@@ -35,6 +35,22 @@ python scripts/send_patch.py examples/patches/recolor_pillar.json  # pillar turn
 
 `GET /world` returns the current world document.
 
+## Drive it with the MCP server (Phase 1)
+
+The world-editing **MCP server** exposes the director's tools (`query_world`, `add_entity`,
+`move_entity`, `update_entity`, `remove_entity`, `set_environment`). It translates tool calls
+into patches and POSTs them to the running world server, so edits broadcast live to every
+headset. This is the surface PipeCat's `MCPClient` will connect to in Phase 2.
+
+With the world server running, exercise it over stdio (as an MCP client would):
+
+```bash
+python scripts/mcp_smoke.py
+```
+
+To wire it into an MCP client / agent, run it as a stdio server: `python -m conjure.mcp_server`
+(or the `conjure-mcp` console script), with `CONJURE_URL` pointing at the world server.
+
 ## Run it on the Quest 3 (Phase-0 path: `adb reverse`)
 
 WebXR needs a secure context, but the browser treats `localhost` as secure — so we forward the
