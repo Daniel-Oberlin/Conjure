@@ -1,0 +1,28 @@
+{
+  "id": "world_hello",
+  "name": "Hello Conjure",
+  "description": "Phase-0 starter scene: a ground plane and a pillar, no assets required.",
+  "tags": ["starter"],
+  "rev": 0,
+  "environment": {
+    "sky": { "color": "#1a2233" }
+  },
+  "entities": [
+    {
+      "id": "ground",
+      "transform": { "position": [0, 0, 0], "rotation": [-90, 0, 0] },
+      "components": {
+        "geometry": { "primitive": "plane", "width": 20, "height": 20 },
+        "material": { "color": "#2f7a4d" }
+      }
+    },
+    {
+      "id": "pillar",
+      "transform": { "position": [0, 1, -3] },
+      "components": {
+        "geometry": { "primitive": "box", "width": 0.5, "height": 2, "depth": 0.5 },
+        "material": { "color": "#c8884a" }
+      }
+    }
+  ]
+}

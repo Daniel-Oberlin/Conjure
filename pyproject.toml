@@ -1,0 +1,20 @@
+[project]
+name = "conjure"
+version = "0.0.1"
+description = "Conjure — a voice-driven WebXR holodeck (Phase 0 scaffold)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+]
+
+[project.scripts]
+conjure = "conjure.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["conjure"]

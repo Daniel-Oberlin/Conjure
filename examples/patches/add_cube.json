@@ -1,0 +1,16 @@
+{
+  "origin": "hand",
+  "ops": [
+    {
+      "op": "add",
+      "entity": {
+        "id": "cube1",
+        "transform": { "position": [1.2, 1, -3] },
+        "components": {
+          "geometry": { "primitive": "box" },
+          "material": { "color": "tomato" }
+        }
+      }
+    }
+  ]
+}
