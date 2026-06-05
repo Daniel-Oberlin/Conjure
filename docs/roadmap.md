@@ -16,10 +16,14 @@ with something you can actually experience on the Quest.
 - Drive it from a text client / script. *Milestone: type a command, see a cube appear in
   the headset live.* — **achieved** (via `send_patch` and the MCP server, confirmed in-headset).
 
-## Phase 2 — Voice
+## Phase 2 — Voice ✅ DONE
 - PipeCat pipeline (STT → director LLM → TTS), director wired to the MCP server.
-- Conversational editing with barge-in and progress narration. *Milestone: "add a red
-  cube on the table" works by voice.*
+- Conversational editing. *Milestone: "add a red cube in front of me" works by voice* —
+  **achieved** (local Whisper + Kokoro + cloud Claude; verified building/stacking shapes by voice).
+- **Audio-polish follow-ups (open):** (1) room-speaker support without earbuds — acoustic echo
+  cancellation or **push-to-talk** (ties to #5), since an open mic+speaker feeds the bot's TTS
+  back to itself; today's loop is avoided with earbuds + a terse director prompt. (2) modernize
+  `PipelineTask`/`PipelineRunner` → `PipelineWorker`/`WorkerRunner` (pipecat 1.3 deprecations).
 
 ## Phase 3 — Assets
 - Asset pipeline: resolve from CC sources, convert to glTF, optimize to budget, cache.

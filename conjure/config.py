@@ -28,6 +28,7 @@ class Settings:
     stt: str
     tts: str
     llm: str
+    llm_model: str
     # secrets
     anthropic_api_key: str | None
     # server / connectivity
@@ -42,6 +43,7 @@ def get_settings() -> Settings:
         stt=os.environ.get("CONJURE_STT", "whisper"),
         tts=os.environ.get("CONJURE_TTS", "kokoro"),
         llm=os.environ.get("CONJURE_LLM", "claude"),
+        llm_model=os.environ.get("CONJURE_LLM_MODEL", "claude-sonnet-4-6"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         host=os.environ.get("CONJURE_HOST", "0.0.0.0"),
         port=int(os.environ.get("CONJURE_PORT", "8080")),

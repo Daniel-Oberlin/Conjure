@@ -51,10 +51,13 @@ python scripts/mcp_smoke.py
 To wire it into an MCP client / agent, run it as a stdio server: `python -m conjure.mcp_server`
 (or the `conjure-mcp` console script), with `CONJURE_URL` pointing at the world server.
 
-## Voice (Phase 2 — in progress)
+## Voice (Phase 2)
 
-The voice loop uses local Whisper (STT) + local Kokoro (TTS) + cloud Claude (director), behind a
-provider abstraction. Setup is one script plus one API key:
+Talk to the world. The loop is **mic → Whisper (STT) → Claude director w/ MCP tools → Kokoro (TTS)
+→ speaker**, all local except the cloud director, behind a provider abstraction. Audio runs on the
+host — nothing is piped through the Quest.
+
+Setup (one script + one key):
 
 ```bash
 ./scripts/setup.sh                     # system deps + venv + voice extras + .env
@@ -62,8 +65,16 @@ provider abstraction. Setup is one script plus one API key:
 python -m conjure.doctor               # confirm prerequisites
 ```
 
-Prerequisites, what's automatic vs. manual, and the doctor checklist: [docs/setup.md](./docs/setup.md).
-Provider options: [docs/providers.md](./docs/providers.md). (The PipeCat pipeline itself lands next.)
+Run it (two terminals):
+
+```bash
+python -m conjure                      # 1) world server (also serving the Quest)
+python -m conjure.voice                # 2) voice loop  (or the `conjure-voice` script)
+```
+
+Then speak, e.g. *"add a red cube in front of me"* — the director calls the world tools and the
+change appears live in the headset. Prerequisites & the doctor: [docs/setup.md](./docs/setup.md);
+provider options: [docs/providers.md](./docs/providers.md).
 
 ## Run it on the Quest 3 (Phase-0 path: `adb reverse`)
 

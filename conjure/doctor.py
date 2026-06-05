@@ -57,7 +57,7 @@ def main() -> int:
 
     # 4. TTS backend
     if s.tts == "kokoro":
-        present = _have("kokoro")
+        present = _have("kokoro_onnx")
         rows.append((OK if present else WARN,
                      "Kokoro TTS (model downloads on first run)",
                      "" if present else "comes with pipecat-ai[kokoro]"))
