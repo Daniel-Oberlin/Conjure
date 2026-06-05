@@ -59,18 +59,18 @@ Multiple named LLMs may be active in one session; this is the **default director
 
 ## Asset & media generation
 
-### Image generation
+### Image generation (pluggable registry — `imagegen.py`)
 | Option | Hosting | Notes |
 |---|---|---|
-| 🔜 *(not yet chosen)* | — | Decide at the assets/generation phase. |
-| 💡 Cloud image models | cloud | text/image → image. |
-| 💡 Stable Diffusion (local) | local | Self-host on a Mac / home GPU box. |
+| ✅ **Gemini "Nano Banana"** (`gemini-2.5-flash-image`) | cloud | Default; great at editing + outpainting; ~4¢/image (needs billing). |
+| 💡 OpenAI gpt-image-1 | cloud | Strong prompt adherence + text-in-image; ~15 lines to add as a generator. |
+| 💡 FLUX (fal/Replicate) · Stable Diffusion (local) | cloud/local | Plug in as further generators. |
 
 ### Image processing — up-res & outpainting (spec §5)
 | Option | Hosting | Notes |
 |---|---|---|
+| ✅/💡 Gemini "Nano Banana" (editing) | cloud | Best-in-class **layout-aware outpainting** → photo to skybox/panorama; image-in→image-out path already wired (generate_content). |
 | 💡 Super-resolution (e.g. Real-ESRGAN-class) | local/cloud | Up-res images/textures. |
-| 💡 Diffusion outpainting | local/cloud | Extend photos → seamless **skybox / 360 / cylindrical panorama**. |
 
 ### 3D generation (spec §5, #10)
 | Option | Hosting | Notes |

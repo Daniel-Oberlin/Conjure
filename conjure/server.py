@@ -12,6 +12,7 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -23,6 +24,7 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .config import get_settings
+from .imagegen import get_image_generator
 from .schema import Patch
 from .world import WorldStore
 
@@ -30,6 +32,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 ASSET_CACHE = ROOT / ".cache" / "assets"
+ASSET_CACHE.mkdir(parents=True, exist_ok=True)
+MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
 
 settings = get_settings()  # loads .env
 store = WorldStore.load(SAMPLE_WORLD)
@@ -37,6 +41,7 @@ clients: set[WebSocket] = set()
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
+image_gen = get_image_generator(settings)  # None if its key/provider isn't configured
 
 TARGET_SIZE_M = 1.8  # fit a placed model's largest dimension to ~this many meters
 
@@ -85,14 +90,13 @@ class PlaceAssetRequest(BaseModel):
 
 @app.get("/assets/{filename}")
 async def asset(filename: str) -> FileResponse:
-    """Serve a cached GLB so the headset loads it from this server (same origin/connection)."""
-    if resolver is None:
-        raise HTTPException(status_code=404, detail="assets disabled (no POLY_PIZZA_API_KEY)")
-    asset_hash = filename[:-4] if filename.endswith(".glb") else filename
-    path = resolver.path_for(asset_hash)
+    """Serve a cached asset (GLB model or generated image) from this server's content store."""
+    if "/" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="bad filename")
+    path = ASSET_CACHE / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="asset not found")
-    return FileResponse(path, media_type="model/gltf-binary")
+    return FileResponse(path, media_type=MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"))
 
 
 @app.post("/place_asset")
@@ -160,6 +164,67 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
         "licence": record.licence,
         "attribution": record.attribution,
     }
+
+
+class PlaceImageRequest(BaseModel):
+    prompt: str
+    position: Optional[list[float]] = None
+    size_m: Optional[float] = None
+    name: Optional[str] = None
+
+
+def _image_plane(eid: str, pos: list[float], size: float, material: dict, meta: dict | None = None) -> dict:
+    return {
+        "op": "add",
+        "entity": {
+            "id": eid,
+            "transform": {"position": pos},
+            "components": {
+                "geometry": {"primitive": "plane", "width": size, "height": size},
+                "material": material,
+            },
+            **({"meta": meta} if meta else {}),
+        },
+    }
+
+
+@app.post("/place_image")
+async def place_image(req: PlaceImageRequest) -> dict:
+    """Generate an image and hang it as a textured plane (a painting/poster) facing the user."""
+    if image_gen is None:
+        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
+
+    eid = req.name or f"ent_image_{uuid4().hex[:6]}"
+    pos = req.position or [0.0, 1.5, -3.0]  # eye height, on the wall in front
+    size = req.size_m or 1.0
+
+    # 1. Placeholder frame appears instantly.
+    placeholder = _image_plane(eid, pos, size, {"color": "#333", "side": "double"})
+    await _broadcast({"type": "patch", "patch": store.apply_patch([placeholder], origin="image")})
+
+    # 2. Generate.
+    try:
+        result = await image_gen.generate(req.prompt)
+    except Exception as exc:  # noqa: BLE001
+        await _broadcast({"type": "patch", "patch": store.apply_patch([{"op": "remove", "id": eid}], origin="image")})
+        return {"ok": False, "error": str(exc)}
+
+    ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
+    img_hash = hashlib.sha256(result.data).hexdigest()[:16]
+    (ASSET_CACHE / f"{img_hash}{ext}").write_bytes(result.data)
+    url = f"/assets/{img_hash}{ext}"
+
+    # 3. Swap the placeholder for the generated image (flat shader so colors are true).
+    swap = [
+        {"op": "remove", "id": eid},
+        _image_plane(
+            eid, pos, size,
+            {"src": url, "shader": "flat", "side": "double"},
+            {"generated": True, "provider": result.provider, "model": result.model, "prompt": req.prompt},
+        ),
+    ]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(swap, origin="image")})
+    return {"ok": True, "id": eid, "prompt": req.prompt, "provider": result.provider, "model": result.model}
 
 
 @app.websocket("/ws")

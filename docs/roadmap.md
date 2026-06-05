@@ -35,9 +35,15 @@ with something you can actually experience on the Quest.
   GLB bounding box, fit to a target size, sit on the floor) — models currently load at native
   scale and float; (2) tri-budget filtering when picking a result; (3) more CC sources as modules.
 
-## Phase 4 — Generation
-- Generative image/3D/audio via model APIs, incorporated as assets. *Milestone: "make a
-  painting of a dragon and hang it on the wall."*
+## Phase 4 — Generation 🔶 IMAGES DONE
+- **Image generation** via a pluggable generator registry (`imagegen.py`, decision #1). First
+  plugin: **Google Gemini "Nano Banana"** (chosen for editing + outpainting). `place_image` hangs
+  a generated picture as a textured plane. *Milestone: "paint a dragon and hang it on the wall"* —
+  **achieved**.
+- **Open follow-ups:** (1) **image editing / outpainting** (Nano Banana's strength — extend a
+  photo into a skybox/panorama, iterative edits — vision's image-enhancement goals); (2) non-square
+  aspect ratios; (3) **text→3D generation** (Meshy/Tripo/…) as another `place_*` path; (4)
+  generated audio (the extensible audio engine).
 
 ## Phase 5 — Memory & connections
 - Persist worlds + versions; semantic recall ("the beach world"); portals between worlds.

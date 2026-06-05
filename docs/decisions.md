@@ -8,7 +8,7 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 1 | Cloud vs local compute (STT/LLM/TTS/gen) | ✅ RESOLVED | Cloud-first, provider-abstracted, host-flexible |
 | 2 | World representation (declarative engine vs neutral JSON) | ✅ RESOLVED | Declarative — A-Frame (ECS-as-HTML over Three.js) |
 | 3 | Serving WebXR to the headset over HTTPS | ✅ RESOLVED | 3-tier: adb reverse → Caddy/DNS-01 → Tailscale |
-| 4 | Asset sources & generation providers for v1 | 🔶 PARTIAL | Fetch: Poly Pizza (GLB); generation TBD (Phase 4) |
+| 4 | Asset sources & generation providers for v1 | 🔶 PARTIAL | Fetch: Poly Pizza (GLB); image-gen: Gemini; 3D-gen TBD |
 | 5 | Voice activation + audio capture topology | 🔶 CONSTRAINED by #9 | Presence-aware: solo → wake-word optional (open-mic ok); shared → wake-word + PTT |
 | 6 | Behavior execution split (client vs server) | 🔶 EASED by #7 | Per-behavior placement (portable runtime); default split TBD |
 | 7 | Sandboxing model for LLM-authored code | ✅ RESOLVED | Capability API + unified JS in QuickJS-WASM, both sides |
@@ -81,8 +81,10 @@ friendly), CC-licensed, no end-user login. Needs a free developer token (`POLY_P
 Other CC sources (Quaternius/Kenney CC0 packs, Sketchfab-CC, Objaverse, Poly Haven for HDRIs) can
 be added later as additional content-source modules.
 
-**Still open:** generative providers (image; text/image→3D) — chosen at the generation phase
-(Phase 4). See [providers.md](./providers.md).
+**Image generation (Phase 4) — ✅ Google Gemini "Nano Banana"** (`gemini-2.5-flash-image`), behind
+a pluggable generator registry (`imagegen.py`) so OpenAI/FLUX/local SD plug in. Chosen for
+best-in-class editing + layout-aware outpainting (sets up the vision's skybox/panorama work).
+Needs billing on the Google AI Studio key. **Still open:** text/image→3D generation.
 
 ### 5. Voice activation + audio capture topology — 🔶 CONSTRAINED by #9
 **Presence-aware activation:** the activation model scales with who's present.

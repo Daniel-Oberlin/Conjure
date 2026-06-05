@@ -123,6 +123,40 @@ async def place_asset(
 
 
 @mcp.tool()
+async def place_image(
+    prompt: str,
+    position: Optional[list[float]] = None,
+    size_m: Optional[float] = None,
+    name: Optional[str] = None,
+) -> str:
+    """Generate an image with AI and hang it as a painting/poster facing the user.
+
+    Use for art, paintings, posters, photos, signs — anything pictorial. (For physical 3D
+    objects use place_asset instead.)
+    prompt: a vivid description of the image, e.g. 'an oil painting of a red dragon over a castle'.
+    position: [x, y, z] meters (default [0, 1.5, -3], eye height on the wall in front).
+    size_m: width/height of the framed image in meters (default 1.0).
+    name: explicit entity id; auto-generated if omitted.
+
+    A placeholder frame appears immediately; the generated image swaps in once ready.
+    """
+    body: dict[str, Any] = {"prompt": prompt}
+    if position is not None:
+        body["position"] = position
+    if size_m is not None:
+        body["size_m"] = size_m
+    if name is not None:
+        body["name"] = name
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(f"{BASE}/place_image", json=body)
+        resp.raise_for_status()
+        result = resp.json()
+    if not result.get("ok"):
+        return f"Couldn't generate image: {result.get('error', 'unknown error')}."
+    return f"Generated and hung an image ({result.get('model', '?')}) as {result['id']}."
+
+
+@mcp.tool()
 async def move_entity(id: str, position: list[float]) -> str:
     """Move an entity to a new [x, y, z] position (meters)."""
     patch = await _post_patch([{"op": "update", "id": id, "set": {"transform.position": position}}])

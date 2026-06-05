@@ -34,6 +34,7 @@ SYSTEM_PROMPT = (
     "or remove objects, and set the environment. "
     "For real-world objects (a tree, a chair, a car, an animal), use place_asset with a short "
     "search query; use add_entity only for basic primitive shapes (cube, sphere, cone, ...). "
+    "For pictures — paintings, posters, photos, signs, art — use place_image with a vivid prompt. "
     "CRITICAL: do NOT think out loud, explain your reasoning, or recite coordinates, sizes, or "
     "measurements. Do the work silently via tool calls, then reply with AT MOST one short "
     "confirmation sentence (e.g. 'Added a gray sphere above the cubes.'). Never repeat or restate "
