@@ -63,6 +63,9 @@ adb reverse tcp:8080 tcp:8080
 Then open <http://localhost:8080> in the **Quest browser** and enter VR. Multi-headset /
 LAN serving moves to Caddy + TLS later (decision #3, tiers 2–3).
 
+**Full step-by-step (adb install, Developer Mode, USB authorize, live-edit test):**
+see [docs/testing-on-quest.md](./docs/testing-on-quest.md).
+
 ## Layout
 
 ```

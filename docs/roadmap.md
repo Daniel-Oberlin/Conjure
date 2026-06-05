@@ -3,17 +3,18 @@
 A path that gets something working in the headset *early*, then deepens. Each phase ends
 with something you can actually experience on the Quest.
 
-## Phase 0 — Foundations & decisions
+## Phase 0 — Foundations & decisions ✅ DONE
 - Settle the high-leverage decisions (decisions.md #1, #2, #3).
 - Stand up the repo skeleton: Python backend, WebXR client, shared scene-graph schema.
 - Solve **HTTPS-to-headset** so the Quest can load a page from the server. *Milestone:
-  a static WebXR scene renders on the Quest 3.*
+  a static WebXR scene renders on the Quest 3.* — **achieved** (adb-reverse path,
+  [testing-on-quest.md](./testing-on-quest.md)).
 
-## Phase 1 — Live editing loop (no voice yet)
+## Phase 1 — Live editing loop (no voice yet) ✅ DONE
 - World server holds scene state; WebSocket pushes **patches** to the client.
 - MCP server with a few tools (`add_entity`, `set_environment`, `move_entity`).
 - Drive it from a text client / script. *Milestone: type a command, see a cube appear in
-  the headset live.*
+  the headset live.* — **achieved** (via `send_patch` and the MCP server, confirmed in-headset).
 
 ## Phase 2 — Voice
 - PipeCat pipeline (STT → director LLM → TTS), director wired to the MCP server.
