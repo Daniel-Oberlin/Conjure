@@ -2,8 +2,10 @@
 
 How to run Conjure and view/drive it live inside the headset. This is the **Phase-0 path**
 (`adb reverse` over USB — decision #3, tier 1): it needs no TLS because the Quest browser treats
-`localhost` as a secure context, which WebXR requires. Multi-headset / LAN serving moves to
-Caddy + TLS later (decision #3, tiers 2–3).
+`localhost` as a secure context, which WebXR requires.
+
+> **Want to go wireless (no USB cable)?** See **[https-setup.md](./https-setup.md)** — serve over
+> HTTPS via cloudflared (fastest), Caddy + Let's Encrypt, or Tailscale.
 
 > Verified working: a static A-Frame scene renders in VR and live patches appear in-headset.
 
