@@ -21,7 +21,7 @@ POSTing hand-authored patches.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
+pip install -e .                       # base: world server + MCP (no voice)
 python -m conjure                      # serves on http://localhost:8080
 ```
 
@@ -50,6 +50,20 @@ python scripts/mcp_smoke.py
 
 To wire it into an MCP client / agent, run it as a stdio server: `python -m conjure.mcp_server`
 (or the `conjure-mcp` console script), with `CONJURE_URL` pointing at the world server.
+
+## Voice (Phase 2 — in progress)
+
+The voice loop uses local Whisper (STT) + local Kokoro (TTS) + cloud Claude (director), behind a
+provider abstraction. Setup is one script plus one API key:
+
+```bash
+./scripts/setup.sh                     # system deps + venv + voice extras + .env
+# add ANTHROPIC_API_KEY to .env, then:
+python -m conjure.doctor               # confirm prerequisites
+```
+
+Prerequisites, what's automatic vs. manual, and the doctor checklist: [docs/setup.md](./docs/setup.md).
+Provider options: [docs/providers.md](./docs/providers.md). (The PipeCat pipeline itself lands next.)
 
 ## Run it on the Quest 3 (Phase-0 path: `adb reverse`)
 

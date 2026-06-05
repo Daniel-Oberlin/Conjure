@@ -11,7 +11,9 @@ dynamic behavior, and the ability to pull in generated or pre-existing web conte
 3. **[architecture.md](./architecture.md)** — the v1 design: concrete contracts, runtime, channels, trust model.
 4. **[roadmap.md](./roadmap.md)** — phased path from prototype to full system.
 5. **[decisions.md](./decisions.md)** — log of consequential forks and what we chose & why.
-6. **[testing-on-quest.md](./testing-on-quest.md)** — exact steps to run it in the Quest 3 headset.
+6. **[providers.md](./providers.md)** — provider & module registry: chosen defaults + future options per swappable slot.
+7. **[setup.md](./setup.md)** — prerequisites & onboarding: what installs automatically vs. by hand, the doctor check.
+8. **[testing-on-quest.md](./testing-on-quest.md)** — exact steps to run it in the Quest 3 headset.
 
 ## Status
 
