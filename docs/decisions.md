@@ -8,7 +8,7 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 1 | Cloud vs local compute (STT/LLM/TTS/gen) | ✅ RESOLVED | Cloud-first, provider-abstracted, host-flexible |
 | 2 | World representation (declarative engine vs neutral JSON) | ✅ RESOLVED | Declarative — A-Frame (ECS-as-HTML over Three.js) |
 | 3 | Serving WebXR to the headset over HTTPS | ✅ RESOLVED | 3-tier: adb reverse → Caddy/DNS-01 → Tailscale |
-| 4 | Asset sources & generation providers for v1 | OPEN | — |
+| 4 | Asset sources & generation providers for v1 | 🔶 PARTIAL | Fetch: Poly Pizza (GLB); generation TBD (Phase 4) |
 | 5 | Voice activation + audio capture topology | 🔶 CONSTRAINED by #9 | Presence-aware: solo → wake-word optional (open-mic ok); shared → wake-word + PTT |
 | 6 | Behavior execution split (client vs server) | 🔶 EASED by #7 | Per-behavior placement (portable runtime); default split TBD |
 | 7 | Sandboxing model for LLM-authored code | ✅ RESOLVED | Capability API + unified JS in QuickJS-WASM, both sides |
@@ -75,9 +75,14 @@ possible — but we are not paying portability tax for it in v1.
 **Why:** Each tier removes friction at the cost of setup we don't need yet. Tier 1 gets pixels
 in the headset today; Tier 2 is the standing multi-user LAN story; Tier 3 is the remote path.
 
-### 4. Asset sources & generation providers
-Which CC sources (Poly Pizza, Quaternius, Kenney, Sketchfab-CC, Objaverse, Poly Haven) and
-which generative providers (image; text/image→3D) for v1. Self-host vs API.
+### 4. Asset sources & generation providers — 🔶 PARTIAL
+**Fetch source (Phase 3) — ✅ Poly Pizza.** Free API, keyword search, **low-poly GLB** (Quest-
+friendly), CC-licensed, no end-user login. Needs a free developer token (`POLY_PIZZA_API_KEY`).
+Other CC sources (Quaternius/Kenney CC0 packs, Sketchfab-CC, Objaverse, Poly Haven for HDRIs) can
+be added later as additional content-source modules.
+
+**Still open:** generative providers (image; text/image→3D) — chosen at the generation phase
+(Phase 4). See [providers.md](./providers.md).
 
 ### 5. Voice activation + audio capture topology — 🔶 CONSTRAINED by #9
 **Presence-aware activation:** the activation model scales with who's present.

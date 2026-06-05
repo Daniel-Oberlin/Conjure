@@ -25,10 +25,15 @@ with something you can actually experience on the Quest.
   back to itself; today's loop is avoided with earbuds + a terse director prompt. (2) modernize
   `PipelineTask`/`PipelineRunner` → `PipelineWorker`/`WorkerRunner` (pipecat 1.3 deprecations).
 
-## Phase 3 — Assets
-- Asset pipeline: resolve from CC sources, convert to glTF, optimize to budget, cache.
-- `place_asset` + progressive placeholder→real swap. *Milestone: "put a tree here" pulls a
-  real model into the world.*
+## Phase 3 — Assets ✅ DONE (polish pending)
+- Asset pipeline: **Poly Pizza** (decision #4) search → download → content-addressed cache →
+  served at `/assets/<hash>.glb`; license + attribution captured per asset.
+- `place_asset` MCP tool with progressive placeholder→model swap. *Milestone: "put a tree in
+  front of me" pulls a real model into the world* — **achieved** (tree/chair/dog by voice,
+  movable/rotatable/scalable).
+- **Polish follow-ups (open):** (1) **auto-normalize asset scale + ground placement** (read the
+  GLB bounding box, fit to a target size, sit on the floor) — models currently load at native
+  scale and float; (2) tri-budget filtering when picking a result; (3) more CC sources as modules.
 
 ## Phase 4 — Generation
 - Generative image/3D/audio via model APIs, incorporated as assets. *Milestone: "make a

@@ -87,6 +87,38 @@ async def add_entity(
 
 
 @mcp.tool()
+async def place_asset(
+    query: str,
+    position: Optional[list[float]] = None,
+    name: Optional[str] = None,
+) -> str:
+    """Place a real 3D model found by search — use this for real-world objects.
+
+    query: what to find, e.g. 'oak tree', 'wooden chair', 'sports car', 'treasure chest'.
+        Use add_entity (not this) only for basic primitive shapes like cube/sphere/cone.
+    position: [x, y, z] meters (default [0, 1, -3], in front of the user).
+    name: explicit entity id; auto-generated if omitted.
+
+    A placeholder appears immediately; the real model swaps in once downloaded.
+    """
+    body: dict[str, Any] = {"query": query}
+    if position is not None:
+        body["position"] = position
+    if name is not None:
+        body["name"] = name
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        resp = await client.post(f"{BASE}/place_asset", json=body)
+        resp.raise_for_status()
+        result = resp.json()
+    if not result.get("ok"):
+        return f"Couldn't place {query!r}: {result.get('error', 'no model found')}."
+    return (
+        f"Placed {result['title']!r} ({result.get('tris', '?')} tris) as {result['id']}. "
+        f"{result.get('attribution', '')[:140]}"
+    )
+
+
+@mcp.tool()
 async def move_entity(id: str, position: list[float]) -> str:
     """Move an entity to a new [x, y, z] position (meters)."""
     patch = await _post_patch([{"op": "update", "id": id, "set": {"transform.position": position}}])

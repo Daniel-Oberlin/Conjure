@@ -31,6 +31,7 @@ class Settings:
     llm_model: str
     # secrets
     anthropic_api_key: str | None
+    poly_pizza_api_key: str | None
     # server / connectivity
     host: str
     port: int
@@ -45,6 +46,7 @@ def get_settings() -> Settings:
         llm=os.environ.get("CONJURE_LLM", "claude"),
         llm_model=os.environ.get("CONJURE_LLM_MODEL", "claude-sonnet-4-6"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
+        poly_pizza_api_key=os.environ.get("POLY_PIZZA_API_KEY") or None,
         host=os.environ.get("CONJURE_HOST", "0.0.0.0"),
         port=int(os.environ.get("CONJURE_PORT", "8080")),
         world_url=os.environ.get("CONJURE_URL", "http://localhost:8080"),
