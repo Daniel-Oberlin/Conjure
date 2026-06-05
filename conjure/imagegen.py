@@ -31,7 +31,7 @@ class ImageGenerator(Protocol):
     name: str
     model: str
 
-    async def generate(self, prompt: str) -> ImageResult: ...
+    async def generate(self, prompt: str, *, aspect_ratio: Optional[str] = None) -> ImageResult: ...
     # Future: async def edit(self, prompt: str, image: bytes) -> ImageResult: ...
 
 
@@ -65,19 +65,22 @@ class GeminiImageGenerator:
         self.model = model
         self._api_key = api_key
 
-    async def generate(self, prompt: str) -> ImageResult:
+    async def generate(self, prompt: str, *, aspect_ratio: Optional[str] = None) -> ImageResult:
         # google-genai's call is sync; run it off the event loop.
-        return await asyncio.to_thread(self._generate_sync, prompt)
+        return await asyncio.to_thread(self._generate_sync, prompt, aspect_ratio)
 
-    def _generate_sync(self, prompt: str) -> ImageResult:
+    def _generate_sync(self, prompt: str, aspect_ratio: Optional[str]) -> ImageResult:
         from google import genai
         from google.genai import types
 
         client = genai.Client(api_key=self._api_key)
+        config_kwargs: dict = {"response_modalities": ["IMAGE"]}
+        if aspect_ratio:
+            config_kwargs["image_config"] = types.ImageConfig(aspect_ratio=aspect_ratio)
         resp = client.models.generate_content(
             model=self.model,
             contents=prompt,
-            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+            config=types.GenerateContentConfig(**config_kwargs),
         )
         for candidate in resp.candidates or []:
             for part in (candidate.content.parts if candidate.content else []) or []:

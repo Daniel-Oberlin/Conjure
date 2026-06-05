@@ -63,9 +63,18 @@ def _normalize(record, pos: list[float], target_m: float) -> tuple[list[float], 
     return position, [s, s, s]
 
 
+_NO_STORE = {"Cache-Control": "no-store"}  # avoid stale client during active dev
+
+
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(CLIENT_DIR / "index.html")
+    return FileResponse(CLIENT_DIR / "index.html", headers=_NO_STORE)
+
+
+@app.get("/static/conjure-client.js")
+async def client_js() -> FileResponse:
+    # Explicit route (takes precedence over the /static mount) so we can disable caching.
+    return FileResponse(CLIENT_DIR / "conjure-client.js", media_type="application/javascript", headers=_NO_STORE)
 
 
 @app.get("/world")
@@ -225,6 +234,35 @@ async def place_image(req: PlaceImageRequest) -> dict:
     ]
     await _broadcast({"type": "patch", "patch": store.apply_patch(swap, origin="image")})
     return {"ok": True, "id": eid, "prompt": req.prompt, "provider": result.provider, "model": result.model}
+
+
+class SkyboxRequest(BaseModel):
+    prompt: str
+
+
+@app.post("/set_skybox")
+async def set_skybox(req: SkyboxRequest) -> dict:
+    """Generate a 360° panorama and wrap the whole scene in it (the sky/environment)."""
+    if image_gen is None:
+        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
+
+    full_prompt = (
+        f"A seamless equirectangular 360-degree panorama for a VR skybox: {req.prompt}. "
+        "Centered horizon, evenly lit, no people, no text, no watermark, no borders."
+    )
+    try:
+        result = await image_gen.generate(full_prompt, aspect_ratio="21:9")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+    ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
+    img_hash = hashlib.sha256(result.data).hexdigest()[:16]
+    (ASSET_CACHE / f"{img_hash}{ext}").write_bytes(result.data)
+    url = f"/assets/{img_hash}{ext}"
+
+    patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": url}}}], origin="image")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "sky": url, "provider": result.provider, "model": result.model}
 
 
 @app.websocket("/ws")

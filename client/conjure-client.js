@@ -35,8 +35,17 @@
   function applyEnv(env) {
     env = env || {};
     var sky = document.getElementById("sky");
-    var color = (env.sky && env.sky.color) || env.background;
-    if (color && sky) sky.setAttribute("color", color);
+    if (sky) {
+      if (env.sky && env.sky.src) {
+        // 360 equirectangular image: set the full material so the texture isn't tinted and
+        // renders on the inside of the sky sphere. (Setting the mapped <a-sky src> attribute
+        // doesn't reliably update at runtime.)
+        sky.setAttribute("material", { shader: "flat", side: "back", color: "#FFFFFF", src: env.sky.src });
+      } else {
+        var color = (env.sky && env.sky.color) || env.background;
+        if (color) sky.setAttribute("material", { shader: "flat", side: "back", color: color, src: "" });
+      }
+    }
     if (env.fog) document.querySelector("a-scene").setAttribute("fog", env.fog);
   }
 

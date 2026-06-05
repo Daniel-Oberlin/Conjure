@@ -40,10 +40,14 @@ with something you can actually experience on the Quest.
   plugin: **Google Gemini "Nano Banana"** (chosen for editing + outpainting). `place_image` hangs
   a generated picture as a textured plane. *Milestone: "paint a dragon and hang it on the wall"* —
   **achieved**.
-- **Open follow-ups:** (1) **image editing / outpainting** (Nano Banana's strength — extend a
-  photo into a skybox/panorama, iterative edits — vision's image-enhancement goals); (2) non-square
-  aspect ratios; (3) **text→3D generation** (Meshy/Tripo/…) as another `place_*` path; (4)
-  generated audio (the extensible audio engine).
+- **Skybox** via `set_skybox` — generate a 360° panorama (Gemini, 21:9) and wrap the scene in it
+  (`<a-sky>`). *Working* (acceptable first pass; low-res/blocky + one seam, since a general image
+  model isn't true seamless equirectangular).
+- **Open follow-ups:** (1) **higher-res / true-equirectangular skyboxes** — `image_size` config, or
+  a dedicated 360 model (Blockade Labs) as a registry plugin; (2) **conversational editing /
+  outpainting** via the generator `edit()` path (Nano Banana's strength — edit in-world images,
+  extend a photo); (3) non-square aspect ratios for `place_image`; (4) **text→3D generation**
+  (Meshy/Tripo/…) as another `place_*` path; (5) generated audio (the extensible audio engine).
 
 ## Phase 5 — Memory & connections
 - Persist worlds + versions; semantic recall ("the beach world"); portals between worlds.

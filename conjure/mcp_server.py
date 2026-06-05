@@ -157,6 +157,23 @@ async def place_image(
 
 
 @mcp.tool()
+async def set_skybox(prompt: str) -> str:
+    """Wrap the whole scene in a generated 360° environment (the sky all around the user).
+
+    prompt: the surroundings, e.g. 'a calm sunset beach', 'deep space with colorful nebulae',
+        'a misty pine forest at dawn', 'inside a grand marble cathedral'. Use this to set the
+        *environment*; use place_image for a flat framed picture.
+    """
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(f"{BASE}/set_skybox", json={"prompt": prompt})
+        resp.raise_for_status()
+        result = resp.json()
+    if not result.get("ok"):
+        return f"Couldn't set the skybox: {result.get('error', 'unknown error')}."
+    return f"Wrapped the scene in a generated skybox ({result.get('model', '?')})."
+
+
+@mcp.tool()
 async def move_entity(id: str, position: list[float]) -> str:
     """Move an entity to a new [x, y, z] position (meters)."""
     patch = await _post_patch([{"op": "update", "id": id, "set": {"transform.position": position}}])
