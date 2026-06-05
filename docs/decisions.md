@@ -39,6 +39,11 @@ heavy models offline or on a powerful home machine.
   different hosts, talking over the network, so the "powerful machine I control" can be added
   later without re-architecting.
 
+**Phase-2 voice default (first concrete provider picks):** **local Whisper (STT) + local
+Kokoro/Piper (TTS) + cloud Claude (director)** — local speech keeps audio on the Mac at near-zero
+cost; cloud Claude gives reliable tool-calling; one API key to start. Fully swappable. The full
+catalog of per-slot defaults and alternatives lives in [providers.md](./providers.md).
+
 ### 2. World representation — ✅ RESOLVED
 **Choice:** Declarative scene graph via **A-Frame** (entity-component system expressed as
 HTML-like custom elements over Three.js).

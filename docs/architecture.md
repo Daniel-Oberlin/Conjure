@@ -30,7 +30,7 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 | 6 | **Memory** | host | World store, asset store, vector index, connection graph, sessions, anchors |
 | 7 | **Modules** | anywhere | Pluggable MCP servers: content sources, engines, capability extensions, input providers |
 | 8 | **Input layer** | host **and** client | Normalize + merge input devices into abstract actions/axes |
-| 9 | **Model services** | cloud / local / home box | STT, LLM, TTS, image-gen, 3D-gen behind a provider abstraction (decision #1) |
+| 9 | **Model services** | cloud / local / home box | STT, LLM, TTS, image-gen, 3D-gen behind a provider abstraction (decision #1); per-slot defaults/options in [providers.md](./providers.md) |
 | 10 | **WebXR client** | Quest / any WebXR device | Render + interact; VR/AR/flat; applies patches; capability detection |
 | 11 | **Audio engine** | client (+ host gen) | Extensible, plugin-based: spatialized playback, programmatic/procedural synthesis (Web Audio / AudioWorklet), generated/streamed sources (§7 spec) |
 
