@@ -9,7 +9,7 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 2 | World representation (declarative engine vs neutral JSON) | ✅ RESOLVED | Declarative — A-Frame (ECS-as-HTML over Three.js) |
 | 3 | Serving WebXR to the headset over HTTPS | ✅ RESOLVED | 3-tier: adb reverse → Caddy/DNS-01 → Tailscale |
 | 4 | Asset sources & generation providers for v1 | OPEN | — |
-| 5 | Voice activation + audio capture topology | 🔶 CONSTRAINED by #9 | Wake-word + PTT; shared-room device (diarization) or per-headset mics |
+| 5 | Voice activation + audio capture topology | 🔶 CONSTRAINED by #9 | Presence-aware: solo → wake-word optional (open-mic ok); shared → wake-word + PTT |
 | 6 | Behavior execution split (client vs server) | 🔶 EASED by #7 | Per-behavior placement (portable runtime); default split TBD |
 | 7 | Sandboxing model for LLM-authored code | ✅ RESOLVED | Capability API + unified JS in QuickJS-WASM, both sides |
 | 8 | Desktop/non-headset preview approach | OPEN | — |
@@ -75,9 +75,12 @@ Which CC sources (Poly Pizza, Quaternius, Kenney, Sketchfab-CC, Objaverse, Poly 
 which generative providers (image; text/image→3D) for v1. Self-host vs API.
 
 ### 5. Voice activation + audio capture topology — 🔶 CONSTRAINED by #9
-Multi-user-in-a-room (decision #9) **rules out open-mic VAD** as the input model. Leaning
-toward **wake word ("Conjure, ...") + push-to-talk** (controller button / pinch), with an LLM
-intent-classifier backstop.
+**Presence-aware activation:** the activation model scales with who's present.
+- *Solo mode* — when the user indicates they're alone (by voice or a toggle), the **wake word is
+  optional**; open-mic / always-listening is allowed since there's nothing to disambiguate.
+- *Shared mode* — with others present, **wake word ("Conjure, ...") + push-to-talk** (controller
+  button / pinch) is required, with an LLM intent-classifier backstop. Open-mic VAD is ruled out
+  here by multi-user cross-talk (decision #9). **Safe default is shared** until the user declares solo.
 
 **Capture topology (corrected — don't assume per-headset mics):**
 - *Shared room device* (Bluetooth speakerphone) is the **expected default** for co-located use:

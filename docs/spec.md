@@ -65,11 +65,17 @@ Requirements:
     who's who, and an addressing gate to pull out agent-directed speech.
   - *Per-headset mic* — also supported; gives a clean per-speaker stream tagged with identity
     (no diarization needed). The architecture must allow either or a mix.
-- **Addressing** (multi-user, §12): the director must distinguish "someone is talking to
-  Conjure" from "people in the room talking to each other." An addressing gate — **wake word
-  ("Conjure, …") + push-to-talk**, with an intent-classifier backstop — decides what reaches the
-  director; diarization/stream identity tells it *who* spoke. (decisions.md #5, #9)
-- 🔶 Open-mic-VAD-as-input is ruled out by multi-user; wake-word + PTT is the lean. (#5)
+- **Presence-aware activation** (decisions.md #5): the addressing requirement scales with who's
+  in the room.
+  - *Solo mode* — when the user indicates they're the only one present, the **wake word is
+    optional**: open-mic / always-listening conversation is allowed (nothing to disambiguate).
+  - *Shared mode* — with others present, **wake word ("Conjure, …") + push-to-talk** is required;
+    open-mic is ruled out (room cross-talk). This is the **safe default** until the user declares
+    solo (by voice or a toggle).
+- **Addressing** (multi-user, §12): in shared mode the director must distinguish "someone is
+  talking to Conjure" from "people talking to each other." The addressing gate (wake word + PTT,
+  with an intent-classifier backstop) decides what reaches the director; diarization/stream
+  identity tells it *who* spoke. (decisions.md #5, #9)
 - ✅ STT/LLM/TTS are **cloud-first behind a provider abstraction**, swappable for local or a
   self-hosted home endpoint. Pi stays viable as a thin orchestrator. (decisions.md #1)
 
