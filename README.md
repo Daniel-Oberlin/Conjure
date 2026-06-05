@@ -30,7 +30,7 @@ In another terminal, drive it live:
 
 ```bash
 python scripts/send_patch.py examples/patches/add_cube.json        # a tomato cube appears
-python scripts/send_patch.py examples/patches/recolor_pillar.json  # pillar turns blue & rises
+python scripts/send_patch.py examples/patches/recolor_ground.json  # ground turns blue, sky darkens
 ```
 
 `GET /world` returns the current world document.

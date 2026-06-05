@@ -3,11 +3,8 @@
   "ops": [
     {
       "op": "update",
-      "id": "pillar",
-      "set": {
-        "components.material.color": "#3399ff",
-        "transform.position": [0, 1.5, -3]
-      }
+      "id": "ground",
+      "set": { "components.material.color": "#3a6ea5" }
     },
     {
       "op": "env",

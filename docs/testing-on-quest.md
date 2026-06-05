@@ -112,7 +112,7 @@ Keep the headset on; in **Terminal 2**:
 
 ```bash
 python scripts/send_patch.py examples/patches/add_cube.json        # red cube pops in to your right
-python scripts/send_patch.py examples/patches/recolor_pillar.json  # pillar turns blue & rises, sky darkens
+python scripts/send_patch.py examples/patches/recolor_ground.json  # ground turns blue, sky darkens
 ```
 
 The changes appear **live while you're wearing the headset**. You can also drive it through the
