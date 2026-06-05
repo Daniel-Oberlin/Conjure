@@ -78,6 +78,17 @@ Requirements:
   identity tells it *who* spoke. (decisions.md #5, #9)
 - ✅ STT/LLM/TTS are **cloud-first behind a provider abstraction**, swappable for local or a
   self-hosted home endpoint. Pi stays viable as a thin orchestrator. (decisions.md #1)
+- **Multiple LLMs in one session (director roster).** Several LLMs are available at once, each
+  with a **user-given casual name** ("Gemini", "Chat", …). The user **switches by voice** ("let me
+  talk to Gemini") and the named LLM becomes the active director. (Built on the provider
+  abstraction, #1; the casual name doubles as an addressing target — see #5.)
+  - **Attributed shared transcript.** One conversation log where every turn is tagged with its
+    source (the user, or a specific LLM by name). All LLMs read this shared, attributed history, so
+    a newly-active LLM can **reference and comment on what another LLM said** ("Gemini suggested a
+    fountain — I'd put it here instead"). World state + tool/edit history are shared too, so
+    switching never loses context.
+  - Design notes: a **roster** maps names → provider/model configs (user-editable); one LLM is
+    active at a time; the voice agent routes the active stream to it. (architecture.md §7)
 
 ## 4. World creation & editing (director capabilities)
 
@@ -115,6 +126,13 @@ Find / generate / fetch / convert / optimize / cache content.
   Poly Haven (HDRIs/textures/models).
 - **Generative**: text/image → image (e.g. via the director calling image models),
   text/image → 3D (Meshy, Luma, Tripo, Hunyuan3D, Trellis, etc.), text → audio/SFX/music.
+- **Image enhancement & extrapolation (plugin operations)** — post-process images via pluggable
+  model operations behind the provider abstraction (#1) / as modules (§13):
+  - *Up-res / super-resolution* — sharpen and enlarge a low-res image or texture.
+  - *Outpainting / extrapolation* — paint **beyond an image's edges** to extend it; especially to
+    turn an ordinary photo into an immersive **skybox**, **360°/equirectangular**, or **cylindrical
+    panorama** that wraps the user. Pairs with the immersive media types below and seam-aware
+    handling for wrap-around continuity.
 - **Mesh generation (when nothing fetched/generated fits)** — produce geometry on demand.
   Three complementary modes (decisions.md #10):
   - *Procedural / parametric*: the director (or a behavior) emits code that builds geometry
@@ -210,7 +228,15 @@ Worlds can have reactive logic ("when I clap, launch fireworks"; "the sun sets o
     yoke flying a plane) the relevant motion model may run server-side near the input and sync pose
     to clients — ties to behavior placement (#6) and vehicle motion authority (§12, #12).
   - *Still to design (not a fork):* the host-input transport and the binding-config format.
-- **Spatial audio**: positional sources + ambient beds for immersion.
+- **Extensible audio engine** (plugin architecture): a first-class audio subsystem, not just
+  attached sound files. Spatialized positional sources + ambient beds, driven by the director and
+  by behaviors (`world.audio`, §6). Pluggable **audio sources/effects** (§13):
+  - *File playback* — play/stream audio assets (positional or ambient).
+  - *Programmatic / procedural audio* — synthesize sound at runtime (e.g. Web Audio oscillators /
+    `AudioWorklet` in the browser; generators server-side), for synths, tones, generative
+    soundscapes/music.
+  - *Generated audio* — TTS, SFX/music from models (§5), and streamed sources.
+  - New source and effect types plug in as modules without touching the core.
 - **Comfort & safety**: respect real-world **scale (meters)**, the guardian/play boundary, and
   motion-sickness comfort; don't spawn objects where the user will walk into a wall.
 - **Vendor-neutral baseline + capability extensions** (decisions.md #11): the experience must
@@ -293,6 +319,11 @@ capability = adding an MCP module — no core changes. Module taxonomy:
   - *Example:* a **NAS photo library** module exposing `search_photos` / `get_photo`, including
     **stereoscopic (VR180/side-by-side) and 360° photos** placed as immersive media (§5).
   - *Example:* CC web asset libraries; generative-model wrappers.
+- **Processing modules** — transform existing content rather than source it: **image enhancement
+  (up-res)** and **outpainting/extrapolation** (photo → skybox/panorama), format conversion, mesh
+  optimization (§5).
+- **Audio modules** — audio sources and effects for the extensible audio engine (§7): file
+  players, **programmatic/procedural synths**, generated-audio wrappers, streamed sources.
 - **Experience / engine modules** — external interactive systems the director *mediates* into
   the world.
   - *Example:* an **Infocom Z-machine** module (`new_game`, `send_command`, `get_state`). The

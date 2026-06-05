@@ -34,6 +34,13 @@ the architecture doesn't foreclose it.
   run live ("when X, do Y").
 - **Multimodal & resourceful.** Generate images/audio/3D via other models; **generate meshes**
   when nothing fits; find and reuse free existing content from the web; convert formats as needed.
+- **Many AIs in one conversation.** Several LLMs available in a single session, each with a casual
+  name you give it ("Gemini", "Chat"); ask to talk to a different one and it switches. The
+  conversation remembers **who said what**, so the AIs can react to and build on each other.
+- **Image up-res & outpainting.** Enhance images (super-resolution) and **paint beyond their
+  edges** to turn an ordinary photo into an immersive skybox or wrap-around panorama.
+- **Extensible audio engine.** A plugin-based audio engine — play audio files, **synthesize sound
+  programmatically**, spatialize it — extensible with new audio sources and effects.
 - **VR *and* AR.** Build immersive VR worlds or place content into your real room via passthrough.
 - **Embodiment & vehicles.** Occupy an avatar, or climb into a vehicle — car, tank, plane, hot-air
   balloon — each with its own way of moving and being driven.

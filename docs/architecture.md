@@ -23,7 +23,7 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 | # | Component | Runs on | Responsibility |
 |---|---|---|---|
 | 1 | **Voice agent** | host | PipeCat pipeline: STT → director → TTS, barge-in, addressing gate |
-| 2 | **Director** | host | Orchestrating LLM; MCP **client** of the world server + modules |
+| 2 | **Director (LLM roster)** | host | Orchestrating LLM; MCP **client** of the world server + modules. A session has a **roster of named LLMs**, one active at a time, sharing an attributed transcript (§7) |
 | 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app; MCP **server** of world-editing tools; broadcasts state |
 | 4 | **Behavior runtime** | host **and** client | QuickJS-WASM sandbox executing behaviors + geometry code (decision #7) |
 | 5 | **Asset pipeline** | host (+ remote model APIs) | Resolve / generate / convert / optimize / cache content |
@@ -32,6 +32,7 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 | 8 | **Input layer** | host **and** client | Normalize + merge input devices into abstract actions/axes |
 | 9 | **Model services** | cloud / local / home box | STT, LLM, TTS, image-gen, 3D-gen behind a provider abstraction (decision #1) |
 | 10 | **WebXR client** | Quest / any WebXR device | Render + interact; VR/AR/flat; applies patches; capability detection |
+| 11 | **Audio engine** | client (+ host gen) | Extensible, plugin-based: spatialized playback, programmatic/procedural synthesis (Web Audio / AudioWorklet), generated/streamed sources (§7 spec) |
 
 ```
                          ┌──────────── MCP (control plane) ─────────────┐
@@ -184,6 +185,22 @@ Design notes: keep tools **coarse and intent-level** (`place_asset("campfire", n
 director reasons about goals, not transforms. Consider a future split into sub-agents (asset agent,
 code agent) — not required for v1.
 
+### 7a. LLM roster — many named LLMs in one session  🟡
+
+The director role is filled by a **roster** of LLMs, not a single model:
+
+- **Roster** — a user-editable map of **casual name → provider/model config** (e.g. `"Gemini"` →
+  Gemini, `"Chat"` → GPT), each behind the provider abstraction (decision #1). One is **active**
+  at a time; the voice agent routes the active stream to it.
+- **Switching by voice** — "let me talk to Gemini" (or addressing a name directly) makes that LLM
+  active. The casual name doubles as an addressing target alongside the wake word (decision #5).
+- **Attributed shared transcript** — a single conversation log where every turn carries a
+  `speaker` (`user` | LLM name). All LLMs are prompted with this shared, attributed history, so a
+  newly-active LLM can **reference/comment on another LLM's contributions**. World state and
+  tool/edit history are shared too — switching never drops context.
+- Open design points: how much of a non-active LLM's internal reasoning is shared (we share the
+  visible transcript + edits, not hidden chain-of-thought); per-LLM system-prompt/persona.
+
 ## 8. MCP tool surface (world server)  🟡
 
 Grouped; signatures indicative. These are the director's action vocabulary (spec §4).
@@ -244,6 +261,9 @@ Flow: **resolve → (fetch | generate) → convert → optimize → cache → de
 
 - **Resolve:** cache hit by content hash? else pick a source (CC library / module / generator).
 - **Convert:** anything → **glTF/GLB** (Blender headless / assimp / gltf-transform).
+- **Process (pluggable ops):** image **up-res / super-resolution** and **outpainting/extrapolation**
+  (photo → seamless skybox / 360 / cylindrical panorama), behind the provider abstraction or as
+  processing modules (spec §5, §13). These produce derived assets with their own descriptor.
 - **Optimize to budget:** Draco/meshopt, texture downscale, LOD; must fit the world's perf budget.
 - **Cache:** content-addressed blob store; dedup across worlds.
 
@@ -308,7 +328,8 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
 - **Asset store** — content-addressed blobs + descriptors (§10).
 - **Vector index** — embeddings of world name/description/tags for semantic recall ("the beach world").
 - **Connection graph** — portals between worlds.
-- **Session store** — conversation history + edit provenance ("why is this here").
+- **Session store** — the **attributed transcript** (each turn tagged with speaker: `user` or an
+  LLM roster name, §7a) + edit provenance ("why is this here"). Shared across all roster LLMs.
 - **Anchor registry** (forward-compat) — persistent real-world anchor id ↔ pose, keyed to a place.
 
 Storage choices 🔴 (open, low-stakes): SQLite + a vector extension and a filesystem blob store is a
