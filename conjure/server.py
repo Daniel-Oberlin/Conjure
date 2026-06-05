@@ -38,7 +38,24 @@ resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
 
+TARGET_SIZE_M = 1.8  # fit a placed model's largest dimension to ~this many meters
+
 app = FastAPI(title="Conjure", version="0.0.1")
+
+
+def _normalize(record, pos: list[float], target_m: float) -> tuple[list[float], list[float]]:
+    """Scale a model so its largest dimension is `target_m` meters and its base sits at pos.y,
+    centered at pos.x/z. Returns (position, scale); native scale if the bounding box is unknown.
+    """
+    if not record.bbox_min or not record.bbox_max:
+        return pos, [1.0, 1.0, 1.0]
+    mn, mx = record.bbox_min, record.bbox_max
+    size = [mx[i] - mn[i] for i in range(3)]
+    max_dim = max(size) or 1.0
+    s = target_m / max_dim
+    cx, cz = (mn[0] + mx[0]) / 2, (mn[2] + mx[2]) / 2
+    position = [pos[0] - s * cx, pos[1] - s * mn[1], pos[2] - s * cz]
+    return position, [s, s, s]
 
 
 @app.get("/")
@@ -62,6 +79,7 @@ async def post_patch(patch: Patch) -> dict:
 class PlaceAssetRequest(BaseModel):
     query: str
     position: Optional[list[float]] = None
+    size_m: Optional[float] = None  # intended real-world largest dimension, meters
     name: Optional[str] = None
 
 
@@ -84,7 +102,7 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
         return {"ok": False, "error": "POLY_PIZZA_API_KEY not set"}
 
     eid = req.name or f"ent_asset_{uuid4().hex[:6]}"
-    pos = req.position or [0.0, 1.0, -3.0]
+    pos = req.position or [0.0, 0.0, -3.0]  # base on the floor, a few meters in front
 
     # 1. Placeholder appears immediately (progressive construction, architecture.md §5).
     placeholder = {
@@ -110,14 +128,16 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
         await _broadcast({"type": "patch", "patch": store.apply_patch([{"op": "remove", "id": eid}], origin="asset")})
         return {"ok": False, "error": detail}
 
-    # 3. Swap the placeholder for the real glTF model (carrying license + attribution).
+    # 3. Swap the placeholder for the real glTF model (auto-scaled to sit on the floor),
+    #    carrying license + attribution.
+    model_pos, model_scale = _normalize(record, pos, req.size_m or TARGET_SIZE_M)
     swap = [
         {"op": "remove", "id": eid},
         {
             "op": "add",
             "entity": {
                 "id": eid,
-                "transform": {"position": pos},
+                "transform": {"position": model_pos, "scale": model_scale},
                 "components": {"gltf-model": f"/assets/{record.hash}.glb"},
                 "meta": {
                     "title": record.title,

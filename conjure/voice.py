@@ -40,7 +40,9 @@ SYSTEM_PROMPT = (
     "what the user said. If no action is needed, reply with a single word like 'Okay.' "
     "Call query_world first when an edit depends on what's already there. "
     "Positions are [x, y, z] in meters: the user faces -z, so place things a few meters in front "
-    "(negative z) around y=1 unless asked otherwise."
+    "(negative z) around y=1 unless asked otherwise. For place_asset, always pass size_m as the "
+    "object's real-world size in meters (tree ~7, chair ~0.9, mug ~0.1) so the scene is to-scale; "
+    "those objects auto-sit on the floor (y=0) — only raise y to set something on a surface."
 )
 
 

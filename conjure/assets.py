@@ -27,6 +27,22 @@ class AssetRecord:
     creator: str
     tris: int
     source_url: str
+    bbox_min: list[float] | None = None  # axis-aligned bounds (model units) for auto-scaling
+    bbox_max: list[float] | None = None
+
+
+def _bounding_box(glb_path: Path) -> tuple[list[float], list[float]] | None:
+    """Axis-aligned bounding box of a GLB (node transforms applied), or None if unavailable."""
+    try:
+        import trimesh
+
+        mesh = trimesh.load(glb_path, force="scene")
+        bounds = getattr(mesh, "bounds", None)
+        if bounds is None:
+            return None
+        return [float(v) for v in bounds[0]], [float(v) for v in bounds[1]]
+    except Exception:
+        return None
 
 
 class AssetResolver:
@@ -71,6 +87,7 @@ class AssetResolver:
 
         asset_hash = hashlib.sha256(blob).hexdigest()[:16]
         self.path_for(asset_hash).write_bytes(blob)
+        bbox = _bounding_box(self.path_for(asset_hash))
         record = AssetRecord(
             hash=asset_hash,
             title=item.get("Title") or query,
@@ -79,6 +96,8 @@ class AssetResolver:
             creator=(item.get("Creator") or {}).get("Username", ""),
             tris=int(item.get("Tri Count") or 0),
             source_url=download_url,
+            bbox_min=bbox[0] if bbox else None,
+            bbox_max=bbox[1] if bbox else None,
         )
         self._meta_for(asset_hash).write_text(json.dumps(asdict(record)))
         self._index[download_url] = asset_hash

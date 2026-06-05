@@ -89,6 +89,7 @@ async def add_entity(
 @mcp.tool()
 async def place_asset(
     query: str,
+    size_m: float,
     position: Optional[list[float]] = None,
     name: Optional[str] = None,
 ) -> str:
@@ -96,12 +97,15 @@ async def place_asset(
 
     query: what to find, e.g. 'oak tree', 'wooden chair', 'sports car', 'treasure chest'.
         Use add_entity (not this) only for basic primitive shapes like cube/sphere/cone.
-    position: [x, y, z] meters (default [0, 1, -3], in front of the user).
+    size_m: the object's REAL-WORLD largest dimension in METERS — use your world knowledge so
+        scenes are to-scale. Examples: mug 0.1, house cat 0.5, dining chair 0.9, person 1.8,
+        sofa 2.0, car 4.5, oak tree 7, giraffe 5, house 8. Be realistic.
+    position: [x, y, z] meters; the object auto-sits on the floor (default [0, 0, -3]).
     name: explicit entity id; auto-generated if omitted.
 
-    A placeholder appears immediately; the real model swaps in once downloaded.
+    A placeholder appears immediately; the real model (scaled to size_m) swaps in once downloaded.
     """
-    body: dict[str, Any] = {"query": query}
+    body: dict[str, Any] = {"query": query, "size_m": size_m}
     if position is not None:
         body["position"] = position
     if name is not None:
