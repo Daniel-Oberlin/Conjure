@@ -45,10 +45,17 @@ async def query_world() -> str:
     ]
     for e in doc["entities"]:
         comps = e.get("components", {})
-        prim = comps.get("geometry", {}).get("primitive", "?")
-        color = comps.get("material", {}).get("color", "?")
+        meta = e.get("meta", {})
         pos = e.get("transform", {}).get("position")
-        lines.append(f"  - {e['id']}: {prim} {color} at {pos}")
+        if "gltf-model" in comps:
+            desc = f"model {meta.get('title', '?')!r}"
+        elif comps.get("material", {}).get("src"):
+            desc = f"image {(meta.get('prompt') or meta.get('title') or '?')!r}"
+        else:
+            prim = comps.get("geometry", {}).get("primitive", "?")
+            color = comps.get("material", {}).get("color", "?")
+            desc = f"{prim} {color}"
+        lines.append(f"  - {e['id']}: {desc} at {pos}")
     lines.append(f"environment: {doc.get('environment', {})}")
     return "\n".join(lines)
 
@@ -154,6 +161,24 @@ async def place_image(
     if not result.get("ok"):
         return f"Couldn't generate image: {result.get('error', 'unknown error')}."
     return f"Generated and hung an image ({result.get('model', '?')}) as {result['id']}."
+
+
+@mcp.tool()
+async def edit_image(id: str, prompt: str) -> str:
+    """Edit an existing in-world image (one placed by place_image) — conversational editing.
+
+    Use for changes to a picture already in the scene, e.g. 'make the dragon blue', 'add a full
+    moon', 'make it nighttime', 'turn it into winter'. The edit happens in place. If you don't
+    know the image's id, call query_world first (images are listed as `image '<description>'`).
+    Only works on images, not 3D models or the skybox.
+    """
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(f"{BASE}/edit_image", json={"id": id, "prompt": prompt})
+        resp.raise_for_status()
+        result = resp.json()
+    if not result.get("ok"):
+        return f"Couldn't edit {id!r}: {result.get('error', 'unknown error')}."
+    return f"Updated the image {id}."
 
 
 @mcp.tool()

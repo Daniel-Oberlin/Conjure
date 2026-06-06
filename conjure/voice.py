@@ -35,6 +35,7 @@ SYSTEM_PROMPT = (
     "For real-world objects (a tree, a chair, a car, an animal), use place_asset with a short "
     "search query; use add_entity only for basic primitive shapes (cube, sphere, cone, ...). "
     "For pictures — paintings, posters, photos, signs, art — use place_image with a vivid prompt. "
+    "To change a picture already in the scene, use edit_image (find its id via query_world). "
     "To set the surrounding environment/sky (wrap the user in a place), use set_skybox. "
     "THE MOMENT you understand a request, FIRST say a brief, natural, VARIED acknowledgement out "
     "loud — e.g. 'On it', 'Sure, one sec', 'Got it', 'Working on it', 'You got it' — then "

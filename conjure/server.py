@@ -265,6 +265,45 @@ async def set_skybox(req: SkyboxRequest) -> dict:
     return {"ok": True, "sky": url, "provider": result.provider, "model": result.model}
 
 
+class EditImageRequest(BaseModel):
+    id: str
+    prompt: str
+
+
+@app.post("/edit_image")
+async def edit_image(req: EditImageRequest) -> dict:
+    """Edit an existing in-world image (from place_image) in place — conversational editing."""
+    if image_gen is None:
+        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
+
+    entity = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if entity is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+    src = entity.get("components", {}).get("material", {}).get("src")
+    if not src:
+        return {"ok": False, "error": f"{req.id!r} is not an editable image"}
+    path = ASSET_CACHE / src.rsplit("/", 1)[-1]
+    if not path.exists():
+        return {"ok": False, "error": "source image not cached"}
+
+    try:
+        result = await image_gen.edit(req.prompt, path.read_bytes())
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+    ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
+    img_hash = hashlib.sha256(result.data).hexdigest()[:16]
+    (ASSET_CACHE / f"{img_hash}{ext}").write_bytes(result.data)
+    new_url = f"/assets/{img_hash}{ext}"
+
+    patch = store.apply_patch(
+        [{"op": "update", "id": req.id, "set": {"components.material.src": new_url, "meta.prompt": req.prompt}}],
+        origin="image",
+    )
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "id": req.id, "src": new_url, "model": result.model}
+
+
 @app.websocket("/ws")
 async def ws(websocket: WebSocket) -> None:
     await websocket.accept()

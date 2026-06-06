@@ -43,11 +43,13 @@ with something you can actually experience on the Quest.
 - **Skybox** via `set_skybox` — generate a 360° panorama (Gemini, 21:9) and wrap the scene in it
   (`<a-sky>`). *Working* (acceptable first pass; low-res/blocky + one seam, since a general image
   model isn't true seamless equirectangular).
+- **Conversational image editing** via the generator `edit()` path (`edit_image` — "make the
+  dragon breathe fire", "add a moon"). *Working* — edits an in-world image in place.
 - **Open follow-ups:** (1) **higher-res / true-equirectangular skyboxes** — `image_size` config, or
-  a dedicated 360 model (Blockade Labs) as a registry plugin; (2) **conversational editing /
-  outpainting** via the generator `edit()` path (Nano Banana's strength — edit in-world images,
-  extend a photo); (3) non-square aspect ratios for `place_image`; (4) **text→3D generation**
-  (Meshy/Tripo/…) as another `place_*` path; (5) generated audio (the extensible audio engine).
+  a dedicated 360 model (Blockade Labs) as a registry plugin; (2) **outpainting** (extend a photo →
+  skybox/panorama) — the other use of `edit()`; (3) editing the skybox itself; (4) non-square
+  aspect ratios for `place_image`; (5) **text→3D generation** (Meshy/Tripo/…) as another `place_*`
+  path; (6) generated audio (the extensible audio engine).
 
 ## Phase 5 — Memory & connections
 - Persist worlds + versions; semantic recall ("the beach world"); portals between worlds.
