@@ -8,7 +8,7 @@ Provider/model choices live in [providers.md](./providers.md); this is the insta
 ```bash
 # from the repo root
 ./scripts/setup.sh                 # system deps + venv + voice extras + .env + doctor
-# then edit .env to add ANTHROPIC_API_KEY, and:
+# then edit .env: ANTHROPIC_API_KEY (voice) + POLY_PIZZA_API_KEY (models) + GOOGLE_API_KEY (images)
 python -m conjure.doctor           # until all required checks pass
 ```
 
@@ -40,17 +40,23 @@ this doc + **`scripts/setup.sh`** (system libs), and **`conjure/doctor.py`** (th
 `portaudio` is needed for the host microphone/speaker (local audio transport). `espeak-ng` is used
 by the local TTS for phonemization.
 
-## API key
+## API keys
 
-The recommended stack (local Whisper + local Kokoro + cloud Claude) needs **one** key:
+Speech runs **locally** (Whisper STT, Kokoro TTS) — no keys. Keys are needed per feature
+(all in `.env`, git-ignored; see `.env.example`):
 
-- **`ANTHROPIC_API_KEY`** — from <https://console.anthropic.com> (the API; requires billing/credits,
-  separate from a Claude.ai subscription). Put it in `.env`:
-  ```
-  ANTHROPIC_API_KEY=sk-ant-...
-  ```
+| Key | Unlocks | Notes |
+|---|---|---|
+| **`ANTHROPIC_API_KEY`** | the voice/CLI **director** (Claude) | required for voice; billing — <https://console.anthropic.com> (separate from a Claude.ai subscription) |
+| **`POLY_PIZZA_API_KEY`** | **`place_asset`** (real 3D models) | free, no billing — <https://poly.pizza/docs/api/v1.1> |
+| **`GOOGLE_API_KEY`** | **`place_image` / `edit_image` / `set_skybox`** (Gemini) | billing — <https://aistudio.google.com> |
 
-You only need more keys if you switch to cloud speech or add roster LLMs (see `.env.example`).
+You can run with just the keys for the features you use (e.g. world + voice needs only Anthropic;
+add Poly Pizza for models, Google for generated art). Switching to cloud speech or adding roster
+LLMs needs their keys too — see `.env.example`.
+
+> Note: the doctor checks the voice stack + `ANTHROPIC_API_KEY`; the asset/image keys surface as a
+> clear error from `place_asset`/`place_image` if missing.
 
 ## The doctor (preflight check)
 

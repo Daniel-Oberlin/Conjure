@@ -17,10 +17,5 @@ dynamic behavior, and the ability to pull in generated or pre-existing web conte
 9. **[https-setup.md](./https-setup.md)** — go wireless: serve over HTTPS (cloudflared / Caddy / Tailscale).
 10. **[testing.md](./testing.md)** — automated testing strategy (proposal, for review).
 
-## Status
-
-🏗️ **Design stage.** Nothing built yet, but the big architectural decisions (10 of 12)
-are settled and `architecture.md` is now a real v1 design. The remaining open questions
-are all phase-time and non-blocking (marked `❓ OPEN` in the spec, tracked in `decisions.md`).
-Next: lock the Phase-0 contracts (world-document schema, patch protocol, state channel) and
-get a static A-Frame scene onto the Quest over TLS.
+> For current project status / what works today, see the top-level [README](../README.md) — it's
+> the single source of truth for status, so these docs don't drift.
