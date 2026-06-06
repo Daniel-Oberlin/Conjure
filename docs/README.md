@@ -15,6 +15,7 @@ dynamic behavior, and the ability to pull in generated or pre-existing web conte
 7. **[setup.md](./setup.md)** — prerequisites & onboarding: what installs automatically vs. by hand, the doctor check.
 8. **[testing-on-quest.md](./testing-on-quest.md)** — exact steps to run it in the Quest 3 headset (USB).
 9. **[https-setup.md](./https-setup.md)** — go wireless: serve over HTTPS (cloudflared / Caddy / Tailscale).
+10. **[testing.md](./testing.md)** — automated testing strategy (proposal, for review).
 
 ## Status
 
