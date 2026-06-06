@@ -64,8 +64,13 @@ class AssetResolver:
         return self._dir / f"{asset_hash}.json"
 
     async def resolve(self, query: str) -> AssetRecord | None:
-        """Return a cached AssetRecord for the best match, or None if nothing was found."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        """Return a cached AssetRecord for the best match, or None if nothing was found.
+
+        Raises if the model download fails or isn't a real GLB (so callers report the failure
+        instead of caching/serving an error page).
+        """
+        headers = {"User-Agent": "Conjure/0.1 (+https://github.com/; VR holodeck)"}
+        async with httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True) as client:
             resp = await client.get(
                 SEARCH_URL.format(query=query),
                 headers={"x-auth-token": self._key},
@@ -78,12 +83,22 @@ class AssetResolver:
             item = results[0]  # Poly Pizza returns by relevance
             download_url = item["Download"]
 
-            # Cache hit: same source URL already downloaded.
+            # Cache hit: same source URL already downloaded (and the cached file is a real GLB —
+            # otherwise it's a poisoned entry from a past failed download, so re-fetch).
             cached_hash = self._index.get(download_url)
-            if cached_hash and self.path_for(cached_hash).exists() and self._meta_for(cached_hash).exists():
+            if (cached_hash and self.path_for(cached_hash).exists() and self._meta_for(cached_hash).exists()
+                    and self.path_for(cached_hash).open("rb").read(4) == b"glTF"):
                 return AssetRecord(**json.loads(self._meta_for(cached_hash).read_text()))
 
-            blob = (await client.get(download_url, timeout=60.0)).content
+            dl = await client.get(download_url, timeout=60.0)
+            dl.raise_for_status()
+            blob = dl.content
+            if blob[:4] != b"glTF":  # GLB magic; a 403/HTML error page would slip through otherwise
+                raise RuntimeError(
+                    f"downloaded model was not a GLB (content-type "
+                    f"{dl.headers.get('content-type', '?')}); the source is likely blocking "
+                    "automated downloads right now"
+                )
 
         asset_hash = hashlib.sha256(blob).hexdigest()[:16]
         self.path_for(asset_hash).write_bytes(blob)
