@@ -47,6 +47,11 @@ if [ ! -f .env ]; then
   cp .env.example .env
 fi
 
+if [ -d .git ]; then
+  echo "==> Installing git hooks (pre-push runs the fast test suite)"
+  git config core.hooksPath scripts/git-hooks
+fi
+
 echo "==> Preflight doctor"
 python -m conjure.doctor || true
 

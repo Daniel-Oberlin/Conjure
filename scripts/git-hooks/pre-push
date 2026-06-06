@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Block a push if the fast test suite (Tiers 1-2) fails. Runs in ~3s; needs no keys/network.
+# Versioned hook — installed by pointing git at this dir:
+#   git config core.hooksPath scripts/git-hooks      (scripts/setup.sh does this)
+# Bypass in a pinch with:  git push --no-verify
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+PY=python
+[ -x .venv/bin/python ] && PY=.venv/bin/python
+
+echo "pre-push: running fast test suite…"
+if ! "$PY" -m pytest -q; then
+  echo "pre-push: tests failed — push aborted. (Override with 'git push --no-verify'.)" >&2
+  exit 1
+fi

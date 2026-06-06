@@ -1,16 +1,18 @@
 # Testing strategy
 
-> Status: **adopted; first suite built.** Tiers 1–2 (the six high-value targets below) are
-> implemented in `tests/` and green. Tier 3 (live canaries) and Tier 4 (manual checklist) are
-> documented here and added as needed. Goal: **prevent silent breakage from changes** without
-> drowning in trivial tests or burning API/LLM credits.
+> Status: **adopted; first suite built.** Tiers 1–2 (35 fast tests) and the Tier-3 live canaries
+> (`tests/test_live.py`) are implemented in `tests/` and green; a **pre-push hook** runs the fast
+> suite on every push. Tier 4 is the manual checklist. Goal: **prevent silent breakage from
+> changes** without drowning in trivial tests or burning API/LLM credits. See
+> [`../tests/README.md`](../tests/README.md) for the inventory and
+> [**Adding tests as you build**](#adding-tests-as-you-build) for the ongoing plan.
 
 ## Running the tests
 
 ```bash
 pip install -e ".[dev]"     # pytest, pytest-asyncio, respx
 pytest                       # Tiers 1–2: fast, free, deterministic (live canaries skipped by default)
-pytest -m live               # Tier 3 only — opt-in, needs keys + network (none written yet)
+pytest -m live               # Tier 3 canaries — opt-in, needs keys + network, a few ¢
 ```
 
 Default `pytest` needs no API keys and no network. (The `[voice]`/`google-genai` deps make the
@@ -74,13 +76,15 @@ This is the cheap catch for the PipeCat-1.x-style drift that bit us repeatedly: 
 `generate_content`/`ImageConfig` surface, and `mcp` types still exist with the shapes we call.
 (These need the `[voice]`/genai deps but **no keys** and **no network**.)
 
-### Tier 3 — live external "canaries" ✦ opt-in (manual / nightly), cost-bounded
-The whole point is detecting when an external service *changes*, so these can't be mocked. Gated
-behind `CONJURE_LIVE=1` + keys, **never on every commit.** Strictly minimal:
-- Poly Pizza: one search returns the expected fields **and one download is a valid GLB**
-  *(this is the test that would have flagged the Cloudflare 403 before you hit it)*.
-- Gemini: one **cheap** (flash, 1K) generate returns a real image; assert mime/decodes.
-- Director: optionally one short turn (cheap model) — see LLM section.
+### Tier 3 — live external "canaries" ✦ opt-in, cost-bounded — **built (`tests/test_live.py`)**
+The whole point is detecting when an external service *changes*, so these can't be mocked. Marked
+`@pytest.mark.live` and skipped by default; run with **`pytest -m live`**. Each skips if its key is
+missing. Strictly minimal:
+- Poly Pizza: search returns the expected fields **and a real download is a valid GLB**
+  *(the test that would have flagged the Cloudflare 403 before a user hit it)*.
+- Gemini: one **cheap** (flash, 1K) generate decodes to an image; the configured image/skybox
+  **models still exist** (catches deprecation).
+- Director eval: optionally one short turn (cheap model) — see LLM section. *(Not written yet.)*
 Cost target: a few cents per run. No 4K skyboxes, no long LLM loops.
 
 ### Tier 4 — manual / visual checklist ✦ human, before releases or risky client changes
@@ -127,7 +131,7 @@ Spin up the server, run `conjure-cli add box` / `asset` (with a fake resolver) /
 - WebGL/visual fidelity — manual checklist.
 - Aiming for a coverage number.
 
-## Suggested first tests (highest value first)
+## The suite, by value (all built — inventory in [`../tests/README.md`](../tests/README.md))
 
 1. `world.py` patch + inverse + dotted-path (pure, foundational — everything rides on it).
 2. `assets.py` download validation: **403/HTML rejected**, valid GLB accepted, empty results,
@@ -138,7 +142,8 @@ Spin up the server, run `conjure-cli add box` / `asset` (with a fake resolver) /
 5. Tier-2 library signature checks for PipeCat + google-genai + mcp (catches SDK drift ~free).
 6. WebSocket broadcast shape; MCP-tool→endpoint payload contract.
 
-That set is small, fast, free, and covers the failure modes we've actually hit.
+That set is small, fast, free, and covers the failure modes we've actually hit. As of the first
+build: **35 fast tests (~3 s) + 4 opt-in live canaries**, green.
 
 ## Tooling & layout
 
@@ -146,12 +151,14 @@ That set is small, fast, free, and covers the failure modes we've actually hit.
   `httpx.MockTransport`) for HTTP — add `respx` to the `[dev]` extra.
 - `tests/` mirrors `conjure/`; fixtures: a tiny valid GLB, a sample world, a fake Gemini response,
   `FakeImageGenerator`/`FakeAssetResolver`.
-- Markers: `@pytest.mark.live` (Tier 3) — default `pytest` skips them; `CONJURE_LIVE=1 pytest -m
-  live` runs them.
-- **CI (optional, recommended):** a GitHub Action running **Tier 1 only** on push (no keys, no
-  torch — keep these tests dependency-light so they don't need the `[voice]` stack). Tier 2 runs
-  where the heavier deps are installed; Tier 3 stays manual/scheduled. Solo-dev alternative: a
-  `pre-push` hook running Tier 1.
+- Markers: `@pytest.mark.live` (Tier 3) — default `pytest` skips them (`addopts = -m 'not live'`);
+  `pytest -m live` runs them, each skipping if its key is absent.
+- **Pre-push hook (installed):** `scripts/git-hooks/pre-push` runs the fast suite and blocks a
+  failing push; wired up by `scripts/setup.sh` via `git config core.hooksPath scripts/git-hooks`.
+  Bypass once with `git push --no-verify`.
+- **CI (optional, later):** a GitHub Action could run **Tier 1 only** on push (no keys, no torch —
+  these tests are dependency-light and don't need the `[voice]` stack); Tier 2 where the heavier
+  deps are installed; Tier 3 manual/scheduled. The pre-push hook covers the solo-dev case for now.
 
 ## Cost summary
 
@@ -165,3 +172,33 @@ That set is small, fast, free, and covers the failure modes we've actually hit.
 Default `pytest` = Tiers 1–2: fast, free, deterministic, and would have caught the asset bug's
 *code* defect, the PipeCat API drift, and the normalization bug. The Cloudflare/CDN *environment*
 change is exactly what the opt-in Tier-3 canary exists to surface early.
+
+## Adding tests as you build
+
+The rule of thumb stays the same as the strategy above: **test what would silently break and waste
+your time, not what's obvious.** Concretely, when you add a feature, reach for the matching row —
+not every row. A new primitive type needs no test; a new external dependency or a new piece of
+math does.
+
+| When you add… | Add this test (tier) | Why |
+|---|---|---|
+| a new **patch op** or world-doc field | apply **+ inverse** round-trip, dotted-path (1) | undo and broadcast both ride on the inverse being exact |
+| a new **server endpoint** | happy path + **failure leaves no garbage entity**, with fakes (1) | the asset bug was a failure path that wrote junk |
+| a new **external provider** (asset source, image/STT/TTS/LLM) | mocked unit test of the adapter **+ one Tier-3 canary** (real call) | the canary is the only thing that catches an API/CDN change |
+| **scaling / placement / geometry** math | a worked example incl. the **degenerate case** (no bbox, zero size) (1) | silent off-by-one puts objects underground or 100× too big |
+| a tool the **director (LLM) calls** | MCP tool → endpoint **payload contract** with respx (1) | a renamed field fails silently mid-conversation |
+| code pinned to a **3rd-party SDK signature** (PipeCat, google-genai, mcp) | a Tier-2 `importorskip` signature check (2) | catches dependency drift on `pip install -U`, ~free |
+| a **parser / state machine / non-trivial pure function** (e.g. Z-machine, QuickJS glue) | focused unit tests at the edges (1) | complex logic is where unit tests earn their keep |
+| a new **client/WebXR render path** | a Tier-4 line in the manual checklist | WebGL/headset output isn't worth automating yet |
+
+Conventions to keep the suite cheap and honest:
+
+- **Mock the boundary, not the logic.** Hit the real HTTP/SDK seam with `respx`/fakes; let your own
+  code run for real. Reuse `FakeImageGenerator` / `FakeAssetResolver` from `conftest.py`.
+- **One canary per service, and keep it cheap** — cheapest model, smallest size, gated on its key.
+  Never a 4K skybox or an LLM loop in the default or live run.
+- **Regression-first:** when a bug slips through, the fix lands *with* the test that would have
+  caught it (as the asset bug did). That test is the durable part of the fix.
+- **Don't chase coverage.** A trivial test that only restates the code is noise; delete it.
+- Keep Tier-1/2 tests **out of the `[voice]` stack** (no torch import) so they stay seconds-fast and
+  CI-able without the heavy deps.
