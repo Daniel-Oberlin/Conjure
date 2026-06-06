@@ -116,6 +116,7 @@ conjure/    world server (schema · world store · FastAPI app · MCP tools · v
 client/     A-Frame WebXR client + live patch applier
 examples/   starter world + hand-authored example patches
 scripts/    setup.sh, send_patch.py, mcp_smoke.py, mic_check.py, vad_check.py
+tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`)
 docs/       vision · spec · architecture · decisions · providers · roadmap · setup · testing/https guides
 ```
 

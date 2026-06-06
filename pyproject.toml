@@ -22,6 +22,8 @@ voice = [
 ]
 dev = [
     "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
 ]
 
 [project.scripts]
@@ -37,3 +39,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["conjure"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "live: hits real external APIs (opt-in; needs keys + network). Run with: pytest -m live",
+]
+# Default run skips live canaries (Tier 3).
+addopts = "-m 'not live'"

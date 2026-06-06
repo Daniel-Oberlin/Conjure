@@ -1,8 +1,20 @@
-# Testing strategy (proposal — for review)
+# Testing strategy
 
-> Status: **proposal.** No tests exist yet. This is a plan to adopt, not a description of what's
-> built. The goal is to **prevent silent breakage from changes** without drowning in trivial tests
-> or burning API/LLM credits.
+> Status: **adopted; first suite built.** Tiers 1–2 (the six high-value targets below) are
+> implemented in `tests/` and green. Tier 3 (live canaries) and Tier 4 (manual checklist) are
+> documented here and added as needed. Goal: **prevent silent breakage from changes** without
+> drowning in trivial tests or burning API/LLM credits.
+
+## Running the tests
+
+```bash
+pip install -e ".[dev]"     # pytest, pytest-asyncio, respx
+pytest                       # Tiers 1–2: fast, free, deterministic (live canaries skipped by default)
+pytest -m live               # Tier 3 only — opt-in, needs keys + network (none written yet)
+```
+
+Default `pytest` needs no API keys and no network. (The `[voice]`/`google-genai` deps make the
+Tier-2 signature checks in `test_contracts.py` meaningful; without them those tests skip.)
 
 ## Philosophy
 
