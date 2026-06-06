@@ -85,6 +85,22 @@ Speech (Whisper STT, Kokoro TTS) runs **locally** — no keys. Full prerequisite
 > **Audio note:** use **earbuds**. On an open room mic+speaker the director's own TTS feeds back
 > into the mic; room-speaker support (push-to-talk / echo cancellation) is a tracked follow-up.
 
+## CLI — drive it from the terminal (no voice)
+
+Quiet, fast, discrete testing without the mic. With the world server running:
+
+```bash
+conjure-cli asset "oak tree" --size 7      # direct, deterministic tool commands
+conjure-cli image "an oil painting of a red dragon"
+conjure-cli skybox "a misty pine forest"
+conjure-cli world                          # print the world
+
+conjure-cli say "put a tree in front of me and hang a sunset painting"   # the director, by text
+conjure-cli                                # no args → interactive director REPL
+```
+
+Quiet by default; add `-v` for tool calls and library logs. (`say`/REPL need `ANTHROPIC_API_KEY`.)
+
 ## On the Quest 3
 
 - **USB (quickest):** `adb reverse tcp:8080 tcp:8080`, then open `http://localhost:8080` in the
@@ -96,7 +112,7 @@ Speech (Whisper STT, Kokoro TTS) runs **locally** — no keys. Full prerequisite
 
 ```
 conjure/    world server (schema · world store · FastAPI app · MCP tools · voice loop ·
-            assets pipeline · image-gen registry · config · doctor)
+            CLI · assets pipeline · image-gen registry · config · doctor)
 client/     A-Frame WebXR client + live patch applier
 examples/   starter world + hand-authored example patches
 scripts/    setup.sh, send_patch.py, mcp_smoke.py, mic_check.py, vad_check.py
