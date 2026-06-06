@@ -14,9 +14,11 @@ You stand in a holodeck (black void, 1 m white grid) and talk. The director can:
 
 - **Build** — primitives, and real CC-licensed **3D models** pulled from the web ([Poly Pizza]),
   auto-scaled to real-world size and placed on the floor; move / rotate / resize by voice.
-- **Create art** — **AI-generated** paintings, posters, and photos (Google Gemini), hung as
-  framed images — and **edit them conversationally** in place ("make the dragon breathe fire").
-- **Set the scene** — generate a 360° **skybox** that wraps the whole environment.
+- **Create art** — **AI-generated** paintings, posters, and photos (Google Gemini), hung as framed
+  images — **edit them conversationally** in place ("make the dragon breathe fire") and
+  **outpaint** them wider.
+- **Set the scene** — generate a high-res 360° **skybox** that wraps the whole environment, or
+  turn any in-world image into the surrounding sky.
 - **Feel real-time** — a brief spoken acknowledgement ("on it") the instant you ask.
 
 Everything is live: edits broadcast over a WebSocket to every connected headset. Models for

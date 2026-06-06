@@ -182,6 +182,45 @@ async def edit_image(id: str, prompt: str) -> str:
 
 
 @mcp.tool()
+async def outpaint_image(id: str, aspect: Optional[str] = None, prompt: Optional[str] = None) -> str:
+    """Extend (outpaint) an existing in-world image beyond its borders to a wider frame, in place.
+
+    Use to make a picture wider / reveal more of the scene, e.g. 'make the painting wider', 'show
+    more of the landscape'. Keeps the original and continues it outward.
+    id: the image entity id (find via query_world). aspect: target frame like '16:9' (default) or
+    '21:9'. prompt: optional guidance for what the extended area should contain.
+    """
+    body: dict[str, Any] = {"id": id}
+    if aspect is not None:
+        body["aspect"] = aspect
+    if prompt is not None:
+        body["prompt"] = prompt
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(f"{BASE}/outpaint_image", json=body)
+        resp.raise_for_status()
+        result = resp.json()
+    if not result.get("ok"):
+        return f"Couldn't outpaint {id!r}: {result.get('error', 'unknown error')}."
+    return f"Extended the image {id}."
+
+
+@mcp.tool()
+async def skybox_from_image(id: str) -> str:
+    """Turn an existing in-world image into the surrounding 360° sky (outpaint it into a skybox).
+
+    Use for requests like 'make that painting the sky', 'put me inside that scene', 'extend this
+    photo into a skybox'. id: the image entity id (find via query_world).
+    """
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        resp = await client.post(f"{BASE}/skybox_from_image", json={"id": id})
+        resp.raise_for_status()
+        result = resp.json()
+    if not result.get("ok"):
+        return f"Couldn't build a skybox from {id!r}: {result.get('error', 'unknown error')}."
+    return "Wrapped the scene in that image as a 360° skybox."
+
+
+@mcp.tool()
 async def set_skybox(prompt: str) -> str:
     """Wrap the whole scene in a generated 360° environment (the sky all around the user).
 

@@ -31,6 +31,8 @@ class Settings:
     llm_model: str
     image_provider: str
     image_model: str
+    skybox_model: str
+    skybox_size: str
     # secrets
     anthropic_api_key: str | None
     poly_pizza_api_key: str | None
@@ -51,6 +53,9 @@ def get_settings() -> Settings:
         llm_model=os.environ.get("CONJURE_LLM_MODEL", "claude-sonnet-4-6"),
         image_provider=os.environ.get("CONJURE_IMAGE_PROVIDER", "gemini"),
         image_model=os.environ.get("CONJURE_IMAGE_MODEL", "gemini-2.5-flash-image"),
+        # Skyboxes wrap the whole view, so they use a higher-res model (Nano Banana Pro @ 4K).
+        skybox_model=os.environ.get("CONJURE_SKYBOX_MODEL", "gemini-3-pro-image"),
+        skybox_size=os.environ.get("CONJURE_SKYBOX_SIZE", "4K"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         poly_pizza_api_key=os.environ.get("POLY_PIZZA_API_KEY") or None,
         openai_api_key=os.environ.get("OPENAI_API_KEY") or None,

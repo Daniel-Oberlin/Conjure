@@ -31,8 +31,10 @@ class ImageGenerator(Protocol):
     name: str
     model: str
 
-    async def generate(self, prompt: str, *, aspect_ratio: Optional[str] = None) -> ImageResult: ...
-    async def edit(self, prompt: str, image: bytes, *, aspect_ratio: Optional[str] = None) -> ImageResult: ...
+    async def generate(self, prompt: str, *, aspect_ratio: Optional[str] = None,
+                       image_size: Optional[str] = None, model: Optional[str] = None) -> ImageResult: ...
+    async def edit(self, prompt: str, image: bytes, *, aspect_ratio: Optional[str] = None,
+                   image_size: Optional[str] = None, model: Optional[str] = None) -> ImageResult: ...
 
 
 _FACTORIES: dict[str, Callable[[Settings], "Optional[ImageGenerator]"]] = {}
@@ -65,14 +67,17 @@ class GeminiImageGenerator:
         self.model = model
         self._api_key = api_key
 
-    async def generate(self, prompt: str, *, aspect_ratio: Optional[str] = None) -> ImageResult:
+    async def generate(self, prompt: str, *, aspect_ratio: Optional[str] = None,
+                       image_size: Optional[str] = None, model: Optional[str] = None) -> ImageResult:
         # google-genai's call is sync; run it off the event loop.
-        return await asyncio.to_thread(self._call, [prompt], aspect_ratio)
+        return await asyncio.to_thread(self._call, [prompt], aspect_ratio, image_size, model)
 
-    async def edit(self, prompt: str, image: bytes, *, aspect_ratio: Optional[str] = None) -> ImageResult:
-        return await asyncio.to_thread(self._call, [image, prompt], aspect_ratio)
+    async def edit(self, prompt: str, image: bytes, *, aspect_ratio: Optional[str] = None,
+                   image_size: Optional[str] = None, model: Optional[str] = None) -> ImageResult:
+        return await asyncio.to_thread(self._call, [image, prompt], aspect_ratio, image_size, model)
 
-    def _call(self, parts: list, aspect_ratio: Optional[str]) -> ImageResult:
+    def _call(self, parts: list, aspect_ratio: Optional[str], image_size: Optional[str],
+              model: Optional[str]) -> ImageResult:
         """parts: list of prompt str and/or raw image bytes (bytes are sent as an image part)."""
         from google import genai
         from google.genai import types
@@ -82,11 +87,17 @@ class GeminiImageGenerator:
             types.Part(inline_data=types.Blob(data=p, mime_type="image/png")) if isinstance(p, bytes) else p
             for p in parts
         ]
-        config_kwargs: dict = {"response_modalities": ["IMAGE"]}
+        img_cfg: dict = {}
         if aspect_ratio:
-            config_kwargs["image_config"] = types.ImageConfig(aspect_ratio=aspect_ratio)
+            img_cfg["aspect_ratio"] = aspect_ratio
+        if image_size:
+            img_cfg["image_size"] = image_size
+        config_kwargs: dict = {"response_modalities": ["IMAGE"]}
+        if img_cfg:
+            config_kwargs["image_config"] = types.ImageConfig(**img_cfg)
+        effective_model = model or self.model
         resp = client.models.generate_content(
-            model=self.model,
+            model=effective_model,
             contents=contents,
             config=types.GenerateContentConfig(**config_kwargs),
         )
@@ -101,7 +112,7 @@ class GeminiImageGenerator:
                         data=data,
                         mime_type=blob.mime_type or "image/png",
                         provider=self.name,
-                        model=self.model,
+                        model=effective_model,
                     )
         raise RuntimeError("Gemini returned no image part")
 

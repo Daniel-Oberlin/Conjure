@@ -44,12 +44,14 @@ with something you can actually experience on the Quest.
   (`<a-sky>`). *Working* (acceptable first pass; low-res/blocky + one seam, since a general image
   model isn't true seamless equirectangular).
 - **Conversational image editing** via the generator `edit()` path (`edit_image` — "make the
-  dragon breathe fire", "add a moon"). *Working* — edits an in-world image in place.
-- **Open follow-ups:** (1) **higher-res / true-equirectangular skyboxes** — `image_size` config, or
-  a dedicated 360 model (Blockade Labs) as a registry plugin; (2) **outpainting** (extend a photo →
-  skybox/panorama) — the other use of `edit()`; (3) editing the skybox itself; (4) non-square
-  aspect ratios for `place_image`; (5) **text→3D generation** (Meshy/Tripo/…) as another `place_*`
-  path; (6) generated audio (the extensible audio engine).
+  dragon breathe fire"); **outpainting** (`outpaint_image` — extend a picture wider;
+  `skybox_from_image` — turn an in-world image into the 360° sky). *Working*.
+- **Higher-res skyboxes** — `set_skybox`/`skybox_from_image` use **Nano Banana Pro @ 4K**
+  (6336×2688), much sharper than the flash default. *Working*.
+- **Open follow-ups:** (1) **true-equirectangular / seamless** skyboxes — a dedicated 360 model
+  (Blockade Labs) as a registry plugin (the wrap-seam/pole distortion remains with general models);
+  (2) editing the skybox itself; (3) non-square aspect ratios for `place_image`; (4) **text→3D
+  generation** (Meshy/Tripo/…) as another `place_*` path; (5) generated audio.
 
 ## Phase 5 — Memory & connections
 - Persist worlds + versions; semantic recall ("the beach world"); portals between worlds.

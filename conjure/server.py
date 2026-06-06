@@ -63,6 +63,37 @@ def _normalize(record, pos: list[float], target_m: float) -> tuple[list[float], 
     return position, [s, s, s]
 
 
+def _cache_image(result) -> str:
+    """Write a generated image to the content store; return its /assets URL."""
+    ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
+    img_hash = hashlib.sha256(result.data).hexdigest()[:16]
+    (ASSET_CACHE / f"{img_hash}{ext}").write_bytes(result.data)
+    return f"/assets/{img_hash}{ext}"
+
+
+def _load_entity_image(entity_id: str):
+    """Return (entity, image_bytes, error) for an in-world image entity."""
+    entity = next((e for e in store.doc["entities"] if e["id"] == entity_id), None)
+    if entity is None:
+        return None, None, f"no entity {entity_id!r}"
+    src = entity.get("components", {}).get("material", {}).get("src")
+    if not src:
+        return None, None, f"{entity_id!r} is not an editable image"
+    path = ASSET_CACHE / src.rsplit("/", 1)[-1]
+    if not path.exists():
+        return None, None, "source image not cached"
+    return entity, path.read_bytes(), None
+
+
+def _img_dims(data: bytes) -> tuple[int, int]:
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as im:
+        return im.size
+
+
 _NO_STORE = {"Cache-Control": "no-store"}  # avoid stale client during active dev
 
 
@@ -218,10 +249,7 @@ async def place_image(req: PlaceImageRequest) -> dict:
         await _broadcast({"type": "patch", "patch": store.apply_patch([{"op": "remove", "id": eid}], origin="image")})
         return {"ok": False, "error": str(exc)}
 
-    ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
-    img_hash = hashlib.sha256(result.data).hexdigest()[:16]
-    (ASSET_CACHE / f"{img_hash}{ext}").write_bytes(result.data)
-    url = f"/assets/{img_hash}{ext}"
+    url = _cache_image(result)
 
     # 3. Swap the placeholder for the generated image (flat shader so colors are true).
     swap = [
@@ -251,15 +279,14 @@ async def set_skybox(req: SkyboxRequest) -> dict:
         "Centered horizon, evenly lit, no people, no text, no watermark, no borders."
     )
     try:
-        result = await image_gen.generate(full_prompt, aspect_ratio="21:9")
+        # Skyboxes wrap the whole view → use the higher-res model (Nano Banana Pro @ 4K).
+        result = await image_gen.generate(
+            full_prompt, aspect_ratio="21:9", image_size=settings.skybox_size, model=settings.skybox_model
+        )
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
-    ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
-    img_hash = hashlib.sha256(result.data).hexdigest()[:16]
-    (ASSET_CACHE / f"{img_hash}{ext}").write_bytes(result.data)
-    url = f"/assets/{img_hash}{ext}"
-
+    url = _cache_image(result)
     patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": url}}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
     return {"ok": True, "sky": url, "provider": result.provider, "model": result.model}
@@ -276,32 +303,95 @@ async def edit_image(req: EditImageRequest) -> dict:
     if image_gen is None:
         return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
 
-    entity = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
-    if entity is None:
-        return {"ok": False, "error": f"no entity {req.id!r}"}
-    src = entity.get("components", {}).get("material", {}).get("src")
-    if not src:
-        return {"ok": False, "error": f"{req.id!r} is not an editable image"}
-    path = ASSET_CACHE / src.rsplit("/", 1)[-1]
-    if not path.exists():
-        return {"ok": False, "error": "source image not cached"}
+    _, img, err = _load_entity_image(req.id)
+    if err:
+        return {"ok": False, "error": err}
 
     try:
-        result = await image_gen.edit(req.prompt, path.read_bytes())
+        result = await image_gen.edit(req.prompt, img)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
-    ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
-    img_hash = hashlib.sha256(result.data).hexdigest()[:16]
-    (ASSET_CACHE / f"{img_hash}{ext}").write_bytes(result.data)
-    new_url = f"/assets/{img_hash}{ext}"
-
+    new_url = _cache_image(result)
     patch = store.apply_patch(
         [{"op": "update", "id": req.id, "set": {"components.material.src": new_url, "meta.prompt": req.prompt}}],
         origin="image",
     )
     await _broadcast({"type": "patch", "patch": patch})
     return {"ok": True, "id": req.id, "src": new_url, "model": result.model}
+
+
+class OutpaintRequest(BaseModel):
+    id: str
+    aspect: Optional[str] = None  # target frame, e.g. "16:9" (default), "21:9"
+    prompt: Optional[str] = None  # optional extra guidance
+
+
+@app.post("/outpaint_image")
+async def outpaint_image(req: OutpaintRequest) -> dict:
+    """Extend an in-world image beyond its borders to a wider frame (outpainting), in place."""
+    if image_gen is None:
+        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
+    entity, img, err = _load_entity_image(req.id)
+    if err:
+        return {"ok": False, "error": err}
+
+    aspect = req.aspect or "16:9"
+    instruction = (
+        f"Outpaint this image: extend it outward to fill a wider {aspect} frame. Keep the existing "
+        "scene and subject exactly, and continue it seamlessly outward in the same style, colors, and "
+        "lighting. Do not crop, zoom, or change the original content."
+    )
+    if req.prompt:
+        instruction += " " + req.prompt
+    try:
+        result = await image_gen.edit(instruction, img, aspect_ratio=aspect)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+    new_url = _cache_image(result)
+    # Widen the plane to the new image's aspect so it isn't squished (keep the current height).
+    w, h = _img_dims(result.data)
+    height = entity.get("components", {}).get("geometry", {}).get("height", 1.0)
+    new_width = round(height * w / h, 3)
+    patch = store.apply_patch(
+        [{"op": "update", "id": req.id,
+          "set": {"components.material.src": new_url, "components.geometry.width": new_width}}],
+        origin="image",
+    )
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "id": req.id, "src": new_url, "model": result.model}
+
+
+class SkyboxFromImageRequest(BaseModel):
+    id: str
+
+
+@app.post("/skybox_from_image")
+async def skybox_from_image(req: SkyboxFromImageRequest) -> dict:
+    """Outpaint an existing in-world image into a 360° panorama and make it the skybox."""
+    if image_gen is None:
+        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
+    _, img, err = _load_entity_image(req.id)
+    if err:
+        return {"ok": False, "error": err}
+
+    instruction = (
+        "Turn this image into a seamless equirectangular 360-degree panorama for a VR skybox, "
+        "extending the scene all the way around. Keep its style, palette, and mood. Centered horizon, "
+        "no people, no text, no borders."
+    )
+    try:
+        result = await image_gen.edit(
+            instruction, img, aspect_ratio="21:9", image_size=settings.skybox_size, model=settings.skybox_model
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+    url = _cache_image(result)
+    patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": url}}}], origin="image")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "sky": url, "model": result.model}
 
 
 @app.websocket("/ws")
