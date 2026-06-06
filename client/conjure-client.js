@@ -5,6 +5,28 @@
 (function () {
   "use strict";
 
+  // Custom component: a flat grid of lines in the entity's local X-Y plane (rotate -90 on X for a
+  // floor). Used for the holodeck grid; also available to generated content.
+  if (window.AFRAME && !AFRAME.components.grid) {
+    AFRAME.registerComponent("grid", {
+      schema: {
+        width: { default: 20 },
+        height: { default: 20 },
+        cell: { default: 1 },
+        color: { default: "#ffffff" },
+      },
+      init: function () {
+        var THREE = AFRAME.THREE, d = this.data, pts = [], hw = d.width / 2, hh = d.height / 2, i;
+        for (i = -hw; i <= hw + 1e-6; i += d.cell) pts.push(i, -hh, 0, i, hh, 0);
+        for (i = -hh; i <= hh + 1e-6; i += d.cell) pts.push(-hw, i, 0, hw, i, 0);
+        var geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+        this.el.setObject3D("grid", new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: d.color })));
+      },
+      remove: function () { this.el.removeObject3D("grid"); },
+    });
+  }
+
   var root = function () { return document.getElementById("world-root"); };
 
   function v3(a) { return Array.isArray(a) ? a.join(" ") : a; }

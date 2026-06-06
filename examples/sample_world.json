@@ -1,20 +1,45 @@
 {
-  "id": "world_hello",
-  "name": "Hello Conjure",
-  "description": "Starter scene: just a ground plane — speak to build the rest.",
+  "id": "world_holodeck",
+  "name": "Holodeck",
+  "description": "Empty holodeck: black with a 1-meter white grid on the floor and walls. Speak to build.",
   "tags": ["starter"],
   "rev": 0,
   "environment": {
-    "sky": { "color": "#1a2233" }
+    "sky": { "color": "#000000" }
   },
   "entities": [
     {
-      "id": "ground",
+      "id": "floor",
       "transform": { "position": [0, 0, 0], "rotation": [-90, 0, 0] },
       "components": {
         "geometry": { "primitive": "plane", "width": 20, "height": 20 },
-        "material": { "color": "#2f7a4d" }
+        "material": { "color": "#000000" }
       }
+    },
+    {
+      "id": "floor-grid",
+      "transform": { "position": [0, 0.01, 0], "rotation": [-90, 0, 0] },
+      "components": { "grid": { "width": 20, "height": 20, "cell": 1, "color": "#ffffff" } }
+    },
+    {
+      "id": "wall-back",
+      "transform": { "position": [0, 2, -10] },
+      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } }
+    },
+    {
+      "id": "wall-front",
+      "transform": { "position": [0, 2, 10], "rotation": [0, 180, 0] },
+      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } }
+    },
+    {
+      "id": "wall-left",
+      "transform": { "position": [-10, 2, 0], "rotation": [0, 90, 0] },
+      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } }
+    },
+    {
+      "id": "wall-right",
+      "transform": { "position": [10, 2, 0], "rotation": [0, -90, 0] },
+      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } }
     }
   ]
 }

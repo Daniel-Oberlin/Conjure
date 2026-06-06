@@ -3,7 +3,7 @@
   "ops": [
     {
       "op": "update",
-      "id": "ground",
+      "id": "floor",
       "set": { "components.material.color": "#3a6ea5" }
     },
     {
