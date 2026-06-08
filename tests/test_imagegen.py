@@ -57,6 +57,55 @@ def test_gemini_extracts_inline_image(monkeypatch):
     assert res.provider == "gemini" and res.model == "gemini-2.5-flash-image"
 
 
+def _image_resp():
+    return type("R", (), {"candidates": [type("C", (), {"content": type("Ct", (), {
+        "parts": [type("P", (), {"inline_data": type("B", (), {
+            "data": b"PNG", "mime_type": "image/png"})()})()]})()})()]})()
+
+
+def _empty_resp(reason):
+    """A candidate with no image part and the given finish_reason."""
+    from google.genai import types
+    cand = type("C", (), {"content": type("Ct", (), {"parts": []})(), "finish_reason": reason})()
+    return type("R", (), {"candidates": [cand]})()
+
+
+def test_gemini_retries_transient_empty_response(monkeypatch):
+    """A STOP-but-empty candidate is a transient blip — retry once and succeed."""
+    from google import genai
+    from google.genai import types
+
+    calls = {"n": 0}
+
+    def _gen(self, **kw):
+        calls["n"] += 1
+        return _empty_resp(types.FinishReason.STOP) if calls["n"] == 1 else _image_resp()
+
+    monkeypatch.setattr(genai, "Client",
+                        lambda **kw: type("Cl", (), {"models": type("M", (), {"generate_content": _gen})()})())
+    res = GeminiImageGenerator("key", "im")._call(["p"], None, None, None)
+    assert res.data == b"PNG" and calls["n"] == 2  # retried exactly once
+
+
+def test_gemini_does_not_retry_a_real_refusal(monkeypatch):
+    """A non-STOP finish_reason (e.g. safety block) fails immediately — no wasted second call."""
+    import pytest
+    from google import genai
+    from google.genai import types
+
+    calls = {"n": 0}
+
+    def _gen(self, **kw):
+        calls["n"] += 1
+        return _empty_resp(types.FinishReason.SAFETY)
+
+    monkeypatch.setattr(genai, "Client",
+                        lambda **kw: type("Cl", (), {"models": type("M", (), {"generate_content": _gen})()})())
+    with pytest.raises(RuntimeError, match="SAFETY"):
+        GeminiImageGenerator("key", "im")._call(["p"], None, None, None)
+    assert calls["n"] == 1  # did not pay for a retry
+
+
 def test_gemini_model_override(monkeypatch):
     from google import genai
 

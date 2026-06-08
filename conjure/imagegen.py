@@ -96,25 +96,32 @@ class GeminiImageGenerator:
         if img_cfg:
             config_kwargs["image_config"] = types.ImageConfig(**img_cfg)
         effective_model = model or self.model
-        resp = client.models.generate_content(
-            model=effective_model,
-            contents=contents,
-            config=types.GenerateContentConfig(**config_kwargs),
-        )
-        for candidate in resp.candidates or []:
-            for part in (candidate.content.parts if candidate.content else []) or []:
-                blob = getattr(part, "inline_data", None)
-                if blob and blob.data:
-                    data = blob.data
-                    if isinstance(data, str):  # some SDK paths hand back base64
-                        data = base64.b64decode(data)
-                    return ImageResult(
-                        data=data,
-                        mime_type=blob.mime_type or "image/png",
-                        provider=self.name,
-                        model=effective_model,
-                    )
-        raise RuntimeError("Gemini returned no image part")
+        config = types.GenerateContentConfig(**config_kwargs)
+
+        # Gemini occasionally returns an empty candidate (finish_reason STOP, no image) — a
+        # transient blip. Retry that once. But a non-STOP reason (SAFETY, PROHIBITED_CONTENT,
+        # MAX_TOKENS…) is a real refusal: surface it immediately rather than pay for a retry.
+        last_reason = None
+        for _attempt in range(2):
+            resp = client.models.generate_content(
+                model=effective_model, contents=contents, config=config)
+            for candidate in resp.candidates or []:
+                last_reason = getattr(candidate, "finish_reason", None)
+                for part in (candidate.content.parts if candidate.content else []) or []:
+                    blob = getattr(part, "inline_data", None)
+                    if blob and blob.data:
+                        data = blob.data
+                        if isinstance(data, str):  # some SDK paths hand back base64
+                            data = base64.b64decode(data)
+                        return ImageResult(
+                            data=data,
+                            mime_type=blob.mime_type or "image/png",
+                            provider=self.name,
+                            model=effective_model,
+                        )
+            if last_reason not in (None, types.FinishReason.STOP):
+                break
+        raise RuntimeError(f"Gemini returned no image part (finish_reason={last_reason})")
 
 
 @register("gemini")
