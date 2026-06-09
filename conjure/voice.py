@@ -82,6 +82,14 @@ async def _run(settings: Settings) -> None:
                 await self._director.handle(text, on_text=on_text)
             except Exception as exc:  # never let one bad turn tear down the pipeline
                 print(f"director error: {exc}", file=sys.stderr)
+                await self.push_frame(
+                    TTSSpeakFrame(
+                        text=(
+                            "There was an error with the Director. "
+                            "Please try again or switch to a different LLM."
+                        )
+                    )
+                )
 
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
