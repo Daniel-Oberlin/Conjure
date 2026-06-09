@@ -9,6 +9,7 @@ import pytest
 def test_pipecat_surface_we_depend_on():
     pytest.importorskip("pipecat")
     from pipecat.audio.vad.silero import SileroVADAnalyzer  # noqa: F401
+    from pipecat.frames.frames import TTSSpeakFrame
     from pipecat.pipeline.pipeline import Pipeline  # noqa: F401
     from pipecat.pipeline.task import PipelineParams, PipelineTask  # noqa: F401
     from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: F401
@@ -17,7 +18,7 @@ def test_pipecat_surface_we_depend_on():
         LLMUserAggregatorParams,
     )
     from pipecat.processors.audio.vad_processor import VADProcessor  # noqa: F401
-    from pipecat.services.anthropic.llm import AnthropicLLMService
+    from pipecat.processors.frame_processor import FrameProcessor, FrameDirection  # noqa: F401
     from pipecat.services.kokoro.tts import KokoroTTSService
     from pipecat.services.whisper.stt import WhisperSTTService
     from pipecat.turns.user_mute.always_user_mute_strategy import AlwaysUserMuteStrategy  # noqa: F401
@@ -25,8 +26,11 @@ def test_pipecat_surface_we_depend_on():
 
     assert hasattr(WhisperSTTService, "Settings")
     assert hasattr(KokoroTTSService, "Settings")
-    # voice.py constructs AnthropicLLMService(settings=AnthropicLLMService.Settings(model=...))
-    assert "settings" in inspect.signature(AnthropicLLMService.__init__).parameters
+    # voice.py's DirectorProcessor subclasses FrameProcessor: overrides process_frame(self, frame,
+    # direction) and calls push_frame; it speaks the director's reply via TTSSpeakFrame(text=...).
+    assert {"frame", "direction"} <= set(inspect.signature(FrameProcessor.process_frame).parameters)
+    assert hasattr(FrameProcessor, "push_frame")
+    assert "text" in {f.name for f in __import__("dataclasses").fields(TTSSpeakFrame)}
 
 
 def test_genai_image_config_surface():

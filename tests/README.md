@@ -14,6 +14,8 @@ via `git config core.hooksPath scripts/git-hooks`; bypass once with `git push --
 | File | Covers |
 |---|---|
 | `test_world.py` | patch protocol: apply / inverse / dotted-path / env (the foundation) |
+| `test_director.py` | director routing (switch / address an LLM mid-conversation) + orchestration with fake LLMs |
+| `test_llm.py` | LLM roster: attribution rendering, Claude/Gemini tool-call loops (faked SDKs), registry |
 | `test_assets.py` | `AssetResolver` download validation — **regression for the 403-HTML-as-GLB bug** |
 | `test_server.py` | world-server endpoints w/ faked externals: normalization, placeholder→swap, failure-leaves-no-garbage, place/edit image, skybox, route + WS-broadcast contracts |
 | `test_imagegen.py` | generator registry + Gemini response extraction + per-call model override |

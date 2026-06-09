@@ -19,6 +19,9 @@ You stand in a holodeck (black void, 1 m white grid) and talk. The director can:
   **outpaint** them wider.
 - **Set the scene** — generate a high-res 360° **skybox** that wraps the whole environment, or
   turn any in-world image into the surrounding sky.
+- **Talk to more than one AI** — a roster of named LLMs (Claude + Gemini) shares one attributed
+  conversation; switch mid-stream ("let me talk to Gemini") or hand off a single turn ("Gemini,
+  make a picture of a cat"), and each AI sees who said what.
 - **Feel real-time** — a brief spoken acknowledgement ("on it") the instant you ask.
 
 Everything is live: edits broadcast over a WebSocket to every connected headset. Models for
@@ -42,8 +45,10 @@ editing + skybox.
 
 - **World server** (`conjure/`, Python/FastAPI) owns one declarative world document, applies
   **patches**, serves the WebXR app + cached assets, and exposes world-editing **MCP tools**.
-- **Director** is an LLM (Claude) that drives those MCP tools by voice (PipeCat: local Whisper STT
-  → Claude → local Kokoro TTS).
+- **Director** (`conjure/director.py`) is the shared brain for both voice and CLI: it owns the
+  attributed transcript, an **LLM roster** (`conjure/llm.py` — Claude/Gemini, switchable
+  mid-conversation), and the MCP tools. PipeCat is just ears+mouth (Whisper STT → director → Kokoro
+  TTS); the CLI feeds it typed text. New LLMs register in one place — nothing else changes.
 - Model roles (STT/TTS/LLM/image-gen) and asset sources sit behind **swappable registries**
   (`docs/providers.md`), so providers plug in without touching callers.
 
@@ -75,11 +80,12 @@ wall", "wrap me in a misty forest", "make the painting nighttime".*
 
 | Key | For | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | the voice director (Claude) | required for voice; billing |
+| `ANTHROPIC_API_KEY` | director "Claude" | billing |
+| `GOOGLE_API_KEY` | director "Gemini" + `place_image` / `edit_image` / `set_skybox` | Gemini; billing |
 | `POLY_PIZZA_API_KEY` | `place_asset` (3D models) | free, no billing |
-| `GOOGLE_API_KEY` | `place_image` / `edit_image` / `set_skybox` | Gemini; billing |
 
-Speech (Whisper STT, Kokoro TTS) runs **locally** — no keys. Full prerequisites + the doctor:
+At least one of `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` is required for the director (set both to use
+the roster). Speech (Whisper STT, Kokoro TTS) runs **locally** — no keys. Full prerequisites + the doctor:
 [docs/setup.md](./docs/setup.md). Provider options: [docs/providers.md](./docs/providers.md).
 
 > **Audio note:** use **earbuds**. On an open room mic+speaker the director's own TTS feeds back
@@ -111,8 +117,8 @@ Quiet by default; add `-v` for tool calls and library logs. (`say`/REPL need `AN
 ## Layout
 
 ```
-conjure/    world server (schema · world store · FastAPI app · MCP tools · voice loop ·
-            CLI · assets pipeline · image-gen registry · config · doctor)
+conjure/    world server (schema · world store · FastAPI app · MCP tools · director + LLM roster ·
+            voice loop · CLI · assets pipeline · image-gen registry · config · doctor)
 client/     A-Frame WebXR client + live patch applier
 examples/   starter world + hand-authored example patches
 scripts/    setup.sh, send_patch.py, mcp_smoke.py, mic_check.py, vad_check.py

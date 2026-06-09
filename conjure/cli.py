@@ -22,22 +22,13 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
 import uuid
 
 import httpx
 
 from .config import Settings, get_settings
-
-DIRECTOR_PROMPT = (
-    "You are Conjure's director for a VR holodeck. Use the tools to build and edit the world. "
-    "Real-world objects (tree, chair, car, animal): place_asset with a short query and size_m = its "
-    "real-world size in meters (tree ~7, chair ~0.9, mug ~0.1). Pictures/art: place_image; change one "
-    "with edit_image, widen with outpaint_image, turn one into the sky with skybox_from_image. "
-    "Surrounding environment/sky: set_skybox. Basic shapes: add_entity. Call query_world when an edit "
-    "depends on what's already there. Be concise; do the work via tools and give a one-line summary."
-)
+from .director import Director
 
 
 # --------------------------------------------------------------------------- helpers
@@ -167,52 +158,24 @@ def cmd_skybox_from(s: Settings, a) -> None:
 # --------------------------------------------------------------------------- director (text)
 
 async def _director(s: Settings, instructions, verbose: bool) -> None:
-    """Run text instructions through the director LLM + MCP tools. `instructions` is an async
-    iterator of strings (one-shot or interactive)."""
-    import anthropic
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
+    """Run text instructions through the shared director (conjure.director). `instructions` is an
+    async iterator of strings (one-shot or interactive). The director owns the LLM roster, the MCP
+    tools, and mid-conversation LLM switching; the CLI only decides how to print."""
+    errlog = sys.stderr if verbose else None
+    async with Director.connect(s, errlog=errlog) as director:
+        multi = len(director.roster) > 1  # show who's speaking once there's more than one LLM
 
-    errlog = sys.stderr if verbose else open(os.devnull, "w")
-    params = StdioServerParameters(
-        command=sys.executable, args=["-m", "conjure.mcp_server"],
-        env={**os.environ, "CONJURE_URL": s.world_url},
-    )
-    async with stdio_client(params, errlog=errlog) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tools = [
-                {"name": t.name, "description": t.description or "", "input_schema": t.inputSchema}
-                for t in (await session.list_tools()).tools
-            ]
-            client = anthropic.AsyncAnthropic(api_key=s.anthropic_api_key)
-            messages: list = []
-            async for text in instructions:
-                messages.append({"role": "user", "content": text})
-                while True:
-                    resp = await client.messages.create(
-                        model=s.llm_model, max_tokens=1024, system=DIRECTOR_PROMPT,
-                        tools=tools, messages=messages,
-                    )
-                    messages.append({"role": "assistant", "content": resp.content})
-                    tool_uses = [b for b in resp.content if b.type == "tool_use"]
-                    # Quiet by default: print only the final summary (a turn with no tool calls);
-                    # show the running narration only with -v.
-                    for block in resp.content:
-                        if block.type == "text" and block.text.strip() and (verbose or not tool_uses):
-                            print(block.text.strip())
-                    if not tool_uses:
-                        break
-                    results = []
-                    for tu in tool_uses:
-                        if verbose:
-                            print(f"  · {tu.name}({json.dumps(tu.input)})")
-                        out = await session.call_tool(tu.name, tu.input)
-                        results.append({
-                            "type": "tool_result", "tool_use_id": tu.id,
-                            "content": "".join(getattr(c, "text", "") for c in out.content),
-                        })
-                    messages.append({"role": "user", "content": results})
+        async def on_text(text: str, *, final: bool, speaker: str) -> None:
+            # Quiet by default: print only the closing reply; show running narration with -v.
+            if verbose or final:
+                print(f"{speaker}: {text}" if multi else text)
+
+        async def on_tool(name: str, args: dict) -> None:
+            if verbose:
+                print(f"  · {name}({json.dumps(args)})")
+
+        async for text in instructions:
+            await director.handle(text, on_text=on_text, on_tool=on_tool)
 
 
 def cmd_say(s: Settings, a) -> None:
@@ -222,7 +185,9 @@ def cmd_say(s: Settings, a) -> None:
 
 
 def cmd_repl(s: Settings, a) -> None:
-    print("Conjure director REPL — type an instruction (':q' to quit).")
+    print("Conjure director REPL — type an instruction (':q' to quit).\n"
+          "With more than one LLM configured you can switch ('let me talk to Gemini') or address "
+          "one for a single turn ('Claude, make a picture of a cat').")
 
     async def lines():
         loop = asyncio.get_event_loop()
@@ -308,6 +273,9 @@ def main() -> int:
         fn(settings, args)
     except KeyboardInterrupt:
         return 130
+    except RuntimeError as exc:  # e.g. no LLM keys for the director (say/repl)
+        print(exc)
+        return 1
     except httpx.HTTPError as exc:
         print(f"request failed: {exc}")
         return 1

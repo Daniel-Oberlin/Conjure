@@ -42,6 +42,9 @@ class Settings:
     host: str
     port: int
     world_url: str
+    # director LLM model for the Gemini roster member (Claude uses llm_model). Trailing + defaulted
+    # so existing Settings(...) constructions stay valid.
+    gemini_model: str = "gemini-2.5-flash"
 
 
 def get_settings() -> Settings:
@@ -63,4 +66,5 @@ def get_settings() -> Settings:
         host=os.environ.get("CONJURE_HOST", "0.0.0.0"),
         port=int(os.environ.get("CONJURE_PORT", "8080")),
         world_url=os.environ.get("CONJURE_URL", "http://localhost:8080"),
+        gemini_model=os.environ.get("CONJURE_GEMINI_MODEL", "gemini-2.5-flash"),
     )

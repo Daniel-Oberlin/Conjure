@@ -2,15 +2,18 @@
 
 Wires a real-time voice agent to the Conjure world:
 
-    mic → Silero VAD → Whisper STT → Claude (director, w/ MCP tools) → Kokoro TTS → speaker
+    mic → Silero VAD → Whisper STT → director (conjure.director) → Kokoro TTS → speaker
 
-The director LLM is given the world-editing MCP tools (via PipeCat's MCPClient connecting to
-`conjure.mcp_server` over stdio), so spoken requests turn into world patches that broadcast live
-to every connected headset. Audio runs on the host (decision #5's shared-room-device default) —
-no audio is piped through the Quest.
+PipeCat here is only *ears and mouth*: STT, TTS, VAD, end-of-turn detection, and mute-while-speaking
+echo mitigation. The brain is the shared `conjure.director.Director` — the SAME director the CLI
+drives — which owns the LLM roster (Claude/Gemini/…, switchable mid-conversation), the attributed
+transcript, and the world-editing MCP tools. So spoken requests turn into world patches that
+broadcast live to every connected headset, and adding/switching LLMs needs no change here.
+
+Audio runs on the host (decision #5's shared-room-device default) — no audio is piped through Quest.
 
 Prerequisites (see docs/setup.md): `pip install -e ".[voice]"`, system libs (portaudio/espeak-ng),
-and ANTHROPIC_API_KEY in `.env`. Run `python -m conjure.doctor` to check.
+and ANTHROPIC_API_KEY and/or GOOGLE_API_KEY in `.env`. Run `python -m conjure.doctor` to check.
 
 Usage (two terminals):
     1) python -m conjure          # the world server (must be running)
@@ -20,38 +23,11 @@ Usage (two terminals):
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import urllib.request
 
 from .config import Settings, get_settings
-
-# Spoken context for the director. Matches the world's coordinate convention (user faces -z,
-# eye height ~1.6 m), so placements land in front of the user.
-SYSTEM_PROMPT = (
-    "You are Conjure, the director of a voice-controlled VR holodeck. When the user describes or "
-    "requests a scene or a change, USE THE TOOLS to build and edit the world — add, move, update, "
-    "or remove objects, and set the environment. "
-    "For real-world objects (a tree, a chair, a car, an animal), use place_asset with a short "
-    "search query; use add_entity only for basic primitive shapes (cube, sphere, cone, ...). "
-    "For pictures — paintings, posters, photos, signs, art — use place_image with a vivid prompt. "
-    "To change a picture already in the scene, use edit_image; to extend/widen one, use "
-    "outpaint_image; to turn one into the surrounding sky, use skybox_from_image (find ids via "
-    "query_world). To set the surrounding environment/sky from scratch, use set_skybox. "
-    "THE MOMENT you understand a request, FIRST say a brief, natural, VARIED acknowledgement out "
-    "loud — e.g. 'On it', 'Sure, one sec', 'Got it', 'Working on it', 'You got it' — then "
-    "immediately call the tools. Vary the wording each time; never sound scripted or repeat the "
-    "same phrase. "
-    "CRITICAL: after that acknowledgement, do NOT think out loud, explain your reasoning, or recite "
-    "coordinates, sizes, or measurements. Do the work via tool calls, then reply with AT MOST one "
-    "short confirmation (e.g. 'Done — there's your dragon.'). Never repeat or restate what the user "
-    "said. If no action is needed, just give a brief reply. "
-    "Call query_world first when an edit depends on what's already there. "
-    "Positions are [x, y, z] in meters: the user faces -z, so place things a few meters in front "
-    "(negative z) around y=1 unless asked otherwise. For place_asset, always pass size_m as the "
-    "object's real-world size in meters (tree ~7, chair ~0.9, mug ~0.1) so the scene is to-scale; "
-    "those objects auto-sit on the floor (y=0) — only raise y to set something on a surface."
-)
+from .director import Director
 
 
 def _world_reachable(url: str) -> bool:
@@ -65,27 +41,47 @@ def _world_reachable(url: str) -> bool:
 
 async def _run(settings: Settings) -> None:
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
-    from mcp import StdioServerParameters
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
+    from pipecat.frames.frames import TTSSpeakFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.processors.audio.vad_processor import VADProcessor
+    from pipecat.processors.frame_processor import FrameProcessor
     from pipecat.processors.aggregators.llm_context import LLMContext
     from pipecat.processors.aggregators.llm_response_universal import (
         LLMContextAggregatorPair,
         LLMUserAggregatorParams,
     )
-    from pipecat.services.anthropic.llm import AnthropicLLMService
     from pipecat.turns.user_mute.always_user_mute_strategy import AlwaysUserMuteStrategy
     from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
     from pipecat.turns.user_turn_strategies import UserTurnStrategies
     from pipecat.services.kokoro.tts import KokoroTTSService
-    from pipecat.services.mcp_service import MCPClient
     from pipecat.services.whisper.stt import WhisperSTTService
     from pipecat.transcriptions.language import Language
     from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
+
+    # Our "brain" as a PipeCat processor: it passes audio/text frames through untouched and, when a
+    # user turn completes, runs the shared director and speaks its reply via TTSSpeakFrame (a
+    # self-contained utterance the TTS service synthesizes immediately — the early acknowledgement
+    # and the final confirmation each become one).
+    class DirectorProcessor(FrameProcessor):
+        def __init__(self, director: Director):
+            super().__init__()
+            self._director = director
+
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+
+        async def run_turn(self, text: str) -> None:
+            async def on_text(reply: str, *, final: bool, speaker: str) -> None:
+                await self.push_frame(TTSSpeakFrame(text=reply))
+            try:
+                await self._director.handle(text, on_text=on_text)
+            except Exception as exc:  # never let one bad turn tear down the pipeline
+                print(f"director error: {exc}", file=sys.stderr)
 
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
@@ -108,31 +104,21 @@ async def _run(settings: Settings) -> None:
 
     stt = WhisperSTTService(settings=WhisperSTTService.Settings(model="base", language=Language.EN))
     tts = KokoroTTSService(settings=KokoroTTSService.Settings(voice="af_heart"))
-    llm = AnthropicLLMService(
-        api_key=settings.anthropic_api_key,
-        settings=AnthropicLLMService.Settings(model=settings.llm_model),
-    )
 
-    # The director's tools come from our world-editing MCP server, spawned over stdio. It POSTs
-    # patches to the world server, so CONJURE_URL must point there.
-    server_params = StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "conjure.mcp_server"],
-        env={**os.environ, "CONJURE_URL": settings.world_url},
-    )
+    # The shared director owns the LLM roster and the world-editing MCP tools (it spawns
+    # conjure.mcp_server over stdio itself). PipeCat no longer talks to any LLM.
+    async with Director.connect(settings) as director:
+        director_proc = DirectorProcessor(director)
 
-    async with MCPClient(server_params=server_params) as mcp:
-        tools = await mcp.register_tools(llm)  # discovers + registers world tools with the LLM
-        context = LLMContext(
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}],
-            tools=tools,
-        )
-        # End the user's turn after a short silence (instead of pipecat 1.3's default Smart-Turn
-        # v3 model, which otherwise decides when the director runs — and was never completing
-        # the turn, so nothing happened). Simple + predictable for a command interface.
+        # We keep the LLM context aggregator ONLY for its end-of-turn detection and mute-while-
+        # speaking — not for messages (the director owns the transcript). Its `on_user_turn_stopped`
+        # event hands us the full utterance, which we run through the director.
         aggregator = LLMContextAggregatorPair(
-            context,
+            LLMContext(messages=[]),
             user_params=LLMUserAggregatorParams(
+                # End the user's turn after a short silence (instead of pipecat 1.3's default
+                # Smart-Turn v3 model, which never completed the turn so nothing happened). Simple
+                # + predictable for a command interface.
                 user_turn_strategies=UserTurnStrategies(
                     stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.8)],
                 ),
@@ -143,16 +129,22 @@ async def _run(settings: Settings) -> None:
             ),
         )
 
+        @aggregator.user().event_handler("on_user_turn_stopped")
+        async def _on_user_turn(aggr, strategy, message):
+            text = (getattr(message, "content", "") or "").strip()
+            if text:
+                await director_proc.run_turn(text)
+
         pipeline = Pipeline(
             [
                 transport.input(),       # mic
                 vad,                     # VAD → emits user-speaking frames (1.3.x: a processor)
                 stt,                     # speech → text
-                aggregator.user(),       # add user turn to context
-                llm,                     # director: may emit tool calls (world edits)
+                aggregator.user(),       # detect end-of-turn + mute while speaking
+                director_proc,           # brain anchor: speaks the director's replies as TTS frames
                 tts,                     # reply text → speech
                 transport.output(),      # speaker
-                aggregator.assistant(),  # add assistant turn to context
+                aggregator.assistant(),  # (context unused, kept so the pair is wired normally)
             ]
         )
 
@@ -163,16 +155,18 @@ async def _run(settings: Settings) -> None:
         task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=False))
         runner = PipelineRunner(handle_sigint=True)
 
-        print(f"🎙️  Conjure voice is listening (director={settings.llm_model}). Speak to build the "
-              f"world. Ctrl+C to stop.")
+        roster = ", ".join(director.roster) or "none"
+        print(f"🎙️  Conjure voice is listening (active={director.active}; roster: {roster}). Speak "
+              f"to build the world; say 'let me talk to <name>' to switch LLMs. Ctrl+C to stop.")
         await runner.run(task)
 
 
 def main() -> int:
     settings = get_settings()
 
-    if settings.llm == "claude" and not settings.anthropic_api_key:
-        print("ANTHROPIC_API_KEY is not set. Add it to .env, then run `python -m conjure.doctor`.")
+    if not (settings.anthropic_api_key or settings.google_api_key):
+        print("No director LLM keys set. Add ANTHROPIC_API_KEY and/or GOOGLE_API_KEY to .env, then "
+              "run `python -m conjure.doctor`.")
         return 1
     if not _world_reachable(settings.world_url):
         print(f"World server not reachable at {settings.world_url}.\n"

@@ -27,12 +27,17 @@ cost, strong tool-calling where it matters, one API key (Anthropic). Maps onto t
 | 💡 Deepgram / AssemblyAI | cloud | True low-latency streaming; snappiest feel. Per-minute cost + keys. |
 
 ### Director LLM (roster — spec §3, arch §7a)
-Multiple named LLMs may be active in one session; this is the **default director** + likely roster members.
+Multiple named LLMs may be active in one session; this is the **default director** + likely roster
+members. The roster + switching are **built** (`conjure/llm.py`, `conjure/director.py`): one shared
+director serves both voice and CLI; add a provider by registering it in `build_roster` and it's
+usable everywhere with no other code change. Switch mid-conversation ("let me talk to Gemini") or
+address one for a single turn ("Gemini, make a picture of a cat"); the transcript is attributed so
+each LLM sees who said what.
 | Option | Hosting | Notes |
 |---|---|---|
 | ✅ **Claude** (Anthropic) | cloud | Default director — strongest, most reliable **tool-calling** (it drives the MCP edits). |
+| ✅ **Google Gemini** | cloud | Built roster member (casual name "Gemini"); `CONJURE_GEMINI_MODEL`, default `gemini-2.5-flash`. |
 | 💡 OpenAI (GPT) | cloud | Roster member (e.g. casual name "Chat"). |
-| 💡 Google Gemini | cloud | Roster member (e.g. casual name "Gemini"). |
 | 💡 Groq | cloud | Very fast inference; good for snappy turns. |
 | 💡 Local Ollama (Qwen / Llama w/ tool-calling) | local | Zero-key / offline director. Works, but tool-calling is less reliable — experimentation, not the robust default. |
 

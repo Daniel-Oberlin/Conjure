@@ -17,9 +17,13 @@ with something you can actually experience on the Quest.
   the headset live.* — **achieved** (via `send_patch` and the MCP server, confirmed in-headset).
 
 ## Phase 2 — Voice ✅ DONE
-- PipeCat pipeline (STT → director LLM → TTS), director wired to the MCP server.
+- PipeCat pipeline (STT → director → TTS), director wired to the MCP server.
 - Conversational editing. *Milestone: "add a red cube in front of me" works by voice* —
   **achieved** (local Whisper + Kokoro + cloud Claude; verified building/stacking shapes by voice).
+- **Shared director + LLM roster ✅** (`conjure/director.py`, `conjure/llm.py`): voice and CLI drive
+  one director; an LLM roster (Claude + Gemini) is switchable mid-conversation ("let me talk to
+  Gemini") or addressable per-turn ("Gemini, …"), over an attributed transcript (arch §7a). New
+  providers register in one place — no caller changes. (Verified end-to-end via CLI.)
 - **Audio-polish follow-ups (open):** (1) room-speaker support without earbuds — acoustic echo
   cancellation or **push-to-talk** (ties to #5), since an open mic+speaker feeds the bot's TTS
   back to itself; today's loop is avoided with earbuds + a terse director prompt. (2) modernize
