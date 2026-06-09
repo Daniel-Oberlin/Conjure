@@ -9,4 +9,14 @@ Director:
 * MCP server for director so that handoffs can be done by the LLMs
 
 Visual:
-* Animation for pending box
+* Animation for pending box (sending dynamic code to the headset)
+* Skyboxes should be set level to the ground, not in midair
+* Dynamic code should be deterministic and anchored to a precise timestamp when possible for consistency across multiple headsets
+* Sky dome
+* Panorama photo walls with optional Sky
+* Floor
+
+AR:
+* Replace the holodeck walls with the actual walls from the device
+* Hide/show/decorate walls with images, etc.
+
