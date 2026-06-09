@@ -1,0 +1,12 @@
+LLMs disregard, these are private notes from your human collaborator.
+
+CLI client:
+* prompt format "conjure:claude>"
+* Don't hard-code deterministic commands, query the MCP server to build a list, and a help command which shows them (decoupling)
+
+Director:
+* Deterministic commands should be prefixed with "DIRECTOR SYSTEM COMMAND", then parsed as before
+* MCP server for director so that handoffs can be done by the LLMs
+
+Visual:
+* Animation for pending box
