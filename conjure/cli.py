@@ -128,16 +128,45 @@ def cmd_asset(s: Settings, a) -> None:
 
 
 def cmd_image(s: Settings, a) -> None:
-    body = {"prompt": a.prompt}
+    # Procurement is decoupled from placement; the CLI runs both steps for convenience.
+    gen_body = {"prompt": a.prompt}
+    if a.transparent:
+        gen_body["transparent"] = True
+    if a.generator:
+        gen_body["generator"] = a.generator
+    procured = _post(s, "/images/generate", gen_body)
+    if procured.get("ok") is False:
+        _say(procured, a.verbose, "")
+        return
+    body = {"image_id": procured["image_id"]}
     if a.pos:
         body["position"] = a.pos
     if a.size is not None:
         body["size_m"] = a.size
-    _say(_post(s, "/place_image", body), a.verbose, "placed image")
+    _say(_post(s, "/place_image", body), a.verbose, f"placed image ({procured.get('provider', '?')})")
 
 
 def cmd_skybox(s: Settings, a) -> None:
-    _say(_post(s, "/set_skybox", {"prompt": a.prompt}), a.verbose, "set skybox")
+    gen_body = {"prompt": a.prompt}
+    if a.generator:
+        gen_body["generator"] = a.generator
+    procured = _post(s, "/images/skybox", gen_body)
+    if procured.get("ok") is False:
+        _say(procured, a.verbose, "")
+        return
+    _say(_post(s, "/set_skybox", {"image_id": procured["image_id"]}), a.verbose, "set skybox")
+
+
+def cmd_generators(s: Settings, a) -> None:
+    out = _get(s, "/images/generators")
+    if a.verbose:
+        print(json.dumps(out, indent=2))
+        return
+    for g in out.get("generators", []):
+        c = g["capabilities"]
+        print(f"{g['name']}: ops={','.join(c['operations'])}, edit={c['edit_mode']}, "
+              f"max={c['max_resolution']}px, aspect={c['aspect']}, transparency={c['transparency']}")
+    print(f"defaults: {out.get('defaults', {})}")
 
 
 def cmd_edit(s: Settings, a) -> None:
@@ -226,10 +255,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("query"); a.add_argument("--size", type=float, default=1.0, help="real-world size, meters"); _pos(a)
 
     a = sub.add_parser("image", help="generate + hang an image"); a.set_defaults(fn=cmd_image)
-    a.add_argument("prompt"); a.add_argument("--size", type=float); _pos(a)
+    a.add_argument("prompt"); a.add_argument("--size", type=float)
+    a.add_argument("--transparent", action="store_true", help="cut-out with a transparent background")
+    a.add_argument("--generator", help="force an image generator (else best default)"); _pos(a)
 
     a = sub.add_parser("skybox", help="generate a 360 skybox"); a.set_defaults(fn=cmd_skybox)
-    a.add_argument("prompt")
+    a.add_argument("prompt"); a.add_argument("--generator", help="force an image generator")
+
+    sub.add_parser("generators", help="list image generators + capabilities").set_defaults(fn=cmd_generators)
 
     a = sub.add_parser("edit", help="edit an in-world image"); a.set_defaults(fn=cmd_edit)
     a.add_argument("id"); a.add_argument("prompt")
