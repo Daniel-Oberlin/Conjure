@@ -2,7 +2,18 @@
 registry. No network: anthropic/genai clients are monkeypatched."""
 
 from conjure.config import Settings
-from conjure.llm import ClaudeLLM, GeminiLLM, ToolSpec, Turn, _attributed, build_roster
+from conjure.llm import (
+    ClaudeLLM,
+    GeminiLLM,
+    OpenAIImageGenerator,
+    OpenAILLM,
+    ToolSpec,
+    Turn,
+    _attributed,
+    build_image_generators,
+    build_roster,
+    select_generator,
+)
 
 
 def _settings(**overrides) -> Settings:
@@ -157,3 +168,148 @@ async def test_gemini_runs_a_tool_then_returns_final(monkeypatch):
     assert out == "Done — you're in a forest."
     assert tool_calls == [("set_skybox", {"prompt": "forest"})]
     assert (False, "Sure") in emitted and emitted[-1] == (True, "Done — you're in a forest.")
+
+
+# --------------------------------------------------------------------------- OpenAI director loop
+
+def _oa_tc(id, name, arguments):
+    fn = type("F", (), {"name": name, "arguments": arguments})()
+    return type("TC", (), {"id": id, "type": "function", "function": fn})()
+
+
+def _oa_resp(content=None, tool_calls=None):
+    msg = type("M", (), {"content": content, "tool_calls": tool_calls})()
+    return type("R", (), {"choices": [type("Ch", (), {"message": msg})()]})()
+
+
+async def test_openai_director_runs_a_tool_then_returns_final(monkeypatch):
+    import openai
+
+    responses = [
+        _oa_resp("On it", [_oa_tc("c1", "place_asset", '{"query": "tree", "size_m": 7}')]),
+        _oa_resp("Done — there's your tree.", None),
+    ]
+    state = {"n": 0, "last": None}
+
+    class _Chat:
+        async def create(self, **kw):
+            state["last"] = kw
+            r = responses[state["n"]]; state["n"] += 1
+            return r
+
+    monkeypatch.setattr(openai, "AsyncOpenAI",
+                        lambda **kw: type("Cl", (), {"chat": type("C", (), {"completions": _Chat()})()})())
+
+    emitted, tool_calls = [], []
+
+    async def emit(t, *, final): emitted.append((final, t))
+
+    async def execute_tool(name, args): tool_calls.append((name, args)); return "ok"
+
+    out = await OpenAILLM("Chat", "key", "gpt-x").run_turn(
+        system="SYS", history=[Turn("user", "hi"), Turn("Gemini", "yo")],
+        user_text="put a tree in front of me",
+        tools=[ToolSpec("place_asset", "place", {"type": "object"})],
+        execute_tool=execute_tool, emit=emit,
+    )
+    assert out == "Done — there's your tree."
+    assert tool_calls == [("place_asset", {"query": "tree", "size_m": 7})]   # JSON-string args parsed
+    assert emitted[-1] == (True, "Done — there's your tree.")
+    msgs = state["last"]["messages"]
+    assert msgs[0] == {"role": "system", "content": "SYS"}                   # system first
+    assert {"role": "tool", "tool_call_id": "c1", "content": "ok"} in msgs   # tool result fed back
+    assert msgs[2] == {"role": "assistant", "content": "[Gemini] yo"}        # attributed history
+
+
+# --------------------------------------------------------------------------- image registry + capabilities
+
+def test_build_image_generators_keyed_by_casual_name():
+    gens = build_image_generators(_settings(google_api_key="g", openai_api_key="o"))
+    assert set(gens) == {"Gemini", "Chat"}
+    assert gens["Gemini"].capabilities.aspect == "free" and gens["Gemini"].capabilities.max_resolution == 4096
+    assert gens["Chat"].capabilities.transparency is True and gens["Chat"].capabilities.aspect == "fixed"
+
+
+def test_only_image_capable_keyed_vendors_appear():
+    # Claude has no image facet; an anthropic-only setup has no image generators.
+    assert build_image_generators(_settings(anthropic_api_key="a")) == {}
+
+
+def test_roster_includes_chat_with_openai_key():
+    roster, _ = build_roster(_settings(openai_api_key="o"))
+    assert "Chat" in roster and roster["Chat"].name == "Chat"
+
+
+def test_openai_size_snapping():
+    g = OpenAIImageGenerator("Chat", "k", "gpt-image-1")
+    assert g._size_for("21:9") == "1536x1024"
+    assert g._size_for("9:16") == "1024x1536"
+    assert g._size_for("1:1") == "1024x1024"
+    assert g._size_for(None) == "1024x1024"
+
+
+# --------------------------------------------------------------------------- mediation (select_generator)
+
+def _registry(**keys):
+    return build_image_generators(_settings(**keys))
+
+
+def test_default_routes_to_gemini_for_every_op():
+    reg = _registry(google_api_key="g", openai_api_key="o")
+    for op in ("generate", "edit", "outpaint", "skybox", "skybox_from"):
+        gen, err = select_generator(reg, op)
+        assert err is None and gen.name == "Gemini", op
+
+
+def test_transparency_steers_to_openai():
+    reg = _registry(google_api_key="g", openai_api_key="o")
+    gen, err = select_generator(reg, "generate", transparent=True)
+    assert err is None and gen.name == "Chat"
+
+
+def test_requested_generator_lacking_capability_errors():
+    reg = _registry(google_api_key="g", openai_api_key="o")
+    gen, err = select_generator(reg, "outpaint", requested="Chat")
+    assert gen is None and "outpaint" in err
+    gen, err = select_generator(reg, "generate", requested="Gemini", transparent=True)
+    assert gen is None and "transparency" in err.lower()
+
+
+def test_requested_unknown_generator_errors():
+    reg = _registry(google_api_key="g")
+    gen, err = select_generator(reg, "generate", requested="Nope")
+    assert gen is None and "not configured" in err
+
+
+def test_no_capable_generator_errors():
+    reg = _registry(openai_api_key="o")  # only OpenAI → can't skybox at all
+    gen, err = select_generator(reg, "skybox")
+    assert gen is None and "skybox" in err
+
+
+def test_explicit_request_honored_when_capable():
+    reg = _registry(google_api_key="g", openai_api_key="o")
+    gen, err = select_generator(reg, "generate", requested="Chat")
+    assert err is None and gen.name == "Chat"
+
+
+# --------------------------------------------------------------------------- OpenAI image gen (faked)
+
+async def test_openai_image_generate_decodes_b64(monkeypatch):
+    import base64
+
+    import openai
+
+    payload = base64.b64encode(b"PNGBYTES").decode()
+
+    class _Images:
+        async def generate(self, **kw):
+            _Images.kw = kw
+            return type("R", (), {"data": [type("D", (), {"b64_json": payload})()]})()
+
+    monkeypatch.setattr(openai, "AsyncOpenAI",
+                        lambda **kw: type("Cl", (), {"images": _Images()})())
+    res = await OpenAIImageGenerator("Chat", "k", "gpt-image-1").generate(
+        "a red circle", aspect_ratio="21:9", transparent=True)
+    assert res.data == b"PNGBYTES" and res.provider == "Chat"
+    assert _Images.kw["size"] == "1536x1024" and _Images.kw["background"] == "transparent"

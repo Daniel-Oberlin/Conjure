@@ -42,9 +42,11 @@ class Settings:
     host: str
     port: int
     world_url: str
-    # director LLM model for the Gemini roster member (Claude uses llm_model). Trailing + defaulted
-    # so existing Settings(...) constructions stay valid.
-    gemini_model: str = "gemini-2.5-flash"
+    # Per-vendor director/image models for the roster members beyond Claude. Trailing + defaulted so
+    # existing Settings(...) constructions stay valid. (Wired in conjure.llm's ROSTER table.)
+    gemini_model: str = "gemini-2.5-flash"           # Gemini director model
+    openai_director_model: str = "gpt-4.1"           # OpenAI ("Chat") director model
+    openai_image_model: str = "gpt-image-1"          # OpenAI image generator model
 
 
 def get_settings() -> Settings:
@@ -67,4 +69,6 @@ def get_settings() -> Settings:
         port=int(os.environ.get("CONJURE_PORT", "8080")),
         world_url=os.environ.get("CONJURE_URL", "http://localhost:8080"),
         gemini_model=os.environ.get("CONJURE_GEMINI_MODEL", "gemini-2.5-flash"),
+        openai_director_model=os.environ.get("CONJURE_OPENAI_DIRECTOR_MODEL", "gpt-4.1"),
+        openai_image_model=os.environ.get("CONJURE_OPENAI_IMAGE_MODEL", "gpt-image-1"),
     )

@@ -42,6 +42,22 @@ def test_genai_image_config_surface():
     assert "response_modalities" in types.GenerateContentConfig.model_fields
 
 
+def test_openai_surface_we_depend_on():
+    pytest.importorskip("openai")
+    import inspect as _inspect
+
+    # OpenAIImageGenerator uses images.generate/edit; OpenAILLM uses chat.completions.create.
+    from openai.resources.chat.completions import AsyncCompletions
+    from openai.resources.images import AsyncImages
+
+    gen_params = _inspect.signature(AsyncImages.generate).parameters
+    assert {"prompt", "model", "size", "background"} <= set(gen_params)
+    edit_params = _inspect.signature(AsyncImages.edit).parameters
+    assert {"image", "prompt", "mask"} <= set(edit_params)
+    create_params = _inspect.signature(AsyncCompletions.create).parameters
+    assert {"messages", "model", "tools"} <= set(create_params)
+
+
 def test_mcp_client_surface():
     from mcp import ClientSession, StdioServerParameters  # noqa: F401
     from mcp.client.stdio import stdio_client

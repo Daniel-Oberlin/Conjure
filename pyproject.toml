@@ -12,6 +12,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "trimesh>=4.0",
     "google-genai>=1.0",
+    "openai>=1.40",
+    "pillow>=10.0",
 ]
 
 [project.optional-dependencies]
