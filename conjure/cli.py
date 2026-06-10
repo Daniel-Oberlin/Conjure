@@ -204,7 +204,10 @@ async def _director(s: Settings, instructions, verbose: bool) -> None:
                 print(f"  · {name}({json.dumps(args)})")
 
         async for text in instructions:
-            await director.handle(text, on_text=on_text, on_tool=on_tool)
+            try:
+                await director.handle(text, on_text=on_text, on_tool=on_tool)
+            except Exception as exc:  # one bad turn (API error, quota, …) shouldn't kill the REPL
+                print(f"error: {exc}")
 
 
 def cmd_say(s: Settings, a) -> None:

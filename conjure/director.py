@@ -190,6 +190,7 @@ class Director:
         transcript, and return the final reply. `on_text(text, final=, speaker=)` receives reply
         text as it's produced; `on_tool(name, args)` fires before each tool call."""
         route = route_turn(text, self.roster, self.active)
+        prev_active = self.active
         if route.persistent:
             self.active = route.target
         llm = self.roster[route.target]
@@ -205,14 +206,21 @@ class Director:
         async def execute(n, a):
             return await self._execute_tool(n, a, on_tool)
 
-        final = await llm.run_turn(
-            system=self._system_for(route.target),
-            history=list(self.transcript),
-            user_text=user_text,
-            tools=self._tools,
-            execute_tool=execute,
-            emit=emit,
-        )
+        try:
+            final = await llm.run_turn(
+                system=self._system_for(route.target),
+                history=list(self.transcript),
+                user_text=user_text,
+                tools=self._tools,
+                execute_tool=execute,
+                emit=emit,
+            )
+        except Exception:
+            # A switch that failed on its first turn shouldn't strand the user on a broken LLM —
+            # revert to whoever they were talking to. (The caller surfaces the error.)
+            if route.persistent:
+                self.active = prev_active
+            raise
         self.transcript.append(Turn("user", text.strip()))
         self.transcript.append(Turn(route.target, final))
         return final

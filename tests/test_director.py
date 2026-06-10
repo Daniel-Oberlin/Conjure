@@ -119,6 +119,22 @@ async def test_persistent_handover_changes_active():
     assert d.transcript[-1].speaker == "Gemini"
 
 
+async def test_failed_handover_reverts_active():
+    """If switching to an LLM fails on its first turn (e.g. quota error), don't strand the user on
+    the broken LLM — revert to whoever they were talking to. The error still propagates."""
+    class BoomLLM:
+        name = "Chat"
+
+        async def run_turn(self, **kw):
+            raise RuntimeError("insufficient_quota")
+
+    d = _director(active="Claude", Claude=FakeLLM("Claude"), Chat=BoomLLM())
+    with pytest.raises(RuntimeError, match="quota"):
+        await d.handle("let me speak with Chat")
+    assert d.active == "Claude"            # reverted
+    assert d.transcript == []             # nothing recorded for the failed turn
+
+
 async def test_one_shot_address_does_not_change_active():
     d = _director(active="Claude")
     await d.handle("Gemini, make a picture of a cat")
