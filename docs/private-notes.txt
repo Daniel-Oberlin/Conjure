@@ -4,9 +4,12 @@ CLI client:
 * prompt format "conjure:claude>"
 * Don't hard-code deterministic commands, query the MCP server to build a list, and a help command which shows them (decoupling)
 
-Director:
-* Deterministic commands should be prefixed with "DIRECTOR SYSTEM COMMAND", then parsed as before
-* MCP server for director so that handoffs can be done by the LLMs
+Shell:
+* Speaking or typing "conjure open shell" starts a non-llm based shell
+* Deterministic parsing - use what we have now for handoffs for example
+* Extend to things like limiting LLM access, removing LLM from roster, other system changes
+* "exit, close, leave, etc." gets you back to normal
+* In CLI go to just "conjure>" or "conjure:shell>"
 
 Visual:
 * Animation for pending box (sending dynamic code to the headset)
@@ -20,3 +23,16 @@ AR:
 * Replace the holodeck walls with the actual walls from the device
 * Hide/show/decorate walls with images, etc.
 
+Web:
+* Do web requests
+* Get images from web
+
+Host:
+* Drone (use drone controls)
+* Walker (move bound to floor), maybe use second stick to move view
+* Fixed Camera
+* Vehicle
+* etc.
+
+Models:
+* Abstract model provider with capabilities
