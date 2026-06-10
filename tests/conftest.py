@@ -8,32 +8,59 @@ import pytest
 from PIL import Image
 
 from conjure.assets import AssetRecord
-from conjure.imagegen import ImageResult
+from conjure.llm import ImageCapabilities, ImageResult
 
 
-def _png() -> bytes:
+def _png(color="red", size=(4, 4)) -> bytes:
     buf = io.BytesIO()
-    Image.new("RGB", (4, 4), "red").save(buf, "PNG")
+    Image.new("RGB", size, color).save(buf, "PNG")
     return buf.getvalue()
 
 
 TINY_PNG = _png()
+WIDE_PNG = _png("blue", (8, 4))  # 2:1 — lets place_image's aspect handling be checked
 # Passes the GLB magic check; trimesh won't parse it (bbox → None), which is fine for these tests.
 FAKE_GLB = b"glTF" + bytes(40)
 
 
 class FakeImageGenerator:
-    """Stand-in for an image generator — returns a fixed tiny PNG, no API call."""
+    """Stand-in for a Gemini-like generator (all ops, free aspect) — returns a tiny PNG, no API."""
 
-    name = "fake"
-    model = "fake-model"
+    name = "Gemini"
+    model = "fake-gemini"
+    capabilities = ImageCapabilities(
+        operations=frozenset({"generate", "edit", "outpaint", "skybox"}),
+        edit_mode="prompt", max_resolution=4096, aspect="free", fixed_sizes=(), transparency=False,
+    )
 
-    async def generate(self, prompt, *, aspect_ratio=None, image_size=None, model=None) -> ImageResult:
-        return ImageResult(data=TINY_PNG, mime_type="image/png", provider="fake", model=model or self.model)
+    async def generate(self, prompt, *, aspect_ratio=None, image_size=None, model=None,
+                       transparent=False) -> ImageResult:
+        return ImageResult(data=TINY_PNG, mime_type="image/png", provider=self.name, model=model or self.model)
 
-    async def edit(self, prompt, image, *, aspect_ratio=None, image_size=None, model=None) -> ImageResult:
-        # Different bytes so callers can detect the change.
-        return ImageResult(data=TINY_PNG + b"edited", mime_type="image/png", provider="fake", model=model or self.model)
+    async def edit(self, prompt, image, *, aspect_ratio=None, image_size=None, model=None,
+                   transparent=False, mask=None) -> ImageResult:
+        # Different bytes (and shape) so callers can detect the change; WIDE so outpaint resizes.
+        return ImageResult(data=WIDE_PNG, mime_type="image/png", provider=self.name, model=model or self.model)
+
+
+class FakeOpenAIImageGenerator:
+    """Stand-in for OpenAI: generate + edit only, transparency, fixed sizes — for mediation tests."""
+
+    name = "Chat"
+    model = "fake-gpt-image"
+    capabilities = ImageCapabilities(
+        operations=frozenset({"generate", "edit"}),
+        edit_mode="mask", max_resolution=1536, aspect="fixed",
+        fixed_sizes=("1024x1024", "1536x1024", "1024x1536"), transparency=True,
+    )
+
+    async def generate(self, prompt, *, aspect_ratio=None, image_size=None, model=None,
+                       transparent=False) -> ImageResult:
+        return ImageResult(data=TINY_PNG, mime_type="image/png", provider=self.name, model=self.model)
+
+    async def edit(self, prompt, image, *, aspect_ratio=None, image_size=None, model=None,
+                   transparent=False, mask=None) -> ImageResult:
+        return ImageResult(data=TINY_PNG, mime_type="image/png", provider=self.name, model=self.model)
 
 
 class FakeAssetResolver:
@@ -76,7 +103,8 @@ def srv(tmp_path, monkeypatch):
         server, "store",
         WorldStore({"id": "test", "name": "Test", "rev": 0, "environment": {"sky": {"color": "#000"}}, "entities": []}),
     )
-    monkeypatch.setattr(server, "image_gen", FakeImageGenerator())
+    monkeypatch.setattr(server, "image_generators", {"Gemini": FakeImageGenerator()})
+    monkeypatch.setattr(server, "IMAGES", {})  # clean image store per test
     monkeypatch.setattr(server, "resolver", None)
     server.clients.clear()
     return server

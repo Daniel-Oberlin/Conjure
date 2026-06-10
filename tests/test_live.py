@@ -45,9 +45,10 @@ async def test_poly_pizza_downloads_a_real_glb(tmp_path):
 @pytest.mark.skipif(not S.google_api_key, reason="no GOOGLE_API_KEY")
 async def test_gemini_generates_a_decodable_image():
     """One cheap flash generation actually returns a usable image."""
-    from conjure.imagegen import get_image_generator
+    from conjure.llm import build_image_generators
 
-    res = await get_image_generator(S).generate("a small red circle on a white background", image_size="1K")
+    gen = build_image_generators(S)["Gemini"]
+    res = await gen.generate("a small red circle on a white background", image_size="1K")
     img = Image.open(io.BytesIO(res.data))
     assert img.size[0] > 0 and img.size[1] > 0
 

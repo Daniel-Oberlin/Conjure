@@ -37,47 +37,102 @@ def test_place_asset_failure_leaves_no_garbage_entity(srv, client):
     assert not any(e["id"].startswith("ent_asset") for e in _entities(client))
 
 
-def test_place_image_hangs_textured_plane(srv, client, tmp_path):
-    r = client.post("/place_image", json={"prompt": "a red dragon", "size_m": 1.0})
+def _procure(client, prompt="a red dragon", **extra) -> str:
+    """Procure an image and return its id (the new decoupled first step)."""
+    r = client.post("/images/generate", json={"prompt": prompt, **extra})
+    assert r.json()["ok"] is True, r.json()
+    return r.json()["image_id"]
+
+
+def test_procurement_returns_id_without_touching_the_world(srv, client):
+    before = len(_entities(client))
+    body = client.post("/images/generate", json={"prompt": "a red dragon"}).json()
+    assert body["ok"] and body["image_id"].endswith(".png") and body["url"].startswith("/assets/")
+    assert body["provider"] == "Gemini"
+    assert len(_entities(client)) == before              # no scene effect
+    assert client.get(body["url"]).status_code == 200    # bytes actually cached + served
+
+
+def test_place_image_takes_an_id_and_hangs_aspect_correct_plane(srv, client):
+    image_id = _procure(client)
+    r = client.post("/place_image", json={"image_id": image_id, "size_m": 1.0})
     assert r.json()["ok"] is True
     img = next(e for e in _entities(client) if e.get("components", {}).get("material", {}).get("src"))
-    src = img["components"]["material"]["src"]
-    assert src.startswith("/assets/") and src.endswith(".png")
-    # The image was actually cached and is served.
-    assert client.get(src).status_code == 200
-    assert img["meta"]["generated"] is True
+    assert img["components"]["material"]["src"] == f"/assets/{image_id}"
+    assert img["meta"]["generated"] is True and img["meta"]["image_id"] == image_id
+    # 4x4 image → square plane (longest side = size_m).
+    assert img["components"]["geometry"]["width"] == 1.0
+    assert img["components"]["geometry"]["height"] == 1.0
+
+
+def test_place_image_unknown_id_errors(srv, client):
+    assert client.post("/place_image", json={"image_id": "nope.png"}).json()["ok"] is False
 
 
 def test_edit_image_updates_in_place(srv, client):
-    eid = client.post("/place_image", json={"prompt": "a dragon"}).json()["id"]
+    eid = client.post("/place_image", json={"image_id": _procure(client)}).json()["id"]
     before = next(e for e in _entities(client) if e["id"] == eid)["components"]["material"]["src"]
     r = client.post("/edit_image", json={"id": eid, "prompt": "add a moon"})
     assert r.json()["ok"] is True
-    after = next(e for e in _entities(client) if e["id"] == eid)["components"]["material"]["src"]
-    assert after != before  # the texture swapped
+    after = next(e for e in _entities(client) if e["id"] == eid)
+    assert after["components"]["material"]["src"] != before     # the texture swapped
+    assert after["meta"]["image_id"] == r.json()["image_id"]     # meta tracks the new image
+
+
+def test_outpaint_widens_the_plane(srv, client):
+    eid = client.post("/place_image", json={"image_id": _procure(client), "size_m": 1.0}).json()["id"]
+    r = client.post("/outpaint_image", json={"id": eid})
+    assert r.json()["ok"] is True
+    geo = next(e for e in _entities(client) if e["id"] == eid)["components"]["geometry"]
+    assert geo["width"] == 2.0  # fake edit returns an 8x4 (2:1) image, height 1.0 → width 2.0
 
 
 def test_edit_unknown_entity_errors(srv, client):
     assert client.post("/edit_image", json={"id": "nope", "prompt": "x"}).json()["ok"] is False
 
 
-def test_set_skybox_sets_env_sky_src(srv, client):
-    r = client.post("/set_skybox", json={"prompt": "a sunset beach"})
+def test_set_skybox_takes_an_id(srv, client):
+    r = client.post("/images/skybox", json={"prompt": "a sunset beach"})
     assert r.json()["ok"] is True
+    assert client.post("/set_skybox", json={"image_id": r.json()["image_id"]}).json()["ok"] is True
     sky = client.get("/world").json()["environment"]["sky"]
-    assert "src" in sky and sky["src"].startswith("/assets/")
+    assert sky["src"] == f"/assets/{r.json()['image_id']}"
+
+
+def test_list_generators_reports_capabilities_and_defaults(srv, client):
+    body = client.get("/images/generators").json()
+    assert body["ok"] and [g["name"] for g in body["generators"]] == ["Gemini"]
+    assert body["defaults"]["skybox"] == "Gemini"
+
+
+def test_mediation_rejects_incapable_requested_generator(srv, client):
+    # Register an OpenAI-like generator that can't outpaint.
+    from conftest import FakeOpenAIImageGenerator
+    srv.image_generators = {"Gemini": srv.image_generators["Gemini"], "Chat": FakeOpenAIImageGenerator()}
+    image_id = _procure(client)
+    r = client.post("/images/outpaint", json={"image_id": image_id, "generator": "Chat"})
+    assert r.json()["ok"] is False and "outpaint" in r.json()["error"]
+
+
+def test_transparency_steers_to_openai(srv, client):
+    from conftest import FakeOpenAIImageGenerator
+    srv.image_generators = {"Gemini": srv.image_generators["Gemini"], "Chat": FakeOpenAIImageGenerator()}
+    body = client.post("/images/generate", json={"prompt": "a star", "transparent": True}).json()
+    assert body["ok"] and body["provider"] == "Chat"
 
 
 def test_disabled_when_no_image_generator(srv, client):
-    srv.image_gen = None
-    assert client.post("/set_skybox", json={"prompt": "x"}).json()["ok"] is False
+    srv.image_generators = {}
+    assert client.post("/images/generate", json={"prompt": "x"}).json()["ok"] is False
 
 
 def test_expected_routes_exist(srv):
     # Contract: the endpoints the MCP tools + client depend on must exist.
     paths = {getattr(r, "path", None) for r in srv.app.routes}
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
-              "/outpaint_image", "/set_skybox", "/skybox_from_image", "/assets/{filename}", "/ws"):
+              "/outpaint_image", "/set_skybox", "/skybox_from_image", "/assets/{filename}", "/ws",
+              "/images/generators", "/images/generate", "/images/skybox", "/images/edit",
+              "/images/outpaint", "/images/skybox_from"):
         assert p in paths, f"missing route {p}"
 
 

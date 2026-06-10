@@ -13,6 +13,7 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -24,7 +25,7 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .config import get_settings
-from .imagegen import get_image_generator
+from .llm import build_image_generators, select_generator
 from .schema import Patch
 from .world import WorldStore
 
@@ -41,9 +42,30 @@ clients: set[WebSocket] = set()
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
-image_gen = get_image_generator(settings)  # None if its key/provider isn't configured
+# Every configured image generator (keyed by casual name "Gemini"/"Chat"); the procurement
+# endpoints mediate which one services a request (conjure.llm.select_generator).
+image_generators = build_image_generators(settings)
 
 TARGET_SIZE_M = 1.8  # fit a placed model's largest dimension to ~this many meters
+
+# --- image store: procurement is decoupled from scene use. Procuring an image caches its bytes and
+# registers an ImageRecord; scene tools (place_image/set_skybox) reference it by id. -------------
+PROCURE_OPS = ("generate", "edit", "outpaint", "skybox", "skybox_from")
+
+
+@dataclass
+class ImageRecord:
+    id: str        # "<sha16>.<ext>" — also the /assets filename
+    url: str       # "/assets/<id>"
+    w: int
+    h: int
+    provider: str
+    model: str
+    prompt: str
+    op: str
+
+
+IMAGES: dict[str, ImageRecord] = {}
 
 app = FastAPI(title="Conjure", version="0.0.1")
 
@@ -63,26 +85,68 @@ def _normalize(record, pos: list[float], target_m: float) -> tuple[list[float], 
     return position, [s, s, s]
 
 
-def _cache_image(result) -> str:
-    """Write a generated image to the content store; return its /assets URL."""
+def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
+    """Write a procured image to the content store and register an ImageRecord; return it."""
     ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
-    img_hash = hashlib.sha256(result.data).hexdigest()[:16]
-    (ASSET_CACHE / f"{img_hash}{ext}").write_bytes(result.data)
-    return f"/assets/{img_hash}{ext}"
+    image_id = f"{hashlib.sha256(result.data).hexdigest()[:16]}{ext}"
+    (ASSET_CACHE / image_id).write_bytes(result.data)
+    w, h = _img_dims(result.data)
+    rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h,
+                      provider=result.provider, model=result.model, prompt=prompt, op=op)
+    IMAGES[image_id] = rec
+    return rec
 
 
-def _load_entity_image(entity_id: str):
-    """Return (entity, image_bytes, error) for an in-world image entity."""
+def _get_image(image_id: str):
+    """Return (record, bytes, error) for a procured image id. Rebuilds a minimal record from disk if
+    the in-memory entry was lost to a restart, so post-restart edits still work."""
+    if not image_id or "/" in image_id or ".." in image_id:
+        return None, None, f"bad image id {image_id!r}"
+    path = ASSET_CACHE / image_id
+    if not path.exists():
+        return None, None, f"no image {image_id!r}"
+    data = path.read_bytes()
+    rec = IMAGES.get(image_id)
+    if rec is None:
+        w, h = _img_dims(data)
+        rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h,
+                          provider="?", model="?", prompt="", op="?")
+        IMAGES[image_id] = rec
+    return rec, data, None
+
+
+def _entity_image(entity_id: str):
+    """Return (entity, image_id, error) for an in-scene image entity (resolves meta.image_id, else
+    derives the id from the material src filename for entities placed before this field existed)."""
     entity = next((e for e in store.doc["entities"] if e["id"] == entity_id), None)
     if entity is None:
         return None, None, f"no entity {entity_id!r}"
-    src = entity.get("components", {}).get("material", {}).get("src")
-    if not src:
+    meta = entity.get("meta", {})
+    image_id = meta.get("image_id")
+    if not image_id:
+        src = entity.get("components", {}).get("material", {}).get("src") or ""
+        if "/assets/" in src:
+            image_id = src.rsplit("/", 1)[-1]
+    if not image_id:
         return None, None, f"{entity_id!r} is not an editable image"
-    path = ASSET_CACHE / src.rsplit("/", 1)[-1]
-    if not path.exists():
-        return None, None, "source image not cached"
-    return entity, path.read_bytes(), None
+    return entity, image_id, None
+
+
+async def _procure(op: str, *, prompt: str, requested: Optional[str], transparent: bool, run) -> dict:
+    """Mediate + run one procurement op. `run(generator) -> ImageResult`. Returns the uniform image
+    result dict (no scene effect)."""
+    if not image_generators:
+        return {"ok": False, "error": "no image generator configured (set GOOGLE_API_KEY and/or OPENAI_API_KEY)"}
+    gen, err = select_generator(image_generators, op, requested=requested, transparent=transparent)
+    if err:
+        return {"ok": False, "error": err}
+    try:
+        result = await run(gen)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    rec = _store_image(result, prompt=prompt, op=op)
+    return {"ok": True, "image_id": rec.id, "url": rec.url, "w": rec.w, "h": rec.h,
+            "provider": rec.provider, "model": rec.model, "op": op}
 
 
 def _img_dims(data: bytes) -> tuple[int, int]:
@@ -206,21 +270,130 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
     }
 
 
-class PlaceImageRequest(BaseModel):
+# --- procurement: produce/transform an image, return an id; NO scene effect ---------------------
+
+_SKYBOX_PROMPT = (
+    "A seamless equirectangular 360-degree panorama for a VR skybox: {p}. "
+    "Centered horizon, evenly lit, no people, no text, no watermark, no borders."
+)
+_OUTPAINT_PROMPT = (
+    "Outpaint this image: extend it outward to fill a wider {aspect} frame. Keep the existing scene "
+    "and subject exactly, and continue it seamlessly outward in the same style, colors, and lighting. "
+    "Do not crop, zoom, or change the original content."
+)
+_SKYBOX_FROM_PROMPT = (
+    "Turn this image into a seamless equirectangular 360-degree panorama for a VR skybox, extending "
+    "the scene all the way around. Keep its style, palette, and mood. Centered horizon, no people, "
+    "no text, no borders."
+)
+
+
+@app.get("/images/generators")
+async def images_generators() -> dict:
+    """List the available image generators, their capabilities, and the default chosen per op."""
+    defaults = {op: (lambda g: g.name if g else None)(select_generator(image_generators, op)[0])
+                for op in PROCURE_OPS}
+    defaults["transparent"] = (lambda g: g.name if g else None)(
+        select_generator(image_generators, "generate", transparent=True)[0])
+    return {
+        "ok": True,
+        "generators": [{"name": n, "capabilities": g.capabilities.to_dict()}
+                       for n, g in image_generators.items()],
+        "defaults": defaults,
+    }
+
+
+class GenerateImageRequest(BaseModel):
     prompt: str
-    position: Optional[list[float]] = None
-    size_m: Optional[float] = None
-    name: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    transparent: bool = False
+    generator: Optional[str] = None
 
 
-def _image_plane(eid: str, pos: list[float], size: float, material: dict, meta: dict | None = None) -> dict:
+@app.post("/images/generate")
+async def images_generate(req: GenerateImageRequest) -> dict:
+    return await _procure(
+        "generate", prompt=req.prompt, requested=req.generator, transparent=req.transparent,
+        run=lambda g: g.generate(req.prompt, aspect_ratio=req.aspect_ratio, transparent=req.transparent))
+
+
+class SkyboxImageRequest(BaseModel):
+    prompt: str
+    generator: Optional[str] = None
+
+
+@app.post("/images/skybox")
+async def images_skybox(req: SkyboxImageRequest) -> dict:
+    full = _SKYBOX_PROMPT.format(p=req.prompt)
+    return await _procure(
+        "skybox", prompt=req.prompt, requested=req.generator, transparent=False,
+        run=lambda g: g.generate(full, aspect_ratio="21:9", image_size=settings.skybox_size,
+                                 model=settings.skybox_model))
+
+
+class EditImageAssetRequest(BaseModel):
+    image_id: str
+    prompt: str
+    transparent: bool = False
+    generator: Optional[str] = None
+
+
+@app.post("/images/edit")
+async def images_edit(req: EditImageAssetRequest) -> dict:
+    _, img, err = _get_image(req.image_id)
+    if err:
+        return {"ok": False, "error": err}
+    return await _procure(
+        "edit", prompt=req.prompt, requested=req.generator, transparent=req.transparent,
+        run=lambda g: g.edit(req.prompt, img, transparent=req.transparent))
+
+
+class OutpaintImageAssetRequest(BaseModel):
+    image_id: str
+    aspect: Optional[str] = None
+    prompt: Optional[str] = None
+    generator: Optional[str] = None
+
+
+@app.post("/images/outpaint")
+async def images_outpaint(req: OutpaintImageAssetRequest) -> dict:
+    _, img, err = _get_image(req.image_id)
+    if err:
+        return {"ok": False, "error": err}
+    aspect = req.aspect or "16:9"
+    instruction = _OUTPAINT_PROMPT.format(aspect=aspect) + (f" {req.prompt}" if req.prompt else "")
+    return await _procure(
+        "outpaint", prompt=instruction, requested=req.generator, transparent=False,
+        run=lambda g: g.edit(instruction, img, aspect_ratio=aspect))
+
+
+class SkyboxFromImageAssetRequest(BaseModel):
+    image_id: str
+    generator: Optional[str] = None
+
+
+@app.post("/images/skybox_from")
+async def images_skybox_from(req: SkyboxFromImageAssetRequest) -> dict:
+    _, img, err = _get_image(req.image_id)
+    if err:
+        return {"ok": False, "error": err}
+    return await _procure(
+        "skybox_from", prompt=_SKYBOX_FROM_PROMPT, requested=req.generator, transparent=False,
+        run=lambda g: g.edit(_SKYBOX_FROM_PROMPT, img, aspect_ratio="21:9",
+                             image_size=settings.skybox_size, model=settings.skybox_model))
+
+
+# --- scene use: incorporate a procured image (by id) into the world ------------------------------
+
+def _image_plane(eid: str, pos: list[float], width: float, height: float,
+                 material: dict, meta: dict | None = None) -> dict:
     return {
         "op": "add",
         "entity": {
             "id": eid,
             "transform": {"position": pos},
             "components": {
-                "geometry": {"primitive": "plane", "width": size, "height": size},
+                "geometry": {"primitive": "plane", "width": width, "height": height},
                 "material": material,
             },
             **({"meta": meta} if meta else {}),
@@ -228,170 +401,149 @@ def _image_plane(eid: str, pos: list[float], size: float, material: dict, meta: 
     }
 
 
+def _plane_dims(rec: ImageRecord, size: float) -> tuple[float, float]:
+    """Fit the image's longest side to `size` meters, preserving its aspect."""
+    w, h = rec.w or 1, rec.h or 1
+    if w >= h:
+        return size, round(size * h / w, 3)
+    return round(size * w / h, 3), size
+
+
+class PlaceImageRequest(BaseModel):
+    image_id: str
+    position: Optional[list[float]] = None
+    size_m: Optional[float] = None
+    name: Optional[str] = None
+
+
 @app.post("/place_image")
 async def place_image(req: PlaceImageRequest) -> dict:
-    """Generate an image and hang it as a textured plane (a painting/poster) facing the user."""
-    if image_gen is None:
-        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
-
-    eid = req.name or f"ent_image_{uuid4().hex[:6]}"
+    """Hang a previously-procured image (by id) as a textured plane facing the user. If `name` is an
+    existing entity, swap its image in place (keeping position)."""
+    rec, _, err = _get_image(req.image_id)
+    if err:
+        return {"ok": False, "error": err}
     pos = req.position or [0.0, 1.5, -3.0]  # eye height, on the wall in front
-    size = req.size_m or 1.0
+    width, height = _plane_dims(rec, req.size_m or 1.0)
+    eid = req.name or f"ent_image_{uuid4().hex[:6]}"
+    meta = {"generated": True, "provider": rec.provider, "model": rec.model,
+            "prompt": rec.prompt, "image_id": rec.id}
 
-    # 1. Placeholder frame appears instantly.
-    placeholder = _image_plane(eid, pos, size, {"color": "#333", "side": "double"})
-    await _broadcast({"type": "patch", "patch": store.apply_patch([placeholder], origin="image")})
-
-    # 2. Generate.
-    try:
-        result = await image_gen.generate(req.prompt)
-    except Exception as exc:  # noqa: BLE001
-        await _broadcast({"type": "patch", "patch": store.apply_patch([{"op": "remove", "id": eid}], origin="image")})
-        return {"ok": False, "error": str(exc)}
-
-    url = _cache_image(result)
-
-    # 3. Swap the placeholder for the generated image (flat shader so colors are true).
-    swap = [
-        {"op": "remove", "id": eid},
-        _image_plane(
-            eid, pos, size,
-            {"src": url, "shader": "flat", "side": "double"},
-            {"generated": True, "provider": result.provider, "model": result.model, "prompt": req.prompt},
-        ),
-    ]
-    await _broadcast({"type": "patch", "patch": store.apply_patch(swap, origin="image")})
-    return {"ok": True, "id": eid, "prompt": req.prompt, "provider": result.provider, "model": result.model}
+    existing = any(e["id"] == eid for e in store.doc["entities"])
+    if existing:  # swap in place
+        ops = [{"op": "update", "id": eid, "set": {
+            "components.material.src": rec.url, "components.geometry.width": width,
+            "components.geometry.height": height,
+            "meta.image_id": rec.id, "meta.prompt": rec.prompt,
+            "meta.provider": rec.provider, "meta.model": rec.model}}]
+    else:
+        ops = [_image_plane(eid, pos, width, height,
+                            {"src": rec.url, "shader": "flat", "side": "double"}, meta)]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="image")})
+    return {"ok": True, "id": eid, "image_id": rec.id}
 
 
-class SkyboxRequest(BaseModel):
-    prompt: str
+class SetSkyboxRequest(BaseModel):
+    image_id: str
 
 
 @app.post("/set_skybox")
-async def set_skybox(req: SkyboxRequest) -> dict:
-    """Generate a 360° panorama and wrap the whole scene in it (the sky/environment)."""
-    if image_gen is None:
-        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
-
-    full_prompt = (
-        f"A seamless equirectangular 360-degree panorama for a VR skybox: {req.prompt}. "
-        "Centered horizon, evenly lit, no people, no text, no watermark, no borders."
-    )
-    try:
-        # Skyboxes wrap the whole view → use the higher-res model (Nano Banana Pro @ 4K).
-        result = await image_gen.generate(
-            full_prompt, aspect_ratio="21:9", image_size=settings.skybox_size, model=settings.skybox_model
-        )
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
-
-    url = _cache_image(result)
-    patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": url}}}], origin="image")
+async def set_skybox(req: SetSkyboxRequest) -> dict:
+    """Wrap the whole scene in a previously-procured image (by id) as the sky/environment."""
+    rec, _, err = _get_image(req.image_id)
+    if err:
+        return {"ok": False, "error": err}
+    patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": rec.url}}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "sky": url, "provider": result.provider, "model": result.model}
+    return {"ok": True, "sky": rec.url, "image_id": rec.id}
 
 
-class EditImageRequest(BaseModel):
+# --- scene editors (hybrid): one-call edits of an image already in the scene (entity id). They
+#     procure a new image from the entity's current one, then apply it — convenience over the
+#     procure→place flow for the common conversational case. ---------------------------------------
+
+class EditSceneImageRequest(BaseModel):
     id: str
     prompt: str
 
 
 @app.post("/edit_image")
-async def edit_image(req: EditImageRequest) -> dict:
-    """Edit an existing in-world image (from place_image) in place — conversational editing."""
-    if image_gen is None:
-        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
-
-    _, img, err = _load_entity_image(req.id)
+async def edit_image(req: EditSceneImageRequest) -> dict:
+    """Edit an image already in the scene in place — conversational editing ('make it nighttime')."""
+    entity, image_id, err = _entity_image(req.id)
     if err:
         return {"ok": False, "error": err}
-
-    try:
-        result = await image_gen.edit(req.prompt, img)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
-
-    new_url = _cache_image(result)
+    _, img, err = _get_image(image_id)
+    if err:
+        return {"ok": False, "error": err}
+    out = await _procure("edit", prompt=req.prompt, requested=None, transparent=False,
+                         run=lambda g: g.edit(req.prompt, img))
+    if not out["ok"]:
+        return out
+    new = IMAGES[out["image_id"]]
     patch = store.apply_patch(
-        [{"op": "update", "id": req.id, "set": {"components.material.src": new_url, "meta.prompt": req.prompt}}],
-        origin="image",
-    )
+        [{"op": "update", "id": req.id,
+          "set": {"components.material.src": new.url, "meta.image_id": new.id, "meta.prompt": req.prompt}}],
+        origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "id": req.id, "src": new_url, "model": result.model}
+    return {"ok": True, "id": req.id, "image_id": new.id}
 
 
-class OutpaintRequest(BaseModel):
+class OutpaintSceneRequest(BaseModel):
     id: str
-    aspect: Optional[str] = None  # target frame, e.g. "16:9" (default), "21:9"
-    prompt: Optional[str] = None  # optional extra guidance
+    aspect: Optional[str] = None
+    prompt: Optional[str] = None
 
 
 @app.post("/outpaint_image")
-async def outpaint_image(req: OutpaintRequest) -> dict:
-    """Extend an in-world image beyond its borders to a wider frame (outpainting), in place."""
-    if image_gen is None:
-        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
-    entity, img, err = _load_entity_image(req.id)
+async def outpaint_image(req: OutpaintSceneRequest) -> dict:
+    """Extend an in-scene image to a wider frame (outpaint), in place; widens the plane to match."""
+    entity, image_id, err = _entity_image(req.id)
     if err:
         return {"ok": False, "error": err}
-
+    _, img, err = _get_image(image_id)
+    if err:
+        return {"ok": False, "error": err}
     aspect = req.aspect or "16:9"
-    instruction = (
-        f"Outpaint this image: extend it outward to fill a wider {aspect} frame. Keep the existing "
-        "scene and subject exactly, and continue it seamlessly outward in the same style, colors, and "
-        "lighting. Do not crop, zoom, or change the original content."
-    )
-    if req.prompt:
-        instruction += " " + req.prompt
-    try:
-        result = await image_gen.edit(instruction, img, aspect_ratio=aspect)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
-
-    new_url = _cache_image(result)
-    # Widen the plane to the new image's aspect so it isn't squished (keep the current height).
-    w, h = _img_dims(result.data)
+    instruction = _OUTPAINT_PROMPT.format(aspect=aspect) + (f" {req.prompt}" if req.prompt else "")
+    out = await _procure("outpaint", prompt=instruction, requested=None, transparent=False,
+                         run=lambda g: g.edit(instruction, img, aspect_ratio=aspect))
+    if not out["ok"]:
+        return out
+    new = IMAGES[out["image_id"]]
     height = entity.get("components", {}).get("geometry", {}).get("height", 1.0)
-    new_width = round(height * w / h, 3)
+    new_width = round(height * new.w / new.h, 3) if new.h else height
     patch = store.apply_patch(
         [{"op": "update", "id": req.id,
-          "set": {"components.material.src": new_url, "components.geometry.width": new_width}}],
-        origin="image",
-    )
+          "set": {"components.material.src": new.url, "components.geometry.width": new_width,
+                  "meta.image_id": new.id}}],
+        origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "id": req.id, "src": new_url, "model": result.model}
+    return {"ok": True, "id": req.id, "image_id": new.id}
 
 
-class SkyboxFromImageRequest(BaseModel):
+class SkyboxFromSceneRequest(BaseModel):
     id: str
 
 
 @app.post("/skybox_from_image")
-async def skybox_from_image(req: SkyboxFromImageRequest) -> dict:
-    """Outpaint an existing in-world image into a 360° panorama and make it the skybox."""
-    if image_gen is None:
-        return {"ok": False, "error": f"no image generator (set GOOGLE_API_KEY; provider={settings.image_provider})"}
-    _, img, err = _load_entity_image(req.id)
+async def skybox_from_image(req: SkyboxFromSceneRequest) -> dict:
+    """Turn an in-scene image into the surrounding 360° sky."""
+    entity, image_id, err = _entity_image(req.id)
     if err:
         return {"ok": False, "error": err}
-
-    instruction = (
-        "Turn this image into a seamless equirectangular 360-degree panorama for a VR skybox, "
-        "extending the scene all the way around. Keep its style, palette, and mood. Centered horizon, "
-        "no people, no text, no borders."
-    )
-    try:
-        result = await image_gen.edit(
-            instruction, img, aspect_ratio="21:9", image_size=settings.skybox_size, model=settings.skybox_model
-        )
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
-
-    url = _cache_image(result)
-    patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": url}}}], origin="image")
+    _, img, err = _get_image(image_id)
+    if err:
+        return {"ok": False, "error": err}
+    out = await _procure("skybox_from", prompt=_SKYBOX_FROM_PROMPT, requested=None, transparent=False,
+                         run=lambda g: g.edit(_SKYBOX_FROM_PROMPT, img, aspect_ratio="21:9",
+                                              image_size=settings.skybox_size, model=settings.skybox_model))
+    if not out["ok"]:
+        return out
+    new = IMAGES[out["image_id"]]
+    patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": new.url}}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "sky": url, "model": result.model}
+    return {"ok": True, "sky": new.url, "image_id": new.id}
 
 
 @app.websocket("/ws")
