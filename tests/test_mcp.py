@@ -28,27 +28,71 @@ async def test_place_asset_tool_payload(monkeypatch):
 
 
 @respx.mock
-async def test_place_image_tool_payload(monkeypatch):
+async def test_generate_image_tool_payload(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    route = respx.post("http://world/place_image").mock(return_value=httpx.Response(200, json={"ok": True, "id": "i", "model": "x"}))
-    await _tool("place_image")(prompt="a dragon")
-    assert json.loads(route.calls.last.request.content) == {"prompt": "a dragon"}
+    route = respx.post("http://world/images/generate").mock(
+        return_value=httpx.Response(200, json={"ok": True, "image_id": "abc.png", "url": "/assets/abc.png",
+                                               "w": 1024, "h": 1024, "provider": "Gemini"}))
+    out = await _tool("generate_image")(prompt="a dragon", transparent=True)
+    assert json.loads(route.calls.last.request.content) == {
+        "prompt": "a dragon", "transparent": True}              # None aspect_ratio/generator dropped
+    assert "image_id=abc.png" in out                            # id surfaced for the next call
 
 
 @respx.mock
-async def test_edit_image_tool_payload(monkeypatch):
+async def test_generate_skybox_image_tool_payload(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/images/skybox").mock(
+        return_value=httpx.Response(200, json={"ok": True, "image_id": "s.png", "provider": "Gemini"}))
+    await _tool("generate_skybox_image")(prompt="a forest")
+    assert json.loads(route.calls.last.request.content) == {"prompt": "a forest"}
+
+
+@respx.mock
+async def test_procurement_edit_passes_image_id(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/images/edit").mock(
+        return_value=httpx.Response(200, json={"ok": True, "image_id": "n.png", "provider": "Gemini"}))
+    await _tool("edit_image")(image_id="abc.png", prompt="add a moon", generator="Chat")
+    assert json.loads(route.calls.last.request.content) == {
+        "image_id": "abc.png", "prompt": "add a moon", "transparent": False, "generator": "Chat"}
+
+
+@respx.mock
+async def test_place_image_tool_takes_image_id(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/place_image").mock(
+        return_value=httpx.Response(200, json={"ok": True, "id": "i", "image_id": "abc.png"}))
+    await _tool("place_image")(image_id="abc.png", size_m=2.0)
+    assert json.loads(route.calls.last.request.content) == {"image_id": "abc.png", "size_m": 2.0}
+
+
+@respx.mock
+async def test_set_skybox_tool_takes_image_id(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/set_skybox").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("set_skybox")(image_id="s.png")
+    assert json.loads(route.calls.last.request.content) == {"image_id": "s.png"}
+
+
+@respx.mock
+async def test_edit_scene_image_tool_is_entity_keyed(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     route = respx.post("http://world/edit_image").mock(return_value=httpx.Response(200, json={"ok": True}))
-    await _tool("edit_image")(id="ent_image_1", prompt="add a moon")
-    assert json.loads(route.calls.last.request.content) == {"id": "ent_image_1", "prompt": "add a moon"}
+    await _tool("edit_scene_image")(id="ent_image_1", prompt="make it night")
+    assert json.loads(route.calls.last.request.content) == {"id": "ent_image_1", "prompt": "make it night"}
 
 
 @respx.mock
-async def test_set_skybox_tool_payload(monkeypatch):
+async def test_list_image_generators_tool(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    route = respx.post("http://world/set_skybox").mock(return_value=httpx.Response(200, json={"ok": True, "model": "x"}))
-    await _tool("set_skybox")(prompt="a forest")
-    assert json.loads(route.calls.last.request.content) == {"prompt": "a forest"}
+    respx.get("http://world/images/generators").mock(return_value=httpx.Response(200, json={
+        "ok": True, "generators": [{"name": "Gemini", "capabilities": {
+            "operations": ["generate", "edit", "outpaint", "skybox"], "edit_mode": "prompt",
+            "max_resolution": 4096, "aspect": "free", "transparency": False}}],
+        "defaults": {"generate": "Gemini"}}))
+    out = await _tool("list_image_generators")()
+    assert "Gemini" in out and "transparency=False" in out
 
 
 @respx.mock

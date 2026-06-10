@@ -33,6 +33,25 @@ async def _post_patch(ops: list[dict[str, Any]], origin: str = "director") -> di
         return resp.json()
 
 
+def _body(**kw) -> dict[str, Any]:
+    """Drop None-valued keys so optional params aren't sent."""
+    return {k: v for k, v in kw.items() if v is not None}
+
+
+async def _post(path: str, body: dict[str, Any], timeout: float = 150.0) -> dict:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(f"{BASE}{path}", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _get(path: str, timeout: float = 10.0) -> dict:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(f"{BASE}{path}")
+        resp.raise_for_status()
+        return resp.json()
+
+
 @mcp.tool()
 async def query_world() -> str:
     """Summarize the current world (entities + environment). Read this before editing."""
@@ -129,112 +148,196 @@ async def place_asset(
     )
 
 
+# --- Image procurement (produce/transform an image, get back an image_id) ----------------------
+# Procurement is decoupled from scene use: these make/transform an image and return an `image_id`
+# you then pass to place_image / set_skybox. The `generator` arg is OPTIONAL — omit it to use the
+# best default for the task (Gemini for most; OpenAI when you ask for transparency). Only name a
+# generator if the user asked for a specific one, or you need a capability the default lacks (call
+# list_image_generators if unsure what each supports).
+
+@mcp.tool()
+async def generate_image(
+    prompt: str,
+    aspect_ratio: Optional[str] = None,
+    transparent: bool = False,
+    generator: Optional[str] = None,
+) -> str:
+    """Generate a NEW image with AI and return its image_id (does NOT put it in the scene).
+
+    Use for art, paintings, posters, photos, signs — anything pictorial. Then call place_image with
+    the returned image_id to hang it. (For physical 3D objects use place_asset instead.)
+    prompt: a vivid description, e.g. 'an oil painting of a red dragon over a castle'.
+    aspect_ratio: e.g. '1:1', '16:9', '4:3' (the default generator supports any; some snap to fixed).
+    transparent: true for a cut-out with a transparent background (e.g. a sticker/decal); routes to a
+        generator that supports alpha.
+    generator: optional — see the note above; omit to use the default.
+    """
+    out = await _post("/images/generate", _body(
+        prompt=prompt, aspect_ratio=aspect_ratio, transparent=transparent, generator=generator))
+    if not out.get("ok"):
+        return f"Couldn't generate image: {out.get('error', 'unknown error')}."
+    return (f"Generated image_id={out['image_id']} ({out['provider']}, {out.get('w')}x{out.get('h')}). "
+            f"Call place_image with this image_id to hang it.")
+
+
+@mcp.tool()
+async def generate_skybox_image(prompt: str, generator: Optional[str] = None) -> str:
+    """Generate a 360° equirectangular panorama image and return its image_id (does NOT apply it).
+
+    Then call set_skybox with the returned image_id to wrap the scene. Use for the surrounding
+    environment, e.g. 'a calm sunset beach', 'deep space with colorful nebulae', 'a misty pine
+    forest at dawn'. generator: optional (omit to use the default).
+    """
+    out = await _post("/images/skybox", _body(prompt=prompt, generator=generator), timeout=200.0)
+    if not out.get("ok"):
+        return f"Couldn't generate skybox image: {out.get('error', 'unknown error')}."
+    return (f"Generated skybox image_id={out['image_id']} ({out['provider']}). "
+            f"Call set_skybox with this image_id to wrap the scene.")
+
+
+@mcp.tool()
+async def edit_image(
+    image_id: str,
+    prompt: str,
+    transparent: bool = False,
+    generator: Optional[str] = None,
+) -> str:
+    """Edit a procured image (by image_id) and return a NEW image_id (does NOT change the scene).
+
+    Use to derive a variant of an image you already have an id for. To change a picture already
+    hanging in the scene, prefer edit_scene_image (one step). generator/transparent: optional.
+    """
+    out = await _post("/images/edit", _body(
+        image_id=image_id, prompt=prompt, transparent=transparent, generator=generator))
+    if not out.get("ok"):
+        return f"Couldn't edit image: {out.get('error', 'unknown error')}."
+    return f"Edited → image_id={out['image_id']} ({out['provider']})."
+
+
+@mcp.tool()
+async def outpaint_image(
+    image_id: str,
+    aspect: Optional[str] = None,
+    prompt: Optional[str] = None,
+    generator: Optional[str] = None,
+) -> str:
+    """Extend (outpaint) a procured image to a wider frame and return a NEW image_id (no scene effect).
+
+    aspect: target frame like '16:9' (default) or '21:9'. To widen a picture already in the scene,
+    prefer widen_scene_image. generator: optional.
+    """
+    out = await _post("/images/outpaint", _body(
+        image_id=image_id, aspect=aspect, prompt=prompt, generator=generator))
+    if not out.get("ok"):
+        return f"Couldn't outpaint image: {out.get('error', 'unknown error')}."
+    return f"Outpainted → image_id={out['image_id']} ({out['provider']})."
+
+
+@mcp.tool()
+async def skybox_from_image(image_id: str, generator: Optional[str] = None) -> str:
+    """Turn a procured image (by image_id) into a 360° panorama and return a NEW image_id.
+
+    Then call set_skybox with the returned image_id. To turn a picture already in the scene into the
+    sky, prefer skybox_from_scene_image. generator: optional.
+    """
+    out = await _post("/images/skybox_from", _body(image_id=image_id, generator=generator), timeout=200.0)
+    if not out.get("ok"):
+        return f"Couldn't build a skybox image: {out.get('error', 'unknown error')}."
+    return (f"Built skybox image_id={out['image_id']} ({out['provider']}). "
+            f"Call set_skybox with this image_id.")
+
+
+@mcp.tool()
+async def list_image_generators() -> str:
+    """List the available image generators and what each can do (operations, edit mode, max
+    resolution, aspect support, transparency), plus the default chosen per task. Call this only if
+    unsure which generator a request needs — otherwise omit `generator` and trust the default."""
+    out = await _get("/images/generators")
+    if not out.get("ok") or not out.get("generators"):
+        return "No image generators are configured."
+    lines = []
+    for g in out["generators"]:
+        c = g["capabilities"]
+        lines.append(f"- {g['name']}: ops={','.join(c['operations'])}; edit={c['edit_mode']}; "
+                     f"max={c['max_resolution']}px; aspect={c['aspect']}; "
+                     f"transparency={c['transparency']}")
+    lines.append(f"defaults: {out.get('defaults', {})}")
+    return "\n".join(lines)
+
+
+# --- Scene use of images (reference a procured image_id) ----------------------------------------
+
 @mcp.tool()
 async def place_image(
-    prompt: str,
+    image_id: str,
     position: Optional[list[float]] = None,
     size_m: Optional[float] = None,
     name: Optional[str] = None,
 ) -> str:
-    """Generate an image with AI and hang it as a painting/poster facing the user.
-
-    Use for art, paintings, posters, photos, signs — anything pictorial. (For physical 3D
-    objects use place_asset instead.)
-    prompt: a vivid description of the image, e.g. 'an oil painting of a red dragon over a castle'.
-    position: [x, y, z] meters (default [0, 1.5, -3], eye height on the wall in front).
-    size_m: width/height of the framed image in meters (default 1.0).
-    name: explicit entity id; auto-generated if omitted.
-
-    A placeholder frame appears immediately; the generated image swaps in once ready.
+    """Hang a procured image (by image_id from generate_image/edit_image/...) as a painting facing
+    the user. position: [x, y, z] meters (default [0, 1.5, -3]). size_m: longest side in meters
+    (default 1.0; the plane keeps the image's aspect). name: pass an existing entity id to swap its
+    image in place; otherwise a new one is created.
     """
-    body: dict[str, Any] = {"prompt": prompt}
-    if position is not None:
-        body["position"] = position
-    if size_m is not None:
-        body["size_m"] = size_m
-    if name is not None:
-        body["name"] = name
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(f"{BASE}/place_image", json=body)
-        resp.raise_for_status()
-        result = resp.json()
-    if not result.get("ok"):
-        return f"Couldn't generate image: {result.get('error', 'unknown error')}."
-    return f"Generated and hung an image ({result.get('model', '?')}) as {result['id']}."
+    out = await _post("/place_image", _body(
+        image_id=image_id, position=position, size_m=size_m, name=name))
+    if not out.get("ok"):
+        return f"Couldn't place image: {out.get('error', 'unknown error')}."
+    return f"Hung image {out['image_id']} as {out['id']}."
 
 
 @mcp.tool()
-async def edit_image(id: str, prompt: str) -> str:
-    """Edit an existing in-world image (one placed by place_image) — conversational editing.
+async def set_skybox(image_id: str) -> str:
+    """Wrap the whole scene in a procured image (by image_id from generate_skybox_image /
+    skybox_from_image) as the surrounding sky/environment."""
+    out = await _post("/set_skybox", _body(image_id=image_id))
+    if not out.get("ok"):
+        return f"Couldn't set the skybox: {out.get('error', 'unknown error')}."
+    return "Wrapped the scene in that image as a 360° skybox."
 
-    Use for changes to a picture already in the scene, e.g. 'make the dragon blue', 'add a full
-    moon', 'make it nighttime', 'turn it into winter'. The edit happens in place. If you don't
-    know the image's id, call query_world first (images are listed as `image '<description>'`).
-    Only works on images, not 3D models or the skybox.
+
+# --- One-shot scene edits (act on an image already in the scene, by entity id) ------------------
+# Convenience over the procure→place flow for the common conversational case: these procure a new
+# image from the entity's current one and apply it in a single call.
+
+@mcp.tool()
+async def edit_scene_image(id: str, prompt: str) -> str:
+    """Edit an image ALREADY in the scene, in place — conversational editing.
+
+    Use for changes to a picture already hanging, e.g. 'make the dragon blue', 'add a full moon',
+    'make it nighttime'. id: the image entity id (find via query_world). One step (no image_id
+    needed). Only works on images, not 3D models or the skybox.
     """
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(f"{BASE}/edit_image", json={"id": id, "prompt": prompt})
-        resp.raise_for_status()
-        result = resp.json()
-    if not result.get("ok"):
-        return f"Couldn't edit {id!r}: {result.get('error', 'unknown error')}."
+    out = await _post("/edit_image", {"id": id, "prompt": prompt})
+    if not out.get("ok"):
+        return f"Couldn't edit {id!r}: {out.get('error', 'unknown error')}."
     return f"Updated the image {id}."
 
 
 @mcp.tool()
-async def outpaint_image(id: str, aspect: Optional[str] = None, prompt: Optional[str] = None) -> str:
-    """Extend (outpaint) an existing in-world image beyond its borders to a wider frame, in place.
+async def widen_scene_image(id: str, aspect: Optional[str] = None, prompt: Optional[str] = None) -> str:
+    """Extend (outpaint) an image ALREADY in the scene to a wider frame, in place.
 
-    Use to make a picture wider / reveal more of the scene, e.g. 'make the painting wider', 'show
-    more of the landscape'. Keeps the original and continues it outward.
-    id: the image entity id (find via query_world). aspect: target frame like '16:9' (default) or
-    '21:9'. prompt: optional guidance for what the extended area should contain.
+    Use for 'make the painting wider', 'show more of the landscape'. id: the image entity id (find
+    via query_world). aspect: '16:9' (default) or '21:9'. prompt: optional guidance for the new area.
     """
-    body: dict[str, Any] = {"id": id}
-    if aspect is not None:
-        body["aspect"] = aspect
-    if prompt is not None:
-        body["prompt"] = prompt
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(f"{BASE}/outpaint_image", json=body)
-        resp.raise_for_status()
-        result = resp.json()
-    if not result.get("ok"):
-        return f"Couldn't outpaint {id!r}: {result.get('error', 'unknown error')}."
+    out = await _post("/outpaint_image", _body(id=id, aspect=aspect, prompt=prompt))
+    if not out.get("ok"):
+        return f"Couldn't widen {id!r}: {out.get('error', 'unknown error')}."
     return f"Extended the image {id}."
 
 
 @mcp.tool()
-async def skybox_from_image(id: str) -> str:
-    """Turn an existing in-world image into the surrounding 360° sky (outpaint it into a skybox).
+async def skybox_from_scene_image(id: str) -> str:
+    """Turn an image ALREADY in the scene into the surrounding 360° sky.
 
-    Use for requests like 'make that painting the sky', 'put me inside that scene', 'extend this
-    photo into a skybox'. id: the image entity id (find via query_world).
+    Use for 'make that painting the sky', 'put me inside that scene'. id: the image entity id (find
+    via query_world).
     """
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        resp = await client.post(f"{BASE}/skybox_from_image", json={"id": id})
-        resp.raise_for_status()
-        result = resp.json()
-    if not result.get("ok"):
-        return f"Couldn't build a skybox from {id!r}: {result.get('error', 'unknown error')}."
+    out = await _post("/skybox_from_image", {"id": id}, timeout=200.0)
+    if not out.get("ok"):
+        return f"Couldn't build a skybox from {id!r}: {out.get('error', 'unknown error')}."
     return "Wrapped the scene in that image as a 360° skybox."
-
-
-@mcp.tool()
-async def set_skybox(prompt: str) -> str:
-    """Wrap the whole scene in a generated 360° environment (the sky all around the user).
-
-    prompt: the surroundings, e.g. 'a calm sunset beach', 'deep space with colorful nebulae',
-        'a misty pine forest at dawn', 'inside a grand marble cathedral'. Use this to set the
-        *environment*; use place_image for a flat framed picture.
-    """
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(f"{BASE}/set_skybox", json={"prompt": prompt})
-        resp.raise_for_status()
-        result = resp.json()
-    if not result.get("ok"):
-        return f"Couldn't set the skybox: {result.get('error', 'unknown error')}."
-    return f"Wrapped the scene in a generated skybox ({result.get('model', '?')})."
 
 
 @mcp.tool()
