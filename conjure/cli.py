@@ -164,7 +164,8 @@ def cmd_generators(s: Settings, a) -> None:
         return
     for g in out.get("generators", []):
         c = g["capabilities"]
-        print(f"{g['name']}: ops={','.join(c['operations'])}, edit={c['edit_mode']}, "
+        vendor = f" ({g['vendor']})" if g.get("vendor") else ""
+        print(f"{g['name']}{vendor}: ops={','.join(c['operations'])}, edit={c['edit_mode']}, "
               f"max={c['max_resolution']}px, aspect={c['aspect']}, transparency={c['transparency']}")
     print(f"defaults: {out.get('defaults', {})}")
 
