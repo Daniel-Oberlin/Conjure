@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .config import get_settings
-from .llm import build_image_generators, select_generator
+from .llm import build_image_generators, select_generator, vendor_for
 from .schema import Patch
 from .world import WorldStore
 
@@ -297,7 +297,7 @@ async def images_generators() -> dict:
         select_generator(image_generators, "generate", transparent=True)[0])
     return {
         "ok": True,
-        "generators": [{"name": n, "capabilities": g.capabilities.to_dict()}
+        "generators": [{"name": n, "vendor": vendor_for(n), "capabilities": g.capabilities.to_dict()}
                        for n, g in image_generators.items()],
         "defaults": defaults,
     }

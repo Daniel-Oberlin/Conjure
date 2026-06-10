@@ -413,9 +413,10 @@ class OpenAIImageGenerator:
 
 @dataclass(frozen=True)
 class RosterEntry:
-    """One vendor's wiring — THE place its casual name, key, models, and roles are defined."""
+    """One vendor's wiring — THE place its casual name, vendor, key, models, and roles are defined."""
 
     name: str                                    # casual name, used everywhere
+    vendor: str                                  # vendor alias ("openai") — also accepted in requests
     key_field: str                               # Settings attr holding the api key
     director: Optional[type]                     # director LLM class, or None
     director_model_field: Optional[str]
@@ -427,12 +428,17 @@ class RosterEntry:
 # Change a name/model/role here and it changes everywhere. Order matters: it sets default priority
 # and the tie-break for transparency selection.
 ROSTER: list[RosterEntry] = [
-    RosterEntry("Claude", "anthropic_api_key", ClaudeLLM, "llm_model", None, None, ()),
-    RosterEntry("Gemini", "google_api_key", GeminiLLM, "gemini_model",
+    RosterEntry("Claude", "anthropic", "anthropic_api_key", ClaudeLLM, "llm_model", None, None, ()),
+    RosterEntry("Gemini", "google", "google_api_key", GeminiLLM, "gemini_model",
                 GeminiImageGenerator, "image_model", ("generate", "edit", "outpaint", "skybox")),
-    RosterEntry("Chat", "openai_api_key", OpenAILLM, "openai_director_model",
+    RosterEntry("Chat", "openai", "openai_api_key", OpenAILLM, "openai_director_model",
                 OpenAIImageGenerator, "openai_image_model", ()),  # opt-in; default for transparency
 ]
+
+
+def vendor_for(name: str) -> Optional[str]:
+    """The vendor alias for a casual name (e.g. 'Chat' → 'openai'), for display + request matching."""
+    return next((e.vendor for e in ROSTER if e.name == name), None)
 
 
 def build_roster(settings: Settings) -> tuple[dict[str, LLM], str]:
@@ -468,12 +474,22 @@ def _supports(gen: ImageGenerator, op: str) -> bool:
     return op in caps.operations
 
 
+def _resolve_name(registry: dict[str, ImageGenerator], requested: str) -> Optional[str]:
+    """Match a request to a registry key by casual name OR vendor alias ('OpenAI' → 'Chat')."""
+    req = requested.strip().lower()
+    for e in ROSTER:
+        if e.name in registry and req in (e.name.lower(), e.vendor.lower()):
+            return e.name
+    return next((n for n in registry if n.lower() == req), None)  # custom registries (e.g. tests)
+
+
 def select_generator(registry: dict[str, ImageGenerator], op: str, *,
                      requested: Optional[str] = None,
                      transparent: bool = False) -> tuple[Optional[ImageGenerator], Optional[str]]:
     """Pick the image generator for `op` (mediation).
 
-    - `requested` (a casual name) is honored if present and capable, else a clear error explains why.
+    - `requested` (a casual name or vendor alias, e.g. "OpenAI") is honored if present and capable,
+      else a clear error explains why.
     - otherwise: transparency steers to the transparency-capable generator; else the generator whose
       `default_ops` includes `op` (per `ROSTER` order); else any capable one; else an error.
     Returns ``(generator, None)`` or ``(None, error_message)``."""
@@ -481,7 +497,7 @@ def select_generator(registry: dict[str, ImageGenerator], op: str, *,
         return _supports(g, op) and (g.capabilities.transparency if transparent else True)
 
     if requested is not None:
-        match = next((n for n in registry if n.lower() == requested.strip().lower()), None)
+        match = _resolve_name(registry, requested)
         if match is None:
             have = ", ".join(registry) or "none"
             return None, f"image generator {requested!r} is not configured (available: {have})"

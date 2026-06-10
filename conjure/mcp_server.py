@@ -258,10 +258,12 @@ async def list_image_generators() -> str:
     lines = []
     for g in out["generators"]:
         c = g["capabilities"]
-        lines.append(f"- {g['name']}: ops={','.join(c['operations'])}; edit={c['edit_mode']}; "
+        vendor = f" (vendor: {g['vendor']})" if g.get("vendor") else ""
+        lines.append(f"- {g['name']}{vendor}: ops={','.join(c['operations'])}; edit={c['edit_mode']}; "
                      f"max={c['max_resolution']}px; aspect={c['aspect']}; "
                      f"transparency={c['transparency']}")
     lines.append(f"defaults: {out.get('defaults', {})}")
+    lines.append("(You can pass a generator by its name or its vendor, e.g. 'Chat' or 'OpenAI'.)")
     return "\n".join(lines)
 
 

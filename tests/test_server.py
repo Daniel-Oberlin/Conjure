@@ -102,7 +102,15 @@ def test_set_skybox_takes_an_id(srv, client):
 def test_list_generators_reports_capabilities_and_defaults(srv, client):
     body = client.get("/images/generators").json()
     assert body["ok"] and [g["name"] for g in body["generators"]] == ["Gemini"]
+    assert body["generators"][0]["vendor"] == "google"   # vendor surfaced for the LLM
     assert body["defaults"]["skybox"] == "Gemini"
+
+
+def test_request_by_vendor_alias_routes(srv, client):
+    from conftest import FakeOpenAIImageGenerator
+    srv.image_generators = {"Gemini": srv.image_generators["Gemini"], "Chat": FakeOpenAIImageGenerator()}
+    body = client.post("/images/generate", json={"prompt": "x", "generator": "OpenAI"}).json()
+    assert body["ok"] and body["provider"] == "Chat"     # "OpenAI" → the Chat generator
 
 
 def test_mediation_rejects_incapable_requested_generator(srv, client):

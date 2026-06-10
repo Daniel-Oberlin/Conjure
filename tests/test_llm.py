@@ -293,6 +293,13 @@ def test_explicit_request_honored_when_capable():
     assert err is None and gen.name == "Chat"
 
 
+def test_request_accepts_vendor_alias():
+    # Users/LLMs say "OpenAI"/"Google", not the casual name — resolve those to the right generator.
+    reg = _registry(google_api_key="g", openai_api_key="o")
+    assert select_generator(reg, "generate", requested="OpenAI")[0].name == "Chat"
+    assert select_generator(reg, "edit", requested="google")[0].name == "Gemini"
+
+
 # --------------------------------------------------------------------------- OpenAI image gen (faked)
 
 async def test_openai_image_generate_decodes_b64(monkeypatch):
