@@ -69,6 +69,22 @@ def test_place_image_unknown_id_errors(srv, client):
     assert client.post("/place_image", json={"image_id": "nope.png"}).json()["ok"] is False
 
 
+def test_opaque_image_is_not_marked_transparent(srv, client):
+    eid = client.post("/place_image", json={"image_id": _procure(client)}).json()["id"]
+    mat = next(e for e in _entities(client) if e["id"] == eid)["components"]["material"]
+    assert mat["transparent"] is False
+
+
+def test_transparent_image_renders_with_transparency(srv, client):
+    from conftest import FakeOpenAIImageGenerator
+    srv.image_generators = {"Gemini": srv.image_generators["Gemini"], "Chat": FakeOpenAIImageGenerator()}
+    gen = client.post("/images/generate", json={"prompt": "a star", "transparent": True}).json()
+    assert gen["ok"]
+    eid = client.post("/place_image", json={"image_id": gen["image_id"]}).json()["id"]
+    mat = next(e for e in _entities(client) if e["id"] == eid)["components"]["material"]
+    assert mat["transparent"] is True   # alpha image → plane renders with transparency on
+
+
 def test_edit_image_updates_in_place(srv, client):
     eid = client.post("/place_image", json={"image_id": _procure(client)}).json()["id"]
     before = next(e for e in _entities(client) if e["id"] == eid)["components"]["material"]["src"]

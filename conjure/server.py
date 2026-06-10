@@ -63,6 +63,7 @@ class ImageRecord:
     model: str
     prompt: str
     op: str
+    transparent: bool = False  # has a real alpha channel → render the plane with transparency
 
 
 IMAGES: dict[str, ImageRecord] = {}
@@ -90,9 +91,9 @@ def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
     image_id = f"{hashlib.sha256(result.data).hexdigest()[:16]}{ext}"
     (ASSET_CACHE / image_id).write_bytes(result.data)
-    w, h = _img_dims(result.data)
-    rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h,
-                      provider=result.provider, model=result.model, prompt=prompt, op=op)
+    w, h, transparent = _img_meta(result.data)
+    rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h, provider=result.provider,
+                      model=result.model, prompt=prompt, op=op, transparent=transparent)
     IMAGES[image_id] = rec
     return rec
 
@@ -108,9 +109,9 @@ def _get_image(image_id: str):
     data = path.read_bytes()
     rec = IMAGES.get(image_id)
     if rec is None:
-        w, h = _img_dims(data)
+        w, h, transparent = _img_meta(data)
         rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h,
-                          provider="?", model="?", prompt="", op="?")
+                          provider="?", model="?", prompt="", op="?", transparent=transparent)
         IMAGES[image_id] = rec
     return rec, data, None
 
@@ -149,13 +150,19 @@ async def _procure(op: str, *, prompt: str, requested: Optional[str], transparen
             "provider": rec.provider, "model": rec.model, "op": op}
 
 
-def _img_dims(data: bytes) -> tuple[int, int]:
+def _img_meta(data: bytes) -> tuple[int, int, bool]:
+    """(width, height, has-real-alpha) for a stored image."""
     import io
 
     from PIL import Image
 
     with Image.open(io.BytesIO(data)) as im:
-        return im.size
+        w, h = im.size
+        if im.mode in ("RGBA", "LA"):
+            transparent = im.getchannel("A").getextrema()[0] < 255  # some pixel non-opaque
+        else:
+            transparent = "transparency" in im.info
+        return w, h, transparent
 
 
 _NO_STORE = {"Cache-Control": "no-store"}  # avoid stale client during active dev
@@ -192,9 +199,10 @@ class PlaceAssetRequest(BaseModel):
     name: Optional[str] = None
 
 
-@app.get("/assets/{filename}")
+@app.api_route("/assets/{filename}", methods=["GET", "HEAD"])
 async def asset(filename: str) -> FileResponse:
-    """Serve a cached asset (GLB model or generated image) from this server's content store."""
+    """Serve a cached asset (GLB model or generated image). Supports HEAD (some loaders probe with
+    it before GET — without this they get a noisy 405 then retry)."""
     if "/" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="bad filename")
     path = ASSET_CACHE / filename
@@ -428,17 +436,18 @@ async def place_image(req: PlaceImageRequest) -> dict:
     eid = req.name or f"ent_image_{uuid4().hex[:6]}"
     meta = {"generated": True, "provider": rec.provider, "model": rec.model,
             "prompt": rec.prompt, "image_id": rec.id}
+    # A transparent (alpha) image must render with transparency on, or three.js shows it opaque.
+    material = {"src": rec.url, "shader": "flat", "side": "double", "transparent": rec.transparent}
 
     existing = any(e["id"] == eid for e in store.doc["entities"])
     if existing:  # swap in place
         ops = [{"op": "update", "id": eid, "set": {
-            "components.material.src": rec.url, "components.geometry.width": width,
-            "components.geometry.height": height,
+            "components.material.src": rec.url, "components.material.transparent": rec.transparent,
+            "components.geometry.width": width, "components.geometry.height": height,
             "meta.image_id": rec.id, "meta.prompt": rec.prompt,
             "meta.provider": rec.provider, "meta.model": rec.model}}]
     else:
-        ops = [_image_plane(eid, pos, width, height,
-                            {"src": rec.url, "shader": "flat", "side": "double"}, meta)]
+        ops = [_image_plane(eid, pos, width, height, material, meta)]
     await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="image")})
     return {"ok": True, "id": eid, "image_id": rec.id}
 

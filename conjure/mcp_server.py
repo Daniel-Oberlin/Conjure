@@ -168,8 +168,9 @@ async def generate_image(
     the returned image_id to hang it. (For physical 3D objects use place_asset instead.)
     prompt: a vivid description, e.g. 'an oil painting of a red dragon over a castle'.
     aspect_ratio: e.g. '1:1', '16:9', '4:3' (the default generator supports any; some snap to fixed).
-    transparent: true for a cut-out with a transparent background (e.g. a sticker/decal); routes to a
-        generator that supports alpha.
+    transparent: set **true** whenever the user wants a transparent/clear background, a cut-out, a
+        sticker, a decal, or "no background" — you MUST set this flag, NOT just describe it in the
+        prompt. Routes to a generator that supports alpha.
     generator: optional — see the note above; omit to use the default.
     """
     out = await _post("/images/generate", _body(

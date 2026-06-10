@@ -17,8 +17,15 @@ def _png(color="red", size=(4, 4)) -> bytes:
     return buf.getvalue()
 
 
+def _png_rgba(color=(255, 0, 0, 0), size=(4, 4)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGBA", size, color).save(buf, "PNG")
+    return buf.getvalue()
+
+
 TINY_PNG = _png()
 WIDE_PNG = _png("blue", (8, 4))  # 2:1 — lets place_image's aspect handling be checked
+ALPHA_PNG = _png_rgba()          # has a real alpha channel (fully transparent)
 # Passes the GLB magic check; trimesh won't parse it (bbox → None), which is fine for these tests.
 FAKE_GLB = b"glTF" + bytes(40)
 
@@ -56,11 +63,13 @@ class FakeOpenAIImageGenerator:
 
     async def generate(self, prompt, *, aspect_ratio=None, image_size=None, model=None,
                        transparent=False) -> ImageResult:
-        return ImageResult(data=TINY_PNG, mime_type="image/png", provider=self.name, model=self.model)
+        data = ALPHA_PNG if transparent else TINY_PNG  # mirror real gpt-image-1 transparency
+        return ImageResult(data=data, mime_type="image/png", provider=self.name, model=self.model)
 
     async def edit(self, prompt, image, *, aspect_ratio=None, image_size=None, model=None,
                    transparent=False, mask=None) -> ImageResult:
-        return ImageResult(data=TINY_PNG, mime_type="image/png", provider=self.name, model=self.model)
+        data = ALPHA_PNG if transparent else TINY_PNG
+        return ImageResult(data=data, mime_type="image/png", provider=self.name, model=self.model)
 
 
 class FakeAssetResolver:
