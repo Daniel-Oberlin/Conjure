@@ -20,7 +20,7 @@ via `git config core.hooksPath scripts/git-hooks`; bypass once with `git push --
 | `test_server.py` | world-server endpoints w/ faked externals: normalization, image procurement (`/images/*`) vs scene use, place/edit/outpaint by id, mediation errors, route + WS-broadcast contracts |
 | `test_contracts.py` | Tier-2 SDK signature checks (PipeCat / google-genai / openai / mcp drift) |
 | `test_mcp.py` | MCP tool → server-endpoint payload contracts |
-| `test_live.py` | **Tier-3 canaries (opt-in)**: Poly Pizza search shape + real GLB download; Gemini generate + configured-models-exist |
+| `test_live.py` | **Tier-3 canaries (opt-in)**: Poly Pizza search + real GLB download; Gemini generate; OpenAI generate + transparency + "Chat" director turn; configured-models-exist (Gemini + OpenAI) |
 
 Fakes/fixtures are in `conftest.py` (`FakeImageGenerator`/`FakeOpenAIImageGenerator`,
 `FakeAssetResolver`, a temp asset cache, a clean world + image store). Strategy + the **"add tests as you build"** guide: [`../docs/testing.md`](../docs/testing.md).
