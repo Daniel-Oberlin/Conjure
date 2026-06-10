@@ -210,6 +210,14 @@ Grouped; signatures indicative. These are the director's action vocabulary (spec
 - **Entities:** `add_entity`, `update_entity`, `remove_entity`, `move/rotate/scale_entity`
 - **Environment:** `set_environment(sky|light|fog|time_of_day|ambient)`
 - **Assets:** `place_asset(query_or_ref, location)`, `generate_asset(kind, prompt)`
+- **Images — procurement decoupled from scene use (decision #13):** *procure* (return an opaque
+  image id) `generate_image`, `generate_skybox_image`, `edit_image(image_id)`,
+  `outpaint_image(image_id)`, `skybox_from_image(image_id)`, `list_image_generators`; *use in scene*
+  `place_image(image_id)`, `set_skybox(image_id)`; *one-shot in-scene edits* (entity-keyed, procure
+  +apply server-side) `edit_scene_image`, `widen_scene_image`, `skybox_from_scene_image`. Generators
+  declare `ImageCapabilities`; the world server mediates which one runs (best default per op, an
+  optional explicit `generator`, transparency→OpenAI), backed by an in-memory image store over the
+  content-addressed cache. Built in `conjure/llm.py` (the provider abstraction) + `conjure/server.py`.
 - **Behavior & geometry:** `attach_behavior(entity, spec)`, `remove_behavior`,
   `generate_mesh(spec)` (runs in sandbox, decision #10)
 - **Embodiment:** `spawn_vehicle(type, location)`, `set_avatar(spec)`, `occupy(entity, seat?)`,

@@ -81,10 +81,11 @@ friendly), CC-licensed, no end-user login. Needs a free developer token (`POLY_P
 Other CC sources (Quaternius/Kenney CC0 packs, Sketchfab-CC, Objaverse, Poly Haven for HDRIs) can
 be added later as additional content-source modules.
 
-**Image generation (Phase 4) — ✅ Google Gemini "Nano Banana"** (`gemini-2.5-flash-image`), behind
-a pluggable generator registry (`imagegen.py`) so OpenAI/FLUX/local SD plug in. Chosen for
-best-in-class editing + layout-aware outpainting (sets up the vision's skybox/panorama work).
-Needs billing on the Google AI Studio key. **Still open:** text/image→3D generation.
+**Image generation (Phase 4) — ✅ Google Gemini "Nano Banana"** (`gemini-2.5-flash-image`) +
+**OpenAI** (`gpt-image-1`), behind a capability-aware generator registry in the provider abstraction
+(`conjure/llm.py`) so FLUX/local SD plug in. Procurement is decoupled from scene use and selection is
+mediated by capability (decision #13). Gemini chosen as default for best-in-class editing + outpainting
+(sets up the vision's skybox/panorama work). Needs billing. **Still open:** text/image→3D generation.
 
 ### 5. Voice activation + audio capture topology — 🔶 CONSTRAINED by #9
 **Presence-aware activation:** the activation model scales with who's present.
@@ -223,3 +224,24 @@ car, tank, plane, hot-air balloon, boat. Each needs a motion model + control sch
 sandbox (#7); **diegetic vs abstract controls** (grab-the-yoke vs thumbstick); motion authority &
 sync in multi-user (spec §12). Lean: start with **parametric models + a registry**, add physics
 where it earns its keep; custom models ride the sandbox. Decide at the vehicles phase.
+
+### 13. Image procurement decoupled from scene use; capability-aware generators — ✅ RESOLVED
+**Choice (user directive):** Getting an image and using it in the scene are **separate concerns**.
+MCP **procurement** tools (`generate_image`, `generate_skybox_image`, `edit_image`, `outpaint_image`,
+`skybox_from_image`) produce/transform an image and return an opaque **image id**; **scene** tools
+(`place_image`, `set_skybox`) take an id. Image generation joins the **provider abstraction**
+(`conjure/llm.py`): each generator declares `ImageCapabilities`; the world server **mediates**
+selection — the LLM can `list_image_generators`, name one explicitly (clear error if incapable), or
+omit it for a hard-coded **best default per op** (Gemini for all; **transparency → OpenAI**).
+
+**Why:** Future image **sources** (web, filesystem) and **uses** (texturing an object) plug in without
+each re-implementing "how do I get an image." Capabilities differ materially (Gemini: prompt-edit,
+free aspect, 4K, outpaint/skybox; OpenAI: mask edit, fixed ≤1536, **transparency**), so exposing them
+lets the director and the mediator choose well.
+
+**Implications / nuances:**
+- **Hybrid edit surface:** keep one-shot, entity-keyed in-scene editors (`edit_scene_image`,
+  `widen_scene_image`, `skybox_from_scene_image`) for the common voice case — they procure+apply
+  server-side in a single director round-trip; the id-based procurement tools enable the general flow.
+- An in-memory **image store** (id → bytes/dims/provenance) over the content-addressed cache; entities
+  carry `meta.image_id`. Names/roles for the roster + generators live in **one place** (`ROSTER`).

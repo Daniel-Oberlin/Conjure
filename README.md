@@ -14,14 +14,15 @@ You stand in a holodeck (black void, 1 m white grid) and talk. The director can:
 
 - **Build** — primitives, and real CC-licensed **3D models** pulled from the web ([Poly Pizza]),
   auto-scaled to real-world size and placed on the floor; move / rotate / resize by voice.
-- **Create art** — **AI-generated** paintings, posters, and photos (Google Gemini), hung as framed
-  images — **edit them conversationally** in place ("make the dragon breathe fire") and
-  **outpaint** them wider.
+- **Create art** — **AI-generated** paintings, posters, and photos hung as framed images;
+  **edit them conversationally** in place ("make the dragon breathe fire") and **outpaint** them
+  wider. Image *procurement* is decoupled from *placement* — the director makes/fetches an image
+  (Gemini or OpenAI, picked by capability — e.g. transparency → OpenAI) and then hangs it.
 - **Set the scene** — generate a high-res 360° **skybox** that wraps the whole environment, or
   turn any in-world image into the surrounding sky.
-- **Talk to more than one AI** — a roster of named LLMs (Claude + Gemini) shares one attributed
-  conversation; switch mid-stream ("let me talk to Gemini") or hand off a single turn ("Gemini,
-  make a picture of a cat"), and each AI sees who said what.
+- **Talk to more than one AI** — a roster of named LLMs (Claude + Gemini + "Chat"/OpenAI) shares one
+  attributed conversation; switch mid-stream ("let me talk to Gemini") or hand off a single turn
+  ("Gemini, make a picture of a cat"), and each AI sees who said what.
 - **Feel real-time** — a brief spoken acknowledgement ("on it") the instant you ask.
 
 Everything is live: edits broadcast over a WebSocket to every connected headset. Models for
@@ -40,7 +41,7 @@ editing + skybox.
   spkr) │  (Claude) │        │ world + MCP  │             │              │   browser)
         └───────────┘        │ + assets/gen │
                              └──────┬───────┘
-                                    │  Poly Pizza (models) · Gemini (images) · local Whisper/Kokoro
+                                    │  Poly Pizza (models) · Gemini/OpenAI (images) · local Whisper/Kokoro
 ```
 
 - **World server** (`conjure/`, Python/FastAPI) owns one declarative world document, applies
@@ -81,11 +82,13 @@ wall", "wrap me in a misty forest", "make the painting nighttime".*
 | Key | For | Notes |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | director "Claude" | billing |
-| `GOOGLE_API_KEY` | director "Gemini" + `place_image` / `edit_image` / `set_skybox` | Gemini; billing |
+| `GOOGLE_API_KEY` | director "Gemini" + the default image generator | Gemini; billing |
+| `OPENAI_API_KEY` | director "Chat" + the OpenAI image generator (text/typography, transparency) | billing |
 | `POLY_PIZZA_API_KEY` | `place_asset` (3D models) | free, no billing |
 
-At least one of `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` is required for the director (set both to use
-the roster). Speech (Whisper STT, Kokoro TTS) runs **locally** — no keys. Full prerequisites + the doctor:
+At least one of `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` is required for the director
+(set more to grow the roster; `GOOGLE`/`OPENAI` also enable image generators). Speech (Whisper STT,
+Kokoro TTS) runs **locally** — no keys. Full prerequisites + the doctor:
 [docs/setup.md](./docs/setup.md). Provider options: [docs/providers.md](./docs/providers.md).
 
 > **Audio note:** use **earbuds**. On an open room mic+speaker the director's own TTS feeds back

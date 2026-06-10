@@ -40,10 +40,12 @@ with something you can actually experience on the Quest.
   scale and float; (2) tri-budget filtering when picking a result; (3) more CC sources as modules.
 
 ## Phase 4 — Generation 🔶 IMAGES DONE
-- **Image generation** via a pluggable generator registry (`imagegen.py`, decision #1). First
-  plugin: **Google Gemini "Nano Banana"** (chosen for editing + outpainting). `place_image` hangs
-  a generated picture as a textured plane. *Milestone: "paint a dragon and hang it on the wall"* —
-  **achieved**.
+- **Image generation** via a capability-aware generator registry in the provider abstraction
+  (`conjure/llm.py`, decisions #1, #13). **Procurement is decoupled from scene use** (✅): MCP
+  `generate_image`/etc. return an **image id**; `place_image`/`set_skybox` take an id. Generators —
+  **Gemini** (default) + **OpenAI** (`gpt-image-1`; transparency) — declare `ImageCapabilities`; the
+  world server mediates selection (best default per op, transparency→OpenAI, explicit override).
+  *Milestone: "paint a dragon and hang it on the wall"* — **achieved**.
 - **Skybox** via `set_skybox` — generate a 360° panorama (Gemini, 21:9) and wrap the scene in it
   (`<a-sky>`). *Working* (acceptable first pass; low-res/blocky + one seam, since a general image
   model isn't true seamless equirectangular).

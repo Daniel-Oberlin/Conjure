@@ -37,8 +37,11 @@ each LLM sees who said what.
 |---|---|---|
 | ✅ **Claude** (Anthropic) | cloud | Default director — strongest, most reliable **tool-calling** (it drives the MCP edits). |
 | ✅ **Google Gemini** | cloud | Built roster member (casual name "Gemini"); `CONJURE_GEMINI_MODEL`, default `gemini-2.5-flash`. |
-| 💡 OpenAI (GPT) | cloud | Roster member (e.g. casual name "Chat"). |
+| ✅ **OpenAI** | cloud | Built roster member (casual name "Chat"); `CONJURE_OPENAI_DIRECTOR_MODEL`, default `gpt-4.1`. Also an image generator (below). |
 | 💡 Groq | cloud | Very fast inference; good for snappy turns. |
+
+The roster (casual name → vendor/key/models/roles) lives in **one place**: the `ROSTER` table in
+`conjure/llm.py`. Add a row and it's instantly a director and/or image generator everywhere.
 | 💡 Local Ollama (Qwen / Llama w/ tool-calling) | local | Zero-key / offline director. Works, but tool-calling is less reliable — experimentation, not the robust default. |
 
 ### Text-to-speech (TTS)
@@ -64,12 +67,29 @@ each LLM sees who said what.
 
 ## Asset & media generation
 
-### Image generation (pluggable registry — `imagegen.py`)
-| Option | Hosting | Notes |
+### Image generation (capability-aware registry — `conjure/llm.py`)
+Image **procurement is decoupled from scene use** (arch §): MCP procurement tools (`generate_image`,
+`generate_skybox_image`, `edit_image`, `outpaint_image`, `skybox_from_image`) produce/transform an
+image and return an **image id**; scene tools (`place_image`, `set_skybox`) take that id. The world
+server **mediates** which generator services a request — the LLM can `list_image_generators`, may name
+one explicitly (clear error if it can't do the job), or omit it for the hard-coded best default.
+
+| Generator | Hosting | Notes |
 |---|---|---|
-| ✅ **Gemini "Nano Banana"** (`gemini-2.5-flash-image`) | cloud | Default; great at editing + outpainting; ~4¢/image (needs billing). |
-| 💡 OpenAI gpt-image-1 | cloud | Strong prompt adherence + text-in-image; ~15 lines to add as a generator. |
-| 💡 FLUX (fal/Replicate) · Stable Diffusion (local) | cloud/local | Plug in as further generators. |
+| ✅ **Gemini "Nano Banana"** (`gemini-2.5-flash-image`, `gemini-3-pro-image`) | cloud | Default for every op; the only one that can outpaint + make a 4K skybox. |
+| ✅ **OpenAI** (`gpt-image-1`, casual name "Chat") | cloud | Strong prompt adherence + text-in-image; **only one with transparency** (alpha cut-outs). Fixed sizes ≤1536. |
+| 💡 FLUX (fal/Replicate) · Stable Diffusion (local) | cloud/local | Plug in as further generators (add a `ROSTER` row + an `ImageGenerator`). |
+
+**Capabilities** (`ImageCapabilities`, queryable via `list_image_generators`):
+
+| | ops | edit mode | max res | aspect | transparency |
+|---|---|---|---|---|---|
+| Gemini | generate, edit, outpaint, skybox | prompt (conversational) | 4K | free | no |
+| OpenAI | generate, edit | mask / whole-image | 1536 | fixed | **yes** |
+
+**Defaults per op:** Gemini for generate/edit/outpaint/skybox; **transparency steers to OpenAI**. The
+LLM should omit the generator unless the user asked for a specific one or needs a capability the
+default lacks.
 
 ### Image processing — up-res & outpainting (spec §5)
 | Option | Hosting | Notes |

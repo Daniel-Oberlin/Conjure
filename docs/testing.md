@@ -53,8 +53,8 @@ No network, no API keys, no LLM, no torch. Seconds to run. **~90% of the value.*
   - `server.py` `_normalize`: scale-to-target-size + base-on-floor math, and the no-bbox fallback
     (the exact thing that silently mis-scaled models).
   - `schema.py`: patch-op discriminated union, World/Entity validate + round-trip.
-  - `imagegen.py`: provider registry selection; image-bytes extraction from a *fake* Gemini
-    response object (no API call).
+  - `llm.py` image side: capability-aware generator registry + `select_generator` mediation;
+    image-bytes extraction from *fake* Gemini/OpenAI response objects (no API call).
   - `assets.py` **validation logic**: given a fake HTTP response, assert it **rejects non-GLB /
     a 403 body**, accepts a valid GLB, handles empty search results, and self-heals a poisoned
     cache. *(This is the regression test for the bug we just fixed.)*
