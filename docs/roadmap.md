@@ -61,18 +61,24 @@ with something you can actually experience on the Quest.
 
 ## Phase 5 — Room model (AR / scene understanding) ⬅ NEXT
 - Bring the **real room** out of the Quest into the world model via WebXR (`plane-detection`,
-  `mesh-detection`, semantic labels, passthrough, anchors). **See your room** in `immersive-ar`
-  (the synthetic void/grid gives way to your real walls); **semantic surfaces**
-  (`wall`/`floor`/`table`/…) are available for **display** (floating text labels) and **interaction**
-  (mount generated images / objects onto real walls and furniture, anchored); **progressive mesh
-  refinement** runs in the **background on request**, climbing fidelity as you look around. Adds the
-  **client→server reverse channel** (today the WS is server→client only). Full design:
-  **[room-model.md](./room-model.md)**. *Milestone: "hang that dragon on my real wall," and "put a
-  fish tank on my actual coffee table."*
+  `mesh-detection`, semantic labels, passthrough, anchors), as **first-class editable geometry**.
+  Captured surfaces (`wall`/`floor`/`ceiling`/`table`/…) become **stylable entities** the director can
+  **show/hide, recolor, and texture** (e.g. "make the ceiling a galaxy"), available for **display**
+  (text labels) and **interaction** (mount images/objects, anchored). A full **immersion spectrum**
+  from two axes (passthrough × surface-visibility): **virtual room** ↔ **AR** ↔ **mixed** ↔ **hide the
+  room for the original unbounded VR**. The director is **room-aware** — new models land **inside the
+  boundary** — and can **author its own room** fit to the real footprint ("turn my room into a
+  cathedral"). **Progressive mesh refinement** runs in the **background on request**; the refined mesh
+  is edited the **same way** (by semantic surface) as the coarse boundaries. Adds the
+  **client→server reverse channel** (the WS is server→client only today). With multiple headsets,
+  **one is the room authority** (others share it). Full design: **[room-model.md](./room-model.md)**.
+  *Milestone: "hang that dragon on my real wall," "make my walls glass and the ceiling a galaxy,"
+  "drop into full VR."*
 - Realizes the VR+AR / passthrough / anchor-relative threads in spec §3 + vision; a textbook
   capability-tier extension (decision #11) — Quest gets room-aware while other devices fall back to
-  the synthetic holodeck. Persistent anchoring (worlds fixed to a physical room across sessions) is
-  designed-for here and built out with Phase 6 memory.
+  the synthetic holodeck. Multi-headset room sharing depends on **co-location** (spec §12) and
+  **persistent anchoring** (worlds fixed to a physical room across sessions) is designed-for here and
+  built out with Phase 6 memory.
 
 ## Phase 6 — Memory & connections
 - Persist worlds + versions; semantic recall ("the beach world"); portals between worlds.

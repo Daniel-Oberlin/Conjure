@@ -32,9 +32,11 @@ Implemented phases (see [roadmap](./docs/roadmap.md)): **0** world doc + patch p
 client · **1** world-editing MCP tools · **2** voice loop · **3** assets · **4** image generation +
 editing + skybox.
 
-**Next — Phase 5: room model (AR).** Bring your real room into the world via Quest passthrough +
-scene understanding: see your room, mount content on real walls/furniture by semantic label, and
-refine the room mesh progressively. Design: [docs/room-model.md](./docs/room-model.md).
+**Next — Phase 5: room model (AR).** Bring your real room into the world as editable geometry: see your
+room, restyle/texture its walls, mount content on real surfaces by semantic label, slide along a
+passthrough↔virtual immersion spectrum (or hide the room for full VR), have the director keep models
+inside the real bounds or author a room of its own, and refine the room mesh progressively. Design:
+[docs/room-model.md](./docs/room-model.md).
 
 ## How it fits together
 
