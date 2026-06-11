@@ -228,6 +228,13 @@ class OpenAILLM:
 
 # =================================================================== image generation
 
+# Bound a single image request so a stalled API call fails cleanly instead of hanging the server
+# forever (a 4K skybox is the slow case — generous, but finite). Kept below the MCP/CLI HTTP
+# timeouts so the SDK surfaces the error first.
+_IMAGE_TIMEOUT_S = 180
+_IMAGE_TIMEOUT_MS = _IMAGE_TIMEOUT_S * 1000
+
+
 @dataclass
 class ImageResult:
     data: bytes
@@ -303,7 +310,8 @@ class GeminiImageGenerator:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self._api_key)
+        client = genai.Client(api_key=self._api_key,
+                              http_options=types.HttpOptions(timeout=_IMAGE_TIMEOUT_MS))
         contents = [
             types.Part(inline_data=types.Blob(data=p, mime_type="image/png")) if isinstance(p, bytes) else p
             for p in parts
@@ -377,7 +385,7 @@ class OpenAIImageGenerator:
                        transparent=False) -> ImageResult:
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(api_key=self._api_key)
+        client = AsyncOpenAI(api_key=self._api_key, timeout=_IMAGE_TIMEOUT_S)
         eff = model or self.model
         kwargs: dict = {"model": eff, "prompt": prompt, "size": self._size_for(aspect_ratio)}
         if transparent:
@@ -389,7 +397,7 @@ class OpenAIImageGenerator:
                    transparent=False, mask=None) -> ImageResult:
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(api_key=self._api_key)
+        client = AsyncOpenAI(api_key=self._api_key, timeout=_IMAGE_TIMEOUT_S)
         eff = model or self.model
         kwargs: dict = {"model": eff, "prompt": prompt, "image": ("image.png", image, "image/png")}
         if aspect_ratio:

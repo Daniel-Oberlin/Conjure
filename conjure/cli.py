@@ -62,6 +62,11 @@ def _say(obj: dict, verbose: bool, fallback: str) -> None:
         print(fallback)
 
 
+def _working(msg: str) -> None:
+    """A one-line status to stderr so a slow image generation doesn't look like a freeze."""
+    print(msg, file=sys.stderr, flush=True)
+
+
 # --------------------------------------------------------------------------- direct commands
 
 def cmd_world(s: Settings, a) -> None:
@@ -134,6 +139,7 @@ def cmd_image(s: Settings, a) -> None:
         gen_body["transparent"] = True
     if a.generator:
         gen_body["generator"] = a.generator
+    _working("generating image…")
     procured = _post(s, "/images/generate", gen_body)
     if procured.get("ok") is False:
         _say(procured, a.verbose, "")
@@ -150,6 +156,7 @@ def cmd_skybox(s: Settings, a) -> None:
     gen_body = {"prompt": a.prompt}
     if a.generator:
         gen_body["generator"] = a.generator
+    _working("generating skybox (high-res — this can take a minute)…")
     procured = _post(s, "/images/skybox", gen_body)
     if procured.get("ok") is False:
         _say(procured, a.verbose, "")
@@ -171,6 +178,7 @@ def cmd_generators(s: Settings, a) -> None:
 
 
 def cmd_edit(s: Settings, a) -> None:
+    _working("editing image…")
     _say(_post(s, "/edit_image", {"id": a.id, "prompt": a.prompt}), a.verbose, f"edited {a.id}")
 
 
@@ -178,10 +186,12 @@ def cmd_outpaint(s: Settings, a) -> None:
     body = {"id": a.id}
     if a.aspect:
         body["aspect"] = a.aspect
+    _working("outpainting image…")
     _say(_post(s, "/outpaint_image", body), a.verbose, f"outpainted {a.id}")
 
 
 def cmd_skybox_from(s: Settings, a) -> None:
+    _working("building skybox from image (high-res — this can take a minute)…")
     _say(_post(s, "/skybox_from_image", {"id": a.id}), a.verbose, f"skybox from {a.id}")
 
 
