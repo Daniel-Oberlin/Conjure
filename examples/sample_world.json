@@ -14,32 +14,38 @@
       "components": {
         "geometry": { "primitive": "plane", "width": 20, "height": 20 },
         "material": { "color": "#000000" }
-      }
+      },
+      "meta": { "scaffold": true }
     },
     {
       "id": "floor-grid",
       "transform": { "position": [0, 0.01, 0], "rotation": [-90, 0, 0] },
-      "components": { "grid": { "width": 20, "height": 20, "cell": 1, "color": "#ffffff" } }
+      "components": { "grid": { "width": 20, "height": 20, "cell": 1, "color": "#ffffff" } },
+      "meta": { "scaffold": true }
     },
     {
       "id": "wall-back",
       "transform": { "position": [0, 2, -10] },
-      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } }
+      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } },
+      "meta": { "scaffold": true }
     },
     {
       "id": "wall-front",
       "transform": { "position": [0, 2, 10], "rotation": [0, 180, 0] },
-      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } }
+      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } },
+      "meta": { "scaffold": true }
     },
     {
       "id": "wall-left",
       "transform": { "position": [-10, 2, 0], "rotation": [0, 90, 0] },
-      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } }
+      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } },
+      "meta": { "scaffold": true }
     },
     {
       "id": "wall-right",
       "transform": { "position": [10, 2, 0], "rotation": [0, -90, 0] },
-      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } }
+      "components": { "grid": { "width": 20, "height": 4, "cell": 1, "color": "#ffffff" } },
+      "meta": { "scaffold": true }
     }
   ]
 }
