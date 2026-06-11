@@ -192,6 +192,96 @@ async def post_patch(patch: Patch) -> dict:
     return applied
 
 
+# --- Room model: the client→server reverse channel (a headset reports its real room) ------------
+# Captured surfaces become `real`-tagged stylable entities; `environment.room` holds the boundary,
+# active flag, and the single room **authority** (only that headset may report room geometry).
+# See docs/room-model.md.
+
+class RoomSurface(BaseModel):
+    id: str                                   # stable id from the headset, e.g. "real_wall_3"
+    semantic: str = "surface"                 # wall | floor | ceiling | table | …
+    position: list[float]
+    rotation: Optional[list[float]] = None
+    polygon: Optional[list[list[float]]] = None   # 2D outline in the surface plane
+    extent: Optional[list[float]] = None          # [w, h]
+    mesh_segment: Optional[str] = None            # segment id when backed by the refined mesh
+
+
+class RoomUpdate(BaseModel):
+    client_id: str                            # which headset is reporting
+    surfaces: list[RoomSurface] = []
+    boundary: Optional[dict] = None           # {floorPolygon: [[x,z]…], height: float}
+    replace: bool = True                      # replace the whole real-surface set vs merge
+
+
+def _surface_entity(s: RoomSurface) -> dict:
+    """A fresh `real` surface entity. Visibility/style are left to the renderer default
+    (environment.room.defaultSurfaceVisible) + later director edits, so re-capture never clobbers
+    a director's color/visibility (those go through update, below)."""
+    transform: dict = {"position": s.position}
+    if s.rotation is not None:
+        transform["rotation"] = s.rotation
+    surface: dict = {}
+    if s.polygon is not None:
+        surface["polygon"] = s.polygon
+    if s.extent is not None:
+        surface["extent"] = s.extent
+    meta = {"real": True, "semantic": s.semantic, "source": "headset"}
+    if s.mesh_segment is not None:
+        meta["meshSegment"] = s.mesh_segment
+    return {
+        "id": s.id,
+        "transform": transform,
+        "components": {"surface": surface,
+                       "material": {"shader": "flat", "color": "#888", "side": "double", "opacity": 1.0}},
+        "meta": meta,
+    }
+
+
+@app.post("/room")
+async def ingest_room(req: RoomUpdate) -> dict:
+    """Ingest captured room geometry from the room **authority** headset. Existing surfaces are
+    *updated* in place (preserving director style); new ones added; with replace=True, stale ones
+    removed. Sets environment.room (boundary, active, authority)."""
+    room = store.doc["environment"].get("room", {})
+    authority = room.get("authorityClientId")
+    if authority and authority != req.client_id:
+        return {"ok": False, "error": f"another headset ({authority}) is the room authority"}
+
+    existing = {e["id"]: e for e in store.doc["entities"] if e.get("meta", {}).get("real")}
+    new_ids = {s.id for s in req.surfaces}
+    ops: list[dict] = []
+
+    if req.replace:
+        ops += [{"op": "remove", "id": eid} for eid in existing if eid not in new_ids]
+
+    for s in req.surfaces:
+        if s.id in existing:  # update geometry/pose in place — keep the entity's material (style)
+            up: dict = {"transform.position": s.position, "meta.semantic": s.semantic}
+            if s.rotation is not None:
+                up["transform.rotation"] = s.rotation
+            if s.polygon is not None:
+                up["components.surface.polygon"] = s.polygon
+            if s.extent is not None:
+                up["components.surface.extent"] = s.extent
+            if s.mesh_segment is not None:
+                up["meta.meshSegment"] = s.mesh_segment
+            ops.append({"op": "update", "id": s.id, "set": up})
+        else:
+            ops.append({"op": "add", "entity": _surface_entity(s)})
+
+    env_set: dict = {"room.active": True, "room.authorityClientId": req.client_id}
+    if req.boundary is not None:
+        env_set["room.boundary"] = req.boundary
+    if "defaultSurfaceVisible" not in room:
+        env_set["room.defaultSurfaceVisible"] = False  # default: invisible references (AR-style)
+    ops.append({"op": "env", "set": env_set})
+
+    patch = store.apply_patch(ops, origin="room")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
+
+
 class PlaceAssetRequest(BaseModel):
     query: str
     position: Optional[list[float]] = None

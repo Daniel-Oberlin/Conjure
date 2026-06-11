@@ -84,6 +84,47 @@ async def test_edit_scene_image_tool_is_entity_keyed(monkeypatch):
 
 
 @respx.mock
+async def test_set_immersion_tool_payload(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
+    await _tool("set_immersion")(mode="ar")
+    body = json.loads(route.calls.last.request.content)
+    assert body["ops"][0] == {"op": "env", "set": {
+        "passthrough": True, "room.active": True, "room.defaultSurfaceVisible": False}}
+
+
+async def test_set_immersion_rejects_unknown_mode(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    out = await _tool("set_immersion")(mode="bogus")
+    assert "Unknown mode" in out
+
+
+@respx.mock
+async def test_show_surface_updates_matching_surfaces(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={"entities": [
+        {"id": "real_wall_1", "meta": {"real": True, "semantic": "wall"}},
+        {"id": "real_wall_2", "meta": {"real": True, "semantic": "wall"}},
+        {"id": "cube", "meta": {}}]}))
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 2}))
+    await _tool("show_surface")(target="wall", visible=True)
+    ops = json.loads(route.calls.last.request.content)["ops"]
+    assert {o["id"] for o in ops} == {"real_wall_1", "real_wall_2"}      # both walls, not the cube
+    assert all(o["set"] == {"components.material.visible": True} for o in ops)
+
+
+@respx.mock
+async def test_query_room_summarizes(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
+        "entities": [{"id": "real_floor", "meta": {"real": True, "semantic": "floor"},
+                      "components": {"material": {}}, "transform": {"position": [0, 0, 0]}}],
+        "environment": {"passthrough": True, "room": {"active": True, "boundary": {"height": 2.6}}}}))
+    out = await _tool("query_room")()
+    assert "floor" in out and "2.6" in out
+
+
+@respx.mock
 async def test_list_image_generators_tool(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     respx.get("http://world/images/generators").mock(return_value=httpx.Response(200, json={

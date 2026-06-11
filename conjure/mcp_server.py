@@ -66,7 +66,9 @@ async def query_world() -> str:
         comps = e.get("components", {})
         meta = e.get("meta", {})
         pos = e.get("transform", {}).get("position")
-        if "gltf-model" in comps:
+        if meta.get("real"):
+            desc = f"REAL {meta.get('semantic', 'surface')} (room surface — restyle/hide/mount, don't move)"
+        elif "gltf-model" in comps:
             desc = f"model {meta.get('title', '?')!r}"
         elif comps.get("material", {}).get("src"):
             desc = f"image {(meta.get('prompt') or meta.get('title') or '?')!r}"
@@ -77,6 +79,78 @@ async def query_world() -> str:
         lines.append(f"  - {e['id']}: {desc} at {pos}")
     lines.append(f"environment: {doc.get('environment', {})}")
     return "\n".join(lines)
+
+
+# --- Room model (AR / scene understanding) — see docs/room-model.md -----------------------------
+
+_IMMERSION = {
+    "virtual_room": {"passthrough": False, "room.active": True, "room.defaultSurfaceVisible": True},
+    "ar":           {"passthrough": True,  "room.active": True, "room.defaultSurfaceVisible": False},
+    "mixed":        {"passthrough": True,  "room.active": True},
+    "authored":     {"passthrough": False, "room.active": True, "room.defaultSurfaceVisible": False},
+    "vr_unbounded": {"passthrough": False, "room.active": False, "room.defaultSurfaceVisible": False},
+}
+
+
+@mcp.tool()
+async def query_room() -> str:
+    """Summarize the user's real room: surfaces (by semantic label) + the boundary. Read this before
+    placing things (so models land INSIDE the room, not through a wall) or to pick a surface to mount
+    on / restyle. Real surfaces also appear in query_world as REAL entities — restyle or hide them
+    with update_entity's color, or show_surface; don't move or remove them.
+    """
+    doc = await _get("/world")
+    env = doc.get("environment", {})
+    room = env.get("room", {})
+    reals = [e for e in doc["entities"] if e.get("meta", {}).get("real")]
+    if not room.get("active") or not reals:
+        return "No room model yet — the headset hasn't shared one (capture the room, or work in VR)."
+    lines = [f"Room: {len(reals)} surfaces · passthrough={env.get('passthrough', False)} · "
+             f"surfaces-visible-by-default={room.get('defaultSurfaceVisible', False)}"]
+    b = room.get("boundary")
+    if b:
+        lines.append(f"boundary: height {b.get('height')}m, floor polygon {b.get('floorPolygon')}")
+    for e in reals:
+        mat = e.get("components", {}).get("material", {})
+        vis = mat.get("visible", room.get("defaultSurfaceVisible", False))
+        lines.append(f"  - {e['id']}: {e.get('meta', {}).get('semantic', 'surface')} at "
+                     f"{e.get('transform', {}).get('position')} (visible={vis}, color={mat.get('color')})")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def set_immersion(mode: str) -> str:
+    """Set how much real room vs. virtual the user sees:
+    - virtual_room: passthrough off, the room's surfaces rendered (a virtual copy of the room).
+    - ar: passthrough on, real room visible, surfaces hidden (mount/occlude against them).
+    - mixed: passthrough on; then show_surface to reveal specific surfaces (e.g. a virtual ceiling).
+    - authored: passthrough off, captured room hidden — use after build_room to show a built room.
+    - vr_unbounded: ignore the room entirely; the original full synthetic VR space.
+    """
+    env = _IMMERSION.get(mode)
+    if env is None:
+        return f"Unknown mode {mode!r}. Use one of: {', '.join(_IMMERSION)}."
+    await _post_patch([{"op": "env", "set": dict(env)}])
+    return f"Immersion set to {mode}."
+
+
+@mcp.tool()
+async def show_surface(target: str, visible: bool = True) -> str:
+    """Show or hide real room surface(s) as virtual geometry. target: a surface id ('real_wall_1'),
+    a semantic label ('wall', 'ceiling', 'floor', …), or 'all'. Use to build mixed real+virtual
+    views (e.g. show only the ceiling)."""
+    doc = await _get("/world")
+    reals = [e for e in doc["entities"] if e.get("meta", {}).get("real")]
+    if target.lower() == "all":
+        targets = reals
+    else:
+        targets = [e for e in reals
+                   if e["id"] == target or e.get("meta", {}).get("semantic") == target]
+    if not targets:
+        return f"No room surface matches {target!r} (try query_room)."
+    await _post_patch([{"op": "update", "id": e["id"], "set": {"components.material.visible": visible}}
+                       for e in targets])
+    return f"{'Showed' if visible else 'Hid'} {len(targets)} surface(s) matching {target!r}."
 
 
 @mcp.tool()

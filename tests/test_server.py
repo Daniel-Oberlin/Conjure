@@ -156,8 +156,54 @@ def test_expected_routes_exist(srv):
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
               "/outpaint_image", "/set_skybox", "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/edit",
-              "/images/outpaint", "/images/skybox_from"):
+              "/images/outpaint", "/images/skybox_from", "/room"):
         assert p in paths, f"missing route {p}"
+
+
+# --------------------------------------------------------------------------- room model
+
+def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
+    body = {"client_id": "h1",
+            "surfaces": [{"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2],
+                          "extent": [3, 2.4]}],
+            "boundary": {"floorPolygon": [[0, 0], [3, 0], [3, 3], [0, 3]], "height": 2.6}}
+    assert client.post("/room", json=body).json()["ok"] is True
+    e = next(e for e in _entities(client) if e["id"] == "real_wall_1")
+    assert e["meta"]["real"] is True and e["meta"]["semantic"] == "wall"
+    room = client.get("/world").json()["environment"]["room"]
+    assert room["active"] is True and room["authorityClientId"] == "h1"
+    assert room["boundary"]["height"] == 2.6
+
+
+def test_room_authority_rejects_other_headset(srv, client):
+    client.post("/room", json={"client_id": "h1", "surfaces": []})
+    r = client.post("/room", json={"client_id": "h2", "surfaces": []})
+    assert r.json()["ok"] is False and "authority" in r.json()["error"]
+
+
+def test_room_recapture_updates_pose_but_keeps_director_style(srv, client):
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2]}]})
+    # director colors + shows the wall
+    client.post("/patch", json={"ops": [{"op": "update", "id": "real_wall_1", "set": {
+        "components.material.color": "#0000ff", "components.material.visible": True}}]})
+    # re-capture with a refined pose
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.1, -2]}]})
+    e = next(e for e in _entities(client) if e["id"] == "real_wall_1")
+    assert e["transform"]["position"] == [0, 1.1, -2]              # geometry updated
+    assert e["components"]["material"]["color"] == "#0000ff"        # director's style preserved
+    assert e["components"]["material"]["visible"] is True
+
+
+def test_room_replace_removes_stale_surfaces(srv, client):
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "a", "semantic": "wall", "position": [0, 1, -2]},
+        {"id": "b", "semantic": "wall", "position": [1, 1, -2]}]})
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "a", "semantic": "wall", "position": [0, 1, -2]}]})
+    ids = {e["id"] for e in _entities(client)}
+    assert "a" in ids and "b" not in ids
 
 
 async def test_patch_is_broadcast_to_clients(srv):
