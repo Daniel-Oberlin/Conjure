@@ -17,5 +17,10 @@ dynamic behavior, and the ability to pull in generated or pre-existing web conte
 9. **[https-setup.md](./https-setup.md)** — go wireless: serve over HTTPS (cloudflared / Caddy / Tailscale).
 10. **[testing.md](./testing.md)** — automated testing strategy (proposal, for review).
 
+**Focused designs** (deep dives on a single area):
+- **[room-model.md](./room-model.md)** — the **next phase** (roadmap Phase 5): bringing the real room
+  (AR / scene understanding — passthrough, semantic surfaces, mountable real walls/furniture,
+  progressive mesh refinement) out of the Quest and into the world model.
+
 > For current project status / what works today, see the top-level [README](../README.md) — it's
 > the single source of truth for status, so these docs don't drift.

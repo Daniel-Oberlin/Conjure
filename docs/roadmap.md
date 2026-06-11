@@ -59,11 +59,26 @@ with something you can actually experience on the Quest.
   (2) editing the skybox itself; (3) non-square aspect ratios for `place_image`; (4) **text→3D
   generation** (Meshy/Tripo/…) as another `place_*` path; (5) generated audio.
 
-## Phase 5 — Memory & connections
+## Phase 5 — Room model (AR / scene understanding) ⬅ NEXT
+- Bring the **real room** out of the Quest into the world model via WebXR (`plane-detection`,
+  `mesh-detection`, semantic labels, passthrough, anchors). **See your room** in `immersive-ar`
+  (the synthetic void/grid gives way to your real walls); **semantic surfaces**
+  (`wall`/`floor`/`table`/…) are available for **display** (floating text labels) and **interaction**
+  (mount generated images / objects onto real walls and furniture, anchored); **progressive mesh
+  refinement** runs in the **background on request**, climbing fidelity as you look around. Adds the
+  **client→server reverse channel** (today the WS is server→client only). Full design:
+  **[room-model.md](./room-model.md)**. *Milestone: "hang that dragon on my real wall," and "put a
+  fish tank on my actual coffee table."*
+- Realizes the VR+AR / passthrough / anchor-relative threads in spec §3 + vision; a textbook
+  capability-tier extension (decision #11) — Quest gets room-aware while other devices fall back to
+  the synthetic holodeck. Persistent anchoring (worlds fixed to a physical room across sessions) is
+  designed-for here and built out with Phase 6 memory.
+
+## Phase 6 — Memory & connections
 - Persist worlds + versions; semantic recall ("the beach world"); portals between worlds.
   *Milestone: leave, come back tomorrow, reload it; walk through a door into another world.*
 
-## Phase 6 — Dynamic behavior & mesh generation
+## Phase 7 — Dynamic behavior & mesh generation
 - Event model + sandboxed behavior SDK; director authors behaviors. *Milestone: "when I
   clap, launch fireworks."*
 - Mesh generation rides on the same sandbox: procedural/parametric geometry first, dedicated
@@ -86,11 +101,7 @@ with something you can actually experience on the Quest.
 - **Interactive-fiction module:** Z-machine engine; director renders IF state as VR/AR scenes.
   *Milestone: play Zork by voice, with rooms built around you as you explore.*
 
-## AR mode (slots in with the capability layer)
-- `immersive-ar` passthrough alongside VR; place content into the real room. *Milestone:
-  "put a fish tank on my actual coffee table."*
-
-## Embodiment & vehicles (after the behavior sandbox exists, ~Phase 6+)
+## Embodiment & vehicles (after the behavior sandbox exists, ~Phase 7+)
 - Occupancy model (`occupy`/`exit`, seats) with the avatar as the default motion model.
 - Parametric motion-model registry: car, tank, plane, hot-air balloon — with comfort options
   (cockpit reference frame, vignette). Custom models ride the QuickJS sandbox (decisions.md #12,
