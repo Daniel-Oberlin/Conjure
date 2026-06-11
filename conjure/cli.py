@@ -206,9 +206,9 @@ async def _director(s: Settings, instructions, verbose: bool) -> None:
         multi = len(director.roster) > 1  # show who's speaking once there's more than one LLM
 
         async def on_text(text: str, *, final: bool, speaker: str) -> None:
-            # Quiet by default: print only the closing reply; show running narration with -v.
-            if verbose or final:
-                print(f"{speaker}: {text}" if multi else text)
+            # Print every reply chunk — including the upfront acknowledgement ("On it") the director
+            # emits before running the tools — so there's immediate feedback during slow work.
+            print(f"{speaker}: {text}" if multi else text)
 
         async def on_tool(name: str, args: dict) -> None:
             if verbose:
