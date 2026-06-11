@@ -2,12 +2,13 @@
 """Post a SYNTHETIC room to a running Conjure server — exercise the room model without a headset.
 
 Simulates what the Quest's WebXR capture would send (docs/room-model.md): four walls, a floor, a
-ceiling, and a table, plus the room boundary. Lets you see real surfaces render and drive the
-director's `set_immersion` / `show_surface` in a desktop browser.
+ceiling, and a table, plus the room boundary — **centered on the user** so it surrounds you (a real
+capture arrives relative to where you stand). Also flips to `virtual_room` immersion so the surfaces
+are visible on desktop. Then drive the director (`set_immersion` / `show_surface`).
 
 Usage:  python scripts/send_room.py
         CONJURE_URL=http://localhost:8080 python scripts/send_room.py
-Then, e.g.:  conjure-cli say "show my walls and make them blue"
+Then, e.g.:  conjure-cli say "make the walls glass and the ceiling a galaxy"
              conjure-cli say "drop into full VR"   (set_immersion vr_unbounded)
 """
 
@@ -15,31 +16,49 @@ import json
 import os
 import urllib.request
 
-URL = os.environ.get("CONJURE_URL", "http://localhost:8080") + "/room"
+BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
 
-# A 4m × 3m room, 2.6m tall, centered a couple meters in front of the user (faces -z).
-W, D, H = 4.0, 3.0, 2.6
+# Room centered on the user. The client's default rig stands at ~(0, 1.6, 4), so center the room
+# there (CX, CZ) and size it generously enough to enclose you. W = width (x), D = depth (z), H = height.
+CX, CZ = 0.0, 4.0
+W, D, H = 4.0, 5.0, 2.6
+x0, x1 = CX - W / 2, CX + W / 2
+z0, z1 = CZ - D / 2, CZ + D / 2
+
 ROOM = {
     "client_id": "synthetic",
-    "boundary": {"floorPolygon": [[-W / 2, -1], [W / 2, -1], [W / 2, -1 - D], [-W / 2, -1 - D]], "height": H},
+    "boundary": {"floorPolygon": [[x0, z0], [x1, z0], [x1, z1], [x0, z1]], "height": H},
     "surfaces": [
-        {"id": "real_floor", "semantic": "floor", "position": [0, 0, -1 - D / 2], "rotation": [-90, 0, 0], "extent": [W, D]},
-        {"id": "real_ceiling", "semantic": "ceiling", "position": [0, H, -1 - D / 2], "rotation": [90, 0, 0], "extent": [W, D]},
-        {"id": "real_wall_back", "semantic": "wall", "position": [0, H / 2, -1 - D], "extent": [W, H]},
-        {"id": "real_wall_left", "semantic": "wall", "position": [-W / 2, H / 2, -1 - D / 2], "rotation": [0, 90, 0], "extent": [D, H]},
-        {"id": "real_wall_right", "semantic": "wall", "position": [W / 2, H / 2, -1 - D / 2], "rotation": [0, -90, 0], "extent": [D, H]},
-        {"id": "real_table", "semantic": "table", "position": [0, 0.75, -2.2], "rotation": [-90, 0, 0], "extent": [1.2, 0.8]},
+        {"id": "real_floor",   "semantic": "floor",   "position": [CX, 0, CZ], "rotation": [-90, 0, 0], "extent": [W, D]},
+        {"id": "real_ceiling", "semantic": "ceiling", "position": [CX, H, CZ], "rotation": [-90, 0, 0], "extent": [W, D]},
+        {"id": "real_wall_front", "semantic": "wall", "position": [CX, H / 2, z0], "rotation": [0, 0, 0],   "extent": [W, H]},
+        {"id": "real_wall_back",  "semantic": "wall", "position": [CX, H / 2, z1], "rotation": [0, 0, 0],   "extent": [W, H]},
+        {"id": "real_wall_left",  "semantic": "wall", "position": [x0, H / 2, CZ], "rotation": [0, 90, 0],  "extent": [D, H]},
+        {"id": "real_wall_right", "semantic": "wall", "position": [x1, H / 2, CZ], "rotation": [0, 90, 0],  "extent": [D, H]},
+        {"id": "real_table", "semantic": "table", "position": [CX, 0.75, CZ - 1.5], "rotation": [-90, 0, 0], "extent": [1.2, 0.8]},
     ],
     "replace": True,
 }
 
+# Make the surfaces visible on desktop (no passthrough): virtual_room immersion.
+VISIBLE = {"ops": [{"op": "env", "set": {
+    "passthrough": False, "room.active": True, "room.defaultSurfaceVisible": True}}]}
+
+
+def _post(path: str, body: dict) -> str:
+    req = urllib.request.Request(
+        BASE + path, data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req) as resp:
+        return resp.read().decode()
+
 
 def main() -> int:
-    req = urllib.request.Request(
-        URL, data=json.dumps(ROOM).encode(), headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req) as resp:
-        print(resp.read().decode())
-    print("Posted a synthetic room. Try: conjure-cli say \"show me my room\" / \"make the walls glass\".")
+    print(_post("/room", ROOM))
+    _post("/patch", VISIBLE)   # show the surfaces (virtual_room mode)
+    print("Posted a synthetic room around you (virtual_room mode). Try:")
+    print('  conjure-cli say "make the walls glass and the ceiling a galaxy"')
+    print('  conjure-cli say "switch to AR" / "drop into full VR"')
     return 0
 
 
