@@ -28,6 +28,23 @@
     });
   }
 
+  // Outline for a room surface: a bright line loop around the plane's border, nudged a hair off the
+  // surface (local +z) so it doesn't z-fight the fill. Lets you see each surface's edges.
+  if (window.AFRAME && !AFRAME.components["surface-edges"]) {
+    AFRAME.registerComponent("surface-edges", {
+      schema: { width: { default: 1 }, height: { default: 1 }, color: { default: "#35e0ff" } },
+      update: function () {
+        var THREE = AFRAME.THREE, d = this.data, hw = d.width / 2, hh = d.height / 2, z = 0.003;
+        this.el.removeObject3D("edges");
+        var pts = [-hw, -hh, z, hw, -hh, z, hw, hh, z, -hw, hh, z, -hw, -hh, z];
+        var geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+        this.el.setObject3D("edges", new THREE.Line(geo, new THREE.LineBasicMaterial({ color: d.color })));
+      },
+      remove: function () { this.el.removeObject3D("edges"); },
+    });
+  }
+
   // ----------------------------------------------------------------- immersion / room state
   // Two axes (docs/room-model.md §5): passthrough (real room visible) × surface visibility.
   var roomState = { active: false, passthrough: false, defaultVisible: false };
@@ -74,10 +91,12 @@
   function applySurface(el, comps) {
     var s = comps.surface || {};
     var ext = s.extent || [1, 1];
-    el.setAttribute("geometry", { primitive: "plane", width: (+ext[0] || 1), height: (+ext[1] || 1) });
+    var w = (+ext[0] || 1), h = (+ext[1] || 1);
+    el.setAttribute("geometry", { primitive: "plane", width: w, height: h });
     var mat = Object.assign({ shader: "flat", side: "double" }, comps.material || {});
     if ("visible" in mat) { el.dataset.matVisible = String(mat.visible); delete mat.visible; }
     el.setAttribute("material", mat);
+    el.setAttribute("surface-edges", { width: w, height: h });   // outline the surface border
   }
 
   // Inflate (or update) one entity: transform + components map onto A-Frame.
@@ -138,8 +157,10 @@
       return;
     }
     if (path === "components.surface.extent") {         // re-capture resized a surface
-      el.setAttribute("geometry", "width", (+value[0] || 1));
-      el.setAttribute("geometry", "height", (+value[1] || 1));
+      var sw = (+value[0] || 1), sh = (+value[1] || 1);
+      el.setAttribute("geometry", "width", sw);
+      el.setAttribute("geometry", "height", sh);
+      el.setAttribute("surface-edges", { width: sw, height: sh });
       return;
     }
     var parts = path.split(".");
