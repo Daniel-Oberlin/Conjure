@@ -111,9 +111,10 @@ async def query_room() -> str:
     if b:
         lines.append(f"boundary: height {b.get('height')}m, floor polygon {b.get('floorPolygon')}")
     for e in reals:
+        m = e.get("meta", {})
         mat = e.get("components", {}).get("material", {})
         vis = mat.get("visible", room.get("defaultSurfaceVisible", False))
-        lines.append(f"  - {e['id']}: {e.get('meta', {}).get('semantic', 'surface')} at "
+        lines.append(f"  - {m.get('semantic', 'surface')} #{m.get('friendly_id', '?')} ({e['id']}) at "
                      f"{e.get('transform', {}).get('position')} (visible={vis}, color={mat.get('color')})")
     return "\n".join(lines)
 
@@ -163,11 +164,10 @@ async def show_surface(target: str, visible: bool = True) -> str:
     views (e.g. show only the ceiling)."""
     doc = await _get("/world")
     reals = [e for e in doc["entities"] if e.get("meta", {}).get("real")]
-    if target.lower() == "all":
-        targets = reals
-    else:
-        targets = [e for e in reals
-                   if e["id"] == target or e.get("meta", {}).get("semantic") == target]
+    t = target.lower()
+    targets = [e for e in reals
+               if t == "all" or e["id"] == target or e.get("meta", {}).get("semantic") == t
+               or str(e.get("meta", {}).get("friendly_id")) == target]
     if not targets:
         return f"No room surface matches {target!r} (try query_room)."
     await _post_patch([{"op": "update", "id": e["id"], "set": {"components.material.visible": visible}}
@@ -206,12 +206,13 @@ async def style_surface(target: str, color: Optional[str] = None, opacity: Optio
 
 
 @mcp.tool()
-async def show_annotations(on: bool = True) -> str:
-    """Show or hide text labels floating on each room surface — each shows its name + id + size, so
-    the user can see what a surface is and reference it (e.g. 'make real_wall_3 blue'). Turn on when
-    the user wants to inspect/identify surfaces."""
-    await _post_patch([{"op": "env", "set": {"room.annotations": on}}])
-    return f"Surface annotations {'on' if on else 'off'}."
+async def show_annotations(on: bool = True, dimensions: bool = False) -> str:
+    """Show or hide text labels floating on each room surface — each shows its name + short id (e.g.
+    'window (12)'), which the user can reference (e.g. 'make 12 blue'). Turn on when the user wants to
+    inspect/identify surfaces. dimensions: also show each surface's size (default off; turn on only if
+    the user asks for sizes)."""
+    await _post_patch([{"op": "env", "set": {"room.annotations": on, "room.annotationDims": dimensions}}])
+    return f"Surface annotations {'on' if on else 'off'}{' with dimensions' if (on and dimensions) else ''}."
 
 
 @mcp.tool()

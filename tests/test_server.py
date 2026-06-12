@@ -171,9 +171,19 @@ def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
     assert client.post("/room", json=body).json()["ok"] is True
     e = next(e for e in _entities(client) if e["id"] == "real_wall_1")
     assert e["meta"]["real"] is True and e["meta"]["semantic"] == "wall"
+    assert e["meta"]["friendly_id"] == 1                  # short id for annotations/voice reference
     room = client.get("/world").json()["environment"]["room"]
     assert room["active"] is True and room["authorityClientId"] == "h1"
     assert room["boundary"]["height"] == 2.6
+
+
+def test_texture_surface_resolves_by_friendly_id(srv, client):
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_floor_x", "semantic": "floor", "position": [0, 0, 0], "extent": [3, 3]}]})
+    fid = next(e for e in _entities(client) if e["id"] == "real_floor_x")["meta"]["friendly_id"]
+    image_id = _procure(client)
+    r = client.post("/texture_surface", json={"target": str(fid), "image_id": image_id})
+    assert r.json()["ok"] is True and r.json()["count"] == 1
 
 
 def test_reset_clears_world_to_starter(srv, client):

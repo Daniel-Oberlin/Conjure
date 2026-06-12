@@ -71,6 +71,10 @@ class ImageRecord:
 
 IMAGES: dict[str, ImageRecord] = {}
 
+# Short, human-friendly per-surface id shown on annotation labels + usable as a director target
+# (e.g. "make 12 blue"). Sequential; persists on re-capture (update keeps meta.friendly_id).
+_FRIENDLY_NEXT = 1
+
 app = FastAPI(title="Conjure", version="0.0.1")
 
 
@@ -253,7 +257,9 @@ def _surface_entity(s: RoomSurface) -> dict:
         surface["polygon"] = s.polygon
     if s.extent is not None:
         surface["extent"] = s.extent
-    meta = {"real": True, "semantic": s.semantic, "source": "headset"}
+    global _FRIENDLY_NEXT
+    meta = {"real": True, "semantic": s.semantic, "source": "headset", "friendly_id": _FRIENDLY_NEXT}
+    _FRIENDLY_NEXT += 1
     if s.mesh_segment is not None:
         meta["meshSegment"] = s.mesh_segment
     if s.debug is not None:
@@ -332,10 +338,7 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
     rec, _, err = _get_image(req.image_id)
     if err:
         return {"ok": False, "error": err}
-    t = req.target.lower()
-    targets = [e for e in store.doc["entities"]
-               if e.get("meta", {}).get("real")
-               and (t == "all" or e["id"] == req.target or e.get("meta", {}).get("semantic") == t)]
+    targets = _room_targets(req.target)
     if not targets:
         return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_room)"}
     mat = {"components.material.src": rec.url, "components.material.shader": "flat",
@@ -350,10 +353,17 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
 
 
 def _room_targets(target: str) -> list[dict]:
+    """Real surfaces matching `target`: a surface id, semantic label, friendly id (e.g. '12'), or 'all'."""
     t = target.lower()
-    return [e for e in store.doc["entities"]
-            if e.get("meta", {}).get("real")
-            and (t == "all" or e["id"] == target or e.get("meta", {}).get("semantic") == t)]
+    out = []
+    for e in store.doc["entities"]:
+        m = e.get("meta", {})
+        if not m.get("real"):
+            continue
+        if (t == "all" or e["id"] == target or m.get("semantic") == t
+                or str(m.get("friendly_id")) == target):
+            out.append(e)
+    return out
 
 
 class StyleSurfaceRequest(BaseModel):

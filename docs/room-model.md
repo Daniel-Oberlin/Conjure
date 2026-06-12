@@ -144,8 +144,11 @@ Phase-7 mesh generator; boundary-extruded authored rooms are in scope now.
 
 ## 6. Semantic info — display, styling & interaction 🟢 intent / 🟡 surface
 
-**Display (text).** Each surface can render its label as a floating overlay (toggleable): "wall",
-"table", "window". From `meta.semantic`; also available for the director to *speak* the layout.
+**Display (text).** Each surface can render its label as a floating overlay (toggleable): "window
+(12)", "wall (3)" — its `meta.semantic` plus a short **friendly id** (`meta.friendly_id`, a small
+sequential number assigned on ingest) the user can read off and reference by voice ("make 12 blue").
+Dimensions are off by default; `show_annotations(on, dimensions=true)` adds each surface's size.
+From `meta.semantic`/`friendly_id`; also available for the director to *speak* the layout.
 
 **Styling.** Because surfaces are entities with a `material` component, the director restyles them with
 the **existing** edit vocabulary — color, opacity, **texture an image onto a wall** (`material.src` =

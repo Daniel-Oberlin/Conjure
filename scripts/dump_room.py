@@ -29,7 +29,8 @@ def main() -> int:
         rot = [round(x, 1) for x in t.get("rotation", [0, 0, 0])]
         ext = e.get("components", {}).get("surface", {}).get("extent")
         ext = [round(x, 2) for x in ext] if ext else ext
-        print(f"  {e['meta'].get('semantic', '?'):9} pos={pos}  rot={rot}  ext={ext}")
+        fid = e["meta"].get("friendly_id", "?")
+        print(f"  #{str(fid):3} {e['meta'].get('semantic', '?'):9} pos={pos}  rot={rot}  ext={ext}")
         dbg = e.get("meta", {}).get("debug")
         if dbg:
             q = [round(x, 3) for x in dbg.get("quat", [])]

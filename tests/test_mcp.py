@@ -154,18 +154,39 @@ async def test_show_annotations_tool_payload(monkeypatch):
     route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
     await _tool("show_annotations")(on=True)
     assert json.loads(route.calls.last.request.content)["ops"][0] == {
-        "op": "env", "set": {"room.annotations": True}}
+        "op": "env", "set": {"room.annotations": True, "room.annotationDims": False}}
+
+
+@respx.mock
+async def test_show_annotations_with_dimensions(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
+    await _tool("show_annotations")(on=True, dimensions=True)
+    assert json.loads(route.calls.last.request.content)["ops"][0] == {
+        "op": "env", "set": {"room.annotations": True, "room.annotationDims": True}}
+
+
+@respx.mock
+async def test_show_surface_matches_friendly_id(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={"entities": [
+        {"id": "real_wall_a", "meta": {"real": True, "semantic": "wall", "friendly_id": 12}},
+        {"id": "real_wall_b", "meta": {"real": True, "semantic": "wall", "friendly_id": 13}}]}))
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 2}))
+    await _tool("show_surface")(target="12", visible=False)
+    ops = json.loads(route.calls.last.request.content)["ops"]
+    assert {o["id"] for o in ops} == {"real_wall_a"}            # the friendly id picks one wall
 
 
 @respx.mock
 async def test_query_room_summarizes(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
-        "entities": [{"id": "real_floor", "meta": {"real": True, "semantic": "floor"},
+        "entities": [{"id": "real_floor", "meta": {"real": True, "semantic": "floor", "friendly_id": 7},
                       "components": {"material": {}}, "transform": {"position": [0, 0, 0]}}],
         "environment": {"passthrough": True, "room": {"active": True, "boundary": {"height": 2.6}}}}))
     out = await _tool("query_room")()
-    assert "floor" in out and "2.6" in out
+    assert "floor" in out and "2.6" in out and "#7" in out      # friendly id surfaced
 
 
 @respx.mock

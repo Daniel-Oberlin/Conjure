@@ -99,15 +99,17 @@
 
   // ----------------------------------------------------------------- immersion / room state
   // Two axes (docs/room-model.md §5): passthrough (real room visible) × surface visibility.
-  var roomState = { active: false, passthrough: false, defaultVisible: false, annotations: false };
+  var roomState = { active: false, passthrough: false, defaultVisible: false,
+                    annotations: false, annotationDims: false };
 
-  // A floating, camera-facing label on a surface: "<semantic> (<id>)" + dimensions. Toggled by
-  // environment.room.annotations so you can read each surface's metadata and reference its id.
+  // A floating, camera-facing label on a surface: "<semantic> (<friendly id>)", with dimensions only
+  // when room.annotationDims is on. Toggled by environment.room.annotations so you can read each
+  // surface's name and reference its short id (e.g. "window (12)" → "make 12 blue").
   function setSurfaceLabel(el, on) {
     var lbl = el.querySelector(".surface-label");
     if (!on) { if (lbl) el.removeChild(lbl); return; }
-    var text = (el.dataset.semantic || "surface") + " (" + el.id + ")"
-      + (el.dataset.ext ? "\n" + el.dataset.ext : "");
+    var text = (el.dataset.semantic || "surface") + " (" + (el.dataset.fid || el.id) + ")"
+      + (roomState.annotationDims && el.dataset.ext ? "\n" + el.dataset.ext : "");
     if (lbl) { lbl.setAttribute("text", "value", text); return; }
     // Just the text — camera-facing, double-sided, drawn on top (no background plate).
     lbl = document.createElement("a-entity");
@@ -192,6 +194,7 @@
     if (meta.real) {                       // a captured real surface — special render path
       el.dataset.real = "1";
       if (meta.semantic) el.dataset.semantic = meta.semantic;
+      if (meta.friendly_id != null) el.dataset.fid = meta.friendly_id;
       applySurface(el, comps);
       applyRealVisibility(el);
       setSurfaceLabel(el, roomState.annotations);
@@ -220,6 +223,7 @@
       if ("active" in env.room) roomState.active = !!env.room.active;
       if ("defaultSurfaceVisible" in env.room) roomState.defaultVisible = !!env.room.defaultSurfaceVisible;
       if ("annotations" in env.room) roomState.annotations = !!env.room.annotations;
+      if ("annotationDims" in env.room) roomState.annotationDims = !!env.room.annotationDims;
     }
     applyImmersion();
   }

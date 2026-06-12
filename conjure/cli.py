@@ -191,8 +191,9 @@ def cmd_style(s: Settings, a) -> None:
 
 def cmd_annotate(s: Settings, a) -> None:
     on = a.state != "off"
-    r = _post(s, "/patch", {"ops": [{"op": "env", "set": {"room.annotations": on}}]})
-    print(f"annotations {'on' if on else 'off'} (rev {r['rev']})")
+    r = _post(s, "/patch", {"ops": [{"op": "env", "set": {
+        "room.annotations": on, "room.annotationDims": bool(a.dims)}}]})
+    print(f"annotations {'on' if on else 'off'}{' +dims' if (on and a.dims) else ''} (rev {r['rev']})")
 
 
 def cmd_generators(s: Settings, a) -> None:
@@ -318,6 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("annotate", help="toggle surface metadata labels"); a.set_defaults(fn=cmd_annotate)
     a.add_argument("state", nargs="?", default="on", choices=["on", "off"])
+    a.add_argument("--dims", action="store_true", help="also show surface dimensions")
 
     sub.add_parser("generators", help="list image generators + capabilities").set_defaults(fn=cmd_generators)
 
