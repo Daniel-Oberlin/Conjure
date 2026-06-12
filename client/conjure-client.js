@@ -312,13 +312,45 @@
         this.clientId = "hs_" + Math.random().toString(36).slice(2, 8);
         this.lastPost = 0;
         this._resetSpace = null;
+        this._anchor = null;        // the single WebXR anchor that defines the persistent world frame
+        this._anchorReq = false;
+        this._anchorInv = null;     // inverse of the anchor's current pose (refSpace → anchor frame)
         var self = this;
         // A recenter (Meta button) / put-down fires a 'reset' on the reference space — re-capture
-        // immediately so the room snaps back into alignment with the new tracking origin.
+        // immediately. With the world anchor this is mostly cosmetic (anchor coords are stable), but
+        // it keeps things fresh.
         this._onReset = function () { self.lastPost = 0; };
       },
       // Force an immediate re-capture (manual realign — see the /room/realign signal below).
       recapture: function () { this.lastPost = 0; },
+      // Pin the world container (#world-root) to a real-world anchor so ALL content (room + models +
+      // images) stays put + consistent across a recenter. Stores the anchor→refSpace inverse so the
+      // capture can express planes in the (stable, persistent) anchor frame. Falls back to identity
+      // when anchors aren't available (desktop / no support) — i.e. today's behavior.
+      _updateWorldFrame: function (frame, refSpace) {
+        var THREE = AFRAME.THREE;
+        if (!this._anchor && !this._anchorReq && frame.createAnchor && window.XRRigidTransform) {
+          var self = this; this._anchorReq = true;
+          try {
+            frame.createAnchor(new XRRigidTransform(), refSpace).then(
+              function (a) { self._anchor = a; self._anchorReq = false; console.log("[conjure] world anchor created"); },
+              function () { self._anchorReq = false; });
+          } catch (e) { this._anchorReq = false; }
+        }
+        if (!this._anchor) { this._anchorInv = null; return; }
+        var pose;
+        try { pose = frame.getPose(this._anchor.anchorSpace, refSpace); } catch (e) { return; }
+        if (!pose) return;
+        var p = pose.transform.position, o = pose.transform.orientation;
+        var root = document.getElementById("world-root");
+        if (root) {
+          root.object3D.position.set(p.x, p.y, p.z);
+          root.object3D.quaternion.set(o.x, o.y, o.z, o.w);
+        }
+        this._anchorInv = new THREE.Matrix4().compose(
+          new THREE.Vector3(p.x, p.y, p.z), new THREE.Quaternion(o.x, o.y, o.z, o.w),
+          new THREE.Vector3(1, 1, 1)).invert();
+      },
       _euler: function (q) {
         // A captured plane lies in its local X-Z plane (normal +Y); our <a-plane> is X-Y (normal
         // +Z). Compose a -90° X rotation so the rendered plane aligns with the captured one, then
@@ -332,43 +364,50 @@
       },
       tick: function (time) {
         var sceneEl = this.el.sceneEl, frame = sceneEl.frame;
-        if (!frame || !frame.detectedPlanes) return;       // not an AR session with plane detection
-        if (time - this.lastPost < 2000) return;            // throttle to ~0.5 Hz
+        if (!frame) return;
         var refSpace = sceneEl.renderer.xr.getReferenceSpace();
         if (!refSpace) return;
         if (refSpace !== this._resetSpace) {                // (re)subscribe to recenter events
           this._resetSpace = refSpace;
           if (refSpace.addEventListener) refSpace.addEventListener("reset", this._onReset);
         }
+        this._updateWorldFrame(frame, refSpace);            // EVERY frame: pin content to the anchor
+        if (!frame.detectedPlanes) return;                  // capture needs plane detection
+        if (time - this.lastPost < 2000) return;            // throttle to ~0.5 Hz
+        var THREE = AFRAME.THREE, anchorInv = this._anchorInv;
         var self = this, surfaces = [], floor = null;
         frame.detectedPlanes.forEach(function (plane) {
           var pose;
           try { pose = frame.getPose(plane.planeSpace, refSpace); } catch (e) { return; }
           if (!pose) return;
           var label = plane.semanticLabel || (plane.orientation === "horizontal" ? "floor" : "wall");
-          // Stable id from semantic + position (decimeter grid), NOT the ephemeral plane object —
-          // so re-captures (boundary exit/re-entry recreate the plane objects) map to the SAME
-          // surface and the server updates it in place, preserving director edits like color.
-          var pp = pose.transform.position;
+          // Express the plane in the ANCHOR frame (multiply by the anchor's inverse) so its coords
+          // are stable + consistent with all other content. (Identity when no anchor — same as before.)
+          var rp = pose.transform.position, ro = pose.transform.orientation;
+          var planeMat = new THREE.Matrix4().compose(
+            new THREE.Vector3(rp.x, rp.y, rp.z), new THREE.Quaternion(ro.x, ro.y, ro.z, ro.w),
+            new THREE.Vector3(1, 1, 1));
+          var m = anchorInv ? anchorInv.clone().multiply(planeMat) : planeMat;
+          var lp = new THREE.Vector3(), lq = new THREE.Quaternion(), ls = new THREE.Vector3();
+          m.decompose(lp, lq, ls);
+          // Stable id from semantic + anchor-frame position (decimeter grid), NOT the ephemeral plane
+          // object — re-captures map to the SAME surface so the server updates it in place (keeping
+          // director edits like color).
           var gid = function (v) { return Math.round(v * 10); };
-          var sid = "real_" + label + "_" + gid(pp.x) + "_" + gid(pp.y) + "_" + gid(pp.z);
+          var sid = "real_" + label + "_" + gid(lp.x) + "_" + gid(lp.y) + "_" + gid(lp.z);
           var poly = plane.polygon || [];
-          var minx = 1e9, maxx = -1e9, minz = 1e9, maxz = -1e9;
+          var minx = 1e9, maxx = -1e9, minz = 1e9, maxz = -1e9, miny = 1e9, maxy = -1e9;
           poly.forEach(function (pt) {
             minx = Math.min(minx, pt.x); maxx = Math.max(maxx, pt.x);
             minz = Math.min(minz, pt.z); maxz = Math.max(maxz, pt.z);
+            miny = Math.min(miny, pt.y); maxy = Math.max(maxy, pt.y);
           });
           var w = poly.length ? (maxx - minx) : 1, h = poly.length ? (maxz - minz) : 1;
-          var p = pose.transform.position, o = pose.transform.orientation;
-          var miny = 1e9, maxy = -1e9;   // planes should be flat (y≈0); capture range as a sanity check
-          poly.forEach(function (pt) { miny = Math.min(miny, pt.y); maxy = Math.max(maxy, pt.y); });
-          var s = { id: sid, semantic: label, position: [p.x, p.y, p.z],
-                    rotation: self._euler(o), extent: [w, h],
-                    // raw, untransformed plane data — for diagnosing the pose→entity mapping
-                    debug: { pos: [p.x, p.y, p.z], quat: [o.x, o.y, o.z, o.w],
-                             orient: plane.orientation || null, label: plane.semanticLabel || null,
-                             polyY: [miny, maxy], n: poly.length } };
-          surfaces.push(s);
+          surfaces.push({ id: sid, semantic: label, position: [lp.x, lp.y, lp.z],
+            rotation: self._euler(lq), extent: [w, h],
+            debug: { pos: [rp.x, rp.y, rp.z], quat: [ro.x, ro.y, ro.z, ro.w],
+                     orient: plane.orientation || null, label: plane.semanticLabel || null,
+                     polyY: [miny, maxy], n: poly.length, anchored: !!anchorInv } });
           if (label === "floor" && (!floor || w * h > floor._area)) {
             floor = { floorPolygon: poly.map(function (pt) { return [pt.x, pt.z]; }), height: 2.6, _area: w * h };
           }

@@ -195,6 +195,28 @@ shared object every client reads.
   **depend on co-location** (spec §12, the multi-user co-location milestone, decision #11 extension).
   Single-headset is the baseline; the authority concept is designed in now so multi-user drops in later.
 
+## 8a. Anchored world frame — consistency + persistence 🟢 within-session / 🟡 cross-session
+
+**The problem.** Everything is stored relative to the WebXR **reference space**, whose origin a
+recenter (Meta button) / long put-down moves. Re-capturing the room at the new origin keeps the room
+aligned but leaves *placed* content (models/images) at old coordinates → the world shears apart. All
+content must stay consistent **relative to each other and the real world**.
+
+**The fix (implemented, within-session).** One **WebXR anchor** defines the persistent world origin.
+`#world-root` (the container every entity lives under) is positioned at the anchor's pose **every
+frame**; all content is stored in **anchor-relative** coordinates. On a recenter only the container
+moves (the anchor tracks reality), so the whole world — room, models, images — stays put and mutually
+consistent. The room capture multiplies plane poses by the anchor's inverse, so captured coords are in
+the same frame and are **stable across recenters** (no more re-capture churn or lost edits). Falls back
+to identity (today's behavior) when anchors aren't available (desktop / no support). Client-only —
+the world model is frame-agnostic. (`room-capture._updateWorldFrame` in `client/conjure-client.js`.)
+
+**Cross-session persistence (next).** Persist the anchor handle
+(`anchor.requestPersistentHandle()` → store the UUID) and restore it next session
+(`session.restorePersistentAnchors`/`restorePersistentAnchor`), re-localizing the saved world onto the
+same physical anchor. With content already anchor-relative, the world reloads fixed to the real room
+(vision's "persistent rooms"; spec §3). Pairs with Phase 6 memory (where the world doc is persisted).
+
 ## 9. MCP / director surface 🟡
 
 Coarse/intent-level tools (architecture §8). Real surfaces also appear in `query_world` as
