@@ -18,8 +18,11 @@
       <!-- Everything the world server sends lands under here. -->
       <a-entity id="world-root"></a-entity>
 
-      <a-entity id="rig" position="0 1.6 4">
-        <a-camera></a-camera>
+      <!-- Rig at floor level (y=0): in the headset WebXR adds your real head height, so the eye
+           height belongs on the camera (used on desktop; overridden by the headset pose in VR).
+           Putting 1.6 on the rig double-counts height in VR and floats you above a real-scale room. -->
+      <a-entity id="rig" position="0 0 4">
+        <a-camera position="0 1.6 0"></a-camera>
       </a-entity>
     </a-scene>
 
