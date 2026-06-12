@@ -279,5 +279,30 @@
     });
   }
 
-  window.addEventListener("load", connect);
+  // A-Frame 1.4–1.6 has a bug where the "Enter AR" button doesn't render on the Quest browser
+  // (aframevr/aframe#5533), so only "VR" shows. Add our own button that calls A-Frame's AR entry
+  // directly — sceneEl.enterVR(true) (the `true` requests immersive-ar) — which still passes the
+  // plane/mesh/depth optionalFeatures from the <a-scene webxr=...> config.
+  function setupARButton() {
+    if (!navigator.xr || !navigator.xr.isSessionSupported) return;
+    navigator.xr.isSessionSupported("immersive-ar").then(function (supported) {
+      if (!supported) return;
+      var scene = document.querySelector("a-scene");
+      var btn = document.createElement("button");
+      btn.textContent = "ENTER AR";
+      btn.style.cssText =
+        "position:fixed;bottom:20px;left:20px;z-index:99999;padding:12px 22px;" +
+        "font:bold 14px sans-serif;color:#fff;background:#1a8cff;border:none;" +
+        "border-radius:8px;cursor:pointer;opacity:0.9;";
+      btn.addEventListener("click", function () {
+        if (scene && scene.enterVR) scene.enterVR(true);   // useAR = true → immersive-ar
+      });
+      document.body.appendChild(btn);
+      // Tidy up: hide our button while in a session, restore on exit.
+      scene.addEventListener("enter-vr", function () { btn.style.display = "none"; });
+      scene.addEventListener("exit-vr", function () { btn.style.display = ""; });
+    }).catch(function () {});
+  }
+
+  window.addEventListener("load", function () { connect(); setupARButton(); });
 })();
