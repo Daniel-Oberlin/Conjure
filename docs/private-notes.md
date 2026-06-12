@@ -2,9 +2,13 @@
 
 ## AR
 
-- Replace holodeck walls with actual walls from the device
+- Windows, art, doors are fighting with the wall planes.  We need to handle them gracefully.
+ - Snap the doors and windows to the walls that they are almost a part of, for a door, embed it as an opening and make it transparent.  Windows are not transparent by default. Hide the additional lines from subdividing by default (we can show them later).
+ - Wall art should be pushed away from the wall by a centimeter so that it doesn't fight with the wall.
+ - We will do similar things with meshes in the future (hide show the internal lines of the polygons), so account for this in the design.
+- Make a bounding box around the outside of the rooms so that there is no leakage from the real world.  This can be hidden or colored separately.
 - Hide / show / decorate walls with images, etc.
-- Show compass somehow
+- Show compass somehow - place a compass on the ceiling above me - renders with lines, arrow towards north.
 
 ## Performance
 
