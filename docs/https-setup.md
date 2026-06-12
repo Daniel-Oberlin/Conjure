@@ -36,6 +36,21 @@ cloudflared tunnel --url http://localhost:8080
 It prints a URL like `https://random-words.trycloudflare.com`. Open **that** in the Quest browser
 (the Quest just needs internet — any network) and enter VR.
 
+### Tired of typing the long URL? Use `scripts/tunnel.sh` + `/tunnel`
+
+The quick-tunnel URL changes every run, which is tedious to retype on the Quest. Instead, run the
+tunnel via the helper, which publishes the current URL so the server can redirect to it:
+
+```bash
+./scripts/tunnel.sh          # runs cloudflared, prints a short LAN address to use
+```
+
+Then on the Quest (same Wi-Fi as the Mac) always open the **fixed, short** address it prints —
+`http://<your-mac-ip>:8080/tunnel` — and the server 307-redirects you to the current
+`trycloudflare.com` URL. Type it once; it never changes. (The redirect page is plain HTTP on your
+LAN; it bounces you to the HTTPS tunnel where WebXR actually runs.) `Ctrl+C` stops the tunnel and
+clears the published URL. The script writes it to `.cache/tunnel_url`, which the `/tunnel` route reads.
+
 - ⚠️ The URL is **public** while running (anyone with it can reach your server) and **changes every
   run**. Fine for solo testing; for a stable, access-controlled URL, set up a *named* tunnel +
   Cloudflare Access (more involved — see Cloudflare's docs).

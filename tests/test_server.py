@@ -156,7 +156,7 @@ def test_expected_routes_exist(srv):
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
               "/outpaint_image", "/set_skybox", "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/edit",
-              "/images/outpaint", "/images/skybox_from", "/room"):
+              "/images/outpaint", "/images/skybox_from", "/room", "/tunnel"):
         assert p in paths, f"missing route {p}"
 
 
@@ -173,6 +173,20 @@ def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
     room = client.get("/world").json()["environment"]["room"]
     assert room["active"] is True and room["authorityClientId"] == "h1"
     assert room["boundary"]["height"] == 2.6
+
+
+def test_tunnel_redirects_to_published_url(srv, client, tmp_path, monkeypatch):
+    f = tmp_path / "tunnel_url"
+    f.write_text("https://abc-def.trycloudflare.com\n")
+    monkeypatch.setattr(srv, "TUNNEL_FILE", f)
+    r = client.get("/tunnel", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "https://abc-def.trycloudflare.com"
+    assert r.headers.get("cache-control") == "no-store"
+
+
+def test_tunnel_404_when_none_running(srv, client, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "TUNNEL_FILE", tmp_path / "absent")
+    assert client.get("/tunnel", follow_redirects=False).status_code == 404
 
 
 def test_room_authority_rejects_other_headset(srv, client):

@@ -121,7 +121,8 @@ Quiet by default; add `-v` for tool calls and library logs. (`say`/REPL need `AN
 - **USB (quickest):** `adb reverse tcp:8080 tcp:8080`, then open `http://localhost:8080` in the
   Quest browser and enter VR. Full step-by-step: [docs/testing-on-quest.md](./docs/testing-on-quest.md).
 - **Wireless (HTTPS):** [docs/https-setup.md](./docs/https-setup.md) — cloudflared (fastest), Caddy
-  + Let's Encrypt, or Tailscale.
+  + Let's Encrypt, or Tailscale. Tip: `./scripts/tunnel.sh` runs cloudflared and lets you open a
+  fixed `http://<mac-ip>:8080/tunnel` on the Quest that redirects to the current tunnel URL.
 
 ## Layout
 
@@ -130,7 +131,8 @@ conjure/    world server (schema · world store · FastAPI app · MCP tools · d
             voice loop · CLI · assets pipeline · image-gen registry · config · doctor)
 client/     A-Frame WebXR client + live patch applier
 examples/   starter world + hand-authored example patches
-scripts/    setup.sh, send_patch.py, send_room.py (synthetic room), mcp_smoke.py, mic_check.py, vad_check.py
+scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
+            send_room.py (synthetic room), mcp_smoke.py, mic_check.py, vad_check.py
 tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`); a
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
 docs/       vision · spec · architecture · decisions · providers · roadmap · setup · testing/https guides

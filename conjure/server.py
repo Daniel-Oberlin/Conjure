@@ -19,7 +19,7 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -34,6 +34,9 @@ CLIENT_DIR = ROOT / "client"
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 ASSET_CACHE = ROOT / ".cache" / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
+# scripts/tunnel.sh writes the current cloudflared URL here; /tunnel redirects to it (a short, fixed
+# LAN address you can type on the Quest instead of the long random trycloudflare URL each session).
+TUNNEL_FILE = ROOT / ".cache" / "tunnel_url"
 MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
 
 settings = get_settings()  # loads .env
@@ -171,6 +174,18 @@ _NO_STORE = {"Cache-Control": "no-store"}  # avoid stale client during active de
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(CLIENT_DIR / "index.html", headers=_NO_STORE)
+
+
+@app.get("/tunnel")
+async def tunnel() -> RedirectResponse:
+    """Redirect to the current cloudflared tunnel URL (written by scripts/tunnel.sh). Lets you type a
+    short, fixed LAN address (http://<this-machine>:<port>/tunnel) on the Quest instead of the long
+    random trycloudflare URL that changes every session."""
+    url = TUNNEL_FILE.read_text().strip() if TUNNEL_FILE.exists() else ""
+    if not url:
+        raise HTTPException(status_code=404, detail="No tunnel running — start one with scripts/tunnel.sh")
+    # Temporary (the URL changes each run) + no-store so the browser never caches a stale tunnel.
+    return RedirectResponse(url, status_code=307, headers=_NO_STORE)
 
 
 @app.get("/static/conjure-client.js")
