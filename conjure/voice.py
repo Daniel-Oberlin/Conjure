@@ -29,6 +29,9 @@ import urllib.request
 from .config import Settings, get_settings
 from .director import Director
 
+# PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
+PIPELINE_IDLE_TIMEOUT_SECS = 3600  # 1 hour
+
 
 def _world_reachable(url: str) -> bool:
     try:
@@ -160,7 +163,10 @@ async def _run(settings: Settings) -> None:
         # would otherwise leak back, get transcribed, and feed back as user input. Use earbuds for
         # clean room use today; proper room-speaker support (echo cancellation / push-to-talk) is
         # a roadmap audio-polish item.
-        task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=False))
+        task = PipelineTask(pipeline, params=PipelineParams(
+            allow_interruptions=False,
+            idle_timeout_secs=PIPELINE_IDLE_TIMEOUT_SECS,
+        ))
         runner = PipelineRunner(handle_sigint=True)
 
         roster = ", ".join(director.roster) or "none"
