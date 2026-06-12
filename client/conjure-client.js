@@ -78,8 +78,7 @@
         if (!cam) return;
         this._t = this._t || new AFRAME.THREE.Vector3();
         cam.getWorldPosition(this._t);
-        this.el.object3D.lookAt(this._t);
-        this.el.object3D.rotateY(Math.PI);   // text faces +Z; flip so it faces the camera
+        this.el.object3D.lookAt(this._t);   // A-Frame text reads correctly after lookAt (no flip)
       },
     });
   }
