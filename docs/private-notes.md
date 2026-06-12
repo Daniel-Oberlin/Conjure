@@ -4,6 +4,7 @@
 
 - Replace holodeck walls with actual walls from the device
 - Hide / show / decorate walls with images, etc.
+- Show compass somehow
 
 ## Performance
 
@@ -25,6 +26,7 @@
 
 ## Host Modes
 
+- Headset
 - Drone (use drone controls)
 - Walker (movement bound to floor, maybe use second stick for view)
 - Fixed Camera
@@ -35,7 +37,9 @@
 - Keep store of created content, version controlled?
 - Water picture
 - Solar system animation
-
+- Live webcam video
+- Terminal shell with voice
+- X11 window
 
 ## CLI Client
 
