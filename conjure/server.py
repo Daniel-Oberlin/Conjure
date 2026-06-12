@@ -220,6 +220,7 @@ class RoomSurface(BaseModel):
     polygon: Optional[list[list[float]]] = None   # 2D outline in the surface plane
     extent: Optional[list[float]] = None          # [w, h]
     mesh_segment: Optional[str] = None            # segment id when backed by the refined mesh
+    debug: Optional[dict] = None                  # raw pose/label for diagnosis (stored in meta)
 
 
 class RoomUpdate(BaseModel):
@@ -244,6 +245,8 @@ def _surface_entity(s: RoomSurface) -> dict:
     meta = {"real": True, "semantic": s.semantic, "source": "headset"}
     if s.mesh_segment is not None:
         meta["meshSegment"] = s.mesh_segment
+    if s.debug is not None:
+        meta["debug"] = s.debug
     return {
         "id": s.id,
         "transform": transform,

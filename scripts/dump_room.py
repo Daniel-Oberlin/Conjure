@@ -30,6 +30,12 @@ def main() -> int:
         ext = e.get("components", {}).get("surface", {}).get("extent")
         ext = [round(x, 2) for x in ext] if ext else ext
         print(f"  {e['meta'].get('semantic', '?'):9} pos={pos}  rot={rot}  ext={ext}")
+        dbg = e.get("meta", {}).get("debug")
+        if dbg:
+            q = [round(x, 3) for x in dbg.get("quat", [])]
+            rp = [round(x, 2) for x in dbg.get("pos", [])]
+            print(f"            raw: label={dbg.get('label')} orient={dbg.get('orient')} "
+                  f"pos={rp} quat={q} polyY={[round(y,3) for y in dbg.get('polyY',[])]} n={dbg.get('n')}")
     return 0
 
 

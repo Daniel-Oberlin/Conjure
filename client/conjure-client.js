@@ -264,9 +264,15 @@
             minz = Math.min(minz, pt.z); maxz = Math.max(maxz, pt.z);
           });
           var w = poly.length ? (maxx - minx) : 1, h = poly.length ? (maxz - minz) : 1;
-          var p = pose.transform.position;
+          var p = pose.transform.position, o = pose.transform.orientation;
+          var miny = 1e9, maxy = -1e9;   // planes should be flat (y≈0); capture range as a sanity check
+          poly.forEach(function (pt) { miny = Math.min(miny, pt.y); maxy = Math.max(maxy, pt.y); });
           var s = { id: ids.get(plane), semantic: label, position: [p.x, p.y, p.z],
-                    rotation: self._euler(pose.transform.orientation), extent: [w, h] };
+                    rotation: self._euler(o), extent: [w, h],
+                    // raw, untransformed plane data — for diagnosing the pose→entity mapping
+                    debug: { pos: [p.x, p.y, p.z], quat: [o.x, o.y, o.z, o.w],
+                             orient: plane.orientation || null, label: plane.semanticLabel || null,
+                             polyY: [miny, maxy], n: poly.length } };
           surfaces.push(s);
           if (label === "floor" && (!floor || w * h > floor._area)) {
             floor = { floorPolygon: poly.map(function (pt) { return [pt.x, pt.z]; }), height: 2.6, _area: w * h };
