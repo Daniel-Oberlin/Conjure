@@ -234,8 +234,13 @@
         this.lastPost = 0;
       },
       _euler: function (q) {
-        var THREE = AFRAME.THREE, e = new THREE.Euler().setFromQuaternion(
-          new THREE.Quaternion(q.x, q.y, q.z, q.w), "YXZ");
+        // A captured plane lies in its local X-Z plane (normal +Y); our <a-plane> is X-Y (normal
+        // +Z). Compose a -90° X rotation so the rendered plane aligns with the captured one, then
+        // convert to A-Frame's euler degrees (XYZ order).
+        var THREE = AFRAME.THREE;
+        var quat = new THREE.Quaternion(q.x, q.y, q.z, q.w);
+        quat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
+        var e = new THREE.Euler().setFromQuaternion(quat);   // default XYZ, matches A-Frame
         var d = THREE.MathUtils.radToDeg;
         return [d(e.x), d(e.y), d(e.z)];
       },

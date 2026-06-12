@@ -18,9 +18,9 @@ import urllib.request
 
 BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
 
-# Room centered on the user. The client's default rig stands at ~(0, 1.6, 4), so center the room
-# there (CX, CZ) and size it generously enough to enclose you. W = width (x), D = depth (z), H = height.
-CX, CZ = 0.0, 4.0
+# Room centered on the user. The client rig is at the world origin, so center the room there
+# (CX, CZ) so you stand inside it. W = width (x), D = depth (z), H = height. The user faces -z.
+CX, CZ = 0.0, 0.0
 W, D, H = 4.0, 5.0, 2.6
 x0, x1 = CX - W / 2, CX + W / 2
 z0, z1 = CZ - D / 2, CZ + D / 2
