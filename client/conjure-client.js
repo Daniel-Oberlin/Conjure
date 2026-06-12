@@ -51,6 +51,24 @@
     });
   }
 
+  // Show/hide a surface's FILL (plane mesh) + edges without hiding the entity — so child labels can
+  // still render in AR (where the fill is hidden so passthrough shows the real room). Re-applies
+  // when the mesh/edges are (re)created (object3dset), handling A-Frame's async setup.
+  if (window.AFRAME && !AFRAME.components["fill-visible"]) {
+    AFRAME.registerComponent("fill-visible", {
+      schema: { default: true },
+      init: function () {
+        var self = this;
+        this.el.addEventListener("object3dset", function () { self.apply(); });
+      },
+      update: function () { this.apply(); },
+      apply: function () {
+        var m = this.el.getObject3D("mesh"); if (m) m.visible = this.data;
+        var e = this.el.getObject3D("edges"); if (e) e.visible = this.data;
+      },
+    });
+  }
+
   // Keep an entity turned to face the camera (for readable surface labels regardless of the
   // surface's orientation). Cheap: just a lookAt per frame, only on annotation labels.
   if (window.AFRAME && !AFRAME.components.billboard) {
@@ -88,11 +106,13 @@
   }
 
   function applyRealVisibility(el) {
-    // A real surface shows if the room is active AND (its explicit material.visible, else the global
-    // default). When passthrough is off but room inactive, real surfaces stay hidden.
+    // The FILL (plane + edges) shows if the room is active AND (explicit material.visible, else the
+    // global default). The ENTITY stays visible whenever the room is active so its annotation label
+    // (a child) can render even in AR where the fill is hidden; only unbounded-VR hides it entirely.
     var explicit = el.dataset.matVisible;
-    var vis = roomState.active && (explicit != null ? explicit === "true" : roomState.defaultVisible);
-    el.setAttribute("visible", vis);
+    var fill = roomState.active && (explicit != null ? explicit === "true" : roomState.defaultVisible);
+    el.setAttribute("visible", roomState.active);
+    el.setAttribute("fill-visible", fill);
   }
 
   function applyImmersion() {
