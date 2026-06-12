@@ -69,6 +69,20 @@
     });
   }
 
+  // Render an entity's meshes "on top" (depthTest off, high renderOrder) so they're never occluded
+  // or depth-culled — the edges use this and show in the Quest where normal-depth labels didn't.
+  if (window.AFRAME && !AFRAME.components.overlay) {
+    AFRAME.registerComponent("overlay", {
+      init: function () { var s = this; this.el.addEventListener("object3dset", function () { s.apply(); }); this.apply(); },
+      apply: function () {
+        this.el.object3D.traverse(function (o) {
+          if (o.material) { o.material.depthTest = false; o.material.needsUpdate = true; }
+          o.renderOrder = 1000;
+        });
+      },
+    });
+  }
+
   // Keep an entity turned to face the camera (for readable surface labels regardless of the
   // surface's orientation). Cheap: just a lookAt per frame, only on annotation labels.
   if (window.AFRAME && !AFRAME.components.billboard) {
@@ -101,12 +115,14 @@
     lbl.setAttribute("class", "surface-label");
     lbl.setAttribute("position", "0 0 0.06");
     lbl.setAttribute("billboard", "");
+    lbl.setAttribute("overlay", "");            // draw on top (fixes XR occlusion/depth-culling)
     lbl.setAttribute("geometry", { primitive: "plane", width: 1.3, height: 0.42 });
-    lbl.setAttribute("material", { color: "#04141c", opacity: 0.78, transparent: true,
+    lbl.setAttribute("material", { color: "#04141c", opacity: 0.85, transparent: true,
       side: "double", shader: "flat" });
     var t = document.createElement("a-entity");
     t.setAttribute("class", "surface-label-text");
     t.setAttribute("position", "0 0 0.01");
+    t.setAttribute("overlay", "");
     t.setAttribute("text", { value: text, align: "center", color: "#bff3ff", width: 1.2,
       wrapCount: 20, baseline: "center", side: "double" });
     lbl.appendChild(t);
