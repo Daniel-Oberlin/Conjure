@@ -164,6 +164,22 @@ def cmd_skybox(s: Settings, a) -> None:
     _say(_post(s, "/set_skybox", {"image_id": procured["image_id"]}), a.verbose, "set skybox")
 
 
+def cmd_texture(s: Settings, a) -> None:
+    # generate an image, then map it onto a room surface (floor/ceiling/wall/all)
+    gen_body = {"prompt": a.prompt}
+    if a.generator:
+        gen_body["generator"] = a.generator
+    _working("generating image…")
+    procured = _post(s, "/images/generate", gen_body)
+    if procured.get("ok") is False:
+        _say(procured, a.verbose, "")
+        return
+    body = {"target": a.target, "image_id": procured["image_id"]}
+    if a.repeat is not None:
+        body["repeat"] = a.repeat
+    _say(_post(s, "/texture_surface", body), a.verbose, f"textured {a.target}")
+
+
 def cmd_generators(s: Settings, a) -> None:
     out = _get(s, "/images/generators")
     if a.verbose:
@@ -275,6 +291,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("skybox", help="generate a 360 skybox"); a.set_defaults(fn=cmd_skybox)
     a.add_argument("prompt"); a.add_argument("--generator", help="force an image generator")
+
+    a = sub.add_parser("texture", help="map a generated image onto a room surface"); a.set_defaults(fn=cmd_texture)
+    a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")
+    a.add_argument("prompt"); a.add_argument("--repeat", type=float, help="tile NxN (use a seamless image)")
+    a.add_argument("--generator", help="force an image generator")
 
     sub.add_parser("generators", help="list image generators + capabilities").set_defaults(fn=cmd_generators)
 

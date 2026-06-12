@@ -130,6 +130,16 @@ async def test_realign_room_tool(monkeypatch):
 
 
 @respx.mock
+async def test_texture_surface_tool_payload(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/texture_surface").mock(
+        return_value=httpx.Response(200, json={"ok": True, "count": 1, "image_id": "g.png"}))
+    await _tool("texture_surface")(target="floor", image_id="g.png", repeat=4)
+    assert json.loads(route.calls.last.request.content) == {
+        "target": "floor", "image_id": "g.png", "repeat": 4}
+
+
+@respx.mock
 async def test_query_room_summarizes(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json={

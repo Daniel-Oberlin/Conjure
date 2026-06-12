@@ -319,6 +319,36 @@ async def realign_room() -> dict:
     return {"ok": True}
 
 
+class TextureSurfaceRequest(BaseModel):
+    target: str                        # surface id, semantic label ('floor'/'ceiling'/'wall'), or 'all'
+    image_id: str
+    repeat: Optional[float] = None     # tile NxN across the surface (e.g. grass); None = stretch one copy
+
+
+@app.post("/texture_surface")
+async def texture_surface(req: TextureSurfaceRequest) -> dict:
+    """Map a procured image onto room surface(s) — stars on the ceiling, grass on the floor, a mural
+    on a wall. Sets the real surface's material to the image (white-tinted, visible)."""
+    rec, _, err = _get_image(req.image_id)
+    if err:
+        return {"ok": False, "error": err}
+    t = req.target.lower()
+    targets = [e for e in store.doc["entities"]
+               if e.get("meta", {}).get("real")
+               and (t == "all" or e["id"] == req.target or e.get("meta", {}).get("semantic") == t)]
+    if not targets:
+        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_room)"}
+    mat = {"components.material.src": rec.url, "components.material.shader": "flat",
+           "components.material.color": "#FFFFFF", "components.material.side": "double",
+           "components.material.visible": True}
+    if req.repeat:
+        mat["components.material.repeat"] = f"{req.repeat} {req.repeat}"  # tile (needs a seamless image)
+    ops = [{"op": "update", "id": e["id"], "set": {**mat, "meta.image_id": rec.id}} for e in targets]
+    patch = store.apply_patch(ops, origin="image")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "count": len(targets), "image_id": rec.id}
+
+
 class PlaceAssetRequest(BaseModel):
     query: str
     position: Optional[list[float]] = None

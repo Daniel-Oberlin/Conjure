@@ -156,7 +156,8 @@ def test_expected_routes_exist(srv):
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
               "/outpaint_image", "/set_skybox", "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/edit",
-              "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset", "/tunnel"):
+              "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",
+              "/texture_surface", "/tunnel"):
         assert p in paths, f"missing route {p}"
 
 
@@ -233,6 +234,28 @@ def test_room_recapture_updates_pose_but_keeps_director_style(srv, client):
     assert e["transform"]["position"] == [0, 1.1, -2]              # geometry updated
     assert e["components"]["material"]["color"] == "#0000ff"        # director's style preserved
     assert e["components"]["material"]["visible"] is True
+
+
+def test_texture_surface_maps_image_onto_surfaces(srv, client):
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_ceiling", "semantic": "ceiling", "position": [0, 2.6, 0], "extent": [4, 4]},
+        {"id": "real_floor", "semantic": "floor", "position": [0, 0, 0], "extent": [4, 4]}]})
+    image_id = _procure(client, "a starfield")
+    r = client.post("/texture_surface", json={"target": "ceiling", "image_id": image_id, "repeat": 2})
+    assert r.json()["ok"] is True and r.json()["count"] == 1
+    ceil = next(e for e in _entities(client) if e["id"] == "real_ceiling")
+    mat = ceil["components"]["material"]
+    assert mat["src"] == f"/assets/{image_id}" and mat["color"] == "#FFFFFF"
+    assert mat["visible"] is True and mat["repeat"] == "2.0 2.0"
+    assert ceil["meta"]["image_id"] == image_id
+    # the floor (a different semantic) was untouched
+    floor = next(e for e in _entities(client) if e["id"] == "real_floor")
+    assert "src" not in floor["components"]["material"]
+
+
+def test_texture_surface_unknown_target_errors(srv, client):
+    image_id = _procure(client)
+    assert client.post("/texture_surface", json={"target": "nope", "image_id": image_id}).json()["ok"] is False
 
 
 def test_room_replace_removes_stale_surfaces(srv, client):

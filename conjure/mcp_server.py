@@ -176,6 +176,21 @@ async def show_surface(target: str, visible: bool = True) -> str:
 
 
 @mcp.tool()
+async def texture_surface(target: str, image_id: str, repeat: Optional[float] = None) -> str:
+    """Map a procured image onto room surface(s) — e.g. a starfield on the ceiling, grass on the
+    floor, a mural on a wall. First call generate_image, then pass its image_id here.
+
+    target: a surface id ('real_floor'), a semantic label ('floor', 'ceiling', 'wall'), or 'all'.
+    repeat: tile the image NxN across the surface (e.g. 4) — for this, generate a SEAMLESS/tileable
+        image (grass, brick). Omit to stretch a single copy (good for a starfield, sky, or mural).
+    """
+    out = await _post("/texture_surface", _body(target=target, image_id=image_id, repeat=repeat))
+    if not out.get("ok"):
+        return f"Couldn't texture {target!r}: {out.get('error', 'unknown error')}."
+    return f"Mapped the image onto {out['count']} surface(s) ({target})."
+
+
+@mcp.tool()
 async def add_entity(
     shape: str,
     color: str = "white",
