@@ -114,6 +114,22 @@ async def test_show_surface_updates_matching_surfaces(monkeypatch):
 
 
 @respx.mock
+async def test_reset_world_tool(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/reset").mock(return_value=httpx.Response(200, json={"ok": True, "rev": 1}))
+    out = await _tool("reset_world")()
+    assert route.called and "reset" in out.lower()
+
+
+@respx.mock
+async def test_realign_room_tool(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/room/realign").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("realign_room")()
+    assert route.called and json.loads(route.calls.last.request.content) == {}
+
+
+@respx.mock
 async def test_query_room_summarizes(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json={

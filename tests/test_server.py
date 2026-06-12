@@ -156,7 +156,7 @@ def test_expected_routes_exist(srv):
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
               "/outpaint_image", "/set_skybox", "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/edit",
-              "/images/outpaint", "/images/skybox_from", "/room", "/tunnel"):
+              "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset", "/tunnel"):
         assert p in paths, f"missing route {p}"
 
 
@@ -173,6 +173,31 @@ def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
     room = client.get("/world").json()["environment"]["room"]
     assert room["active"] is True and room["authorityClientId"] == "h1"
     assert room["boundary"]["height"] == 2.6
+
+
+def test_reset_clears_world_to_starter(srv, client):
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {"id": "box", "components": {}}}]})
+    assert any(e["id"] == "box" for e in _entities(client))
+    assert client.post("/reset").json()["ok"] is True
+    ids = {e["id"] for e in _entities(client)}
+    assert "box" not in ids and "floor" in ids   # back to the starter holodeck (has the floor)
+
+
+async def test_realign_broadcasts_recapture(srv):
+    class FakeWS:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, m):
+            self.sent.append(m)
+
+    ws = FakeWS()
+    srv.clients.add(ws)
+    try:
+        await srv.realign_room()
+    finally:
+        srv.clients.discard(ws)
+    assert ws.sent and ws.sent[-1]["type"] == "recapture"
 
 
 def test_tunnel_redirects_to_published_url(srv, client, tmp_path, monkeypatch):

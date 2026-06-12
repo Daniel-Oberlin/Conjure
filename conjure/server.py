@@ -199,6 +199,17 @@ async def world() -> dict:
     return store.doc
 
 
+@app.post("/reset")
+async def reset_world() -> dict:
+    """Reset to the empty starter holodeck — clears all entities + environment (incl. any captured
+    room) and broadcasts a fresh snapshot so every client reloads. The room re-captures on its own
+    once a headset is back in AR."""
+    global store
+    store = WorldStore.load(SAMPLE_WORLD)
+    await _broadcast({"type": "snapshot", "world": store.doc})
+    return {"ok": True, "rev": store.doc["rev"]}
+
+
 @app.post("/patch")
 async def post_patch(patch: Patch) -> dict:
     ops = [op.model_dump() for op in patch.ops]
@@ -298,6 +309,14 @@ async def ingest_room(req: RoomUpdate) -> dict:
     patch = store.apply_patch(ops, origin="room")
     await _broadcast({"type": "patch", "patch": patch})
     return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
+
+
+@app.post("/room/realign")
+async def realign_room() -> dict:
+    """Ask connected headsets to re-capture the room at the current tracking origin (restores
+    alignment after a recenter/reload). No-op for clients not in an AR session."""
+    await _broadcast({"type": "recapture"})
+    return {"ok": True}
 
 
 class PlaceAssetRequest(BaseModel):

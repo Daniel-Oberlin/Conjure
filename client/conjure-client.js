@@ -217,6 +217,11 @@
       var msg = JSON.parse(ev.data);
       if (msg.type === "snapshot") applySnapshot(msg.world);
       else if (msg.type === "patch") applyPatch(msg.patch);
+      else if (msg.type === "recapture") {                // realign request → re-capture the room
+        var sc = document.querySelector("a-scene");
+        var rc = sc && sc.components && sc.components["room-capture"];
+        if (rc && rc.recapture) rc.recapture();
+      }
     };
   }
 
@@ -232,7 +237,14 @@
         this.ids = new WeakMap();   // stable id per XRPlane object (persists across frames)
         this.n = 0;
         this.lastPost = 0;
+        this._resetSpace = null;
+        var self = this;
+        // A recenter (Meta button) / put-down fires a 'reset' on the reference space — re-capture
+        // immediately so the room snaps back into alignment with the new tracking origin.
+        this._onReset = function () { self.lastPost = 0; };
       },
+      // Force an immediate re-capture (manual realign — see the /room/realign signal below).
+      recapture: function () { this.lastPost = 0; },
       _euler: function (q) {
         // A captured plane lies in its local X-Z plane (normal +Y); our <a-plane> is X-Y (normal
         // +Z). Compose a -90° X rotation so the rendered plane aligns with the captured one, then
@@ -250,6 +262,10 @@
         if (time - this.lastPost < 2000) return;            // throttle to ~0.5 Hz
         var refSpace = sceneEl.renderer.xr.getReferenceSpace();
         if (!refSpace) return;
+        if (refSpace !== this._resetSpace) {                // (re)subscribe to recenter events
+          this._resetSpace = refSpace;
+          if (refSpace.addEventListener) refSpace.addEventListener("reset", this._onReset);
+        }
         var ids = this.ids, self = this, surfaces = [], floor = null;
         frame.detectedPlanes.forEach(function (plane) {
           var pose;

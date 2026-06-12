@@ -135,6 +135,28 @@ async def set_immersion(mode: str) -> str:
 
 
 @mcp.tool()
+async def realign_room() -> str:
+    """Re-align the virtual room to the real room. Use when the user says the room looks misaligned,
+    drifted, or shifted — e.g. after recentering with the Meta button, putting the headset down, or
+    reloading. Re-captures the room at the current tracking origin. Only affects a headset in AR."""
+    out = await _post("/room/realign", {})
+    if not out.get("ok"):
+        return f"Couldn't realign: {out.get('error', 'unknown error')}."
+    return "Re-aligning the room to your real space — look around for a moment."
+
+
+@mcp.tool()
+async def reset_world() -> str:
+    """Wipe the world back to the empty holodeck and start over — removes ALL placed objects, images,
+    skybox, primitives, and any captured room. Use when the user asks to reset, clear everything, or
+    start fresh. (A captured room re-appears on its own once they're back in AR.)"""
+    out = await _post("/reset", {})
+    if not out.get("ok"):
+        return f"Couldn't reset: {out.get('error', 'unknown error')}."
+    return "Reset to an empty holodeck — ready to build again."
+
+
+@mcp.tool()
 async def show_surface(target: str, visible: bool = True) -> str:
     """Show or hide real room surface(s) as virtual geometry. target: a surface id ('real_wall_1'),
     a semantic label ('wall', 'ceiling', 'floor', …), or 'all'. Use to build mixed real+virtual
