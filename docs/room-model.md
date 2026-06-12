@@ -168,6 +168,56 @@ places content **on/anchored to it** ("hang this on the wall", "vase on the tabl
 volume (not through a wall), resting on the real floor — the server can also clamp/validate placements
 against the boundary as a backstop.
 
+## 6a. Insets, openings & the planes ↔ mesh relationship 🟡 plan
+
+The Quest reports a **door / window / wall-art** as its *own* plane, attached to a parent wall and
+near-coplanar with it. Rendered naïvely (each an idealized solid quad, normal depth test) they
+**z-fight** the wall and the larger wall quad **occludes** them — you can't see a door as an opening.
+The captured polygon is currently reduced to a bounding-box `extent`, so a wall doesn't know its own
+holes. Two design decisions follow.
+
+**(i) Two representations, not two LODs.** The semantic **plane model** and the **scan mesh** are
+different *kinds* of model of the same room, used by division of labor:
+
+| Tier | Source | Role |
+|---|---|---|
+| **Planes** | `plane-detection` | logical/authoring layer — labels, mounting, styling, bounds, the director's vocabulary |
+| **Depth** | depth API | cheap per-frame occlusion, no geometry |
+| **Mesh** | `mesh-detection` (§7) | physical/render layer — literal geometry, exact occlusion, openings already present |
+
+They **coexist**, they don't replace each other: **mounting & addressing always resolve against
+planes**, even while the *mesh* is what's displayed (planes stay live but invisible as stable mount/hit
+handles). A `room.geometry = planes | mesh | both` display mode and `room.occlusion = off | depth |
+mesh` choose what renders / what occludes. There is **no continuum of mesh LODs** — Quest hands us
+planes + one global mesh + depth; we mix these three layers rather than climbing rungs. This is the
+same "uniform editing over a stable semantic id" promise as §7, viewed from the rendering side.
+
+**(ii) Openings are synthesized in plane mode, inherent in mesh mode.**
+- **Plane mode:** the wall is an idealized solid quad, so we *synthesize* the opening — snap insets to
+  the wall, then (target state) **cut** the wall into a polygon-with-holes (door = empty → see-through;
+  window = opaque inset panel, toggleable to glass; wall-art = a decal offset off the surface).
+- **Mesh mode:** the scan **already has** the doorway opening and window recess as real geometry, so the
+  door/window *planes* demote to pure **semantic annotations / mount anchors** (invisible fill, label +
+  optional outline) layered on the mesh. Same object, different coat — the methodology differs by
+  representation but the addressable surface is the same.
+
+**(iii) Edge layers (shared across both worlds).** Edge visibility is layered, identically for planes
+and mesh, so "hide the internal seams, keep the outline" means the same thing everywhere:
+- **outline** — a semantic surface's border (wall/floor outline): default **on** (current `surface-edges`);
+- **feature** — door/window opening outlines: default **on** (they're real features);
+- **tessellation** — wall-subdivision seams (plane mode) *or* mesh triangle wireframe (mesh mode):
+  default **off**, toggleable.
+
+**Status — MVP shipped (snap + offset).** At capture the client **snaps** each inset (door/window/
+wall-art) onto its parent wall: project its center onto the wall plane, adopt the wall's exact
+orientation, and nudge it a couple cm toward the room (`room-capture.tick` in
+`client/conjure-client.js`). This stops the z-fighting/occlusion at the source and also corrects the
+small tilt a noisy inset plane otherwise carried. The server seeds a **door** fill translucent
+(`opacity 0.25`) so it reads as an opening without truly cutting the wall (`_default_surface_material`).
+**Follow-ups:** cut real openings (polygon-with-holes triangulation; the door-style fork — true hole vs
+transparent panel — is decided then); the `feature`/`tessellation` edge layers; depth-API occlusion;
+the `room.geometry`/`room.occlusion` display modes; mesh layer (§7).
+
 ## 7. Progressive mesh refinement (background, on request) — uniform editing 🟡
 
 Start coarse, refine on demand, **without changing how the director edits**:

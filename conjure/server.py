@@ -267,10 +267,19 @@ def _surface_entity(s: RoomSurface) -> dict:
     return {
         "id": s.id,
         "transform": transform,
-        "components": {"surface": surface,
-                       "material": {"shader": "flat", "color": "#888", "side": "double", "opacity": 1.0}},
+        "components": {"surface": surface, "material": _default_surface_material(s.semantic)},
         "meta": meta,
     }
+
+
+# Per-semantic fill defaults. A door reads as a see-through opening (translucent) so it doesn't fight
+# the wall it's snapped onto; everything else is an opaque panel. Re-capture preserves any later
+# director edits (update-in-place keeps the material), so these only seed a surface's first appearance.
+def _default_surface_material(semantic: str) -> dict:
+    mat = {"shader": "flat", "color": "#888", "side": "double", "opacity": 1.0}
+    if (semantic or "").lower() == "door":
+        mat.update(opacity=0.25, transparent=True)
+    return mat
 
 
 @app.post("/room")

@@ -177,6 +177,17 @@ def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
     assert room["boundary"]["height"] == 2.6
 
 
+def test_door_surface_defaults_to_translucent(srv, client):
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]},
+        {"id": "real_door_1", "semantic": "door", "position": [0.5, 1.0, -2], "extent": [0.9, 2.0]}]})
+    ents = {e["id"]: e for e in _entities(client)}
+    door = ents["real_door_1"]["components"]["material"]
+    assert door["transparent"] is True and door["opacity"] == 0.25   # reads as a see-through opening
+    wall = ents["real_wall_1"]["components"]["material"]
+    assert wall["opacity"] == 1.0 and "transparent" not in wall       # walls stay solid
+
+
 def test_texture_surface_resolves_by_friendly_id(srv, client):
     client.post("/room", json={"client_id": "h1", "surfaces": [
         {"id": "real_floor_x", "semantic": "floor", "position": [0, 0, 0], "extent": [3, 3]}]})

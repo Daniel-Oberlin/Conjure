@@ -427,7 +427,7 @@
           });
           var w = poly.length ? (maxx - minx) : 1, h = poly.length ? (maxz - minz) : 1;
           surfaces.push({ id: sid, semantic: label, position: [lp.x, lp.y, lp.z],
-            rotation: self._euler(lq), extent: [w, h],
+            rotation: self._euler(lq), extent: [w, h], _lp: lp.clone(), _lq: lq.clone(),
             debug: { pos: [rp.x, rp.y, rp.z], quat: [ro.x, ro.y, ro.z, ro.w],
                      orient: plane.orientation || null, label: plane.semanticLabel || null,
                      polyY: [miny, maxy], n: poly.length, anchored: !!anchorInv } });
@@ -436,6 +436,32 @@
           }
         });
         if (!surfaces.length) return;
+        // Snap insets (door/window/wall art) onto their parent wall: project onto the wall plane,
+        // adopt its exact orientation, and nudge a couple cm toward the room so near-coplanar fills
+        // stop z-fighting and the wall stops occluding them. (Snapping also corrects the small tilt
+        // a noisy inset plane would otherwise keep.) Geometry only — fill style is the server's job.
+        var V3 = THREE.Vector3;
+        var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
+        var INSET = { "door": 0.012, "window": 0.012, "wall art": 0.022 };
+        surfaces.forEach(function (s) {
+          var off = INSET[s.semantic];
+          if (off == null || !walls.length) return;
+          var sn = new V3(0, 0, 1).applyQuaternion(s._lq), best = null, bestD = 0.6;
+          walls.forEach(function (wl) {
+            var wn = new V3(0, 0, 1).applyQuaternion(wl._lq);
+            if (Math.abs(wn.dot(sn)) < 0.85) return;                  // must be ~parallel to the wall
+            var d = Math.abs(s._lp.clone().sub(wl._lp).dot(wn));       // distance from the wall plane
+            if (d < bestD) { bestD = d; best = wl; }
+          });
+          if (!best) return;
+          var n = new V3(0, 0, 1).applyQuaternion(best._lq);
+          var dist = s._lp.clone().sub(best._lp).dot(n);
+          var sign = dist >= 0 ? 1 : -1;                              // keep it on the side it was on
+          var fp = s._lp.clone().sub(n.clone().multiplyScalar(dist)).add(n.clone().multiplyScalar(sign * off));
+          s.position = [fp.x, fp.y, fp.z];
+          s.rotation = best.rotation.slice();                         // adopt the wall's orientation
+        });
+        surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
         this.lastPost = time;
         var boundary = null;
         if (floor) { delete floor._area; boundary = floor; }
