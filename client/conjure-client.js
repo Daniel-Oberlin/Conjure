@@ -28,18 +28,24 @@
     });
   }
 
-  // Outline for a room surface: a bright line loop around the plane's border, nudged a hair off the
-  // surface (local +z) so it doesn't z-fight the fill. Lets you see each surface's edges.
+  // Outline for a room surface: a bright line loop around the plane's border. Drawn as an
+  // always-on-top overlay (depthTest off, high renderOrder) so EVERY surface's edges show —
+  // otherwise a surface facing away from you occludes its own outline (you'd see only the floor's).
+  // The result is a full room wireframe with crisp corners and ceiling joins.
   if (window.AFRAME && !AFRAME.components["surface-edges"]) {
     AFRAME.registerComponent("surface-edges", {
       schema: { width: { default: 1 }, height: { default: 1 }, color: { default: "#35e0ff" } },
       update: function () {
-        var THREE = AFRAME.THREE, d = this.data, hw = d.width / 2, hh = d.height / 2, z = 0.003;
+        var THREE = AFRAME.THREE, d = this.data, hw = d.width / 2, hh = d.height / 2;
         this.el.removeObject3D("edges");
-        var pts = [-hw, -hh, z, hw, -hh, z, hw, hh, z, -hw, hh, z, -hw, -hh, z];
+        var pts = [-hw, -hh, 0, hw, -hh, 0, hw, hh, 0, -hw, hh, 0, -hw, -hh, 0];
         var geo = new THREE.BufferGeometry();
         geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
-        this.el.setObject3D("edges", new THREE.Line(geo, new THREE.LineBasicMaterial({ color: d.color })));
+        var mat = new THREE.LineBasicMaterial({
+          color: d.color, depthTest: false, depthWrite: false, transparent: true });
+        var line = new THREE.Line(geo, mat);
+        line.renderOrder = 999;   // after the fills, so edges are never hidden by a surface
+        this.el.setObject3D("edges", line);
       },
       remove: function () { this.el.removeObject3D("edges"); },
     });
