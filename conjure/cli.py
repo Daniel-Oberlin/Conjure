@@ -190,10 +190,23 @@ def cmd_style(s: Settings, a) -> None:
 
 
 def cmd_annotate(s: Settings, a) -> None:
-    on = a.state != "off"
-    r = _post(s, "/patch", {"ops": [{"op": "env", "set": {
-        "room.annotations": on, "room.annotationDims": bool(a.dims)}}]})
-    print(f"annotations {'on' if on else 'off'}{' +dims' if (on and a.dims) else ''} (rev {r['rev']})")
+    sets = {"room.annotations": a.state != "off", "room.annotationDims": bool(a.dims)}
+    if a.color is not None:
+        sets["room.annotationColor"] = a.color
+    if a.opacity is not None:
+        sets["room.annotationOpacity"] = a.opacity
+    r = _post(s, "/patch", {"ops": [{"op": "env", "set": sets}]})
+    print(f"annotations {a.state}{' +dims' if a.dims else ''} (rev {r['rev']})")
+
+
+def cmd_edges(s: Settings, a) -> None:
+    sets = {"room.edgesVisible": a.state != "off"}
+    if a.color is not None:
+        sets["room.edgeColor"] = a.color
+    if a.opacity is not None:
+        sets["room.edgeOpacity"] = a.opacity
+    r = _post(s, "/patch", {"ops": [{"op": "env", "set": sets}]})
+    print(f"edges {a.state} (rev {r['rev']})")
 
 
 def cmd_generators(s: Settings, a) -> None:
@@ -317,9 +330,16 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")
     a.add_argument("--color", help="CSS name or #hex"); a.add_argument("--opacity", type=float, help="0..1")
 
-    a = sub.add_parser("annotate", help="toggle surface metadata labels"); a.set_defaults(fn=cmd_annotate)
+    a = sub.add_parser("annotate", help="toggle / restyle surface metadata labels"); a.set_defaults(fn=cmd_annotate)
     a.add_argument("state", nargs="?", default="on", choices=["on", "off"])
     a.add_argument("--dims", action="store_true", help="also show surface dimensions")
+    a.add_argument("--color", help="label text color (CSS name or #hex)")
+    a.add_argument("--opacity", type=float, help="label opacity 0..1")
+
+    a = sub.add_parser("edges", help="show/hide / restyle surface outline wireframe"); a.set_defaults(fn=cmd_edges)
+    a.add_argument("state", nargs="?", default="on", choices=["on", "off"])
+    a.add_argument("--color", help="edge color (CSS name or #hex)")
+    a.add_argument("--opacity", type=float, help="edge opacity 0..1")
 
     sub.add_parser("generators", help="list image generators + capabilities").set_defaults(fn=cmd_generators)
 

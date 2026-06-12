@@ -216,6 +216,46 @@ async def show_annotations(on: bool = True, dimensions: bool = False) -> str:
 
 
 @mcp.tool()
+async def style_annotations(color: Optional[str] = None, opacity: Optional[float] = None) -> str:
+    """Restyle the surface annotation labels (the floating "<name> (id)" text) — e.g. 'make the labels
+    yellow', 'make the labels faint'. color: CSS name or #hex. opacity: 0 (invisible) … 1 (solid).
+    Affects all labels at once; use show_annotations to turn them on/off."""
+    sets = {}
+    if color is not None:
+        sets["room.annotationColor"] = color
+    if opacity is not None:
+        sets["room.annotationOpacity"] = opacity
+    if not sets:
+        return "Nothing to change — pass a color and/or opacity."
+    await _post_patch([{"op": "env", "set": sets}])
+    return f"Annotation labels restyled ({', '.join(sets)})."
+
+
+@mcp.tool()
+async def show_edges(on: bool = True) -> str:
+    """Show or hide the polygon outline drawn around every room surface (the bright wireframe of the
+    real room). Edges are ON by default; turn them off for a cleaner passthrough view."""
+    await _post_patch([{"op": "env", "set": {"room.edgesVisible": on}}])
+    return f"Surface edges {'on' if on else 'off'}."
+
+
+@mcp.tool()
+async def style_edges(color: Optional[str] = None, opacity: Optional[float] = None) -> str:
+    """Restyle the surface outline wireframe — e.g. 'make the edges green', 'make the outlines faint'.
+    color: CSS name or #hex. opacity: 0 (invisible) … 1 (solid). Affects all surface edges at once;
+    use show_edges to turn the outline on/off."""
+    sets = {}
+    if color is not None:
+        sets["room.edgeColor"] = color
+    if opacity is not None:
+        sets["room.edgeOpacity"] = opacity
+    if not sets:
+        return "Nothing to change — pass a color and/or opacity."
+    await _post_patch([{"op": "env", "set": sets}])
+    return f"Surface edges restyled ({', '.join(sets)})."
+
+
+@mcp.tool()
 async def add_entity(
     shape: str,
     color: str = "white",

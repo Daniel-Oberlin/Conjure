@@ -167,6 +167,39 @@ async def test_show_annotations_with_dimensions(monkeypatch):
 
 
 @respx.mock
+async def test_show_edges_tool_payload(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
+    await _tool("show_edges")(on=False)
+    assert json.loads(route.calls.last.request.content)["ops"][0] == {
+        "op": "env", "set": {"room.edgesVisible": False}}
+
+
+@respx.mock
+async def test_style_edges_tool_payload(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
+    await _tool("style_edges")(color="lime", opacity=0.5)
+    assert json.loads(route.calls.last.request.content)["ops"][0] == {
+        "op": "env", "set": {"room.edgeColor": "lime", "room.edgeOpacity": 0.5}}
+
+
+@respx.mock
+async def test_style_annotations_tool_payload(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
+    await _tool("style_annotations")(color="yellow")
+    assert json.loads(route.calls.last.request.content)["ops"][0] == {
+        "op": "env", "set": {"room.annotationColor": "yellow"}}
+
+
+async def test_style_edges_noop_without_args(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    out = await _tool("style_edges")()
+    assert "Nothing to change" in out
+
+
+@respx.mock
 async def test_show_surface_matches_friendly_id(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json={"entities": [

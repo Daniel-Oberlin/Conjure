@@ -34,7 +34,8 @@
   // The result is a full room wireframe with crisp corners and ceiling joins.
   if (window.AFRAME && !AFRAME.components["surface-edges"]) {
     AFRAME.registerComponent("surface-edges", {
-      schema: { width: { default: 1 }, height: { default: 1 }, color: { default: "#35e0ff" } },
+      schema: { width: { default: 1 }, height: { default: 1 }, color: { default: "#35e0ff" },
+                opacity: { default: 1 }, visible: { default: true } },
       update: function () {
         var THREE = AFRAME.THREE, d = this.data, hw = d.width / 2, hh = d.height / 2;
         this.el.removeObject3D("edges");
@@ -42,18 +43,20 @@
         var geo = new THREE.BufferGeometry();
         geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
         var mat = new THREE.LineBasicMaterial({
-          color: d.color, depthTest: false, depthWrite: false, transparent: true });
+          color: d.color, opacity: d.opacity, depthTest: false, depthWrite: false, transparent: true });
         var line = new THREE.Line(geo, mat);
         line.renderOrder = 999;   // after the fills, so edges are never hidden by a surface
+        line.visible = d.visible;
         this.el.setObject3D("edges", line);
       },
       remove: function () { this.el.removeObject3D("edges"); },
     });
   }
 
-  // Show/hide a surface's FILL (plane mesh) + edges without hiding the entity — so child labels can
-  // still render in AR (where the fill is hidden so passthrough shows the real room). Re-applies
-  // when the mesh/edges are (re)created (object3dset), handling A-Frame's async setup.
+  // Show/hide a surface's FILL (plane mesh) without hiding the entity — so child labels and the edge
+  // outline still render in AR (where the fill is hidden so passthrough shows the real room). The
+  // edges are governed independently by `surface-edges` (room.edgesVisible). Re-applies when the mesh
+  // is (re)created (object3dset), handling A-Frame's async setup.
   if (window.AFRAME && !AFRAME.components["fill-visible"]) {
     AFRAME.registerComponent("fill-visible", {
       schema: { default: true },
@@ -64,7 +67,6 @@
       update: function () { this.apply(); },
       apply: function () {
         var m = this.el.getObject3D("mesh"); if (m) m.visible = this.data;
-        var e = this.el.getObject3D("edges"); if (e) e.visible = this.data;
       },
     });
   }
@@ -100,7 +102,9 @@
   // ----------------------------------------------------------------- immersion / room state
   // Two axes (docs/room-model.md §5): passthrough (real room visible) × surface visibility.
   var roomState = { active: false, passthrough: false, defaultVisible: false,
-                    annotations: false, annotationDims: false };
+                    annotations: false, annotationDims: false,
+                    edgesVisible: true, edgeColor: "#35e0ff", edgeOpacity: 1,
+                    annotationColor: "#bff3ff", annotationOpacity: 1 };
 
   // A floating, camera-facing label on a surface: "<semantic> (<friendly id>)", with dimensions only
   // when room.annotationDims is on. Toggled by environment.room.annotations so you can read each
@@ -110,26 +114,34 @@
     if (!on) { if (lbl) el.removeChild(lbl); return; }
     var text = (el.dataset.semantic || "surface") + " (" + (el.dataset.fid || el.id) + ")"
       + (roomState.annotationDims && el.dataset.ext ? "\n" + el.dataset.ext : "");
-    if (lbl) { lbl.setAttribute("text", "value", text); return; }
+    var style = { value: text, color: roomState.annotationColor, opacity: roomState.annotationOpacity };
+    if (lbl) { lbl.setAttribute("text", style); return; }
     // Just the text — camera-facing, double-sided, drawn on top (no background plate).
     lbl = document.createElement("a-entity");
     lbl.setAttribute("class", "surface-label");
     lbl.setAttribute("position", "0 0 0.06");
     lbl.setAttribute("billboard", "");
     lbl.setAttribute("overlay", "");            // draw on top (fixes XR occlusion/depth-culling)
-    lbl.setAttribute("text", { value: text, align: "center", color: "#bff3ff", width: 1.3,
-      wrapCount: 20, baseline: "center", side: "double" });
+    lbl.setAttribute("text", Object.assign(style, { align: "center", width: 1.3,
+      wrapCount: 20, baseline: "center", side: "double" }));
     el.appendChild(lbl);
   }
 
   function applyRealVisibility(el) {
-    // The FILL (plane + edges) shows if the room is active AND (explicit material.visible, else the
+    // The FILL (plane mesh) shows if the room is active AND (explicit material.visible, else the
     // global default). The ENTITY stays visible whenever the room is active so its annotation label
-    // (a child) can render even in AR where the fill is hidden; only unbounded-VR hides it entirely.
+    // and edge outline (children) can render even in AR where the fill is hidden; only unbounded-VR
+    // hides it entirely.
     var explicit = el.dataset.matVisible;
     var fill = roomState.active && (explicit != null ? explicit === "true" : roomState.defaultVisible);
     el.setAttribute("visible", roomState.active);
     el.setAttribute("fill-visible", fill);
+  }
+
+  // The surface outline's color/alpha/visibility — global room display state, independent of the fill.
+  function applyEdgeStyle(el) {
+    el.setAttribute("surface-edges", { color: roomState.edgeColor,
+      opacity: roomState.edgeOpacity, visible: roomState.edgesVisible });
   }
 
   function applyImmersion() {
@@ -146,6 +158,7 @@
     var reals = document.querySelectorAll("[data-real]");
     reals.forEach(function (el) {
       applyRealVisibility(el);
+      applyEdgeStyle(el);
       setSurfaceLabel(el, roomState.annotations);
     });
     console.log("[conjure] immersion: active=" + roomState.active + " annotations=" +
@@ -197,6 +210,7 @@
       if (meta.friendly_id != null) el.dataset.fid = meta.friendly_id;
       applySurface(el, comps);
       applyRealVisibility(el);
+      applyEdgeStyle(el);
       setSurfaceLabel(el, roomState.annotations);
       return;
     }
@@ -224,6 +238,11 @@
       if ("defaultSurfaceVisible" in env.room) roomState.defaultVisible = !!env.room.defaultSurfaceVisible;
       if ("annotations" in env.room) roomState.annotations = !!env.room.annotations;
       if ("annotationDims" in env.room) roomState.annotationDims = !!env.room.annotationDims;
+      if ("annotationColor" in env.room) roomState.annotationColor = env.room.annotationColor;
+      if ("annotationOpacity" in env.room) roomState.annotationOpacity = +env.room.annotationOpacity;
+      if ("edgesVisible" in env.room) roomState.edgesVisible = !!env.room.edgesVisible;
+      if ("edgeColor" in env.room) roomState.edgeColor = env.room.edgeColor;
+      if ("edgeOpacity" in env.room) roomState.edgeOpacity = +env.room.edgeOpacity;
     }
     applyImmersion();
   }

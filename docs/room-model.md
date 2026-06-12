@@ -147,8 +147,15 @@ Phase-7 mesh generator; boundary-extruded authored rooms are in scope now.
 **Display (text).** Each surface can render its label as a floating overlay (toggleable): "window
 (12)", "wall (3)" — its `meta.semantic` plus a short **friendly id** (`meta.friendly_id`, a small
 sequential number assigned on ingest) the user can read off and reference by voice ("make 12 blue").
-Dimensions are off by default; `show_annotations(on, dimensions=true)` adds each surface's size.
-From `meta.semantic`/`friendly_id`; also available for the director to *speak* the layout.
+Dimensions are off by default; `show_annotations(on, dimensions=true)` adds each surface's size. Label
+color/alpha are restyleable (`style_annotations(color, opacity)` → env `room.annotationColor` /
+`room.annotationOpacity`). From `meta.semantic`/`friendly_id`; also available for the director to
+*speak* the layout.
+
+**Display (outline).** Every real surface is outlined by a bright wireframe (a `surface-edges` line
+loop, drawn always-on-top so the whole room reads as a wireframe even in AR). It is **on by default**,
+independent of the fill, and globally toggleable + restyleable: `show_edges(on)` →
+`room.edgesVisible`; `style_edges(color, opacity)` → `room.edgeColor` / `room.edgeOpacity`.
 
 **Styling.** Because surfaces are entities with a `material` component, the director restyles them with
 the **existing** edit vocabulary — color, opacity, **texture an image onto a wall** (`material.src` =
