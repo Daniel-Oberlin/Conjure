@@ -41,13 +41,16 @@
   }
 
   function applyImmersion() {
-    // Hide the synthetic holodeck shell (floor/grid/walls + sky) when in passthrough so the real
-    // room shows through; show it otherwise.
+    // The synthetic holodeck shell (grid floor/walls) + the void sky belong ONLY to "unbounded VR"
+    // (room inactive). Whenever the room is active — AR passthrough OR a virtual room — hide them so
+    // you see the room, not the grid/void competing with it. (In AR the a-sky would also occlude the
+    // passthrough camera, so it must be hidden there too.)
+    var inRoom = roomState.active;
     document.querySelectorAll("[data-scaffold]").forEach(function (el) {
-      el.setAttribute("visible", !roomState.passthrough);
+      el.setAttribute("visible", !inRoom);
     });
     var sky = document.getElementById("sky");
-    if (sky) sky.setAttribute("visible", !roomState.passthrough);
+    if (sky) sky.setAttribute("visible", !inRoom);
     document.querySelectorAll("[data-real]").forEach(applyRealVisibility);
   }
 
