@@ -95,13 +95,22 @@
     if (!on) { if (lbl) el.removeChild(lbl); return; }
     var text = (el.dataset.semantic || "surface") + " (" + el.id + ")"
       + (el.dataset.ext ? "\n" + el.dataset.ext : "");
-    if (lbl) { lbl.setAttribute("text", "value", text); return; }
+    if (lbl) { lbl.querySelector(".surface-label-text").setAttribute("text", "value", text); return; }
+    // A camera-facing dark plate (so it's readable + clearly visible) with double-sided text on top
+    // (double-sided so a wrong-facing billboard can't hide it).
     lbl = document.createElement("a-entity");
     lbl.setAttribute("class", "surface-label");
-    lbl.setAttribute("position", "0 0 0.05");
+    lbl.setAttribute("position", "0 0 0.06");
     lbl.setAttribute("billboard", "");
-    lbl.setAttribute("text", { value: text, align: "center", color: "#aef3ff", width: 2.4,
-      wrapCount: 22, baseline: "center", zOffset: 0.01 });
+    lbl.setAttribute("geometry", { primitive: "plane", width: 1.3, height: 0.42 });
+    lbl.setAttribute("material", { color: "#04141c", opacity: 0.78, transparent: true,
+      side: "double", shader: "flat" });
+    var t = document.createElement("a-entity");
+    t.setAttribute("class", "surface-label-text");
+    t.setAttribute("position", "0 0 0.01");
+    t.setAttribute("text", { value: text, align: "center", color: "#bff3ff", width: 1.2,
+      wrapCount: 20, baseline: "center", side: "double" });
+    lbl.appendChild(t);
     el.appendChild(lbl);
   }
 
@@ -126,10 +135,13 @@
     });
     var sky = document.getElementById("sky");
     if (sky) sky.setAttribute("visible", !inRoom);
-    document.querySelectorAll("[data-real]").forEach(function (el) {
+    var reals = document.querySelectorAll("[data-real]");
+    reals.forEach(function (el) {
       applyRealVisibility(el);
       setSurfaceLabel(el, roomState.annotations);
     });
+    console.log("[conjure] immersion: active=" + roomState.active + " annotations=" +
+      roomState.annotations + " surfaces=" + reals.length);
   }
 
   // ----------------------------------------------------------------- entity / env rendering
