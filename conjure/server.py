@@ -349,6 +349,40 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
     return {"ok": True, "count": len(targets), "image_id": rec.id}
 
 
+def _room_targets(target: str) -> list[dict]:
+    t = target.lower()
+    return [e for e in store.doc["entities"]
+            if e.get("meta", {}).get("real")
+            and (t == "all" or e["id"] == target or e.get("meta", {}).get("semantic") == t)]
+
+
+class StyleSurfaceRequest(BaseModel):
+    target: str                        # surface id, semantic label, or 'all'
+    color: Optional[str] = None        # CSS name or #hex
+    opacity: Optional[float] = None    # 0..1; < 1 makes it see-through
+
+
+@app.post("/style_surface")
+async def style_surface(req: StyleSurfaceRequest) -> dict:
+    """Color and/or set the transparency of room surface(s) — e.g. semi-transparent blue walls, a
+    glass ceiling. (For an image, use /texture_surface.)"""
+    targets = _room_targets(req.target)
+    if not targets:
+        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_room)"}
+    setm: dict = {"components.material.visible": True}
+    if req.color is not None:
+        setm["components.material.color"] = req.color
+        setm["components.material.src"] = ""             # clear any texture so the color shows
+    if req.opacity is not None:
+        setm["components.material.opacity"] = req.opacity
+        setm["components.material.transparent"] = req.opacity < 1.0
+    if len(setm) == 1:
+        return {"ok": False, "error": "specify a color and/or opacity"}
+    patch = store.apply_patch([{"op": "update", "id": e["id"], "set": setm} for e in targets], origin="image")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "count": len(targets)}
+
+
 class PlaceAssetRequest(BaseModel):
     query: str
     position: Optional[list[float]] = None

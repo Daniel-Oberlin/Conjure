@@ -51,9 +51,41 @@
     });
   }
 
+  // Keep an entity turned to face the camera (for readable surface labels regardless of the
+  // surface's orientation). Cheap: just a lookAt per frame, only on annotation labels.
+  if (window.AFRAME && !AFRAME.components.billboard) {
+    AFRAME.registerComponent("billboard", {
+      tick: function () {
+        var cam = this.el.sceneEl && this.el.sceneEl.camera;
+        if (!cam) return;
+        this._t = this._t || new AFRAME.THREE.Vector3();
+        cam.getWorldPosition(this._t);
+        this.el.object3D.lookAt(this._t);
+        this.el.object3D.rotateY(Math.PI);   // text faces +Z; flip so it faces the camera
+      },
+    });
+  }
+
   // ----------------------------------------------------------------- immersion / room state
   // Two axes (docs/room-model.md §5): passthrough (real room visible) × surface visibility.
-  var roomState = { active: false, passthrough: false, defaultVisible: false };
+  var roomState = { active: false, passthrough: false, defaultVisible: false, annotations: false };
+
+  // A floating, camera-facing label on a surface: "<semantic> (<id>)" + dimensions. Toggled by
+  // environment.room.annotations so you can read each surface's metadata and reference its id.
+  function setSurfaceLabel(el, on) {
+    var lbl = el.querySelector(".surface-label");
+    if (!on) { if (lbl) el.removeChild(lbl); return; }
+    var text = (el.dataset.semantic || "surface") + " (" + el.id + ")"
+      + (el.dataset.ext ? "\n" + el.dataset.ext : "");
+    if (lbl) { lbl.setAttribute("text", "value", text); return; }
+    lbl = document.createElement("a-entity");
+    lbl.setAttribute("class", "surface-label");
+    lbl.setAttribute("position", "0 0 0.05");
+    lbl.setAttribute("billboard", "");
+    lbl.setAttribute("text", { value: text, align: "center", color: "#aef3ff", width: 2.4,
+      wrapCount: 22, baseline: "center", zOffset: 0.01 });
+    el.appendChild(lbl);
+  }
 
   function applyRealVisibility(el) {
     // A real surface shows if the room is active AND (its explicit material.visible, else the global
@@ -74,7 +106,10 @@
     });
     var sky = document.getElementById("sky");
     if (sky) sky.setAttribute("visible", !inRoom);
-    document.querySelectorAll("[data-real]").forEach(applyRealVisibility);
+    document.querySelectorAll("[data-real]").forEach(function (el) {
+      applyRealVisibility(el);
+      setSurfaceLabel(el, roomState.annotations);
+    });
   }
 
   // ----------------------------------------------------------------- entity / env rendering
@@ -98,6 +133,7 @@
     var s = comps.surface || {};
     var ext = s.extent || [1, 1];
     var w = (+ext[0] || 1), h = (+ext[1] || 1);
+    el.dataset.ext = w.toFixed(1) + " x " + h.toFixed(1) + " m";   // for the annotation label
     el.setAttribute("geometry", { primitive: "plane", width: w, height: h });
     var mat = Object.assign({ shader: "flat", side: "double" }, comps.material || {});
     if ("visible" in mat) { el.dataset.matVisible = String(mat.visible); delete mat.visible; }
@@ -120,6 +156,7 @@
       if (meta.semantic) el.dataset.semantic = meta.semantic;
       applySurface(el, comps);
       applyRealVisibility(el);
+      setSurfaceLabel(el, roomState.annotations);
       return;
     }
     Object.keys(comps).forEach(function (name) { el.setAttribute(name, comps[name]); });
@@ -144,6 +181,7 @@
     if (env.room) {
       if ("active" in env.room) roomState.active = !!env.room.active;
       if ("defaultSurfaceVisible" in env.room) roomState.defaultVisible = !!env.room.defaultSurfaceVisible;
+      if ("annotations" in env.room) roomState.annotations = !!env.room.annotations;
     }
     applyImmersion();
   }

@@ -180,6 +180,21 @@ def cmd_texture(s: Settings, a) -> None:
     _say(_post(s, "/texture_surface", body), a.verbose, f"textured {a.target}")
 
 
+def cmd_style(s: Settings, a) -> None:
+    body = {"target": a.target}
+    if a.color:
+        body["color"] = a.color
+    if a.opacity is not None:
+        body["opacity"] = a.opacity
+    _say(_post(s, "/style_surface", body), a.verbose, f"styled {a.target}")
+
+
+def cmd_annotate(s: Settings, a) -> None:
+    on = a.state != "off"
+    r = _post(s, "/patch", {"ops": [{"op": "env", "set": {"room.annotations": on}}]})
+    print(f"annotations {'on' if on else 'off'} (rev {r['rev']})")
+
+
 def cmd_generators(s: Settings, a) -> None:
     out = _get(s, "/images/generators")
     if a.verbose:
@@ -296,6 +311,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")
     a.add_argument("prompt"); a.add_argument("--repeat", type=float, help="tile NxN (use a seamless image)")
     a.add_argument("--generator", help="force an image generator")
+
+    a = sub.add_parser("style", help="color / set transparency of a room surface"); a.set_defaults(fn=cmd_style)
+    a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")
+    a.add_argument("--color", help="CSS name or #hex"); a.add_argument("--opacity", type=float, help="0..1")
+
+    a = sub.add_parser("annotate", help="toggle surface metadata labels"); a.set_defaults(fn=cmd_annotate)
+    a.add_argument("state", nargs="?", default="on", choices=["on", "off"])
 
     sub.add_parser("generators", help="list image generators + capabilities").set_defaults(fn=cmd_generators)
 

@@ -140,6 +140,24 @@ async def test_texture_surface_tool_payload(monkeypatch):
 
 
 @respx.mock
+async def test_style_surface_tool_payload(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/style_surface").mock(
+        return_value=httpx.Response(200, json={"ok": True, "count": 2}))
+    await _tool("style_surface")(target="wall", color="blue", opacity=0.4)
+    assert json.loads(route.calls.last.request.content) == {"target": "wall", "color": "blue", "opacity": 0.4}
+
+
+@respx.mock
+async def test_show_annotations_tool_payload(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
+    await _tool("show_annotations")(on=True)
+    assert json.loads(route.calls.last.request.content)["ops"][0] == {
+        "op": "env", "set": {"room.annotations": True}}
+
+
+@respx.mock
 async def test_query_room_summarizes(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json={

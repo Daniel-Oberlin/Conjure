@@ -157,7 +157,7 @@ def test_expected_routes_exist(srv):
               "/outpaint_image", "/set_skybox", "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/edit",
               "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",
-              "/texture_surface", "/tunnel"):
+              "/texture_surface", "/style_surface", "/tunnel"):
         assert p in paths, f"missing route {p}"
 
 
@@ -256,6 +256,22 @@ def test_texture_surface_maps_image_onto_surfaces(srv, client):
 def test_texture_surface_unknown_target_errors(srv, client):
     image_id = _procure(client)
     assert client.post("/texture_surface", json={"target": "nope", "image_id": image_id}).json()["ok"] is False
+
+
+def test_style_surface_sets_color_and_opacity(srv, client):
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}]})
+    r = client.post("/style_surface", json={"target": "wall", "color": "blue", "opacity": 0.4})
+    assert r.json()["ok"] is True and r.json()["count"] == 1
+    mat = next(e for e in _entities(client) if e["id"] == "real_wall_1")["components"]["material"]
+    assert mat["color"] == "blue" and mat["opacity"] == 0.4
+    assert mat["transparent"] is True and mat["visible"] is True
+
+
+def test_style_surface_needs_color_or_opacity(srv, client):
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2]}]})
+    assert client.post("/style_surface", json={"target": "wall"}).json()["ok"] is False
 
 
 def test_room_replace_removes_stale_surfaces(srv, client):

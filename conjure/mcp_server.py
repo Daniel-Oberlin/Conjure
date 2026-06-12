@@ -191,6 +191,30 @@ async def texture_surface(target: str, image_id: str, repeat: Optional[float] = 
 
 
 @mcp.tool()
+async def style_surface(target: str, color: Optional[str] = None, opacity: Optional[float] = None) -> str:
+    """Color and/or set the transparency of room surface(s) — e.g. 'make the walls semi-transparent
+    blue', 'make the ceiling glass', 'paint the floor red'.
+
+    target: a surface id ('real_wall_3'), a semantic label ('wall'/'floor'/'ceiling'), or 'all'.
+    color: CSS name or #hex. opacity: 0 (invisible) … 1 (solid); < 1 makes it see-through.
+    (To map an image onto a surface, use texture_surface instead.)
+    """
+    out = await _post("/style_surface", _body(target=target, color=color, opacity=opacity))
+    if not out.get("ok"):
+        return f"Couldn't style {target!r}: {out.get('error', 'unknown error')}."
+    return f"Styled {out['count']} surface(s) ({target})."
+
+
+@mcp.tool()
+async def show_annotations(on: bool = True) -> str:
+    """Show or hide text labels floating on each room surface — each shows its name + id + size, so
+    the user can see what a surface is and reference it (e.g. 'make real_wall_3 blue'). Turn on when
+    the user wants to inspect/identify surfaces."""
+    await _post_patch([{"op": "env", "set": {"room.annotations": on}}])
+    return f"Surface annotations {'on' if on else 'off'}."
+
+
+@mcp.tool()
 async def add_entity(
     shape: str,
     color: str = "white",
