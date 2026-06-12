@@ -5,6 +5,10 @@
 - Replace holodeck walls with actual walls from the device
 - Hide / show / decorate walls with images, etc.
 
+## Performance
+
+- Can we somehow inject the world view into the prompt before each query to the LLM so that we save a call to get the world?  Would that make a difference?
+
 ## Web
 
 - Perform web requests
@@ -26,6 +30,12 @@
 - Fixed Camera
 - Vehicle
 - etc.
+
+## Dynamic content
+- Keep store of created content, version controlled?
+- Water picture
+- Solar system animation
+
 
 ## CLI Client
 
