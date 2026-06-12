@@ -108,24 +108,15 @@
     if (!on) { if (lbl) el.removeChild(lbl); return; }
     var text = (el.dataset.semantic || "surface") + " (" + el.id + ")"
       + (el.dataset.ext ? "\n" + el.dataset.ext : "");
-    if (lbl) { lbl.querySelector(".surface-label-text").setAttribute("text", "value", text); return; }
-    // A camera-facing dark plate (so it's readable + clearly visible) with double-sided text on top
-    // (double-sided so a wrong-facing billboard can't hide it).
+    if (lbl) { lbl.setAttribute("text", "value", text); return; }
+    // Just the text — camera-facing, double-sided, drawn on top (no background plate).
     lbl = document.createElement("a-entity");
     lbl.setAttribute("class", "surface-label");
     lbl.setAttribute("position", "0 0 0.06");
     lbl.setAttribute("billboard", "");
     lbl.setAttribute("overlay", "");            // draw on top (fixes XR occlusion/depth-culling)
-    lbl.setAttribute("geometry", { primitive: "plane", width: 1.3, height: 0.42 });
-    lbl.setAttribute("material", { color: "#04141c", opacity: 0.85, transparent: true,
-      side: "double", shader: "flat" });
-    var t = document.createElement("a-entity");
-    t.setAttribute("class", "surface-label-text");
-    t.setAttribute("position", "0 0 0.01");
-    t.setAttribute("overlay", "");
-    t.setAttribute("text", { value: text, align: "center", color: "#bff3ff", width: 1.2,
+    lbl.setAttribute("text", { value: text, align: "center", color: "#bff3ff", width: 1.3,
       wrapCount: 20, baseline: "center", side: "double" });
-    lbl.appendChild(t);
     el.appendChild(lbl);
   }
 
@@ -319,8 +310,6 @@
     AFRAME.registerComponent("room-capture", {
       init: function () {
         this.clientId = "hs_" + Math.random().toString(36).slice(2, 8);
-        this.ids = new WeakMap();   // stable id per XRPlane object (persists across frames)
-        this.n = 0;
         this.lastPost = 0;
         this._resetSpace = null;
         var self = this;
@@ -351,13 +340,18 @@
           this._resetSpace = refSpace;
           if (refSpace.addEventListener) refSpace.addEventListener("reset", this._onReset);
         }
-        var ids = this.ids, self = this, surfaces = [], floor = null;
+        var self = this, surfaces = [], floor = null;
         frame.detectedPlanes.forEach(function (plane) {
           var pose;
           try { pose = frame.getPose(plane.planeSpace, refSpace); } catch (e) { return; }
           if (!pose) return;
           var label = plane.semanticLabel || (plane.orientation === "horizontal" ? "floor" : "wall");
-          if (!ids.has(plane)) ids.set(plane, "real_" + label + "_" + (self.n++));
+          // Stable id from semantic + position (decimeter grid), NOT the ephemeral plane object —
+          // so re-captures (boundary exit/re-entry recreate the plane objects) map to the SAME
+          // surface and the server updates it in place, preserving director edits like color.
+          var pp = pose.transform.position;
+          var gid = function (v) { return Math.round(v * 10); };
+          var sid = "real_" + label + "_" + gid(pp.x) + "_" + gid(pp.y) + "_" + gid(pp.z);
           var poly = plane.polygon || [];
           var minx = 1e9, maxx = -1e9, minz = 1e9, maxz = -1e9;
           poly.forEach(function (pt) {
@@ -368,7 +362,7 @@
           var p = pose.transform.position, o = pose.transform.orientation;
           var miny = 1e9, maxy = -1e9;   // planes should be flat (y≈0); capture range as a sanity check
           poly.forEach(function (pt) { miny = Math.min(miny, pt.y); maxy = Math.max(maxy, pt.y); });
-          var s = { id: ids.get(plane), semantic: label, position: [p.x, p.y, p.z],
+          var s = { id: sid, semantic: label, position: [p.x, p.y, p.z],
                     rotation: self._euler(o), extent: [w, h],
                     // raw, untransformed plane data — for diagnosing the pose→entity mapping
                     debug: { pos: [p.x, p.y, p.z], quat: [o.x, o.y, o.z, o.w],
