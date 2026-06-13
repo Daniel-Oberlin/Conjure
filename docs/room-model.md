@@ -277,6 +277,69 @@ the world model is frame-agnostic. (`room-capture._updateWorldFrame` in `client/
 same physical anchor. With content already anchor-relative, the world reloads fixed to the real room
 (vision's "persistent rooms"; spec §3). Pairs with Phase 6 memory (where the world doc is persisted).
 
+## 8b. Shared world frame — multi-user co-location 🟡 design / 🔴 platform dependency
+
+**One model, N perceptions.** There is exactly **one** world model (the server doc) in exactly **one**
+coordinate frame (the authority's anchor frame, §8a). A secondary headset does **not** build its own
+model — it *consumes* the shared one (§8: only the authority authors room geometry). It has a
+*perception* (its own WebXR planes + tracking origin), not a model. So "does the secondary's model map
+onto the world model?" collapses to a single rigid transform:
+
+> **T** = (secondary's tracking space) → (authority's anchor frame)
+
+With **T**, the secondary renders identically to the authority: it parks its `#world-root` at the shared
+frame and draws everything anchor-relative — the **exact mechanism §8a already built**. Note `T` *is*
+`room-capture._anchorInv` (refSpace → anchor frame); the only thing that differs per headset is **how
+that transform is obtained**, not how it's used. Room **ids never differ**: they're authored once by the
+authority and broadcast; secondaries never generate them (the position-derived id scheme in §4 assumes a
+single writer — and there is one).
+
+**The gap.** Today the frame lives *only* inside the authority client's session (`room-capture._anchor`;
+the server stores `authorityClientId` but no anchor/origin — the model is frame-agnostic, §8a). Nothing
+a secondary (or a re-joining authority) can localize to. Multi-user requires **promoting the frame to
+shared, resolvable state** — the *same* promotion cross-session persistence needs, so one investment
+serves both.
+
+**Schema (design).** Publish the frame into the model:
+```jsonc
+environment.room.worldAnchor = {
+  "id": "wa_<uuid>",                 // logical id of the shared frame
+  "method": "spatial-anchor" | "registration" | "manual",
+  "authorityClientId": "<creator>",
+  "handle": "<platform shared/persistent anchor uuid>",  // spatial-anchor method
+  "createdRev": <int>
+  // registration/manual carry no handle: each client derives T itself (see below)
+}
+```
+
+**Client flow (design).** Factor `room-capture` into *obtain the world anchor* → *use it* (the "use"
+half — pin `#world-root` every frame — already exists and is shared verbatim):
+- **Authority:** create the anchor, `requestPersistentHandle()`, publish `worldAnchor{handle,…}`. (Its
+  own render path is unchanged.)
+- **Secondary:** read `worldAnchor` from the snapshot → `restorePersistentAnchors([handle])` → an
+  `XRAnchor` in *its* refSpace → assign it as `_anchor`; the existing per-frame `_updateWorldFrame` does
+  the rest. Same call as cross-session restore, so the two features share a code path.
+
+**Obtaining T — layered, decreasing reliance on platform features:**
+- **(a) Native shared spatial anchors** — authority shares a Meta colocation/shared anchor; secondary
+  *resolves* it → `T` directly. Cleanest. **Biggest risk:** WebXR anchors are session/device-local and
+  cross-device sharing is Meta-specific — it **may not be exposed to the browser/WebXR**, which could
+  force a native shell or block (a). *Spike this before committing.*
+- **(b) Geometry registration (strong fallback, no special API)** — the secondary runs its own plane
+  detection and registers its local walls/corners against the **broadcast room model** (match normals +
+  corner correspondences → solve the rigid `T`, write it straight into `_anchorInv`). Reuses the room as
+  its own fiducial; costs compute and is ambiguous in symmetric/empty rooms.
+- **(c) Manual / marker calibration (last resort)** — a printed marker or a two-point "touch here, then
+  here" gesture → `T`. Always works; least magical.
+
+**Invariants that make this safe:** ids stay **authority-owned** (do *not* let secondaries contribute
+geometry, or the single-writer id assumption breaks); **drift handling is free** — every headset
+re-reads its shared-anchor pose each frame and re-pins `#world-root`, so independent tracking drift and
+recenters self-correct per device, exactly as for the authority. **Verdict:** the *data* architecture is
+already multi-user-ready (single model, single frame, authority-owned ids, anchor-relative render that
+generalizes per-device); the only missing piece is frame-promotion + a way for secondaries to localize
+(`T`) — well-contained, and the §8 authority concept is the right shape to receive it.
+
 ## 9. MCP / director surface 🟡
 
 Coarse/intent-level tools (architecture §8). Real surfaces also appear in `query_world` as
@@ -332,15 +395,17 @@ Each slice is independently demoable in-headset:
 - **D — Progressive refinement (uniform edit).** `refine_room_scan` streaming mesh deltas; surfaces keep
   their ids/materials as geometry sharpens. *Demo: "scan in detail" → edits still target "the wall."*
 - **E — Occlusion.** Depth-sensing occluder (client-side).
-- **F — Multi-headset + persistence (stretch).** Room authority + co-location alignment; anchor storage
-  so a world reloads fixed to the room.
+- **F — Multi-headset + persistence (stretch).** Room authority + co-location alignment (the shared
+  world frame + `T` strategies, §8b); anchor storage so a world reloads fixed to the room.
 
 ## 13. Open questions / risks 🔴
 
 - **A-Frame ↔ raw WebXR**: confirm plane/mesh/depth access + session lifecycle inside the current
   A-Frame setup on the installed Quest Browser (custom component reading `frame.detected*`). Spike first.
 - **Coordinate stability & co-location**: reference-space drift within a session; **shared origin** for
-  multi-headset (§8) and cross-session (anchors). Decide when to anchor (capture vs mount time).
+  multi-headset (§8b) and cross-session (anchors). Decide when to anchor (capture vs mount time). **Open
+  unknown:** is cross-device shared/persistent anchor *resolution* exposed to WebXR in the Quest Browser,
+  or only to native SDKs? Gates strategy (a) vs the (b) registration fallback — spike before committing.
 - **Mesh volume / throttling & segmentation**: simplification + delta strategy; mapping mesh segments to
   stable semantic surface ids so uniform editing (§7) holds.
 - **Schema fit**: `real` stylable entities vs a dedicated `room` block — lean entities for reuse; ensure
