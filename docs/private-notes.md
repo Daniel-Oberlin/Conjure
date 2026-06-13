@@ -19,17 +19,17 @@
 - Perform web requests
 - Fetch images or other content from the web
 
-## Visual
+## Environment
 
-- Animation for pending box (sending dynamic code to the headset)
-- Skyboxes should be set at ground level, not in mid-air
-- Dynamic code should be deterministic and anchored to a precise timestamp for consistency across multiple headsets
-- Sky dome
-- Panorama photo walls with optional sky
-- Floor
+- Need a name for skybox, skydone, panorama, containing box, holodeck
+ - Environment?  Theater?  Boundary?  Enclosure?
+- Problem with Skyboxes, the floor is way below us
+- Implement skydome, panorama, holodeck, containing box
 
 ## Host Modes
 
+- How to reconcile host movement with real movement?
+ - in host mode, the host is attached to your headset?
 - Headset
 - Drone (use drone controls)
 - Walker (movement bound to floor, maybe use second stick for view)
@@ -38,12 +38,23 @@
 - etc.
 
 ## Dynamic content
+- What do we call dynamic modules?
+- Animation for pending box (sending dynamic code to the headset- Dynamic code should be deterministic and anchored to a precise timestamp for consistency across multiple headsets
 - Keep store of created content, version controlled?
 - Water picture
+- Milkdrop style animations on ceiling, in stereo, planetarium style or in front of you
 - Solar system animation
 - Live webcam video
 - Terminal shell with voice
 - X11 window
+
+## Persistance
+- Preferences
+ - colors
+- Asset store
+- Worlds store
+ - Different worlds can map onto the same location
+- Dymamic module store
 
 ## CLI Client
 
