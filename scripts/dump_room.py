@@ -7,10 +7,24 @@ Usage:  python scripts/dump_room.py
 """
 
 import json
+import math
 import os
 import urllib.request
 
 URL = os.environ.get("CONJURE_URL", "http://localhost:8080") + "/world"
+
+
+def normal_from_euler(rot):
+    """World-space normal of the rendered <a-plane> (its local +Z), given A-Frame XYZ euler degrees.
+    Independent of the Z (roll) term, so it isolates how the surface FACES from any in-plane roll."""
+    x, y, z = (math.radians(a) for a in (rot + [0, 0, 0])[:3])
+    c1, s1, c2, s2 = math.cos(x), math.sin(x), math.cos(y), math.sin(y)
+    return (s2, -c2 * s1, c1 * c2)
+
+
+def _yaw(n):
+    """Compass yaw of the normal about vertical, degrees — for spotting walls swung off-axis."""
+    return round(math.degrees(math.atan2(n[0], -n[2])), 1)
 
 
 def main() -> int:
@@ -30,7 +44,10 @@ def main() -> int:
         ext = e.get("components", {}).get("surface", {}).get("extent")
         ext = [round(x, 2) for x in ext] if ext else ext
         fid = e["meta"].get("friendly_id", "?")
+        n = normal_from_euler(t.get("rotation", [0, 0, 0]))
+        nstr = [round(c, 2) for c in n]
         print(f"  #{str(fid):3} {e['meta'].get('semantic', '?'):9} pos={pos}  rot={rot}  ext={ext}")
+        print(f"            normal={nstr}  yaw={_yaw(n)}°  vertical={'yes' if abs(n[1]) < 0.3 else 'no'}")
         dbg = e.get("meta", {}).get("debug")
         if dbg:
             q = [round(x, 3) for x in dbg.get("quat", [])]

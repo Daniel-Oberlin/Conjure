@@ -446,15 +446,16 @@
         surfaces.forEach(function (s) {
           var off = INSET[s.semantic];
           if (off == null || !walls.length) return;
-          var sn = new V3(0, 0, 1).applyQuaternion(s._lq), best = null, bestD = 0.6;
+          // A WebXR plane lies in its local X-Z plane, so its NORMAL is the +Y axis (not +Z).
+          var sn = new V3(0, 1, 0).applyQuaternion(s._lq), best = null, bestD = 0.6;
           walls.forEach(function (wl) {
-            var wn = new V3(0, 0, 1).applyQuaternion(wl._lq);
+            var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
             if (Math.abs(wn.dot(sn)) < 0.85) return;                  // must be ~parallel to the wall
             var d = Math.abs(s._lp.clone().sub(wl._lp).dot(wn));       // distance from the wall plane
             if (d < bestD) { bestD = d; best = wl; }
           });
           if (!best) return;
-          var n = new V3(0, 0, 1).applyQuaternion(best._lq);
+          var n = new V3(0, 1, 0).applyQuaternion(best._lq);
           var dist = s._lp.clone().sub(best._lp).dot(n);
           var sign = dist >= 0 ? 1 : -1;                              // keep it on the side it was on
           var fp = s._lp.clone().sub(n.clone().multiplyScalar(dist)).add(n.clone().multiplyScalar(sign * off));
