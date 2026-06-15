@@ -53,7 +53,8 @@ def main() -> int:
             q = [round(x, 3) for x in dbg.get("quat", [])]
             rp = [round(x, 2) for x in dbg.get("pos", [])]
             print(f"            raw: label={dbg.get('label')} orient={dbg.get('orient')} "
-                  f"pos={rp} quat={q} polyY={[round(y,3) for y in dbg.get('polyY',[])]} n={dbg.get('n')}")
+                  f"pos={rp} quat={q} polyY={[round(y,3) for y in dbg.get('polyY',[])]} n={dbg.get('n')} "
+                  f"reg={dbg.get('registered')} [{dbg.get('regStat')}]")
     return 0
 
 

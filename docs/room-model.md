@@ -271,6 +271,24 @@ the same frame and are **stable across recenters** (no more re-capture churn or 
 to identity (today's behavior) when anchors aren't available (desktop / no support). Client-only —
 the world model is frame-agnostic. (`room-capture._updateWorldFrame` in `client/conjure-client.js`.)
 
+**Geometry-registered frame — stability across the boundary flip (implemented).** The WebXR anchor
+alone is *not* enough. Measured on-device: **leaving the room boundary and returning relocalizes the
+whole tracking frame** — a single rigid jump of **~167° yaw + ~3 m translation** (gravity preserved),
+and the anchor flips with it. Everything stored anchor-relative then moves: every surface re-mints its
+id (server `replace` resets friendly numbers + director edits) and placed content rotates off the real
+walls. A re-detected plane is a brand-new `XRPlane`, so object-identity caching can't save it either.
+
+The fix uses the **room's own geometry as the source of truth**, not the anchor. We keep a persistent
+**reference constellation** of surfaces; each capture, `room-capture._register` solves the single
+yaw+translation transform aligning the newly detected planes onto it — recovering yaw from the *shift in
+surface-normal directions* (no prior pairing needed, so the ~180° flip is fine), then translation, then
+scoring candidates by position inliers. That transform **is** the world frame (`_Tmat`): surfaces
+re-inherit their ids by nearest-reference match, and `#world-root` is parked at `_Tmat`⁻¹ so **placed
+content stays locked** too. Validated against real before/after captures: **43/44 surfaces keep their id
+across the flip** (vs 1/47 before). The WebXR anchor is now just the **bootstrap** frame for the first
+capture; a `reset` event forces immediate re-registration. This is exactly the §8b registration path, so
+the same machinery serves multi-user co-location.
+
 **Cross-session persistence (next).** Persist the anchor handle
 (`anchor.requestPersistentHandle()` → store the UUID) and restore it next session
 (`session.restorePersistentAnchors`/`restorePersistentAnchor`), re-localizing the saved world onto the

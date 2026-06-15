@@ -335,24 +335,43 @@
         this.clientId = "hs_" + Math.random().toString(36).slice(2, 8);
         this.lastPost = 0;
         this._resetSpace = null;
-        this._anchor = null;        // the single WebXR anchor that defines the persistent world frame
+        this._anchor = null;        // a WebXR anchor — only the BOOTSTRAP frame now (see below)
         this._anchorReq = false;
-        this._anchorInv = null;     // inverse of the anchor's current pose (refSpace → anchor frame)
-        this._planeIds = new WeakMap();  // XRPlane object → its stable surface id (survives drift/recenter)
+        this._anchorInv = null;     // refSpace → world frame, used by the capture (= _Tmat once registered)
+        // Geometry-registered world frame. The Quest's tracking origin (and any WebXR anchor) can flip
+        // ~180° + several metres when you leave the room boundary and return (docs/room-model.md §8a), so
+        // we don't trust it for identity. Instead we keep a REFERENCE constellation of the room's own
+        // surfaces and, each capture, solve the single yaw+translation transform that aligns the newly
+        // detected planes onto it (_register). That transform (_Tmat: refSpace → reference frame) IS the
+        // world frame: surface ids stay put across the jump, and #world-root is parked at its inverse so
+        // placed content stays locked to the real room too.
+        this._ref = [];             // [{id, sem, ext:[w,h], pos:Vector3, nyaw, orient}] in the reference frame
+        this._Tmat = null;          // Matrix4: refSpace → reference frame (authoritative once _haveT)
+        this._haveT = false;
+        this._refSeq = 0;           // counter for minting brand-new surface ids
         var self = this;
-        // A recenter (Meta button) / put-down fires a 'reset' on the reference space — re-capture
-        // immediately. With the world anchor this is mostly cosmetic (anchor coords are stable), but
-        // it keeps things fresh.
+        // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
+        // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
         this._onReset = function () { self.lastPost = 0; };
       },
       // Force an immediate re-capture (manual realign — see the /room/realign signal below).
       recapture: function () { this.lastPost = 0; },
-      // Pin the world container (#world-root) to a real-world anchor so ALL content (room + models +
-      // images) stays put + consistent across a recenter. Stores the anchor→refSpace inverse so the
-      // capture can express planes in the (stable, persistent) anchor frame. Falls back to identity
-      // when anchors aren't available (desktop / no support) — i.e. today's behavior.
+      // Park #world-root so content stored in the REFERENCE frame renders at the right real-world spot.
+      // Once registration has a frame (_haveT) that frame is authoritative — world-root = _Tmat⁻¹ and
+      // the capture expresses planes via _Tmat. Before the first capture we bootstrap from a WebXR
+      // anchor if available, else identity (desktop / no support); the reference is then snapped from
+      // that first capture, so the hand-off is seamless.
       _updateWorldFrame: function (frame, refSpace) {
         var THREE = AFRAME.THREE;
+        if (this._haveT) {
+          var inv = this._Tmat.clone().invert();   // reference frame → refSpace = world-root's pose
+          var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
+          inv.decompose(ip, iq, is);
+          var wr = document.getElementById("world-root");
+          if (wr) { wr.object3D.position.copy(ip); wr.object3D.quaternion.copy(iq); }
+          this._anchorInv = this._Tmat;
+          return;
+        }
         if (!this._anchor && !this._anchorReq && frame.createAnchor && window.XRRigidTransform) {
           var self = this; this._anchorReq = true;
           try {
@@ -386,6 +405,68 @@
         var d = THREE.MathUtils.radToDeg;
         return [d(e.x), d(e.y), d(e.z)];
       },
+      _yawOf: function (n) { return Math.atan2(n.x, n.z); },   // compass yaw of a horizontal normal
+      // Solve the single rigid yaw+translation transform mapping the newly detected planes (in the
+      // current refSpace) onto the persistent reference constellation — i.e. recover how the Quest's
+      // frame jumped, using the room's own geometry. Returns a Matrix4 (refSpace → reference frame) when
+      // confident, else null (caller then holds the last frame). Robust to the ~180° boundary flip
+      // because the yaw is read from the SHIFT in surface-normal directions, needing no prior pairing.
+      _register: function (cur) {
+        var THREE = AFRAME.THREE, ref = this._ref, UP = new THREE.Vector3(0, 1, 0);
+        if (ref.length < 3) { this._regStat = "ref<3"; return null; }
+        function wrap(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; }
+        // Step 1 — candidate yaw(s): histogram the normal-yaw delta over same-semantic, similar-size
+        // vertical pairs; every true correspondence votes for the same delta, so the real yaw dominates.
+        var deltas = [];
+        cur.forEach(function (c) {
+          if (c.orient !== "vertical") return;
+          ref.forEach(function (r) {
+            if (r.orient !== "vertical" || r.sem !== c.sem) return;
+            if (Math.abs(r.ext[0] - c.ext[0]) > 0.4 || Math.abs(r.ext[1] - c.ext[1]) > 0.4) return;
+            deltas.push(wrap(r.nyaw - c.nyaw));
+          });
+        });
+        if (deltas.length < 3) { this._regStat = "dlt=" + deltas.length; return null; }
+        var bin = Math.PI / 30, hist = {};                          // 6° bins
+        deltas.forEach(function (d) { var b = Math.round(d / bin); (hist[b] = hist[b] || []).push(d); });
+        var keys = Object.keys(hist).sort(function (a, b) { return hist[b].length - hist[a].length; });
+        var thetas = keys.slice(0, 3).map(function (k) {            // top 3 peaks, circular-mean each
+          var s = 0, c2 = 0; hist[k].forEach(function (d) { s += Math.sin(d); c2 += Math.cos(d); });
+          return Math.atan2(s, c2);
+        });
+        // Step 2/3 — for each candidate yaw, solve translation (densest cell of ref.pos − R·cur.pos over
+        // same-size pairs) and score by how many planes land on a same-semantic reference surface.
+        var best = null;
+        thetas.forEach(function (theta) {
+          var qy = new THREE.Quaternion().setFromAxisAngle(UP, theta);
+          var grid = {}, bestCell = null, bestN = 0;
+          cur.forEach(function (c) {
+            var rc = c.pos.clone().applyQuaternion(qy);
+            ref.forEach(function (r) {
+              if (r.sem !== c.sem) return;
+              if (Math.abs(r.ext[0] - c.ext[0]) > 0.3 || Math.abs(r.ext[1] - c.ext[1]) > 0.3) return;
+              var tx = r.pos.x - rc.x, tz = r.pos.z - rc.z;
+              var k = Math.round(tx / 0.25) + "," + Math.round(tz / 0.25);
+              var cell = grid[k] || (grid[k] = { sx: 0, sz: 0, n: 0 });
+              cell.sx += tx; cell.sz += tz; cell.n++;
+              if (cell.n > bestN) { bestN = cell.n; bestCell = cell; }
+            });
+          });
+          if (!bestCell) return;
+          var Tmat = new THREE.Matrix4().compose(
+            new THREE.Vector3(bestCell.sx / bestCell.n, 0, bestCell.sz / bestCell.n), qy, new THREE.Vector3(1, 1, 1));
+          var inl = 0;
+          cur.forEach(function (c) {
+            var tp = c.pos.clone().applyMatrix4(Tmat), bd = 0.4;
+            ref.forEach(function (r) { if (r.sem === c.sem) { var d = tp.distanceTo(r.pos); if (d < bd) bd = d; } });
+            if (bd < 0.4) inl++;
+          });
+          if (!best || inl > best.inl) best = { Tmat: Tmat, inl: inl };
+        });
+        this._regStat = "inl=" + (best ? best.inl : 0) + "/" + cur.length + " dlt=" + deltas.length;
+        if (!best || best.inl < 4 || best.inl < 0.4 * cur.length) return null;   // not confident → caller holds
+        return best.Tmat;
+      },
       tick: function (time) {
         var sceneEl = this.el.sceneEl, frame = sceneEl.frame;
         if (!frame) return;
@@ -395,37 +476,20 @@
           this._resetSpace = refSpace;
           if (refSpace.addEventListener) refSpace.addEventListener("reset", this._onReset);
         }
-        this._updateWorldFrame(frame, refSpace);            // EVERY frame: pin content to the anchor
+        this._updateWorldFrame(frame, refSpace);            // EVERY frame: park #world-root on the frame
         if (!frame.detectedPlanes) return;                  // capture needs plane detection
         if (time - this.lastPost < 2000) return;            // throttle to ~0.5 Hz
-        var THREE = AFRAME.THREE, anchorInv = this._anchorInv;
-        var self = this, surfaces = [], floor = null;
+        var THREE = AFRAME.THREE, self = this, UP = new THREE.Vector3(0, 1, 0);
+
+        // Pass A — read every detected plane in the CURRENT refSpace (no world frame applied yet).
+        var cur = [];
         frame.detectedPlanes.forEach(function (plane) {
           var pose;
           try { pose = frame.getPose(plane.planeSpace, refSpace); } catch (e) { return; }
           if (!pose) return;
-          var label = plane.semanticLabel || (plane.orientation === "horizontal" ? "floor" : "wall");
-          // Express the plane in the ANCHOR frame (multiply by the anchor's inverse) so its coords
-          // are stable + consistent with all other content. (Identity when no anchor — same as before.)
           var rp = pose.transform.position, ro = pose.transform.orientation;
-          var planeMat = new THREE.Matrix4().compose(
-            new THREE.Vector3(rp.x, rp.y, rp.z), new THREE.Quaternion(ro.x, ro.y, ro.z, ro.w),
-            new THREE.Vector3(1, 1, 1));
-          var m = anchorInv ? anchorInv.clone().multiply(planeMat) : planeMat;
-          var lp = new THREE.Vector3(), lq = new THREE.Quaternion(), ls = new THREE.Vector3();
-          m.decompose(lp, lq, ls);
-          // Stable id: assign once per tracked plane and CACHE it against the XRPlane object, whose
-          // identity the WebXR spec preserves across frames while it stays tracked. So the id no longer
-          // moves when the pose drifts, the origin recenters, or the anchor is re-created (put-down /
-          // pick-up) — the server keeps updating the SAME surface in place, preserving its friendly id
-          // and director edits. Seeded from semantic + anchor-frame position for readability; a brand-
-          // new plane (or a fresh session, where plane objects are new) mints a new id.
-          var sid = self._planeIds.get(plane);
-          if (!sid) {
-            var gid = function (v) { return Math.round(v * 10); };
-            sid = "real_" + label + "_" + gid(lp.x) + "_" + gid(lp.y) + "_" + gid(lp.z);
-            self._planeIds.set(plane, sid);
-          }
+          var quat = new THREE.Quaternion(ro.x, ro.y, ro.z, ro.w);
+          var nrm = UP.clone().applyQuaternion(quat);       // the plane's normal (its local +Y), in refSpace
           var poly = plane.polygon || [];
           var minx = 1e9, maxx = -1e9, minz = 1e9, maxz = -1e9, miny = 1e9, maxy = -1e9;
           poly.forEach(function (pt) {
@@ -433,14 +497,53 @@
             minz = Math.min(minz, pt.z); maxz = Math.max(maxz, pt.z);
             miny = Math.min(miny, pt.y); maxy = Math.max(maxy, pt.y);
           });
-          var w = poly.length ? (maxx - minx) : 1, h = poly.length ? (maxz - minz) : 1;
-          surfaces.push({ id: sid, semantic: label, position: [lp.x, lp.y, lp.z],
-            rotation: self._euler(lq), extent: [w, h], _lp: lp.clone(), _lq: lq.clone(),
-            debug: { pos: [rp.x, rp.y, rp.z], quat: [ro.x, ro.y, ro.z, ro.w],
-                     orient: plane.orientation || null, label: plane.semanticLabel || null,
-                     polyY: [miny, maxy], n: poly.length, anchored: !!anchorInv } });
-          if (label === "floor" && (!floor || w * h > floor._area)) {
-            floor = { floorPolygon: poly.map(function (pt) { return [pt.x, pt.z]; }), height: 2.6, _area: w * h };
+          cur.push({
+            pos: new THREE.Vector3(rp.x, rp.y, rp.z), quat: quat, nrm: nrm,
+            nyaw: Math.atan2(nrm.x, nrm.z),
+            sem: plane.semanticLabel || (plane.orientation === "horizontal" ? "floor" : "wall"),
+            orient: plane.orientation || (Math.abs(nrm.y) > 0.7 ? "horizontal" : "vertical"),
+            ext: [poly.length ? (maxx - minx) : 1, poly.length ? (maxz - minz) : 1],
+            poly: poly, polyY: [miny, maxy], raw: { pos: [rp.x, rp.y, rp.z], quat: [ro.x, ro.y, ro.z, ro.w] }
+          });
+        });
+        if (!cur.length) return;
+
+        // Registration — recover the frame transform, or bootstrap (first capture) / hold (low-confidence).
+        var reg = this._register(cur), registered = !!reg, Tmat;
+        if (reg) { Tmat = this._Tmat = reg; this._haveT = true; }
+        else if (this._haveT) { Tmat = this._Tmat; }                      // hold last good frame this capture
+        else { Tmat = this._anchorInv || new THREE.Matrix4(); this._Tmat = Tmat; this._haveT = true; }  // establish
+        this._anchorInv = Tmat;
+
+        // Pass B — express each plane in the reference frame and assign a STABLE id by the nearest
+        // reference surface of the same semantic; genuinely-new surfaces mint an id and join the reference.
+        var surfaces = [], floor = null, claimed = new Set();
+        cur.forEach(function (c) {
+          var planeMat = new THREE.Matrix4().compose(c.pos, c.quat, new THREE.Vector3(1, 1, 1));
+          var lp = new THREE.Vector3(), lq = new THREE.Quaternion(), ls = new THREE.Vector3();
+          Tmat.clone().multiply(planeMat).decompose(lp, lq, ls);
+          var best = null, bd = 0.5;
+          self._ref.forEach(function (r) {
+            if (r.sem !== c.sem || claimed.has(r)) return;
+            var d = lp.distanceTo(r.pos); if (d < bd) { bd = d; best = r; }
+          });
+          var sid;
+          if (best) {                                                     // re-inherit the existing id
+            sid = best.id; claimed.add(best);
+            best.pos.lerp(lp, 0.3);                                       // track slow real drift
+            best.ext = c.ext.slice(); best.nyaw = self._yawOf(UP.clone().applyQuaternion(lq));
+          } else {                                                        // genuinely new → mint + remember
+            sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
+            best = { id: sid, sem: c.sem, ext: c.ext.slice(), pos: lp.clone(),
+                     nyaw: self._yawOf(UP.clone().applyQuaternion(lq)), orient: c.orient };
+            self._ref.push(best); claimed.add(best);
+          }
+          surfaces.push({ id: sid, semantic: c.sem, position: [lp.x, lp.y, lp.z],
+            rotation: self._euler(lq), extent: [c.ext[0], c.ext[1]], _lp: lp.clone(), _lq: lq.clone(),
+            debug: { pos: c.raw.pos, quat: c.raw.quat, orient: c.orient, label: c.sem,
+                     polyY: c.polyY, n: c.poly.length, registered: registered, regStat: self._regStat } });
+          if (c.sem === "floor" && (!floor || c.ext[0] * c.ext[1] > floor._area)) {
+            floor = { floorPolygon: c.poly.map(function (pt) { return [pt.x, pt.z]; }), height: 2.6, _area: c.ext[0] * c.ext[1] };
           }
         });
         if (!surfaces.length) return;
@@ -450,25 +553,37 @@
         // a noisy inset plane would otherwise keep.) Geometry only — fill style is the server's job.
         var V3 = THREE.Vector3;
         var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
+        var floors = surfaces.filter(function (s) { return s.semantic === "floor"; });
         var INSET = { "door": 0.012, "window": 0.012, "wall art": 0.022 };
         surfaces.forEach(function (s) {
           var off = INSET[s.semantic];
           if (off == null || !walls.length) return;
           // A WebXR plane lies in its local X-Z plane, so its NORMAL is the +Y axis (not +Z).
-          var sn = new V3(0, 1, 0).applyQuaternion(s._lq), best = null, bestD = 0.6;
+          var sn = new V3(0, 1, 0).applyQuaternion(s._lq), best = null, bestD = 0.3;
           walls.forEach(function (wl) {
             var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
-            if (Math.abs(wn.dot(sn)) < 0.85) return;                  // must be ~parallel to the wall
-            var d = Math.abs(s._lp.clone().sub(wl._lp).dot(wn));       // distance from the wall plane
+            if (Math.abs(wn.dot(sn)) < 0.9) return;                   // must be ~parallel to the wall (≤26°)
+            var d = Math.abs(s._lp.clone().sub(wl._lp).dot(wn));       // perpendicular distance to the wall plane
             if (d < bestD) { bestD = d; best = wl; }
           });
           if (!best) return;
           var n = new V3(0, 1, 0).applyQuaternion(best._lq);
-          var dist = s._lp.clone().sub(best._lp).dot(n);
-          var sign = dist >= 0 ? 1 : -1;                              // keep it on the side it was on
-          var fp = s._lp.clone().sub(n.clone().multiplyScalar(dist)).add(n.clone().multiplyScalar(sign * off));
+          // Decide which way is "into the room": neither the wall's nor the inset's own normal reliably
+          // faces inward (the Quest reports either way), so use the nearest floor centre. `nint` is the
+          // wall normal flipped to point at the interior.
+          var fc = null, fcD = 1e9;
+          floors.forEach(function (fl) { var dd = fl._lp.distanceTo(s._lp); if (dd < fcD) { fcD = dd; fc = fl; } });
+          var inward = fc ? (n.dot(fc._lp.clone().sub(s._lp)) >= 0 ? 1 : -1) : (s._lp.clone().sub(best._lp).dot(n) >= 0 ? -1 : 1);
+          var nint = n.clone().multiplyScalar(inward);
+          // Keep the inset's OWN (locally accurate) depth; only ever push it FORWARD so it clears the wall
+          // by `off`. We do NOT reproject onto the wall's best-fit plane — that plane is slightly tilted /
+          // offset from the real wall at the inset's spot, which left one inset gapped and its neighbour
+          // behind. Clamp, don't reproject: a proud inset is untouched (no spurious gap); a recessed or
+          // coplanar one is nudged just to `off` in front (no z-fight, never occluded).
+          var clr = s._lp.clone().sub(best._lp).dot(nint);             // signed clearance in front of the wall
+          var fp = clr < off ? s._lp.clone().add(nint.clone().multiplyScalar(off - clr)) : s._lp.clone();
           s.position = [fp.x, fp.y, fp.z];
-          s.rotation = best.rotation.slice();                         // adopt the wall's orientation
+          s.rotation = best.rotation.slice();                         // adopt the wall's orientation (parallel)
         });
         surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
         this.lastPost = time;
