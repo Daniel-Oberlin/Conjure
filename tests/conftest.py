@@ -116,6 +116,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "IMAGES", {})  # clean image store per test
     monkeypatch.setattr(server, "resolver", None)
     monkeypatch.setattr(server, "_FRIENDLY_NEXT", 1)  # stable friendly ids per test
+    monkeypatch.setattr(server, "_FRIENDLY_BY_ID", {})
     server.clients.clear()
     return server
 

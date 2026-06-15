@@ -338,6 +338,7 @@
         this._anchor = null;        // the single WebXR anchor that defines the persistent world frame
         this._anchorReq = false;
         this._anchorInv = null;     // inverse of the anchor's current pose (refSpace → anchor frame)
+        this._planeIds = new WeakMap();  // XRPlane object → its stable surface id (survives drift/recenter)
         var self = this;
         // A recenter (Meta button) / put-down fires a 'reset' on the reference space — re-capture
         // immediately. With the world anchor this is mostly cosmetic (anchor coords are stable), but
@@ -413,11 +414,18 @@
           var m = anchorInv ? anchorInv.clone().multiply(planeMat) : planeMat;
           var lp = new THREE.Vector3(), lq = new THREE.Quaternion(), ls = new THREE.Vector3();
           m.decompose(lp, lq, ls);
-          // Stable id from semantic + anchor-frame position (decimeter grid), NOT the ephemeral plane
-          // object — re-captures map to the SAME surface so the server updates it in place (keeping
-          // director edits like color).
-          var gid = function (v) { return Math.round(v * 10); };
-          var sid = "real_" + label + "_" + gid(lp.x) + "_" + gid(lp.y) + "_" + gid(lp.z);
+          // Stable id: assign once per tracked plane and CACHE it against the XRPlane object, whose
+          // identity the WebXR spec preserves across frames while it stays tracked. So the id no longer
+          // moves when the pose drifts, the origin recenters, or the anchor is re-created (put-down /
+          // pick-up) — the server keeps updating the SAME surface in place, preserving its friendly id
+          // and director edits. Seeded from semantic + anchor-frame position for readability; a brand-
+          // new plane (or a fresh session, where plane objects are new) mints a new id.
+          var sid = self._planeIds.get(plane);
+          if (!sid) {
+            var gid = function (v) { return Math.round(v * 10); };
+            sid = "real_" + label + "_" + gid(lp.x) + "_" + gid(lp.y) + "_" + gid(lp.z);
+            self._planeIds.set(plane, sid);
+          }
           var poly = plane.polygon || [];
           var minx = 1e9, maxx = -1e9, minz = 1e9, maxz = -1e9, miny = 1e9, maxy = -1e9;
           poly.forEach(function (pt) {

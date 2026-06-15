@@ -188,6 +188,20 @@ def test_door_surface_defaults_to_translucent(srv, client):
     assert wall["opacity"] == 1.0 and "transparent" not in wall       # walls stay solid
 
 
+def test_friendly_id_reclaimed_after_remove_readd(srv, client):
+    # A surface that vanishes (transient tracking loss → replace removes it) and comes back must
+    # reclaim its number, not climb — otherwise put-down/pick-up renumbers the whole room.
+    def fid():
+        return next(e for e in _entities(client) if e["id"] == "real_wall_1")["meta"]["friendly_id"]
+    wall = {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}
+    client.post("/room", json={"client_id": "h1", "surfaces": [wall]})
+    first = fid()
+    client.post("/room", json={"client_id": "h1", "surfaces": []})          # wall drops out
+    assert not any(e["id"] == "real_wall_1" for e in _entities(client))
+    client.post("/room", json={"client_id": "h1", "surfaces": [wall]})       # and returns
+    assert fid() == first                                                    # same number, not higher
+
+
 def test_texture_surface_resolves_by_friendly_id(srv, client):
     client.post("/room", json={"client_id": "h1", "surfaces": [
         {"id": "real_floor_x", "semantic": "floor", "position": [0, 0, 0], "extent": [3, 3]}]})

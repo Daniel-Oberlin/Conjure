@@ -72,8 +72,21 @@ class ImageRecord:
 IMAGES: dict[str, ImageRecord] = {}
 
 # Short, human-friendly per-surface id shown on annotation labels + usable as a director target
-# (e.g. "make 12 blue"). Sequential; persists on re-capture (update keeps meta.friendly_id).
+# (e.g. "make 12 blue"). Cached by surface id (_FRIENDLY_BY_ID) so a surface that's removed and
+# re-added — e.g. a transient tracking loss on put-down/pick-up — RECLAIMS its number instead of
+# climbing. Update-in-place keeps meta.friendly_id too; this covers the remove+add path.
 _FRIENDLY_NEXT = 1
+_FRIENDLY_BY_ID: dict[str, int] = {}
+
+
+def _friendly_id_for(surface_id: str) -> int:
+    global _FRIENDLY_NEXT
+    fid = _FRIENDLY_BY_ID.get(surface_id)
+    if fid is None:
+        fid = _FRIENDLY_NEXT
+        _FRIENDLY_NEXT += 1
+        _FRIENDLY_BY_ID[surface_id] = fid
+    return fid
 
 app = FastAPI(title="Conjure", version="0.0.1")
 
@@ -257,9 +270,8 @@ def _surface_entity(s: RoomSurface) -> dict:
         surface["polygon"] = s.polygon
     if s.extent is not None:
         surface["extent"] = s.extent
-    global _FRIENDLY_NEXT
-    meta = {"real": True, "semantic": s.semantic, "source": "headset", "friendly_id": _FRIENDLY_NEXT}
-    _FRIENDLY_NEXT += 1
+    meta = {"real": True, "semantic": s.semantic, "source": "headset",
+            "friendly_id": _friendly_id_for(s.id)}
     if s.mesh_segment is not None:
         meta["meshSegment"] = s.mesh_segment
     if s.debug is not None:
