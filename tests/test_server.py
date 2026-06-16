@@ -188,9 +188,10 @@ def test_door_surface_defaults_to_translucent(srv, client):
     assert wall["opacity"] == 1.0 and "transparent" not in wall       # walls stay solid
 
 
-def test_friendly_id_reclaimed_after_remove_readd(srv, client):
-    # A surface that vanishes (transient tracking loss → replace removes it) and comes back must
-    # reclaim its number, not climb — otherwise put-down/pick-up renumbers the whole room.
+def test_friendly_id_stable_after_remove_readd(srv, client):
+    # The friendly number is derived from the surface id (real_wall_1 → 1), so a surface that vanishes
+    # (transient tracking loss → replace removes it) and comes back keeps the SAME number by
+    # construction — no climbing, no put-down/pick-up renumbering.
     def fid():
         return next(e for e in _entities(client) if e["id"] == "real_wall_1")["meta"]["friendly_id"]
     wall = {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}
@@ -204,8 +205,8 @@ def test_friendly_id_reclaimed_after_remove_readd(srv, client):
 
 def test_texture_surface_resolves_by_friendly_id(srv, client):
     client.post("/room", json={"client_id": "h1", "surfaces": [
-        {"id": "real_floor_x", "semantic": "floor", "position": [0, 0, 0], "extent": [3, 3]}]})
-    fid = next(e for e in _entities(client) if e["id"] == "real_floor_x")["meta"]["friendly_id"]
+        {"id": "real_floor_3", "semantic": "floor", "position": [0, 0, 0], "extent": [3, 3]}]})
+    fid = next(e for e in _entities(client) if e["id"] == "real_floor_3")["meta"]["friendly_id"]
     image_id = _procure(client)
     r = client.post("/texture_surface", json={"target": str(fid), "image_id": image_id})
     assert r.json()["ok"] is True and r.json()["count"] == 1

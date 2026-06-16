@@ -115,8 +115,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "image_generators", {"Gemini": FakeImageGenerator()})
     monkeypatch.setattr(server, "IMAGES", {})  # clean image store per test
     monkeypatch.setattr(server, "resolver", None)
-    monkeypatch.setattr(server, "_FRIENDLY_NEXT", 1)  # stable friendly ids per test
-    monkeypatch.setattr(server, "_FRIENDLY_BY_ID", {})
+    # (friendly ids are derived from the surface id now — no counter to reset)
     server.clients.clear()
     return server
 
