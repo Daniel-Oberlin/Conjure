@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -186,8 +187,11 @@ async def index() -> HTMLResponse:
     # Stamp the client script URL with its mtime so a code change always busts the cache. The Quest
     # Browser caches /static across reloads even with no-store, which left headsets running stale JS.
     html = (CLIENT_DIR / "index.html").read_text()
-    v = int((CLIENT_DIR / "conjure-client.js").stat().st_mtime)
+    mtime = (CLIENT_DIR / "conjure-client.js").stat().st_mtime
+    v = int(mtime)
+    build = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={v}")
+    html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     return HTMLResponse(html, headers=_NO_STORE)
 
 

@@ -8,6 +8,13 @@
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   </head>
   <body style="margin: 0">
+    <!-- Client build badge (2D page only; hidden once in immersive AR/VR). The server stamps the build
+         time from the JS file's mtime — the same value as the ?v= cache-bust — and conjure-client.js
+         appends "✓" once it actually runs, so a stale/cached page is obvious at a glance. -->
+    <div id="conjure-version" style="position:fixed;top:8px;right:10px;z-index:99999;font:12px/1.4
+         monospace;color:#9fdcb0;background:rgba(0,0,0,.55);padding:4px 8px;border-radius:6px;">
+      client __CLIENT_VERSION__
+    </div>
     <a-scene background="color: #1a2233"
              room-capture
              webxr="optionalFeatures: plane-detection, mesh-detection, hit-test, anchors, depth-sensing, local-floor">

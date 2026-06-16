@@ -721,5 +721,15 @@
     }).catch(function () {});
   }
 
-  window.addEventListener("load", function () { connect(); setupARButton(); });
+  // Tick the build badge so you can see the live client actually executed (and which ?v= it loaded
+  // from). If the badge shows an old time or never gets the ✓, the page/JS is stale-cached.
+  function markVersion() {
+    var el = document.getElementById("conjure-version");
+    if (!el) return;
+    var s = document.querySelector('script[src*="conjure-client.js"]');
+    var m = s && /[?&]v=(\d+)/.exec(s.src);
+    el.textContent = el.textContent.trim() + (m ? "  ✓ js v" + m[1] : "  ✓ js");
+  }
+
+  window.addEventListener("load", function () { connect(); setupARButton(); markVersion(); });
 })();
