@@ -13,6 +13,7 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -71,22 +72,14 @@ class ImageRecord:
 
 IMAGES: dict[str, ImageRecord] = {}
 
-# Short, human-friendly per-surface id shown on annotation labels + usable as a director target
-# (e.g. "make 12 blue"). Cached by surface id (_FRIENDLY_BY_ID) so a surface that's removed and
-# re-added — e.g. a transient tracking loss on put-down/pick-up — RECLAIMS its number instead of
-# climbing. Update-in-place keeps meta.friendly_id too; this covers the remove+add path.
-_FRIENDLY_NEXT = 1
-_FRIENDLY_BY_ID: dict[str, int] = {}
-
-
+# Short, human-friendly per-surface number shown on annotation labels + usable as a director target
+# (e.g. "make 12 blue"). It IS the number already in the surface id (real_wall_3 → 3) — ONE numbering
+# system, so the label, query_room, the id, and the user's reference all agree. (Previously a separate
+# counter started at 1 while the id started at 0, which drifted off-by-one and confused references.)
+# Stable by construction: same surface id → same number, no caching needed.
 def _friendly_id_for(surface_id: str) -> int:
-    global _FRIENDLY_NEXT
-    fid = _FRIENDLY_BY_ID.get(surface_id)
-    if fid is None:
-        fid = _FRIENDLY_NEXT
-        _FRIENDLY_NEXT += 1
-        _FRIENDLY_BY_ID[surface_id] = fid
-    return fid
+    tail = surface_id.rsplit("_", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
 
 app = FastAPI(title="Conjure", version="0.0.1")
 
@@ -234,7 +227,17 @@ async def reset_world() -> dict:
 
 @app.post("/patch")
 async def post_patch(patch: Patch) -> dict:
-    ops = [op.model_dump() for op in patch.ops]
+    ops: list[dict] = []
+    for op in (o.model_dump() for o in patch.ops):
+        # Resolve update/remove targets so a friendly number / semantic / 'wall 4' works in the generic
+        # tools too (not just the surface tools). Exact ids pass through unchanged; a target that maps to
+        # several surfaces (e.g. 'wall') fans out to one op each.
+        if op.get("op") in ("update", "remove") and op.get("id") is not None:
+            ids = _resolve_op_ids(op["id"])
+            if ids and ids != [op["id"]]:
+                ops.extend({**op, "id": i} for i in ids)
+                continue
+        ops.append(op)
     applied = store.apply_patch(ops, origin=patch.origin)
     await _broadcast({"type": "patch", "patch": applied})
     return applied
@@ -378,18 +381,34 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
     return {"ok": True, "count": len(targets), "image_id": rec.id}
 
 
+_SEM_NUM = re.compile(r"^([a-z][a-z ]*?)\s*#?\s*(\d+)$")
+
+
+def _real_surface_match(e: dict, target: str) -> bool:
+    """Does real surface `e` match a director target — a surface id, semantic label ('wall'), friendly
+    number ('4'), the combined 'wall 4' form, or 'all'? The friendly number equals the id's number."""
+    m = e.get("meta", {})
+    if not m.get("real"):
+        return False
+    t = str(target).strip().lower()
+    sem, fid = m.get("semantic", ""), str(m.get("friendly_id"))
+    if t in ("all", e["id"].lower(), sem) or t == fid:
+        return True
+    mm = _SEM_NUM.match(t)                       # 'wall 4' / 'wall #4'
+    return bool(mm and mm.group(1).strip() in (sem, "surface") and mm.group(2) == fid)
+
+
 def _room_targets(target: str) -> list[dict]:
-    """Real surfaces matching `target`: a surface id, semantic label, friendly id (e.g. '12'), or 'all'."""
-    t = target.lower()
-    out = []
-    for e in store.doc["entities"]:
-        m = e.get("meta", {})
-        if not m.get("real"):
-            continue
-        if (t == "all" or e["id"] == target or m.get("semantic") == t
-                or str(m.get("friendly_id")) == target):
-            out.append(e)
-    return out
+    """Real surfaces matching `target` (see _real_surface_match)."""
+    return [e for e in store.doc["entities"] if _real_surface_match(e, target)]
+
+
+def _resolve_op_ids(target: str) -> list[str]:
+    """Entity ids a patch op should hit: an exact entity id (any entity) wins; otherwise real surfaces
+    matching a friendly number / semantic / 'all'. Lets the generic update/move/remove tools accept the
+    same surface references the surface tools do, so 'wall 4' works no matter which tool the director picks."""
+    exact = [e["id"] for e in store.doc["entities"] if e["id"] == target]
+    return exact or [e["id"] for e in store.doc["entities"] if _real_surface_match(e, target)]
 
 
 class StyleSurfaceRequest(BaseModel):
