@@ -247,10 +247,18 @@
     applyImmersion();
   }
 
+  // The persisted real surfaces from the latest server snapshot. On a page (re)load the room-capture
+  // component re-inits with an EMPTY reference and would otherwise establish a brand-new world frame
+  // (jumping you out of the room); instead it seeds its reference from these so its first capture
+  // registers INTO the persisted frame. Stays null until a snapshot carrying real surfaces arrives.
+  var docSurfaces = null;
+
   function applySnapshot(world) {
     root().innerHTML = "";
     (world.entities || []).forEach(applyEntity);
     applyEnv(world.environment);   // after entities, so immersion can toggle them
+    var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
+    if (reals.length) docSurfaces = reals;     // available to seed the room frame on reload
     console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)");
   }
 
@@ -401,7 +409,7 @@
         var THREE = AFRAME.THREE;
         var quat = new THREE.Quaternion(q.x, q.y, q.z, q.w);
         quat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
-        var e = new THREE.Euler().setFromQuaternion(quat);   // default XYZ, matches A-Frame
+        var e = new THREE.Euler().setFromQuaternion(quat, "YXZ");   // A-Frame applies rotations in YXZ order
         var d = THREE.MathUtils.radToDeg;
         return [d(e.x), d(e.y), d(e.z)];
       },
@@ -508,11 +516,46 @@
         });
         if (!cur.length) return;
 
-        // Registration — recover the frame transform, or bootstrap (first capture) / hold (low-confidence).
-        var reg = this._register(cur), registered = !!reg, Tmat;
+        // Seed the reference from the persisted world doc on a fresh (re)load: the server still holds the
+        // room in its frame, so the first capture REGISTERS into that frame instead of establishing a new
+        // one — no jump, and surfaces re-inherit their ids. (No-op after capturing starts, or when the
+        // doc is empty, e.g. a just-restarted server — then we establish fresh below.)
+        if (!this._ref.length && docSurfaces && docSurfaces.length >= 3) {
+          var Z = new THREE.Vector3(0, 0, 1), d2r = THREE.MathUtils.degToRad, mx = 0;
+          docSurfaces.forEach(function (e) {
+            var t = e.transform || {}, p = t.position || [0, 0, 0], r = t.rotation || [0, 0, 0];
+            var q = new THREE.Quaternion().setFromEuler(new THREE.Euler(d2r(r[0]), d2r(r[1]), d2r(r[2]), "XYZ"));
+            var nrm = Z.clone().applyQuaternion(q);                       // a-plane normal is its local +Z
+            var ex = (e.components && e.components.surface && e.components.surface.extent) || [1, 1];
+            self._ref.push({ id: e.id, sem: (e.meta && e.meta.semantic) || "surface", ext: [ex[0], ex[1]],
+              pos: new THREE.Vector3(p[0], p[1], p[2]), nyaw: Math.atan2(nrm.x, nrm.z),
+              orient: Math.abs(nrm.y) > 0.7 ? "horizontal" : "vertical" });
+            var mm = /_(\d+)$/.exec(e.id); if (mm) mx = Math.max(mx, +mm[1] + 1);   // keep new ids unique
+          });
+          self._refSeq = Math.max(self._refSeq, mx);
+          console.log("[conjure] seeded room frame from " + self._ref.length + " persisted surfaces");
+        }
+
+        // Trust gate — reject captures taken mid-relocalization (boundary re-entry, recenter) so a
+        // tilted / wrong-frame snapshot is never displayed, posted, OR allowed to pollute the reference
+        // (a bad capture drifting _ref is what made the tilt persist until a second trip). A settled
+        // floor/ceiling reads |normal.y|≈1; while it's tilted, gravity hasn't reconverged → hold the last
+        // good frame and retry quickly (don't wait the full throttle) until tracking stabilizes.
+        var levelA = 0, levelY = 1;
+        cur.forEach(function (c) {
+          if (c.orient !== "horizontal") return;
+          var a = c.ext[0] * c.ext[1];
+          if (a > levelA) { levelA = a; levelY = Math.abs(c.nrm.y); }
+        });
+        if (levelA > 0 && levelY < 0.98) { this._regStat = "settling ny=" + levelY.toFixed(2); this.lastPost = time - 1700; return; }
+
+        // Recover the frame transform; on the first capture bootstrap the reference, otherwise require a
+        // confident registration — a low-confidence result means we're not locked, so hold + retry fast.
+        var reg = this._register(cur), canEstablish = this._ref.length === 0;
+        if (!reg && !canEstablish) { this.lastPost = time - 1700; return; }   // seeded/running but not locked → hold
+        var registered = !!reg, Tmat;
         if (reg) { Tmat = this._Tmat = reg; this._haveT = true; }
-        else if (this._haveT) { Tmat = this._Tmat; }                      // hold last good frame this capture
-        else { Tmat = this._anchorInv || new THREE.Matrix4(); this._Tmat = Tmat; this._haveT = true; }  // establish
+        else { Tmat = this._anchorInv || new THREE.Matrix4(); this._Tmat = Tmat; this._haveT = true; }  // establish fresh
         this._anchorInv = Tmat;
 
         // Pass B — express each plane in the reference frame and assign a STABLE id by the nearest
@@ -540,6 +583,7 @@
           }
           surfaces.push({ id: sid, semantic: c.sem, position: [lp.x, lp.y, lp.z],
             rotation: self._euler(lq), extent: [c.ext[0], c.ext[1]], _lp: lp.clone(), _lq: lq.clone(),
+            _poly: c.sem === "floor" ? c.poly : null,   // floor outline (plane-local) for the inside test
             debug: { pos: c.raw.pos, quat: c.raw.quat, orient: c.orient, label: c.sem,
                      polyY: c.polyY, n: c.poly.length, registered: registered, regStat: self._regStat } });
           if (c.sem === "floor" && (!floor || c.ext[0] * c.ext[1] > floor._area)) {
@@ -547,6 +591,33 @@
           }
         });
         if (!surfaces.length) return;
+
+        // Square the walls. WebXR fits every plane independently, so small wall slivers around openings
+        // come back a couple degrees off. The whole space shares one orthogonal grid (the rooms are
+        // square with each other), so estimate it width-weighted from all walls — the big, accurate walls
+        // dominate — and snap each vertical surface's facing onto the nearest 90° of it. Small nudges only
+        // (≤12°), so a genuinely angled wall is left alone. (Operates on the quaternion; rendering order
+        // is handled by _euler.)
+        var UP2 = new THREE.Vector3(0, 1, 0), gx = 0, gy = 0;
+        var facing = function (s) { var n = UP2.clone().applyQuaternion(s._lq); return Math.atan2(n.x, n.z); };
+        surfaces.forEach(function (s) {
+          if (s.semantic !== "wall") return;
+          var a = facing(s) * 4, w = (s.extent && s.extent[0]) || 1;  // ×4 folds the 90° grid into a full turn
+          gx += w * Math.cos(a); gy += w * Math.sin(a);
+        });
+        if (gx || gy) {
+          var grid = Math.atan2(gy, gx) / 4;                          // dominant facing, mod 90° (radians)
+          surfaces.forEach(function (s) {
+            if (["wall", "door", "window", "wall art"].indexOf(s.semantic) < 0) return;
+            var yw = facing(s), d = (grid + Math.round((yw - grid) / (Math.PI / 2)) * (Math.PI / 2)) - yw;
+            while (d > Math.PI) d -= 2 * Math.PI;
+            while (d < -Math.PI) d += 2 * Math.PI;
+            if (Math.abs(d) > 0.21) return;                           // >~12° ⇒ likely a real angle, leave it
+            s._lq.premultiply(new THREE.Quaternion().setFromAxisAngle(UP2, d));  // rotate facing onto the grid
+            s.rotation = self._euler(s._lq);
+          });
+        }
+
         // Snap insets (door/window/wall art) onto their parent wall: project onto the wall plane,
         // adopt its exact orientation, and nudge a couple cm toward the room so near-coplanar fills
         // stop z-fighting and the wall stops occluding them. (Snapping also corrects the small tilt
@@ -554,6 +625,20 @@
         var V3 = THREE.Vector3;
         var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
         var floors = surfaces.filter(function (s) { return s.semantic === "floor"; });
+        // The Quest does NOT orient plane normals consistently — some faces point into the room, some out
+        // (proven on real captures: insets that read "behind" had inward normals). So the normal can't
+        // tell us "inside". We ask the unambiguous question instead: which side of the wall has THIS
+        // room's floor? Point-in-polygon against the real floor OUTLINE (not its bounding box — the two
+        // rooms' boxes overlap). With separate junction walls, even junction doors get a clean one-sided
+        // answer (own floor on the in side, the gap/no-floor on the out side).
+        var pip = function (lx, lz, poly) {
+          var inside = false;
+          for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            var xi = poly[i].x, zi = poly[i].z, xj = poly[j].x, zj = poly[j].z;
+            if (((zi > lz) !== (zj > lz)) && (lx < (xj - xi) * (lz - zi) / (zj - zi) + xi)) inside = !inside;
+          }
+          return inside;
+        };
         var INSET = { "door": 0.012, "window": 0.012, "wall art": 0.022 };
         surfaces.forEach(function (s) {
           var off = INSET[s.semantic];
@@ -562,30 +647,44 @@
           var sn = new V3(0, 1, 0).applyQuaternion(s._lq), best = null, bestD = 0.3;
           walls.forEach(function (wl) {
             var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
-            if (Math.abs(wn.dot(sn)) < 0.9) return;                   // must be ~parallel to the wall (≤26°)
-            var d = Math.abs(s._lp.clone().sub(wl._lp).dot(wn));       // perpendicular distance to the wall plane
+            if (Math.abs(wn.dot(sn)) < 0.9) return;                   // nearest ~parallel wall (clamp reference)
+            var d = Math.abs(s._lp.clone().sub(wl._lp).dot(wn));
             if (d < bestD) { bestD = d; best = wl; }
           });
           if (!best) return;
           var n = new V3(0, 1, 0).applyQuaternion(best._lq);
-          // Decide which way is "into the room": neither the wall's nor the inset's own normal reliably
-          // faces inward (the Quest reports either way), so use the nearest floor centre. `nint` is the
-          // wall normal flipped to point at the interior.
-          var fc = null, fcD = 1e9;
-          floors.forEach(function (fl) { var dd = fl._lp.distanceTo(s._lp); if (dd < fcD) { fcD = dd; fc = fl; } });
-          var inward = fc ? (n.dot(fc._lp.clone().sub(s._lp)) >= 0 ? 1 : -1) : (s._lp.clone().sub(best._lp).dot(n) >= 0 ? -1 : 1);
+          var overFloor = function (q) {
+            for (var i = 0; i < floors.length; i++) {
+              var fl = floors[i];
+              if (!fl._poly || fl._poly.length < 3) continue;
+              var loc = q.clone().sub(fl._lp).applyQuaternion(fl._lq.clone().invert());
+              if (pip(loc.x, loc.z, fl._poly)) return fl;          // exact room footprint, not its box
+            }
+            return null;
+          };
+          var fPlus = overFloor(s._lp.clone().add(n.clone().multiplyScalar(0.5)));
+          var fMinus = overFloor(s._lp.clone().add(n.clone().multiplyScalar(-0.5)));
+          var inward, mode;
+          if (!!fPlus !== !!fMinus) {
+            inward = fPlus ? 1 : -1; mode = "floor";                   // exactly one side has floor → inside
+          } else {                                                     // both/neither → nearest floor centre
+            var fc = null, fcD = 1e9;
+            floors.forEach(function (fl) { var dd = fl._lp.distanceTo(s._lp); if (dd < fcD) { fcD = dd; fc = fl; } });
+            inward = fc ? (n.dot(fc._lp.clone().sub(s._lp)) >= 0 ? 1 : -1) : 1;
+            mode = "centroid";
+          }
           var nint = n.clone().multiplyScalar(inward);
-          // Keep the inset's OWN (locally accurate) depth; only ever push it FORWARD so it clears the wall
-          // by `off`. We do NOT reproject onto the wall's best-fit plane — that plane is slightly tilted /
-          // offset from the real wall at the inset's spot, which left one inset gapped and its neighbour
-          // behind. Clamp, don't reproject: a proud inset is untouched (no spurious gap); a recessed or
-          // coplanar one is nudged just to `off` in front (no z-fight, never occluded).
-          var clr = s._lp.clone().sub(best._lp).dot(nint);             // signed clearance in front of the wall
+          // Keep the inset's OWN depth; push FORWARD only to clear the wall by `off`. Proud inset untouched
+          // (no gap); recessed/coplanar nudged forward (no z-fight, never occluded).
+          var clr = s._lp.clone().sub(best._lp).dot(nint);
           var fp = clr < off ? s._lp.clone().add(nint.clone().multiplyScalar(off - clr)) : s._lp.clone();
           s.position = [fp.x, fp.y, fp.z];
           s.rotation = best.rotation.slice();                         // adopt the wall's orientation (parallel)
+          var tag = function (e) { return e ? e.id.slice(-7) : "_"; };
+          s.debug.snap = "wall=" + tag(best) + " " + mode + " in=" + inward +
+            " f+=" + tag(fPlus) + " f-=" + tag(fMinus) + " clr=" + Math.round(clr * 100) + "cm";
         });
-        surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
+        surfaces.forEach(function (s) { delete s._lp; delete s._lq; delete s._poly; });
         this.lastPost = time;
         var boundary = null;
         if (floor) { delete floor._area; boundary = floor; }

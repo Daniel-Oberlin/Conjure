@@ -19,7 +19,7 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -189,8 +189,13 @@ _NO_STORE = {"Cache-Control": "no-store"}  # avoid stale client during active de
 
 
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(CLIENT_DIR / "index.html", headers=_NO_STORE)
+async def index() -> HTMLResponse:
+    # Stamp the client script URL with its mtime so a code change always busts the cache. The Quest
+    # Browser caches /static across reloads even with no-store, which left headsets running stale JS.
+    html = (CLIENT_DIR / "index.html").read_text()
+    v = int((CLIENT_DIR / "conjure-client.js").stat().st_mtime)
+    html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={v}")
+    return HTMLResponse(html, headers=_NO_STORE)
 
 
 @app.get("/tunnel")

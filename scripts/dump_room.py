@@ -15,11 +15,13 @@ URL = os.environ.get("CONJURE_URL", "http://localhost:8080") + "/world"
 
 
 def normal_from_euler(rot):
-    """World-space normal of the rendered <a-plane> (its local +Z), given A-Frame XYZ euler degrees.
-    Independent of the Z (roll) term, so it isolates how the surface FACES from any in-plane roll."""
+    """World-space normal of the rendered <a-plane> (its local +Z), given A-Frame euler degrees.
+    A-Frame applies rotations in YXZ order, so the normal is Ry·Rx·(0,0,1) (Z/roll drops out):
+    (cosx·siny, -sinx, cosx·cosy). Using the wrong order here is what made dumps read 'square' while
+    the headset rendered skewed."""
     x, y, z = (math.radians(a) for a in (rot + [0, 0, 0])[:3])
     c1, s1, c2, s2 = math.cos(x), math.sin(x), math.cos(y), math.sin(y)
-    return (s2, -c2 * s1, c1 * c2)
+    return (c1 * s2, -s1, c1 * c2)
 
 
 def _yaw(n):
@@ -55,6 +57,8 @@ def main() -> int:
             print(f"            raw: label={dbg.get('label')} orient={dbg.get('orient')} "
                   f"pos={rp} quat={q} polyY={[round(y,3) for y in dbg.get('polyY',[])]} n={dbg.get('n')} "
                   f"reg={dbg.get('registered')} [{dbg.get('regStat')}]")
+            if dbg.get("snap"):
+                print(f"            snap: {dbg.get('snap')}")
     return 0
 
 
