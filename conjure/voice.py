@@ -49,7 +49,7 @@ async def _run(settings: Settings) -> None:
     from pipecat.frames.frames import TTSSpeakFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
-    from pipecat.pipeline.task import PipelineParams, PipelineTask
+    from pipecat.pipeline.task import PipelineTask
     from pipecat.processors.audio.vad_processor import VADProcessor
     from pipecat.processors.frame_processor import FrameProcessor
     from pipecat.processors.aggregators.llm_context import LLMContext
@@ -163,10 +163,16 @@ async def _run(settings: Settings) -> None:
         # would otherwise leak back, get transcribed, and feed back as user input. Use earbuds for
         # clean room use today; proper room-speaker support (echo cancellation / push-to-talk) is
         # a roadmap audio-polish item.
-        task = PipelineTask(pipeline, params=PipelineParams(
-            allow_interruptions=False,
+        # Idle timeout: these are PipelineTask kwargs, NOT PipelineParams fields. PipelineParams silently
+        # drops unknown kwargs, so the old idle_timeout_secs (and allow_interruptions) there did nothing —
+        # the pipeline kept pipecat's 300s default and tore down after ~5 min idle. Set a long timeout AND
+        # don't cancel on idle, so a quiet session is never killed.
+        task = PipelineTask(
+            pipeline,
             idle_timeout_secs=PIPELINE_IDLE_TIMEOUT_SECS,
-        ))
+            cancel_on_idle_timeout=False,
+            cancel_runner_on_idle_timeout=False,
+        )
         runner = PipelineRunner(handle_sigint=True)
 
         roster = ", ".join(director.roster) or "none"
