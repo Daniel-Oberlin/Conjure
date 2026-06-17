@@ -1,8 +1,12 @@
 // Unit tests for the pure room-snapping geometry (client/room-snap.js), run with `node --test`.
-// Synthetic rooms give full control: we build surfaces with known facings/positions (mirroring what a
-// Quest capture produces), run the snapping, and assert the invariants we fought hard for — insets land
-// in front of their wall toward the room interior (incl. junction doors), walls come out square, the
-// frame solve recovers a known transform, and rotations are emitted in A-Frame's YXZ order.
+// Two layers:
+//  • Synthetic rooms (built with `vert`) give full control — known facings/positions to assert each
+//    invariant precisely: insets land in front of their wall toward the interior (incl. junction doors),
+//    openings cut where the inset sits, walls come out square, the frame solve recovers a known
+//    transform, rotations are emitted in A-Frame's YXZ order, wall art renders upright.
+//  • One golden room (fixtures/golden-room.json) is a REAL Quest capture (45 surfaces, two rooms). The
+//    synthetic tests encode our assumptions about the device's conventions; the golden room pins them to
+//    the actual hardware and guards against a Quest update changing plane orientation. See its test below.
 const { test } = require("node:test");
 const assert = require("node:assert");
 const THREE = require("three");
@@ -194,4 +198,75 @@ test("register declines (returns null) when the reference is too small", () => {
   const { Tmat, stat } = RS.register(THREE, [], []);
   assert.strictEqual(Tmat, null);
   assert.strictEqual(stat, "ref<3");
+});
+
+// --- Golden room: a REAL Quest capture (45 surfaces, two rooms via connecting doors). The synthetic
+// tests above encode our assumptions about the device's conventions; this one pins those assumptions to
+// the actual hardware — it feeds the captured planes (with their true normals/roll) through the same
+// squareWalls → snapInsets the headset runs and asserts the geometry stays sane. It's the check that
+// would have caught the wall-art roll bug, and it'd catch a Quest OS update changing plane conventions.
+test("golden room (real capture): pipeline holds on real geometry", () => {
+  const fixture = require("./fixtures/golden-room.json");
+  // No active registration ⇒ Tmat = identity, so the local frame is the raw pose (lp = pos, lq = quat),
+  // exactly as the client builds it on the first capture.
+  const surfaces = fixture.surfaces.map(function (s, i) {
+    const lq = new THREE.Quaternion(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+    return { id: "real_" + s.semantic.replace(/\s+/g, "_") + "_" + i, semantic: s.semantic,
+             extent: s.extent, _lp: new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]), _lq: lq,
+             rotation: RS.eulerYXZ(THREE, lq), debug: {} };
+  });
+  RS.squareWalls(THREE, surfaces);
+  RS.snapInsets(THREE, surfaces);
+  const finite = (a) => a.every(Number.isFinite);
+
+  // (1) Nothing degenerated to NaN/Infinity.
+  surfaces.forEach(function (s) {
+    assert.ok(finite(s.rotation), "finite rotation: " + s.id);
+    if (s.position) assert.ok(finite(s.position), "finite position: " + s.id);
+    (s.holes || []).forEach(function (h) {
+      assert.ok(finite([h.x, h.y, h.w, h.h]) && h.w > 0 && h.h > 0, "sane hole on " + s.id);
+    });
+  });
+
+  // (2) Walls come out mutually square: fold each wall's facing into the 90° grid (×4 trick) and confirm
+  // the overwhelming majority cluster on one orientation — i.e. squareWalls aligned the real room.
+  const walls = surfaces.filter((s) => s.semantic === "wall");
+  const facings = walls.map(yawDegOf).map((d) => d * D2R);
+  let cx = 0, cy = 0;
+  facings.forEach((f) => { cx += Math.cos(f * 4); cy += Math.sin(f * 4); });
+  const grid = Math.atan2(cy, cx);
+  const squared = facings.filter(function (f) {
+    let d = f * 4 - grid; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+    return Math.abs(d) / 4 < 2 * D2R;     // within 2° of the grid
+  }).length;
+  assert.ok(squared >= 0.8 * walls.length, squared + "/" + walls.length + " walls squared onto one grid");
+
+  // (3) Doors/windows cut openings, each centred on a real wall (within its extent).
+  let holeCount = 0;
+  walls.forEach(function (wl) {
+    (wl.holes || []).forEach(function (h) {
+      holeCount++;
+      assert.ok(Math.abs(h.x) <= wl.extent[0] / 2 + 1e-6, "opening centre on wall (x): " + wl.id);
+      assert.ok(Math.abs(h.y) <= wl.extent[1] / 2 + 1e-6, "opening centre on wall (y): " + wl.id);
+    });
+  });
+  const insets = surfaces.filter((s) => s.semantic === "door" || s.semantic === "window").length;
+  assert.ok(holeCount >= 0.7 * insets, holeCount + "/" + insets + " doors+windows cut an opening");
+
+  // (4) Every wall-art image renders upright (the roll-bug fix), on real captured planes.
+  surfaces.filter((s) => s.semantic === "wall art").forEach(function (s) {
+    const q = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(s.rotation[0] * D2R, s.rotation[1] * D2R, s.rotation[2] * D2R, "YXZ"));
+    assert.ok(new THREE.Vector3(0, 1, 0).applyQuaternion(q).y > 0.9, "wall art upright: " + s.id);
+  });
+
+  // (5) The frame solve converges on this real 18-wall constellation (cur === ref ⇒ ≈ identity).
+  const constellation = walls.map((s) => ({
+    sem: s.semantic, ext: s.extent, pos: s._lp.clone(), orient: "vertical",
+    nyaw: RS.yawOf(new THREE.Vector3(0, 1, 0).applyQuaternion(s._lq)) }));
+  const reg = RS.register(THREE, constellation, constellation);
+  assert.ok(reg.Tmat, "register converges on the real constellation: " + reg.stat);
+  constellation.forEach(function (c) {
+    assert.ok(c.pos.clone().applyMatrix4(reg.Tmat).distanceTo(c.pos) < 0.1, "register ≈ identity");
+  });
 });
