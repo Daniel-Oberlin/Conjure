@@ -26,6 +26,23 @@
 
   function yawOf(n) { return Math.atan2(n.x, n.z); }   // compass yaw of a horizontal normal
 
+  // Euler (deg, YXZ) that orients an <a-plane> upright and facing the room, given the direction the
+  // FRONT should face (`nInto` = into the room). The plane's local +Z (front, where the texture reads
+  // correctly) points along nInto toward the viewer, +Y is world-up projected onto the plane, +X follows
+  // right-handed. Used for wall art: a captured plane carries an arbitrary in-plane roll, so adopting the
+  // wall's exact orientation can render an image sideways/upside-down — this pins it to gravity instead.
+  function uprightInset(THREE, nInto) {
+    var UP = new THREE.Vector3(0, 1, 0);
+    var F = nInto.clone().normalize();
+    var U = UP.clone().sub(F.clone().multiplyScalar(UP.dot(F)));
+    if (U.lengthSq() < 1e-6) U.set(0, 1, 0);            // degenerate (a floor/ceiling-facing art) fallback
+    U.normalize();
+    var R = U.clone().cross(F);                          // +X = +Y × +Z (right-handed)
+    var q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(R, U, F));
+    var e = new THREE.Euler().setFromQuaternion(q, "YXZ"), d = THREE.MathUtils.radToDeg;
+    return [d(e.x), d(e.y), d(e.z)];
+  }
+
   // Solve the single rigid yaw+translation transform mapping the newly detected planes (cur, in the
   // current refSpace) onto the persistent reference constellation (ref). Recovers how the Quest's frame
   // jumped using the room's own geometry — robust to the ~180° boundary flip because the yaw is read from
@@ -146,7 +163,10 @@
       var clr = s._lp.clone().sub(best._lp).dot(nint);
       var fp = clr < off ? s._lp.clone().add(nint.clone().multiplyScalar(off - clr)) : s._lp.clone();
       s.position = [fp.x, fp.y, fp.z];
-      s.rotation = best.rotation.slice();                       // adopt the wall's orientation (parallel)
+      // A door/window leaf adopts the wall's exact orientation so it fills the wall's opening. Wall art
+      // doesn't cut a hole, so pin it upright and facing the room instead (a textured image must not
+      // inherit the captured plane's arbitrary roll — otherwise it renders sideways/upside-down).
+      s.rotation = s.semantic === "wall art" ? uprightInset(THREE, nint) : best.rotation.slice();
       s.debug.snap = "wall=" + best.id.slice(-7) + " clr=" + Math.round(clr * 100) + "cm";
 
       // Cut the opening. The rendered wall is an <a-plane> oriented by best._lq·Rx(-90°); its local width
@@ -162,5 +182,6 @@
     });
   }
 
-  return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register, squareWalls: squareWalls, snapInsets: snapInsets };
+  return { eulerYXZ: eulerYXZ, yawOf: yawOf, uprightInset: uprightInset,
+           register: register, squareWalls: squareWalls, snapInsets: snapInsets };
 });

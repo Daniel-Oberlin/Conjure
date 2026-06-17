@@ -115,6 +115,32 @@ test("wall art is laid on the wall, not cut through it (no hole)", () => {
   assert.match(surfaces[1].debug.snap, /wall=/, "but it is still snapped onto the wall");
 });
 
+test("uprightInset orients a plane gravity-up, facing the room", () => {
+  // +X wall ⇒ interior is -X; art should face -X with its texture-top toward world +Y.
+  const e = RS.uprightInset(THREE, new THREE.Vector3(-1, 0, 0));
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(e[0] * D2R, e[1] * D2R, e[2] * D2R, "YXZ"));
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);      // a-plane local +Y (texture top)
+  const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(q);     // a-plane local +Z (front face)
+  assert.ok(up.distanceTo(new THREE.Vector3(0, 1, 0)) < 1e-6, "texture-top points to world up");
+  assert.ok(fwd.distanceTo(new THREE.Vector3(-1, 0, 0)) < 1e-6, "front faces into the room");
+});
+
+test("snapInsets renders wall art upright regardless of the captured plane's roll", () => {
+  // Give the art a rolled-over capture (local +Z pointing DOWN) — the case that rendered images
+  // upside-down when art adopted the wall's orientation.
+  const surfaces = [
+    vert("real_wall_0", "wall", [2, 1.2, 0], 90, [4, 2.4]),
+    vert("real_art_1", "wall art", [2, 1.2, 0.5], 90, [0.6, 0.9]),
+  ];
+  surfaces[1]._lq.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
+  RS.snapInsets(THREE, surfaces);
+  const art = surfaces[1];
+  const q = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(art.rotation[0] * D2R, art.rotation[1] * D2R, art.rotation[2] * D2R, "YXZ"));
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+  assert.ok(up.y > 0.999, "wall art's up axis points up in the world (image is upright)");
+});
+
 test("squareWalls snaps near-90° walls onto one orthogonal grid", () => {
   const surfaces = [
     vert("w0", "wall", [0, 1.2, -2], 1, [4, 2.4]),     // ~0°
