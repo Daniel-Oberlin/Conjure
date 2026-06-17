@@ -22,7 +22,7 @@
 ## Environment
 
 - Need a name for skybox, skydone, panorama, containing box, holodeck
- - Environment?  Theater?  Boundary?  Enclosure?
+ - Environment?  Theater?  Boundary?  Enclosure? Holodeck?
 - Problem with Skyboxes, the floor is way below us
 - Implement skydome, panorama, holodeck, containing box
 
@@ -47,6 +47,20 @@
 - Live webcam video
 - Terminal shell with voice
 - X11 window
+- Point clouds
+- Album covers and art
+
+## Appllications
+- What are applications?  Prompt + MCP application?
+- LLM app, world app, headset app (can share a namespace)
+- Infocom Zmachine
+- LLM apps can be scoped with respect to a specific world they own, or MCP access, or LLM
+- conjure:claude.zork>
+- conjure:gemini.builder> (this is the default app we've been working with)
+- Graphic wraparound
+- LLM companion
+
+-
 
 ## Persistance
 - Preferences
@@ -74,6 +88,7 @@
 
 - Abstract model provider with capabilities
 - Smithsonian and other sources
+- Point clouds
 
 ## Utility
 
