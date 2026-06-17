@@ -188,6 +188,28 @@ def test_door_surface_defaults_to_translucent(srv, client):
     assert wall["opacity"] == 1.0 and "transparent" not in wall       # walls stay solid
 
 
+def test_wall_holes_stored_and_window_defaults_to_glass(srv, client):
+    # Doors/windows are cut OUT of their wall: snapInsets records the openings on the wall (wall-local
+    # 2D), and they ride through the model so the renderer can punch them out and you see through.
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4],
+         "holes": [{"x": 0.5, "y": -0.2, "w": 0.9, "h": 2.0}]},
+        {"id": "real_window_1", "semantic": "window", "position": [-0.8, 1.4, -2], "extent": [0.8, 0.9]}]})
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_wall_1"]["components"]["surface"]["holes"] == [{"x": 0.5, "y": -0.2, "w": 0.9, "h": 2.0}]
+    glass = ents["real_window_1"]["components"]["material"]
+    assert glass["transparent"] is True and glass["opacity"] < 0.5    # faint glass — you can see outside
+
+
+def test_wall_holes_update_on_recapture(srv, client):
+    def wall(holes):
+        return {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4], "holes": holes}
+    client.post("/room", json={"client_id": "h1", "surfaces": [wall([{"x": 0.5, "y": 0, "w": 0.9, "h": 2.0}])]})
+    client.post("/room", json={"client_id": "h1", "surfaces": [wall([{"x": -0.7, "y": 0, "w": 0.8, "h": 1.9}])]})
+    holes = next(e for e in _entities(client) if e["id"] == "real_wall_1")["components"]["surface"]["holes"]
+    assert holes == [{"x": -0.7, "y": 0, "w": 0.8, "h": 1.9}]         # re-capture moved the opening in place
+
+
 def test_friendly_id_stable_after_remove_readd(srv, client):
     # The friendly number is derived from the surface id (real_wall_1 → 1), so a surface that vanishes
     # (transient tracking loss → replace removes it) and comes back keeps the SAME number by

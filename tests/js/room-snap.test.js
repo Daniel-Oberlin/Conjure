@@ -67,6 +67,54 @@ test("snapInsets sends each junction door into its OWN room (two separate parall
   assert.ok(surfaces[3].position[0] > 2.3, "door B → into room B (+X), in front of its own wall");
 });
 
+test("snapInsets cuts a door-shaped hole that round-trips to the door's spot on the wall", () => {
+  const surfaces = [
+    vert("real_wall_0", "wall", [2, 1.5, 0], 90, [4, 3]),
+    vert("real_door_1", "door", [2, 1.0, 1.0], 90, [0.9, 2]),   // 1 m along the wall, 0.5 m below centre
+  ];
+  RS.snapInsets(THREE, surfaces);
+  const wall = surfaces[0], door = surfaces[1];
+  assert.equal(wall.holes.length, 1, "the wall got exactly one opening");
+  const h = wall.holes[0];
+  assert.ok(Math.abs(h.w - 0.9) < 1e-9 && Math.abs(h.h - 2) < 1e-9, "opening is the door's size");
+  // Rebuild the opening centre in world from (x, y) via the wall's rendered frame (local +X width, -Z
+  // height); it must land on the door's position projected onto the wall plane — i.e. exactly where the
+  // door sits, ignoring only the tiny perpendicular clearance nudge.
+  const wx = new THREE.Vector3(1, 0, 0).applyQuaternion(wall._lq);
+  const wy = new THREE.Vector3(0, 0, -1).applyQuaternion(wall._lq);
+  const n  = new THREE.Vector3(0, 1, 0).applyQuaternion(wall._lq);
+  const rebuilt = wall._lp.clone().add(wx.clone().multiplyScalar(h.x)).add(wy.clone().multiplyScalar(h.y));
+  const doorPos = new THREE.Vector3(...door.position);
+  const inPlane = doorPos.clone().sub(n.clone().multiplyScalar(doorPos.clone().sub(wall._lp).dot(n)));
+  assert.ok(rebuilt.distanceTo(inPlane) < 1e-6, "opening lands where the door sits on the wall");
+  // The opening is within the wall outline — at most touching an edge (a door reaching the floor sits
+  // flush against the wall's bottom, which is exactly the border case the renderer clamps before cutting).
+  assert.ok(Math.abs(h.x) + h.w / 2 <= 4 / 2 + 1e-9 && Math.abs(h.y) + h.h / 2 <= 3 / 2 + 1e-9,
+    "opening is within the wall outline");
+});
+
+test("each junction wall gets its OWN door hole (openings aren't shared)", () => {
+  const surfaces = [
+    vert("real_wall_0", "wall", [2.0, 1.2, 0], 90, [3, 2.4]),
+    vert("real_wall_1", "wall", [2.3, 1.2, 0], 270, [3, 2.4]),
+    vert("real_door_2", "door", [2.0, 1.0, 0], 90, [0.8, 2]),
+    vert("real_door_3", "door", [2.3, 1.0, 0], 270, [0.8, 2]),
+  ];
+  RS.snapInsets(THREE, surfaces);
+  assert.equal(surfaces[0].holes.length, 1, "wall A is cut by door A only");
+  assert.equal(surfaces[1].holes.length, 1, "wall B is cut by door B only");
+});
+
+test("wall art is laid on the wall, not cut through it (no hole)", () => {
+  const surfaces = [
+    vert("real_wall_0", "wall", [2, 1.2, 0], 90, [4, 2.4]),
+    vert("real_art_1", "wall art", [2, 1.2, 0.5], 90, [0.6, 0.9]),
+  ];
+  RS.snapInsets(THREE, surfaces);
+  assert.equal(surfaces[0].holes.length, 0, "wall art does not open the wall");
+  assert.match(surfaces[1].debug.snap, /wall=/, "but it is still snapped onto the wall");
+});
+
 test("squareWalls snaps near-90° walls onto one orthogonal grid", () => {
   const surfaces = [
     vert("w0", "wall", [0, 1.2, -2], 1, [4, 2.4]),     // ~0°

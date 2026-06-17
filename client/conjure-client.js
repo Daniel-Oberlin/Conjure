@@ -53,6 +53,46 @@
     });
   }
 
+  // Custom geometry: a wall rectangle with rectangular openings cut out of it. The openings come from
+  // room-snap (snapInsets) as {x, y, w, h} in the wall's local X-Y frame — doors/windows cut through so
+  // you can see into the next room / outside. They arrive as a component-string-safe list of "x y w h"
+  // groups (space/comma separated — no ':' or ';' to clash with A-Frame's parser). A door reaching the
+  // floor sits flush against the wall's bottom edge, which would break ShapeGeometry triangulation, so
+  // each opening is kept a hair (M) inside the outline.
+  if (window.AFRAME && !AFRAME.geometries["holed-wall"]) {
+    AFRAME.registerGeometry("holed-wall", {
+      schema: {
+        width: { default: 1, min: 0 },
+        height: { default: 1, min: 0 },
+        holes: { default: "" },   // "x y w h, x y w h, …" in wall-local metres
+      },
+      init: function (data) {
+        var THREE = AFRAME.THREE, hw = data.width / 2, hh = data.height / 2, M = 0.02;
+        var shape = new THREE.Shape();   // outer contour, counter-clockwise
+        shape.moveTo(-hw, -hh); shape.lineTo(hw, -hh); shape.lineTo(hw, hh); shape.lineTo(-hw, hh); shape.lineTo(-hw, -hh);
+        var clamp = function (v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; };
+        (data.holes ? data.holes.split(",") : []).forEach(function (g) {
+          var p = g.trim().split(/\s+/).map(Number);
+          if (p.length < 4 || p.some(function (n) { return isNaN(n); })) return;
+          var ohw = p[2] / 2, ohh = p[3] / 2;
+          var x0 = clamp(p[0] - ohw, -hw + M, hw - M), x1 = clamp(p[0] + ohw, -hw + M, hw - M);
+          var y0 = clamp(p[1] - ohh, -hh + M, hh - M), y1 = clamp(p[1] + ohh, -hh + M, hh - M);
+          if (x1 - x0 < 1e-3 || y1 - y0 < 1e-3) return;
+          var path = new THREE.Path();     // hole, wound clockwise (opposite the contour)
+          path.moveTo(x0, y0); path.lineTo(x0, y1); path.lineTo(x1, y1); path.lineTo(x1, y0); path.lineTo(x0, y0);
+          shape.holes.push(path);
+        });
+        var geo = new THREE.ShapeGeometry(shape);
+        // ShapeGeometry emits UVs in shape (metre) coordinates; remap to 0..1 across the wall so a
+        // director's wall texture maps like it would on a plain <a-plane>.
+        var uv = geo.attributes.uv;
+        for (var i = 0; i < uv.count; i++) uv.setXY(i, (uv.getX(i) + hw) / data.width, (uv.getY(i) + hh) / data.height);
+        uv.needsUpdate = true;
+        this.geometry = geo;
+      },
+    });
+  }
+
   // Show/hide a surface's FILL (plane mesh) without hiding the entity — so child labels and the edge
   // outline still render in AR (where the fill is hidden so passthrough shows the real room). The
   // edges are governed independently by `surface-edges` (room.edgesVisible). Re-applies when the mesh
@@ -182,12 +222,23 @@
 
   // A real room surface → a plane sized by its extent, styled by its material. Visibility is the
   // entity attribute (driven by the room rules), so material.visible is pulled out here.
+  // Encode a wall's openings as the holed-wall geometry's component-string-safe holes list (see the
+  // geometry above): "x y w h, x y w h, …". Empty string ⇒ no openings ⇒ a plain plane.
+  function holesAttr(holes) {
+    return (Array.isArray(holes) ? holes : []).map(function (ho) {
+      return [ho.x, ho.y, ho.w, ho.h].map(function (n) { return (+n).toFixed(4); }).join(" ");
+    }).join(", ");
+  }
+
   function applySurface(el, comps) {
     var s = comps.surface || {};
     var ext = s.extent || [1, 1];
     var w = (+ext[0] || 1), h = (+ext[1] || 1);
     el.dataset.ext = w.toFixed(1) + " x " + h.toFixed(1) + " m";   // for the annotation label
-    el.setAttribute("geometry", { primitive: "plane", width: w, height: h });
+    var hs = holesAttr(s.holes);
+    el.dataset.holes = hs;
+    if (hs) el.setAttribute("geometry", { primitive: "holed-wall", width: w, height: h, holes: hs });
+    else el.setAttribute("geometry", { primitive: "plane", width: w, height: h });
     var mat = Object.assign({ shader: "flat", side: "double" }, comps.material || {});
     if ("visible" in mat) { el.dataset.matVisible = String(mat.visible); delete mat.visible; }
     el.setAttribute("material", mat);
@@ -271,9 +322,18 @@
     }
     if (path === "components.surface.extent") {         // re-capture resized a surface
       var sw = (+value[0] || 1), sh = (+value[1] || 1);
-      el.setAttribute("geometry", "width", sw);
+      el.setAttribute("geometry", "width", sw);         // holed-wall keeps its holes across this
       el.setAttribute("geometry", "height", sh);
       el.setAttribute("surface-edges", { width: sw, height: sh });
+      return;
+    }
+    if (path === "components.surface.holes") {           // re-capture changed a wall's openings
+      var hs = holesAttr(value);
+      if (hs === (el.dataset.holes || "")) return;       // unchanged ⇒ skip the geometry rebuild
+      el.dataset.holes = hs;
+      var g = el.getAttribute("geometry") || {}, gw = +g.width || 1, gh = +g.height || 1;
+      if (hs) el.setAttribute("geometry", { primitive: "holed-wall", width: gw, height: gh, holes: hs });
+      else el.setAttribute("geometry", { primitive: "plane", width: gw, height: gh });
       return;
     }
     var parts = path.split(".");

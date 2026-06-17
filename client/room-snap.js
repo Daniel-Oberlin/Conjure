@@ -118,11 +118,17 @@
   // Snap each inset (door/window/wall art) so it reads as part of its wall: keep its own (locally
   // accurate) depth, nudge it just in front of the wall toward the room interior, and adopt the wall's
   // exact orientation (parallel). "Into the room" is the OPPOSITE of the inset's own normal — the Quest
-  // orients every surface's normal OUTWARD from its room, so this is correct even at a junction. Mutates
-  // s.position / s.rotation / s.debug.snap in place.
+  // orients every surface's normal OUTWARD from its room, so this is correct even at a junction.
+  //
+  // Doors and windows also CUT their wall: each records a hole on its host wall (wl.holes), the inset's
+  // rectangle projected into the wall's rendered local X-Y frame ({x, y, w, h}, metres, centred on the
+  // wall). The renderer turns those into actual openings so you can see through. Wall art does NOT cut —
+  // it's a picture laid on the wall, not an opening. Mutates s.position / s.rotation / s.debug.snap and
+  // wl.holes in place.
   function snapInsets(THREE, surfaces) {
     var V3 = THREE.Vector3;
     var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
+    walls.forEach(function (wl) { wl.holes = []; });            // recomputed fresh every capture
     var INSET = { "door": 0.012, "window": 0.012, "wall art": 0.022 };
     surfaces.forEach(function (s) {
       var off = INSET[s.semantic];
@@ -142,6 +148,17 @@
       s.position = [fp.x, fp.y, fp.z];
       s.rotation = best.rotation.slice();                       // adopt the wall's orientation (parallel)
       s.debug.snap = "wall=" + best.id.slice(-7) + " clr=" + Math.round(clr * 100) + "cm";
+
+      // Cut the opening. The rendered wall is an <a-plane> oriented by best._lq·Rx(-90°); its local width
+      // axis is the captured +X and its height axis the captured -Z (see eulerYXZ). Project the inset's
+      // centre offset onto those to place the hole; the inset adopted the wall's orientation above, so its
+      // extent already lines up with that frame.
+      if ((s.semantic === "door" || s.semantic === "window") && s.extent) {
+        var wx = new V3(1, 0, 0).applyQuaternion(best._lq);     // wall local width axis (world)
+        var wy = new V3(0, 0, -1).applyQuaternion(best._lq);    // wall local height axis (world)
+        var rel = fp.clone().sub(best._lp);
+        best.holes.push({ x: rel.dot(wx), y: rel.dot(wy), w: s.extent[0], h: s.extent[1] });
+      }
     });
   }
 

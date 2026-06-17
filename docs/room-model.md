@@ -173,8 +173,9 @@ against the boundary as a backstop.
 The Quest reports a **door / window / wall-art** as its *own* plane, attached to a parent wall and
 near-coplanar with it. Rendered naïvely (each an idealized solid quad, normal depth test) they
 **z-fight** the wall and the larger wall quad **occludes** them — you can't see a door as an opening.
-The captured polygon is currently reduced to a bounding-box `extent`, so a wall doesn't know its own
-holes. Two design decisions follow.
+The captured polygon is reduced to a bounding-box `extent`, so a wall doesn't carry its own outline —
+instead we derive its **openings** from the inset planes that sit in it (see Status below). Two design
+decisions follow.
 
 **(i) Two representations, not two LODs.** The semantic **plane model** and the **scan mesh** are
 different *kinds* of model of the same room, used by division of labor:
@@ -194,8 +195,10 @@ same "uniform editing over a stable semantic id" promise as §7, viewed from the
 
 **(ii) Openings are synthesized in plane mode, inherent in mesh mode.**
 - **Plane mode:** the wall is an idealized solid quad, so we *synthesize* the opening — snap insets to
-  the wall, then (target state) **cut** the wall into a polygon-with-holes (door = empty → see-through;
-  window = opaque inset panel, toggleable to glass; wall-art = a decal offset off the surface).
+  the wall, then **cut** the wall into a polygon-with-holes (the `holed-wall` geometry). The door/window
+  leaf sits *in* the opening as a **material-driven pane** — see-through is just low `opacity`, not a
+  discrete open/closed state, and the director adjusts opacity/color/texture as ordinary properties.
+  Wall-art is a decal offset off the surface (it does **not** cut a hole — a picture, not an opening).
 - **Mesh mode:** the scan **already has** the doorway opening and window recess as real geometry, so the
   door/window *planes* demote to pure **semantic annotations / mount anchors** (invisible fill, label +
   optional outline) layered on the mesh. Same object, different coat — the methodology differs by
@@ -208,15 +211,19 @@ and mesh, so "hide the internal seams, keep the outline" means the same thing ev
 - **tessellation** — wall-subdivision seams (plane mode) *or* mesh triangle wireframe (mesh mode):
   default **off**, toggleable.
 
-**Status — MVP shipped (snap + offset).** At capture the client **snaps** each inset (door/window/
-wall-art) onto its parent wall: project its center onto the wall plane, adopt the wall's exact
-orientation, and nudge it a couple cm toward the room (`room-capture.tick` in
-`client/conjure-client.js`). This stops the z-fighting/occlusion at the source and also corrects the
-small tilt a noisy inset plane otherwise carried. The server seeds a **door** fill translucent
-(`opacity 0.25`) so it reads as an opening without truly cutting the wall (`_default_surface_material`).
-**Follow-ups:** cut real openings (polygon-with-holes triangulation; the door-style fork — true hole vs
-transparent panel — is decided then); the `feature`/`tessellation` edge layers; depth-API occlusion;
-the `room.geometry`/`room.occlusion` display modes; mesh layer (§7).
+**Status — openings cut.** At capture the client **snaps** each inset (door/window/wall-art) onto its
+parent wall (project center onto the wall plane, adopt its orientation, nudge a couple cm into the
+room) **and** — for doors/windows — records the opening on the wall: the inset's rectangle projected
+into the wall's local 2-D frame as `holes` (`snapInsets` in `client/room-snap.js`, unit-tested). Those
+ride through the model (`surface.holes`) and the wall renders through the **`holed-wall`** geometry —
+the rectangle minus the hole rects, triangulated with `THREE.ShapeGeometry` — so you see into the next
+room / outside. A door reaching the floor sits flush against the wall's bottom edge (which would break
+triangulation), so each opening is clamped a hair inside the outline. Wall-art does **not** cut. The
+leaf is a material-driven pane the director edits as plain properties — door seeds translucent
+(`opacity 0.25`), window faint glass (`#cfe6ff`, `opacity 0.18`) (`_default_surface_material`).
+**Follow-ups:** what's *behind* a window in full VR (a sky/skybox backdrop — free in AR passthrough);
+the `feature`/`tessellation` edge layers; depth-API occlusion; the `room.geometry`/`room.occlusion`
+display modes; mesh layer (§7).
 
 ## 7. Progressive mesh refinement (background, on request) — uniform editing 🟡
 

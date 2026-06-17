@@ -267,6 +267,7 @@ class RoomSurface(BaseModel):
     rotation: Optional[list[float]] = None
     polygon: Optional[list[list[float]]] = None   # 2D outline in the surface plane
     extent: Optional[list[float]] = None          # [w, h]
+    holes: Optional[list[dict]] = None            # wall openings (door/window) {x,y,w,h} in wall-local 2D
     mesh_segment: Optional[str] = None            # segment id when backed by the refined mesh
     debug: Optional[dict] = None                  # raw pose/label for diagnosis (stored in meta)
 
@@ -290,6 +291,8 @@ def _surface_entity(s: RoomSurface) -> dict:
         surface["polygon"] = s.polygon
     if s.extent is not None:
         surface["extent"] = s.extent
+    if s.holes is not None:
+        surface["holes"] = s.holes
     meta = {"real": True, "semantic": s.semantic, "source": "headset",
             "friendly_id": _friendly_id_for(s.id)}
     if s.mesh_segment is not None:
@@ -304,13 +307,18 @@ def _surface_entity(s: RoomSurface) -> dict:
     }
 
 
-# Per-semantic fill defaults. A door reads as a see-through opening (translucent) so it doesn't fight
-# the wall it's snapped onto; everything else is an opaque panel. Re-capture preserves any later
-# director edits (update-in-place keeps the material), so these only seed a surface's first appearance.
+# Per-semantic fill defaults. Doors and windows are cut OUT of their wall (an actual opening), so their
+# leaf sits in the hole: a door is a faint translucent pane (see into the next room), a window is faint
+# glass with a cool tint (see outside). Everything else is an opaque panel. The director adjusts these as
+# plain properties (opacity/color/texture); re-capture preserves those edits (update-in-place keeps the
+# material), so these only seed a surface's first appearance.
 def _default_surface_material(semantic: str) -> dict:
     mat = {"shader": "flat", "color": "#888", "side": "double", "opacity": 1.0}
-    if (semantic or "").lower() == "door":
+    sem = (semantic or "").lower()
+    if sem == "door":
         mat.update(opacity=0.25, transparent=True)
+    elif sem == "window":
+        mat.update(color="#cfe6ff", opacity=0.18, transparent=True)
     return mat
 
 
@@ -340,6 +348,8 @@ async def ingest_room(req: RoomUpdate) -> dict:
                 up["components.surface.polygon"] = s.polygon
             if s.extent is not None:
                 up["components.surface.extent"] = s.extent
+            if s.holes is not None:
+                up["components.surface.holes"] = s.holes
             if s.mesh_segment is not None:
                 up["meta.meshSegment"] = s.mesh_segment
             ops.append({"op": "update", "id": s.id, "set": up})
