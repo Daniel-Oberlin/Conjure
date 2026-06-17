@@ -13,6 +13,7 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -661,13 +662,16 @@ async def images_skybox_from(req: SkyboxFromImageAssetRequest) -> dict:
 
 # --- scene use: incorporate a procured image (by id) into the world ------------------------------
 
-def _image_plane(eid: str, pos: list[float], width: float, height: float,
-                 material: dict, meta: dict | None = None) -> dict:
+def _image_plane(eid: str, pos: list[float], width: float, height: float, material: dict,
+                 meta: dict | None = None, rotation: list[float] | None = None) -> dict:
+    transform: dict = {"position": pos}
+    if rotation is not None:
+        transform["rotation"] = rotation
     return {
         "op": "add",
         "entity": {
             "id": eid,
-            "transform": {"position": pos},
+            "transform": transform,
             "components": {
                 "geometry": {"primitive": "plane", "width": width, "height": height},
                 "material": material,
@@ -685,11 +689,29 @@ def _plane_dims(rec: ImageRecord, size: float) -> tuple[float, float]:
     return round(size * w / h, 3), size
 
 
+def _fit_dims(rec: ImageRecord, extent: list[float]) -> tuple[float, float]:
+    """Fit the image (preserving aspect) *inside* a surface's [w, h] frame — so a picture hung on a
+    wall-art surface fills its frame without stretching or overflowing."""
+    ew, eh = float(extent[0]), float(extent[1])
+    aspect = (rec.w / rec.h) if (rec.w and rec.h) else 1.0
+    if ew / eh > aspect:                       # frame is wider than the image ⇒ height-limited
+        return round(aspect * eh, 3), round(eh, 3)
+    return round(ew, 3), round(ew / aspect, 3)  # width-limited
+
+
+def _forward(rotation: list[float]) -> list[float]:
+    """World-space front (+Z) of an <a-plane> at A-Frame euler `rotation` (degrees, YXZ order) — the
+    direction the texture faces. Used to offset a hung picture a hair off its surface (no z-fight)."""
+    x, y = math.radians(rotation[0]), math.radians(rotation[1])
+    return [math.cos(x) * math.sin(y), -math.sin(x), math.cos(x) * math.cos(y)]
+
+
 class PlaceImageRequest(BaseModel):
     image_id: str
     position: Optional[list[float]] = None
     size_m: Optional[float] = None
     name: Optional[str] = None
+    on_surface: Optional[str] = None   # hang on a real surface (id/label/number) — align + fit to it
 
 
 @app.post("/place_image")
@@ -701,6 +723,19 @@ async def place_image(req: PlaceImageRequest) -> dict:
         return {"ok": False, "error": err}
     pos = req.position or [0.0, 1.5, -3.0]  # eye height, on the wall in front
     width, height = _plane_dims(rec, req.size_m or 1.0)
+    rotation = None
+    if req.on_surface:  # hang on a real surface: adopt its orientation, fit its frame, sit just in front
+        surfaces = _room_targets(req.on_surface)
+        if not surfaces:
+            return {"ok": False, "error": f"no room surface matches {req.on_surface!r}"}
+        surf = surfaces[0]
+        rotation = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
+        spos = surf.get("transform", {}).get("position") or pos
+        extent = surf.get("components", {}).get("surface", {}).get("extent")
+        if extent:
+            width, height = _fit_dims(rec, extent)
+        f = _forward(rotation)
+        pos = [spos[i] + 0.02 * f[i] for i in range(3)]   # 2 cm toward the viewer ⇒ no z-fight
     eid = req.name or f"ent_image_{uuid4().hex[:6]}"
     meta = {"generated": True, "provider": rec.provider, "model": rec.model,
             "prompt": rec.prompt, "image_id": rec.id}
@@ -709,13 +744,17 @@ async def place_image(req: PlaceImageRequest) -> dict:
 
     existing = any(e["id"] == eid for e in store.doc["entities"])
     if existing:  # swap in place
-        ops = [{"op": "update", "id": eid, "set": {
+        sets = {
             "components.material.src": rec.url, "components.material.transparent": rec.transparent,
             "components.geometry.width": width, "components.geometry.height": height,
             "meta.image_id": rec.id, "meta.prompt": rec.prompt,
-            "meta.provider": rec.provider, "meta.model": rec.model}}]
+            "meta.provider": rec.provider, "meta.model": rec.model}
+        if req.on_surface:  # re-hanging on a surface ⇒ also re-align/reposition
+            sets["transform.position"] = pos
+            sets["transform.rotation"] = rotation
+        ops = [{"op": "update", "id": eid, "set": sets}]
     else:
-        ops = [_image_plane(eid, pos, width, height, material, meta)]
+        ops = [_image_plane(eid, pos, width, height, material, meta, rotation)]
     await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="image")})
     return {"ok": True, "id": eid, "image_id": rec.id}
 

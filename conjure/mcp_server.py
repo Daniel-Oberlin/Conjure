@@ -452,14 +452,21 @@ async def place_image(
     position: Optional[list[float]] = None,
     size_m: Optional[float] = None,
     name: Optional[str] = None,
+    on_surface: Optional[str] = None,
 ) -> str:
-    """Hang a procured image (by image_id from generate_image/edit_image/...) as a painting facing
-    the user. position: [x, y, z] meters (default [0, 1.5, -3]). size_m: longest side in meters
-    (default 1.0; the plane keeps the image's aspect). name: pass an existing entity id to swap its
-    image in place; otherwise a new one is created.
+    """Hang a procured image (by image_id from generate_image/edit_image/...) as a painting.
+
+    on_surface: hang it ON a real room surface — pass the surface's id ('real_wall_art_3'), its
+        semantic+number ('wall art 18'), or just its number ('18'). The image is aligned to that
+        surface (upright, parallel) and fitted to its frame automatically — USE THIS whenever the user
+        says "put it in/on wall art N" or any specific surface (don't hand-compute position/rotation).
+    position: [x, y, z] meters for a free-floating painting when NOT on a surface (default [0, 1.5, -3]).
+    size_m: longest side in meters for the free-floating case (default 1.0; aspect preserved). Ignored
+        when on_surface is given (the frame's size wins).
+    name: pass an existing entity id to swap/move that painting; otherwise a new one is created.
     """
     out = await _post("/place_image", _body(
-        image_id=image_id, position=position, size_m=size_m, name=name))
+        image_id=image_id, position=position, size_m=size_m, name=name, on_surface=on_surface))
     if not out.get("ok"):
         return f"Couldn't place image: {out.get('error', 'unknown error')}."
     return f"Hung image {out['image_id']} as {out['id']}."

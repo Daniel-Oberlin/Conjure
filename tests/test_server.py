@@ -65,6 +65,31 @@ def test_place_image_takes_an_id_and_hangs_aspect_correct_plane(srv, client):
     assert img["components"]["geometry"]["height"] == 1.0
 
 
+def test_place_image_on_surface_aligns_and_fits_the_frame(srv, client):
+    # A wall-art frame at a known (upright) orientation and size.
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
+         "rotation": [0.0, -41.0, 0.0], "extent": [0.5, 0.4]}]})
+    image_id = _procure(client)
+    r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 18"}).json()
+    assert r["ok"] is True
+    img = next(e for e in _entities(client) if e["id"] == r["id"])
+    # adopts the surface's orientation — no longer world-axis-aligned (that was the tilt-on-the-wall bug)
+    assert img["transform"]["rotation"] == [0.0, -41.0, 0.0]
+    # fitted inside the 0.5 x 0.4 frame (square image ⇒ 0.4 x 0.4), not the default 1 m floating plane
+    g = img["components"]["geometry"]
+    assert g["width"] <= 0.5 + 1e-9 and g["height"] <= 0.4 + 1e-9 and max(g["width"], g["height"]) > 0.1
+    # sits a couple cm in front of the surface (no z-fight), not exactly coplanar
+    import math
+    assert 0.01 < math.dist(img["transform"]["position"], [0.7, 1.72, -1.04]) < 0.05
+
+
+def test_place_image_on_unknown_surface_errors(srv, client):
+    image_id = _procure(client)
+    r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 999"}).json()
+    assert r["ok"] is False and "surface" in r["error"]
+
+
 def test_place_image_unknown_id_errors(srv, client):
     assert client.post("/place_image", json={"image_id": "nope.png"}).json()["ok"] is False
 
