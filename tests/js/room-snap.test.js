@@ -31,6 +31,12 @@ function vert(id, sem, pos, yawDeg, ext) {
 }
 const normalOf = (s) => UP.clone().applyQuaternion(s._lq);
 const yawDegOf = (s) => { const n = normalOf(s); return Math.atan2(n.x, n.z) / D2R; };
+// A wall's two endpoints in plan view (X-Z), from its current _lp / _lq / extent.
+function planEnds(s) {
+  const n = normalOf(s), L = Math.hypot(n.x, n.z) || 1, tx = n.z / L, tz = -n.x / L, hw = s.extent[0] / 2;
+  return [new THREE.Vector2(s._lp.x + tx * hw, s._lp.z + tz * hw),
+          new THREE.Vector2(s._lp.x - tx * hw, s._lp.z - tz * hw)];
+}
 
 test("eulerYXZ emits angles A-Frame reads in YXZ order (not XYZ)", () => {
   const Rx90 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
@@ -170,6 +176,33 @@ test("squareWalls leaves a genuinely angled (>12°) wall alone", () => {
   assert.ok(Math.abs(yawDegOf(surfaces[3]) - 35) < 0.001, "the 35° wall is untouched");
 });
 
+test("joinCorners extends two perpendicular walls that fall short to meet at the corner", () => {
+  const A = vert("real_wall_0", "wall", [-1.025, 1.2, 0], 0, [1.95, 2.4]);   // along X, ends 5cm short of x=0
+  const B = vert("real_wall_1", "wall", [0, 1.2, -1.025], 90, [1.95, 2.4]);  // along Z, ends 5cm short of z=0
+  RS.joinCorners(THREE, [A, B]);
+  const corner = new THREE.Vector2(0, 0), ea = planEnds(A), eb = planEnds(B);
+  assert.ok(Math.min(ea[0].distanceTo(corner), ea[1].distanceTo(corner)) < 1e-6, "wall A reaches the corner");
+  assert.ok(Math.min(eb[0].distanceTo(corner), eb[1].distanceTo(corner)) < 1e-6, "wall B reaches the corner");
+  const pair = Math.min.apply(null, ea.flatMap((p) => eb.map((q) => p.distanceTo(q))));
+  assert.ok(pair < 1e-6, "the two walls now actually touch (gap closed)");
+});
+
+test("joinCorners leaves a doorway gap between collinear walls alone", () => {
+  const A = vert("real_wall_0", "wall", [-1.15, 1.2, 0], 0, [1.7, 2.4]);     // x ∈ [-2.0, -0.3]
+  const B = vert("real_wall_1", "wall", [1.15, 1.2, 0], 0, [1.7, 2.4]);      // x ∈ [ 0.3,  2.0]
+  RS.joinCorners(THREE, [A, B]);
+  assert.equal(A.extent[0], 1.7, "collinear wall A untouched");
+  assert.equal(B.extent[0], 1.7, "collinear wall B untouched");
+});
+
+test("joinCorners doesn't extend perpendicular walls whose ends are beyond the gap threshold", () => {
+  const A = vert("real_wall_0", "wall", [-1.5, 1.2, 0], 0, [2.0, 2.4]);      // ends 0.5 m from the crossing
+  const B = vert("real_wall_1", "wall", [0, 1.2, -1.5], 90, [2.0, 2.4]);
+  RS.joinCorners(THREE, [A, B]);
+  assert.equal(A.extent[0], 2.0, "far wall left alone (> GAP)");
+  assert.equal(B.extent[0], 2.0, "far wall left alone (> GAP)");
+});
+
 test("register recovers a known yaw + translation from a rotated capture", () => {
   const refWall = (pos, yaw, ext) => ({ sem: "wall", pos: new THREE.Vector3(...pos), ext, nyaw: yaw, orient: "vertical" });
   // Rectangular room (4×3) — distinct long/short wall sizes break the 90° rotational symmetry.
@@ -215,7 +248,10 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
              extent: s.extent, _lp: new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]), _lq: lq,
              rotation: RS.eulerYXZ(THREE, lq), debug: {} };
   });
+  const origW = {};
+  surfaces.filter((s) => s.semantic === "wall").forEach((s) => { origW[s.id] = s.extent[0]; });
   RS.squareWalls(THREE, surfaces);
+  RS.joinCorners(THREE, surfaces);
   RS.snapInsets(THREE, surfaces);
   const finite = (a) => a.every(Number.isFinite);
 
@@ -240,6 +276,11 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
     return Math.abs(d) / 4 < 2 * D2R;     // within 2° of the grid
   }).length;
   assert.ok(squared >= 0.8 * walls.length, squared + "/" + walls.length + " walls squared onto one grid");
+
+  // (2b) Corner-joining only nudges: each wall's width changed by at most 2×GAP (an end can move ≤ GAP).
+  walls.forEach(function (w) {
+    assert.ok(Math.abs(w.extent[0] - origW[w.id]) <= 0.5 + 1e-6, "joinCorners only nudged " + w.id);
+  });
 
   // (3) Doors/windows cut openings, each centred on a real wall (within its extent).
   let holeCount = 0;

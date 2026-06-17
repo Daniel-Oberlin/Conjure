@@ -132,6 +132,53 @@
     });
   }
 
+  // Join wall corners. WebXR fits each wall independently, so two walls that should meet at a corner
+  // often stop a few cm short (or overshoot). After squaring, perpendicular walls' planes intersect on a
+  // clean vertical line; for each such pair whose nearest ENDS both fall within GAP of that intersection,
+  // snap those ends exactly onto it — closing the corner with a small extend/trim. Works in plan view
+  // (X-Z). Leaves parallel walls (a doorway gap, opposite walls) and T-junctions (only one wall ends
+  // near the crossing) alone. Mutates wall _lp / extent / position in place; run after squareWalls.
+  function joinCorners(THREE, surfaces) {
+    var GAP = 0.25;                                              // only close gaps up to 25 cm
+    var W = surfaces.filter(function (s) { return s.semantic === "wall"; }).map(function (s) {
+      var n = new THREE.Vector3(0, 1, 0).applyQuaternion(s._lq);
+      var L = Math.hypot(n.x, n.z) || 1, nx = n.x / L, nz = n.z / L;   // unit horizontal normal
+      var hw = ((s.extent && s.extent[0]) || 0) / 2, cx = s._lp.x, cz = s._lp.z;
+      var tx = nz, tz = -nx;                                     // width axis ⟂ normal (in plan view)
+      return { s: s, cx: cx, cz: cz, nx: nx, nz: nz, hw: hw, cy: s._lp.y,
+               ends: [{ x: cx + tx * hw, z: cz + tz * hw }, { x: cx - tx * hw, z: cz - tz * hw }],
+               tgt: [null, null] };
+    });
+    function nearest(w, px, pz) {
+      var d0 = Math.hypot(w.ends[0].x - px, w.ends[0].z - pz);
+      var d1 = Math.hypot(w.ends[1].x - px, w.ends[1].z - pz);
+      return d1 < d0 ? { i: 1, d: d1 } : { i: 0, d: d0 };
+    }
+    for (var i = 0; i < W.length; i++) {
+      for (var j = i + 1; j < W.length; j++) {
+        var a = W[i], b = W[j];
+        if (Math.abs(a.cy - b.cy) > 0.5) continue;               // different wall band
+        if (Math.abs(a.nx * b.nx + a.nz * b.nz) > 0.3) continue; // normals not ⟂ ⇒ not a corner
+        var det = a.nx * b.nz - a.nz * b.nx;                     // intersect the two wall lines (X·n = c·n)
+        if (Math.abs(det) < 1e-3) continue;
+        var da = a.cx * a.nx + a.cz * a.nz, db = b.cx * b.nx + b.cz * b.nz;
+        var px = (da * b.nz - db * a.nz) / det, pz = (a.nx * db - b.nx * da) / det;
+        var ka = nearest(a, px, pz), kb = nearest(b, px, pz);
+        if (ka.d > GAP || kb.d > GAP) continue;                  // both ends must reach this corner
+        if (!a.tgt[ka.i] || ka.d < a.tgt[ka.i]._d) a.tgt[ka.i] = { x: px, z: pz, _d: ka.d };
+        if (!b.tgt[kb.i] || kb.d < b.tgt[kb.i]._d) b.tgt[kb.i] = { x: px, z: pz, _d: kb.d };
+      }
+    }
+    W.forEach(function (w) {
+      if (!w.tgt[0] && !w.tgt[1]) return;
+      var E0 = w.tgt[0] || w.ends[0], E1 = w.tgt[1] || w.ends[1];
+      var cx = (E0.x + E1.x) / 2, cz = (E0.z + E1.z) / 2;
+      w.s._lp.x = cx; w.s._lp.z = cz;
+      w.s.extent = [Math.hypot(E1.x - E0.x, E1.z - E0.z), (w.s.extent && w.s.extent[1]) || 0];
+      w.s.position = [cx, w.s._lp.y, cz];
+    });
+  }
+
   // Snap each inset (door/window/wall art) so it reads as part of its wall: keep its own (locally
   // accurate) depth, nudge it just in front of the wall toward the room interior, and adopt the wall's
   // exact orientation (parallel). "Into the room" is the OPPOSITE of the inset's own normal — the Quest
@@ -182,6 +229,6 @@
     });
   }
 
-  return { eulerYXZ: eulerYXZ, yawOf: yawOf, uprightInset: uprightInset,
-           register: register, squareWalls: squareWalls, snapInsets: snapInsets };
+  return { eulerYXZ: eulerYXZ, yawOf: yawOf, uprightInset: uprightInset, register: register,
+           squareWalls: squareWalls, joinCorners: joinCorners, snapInsets: snapInsets };
 });

@@ -587,10 +587,12 @@
         });
         if (!surfaces.length) return;
 
-        // Square the walls onto one orthogonal grid, then snap the insets (door/window/art) in front of
-        // their wall toward the room interior. Both mutate `surfaces` in place (orientation, position,
-        // debug.snap). Pure geometry, unit-tested in client/room-snap.js.
+        // Square the walls onto one orthogonal grid, join wall corners that fall a few cm short, then
+        // snap the insets (door/window/art) in front of their wall toward the room interior. All mutate
+        // `surfaces` in place (orientation, position, extent, holes). Pure geometry, unit-tested in
+        // client/room-snap.js.
         window.RoomSnap.squareWalls(THREE, surfaces);
+        window.RoomSnap.joinCorners(THREE, surfaces);
         window.RoomSnap.snapInsets(THREE, surfaces);
         surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
         this.lastPost = time;
