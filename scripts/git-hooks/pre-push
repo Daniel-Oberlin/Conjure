@@ -14,3 +14,18 @@ if ! "$PY" -m pytest -q; then
   echo "pre-push: tests failed — push aborted. (Override with 'git push --no-verify'.)" >&2
   exit 1
 fi
+
+# Room-snap geometry tests (JS). Run when node + deps are present; skip gracefully otherwise so a
+# contributor without the JS tooling isn't blocked. Set up with: npm install  (node from Homebrew).
+NODE=node
+[ -x /opt/homebrew/bin/node ] && NODE=/opt/homebrew/bin/node
+if command -v "$NODE" >/dev/null 2>&1 && [ -d node_modules/three ]; then
+  echo "pre-push: running room-snap JS tests…"
+  if ! out=$("$NODE" --test tests/js/*.test.js 2>&1); then
+    echo "$out" >&2
+    echo "pre-push: JS tests failed — push aborted. (Override with 'git push --no-verify'.)" >&2
+    exit 1
+  fi
+else
+  echo "pre-push: skipping JS tests (need node + 'npm install')." >&2
+fi

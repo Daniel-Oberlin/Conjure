@@ -1,0 +1,123 @@
+// Unit tests for the pure room-snapping geometry (client/room-snap.js), run with `node --test`.
+// Synthetic rooms give full control: we build surfaces with known facings/positions (mirroring what a
+// Quest capture produces), run the snapping, and assert the invariants we fought hard for — insets land
+// in front of their wall toward the room interior (incl. junction doors), walls come out square, the
+// frame solve recovers a known transform, and rotations are emitted in A-Frame's YXZ order.
+const { test } = require("node:test");
+const assert = require("node:assert");
+const THREE = require("three");
+const RS = require("../../client/room-snap.js");
+
+const UP = new THREE.Vector3(0, 1, 0);
+const D2R = Math.PI / 180;
+
+// A vertical surface (wall/door/window/art) whose OUTWARD normal points at compass yaw `yawDeg`
+// (yawOf(normal) === yawDeg). Mirrors a real captured plane's orientation: local +Y is the normal and
+// local +Z points world-up (so the rendered rectangle is upright), which is also where euler ORDER bites.
+function vert(id, sem, pos, yawDeg, ext) {
+  const yaw = yawDeg * D2R;
+  const Y = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));   // normal (plane local +Y)
+  const Z = new THREE.Vector3(0, 1, 0);                           // plane local +Z points world-up
+  const X = new THREE.Vector3().crossVectors(Y, Z);               // right-handed basis
+  const lq = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(X, Y, Z));
+  const s = { id, semantic: sem, extent: ext || [1, 2.4],
+              _lp: new THREE.Vector3(pos[0], pos[1], pos[2]), _lq: lq, debug: {} };
+  s.rotation = RS.eulerYXZ(THREE, lq);
+  return s;
+}
+const normalOf = (s) => UP.clone().applyQuaternion(s._lq);
+const yawDegOf = (s) => { const n = normalOf(s); return Math.atan2(n.x, n.z) / D2R; };
+
+test("eulerYXZ emits angles A-Frame reads in YXZ order (not XYZ)", () => {
+  const Rx90 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.7, 1.1, -0.4, "XYZ"));   // genuine 3-axis
+  const [x, y, z] = RS.eulerYXZ(THREE, q).map((d) => d * D2R);
+  // A-Frame reconstructs the entity orientation from these angles as YXZ; undoing eulerYXZ's -90°X
+  // pre-rotation must then recover the original captured-plane quaternion.
+  const recovered = new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z, "YXZ")).multiply(Rx90);
+  assert.ok(recovered.angleTo(q) < 1e-4, "YXZ round-trips to the captured orientation");
+  // Reading the very same angles as XYZ does NOT — proving the order is load-bearing (the ~48° bug).
+  const wrong = new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z, "XYZ")).multiply(Rx90);
+  assert.ok(wrong.angleTo(q) > 0.1, "XYZ misreads the same angles");
+});
+
+test("snapInsets places a door in front of its wall, toward the interior", () => {
+  // +X wall (outward normal +X ⇒ room interior is -X); door in it with the same outward normal.
+  const surfaces = [
+    vert("real_wall_0", "wall", [2, 1.2, 0], 90, [4, 2.4]),
+    vert("real_door_1", "door", [2, 1.0, 0.3], 90, [0.8, 2]),
+  ];
+  RS.snapInsets(THREE, surfaces);
+  const door = surfaces[1];
+  assert.ok(door.position[0] < 2, "door pushed to the interior (-X) side of the wall");
+  assert.ok(Math.abs(door.position[0] - 2) < 0.05, "door sits within a couple cm of the wall");
+  assert.match(door.debug.snap, /wall=.*clr=/);
+});
+
+test("snapInsets sends each junction door into its OWN room (two separate parallel walls)", () => {
+  // Two near-parallel junction walls 0.3 m apart, each facing out of its own room; a door in each.
+  const surfaces = [
+    vert("real_wall_0", "wall", [2.0, 1.2, 0], 90, [3, 2.4]),    // room A wall, normal +X
+    vert("real_wall_1", "wall", [2.3, 1.2, 0], 270, [3, 2.4]),   // room B wall, normal -X
+    vert("real_door_2", "door", [2.0, 1.0, 0], 90, [0.8, 2]),    // door in A's wall
+    vert("real_door_3", "door", [2.3, 1.0, 0], 270, [0.8, 2]),   // door in B's wall
+  ];
+  RS.snapInsets(THREE, surfaces);
+  assert.ok(surfaces[2].position[0] < 2.0, "door A → into room A (-X), in front of its own wall");
+  assert.ok(surfaces[3].position[0] > 2.3, "door B → into room B (+X), in front of its own wall");
+});
+
+test("squareWalls snaps near-90° walls onto one orthogonal grid", () => {
+  const surfaces = [
+    vert("w0", "wall", [0, 1.2, -2], 1, [4, 2.4]),     // ~0°
+    vert("w1", "wall", [2, 1.2, 0], 88, [4, 2.4]),     // ~90°
+    vert("w2", "wall", [0, 1.2, 2], 179, [4, 2.4]),    // ~180°
+    vert("w3", "wall", [-2, 1.2, 0], 272, [4, 2.4]),   // ~270°
+  ];
+  RS.squareWalls(THREE, surfaces);
+  const mod90 = surfaces.map((s) => ((yawDegOf(s) % 90) + 90) % 90);
+  for (const m of mod90) {
+    assert.ok(Math.abs(((m - mod90[0] + 45) % 90) - 45) < 0.2, "every wall ends up mutually square");
+  }
+});
+
+test("squareWalls leaves a genuinely angled (>12°) wall alone", () => {
+  const surfaces = [
+    vert("w0", "wall", [0, 1.2, -2], 0, [4, 2.4]),
+    vert("w1", "wall", [2, 1.2, 0], 90, [4, 2.4]),
+    vert("w2", "wall", [0, 1.2, 2], 180, [4, 2.4]),
+    vert("a", "wall", [1, 1.2, 1], 35, [0.6, 2.4]),   // a 35°-off small wall — beyond the 12° nudge limit
+  ];
+  RS.squareWalls(THREE, surfaces);
+  assert.ok(Math.abs(yawDegOf(surfaces[3]) - 35) < 0.001, "the 35° wall is untouched");
+});
+
+test("register recovers a known yaw + translation from a rotated capture", () => {
+  const refWall = (pos, yaw, ext) => ({ sem: "wall", pos: new THREE.Vector3(...pos), ext, nyaw: yaw, orient: "vertical" });
+  // Rectangular room (4×3) — distinct long/short wall sizes break the 90° rotational symmetry.
+  const ref = [
+    refWall([0, 1.2, -1.5], 0, [4, 2.4]),
+    refWall([0, 1.2, 1.5], Math.PI, [4, 2.4]),
+    refWall([2, 1.2, 0], Math.PI / 2, [3, 2.4]),
+    refWall([-2, 1.2, 0], -Math.PI / 2, [3, 2.4]),
+  ];
+  const THETA = 160 * D2R, t = new THREE.Vector3(2.5, 0, -1.0);   // ref = R(THETA)·cur + t
+  const Rneg = new THREE.Quaternion().setFromAxisAngle(UP, -THETA);
+  const cur = ref.map((r) => ({
+    sem: r.sem, ext: r.ext, orient: "vertical",
+    pos: r.pos.clone().sub(t).applyQuaternion(Rneg),
+    nyaw: r.nyaw - THETA,
+  }));
+  const { Tmat, stat } = RS.register(THREE, cur, ref);
+  assert.ok(Tmat, "registration was confident: " + stat);
+  for (let i = 0; i < ref.length; i++) {
+    const got = cur[i].pos.clone().applyMatrix4(Tmat);
+    assert.ok(got.distanceTo(ref[i].pos) < 0.05, "cur surface " + i + " maps onto its ref position");
+  }
+});
+
+test("register declines (returns null) when the reference is too small", () => {
+  const { Tmat, stat } = RS.register(THREE, [], []);
+  assert.strictEqual(Tmat, null);
+  assert.strictEqual(stat, "ref<3");
+});

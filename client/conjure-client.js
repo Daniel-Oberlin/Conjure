@@ -402,78 +402,14 @@
           new THREE.Vector3(p.x, p.y, p.z), new THREE.Quaternion(o.x, o.y, o.z, o.w),
           new THREE.Vector3(1, 1, 1)).invert();
       },
-      _euler: function (q) {
-        // A captured plane lies in its local X-Z plane (normal +Y); our <a-plane> is X-Y (normal
-        // +Z). Compose a -90° X rotation so the rendered plane aligns with the captured one, then
-        // convert to A-Frame's euler degrees (XYZ order).
-        var THREE = AFRAME.THREE;
-        var quat = new THREE.Quaternion(q.x, q.y, q.z, q.w);
-        quat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
-        var e = new THREE.Euler().setFromQuaternion(quat, "YXZ");   // A-Frame applies rotations in YXZ order
-        var d = THREE.MathUtils.radToDeg;
-        return [d(e.x), d(e.y), d(e.z)];
-      },
-      _yawOf: function (n) { return Math.atan2(n.x, n.z); },   // compass yaw of a horizontal normal
-      // Solve the single rigid yaw+translation transform mapping the newly detected planes (in the
-      // current refSpace) onto the persistent reference constellation — i.e. recover how the Quest's
-      // frame jumped, using the room's own geometry. Returns a Matrix4 (refSpace → reference frame) when
-      // confident, else null (caller then holds the last frame). Robust to the ~180° boundary flip
-      // because the yaw is read from the SHIFT in surface-normal directions, needing no prior pairing.
+      // The room-snapping geometry lives in the pure, unit-tested client/room-snap.js (RoomSnap). These
+      // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
+      _euler: function (q) { return window.RoomSnap.eulerYXZ(AFRAME.THREE, q); },
+      _yawOf: function (n) { return window.RoomSnap.yawOf(n); },
       _register: function (cur) {
-        var THREE = AFRAME.THREE, ref = this._ref, UP = new THREE.Vector3(0, 1, 0);
-        if (ref.length < 3) { this._regStat = "ref<3"; return null; }
-        function wrap(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; }
-        // Step 1 — candidate yaw(s): histogram the normal-yaw delta over same-semantic, similar-size
-        // vertical pairs; every true correspondence votes for the same delta, so the real yaw dominates.
-        var deltas = [];
-        cur.forEach(function (c) {
-          if (c.orient !== "vertical") return;
-          ref.forEach(function (r) {
-            if (r.orient !== "vertical" || r.sem !== c.sem) return;
-            if (Math.abs(r.ext[0] - c.ext[0]) > 0.4 || Math.abs(r.ext[1] - c.ext[1]) > 0.4) return;
-            deltas.push(wrap(r.nyaw - c.nyaw));
-          });
-        });
-        if (deltas.length < 3) { this._regStat = "dlt=" + deltas.length; return null; }
-        var bin = Math.PI / 30, hist = {};                          // 6° bins
-        deltas.forEach(function (d) { var b = Math.round(d / bin); (hist[b] = hist[b] || []).push(d); });
-        var keys = Object.keys(hist).sort(function (a, b) { return hist[b].length - hist[a].length; });
-        var thetas = keys.slice(0, 3).map(function (k) {            // top 3 peaks, circular-mean each
-          var s = 0, c2 = 0; hist[k].forEach(function (d) { s += Math.sin(d); c2 += Math.cos(d); });
-          return Math.atan2(s, c2);
-        });
-        // Step 2/3 — for each candidate yaw, solve translation (densest cell of ref.pos − R·cur.pos over
-        // same-size pairs) and score by how many planes land on a same-semantic reference surface.
-        var best = null;
-        thetas.forEach(function (theta) {
-          var qy = new THREE.Quaternion().setFromAxisAngle(UP, theta);
-          var grid = {}, bestCell = null, bestN = 0;
-          cur.forEach(function (c) {
-            var rc = c.pos.clone().applyQuaternion(qy);
-            ref.forEach(function (r) {
-              if (r.sem !== c.sem) return;
-              if (Math.abs(r.ext[0] - c.ext[0]) > 0.3 || Math.abs(r.ext[1] - c.ext[1]) > 0.3) return;
-              var tx = r.pos.x - rc.x, tz = r.pos.z - rc.z;
-              var k = Math.round(tx / 0.25) + "," + Math.round(tz / 0.25);
-              var cell = grid[k] || (grid[k] = { sx: 0, sz: 0, n: 0 });
-              cell.sx += tx; cell.sz += tz; cell.n++;
-              if (cell.n > bestN) { bestN = cell.n; bestCell = cell; }
-            });
-          });
-          if (!bestCell) return;
-          var Tmat = new THREE.Matrix4().compose(
-            new THREE.Vector3(bestCell.sx / bestCell.n, 0, bestCell.sz / bestCell.n), qy, new THREE.Vector3(1, 1, 1));
-          var inl = 0;
-          cur.forEach(function (c) {
-            var tp = c.pos.clone().applyMatrix4(Tmat), bd = 0.4;
-            ref.forEach(function (r) { if (r.sem === c.sem) { var d = tp.distanceTo(r.pos); if (d < bd) bd = d; } });
-            if (bd < 0.4) inl++;
-          });
-          if (!best || inl > best.inl) best = { Tmat: Tmat, inl: inl };
-        });
-        this._regStat = "inl=" + (best ? best.inl : 0) + "/" + cur.length + " dlt=" + deltas.length;
-        if (!best || best.inl < 4 || best.inl < 0.4 * cur.length) return null;   // not confident → caller holds
-        return best.Tmat;
+        var r = window.RoomSnap.register(AFRAME.THREE, cur, this._ref);
+        this._regStat = r.stat;
+        return r.Tmat;
       },
       tick: function (time) {
         var sceneEl = this.el.sceneEl, frame = sceneEl.frame;
@@ -591,62 +527,11 @@
         });
         if (!surfaces.length) return;
 
-        // Square the walls. WebXR fits every plane independently, so small wall slivers around openings
-        // come back a couple degrees off. The whole space shares one orthogonal grid (the rooms are
-        // square with each other), so estimate it width-weighted from all walls — the big, accurate walls
-        // dominate — and snap each vertical surface's facing onto the nearest 90° of it. Small nudges only
-        // (≤12°), so a genuinely angled wall is left alone. (Operates on the quaternion; rendering order
-        // is handled by _euler.)
-        var UP2 = new THREE.Vector3(0, 1, 0), gx = 0, gy = 0;
-        var facing = function (s) { var n = UP2.clone().applyQuaternion(s._lq); return Math.atan2(n.x, n.z); };
-        surfaces.forEach(function (s) {
-          if (s.semantic !== "wall") return;
-          var a = facing(s) * 4, w = (s.extent && s.extent[0]) || 1;  // ×4 folds the 90° grid into a full turn
-          gx += w * Math.cos(a); gy += w * Math.sin(a);
-        });
-        if (gx || gy) {
-          var grid = Math.atan2(gy, gx) / 4;                          // dominant facing, mod 90° (radians)
-          surfaces.forEach(function (s) {
-            if (["wall", "door", "window", "wall art"].indexOf(s.semantic) < 0) return;
-            var yw = facing(s), d = (grid + Math.round((yw - grid) / (Math.PI / 2)) * (Math.PI / 2)) - yw;
-            while (d > Math.PI) d -= 2 * Math.PI;
-            while (d < -Math.PI) d += 2 * Math.PI;
-            if (Math.abs(d) > 0.21) return;                           // >~12° ⇒ likely a real angle, leave it
-            s._lq.premultiply(new THREE.Quaternion().setFromAxisAngle(UP2, d));  // rotate facing onto the grid
-            s.rotation = self._euler(s._lq);
-          });
-        }
-
-        // Snap each inset (door/window/wall art) so it reads as part of its wall: keep its own (locally
-        // accurate) depth, nudge it just in front of the wall toward the room interior, and adopt the
-        // wall's exact orientation (parallel). "Into the room" is simply the OPPOSITE of the inset's own
-        // normal — the Quest orients every surface's normal OUTWARD (away from its room), consistently
-        // across captures, so this is correct even at a junction (each door belongs to its own wall's
-        // room; no floor/centroid inference needed). Geometry only — fill style is the server's job.
-        var V3 = THREE.Vector3;
-        var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
-        var INSET = { "door": 0.012, "window": 0.012, "wall art": 0.022 };
-        surfaces.forEach(function (s) {
-          var off = INSET[s.semantic];
-          if (off == null || !walls.length) return;
-          // A WebXR plane lies in its local X-Z plane, so its NORMAL is the +Y axis (not +Z).
-          var sn = new V3(0, 1, 0).applyQuaternion(s._lq), best = null, bestD = 0.3;
-          walls.forEach(function (wl) {
-            var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
-            if (Math.abs(wn.dot(sn)) < 0.9) return;                   // nearest ~parallel wall (clamp reference)
-            var d = Math.abs(s._lp.clone().sub(wl._lp).dot(wn));
-            if (d < bestD) { bestD = d; best = wl; }
-          });
-          if (!best) return;
-          var nint = sn.clone().negate();                             // into the room = opposite outward normal
-          // Keep the inset's OWN depth; push FORWARD only to clear the wall by `off`. Proud inset untouched
-          // (no gap); recessed/coplanar nudged forward (no z-fight, never occluded).
-          var clr = s._lp.clone().sub(best._lp).dot(nint);
-          var fp = clr < off ? s._lp.clone().add(nint.clone().multiplyScalar(off - clr)) : s._lp.clone();
-          s.position = [fp.x, fp.y, fp.z];
-          s.rotation = best.rotation.slice();                         // adopt the wall's orientation (parallel)
-          s.debug.snap = "wall=" + best.id.slice(-7) + " clr=" + Math.round(clr * 100) + "cm";
-        });
+        // Square the walls onto one orthogonal grid, then snap the insets (door/window/art) in front of
+        // their wall toward the room interior. Both mutate `surfaces` in place (orientation, position,
+        // debug.snap). Pure geometry, unit-tested in client/room-snap.js.
+        window.RoomSnap.squareWalls(THREE, surfaces);
+        window.RoomSnap.snapInsets(THREE, surfaces);
         surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
         this.lastPost = time;
         var boundary = null;
