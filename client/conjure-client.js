@@ -583,7 +583,6 @@
           }
           surfaces.push({ id: sid, semantic: c.sem, position: [lp.x, lp.y, lp.z],
             rotation: self._euler(lq), extent: [c.ext[0], c.ext[1]], _lp: lp.clone(), _lq: lq.clone(),
-            _poly: c.sem === "floor" ? c.poly : null,   // floor outline (plane-local) for the inside test
             debug: { pos: c.raw.pos, quat: c.raw.quat, orient: c.orient, label: c.sem,
                      polyY: c.polyY, n: c.poly.length, registered: registered, regStat: self._regStat } });
           if (c.sem === "floor" && (!floor || c.ext[0] * c.ext[1] > floor._area)) {
@@ -618,27 +617,14 @@
           });
         }
 
-        // Snap insets (door/window/wall art) onto their parent wall: project onto the wall plane,
-        // adopt its exact orientation, and nudge a couple cm toward the room so near-coplanar fills
-        // stop z-fighting and the wall stops occluding them. (Snapping also corrects the small tilt
-        // a noisy inset plane would otherwise keep.) Geometry only — fill style is the server's job.
+        // Snap each inset (door/window/wall art) so it reads as part of its wall: keep its own (locally
+        // accurate) depth, nudge it just in front of the wall toward the room interior, and adopt the
+        // wall's exact orientation (parallel). "Into the room" is simply the OPPOSITE of the inset's own
+        // normal — the Quest orients every surface's normal OUTWARD (away from its room), consistently
+        // across captures, so this is correct even at a junction (each door belongs to its own wall's
+        // room; no floor/centroid inference needed). Geometry only — fill style is the server's job.
         var V3 = THREE.Vector3;
         var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
-        var floors = surfaces.filter(function (s) { return s.semantic === "floor"; });
-        // The Quest does NOT orient plane normals consistently — some faces point into the room, some out
-        // (proven on real captures: insets that read "behind" had inward normals). So the normal can't
-        // tell us "inside". We ask the unambiguous question instead: which side of the wall has THIS
-        // room's floor? Point-in-polygon against the real floor OUTLINE (not its bounding box — the two
-        // rooms' boxes overlap). With separate junction walls, even junction doors get a clean one-sided
-        // answer (own floor on the in side, the gap/no-floor on the out side).
-        var pip = function (lx, lz, poly) {
-          var inside = false;
-          for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-            var xi = poly[i].x, zi = poly[i].z, xj = poly[j].x, zj = poly[j].z;
-            if (((zi > lz) !== (zj > lz)) && (lx < (xj - xi) * (lz - zi) / (zj - zi) + xi)) inside = !inside;
-          }
-          return inside;
-        };
         var INSET = { "door": 0.012, "window": 0.012, "wall art": 0.022 };
         surfaces.forEach(function (s) {
           var off = INSET[s.semantic];
@@ -652,39 +638,16 @@
             if (d < bestD) { bestD = d; best = wl; }
           });
           if (!best) return;
-          var n = new V3(0, 1, 0).applyQuaternion(best._lq);
-          var overFloor = function (q) {
-            for (var i = 0; i < floors.length; i++) {
-              var fl = floors[i];
-              if (!fl._poly || fl._poly.length < 3) continue;
-              var loc = q.clone().sub(fl._lp).applyQuaternion(fl._lq.clone().invert());
-              if (pip(loc.x, loc.z, fl._poly)) return fl;          // exact room footprint, not its box
-            }
-            return null;
-          };
-          var fPlus = overFloor(s._lp.clone().add(n.clone().multiplyScalar(0.5)));
-          var fMinus = overFloor(s._lp.clone().add(n.clone().multiplyScalar(-0.5)));
-          var inward, mode;
-          if (!!fPlus !== !!fMinus) {
-            inward = fPlus ? 1 : -1; mode = "floor";                   // exactly one side has floor → inside
-          } else {                                                     // both/neither → nearest floor centre
-            var fc = null, fcD = 1e9;
-            floors.forEach(function (fl) { var dd = fl._lp.distanceTo(s._lp); if (dd < fcD) { fcD = dd; fc = fl; } });
-            inward = fc ? (n.dot(fc._lp.clone().sub(s._lp)) >= 0 ? 1 : -1) : 1;
-            mode = "centroid";
-          }
-          var nint = n.clone().multiplyScalar(inward);
+          var nint = sn.clone().negate();                             // into the room = opposite outward normal
           // Keep the inset's OWN depth; push FORWARD only to clear the wall by `off`. Proud inset untouched
           // (no gap); recessed/coplanar nudged forward (no z-fight, never occluded).
           var clr = s._lp.clone().sub(best._lp).dot(nint);
           var fp = clr < off ? s._lp.clone().add(nint.clone().multiplyScalar(off - clr)) : s._lp.clone();
           s.position = [fp.x, fp.y, fp.z];
           s.rotation = best.rotation.slice();                         // adopt the wall's orientation (parallel)
-          var tag = function (e) { return e ? e.id.slice(-7) : "_"; };
-          s.debug.snap = "wall=" + tag(best) + " " + mode + " in=" + inward +
-            " f+=" + tag(fPlus) + " f-=" + tag(fMinus) + " clr=" + Math.round(clr * 100) + "cm";
+          s.debug.snap = "wall=" + best.id.slice(-7) + " clr=" + Math.round(clr * 100) + "cm";
         });
-        surfaces.forEach(function (s) { delete s._lp; delete s._lq; delete s._poly; });
+        surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
         this.lastPost = time;
         var boundary = null;
         if (floor) { delete floor._area; boundary = floor; }
