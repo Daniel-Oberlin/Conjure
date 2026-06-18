@@ -28,27 +28,41 @@ def test_builder_prompt_is_the_single_source_for_DIRECTOR_PROMPT():
     assert load_agent("builder").prompt == DIRECTOR_PROMPT               # one file, no divergence
 
 
+def _write_agent(tmp_path, name, data, files=None):
+    """Create a `<tmp_path>/<name>/agent.json` def (+ any extra files: {relpath: text})."""
+    d = tmp_path / name
+    d.mkdir()
+    (d / "agent.json").write_text(json.dumps(data))
+    for rel, text in (files or {}).items():
+        (d / rel).write_text(text)
+    return tmp_path
+
+
 def test_unknown_server_ref_is_rejected(tmp_path):
-    (tmp_path / "bad.json").write_text(json.dumps(
-        {"name": "bad", "prompt": "hi {name}", "mcp_servers": [{"server": "nope"}]}))
+    _write_agent(tmp_path, "bad", {"prompt": "hi {name}", "mcp_servers": [{"server": "nope"}]})
     with pytest.raises(ValueError, match="unknown MCP server"):
         load_agent("bad", agents_dir=tmp_path, registry=load_server_registry())
 
 
 def test_missing_prompt_is_rejected(tmp_path):
-    (tmp_path / "empty.json").write_text(json.dumps({"name": "empty", "llms": ["Claude"]}))
+    _write_agent(tmp_path, "empty", {"llms": ["Claude"]})
     with pytest.raises(ValueError, match="prompt"):
         load_agent("empty", agents_dir=tmp_path)
 
 
-def test_name_mismatch_is_rejected(tmp_path):
-    (tmp_path / "x.json").write_text(json.dumps({"name": "y", "prompt": "hi"}))
+def test_name_field_must_match_the_directory(tmp_path):
+    _write_agent(tmp_path, "x", {"name": "y", "prompt": "hi"})   # dir is the identity; a stray name errors
     with pytest.raises(ValueError, match="name"):
         load_agent("x", agents_dir=tmp_path)
 
 
+def test_prompt_file_is_relative_to_the_agent_dir(tmp_path):
+    _write_agent(tmp_path, "p", {"prompt_file": "prompt.md"}, files={"prompt.md": "you are {name}"})
+    assert load_agent("p", agents_dir=tmp_path).prompt == "you are {name}"
+
+
 def test_inline_prompt_and_defaults(tmp_path):
-    (tmp_path / "mini.json").write_text(json.dumps({"name": "mini", "prompt": "you are {name}"}))
+    _write_agent(tmp_path, "mini", {"prompt": "you are {name}"})
     a = load_agent("mini", agents_dir=tmp_path)
     assert a.prompt == "you are {name}" and a.llms == [WILDCARD] and a.servers == []
 

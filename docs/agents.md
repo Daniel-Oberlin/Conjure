@@ -110,13 +110,16 @@ verbatim.
 
 An agent is a **declarative JSON definition** of an experience: a prompt, the LLMs allowed to run it, the
 MCP servers (toolset) it may use, the live context to inject, and any personas it hosts. It owns a
-segregated world (§3b) at runtime. Sketch (schema firms up in §9):
+segregated world (§3b) at runtime. Each agent is a self-contained directory —
+`agents/<name>/agent.json` + its `prompt.md` (+ later its `personas/`); the **directory name is the
+agent's identity**, so `agent.json` needn't repeat it. `prompt_file`/persona paths resolve relative to
+the agent's own dir. Sketch (schema firms up in §9):
 
 ```jsonc
+// agents/dungeon_master/agent.json
 {
-  "name": "dungeon_master",
   "description": "Runs a role-playing game, building the world live as the story unfolds.",
-  "prompt_file": "prompts/dungeon_master.md",    // or inline "prompt": "..."
+  "prompt_file": "prompt.md",                    // relative to this dir; or inline "prompt": "..."
   "llms": ["*"],                                 // allow-list, or "*" = any configured LLM
   "default_llm": "claude",                       // active brain when you switch to this agent
   "mcp_servers": [
@@ -124,7 +127,7 @@ segregated world (§3b) at runtime. Sketch (schema firms up in §9):
     { "server": "assets", "access": "all" }
   ],
   "context": ["room://current"],                 // MCP resources injected into the prompt each turn (§5)
-  "personas": ["prompts/personas/goblin.json"]   // optional participants (§3a); may also be made at runtime
+  "personas": ["personas/goblin.json"]           // optional participants (§3a); may also be made at runtime
 }
 ```
 
@@ -296,7 +299,8 @@ Three non-overlapping config layers, composed at load:
    Server **processes are session-scoped and shared**; each agent gets a *filtered client view*, not its
    own process. This is also the nudge to **split today's monolithic world server** (world-edit /
    asset-search / room-query) so scoping is meaningful.
-3. **Agent defs** (new) — `agents/*.json`, built-in (the builder) + user-defined; non-secret, shareable,
+3. **Agent defs** (new) — `agents/<name>/` (a self-contained dir: `agent.json` + `prompt.md` + later
+   `personas/`), built-in (the builder) + user-defined; non-secret, shareable,
    version-controllable.
 
 `"*"` resolution (any LLM / any server): decide whether it snapshots at load or dynamically includes
@@ -388,7 +392,7 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 
 1. **Server registry + shell skeleton**, no behavior change: lift `route_turn` into the shell, keep the
    single world server, keep current LLMs. Existing director/routing tests stay green.
-2. **Define the current director as `builder.json`** (renaming `director → builder` is fine to defer; keep
+2. **Define the current director as `agents/builder/`** (renaming `director → builder` is fine to defer; keep
    an alias). Route all input through shell → active agent. Identical behavior, now declarative.
 3. **Resource context injection** (§5) — builder gets `room://current`; kill the "let me check" narration
    + round-trip.

@@ -1,9 +1,11 @@
 """Agent definitions + the MCP server registry — the declarative layer behind the director.
 
 An *agent* is an experience (see docs/agents.md): a prompt, the LLMs allowed to run it, the MCP
-servers (toolset) it may use, the context to inject, and any personas it hosts. This module just
-**loads and validates** those JSON defs — `agents/<name>.json` against the `agents/servers.json`
-registry. The runtime wiring (launching servers, building the roster) lives in director.py.
+servers (toolset) it may use, the context to inject, and any personas it hosts. Each agent is a
+self-contained directory — `agents/<name>/agent.json` plus its `prompt.md` (and later its personas)
+— validated against the shared `agents/servers.json` registry. The directory name *is* the agent's
+identity. This module just **loads and validates** those defs; the runtime wiring (launching servers,
+building the roster) lives in director.py.
 
 v1 scope: the data model + loader, with the `builder` agent reproducing today's director. Scoping
 *enforcement* (read-only access, tool filtering), multi-server launch, personas, and context
@@ -79,18 +81,21 @@ def load_server_registry(path: Path = DEFAULT_REGISTRY) -> dict[str, ServerSpec]
 
 def load_agent(name: str, *, agents_dir: Path = AGENTS_DIR,
                registry: Optional[dict[str, ServerSpec]] = None) -> AgentDef:
-    """Load and validate the agent definition `<agents_dir>/<name>.json`.
+    """Load and validate the agent definition `<agents_dir>/<name>/agent.json`.
 
+    The directory name is the agent's identity, so `agent.json` needn't repeat it (a `name` field, if
+    present, is validated to match). `prompt_file` is resolved relative to the agent's directory.
     `registry` (if given) validates that every referenced MCP server exists — pass it to fail loudly
     on a typo'd server name. Raises ValueError on a malformed def, FileNotFoundError on a missing file.
     """
-    data = _read_json(agents_dir / f"{name}.json")
+    agent_dir = agents_dir / name
+    data = _read_json(agent_dir / "agent.json")
     if data.get("name", name) != name:
         raise ValueError(f"agent {name!r}: 'name' field is {data.get('name')!r}, expected {name!r}")
 
     prompt = data.get("prompt") or ""
     if not prompt and data.get("prompt_file"):
-        prompt = (_ROOT / data["prompt_file"]).read_text()
+        prompt = (agent_dir / data["prompt_file"]).read_text()
     if not prompt.strip():
         raise ValueError(f"agent {name!r}: needs a non-empty 'prompt' or 'prompt_file'")
 
