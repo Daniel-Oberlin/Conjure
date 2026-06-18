@@ -324,6 +324,14 @@ This turns the optimization from a one-off patch into a first-class agent capabi
 *also* explicitly forbid narrating tool use — "never say you're checking the scene; just do it" — but the
 durable fix is removing the need.)
 
+**`viewer://current` — the live head pose.** The same mechanism fixes a subtler bug: the builder
+currently can't place things relative to the user, because **nothing reports the headset's pose to the
+server** (the camera pose lives only client-side, used for label billboarding). So the prompt falls back
+to "the session's default forward is -z" — true at session start, wrong the moment the user turns. A
+`viewer://current` resource (position + yaw, injected each turn) lets "a few meters in front of me",
+"to my left", "behind me" resolve against where the user *actually* is — or back relative-placement tool
+args (`near="me"`). Needs a small channel for the headset to report its camera pose. (Deferred — §9.)
+
 ## 6. State & attribution  🟡
 
 - **Transcript ownership.** Switching *LLM* continues the conversation (same agent, new brain — as
@@ -384,7 +392,10 @@ orchestration** — no runtime turn loop; the agent invokes a persona via an `in
 discipline prescribed in its prompt (§3a). **patch provenance** — dropped; segregated world spaces make
 it unnecessary (§6).
 
-Deferrable (don't build yet, don't preclude): cross-session **persistence** of world spaces; agent-to-agent
+Deferrable (don't build yet, don't preclude): **viewer pose** — report the headset's live camera pose
+to the server so placement can be relative to the user ("in front of me", "to my left") via a
+`viewer://current` context resource (§5) or `near="me"` tool args, instead of the static -z default;
+cross-session **persistence** of world spaces; agent-to-agent
 delegation / sub-agents; capability-based LLM selection; concurrent multi-agent panels (v1 = one active
 agent); hot-reload of defs; degraded-mode behavior when an allowed server won't start or an LLM has no key.
 
