@@ -31,10 +31,14 @@
 - Vehicle
 - etc.
 
+# Graphics
+- Lighting
+
 # Utility
 - Compass?
 
 ## Dynamic content
+- Fireflies
 - What do we call dynamic modules?
 - Animation for pending box (sending dynamic code to the headset- Dynamic code should be deterministic and anchored to a precise timestamp for consistency across multiple headsets
 - Keep store of created content, version controlled?
@@ -57,8 +61,7 @@
 - Graphic wraparound
 - LLM companion
 - namespace for worlds: "/worlds/", agents, builders can be scoped to subdirectories
-
--
+- "persona" is like an agent, but only a prompt and access to context, like a participant in a role playing game
 
 ## Persistance
 - Preferences
@@ -93,3 +96,7 @@
 - Logging and instrumentation so that we can profile and see what's taking the time
 - Maybe this is done in the CLI, maybe you can query the logs in the CLI with natural language
 
+## Depolyment and infrastructure
+
+- Put into container?
+- Discovery for MCP servers?
