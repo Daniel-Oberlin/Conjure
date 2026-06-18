@@ -28,18 +28,18 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from .agents import AgentDef, ServerSpec, load_agent, load_server_registry, scoped_roster
 from .config import Settings
 from .llm import LLM, ToolSpec, Turn, build_roster
 
-# Shared system prompt for the builder agent. It now lives in the agent's prompt_file
-# (agents/builder.json → prompts/builder.md) so the agent definition owns it; this constant reads that
-# file (single source) for the default `Director()` prompt and for tests. `{name}` is filled per-call
-# with the active LLM's casual name; roster awareness is appended by `Director._system_for`.
-DIRECTOR_PROMPT = (Path(__file__).resolve().parent.parent / "prompts" / "builder.md").read_text()
+# Shared system prompt for the builder agent. It lives in the agent's prompt_file
+# (agents/builder.json → prompts/builder.md), so the agent definition owns it — including the path.
+# This constant goes through the loader (single source) for the default `Director()` prompt and tests.
+# `{name}` is filled per-call with the active LLM's casual name; roster awareness is appended by
+# `Director._system_for`.
+DIRECTOR_PROMPT = load_agent("builder").prompt
 
 OnText = Callable[..., Awaitable[None]]   # (text, *, final: bool, speaker: str) -> None
 OnTool = Callable[..., Awaitable[None]]   # (name: str, args: dict) -> None
