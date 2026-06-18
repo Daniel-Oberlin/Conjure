@@ -29,6 +29,7 @@ import httpx
 
 from .config import Settings, get_settings
 from .director import Director
+from .shell import Shell
 
 
 # --------------------------------------------------------------------------- helpers
@@ -242,56 +243,58 @@ def cmd_skybox_from(s: Settings, a) -> None:
 
 # --------------------------------------------------------------------------- director (text)
 
-async def _director(s: Settings, instructions, verbose: bool) -> None:
-    """Run text instructions through the shared director (conjure.director). `instructions` is an
-    async iterator of strings (one-shot or interactive). The director owns the LLM roster, the MCP
-    tools, and mid-conversation LLM switching; the CLI only decides how to print."""
+async def _director(s: Settings, make_instructions, verbose: bool) -> None:
+    """Drive the shell (conjure.shell) — which wraps the agent (conjure.director). `make_instructions`
+    is a factory `shell -> async iterator of strings` (so the interactive prompt can reflect shell
+    state). The shell owns deterministic commands + LLM switching; the agent builds the world; the CLI
+    only decides how to print."""
     errlog = sys.stderr if verbose else None
     async with Director.connect(s, errlog=errlog) as director:
+        shell = Shell(director, s)
         multi = len(director.roster) > 1  # show who's speaking once there's more than one LLM
 
         async def on_text(text: str, *, final: bool, speaker: str) -> None:
-            # Print every reply chunk — including the upfront acknowledgement ("On it") the director
-            # emits before running the tools — so there's immediate feedback during slow work.
-            print(f"{speaker}: {text}" if multi else text)
+            # Print every reply chunk — including the upfront acknowledgement ("On it") the agent emits
+            # before running the tools — so there's immediate feedback during slow work.
+            print(f"{speaker}: {text}" if multi or speaker == "shell" else text)
 
         async def on_tool(name: str, args: dict) -> None:
             if verbose:
                 print(f"  · {name}({json.dumps(args)})")
 
-        async for text in instructions:
+        async for text in make_instructions(shell):
             try:
-                await director.handle(text, on_text=on_text, on_tool=on_tool)
+                await shell.feed(text, on_text=on_text, on_tool=on_tool)
             except Exception as exc:  # one bad turn (API error, quota, …) shouldn't kill the REPL
                 print(f"error: {exc}")
 
 
 def cmd_say(s: Settings, a) -> None:
-    async def once():
+    async def once(_shell):
         yield " ".join(a.text)
-    asyncio.run(_director(s, once(), a.verbose))
+    asyncio.run(_director(s, once, a.verbose))
 
 
 def cmd_repl(s: Settings, a) -> None:
-    print("Conjure director REPL — type an instruction (':q' to quit).\n"
-          "With more than one LLM configured you can switch ('let me talk to Gemini') or address "
-          "one for a single turn ('Claude, make a picture of a cat').")
+    print("Conjure REPL — type an instruction (':q' to quit).\n"
+          "Switch LLM with 'let me talk to Gemini' or address one for a turn ('Claude, make a cat').\n"
+          "Type 'conjure open shell' for deterministic commands (switch agent/llm, status, …).")
 
-    async def lines():
+    async def lines(shell: Shell):
         loop = asyncio.get_event_loop()
         while True:
             try:
-                line = await loop.run_in_executor(None, lambda: input("conjure> "))
+                line = await loop.run_in_executor(None, lambda: input(shell.prompt()))
             except (EOFError, KeyboardInterrupt):
                 print()
                 return
             line = line.strip()
-            if line in (":q", ":quit", "exit"):
+            if line in (":q", ":quit"):
                 return
             if line:
                 yield line
 
-    asyncio.run(_director(s, lines(), a.verbose))
+    asyncio.run(_director(s, lines, a.verbose))
 
 
 # --------------------------------------------------------------------------- argparse

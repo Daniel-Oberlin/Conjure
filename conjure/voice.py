@@ -28,6 +28,7 @@ import urllib.request
 
 from .config import Settings, get_settings
 from .director import Director
+from .shell import Shell
 
 # PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
 PIPELINE_IDLE_TIMEOUT_SECS = 3600  # 1 hour
@@ -70,9 +71,9 @@ async def _run(settings: Settings) -> None:
     # self-contained utterance the TTS service synthesizes immediately — the early acknowledgement
     # and the final confirmation each become one).
     class DirectorProcessor(FrameProcessor):
-        def __init__(self, director: Director):
+        def __init__(self, shell: Shell):
             super().__init__()
-            self._director = director
+            self._shell = shell      # the shell (deterministic commands) wrapping the agent
 
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)
@@ -82,7 +83,7 @@ async def _run(settings: Settings) -> None:
             async def on_text(reply: str, *, final: bool, speaker: str) -> None:
                 await self.push_frame(TTSSpeakFrame(text=reply))
             try:
-                await self._director.handle(text, on_text=on_text)
+                await self._shell.feed(text, on_text=on_text)
             except Exception as exc:  # never let one bad turn tear down the pipeline
                 print(f"director error: {exc}", file=sys.stderr)
                 await self.push_frame(
@@ -119,7 +120,7 @@ async def _run(settings: Settings) -> None:
     # The shared director owns the LLM roster and the world-editing MCP tools (it spawns
     # conjure.mcp_server over stdio itself). PipeCat no longer talks to any LLM.
     async with Director.connect(settings) as director:
-        director_proc = DirectorProcessor(director)
+        director_proc = DirectorProcessor(Shell(director, settings))
 
         # We keep the LLM context aggregator ONLY for its end-of-turn detection and mute-while-
         # speaking — not for messages (the director owns the transcript). Its `on_user_turn_stopped`

@@ -106,6 +106,14 @@ the agent just runs turns.
 a small grammar, deterministic. Commands that take free-text args (`save <name>`) capture the tail
 verbatim.
 
+**Status — shipped (skeleton).** `conjure/shell.py` wraps the agent (Director) and drives both
+front-ends (CLI + voice). Shell mode (`conjure open shell` → `conjure:shell>`, `exit`), the `conjure`
+wake-prefix for inline commands, and a small command registry (`open`/`exit`, `help`, `whoami`,
+`llms`, `agents`, plus `talk to/use <llm>` LLM-switching) are in. Input that isn't a recognised command
+is forwarded to the agent unchanged. **Deferred:** fully migrating inline `route_turn` out of
+`director.handle` (bare "let me talk to Gemini" still routes inside the agent for now); world ops as
+commands (`reset`/`save`/`load`); agent-switching (waits on a second agent).
+
 ## 3. The agent  🟡
 
 An agent is a **declarative JSON definition** of an experience: a prompt, the LLMs allowed to run it, the
