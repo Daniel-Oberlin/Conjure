@@ -43,10 +43,11 @@ class Shell:
         ]
 
     def prompt(self) -> str:
-        """The prompt the front-end shows: `conjure:shell>` in shell mode, else `conjure:<llm>.<agent>>`."""
+        """The prompt the front-end shows: `conjure:shell>` in shell mode, else `conjure:<agent>.<llm>>`
+        (agent-primary — the experience is the constant; the LLM running it can vary)."""
         if self.in_shell:
             return "conjure:shell> "
-        return f"conjure:{self._director.active.lower()}.{self._agent_name()}> "
+        return f"conjure:{self._agent_name()}.{self._director.active.lower()}> "
 
     async def feed(self, text: str, *, on_text: Optional[OnText] = None,
                    on_tool: Optional[OnTool] = None) -> None:

@@ -41,7 +41,7 @@ hand turns to **personas**.
 └───────────────┬───────────────────────────────────┘
                 │ activates ONE experience (and its world)
 ┌───────────────▼───────────────────────────────────┐
-│  AGENT = an EXPERIENCE                               │  conjure:claude.builder>
+│  AGENT = an EXPERIENCE                               │  conjure:builder.claude>
 │   • its own segregated WORLD (kept for the session) │
 │   • a scoped TOOLSET (MCP servers)                  │
 │   • a prompt + allowed LLMs                          │
@@ -139,9 +139,10 @@ the agent's own dir. Sketch (schema firms up in §9):
 }
 ```
 
-**Identity is a pair.** The session's active identity is `(llm, agent)`, surfaced in the prompt as
-`conjure:claude.builder>`. One axis (LLM) can change while the other (agent) stays — swapping brains
-mid-conversation, as the roster does today.
+**Identity is a pair.** The session's active identity is `(agent, llm)`, surfaced in the prompt as
+`conjure:builder.claude>` (agent-primary — the experience is the constant; the LLM running it can
+vary). One axis (LLM) can change while the other (agent) stays — swapping brains mid-conversation, as
+the roster does today.
 
 **Scoping LLMs.** `llms` is an allow-list referencing the configured roster, or `"*"` for any. A future
 extension is capability-based selection (an agent declares it *needs* vision / strong tool-use and the

@@ -109,6 +109,6 @@ async def test_help_and_llms_list_without_touching_the_agent():
 
 def test_prompt_reflects_mode():
     sh, d, out, on_text = _shell()
-    assert sh.prompt() == "conjure:claude.builder> "
+    assert sh.prompt() == "conjure:builder.claude> "   # agent-primary; the LLM can vary
     sh.in_shell = True
     assert sh.prompt() == "conjure:shell> "
