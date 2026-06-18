@@ -183,7 +183,9 @@ The orchestration loop (one turn):
 
 Design notes: keep tools **coarse and intent-level** (`place_asset("campfire", near=user)`) so the
 director reasons about goals, not transforms. Consider a future split into sub-agents (asset agent,
-code agent) — not required for v1.
+code agent) — not required for v1. The generalization of this director into a deterministic **shell**
+(reliable control: switch agent, reset, save) above declarative, scoped **agents** (the builder being
+the first) is designed in **[agents.md](./agents.md)**.
 
 ### 7a. LLM roster — many named LLMs in one session  🟡
 
