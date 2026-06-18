@@ -1,0 +1,7 @@
+{
+  "world": {
+    "command": "python",
+    "args": ["-m", "conjure.mcp_server"],
+    "env": { "CONJURE_URL": "${world_url}" }
+  }
+}

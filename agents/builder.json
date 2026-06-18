@@ -1,0 +1,9 @@
+{
+  "name": "builder",
+  "description": "Conversational world-building and editing — customize worlds for yourself.",
+  "prompt_file": "prompts/builder.md",
+  "llms": ["*"],
+  "mcp_servers": [
+    { "server": "world", "access": "all" }
+  ]
+}

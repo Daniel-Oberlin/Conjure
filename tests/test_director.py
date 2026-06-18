@@ -181,6 +181,22 @@ def test_system_prompt_is_per_llm_and_roster_aware():
 
 
 def test_prompt_template_has_a_single_name_placeholder():
-    # Guards against accidental stray braces breaking .format(name=...).
+    # Guards against accidental stray braces breaking .format(name=...). DIRECTOR_PROMPT now reads from
+    # prompts/builder.md (the builder agent's prompt_file), so this also guards that file.
     assert DIRECTOR_PROMPT.count("{name}") == 1
     DIRECTOR_PROMPT.format(name="X")  # must not raise
+
+
+def test_stdio_params_maps_python_and_substitutes_world_url():
+    # The registry stays interpreter-/host-agnostic; _stdio_params resolves it for launch.
+    import sys
+
+    from conjure.agents import ServerSpec
+    from conjure.director import _stdio_params
+
+    spec = ServerSpec(name="world", command="python", args=["-m", "conjure.mcp_server"],
+                      env={"CONJURE_URL": "${world_url}"})
+    p = _stdio_params(spec, type("S", (), {"world_url": "http://host:9999"})())
+    assert p.command == sys.executable
+    assert p.args == ["-m", "conjure.mcp_server"]
+    assert p.env["CONJURE_URL"] == "http://host:9999"

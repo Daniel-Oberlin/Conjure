@@ -28,55 +28,18 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+from .agents import AgentDef, ServerSpec, load_agent, load_server_registry, scoped_roster
 from .config import Settings
 from .llm import LLM, ToolSpec, Turn, build_roster
 
-# Shared system prompt (the verbose one, formerly only in voice.py), parameterised by the active
-# LLM's casual name. Roster awareness is appended per-call by `Director._system_for`.
-DIRECTOR_PROMPT = (
-    "You are {name}, a director of a voice-controlled VR holodeck. When the user describes or "
-    "requests a scene or a change, USE THE TOOLS to build and edit the world — add, move, update, "
-    "or remove objects, and set the environment. "
-    "For real-world objects (a tree, a chair, a car, an animal), use place_asset with a short "
-    "search query; use add_entity only for basic primitive shapes (cube, sphere, cone, ...). "
-    "Images are procured first, then used: to add a NEW picture, call generate_image (it returns an "
-    "image_id) then place_image with that image_id. To hang a picture ON a real surface — e.g. 'put the "
-    "cat in wall art 18' — pass place_image(on_surface=<the surface's number or id>): it's aligned to "
-    "the surface and fitted to its frame automatically, so DON'T hand-compute a position or rotation. "
-    "(Use texture_surface instead when the image should COVER a surface like a mural/wallpaper rather "
-    "than hang as a framed painting.) For a NEW surrounding sky, call "
-    "generate_skybox_image then set_skybox with its image_id. For a transparent cut-out (a sticker/"
-    "decal with no background), pass transparent=true to generate_image. To change a picture ALREADY "
-    "in the scene, use the one-step scene editors by its entity id (find ids via query_world): "
-    "edit_scene_image to change it ('make it nighttime'), widen_scene_image to extend it wider, "
-    "skybox_from_scene_image to turn it into the sky. To map an image onto a REAL room surface — e.g. "
-    "a starfield on the ceiling, grass on the floor, a mural on a wall — generate_image then "
-    "texture_surface(target, image_id) where target is a semantic label ('floor'/'ceiling'/'wall'), a "
-    "surface's short friendly id (a number the user can read off its label), or 'all'; pass repeat=N "
-    "with a seamless/tileable image to tile it (grass, brick). To color a surface or make it see-"
-    "through, use style_surface(target, color, opacity) ('glass walls' = low opacity). "
-    "Use show_annotations(on) to label each surface with its name + short id (e.g. 'window (12)') when "
-    "the user wants to identify or reference surfaces — they can then say 'make 12 blue'; pass "
-    "dimensions=true only if they ask to see sizes. style_annotations(color, opacity) recolors/fades "
-    "those labels. A bright wireframe outlines every real surface (on by default); show_edges(on) "
-    "toggles it and style_edges(color, opacity) recolors/fades it ('make the outlines green', 'hide "
-    "the edges'). Don't pick an image generator unless the user asked for a specific one — "
-    "omit it and the best default is used. "
-    "THE MOMENT you understand a request, FIRST give a brief, natural, VARIED acknowledgement — "
-    "e.g. 'On it', 'Sure, one sec', 'Got it', 'Working on it', 'You got it' — then immediately call "
-    "the tools. Vary the wording each time; never sound scripted or repeat the same phrase. "
-    "CRITICAL: after that acknowledgement, do NOT think out loud, explain your reasoning, or recite "
-    "coordinates, sizes, or measurements. Do the work via tool calls, then reply with AT MOST one "
-    "short confirmation (e.g. 'Done — there's your dragon.'). Never repeat or restate what the user "
-    "said. If no action is needed, just give a brief reply. "
-    "Call query_world first when an edit depends on what's already there. "
-    "Positions are [x, y, z] in meters: the user faces -z, so place things a few meters in front "
-    "(negative z) around y=1 unless asked otherwise. For place_asset, always pass size_m as the "
-    "object's real-world size in meters (tree ~7, chair ~0.9, mug ~0.1) so the scene is to-scale; "
-    "those objects auto-sit on the floor (y=0) — only raise y to set something on a surface."
-)
+# Shared system prompt for the builder agent. It now lives in the agent's prompt_file
+# (agents/builder.json → prompts/builder.md) so the agent definition owns it; this constant reads that
+# file (single source) for the default `Director()` prompt and for tests. `{name}` is filled per-call
+# with the active LLM's casual name; roster awareness is appended by `Director._system_for`.
+DIRECTOR_PROMPT = (Path(__file__).resolve().parent.parent / "prompts" / "builder.md").read_text()
 
 OnText = Callable[..., Awaitable[None]]   # (text, *, final: bool, speaker: str) -> None
 OnTool = Callable[..., Awaitable[None]]   # (name: str, args: dict) -> None
@@ -141,34 +104,60 @@ def route_turn(text: str, roster, active: str) -> Route:
 
 # --------------------------------------------------------------------------- the director
 
+def _stdio_params(spec: ServerSpec, settings: Settings):
+    """Build stdio launch params from a registry ServerSpec: map a bare 'python' to this interpreter
+    and substitute ${world_url} in the env (so the registry stays interpreter-/host-agnostic)."""
+    from mcp import StdioServerParameters
+    command = sys.executable if spec.command in ("python", "python3") else spec.command
+    env = {**os.environ, **{k: v.replace("${world_url}", settings.world_url) for k, v in spec.env.items()}}
+    return StdioServerParameters(command=command, args=list(spec.args), env=env)
+
+
 class Director:
     def __init__(self, settings: Settings, session, roster: dict[str, LLM], active: str,
-                 tools: Optional[list[ToolSpec]] = None, prompt: str = DIRECTOR_PROMPT):
+                 tools: Optional[list[ToolSpec]] = None, prompt: str = DIRECTOR_PROMPT,
+                 agent: Optional[AgentDef] = None):
         self._settings = settings
         self._session = session          # MCP ClientSession (or a stand-in in tests)
         self.roster = roster
         self.active = active
         self._tools = tools or []
         self._prompt = prompt
+        self.agent = agent               # the loaded agent def (None in lightweight tests)
         self.transcript: list[Turn] = []
 
     @classmethod
     @contextlib.asynccontextmanager
-    async def connect(cls, settings: Settings, *, errlog=None):
-        """Open the world-editing MCP server over stdio and build the roster. Yields a ready Director.
+    async def connect(cls, settings: Settings, *, agent: str = "builder", errlog=None):
+        """Load the `agent` definition, open its MCP server(s) over stdio, and build the (scoped)
+        roster. Yields a ready Director driving that agent.
 
-        Raises RuntimeError if no LLM keys are configured (an empty roster can't direct anything)."""
+        Raises RuntimeError if no LLM keys are configured / none the agent allows are available.
+        v1 launches exactly one MCP server (the builder's `world`); multi-server launch is a later
+        slice."""
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
-        roster, active = build_roster(settings)
+        registry = load_server_registry()
+        agentdef = load_agent(agent, registry=registry)
+
+        full_roster, default_active = build_roster(settings)
+        roster = scoped_roster(agentdef, full_roster)
         if not roster:
             raise RuntimeError(
-                "No director LLMs available — set ANTHROPIC_API_KEY and/or GOOGLE_API_KEY in .env.")
-        params = StdioServerParameters(
-            command=sys.executable, args=["-m", "conjure.mcp_server"],
-            env={**os.environ, "CONJURE_URL": settings.world_url},
-        )
+                f"No LLMs available for agent {agent!r} — set ANTHROPIC_API_KEY and/or GOOGLE_API_KEY "
+                f"in .env (the agent allows: {agentdef.llms}).")
+        active = (agentdef.default_llm if agentdef.default_llm in roster      # agent's preference
+                  else default_active if default_active in roster            # then settings.llm
+                  else next(iter(roster)))                                   # then first available
+
+        specs = [registry[r.server] for r in agentdef.servers if r.server in registry]
+        if len(specs) != 1:
+            raise RuntimeError(
+                f"agent {agent!r}: v1 launches exactly one MCP server (got {len(specs)}: "
+                f"{[s.name for s in specs]}).")
+        params = _stdio_params(specs[0], settings)
+
         close_errlog = None
         if errlog is None:
             errlog = close_errlog = open(os.devnull, "w")
@@ -178,7 +167,8 @@ class Director:
                     await session.initialize()
                     tools = [ToolSpec(t.name, t.description or "", t.inputSchema)
                              for t in (await session.list_tools()).tools]
-                    yield cls(settings, session, roster, active, tools)
+                    yield cls(settings, session, roster, active, tools,
+                              prompt=agentdef.prompt, agent=agentdef)
         finally:
             if close_errlog is not None:
                 close_errlog.close()
