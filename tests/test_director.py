@@ -84,12 +84,23 @@ class FakeLLM:
 
 
 class FakeSession:
-    def __init__(self):
+    def __init__(self, resource_text="Room: 2 surfaces (test)\n  - wall #1 (real_wall_1)"):
         self.calls = []
+        self.resources_read = []
+        self._resource_text = resource_text
 
     async def call_tool(self, name, args):
         self.calls.append((name, args))
         return type("R", (), {"content": [type("C", (), {"text": "ok"})()]})()
+
+    async def read_resource(self, uri):
+        self.resources_read.append(uri)
+        return type("R", (), {"contents": [type("C", (), {"text": self._resource_text})()]})()
+
+
+def _agent(context):
+    """A minimal agent stand-in for the Director (just what handle/_fetch_context read)."""
+    return type("A", (), {"name": "builder", "context": list(context)})()
 
 
 def _director(active="Claude", tools=None, **llms):
@@ -170,6 +181,36 @@ async def test_later_llm_sees_prior_turns_with_attribution():
     # the [Name] prefixing happens in llm._attributed, covered in test_llm).
     speakers = [t.speaker for t in history]
     assert "Gemini" in speakers and "user" in speakers
+
+
+async def test_agent_context_is_injected_into_the_system_prompt():
+    llm, session = FakeLLM("Claude"), FakeSession()
+    d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
+                 agent=_agent(["room://current"]))
+    await d.handle("add a tree")
+    system = llm.seen[0]["system"]
+    # the resource's text (not just the prompt's mention of it) is appended each turn
+    assert "Live context (current" in system and "Room: 2 surfaces (test)" in system
+    assert session.resources_read == ["room://current"]
+
+
+async def test_no_context_injected_when_agent_has_none():
+    d = _director()  # agent defaults to None
+    await d.handle("add a tree")
+    assert "Room: 2 surfaces (test)" not in d.roster["Claude"].seen[0]["system"]
+
+
+async def test_context_fetch_failure_is_not_fatal():
+    class BoomSession(FakeSession):
+        async def read_resource(self, uri):
+            raise RuntimeError("no such resource")
+
+    llm = FakeLLM("Claude")
+    d = Director(settings=None, session=BoomSession(), roster={"Claude": llm}, active="Claude",
+                 tools=[], agent=_agent(["room://current"]))
+    out = await d.handle("add a tree")                       # must not raise
+    assert out == "Claude: done «add a tree»"
+    assert "Live context (current" not in llm.seen[0]["system"]   # nothing injected, turn still ran
 
 
 def test_system_prompt_is_per_llm_and_roster_aware():

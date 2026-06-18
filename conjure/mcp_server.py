@@ -92,13 +92,10 @@ _IMMERSION = {
 }
 
 
-@mcp.tool()
-async def query_room() -> str:
-    """Summarize the user's real room: surfaces (by semantic label) + the boundary. Read this before
-    placing things (so models land INSIDE the room, not through a wall) or to pick a surface to mount
-    on / restyle. Real surfaces also appear in query_world as REAL entities — restyle or hide them
-    with update_entity's color, or show_surface; don't move or remove them.
-    """
+async def _room_summary() -> str:
+    """Text summary of the real room: surfaces (by semantic + short id) + the boundary. Shared by the
+    query_room tool and the `room://current` resource (which agents inject into their prompt each turn,
+    so they needn't call query_room just to see surfaces)."""
     doc = await _get("/world")
     env = doc.get("environment", {})
     room = env.get("room", {})
@@ -117,6 +114,23 @@ async def query_room() -> str:
         lines.append(f"  - {m.get('semantic', 'surface')} #{m.get('friendly_id', '?')} ({e['id']}) at "
                      f"{e.get('transform', {}).get('position')} (visible={vis}, color={mat.get('color')})")
     return "\n".join(lines)
+
+
+@mcp.tool()
+async def query_room() -> str:
+    """Summarize the user's real room: surfaces (by semantic label) + the boundary. Read this before
+    placing things (so models land INSIDE the room, not through a wall) or to pick a surface to mount
+    on / restyle. Real surfaces also appear in query_world as REAL entities — restyle or hide them
+    with update_entity's color, or show_surface; don't move or remove them.
+    """
+    return await _room_summary()
+
+
+@mcp.resource("room://current")
+async def room_resource() -> str:
+    """The live real-room summary — injected each turn into agents that list `room://current` in their
+    context (so the builder sees the room without a query_room round-trip)."""
+    return await _room_summary()
 
 
 @mcp.tool()

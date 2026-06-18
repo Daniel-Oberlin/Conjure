@@ -4,5 +4,6 @@
   "llms": ["*"],
   "mcp_servers": [
     { "server": "world", "access": "all" }
-  ]
+  ],
+  "context": ["room://current"]
 }

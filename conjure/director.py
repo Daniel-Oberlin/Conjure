@@ -189,6 +189,26 @@ class Director:
         out = await self._session.call_tool(name, args)
         return "".join(getattr(c, "text", "") for c in out.content)
 
+    async def _fetch_context(self) -> str:
+        """Prefetch the agent's `context` MCP resources (e.g. `room://current`) and return them as a
+        block to append to the system prompt — so the agent has live room state without a query_room
+        round-trip (docs/agents.md §5). A missing/failed resource is skipped, never fatal."""
+        if not self.agent or not self.agent.context:
+            return ""
+        parts = []
+        for uri in self.agent.context:
+            try:
+                res = await self._session.read_resource(uri)
+                text = "".join(getattr(c, "text", "") for c in getattr(res, "contents", []))
+                if text.strip():
+                    parts.append(text.strip())
+            except Exception:
+                continue
+        if not parts:
+            return ""
+        return ("\n\n--- Live context (current; already fetched for you — use it, don't re-query) ---\n"
+                + "\n\n".join(parts))
+
     async def handle(self, text: str, *, on_text: Optional[OnText] = None,
                      on_tool: Optional[OnTool] = None) -> str:
         """Route one user utterance to an LLM, run its turn (with tools), record the attributed
@@ -211,9 +231,10 @@ class Director:
         async def execute(n, a):
             return await self._execute_tool(n, a, on_tool)
 
+        system = self._system_for(route.target) + await self._fetch_context()
         try:
             final = await llm.run_turn(
-                system=self._system_for(route.target),
+                system=system,
                 history=list(self.transcript),
                 user_text=user_text,
                 tools=self._tools,
