@@ -6,15 +6,23 @@
 (function () {
   "use strict";
 
-  // DEBUG (orientation-on-resume): mirror a diagnostic line to the console AND the server terminal
-  // (POST /client_log), so headset-side logs are readable without remote browser debugging. Temporary.
-  function orientLog(msg) {
-    console.log("[conjure][orient] " + msg);
+  // The single default "informational" / heads-up color — used for surface edges, annotation labels,
+  // the re-localizing hint, and the default for future heads-up UI. Edge/annotation colors stay
+  // overridable per-world (environment.room.edgeColor / annotationColor); this is just their default.
+  var INFO_COLOR = "#35e0ff";
+
+  // Mirror a diagnostic line to the console + the server (POST /client_log → temp/conjure.log), so
+  // headset-side logs are captured without remote browser debugging. Gated by a server-injected flag
+  // (window.CONJURE_DEBUG_LOG ← settings.debug_log); when off, nothing is logged or sent.
+  function debugLog(tag, msg) {
+    if (!window.CONJURE_DEBUG_LOG) return;
+    console.log("[conjure][" + tag + "] " + msg);
     try {
       fetch("/client_log", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tag: "orient", msg: msg }) }).catch(function () {});
+        body: JSON.stringify({ tag: tag, msg: msg }) }).catch(function () {});
     } catch (e) { /* never let logging break a frame */ }
   }
+  function orientLog(msg) { debugLog("orient", msg); }
 
   // Custom component: a flat grid of lines in the entity's local X-Y plane (rotate -90 on X for a
   // floor). Used for the holodeck grid; also available to generated content.
@@ -153,8 +161,8 @@
   // Two axes (docs/room-model.md §5): passthrough (real room visible) × surface visibility.
   var roomState = { active: false, passthrough: false, defaultVisible: false,
                     annotations: false, annotationDims: false,
-                    edgesVisible: true, edgeColor: "#35e0ff", edgeOpacity: 1,
-                    annotationColor: "#bff3ff", annotationOpacity: 1 };
+                    edgesVisible: true, edgeColor: INFO_COLOR, edgeOpacity: 1,
+                    annotationColor: INFO_COLOR, annotationOpacity: 1 };
 
   // A floating, camera-facing label on a surface: "<semantic> (<friendly id>)", with dimensions only
   // when room.annotationDims is on. Toggled by environment.room.annotations so you can read each
@@ -521,7 +529,7 @@
           el.id = "reloc-hint";
           el.setAttribute("position", "0 0 -1.5");           // locked ~1.5 m in front of the headset
           el.setAttribute("text", { value: "Re-localizing…\nstep out of your play area and back in",
-            align: "center", color: "#ffcc55", width: 1.6, baseline: "center" });
+            align: "center", color: INFO_COLOR, width: 1.6, baseline: "center" });
           cam.appendChild(el);
         }
         if (el) el.setAttribute("visible", on);

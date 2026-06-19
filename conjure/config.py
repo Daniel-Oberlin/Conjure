@@ -47,6 +47,7 @@ class Settings:
     gemini_model: str = "gemini-2.5-flash"           # Gemini director model
     openai_director_model: str = "gpt-4.1"           # OpenAI ("Chat") director model
     openai_image_model: str = "gpt-image-1"          # OpenAI image generator model
+    debug_log: bool = True                           # append client diagnostics to temp/conjure.log
 
 
 def get_settings() -> Settings:
@@ -71,4 +72,5 @@ def get_settings() -> Settings:
         gemini_model=os.environ.get("CONJURE_GEMINI_MODEL", "gemini-2.5-flash"),
         openai_director_model=os.environ.get("CONJURE_OPENAI_DIRECTOR_MODEL", "gpt-4.1"),
         openai_image_model=os.environ.get("CONJURE_OPENAI_IMAGE_MODEL", "gpt-image-1"),
+        debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
     )

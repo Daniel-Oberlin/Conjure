@@ -13,6 +13,9 @@ dist/
 # Cached assets (downloaded GLBs)
 .cache/
 
+# Scratch dumps + debug log (conjure.log)
+temp/
+
 # OS
 .DS_Store
 

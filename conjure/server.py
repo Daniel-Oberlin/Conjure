@@ -34,6 +34,7 @@ from .world import WorldStore
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
+LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settings.debug_log)
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 ASSET_CACHE = ROOT / ".cache" / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
@@ -195,6 +196,9 @@ async def index() -> HTMLResponse:
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
+    # Tell the client whether debug logging is on, so it doesn't POST diagnostics when it's off.
+    flag = "true" if settings.debug_log else "false"
+    html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};</script>\n  </head>")
     return HTMLResponse(html, headers=_NO_STORE)
 
 
@@ -895,9 +899,19 @@ class ClientLog(BaseModel):
 
 @app.post("/client_log")
 async def client_log(req: ClientLog) -> dict:
-    """Print a diagnostic line from the WebXR client to the server console — so headset-side logs are
-    visible in the terminal without remote browser debugging. (Temporary debugging aid.)"""
-    print(f"[{datetime.now():%H:%M:%S}] [client:{req.tag or 'log'}] {req.msg}", flush=True)
+    """Append a diagnostic line from the WebXR client to temp/conjure.log (and echo to the console), so
+    headset-side logs are captured without remote browser debugging. Gated by settings.debug_log
+    (CONJURE_DEBUG_LOG=0 disables it — then nothing is written and the file isn't created)."""
+    if not settings.debug_log:
+        return {"ok": True}
+    line = f"{datetime.now():%Y-%m-%d %H:%M:%S} [{req.tag or 'log'}] {req.msg}"
+    print(line, flush=True)
+    try:
+        LOG_FILE.parent.mkdir(exist_ok=True)
+        with LOG_FILE.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
     return {"ok": True}
 
 
