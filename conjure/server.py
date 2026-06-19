@@ -897,7 +897,7 @@ class ClientLog(BaseModel):
 async def client_log(req: ClientLog) -> dict:
     """Print a diagnostic line from the WebXR client to the server console — so headset-side logs are
     visible in the terminal without remote browser debugging. (Temporary debugging aid.)"""
-    print(f"[client:{req.tag or 'log'}] {req.msg}", flush=True)
+    print(f"[{datetime.now():%H:%M:%S}] [client:{req.tag or 'log'}] {req.msg}", flush=True)
     return {"ok": True}
 
 

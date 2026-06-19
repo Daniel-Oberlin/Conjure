@@ -103,6 +103,12 @@
     });
     var stat = "inl=" + (best ? best.inl : 0) + "/" + cur.length + " dlt=" + deltas.length;
     if (!best || best.inl < 4 || best.inl < 0.4 * cur.length) return { Tmat: null, stat: stat };
+    // Append the SOLVED transform (yaw about gravity + translation) so diagnostics can tell whether a
+    // relocalization actually changed the frame (yaw jumps) or registration stayed put while the world
+    // shifted. Matrix4 is column-major: e[0]=cosθ, e[8]=sinθ for the Y rotation; e[12],e[14]=tx,tz.
+    var e = best.Tmat.elements;
+    stat += " yaw=" + Math.round(Math.atan2(e[8], e[0]) * 180 / Math.PI) + "° t=("
+      + e[12].toFixed(2) + "," + e[14].toFixed(2) + ")";
     return { Tmat: best.Tmat, stat: stat };
   }
 
