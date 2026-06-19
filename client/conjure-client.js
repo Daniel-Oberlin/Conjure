@@ -22,7 +22,6 @@
         body: JSON.stringify({ tag: tag, msg: msg }) }).catch(function () {});
     } catch (e) { /* never let logging break a frame */ }
   }
-  function orientLog(msg) { debugLog("orient", msg); }
 
   // Custom component: a flat grid of lines in the entity's local X-Y plane (rotate -90 on X for a
   // floor). Used for the holodeck grid; also available to generated content.
@@ -329,8 +328,6 @@
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
     if (reals.length) docSurfaces = reals;     // available to seed the room frame on reload
     console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)");
-    orientLog("snapshot carried " + reals.length + " real surfaces → seed "
-      + (reals.length >= 3 ? "READY" : "too small (won't seed)"));  // DEBUG
   }
 
   // Apply a single dotted-path set from an `update` op.
@@ -440,13 +437,9 @@
         this._reloc = false;        // showing the passthrough "re-localizing" fallback?
         this._refSeq = 0;           // counter for minting brand-new surface ids
         var self = this;
-        orientLog("room-capture init — page (re)loaded, reference reset (ref=0)");  // DEBUG
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
         // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
-        this._onReset = function () {
-          orientLog("refspace RESET (recenter / boundary re-entry) → forcing re-capture");  // DEBUG
-          self.lastPost = 0;
-        };
+        this._onReset = function () { self.lastPost = 0; };
       },
       // Force an immediate re-capture (manual realign — see the /room/realign signal below).
       recapture: function () { this.lastPost = 0; },
@@ -508,7 +501,8 @@
       },
       _relocalize: function (on) {
         this._reloc = on;
-        orientLog("RELOCALIZING " + (on ? "ON — revealing passthrough + hint" : "OFF — re-locked"));  // DEBUG
+        // A low-frequency, useful signal: tracking lost its lock (passthrough fallback shown) / recovered.
+        debugLog("track", on ? "lost lock — showing passthrough + hint" : "re-locked — restoring world");
         var root = document.getElementById("world-root"), sky = document.getElementById("sky");
         if (on) {
           if (root) root.setAttribute("visible", false);     // hide the stale/wrong virtual world…
@@ -608,7 +602,6 @@
         });
         if (levelA > 0 && levelY < 0.98) {
           this._regStat = "settling ny=" + levelY.toFixed(2);
-          orientLog("SETTLING ny=" + levelY.toFixed(2) + " — gravity not reconverged, holding");  // DEBUG
           this._markLost(time);
           this.lastPost = time - 1700; return;
         }
@@ -616,11 +609,6 @@
         // Recover the frame transform; on the first capture bootstrap the reference, otherwise require a
         // confident registration — a low-confidence result means we're not locked, so hold + retry fast.
         var reg = this._register(cur), canEstablish = this._ref.length === 0;
-        orientLog("frame: " + (reg ? "REGISTERED (" + this._regStat + ")"
-          : (canEstablish ? "ESTABLISH-FRESH — no seed yet (ref=0, docSurfaces="
-              + (docSurfaces ? docSurfaces.length : "none") + ")"
-            : "HOLD not-locked (" + this._regStat + ")"))
-          + " | ref=" + this._ref.length + " haveT=" + this._haveT);  // DEBUG
         if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - 1700; return; }   // not locked → hold
         if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }   // re-locked → restore
         var registered = !!reg, Tmat;
