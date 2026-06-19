@@ -6,6 +6,16 @@
 (function () {
   "use strict";
 
+  // DEBUG (orientation-on-resume): mirror a diagnostic line to the console AND the server terminal
+  // (POST /client_log), so headset-side logs are readable without remote browser debugging. Temporary.
+  function orientLog(msg) {
+    console.log("[conjure][orient] " + msg);
+    try {
+      fetch("/client_log", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: "orient", msg: msg }) }).catch(function () {});
+    } catch (e) { /* never let logging break a frame */ }
+  }
+
   // Custom component: a flat grid of lines in the entity's local X-Y plane (rotate -90 on X for a
   // floor). Used for the holodeck grid; also available to generated content.
   if (window.AFRAME && !AFRAME.components.grid) {
@@ -311,6 +321,8 @@
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
     if (reals.length) docSurfaces = reals;     // available to seed the room frame on reload
     console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)");
+    orientLog("snapshot carried " + reals.length + " real surfaces → seed "
+      + (reals.length >= 3 ? "READY" : "too small (won't seed)"));  // DEBUG
   }
 
   // Apply a single dotted-path set from an `update` op.
@@ -418,9 +430,13 @@
         this._haveT = false;
         this._refSeq = 0;           // counter for minting brand-new surface ids
         var self = this;
+        orientLog("room-capture init — page (re)loaded, reference reset (ref=0)");  // DEBUG
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
         // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
-        this._onReset = function () { self.lastPost = 0; };
+        this._onReset = function () {
+          orientLog("refspace RESET (recenter / boundary re-entry) → forcing re-capture");  // DEBUG
+          self.lastPost = 0;
+        };
       },
       // Force an immediate re-capture (manual realign — see the /room/realign signal below).
       recapture: function () { this.lastPost = 0; },
@@ -543,11 +559,20 @@
           var a = c.ext[0] * c.ext[1];
           if (a > levelA) { levelA = a; levelY = Math.abs(c.nrm.y); }
         });
-        if (levelA > 0 && levelY < 0.98) { this._regStat = "settling ny=" + levelY.toFixed(2); this.lastPost = time - 1700; return; }
+        if (levelA > 0 && levelY < 0.98) {
+          this._regStat = "settling ny=" + levelY.toFixed(2);
+          orientLog("SETTLING ny=" + levelY.toFixed(2) + " — gravity not reconverged, holding");  // DEBUG
+          this.lastPost = time - 1700; return;
+        }
 
         // Recover the frame transform; on the first capture bootstrap the reference, otherwise require a
         // confident registration — a low-confidence result means we're not locked, so hold + retry fast.
         var reg = this._register(cur), canEstablish = this._ref.length === 0;
+        orientLog("frame: " + (reg ? "REGISTERED (" + this._regStat + ")"
+          : (canEstablish ? "ESTABLISH-FRESH — no seed yet (ref=0, docSurfaces="
+              + (docSurfaces ? docSurfaces.length : "none") + ")"
+            : "HOLD not-locked (" + this._regStat + ")"))
+          + " | ref=" + this._ref.length + " haveT=" + this._haveT);  // DEBUG
         if (!reg && !canEstablish) { this.lastPost = time - 1700; return; }   // seeded/running but not locked → hold
         var registered = !!reg, Tmat;
         if (reg) { Tmat = this._Tmat = reg; this._haveT = true; }

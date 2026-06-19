@@ -888,5 +888,18 @@ async def _broadcast(message: dict) -> None:
         clients.discard(d)
 
 
+class ClientLog(BaseModel):
+    tag: Optional[str] = None
+    msg: str
+
+
+@app.post("/client_log")
+async def client_log(req: ClientLog) -> dict:
+    """Print a diagnostic line from the WebXR client to the server console — so headset-side logs are
+    visible in the terminal without remote browser debugging. (Temporary debugging aid.)"""
+    print(f"[client:{req.tag or 'log'}] {req.msg}", flush=True)
+    return {"ok": True}
+
+
 # Mount static last so it doesn't shadow the routes above.
 app.mount("/static", StaticFiles(directory=CLIENT_DIR), name="static")
