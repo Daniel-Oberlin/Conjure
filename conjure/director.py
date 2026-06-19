@@ -1,17 +1,21 @@
-"""The director — the shared brain for voice and CLI.
+"""The agent runtime — today's **builder** agent, the shared brain for voice and CLI.
 
-Formerly each interface (voice.py, cli.py) carried its own director: its own system prompt, its own
-LLM call, its own tool loop. This module is the single director both now drive. They differ only in
-how text arrives (mic vs typing) and leaves (TTS vs print):
+The director loads as the `builder` agent — a declarative def in `agents/builder/` (via conjure.agents):
+its prompt, the LLMs it's allowed to run on, the MCP servers it's scoped to, and the context it injects.
+A deterministic **shell** (conjure.shell) wraps it — control commands run there; anything else is
+forwarded here. Both front-ends (voice.py, cli.py) drive shell → agent; they differ only in how text
+arrives (mic vs typing) and leaves (TTS vs print):
 
-    async with Director.connect(settings) as director:
+    async with Director.connect(settings, agent="builder") as director:
         await director.handle("put a tree in front of me", on_text=..., on_tool=...)
 
-The director owns:
+The agent owns:
   • the **attributed transcript** — every turn tagged with its speaker (architecture §7a),
-  • the **LLM roster** (conjure.llm) — many named LLMs, one *active* at a time,
-  • the world-editing **MCP tools** (it is an MCP client of conjure.mcp_server over stdio),
-  • the **routing** that lets the user switch or address LLMs mid-conversation by voice/text.
+  • the **LLM roster** (conjure.llm) — the named LLMs it allows, one *active* at a time,
+  • the world-editing **MCP tools** (it is an MCP client of its scoped servers over stdio),
+  • the per-turn **context** it injects (e.g. `room://current` — the live room, agents.md §5),
+  • the inline **routing** that switches/addresses LLMs (the shell also does this deterministically;
+    migrating the inline path fully to the shell is deferred — agents.md §10).
 
 Routing (deterministic — no tokens, fully testable):
   • "let me talk to Gemini" / "switch to Gemini" / "Gemini, take over" → **persistent handover**:

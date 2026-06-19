@@ -117,6 +117,6 @@ Not v1 commitments — but the architecture is deliberately built so these stay 
 - **Everything is recoverable.** Voice editing is fuzzy, so undo/redo and world versioning
   are first-class.
 - **A host for modules.** Conjure's power grows by adding MCP modules, not by growing a
-  monolith. The director orchestrates many servers; the core stays small.
+  monolith. Agents client into scoped MCP servers (above a deterministic shell); the core stays small.
 - **Vendor-neutral baseline, extensions on top.** It runs on any WebXR device; device-specific
   features light up when present and fall back gracefully when not.

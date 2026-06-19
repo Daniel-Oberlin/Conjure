@@ -2,13 +2,15 @@
 
 Wires a real-time voice agent to the Conjure world:
 
-    mic → Silero VAD → Whisper STT → director (conjure.director) → Kokoro TTS → speaker
+    mic → Silero VAD → Whisper STT → shell → agent (conjure.shell/director) → Kokoro TTS → speaker
 
 PipeCat here is only *ears and mouth*: STT, TTS, VAD, end-of-turn detection, and mute-while-speaking
-echo mitigation. The brain is the shared `conjure.director.Director` — the SAME director the CLI
-drives — which owns the LLM roster (Claude/Gemini/…, switchable mid-conversation), the attributed
-transcript, and the world-editing MCP tools. So spoken requests turn into world patches that
-broadcast live to every connected headset, and adding/switching LLMs needs no change here.
+echo mitigation. Spoken turns go through the deterministic `conjure.shell.Shell` (commands like
+"conjure open shell" run there, never reaching an LLM) which forwards the rest to the active agent —
+the shared `conjure.director.Director` (today's `builder`), the SAME agent the CLI drives. It owns the
+LLM roster (Claude/Gemini/…, switchable mid-conversation), the attributed transcript, the world-editing
+MCP tools, and the live room injected into its prompt. So spoken requests turn into world patches that
+broadcast live to every connected headset, and adding/switching LLMs or agents needs no change here.
 
 Audio runs on the host (decision #5's shared-room-device default) — no audio is piped through Quest.
 

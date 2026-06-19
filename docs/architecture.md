@@ -7,9 +7,9 @@
 
 ## 1. Principles that drive the structure
 
-- **One declarative world document is the source of truth** (A-Frame ECS, decision #2). The
-  director, server, and every headset agree on it.
-- **All change is a validated patch.** Nothing — not the director, not behaviors — mutates the
+- **One declarative world document is the source of truth** (A-Frame ECS, decision #2). Agents, the
+  server, and every headset agree on it.
+- **All change is a validated patch.** Nothing — not an agent, not behaviors — mutates the
   world directly; everything emits patches the trusted server validates and broadcasts.
 - **Capability boundaries, not trust.** LLM-authored code and modules get narrow, declared
   capabilities and no ambient authority (decision #7).
@@ -22,8 +22,8 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 
 | # | Component | Runs on | Responsibility |
 |---|---|---|---|
-| 1 | **Voice agent** | host | PipeCat pipeline: STT → director → TTS, barge-in, addressing gate |
-| 2 | **Director (LLM roster)** | host | Orchestrating LLM; MCP **client** of the world server + modules. A session has a **roster of named LLMs**, one active at a time, sharing an attributed transcript (§7) |
+| 1 | **Voice agent** | host | PipeCat pipeline: STT → shell → agent → TTS, barge-in, addressing gate |
+| 2 | **Shell + agents** | host | A deterministic **shell** (control: switch agent/LLM, reset — no LLM) above the active **agent** — an experience loaded from `agents/<name>/` ([agents.md](./agents.md)): an orchestrating LLM, MCP **client** of its scoped servers, with a **roster of named LLMs** (one active) sharing an attributed transcript (§7). The `builder` is the first agent (today's director) |
 | 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app; MCP **server** of world-editing tools; broadcasts state |
 | 4 | **Behavior runtime** | host **and** client | QuickJS-WASM sandbox executing behaviors + geometry code (decision #7) |
 | 5 | **Asset pipeline** | host (+ remote model APIs) | Resolve / generate / convert / optimize / cache content |
@@ -38,8 +38,8 @@ Components and where each can run. "Host" = the machine running the Conjure serv
                          ┌──────────── MCP (control plane) ─────────────┐
                          │                    │                         │
    ┌───────────┐    ┌────┴─────────┐    ┌──────┴──────┐          ┌───────┴────────┐
-   │ Voice agent│   │ World server │    │   Modules   │          │ Model services │
-   │ + Director │───│ + validator  │    │ (NAS, IF,   │          │ (STT/LLM/TTS/  │
+   │ Front-ends │   │ World server │    │   Modules   │          │ Model services │
+   │ Shell+agent│───│ + validator  │    │ (NAS, IF,   │          │ (STT/LLM/TTS/  │
    │  (PipeCat) │   │ + MCP server │    │  input, …)  │          │  gen) provider │
    └─────┬─────┘    └──┬────────┬──┘    └─────────────┘          │  abstraction   │
          │ voice       │ state  │ assets                         └────────────────┘
@@ -168,34 +168,41 @@ Every change is a patch — the unit of live sync **and** undo/redo.
   (extension); neutral fallback = marker/QR or manual calibration. Presence + world render in that
   shared frame so objects land in the same physical spot.
 
-## 7. The director  🟡
+## 7. The agent (director) + shell  🟡
 
-The orchestration loop (one turn):
+The director is now the **`builder` agent** — an experience loaded from `agents/builder/`
+([agents.md](./agents.md)): a prompt, the LLMs allowed to run it, the MCP servers it's scoped to, and
+the context it injects. Above it sits a deterministic **shell** (`conjure/shell.py`): the control plane
+for things that must be reliable — switch agent/LLM, reset, status — parsed, never sent to an LLM. The
+shell forwards anything that isn't a command to the active agent, which runs the orchestration loop
+(one turn):
 
-1. **Perceive** — addressing gate (§ voice) admits agent-directed speech → STT → director LLM. The
-   prompt carries: a compact world summary (via `query_world`), the performance budget + remaining
-   headroom, available MCP tools (world + modules), and session/conversation memory.
-2. **Plan & act** — the director calls MCP tools (world-editing and/or module tools). It reads
+1. **Perceive** — addressing gate (§ voice) / shell admits agent-directed speech → STT → the agent's
+   LLM. The prompt carries: the **live room**, injected via the `room://current` context resource
+   (agents.md §5) so the agent needn't re-query it; the performance budget + headroom; the agent's
+   scoped MCP tools; and session/conversation memory. (`query_world` is still used for the mutable
+   generated scene.)
+2. **Plan & act** — the agent calls MCP tools (world-editing and/or module tools). It reads
    state back when an edit is context-dependent.
 3. **Apply** — tools mutate server world state through the validation gate → patches → broadcast.
 4. **Narrate** — TTS confirms / narrates progress during slow asset/gen work ("fetching driftwood…").
 5. **Record** — snapshot for undo; log the action + resulting diff (observability/provenance).
 
 Design notes: keep tools **coarse and intent-level** (`place_asset("campfire", near=user)`) so the
-director reasons about goals, not transforms. Consider a future split into sub-agents (asset agent,
-code agent) — not required for v1. The generalization of this director into a deterministic **shell**
-(reliable control: switch agent, reset, save) above declarative, scoped **agents** (the builder being
-the first) is designed in **[agents.md](./agents.md)**.
+agent reasons about goals, not transforms. The shell + agent abstraction (scoped toolsets, personas,
+per-agent world spaces, and a second agent beyond the builder) is designed in **[agents.md](./agents.md)**.
 
 ### 7a. LLM roster — many named LLMs in one session  🟡
 
-The director role is filled by a **roster** of LLMs, not a single model:
+An agent is run by a **roster** of LLMs, not a single model (scoped to the agent's allowed set):
 
 - **Roster** — a user-editable map of **casual name → provider/model config** (e.g. `"Gemini"` →
   Gemini, `"Chat"` → GPT), each behind the provider abstraction (decision #1). One is **active**
-  at a time; the voice agent routes the active stream to it.
-- **Switching by voice** — "let me talk to Gemini" (or addressing a name directly) makes that LLM
-  active. The casual name doubles as an addressing target alongside the wake word (decision #5).
+  at a time; the active stream is routed to it.
+- **Switching** — "let me talk to Gemini" (or addressing a name directly) makes that LLM active. This
+  is the **shell**'s job (a deterministic command — agents.md §2); the inline phrase is still also
+  handled inside the agent today (migration deferred). The casual name doubles as an addressing target
+  alongside the wake word (decision #5).
 - **Attributed shared transcript** — a single conversation log where every turn carries a
   `speaker` (`user` | LLM name). All LLMs are prompted with this shared, attributed history, so a
   newly-active LLM can **reference/comment on another LLM's contributions**. World state and
@@ -292,7 +299,8 @@ live video / remote-screen surfaces (§12).
 ## 11. Modules, input & capability extensions
 
 ### 11a. Modules  🟡
-MCP servers the director also clients into. **Module manifest** (Conjure metadata atop MCP):
+MCP servers an agent also clients into — each agent declares which (via the registry, agents.md §4).
+**Module manifest** (Conjure metadata atop MCP):
 
 ```jsonc
 { "name": "nas-photos", "kind": "content-source|experience|capability|input-provider",

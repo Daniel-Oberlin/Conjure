@@ -333,6 +333,12 @@ This turns the optimization from a one-off patch into a first-class agent capabi
 *also* explicitly forbid narrating tool use — "never say you're checking the scene; just do it" — but the
 durable fix is removing the need.)
 
+**Status — shipped.** The world server exposes `room://current` (sharing `query_room`'s formatter, via
+a `_room_summary` helper); the builder declares `context: ["room://current"]`; `Director._fetch_context()`
+reads the agent's context resources via the MCP session and appends them to the system prompt each turn
+(a failed resource is skipped, never fatal). The narration *and* the round-trip are gone; the prompt also
+forbids narrating "checking the scene".
+
 **`viewer://current` — the live head pose.** The same mechanism fixes a subtler bug: the builder
 currently can't place things relative to the user, because **nothing reports the headset's pose to the
 server** (the camera pose lives only client-side, used for label billboarding). So the prompt falls back
@@ -410,15 +416,16 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 
 ## 10. Build order (proving the abstraction)
 
-1. **Server registry + shell skeleton**, no behavior change: lift `route_turn` into the shell, keep the
-   single world server, keep current LLMs. Existing director/routing tests stay green.
-2. **Define the current director as `agents/builder/`** (renaming `director → builder` is fine to defer; keep
-   an alias). Route all input through shell → active agent. Identical behavior, now declarative.
-3. **Resource context injection** (§5) — builder gets `room://current`; kill the "let me check" narration
-   + round-trip.
-4. **A second, trivial agent** (a read-only `inspector`). *This* is the real test — scoping enforcement,
-   routing collisions, per-agent context. An abstraction with one instance always looks right; the second
-   instance is where the design pressure shows up.
+1. ✅ **Server registry + shell skeleton** — `conjure/agents.py` (loader + `agents/servers.json`),
+   `conjure/shell.py` (deterministic commands, `conjure open shell`, the wake-prefix). Inline
+   `route_turn` still lives in the agent (full migration deferred); existing routing tests stay green.
+2. ✅ **Defined the current director as `agents/builder/`** — `Director.connect("builder")` loads the
+   def, scopes the roster, launches its server from the registry. Identical behavior, now declarative.
+3. ✅ **Resource context injection** (§5) — world server exposes `room://current`; builder injects it
+   each turn; killed the "let me check the environment" narration + the query_room round-trip.
+4. ⏭ **A second, trivial agent** (a read-only `inspector`) + shell `switch to <agent>`. *This* is the
+   real test — scoping enforcement, routing collisions, per-agent context. An abstraction with one
+   instance always looks right; the second instance is where the design pressure shows up.
 
 ## 11. Mapping to current code
 

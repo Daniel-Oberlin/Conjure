@@ -10,13 +10,13 @@ generated environments.
 
 ## What works today
 
-You stand in a holodeck (black void, 1 m white grid) and talk. The director can:
+You stand in a holodeck (black void, 1 m white grid) and talk. Conjure can:
 
 - **Build** — primitives, and real CC-licensed **3D models** pulled from the web ([Poly Pizza]),
   auto-scaled to real-world size and placed on the floor; move / rotate / resize by voice.
 - **Create art** — **AI-generated** paintings, posters, and photos hung as framed images;
   **edit them conversationally** in place ("make the dragon breathe fire") and **outpaint** them
-  wider. Image *procurement* is decoupled from *placement* — the director makes/fetches an image
+  wider. Image *procurement* is decoupled from *placement* — it makes/fetches an image
   (Gemini or OpenAI, picked by capability — e.g. transparency → OpenAI) and then hangs it.
 - **Set the scene** — generate a high-res 360° **skybox** that wraps the whole environment, or
   turn any in-world image into the surrounding sky.
@@ -32,10 +32,11 @@ Implemented phases (see [roadmap](./docs/roadmap.md)): **0** world doc + patch p
 client · **1** world-editing MCP tools · **2** voice loop · **3** assets · **4** image generation +
 editing + skybox.
 
-**Next — Phase 5: room model (AR).** Bring your real room into the world as editable geometry: see your
-room, restyle/texture its walls, mount content on real surfaces by semantic label, slide along a
-passthrough↔virtual immersion spectrum (or hide the room for full VR), have the director keep models
-inside the real bounds or author a room of its own, and refine the room mesh progressively. Design:
+**In progress — Phase 5: room model (AR).** Bring your real room into the world as editable geometry:
+see your room, restyle/texture its walls, mount content on real surfaces by semantic label, slide along
+a passthrough↔virtual immersion spectrum (or hide the room for full VR), keep models inside the real
+bounds, and refine the room mesh progressively. Shipped so far: room capture + stable surface ids, wall
+squaring + corner-joining, real door/window cutouts, and upright mounted art. Design:
 [docs/room-model.md](./docs/room-model.md).
 
 ## How it fits together
@@ -43,8 +44,8 @@ inside the real bounds or author a room of its own, and refine the room mesh pro
 ```
  voice  ┌───────────┐  MCP   ┌──────────────┐  WebSocket  ┌──────────────┐
  ◀────▶ │  PipeCat  │ ◀────▶ │ World server │ ◀─────────▶ │ A-Frame      │  Quest 3
- (mic/  │ +director │        │ (FastAPI):   │  (patches)  │ WebXR client │  (or any
-  spkr) │  (Claude) │        │ world + MCP  │             │              │   browser)
+ (mic/  │  + shell  │        │ (FastAPI):   │  (patches)  │ WebXR client │  (or any
+  spkr) │  + agent  │        │ world + MCP  │             │              │   browser)
         └───────────┘        │ + assets/gen │
                              └──────┬───────┘
                                     │  Poly Pizza (models) · Gemini/OpenAI (images) · local Whisper/Kokoro
@@ -52,10 +53,13 @@ inside the real bounds or author a room of its own, and refine the room mesh pro
 
 - **World server** (`conjure/`, Python/FastAPI) owns one declarative world document, applies
   **patches**, serves the WebXR app + cached assets, and exposes world-editing **MCP tools**.
-- **Director** (`conjure/director.py`) is the shared brain for both voice and CLI: it owns the
-  attributed transcript, an **LLM roster** (`conjure/llm.py` — Claude/Gemini, switchable
-  mid-conversation), and the MCP tools. PipeCat is just ears+mouth (Whisper STT → director → Kokoro
-  TTS); the CLI feeds it typed text. New LLMs register in one place — nothing else changes.
+- **Shell + agent** — the **shell** (`conjure/shell.py`) is a deterministic command plane (switch
+  agent/LLM, status — no LLM); below it the **builder agent** (`conjure/director.py`, loaded
+  declaratively from `agents/builder/`) is the brain for both voice and CLI: it owns the attributed
+  transcript, an **LLM roster** (`conjure/llm.py` — Claude/Gemini/OpenAI, switchable mid-conversation),
+  the MCP tools, and the live room injected into its prompt. PipeCat is just ears+mouth (Whisper STT →
+  shell → agent → Kokoro TTS); the CLI feeds it typed text. New LLMs/agents register declaratively —
+  nothing else changes.
 - Model roles (STT/TTS/LLM/image-gen) and asset sources sit behind **swappable registries**
   (`docs/providers.md`), so providers plug in without touching callers.
 
@@ -127,15 +131,17 @@ Quiet by default; add `-v` for tool calls and library logs. (`say`/REPL need `AN
 ## Layout
 
 ```
-conjure/    world server (schema · world store · FastAPI app · MCP tools · director + LLM roster ·
-            voice loop · CLI · assets pipeline · image-gen registry · config · doctor)
+conjure/    world server (schema · world store · FastAPI app · MCP tools + room resource) · shell ·
+            agents (loader + server registry) · builder/LLM roster · voice loop · CLI ·
+            assets pipeline · image-gen registry · config · doctor
+agents/     declarative agent defs (builder/: agent.json + prompt.md) + servers.json (MCP registry)
 client/     A-Frame WebXR client + live patch applier
 examples/   starter world + hand-authored example patches
 scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
             send_room.py (synthetic room), mcp_smoke.py, mic_check.py, vad_check.py
 tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`); a
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
-docs/       vision · spec · architecture · decisions · providers · roadmap · setup · testing/https guides
+docs/       vision · spec · architecture · agents · room-model · decisions · providers · roadmap · setup · testing/https guides
 ```
 
 [Poly Pizza]: https://poly.pizza

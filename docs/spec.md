@@ -8,12 +8,13 @@
 
 Conjure has six logical subsystems:
 
-1. **Voice agent** — PipeCat pipeline (STT → director LLM → TTS) with barge-in.
-2. **Director** — the orchestrating LLM that turns intent into edits. It is an **MCP client of
-   many servers** (PipeCat's `MCPClient` supports this): the world server plus any number of
-   pluggable **modules** (§13).
+1. **Voice agent** — PipeCat pipeline (STT → shell → agent → TTS) with barge-in.
+2. **Shell + agents** — a deterministic **shell** (reliable control: switch agent/LLM, reset — no LLM)
+   above the active **agent**: an experience (the `builder` is the first) that turns intent into edits.
+   An agent is an orchestrating LLM and an **MCP client of its scoped servers** (the world server plus
+   pluggable **modules**, §13), loaded from a declarative def (see [agents.md](./agents.md)).
 3. **World server** — owns world state, serves the WebXR app, pushes live updates,
-   exposes an **MCP server** of world-editing tools to the director.
+   exposes an **MCP server** of world-editing tools (and context resources) to agents.
 4. **Asset pipeline** — finds, generates, converts, optimizes, and caches content.
 5. **Memory** — persistent store of worlds, assets, connections, and session history.
 6. **Modules** — pluggable MCP servers that extend Conjure: content sources (e.g. a NAS photo
@@ -78,10 +79,11 @@ Requirements:
   identity tells it *who* spoke. (decisions.md #5, #9)
 - ✅ STT/LLM/TTS are **cloud-first behind a provider abstraction**, swappable for local or a
   self-hosted home endpoint. Pi stays viable as a thin orchestrator. (decisions.md #1)
-- **Multiple LLMs in one session (director roster).** Several LLMs are available at once, each
-  with a **user-given casual name** ("Gemini", "Chat", …). The user **switches by voice** ("let me
-  talk to Gemini") and the named LLM becomes the active director. (Built on the provider
-  abstraction, #1; the casual name doubles as an addressing target — see #5.)
+- **Multiple LLMs in one session (the agent's roster).** Several LLMs are available at once, each
+  with a **user-given casual name** ("Gemini", "Chat", …). The user **switches** ("let me talk to
+  Gemini") — a deterministic **shell** command ([agents.md](./agents.md) §2) — and the named LLM
+  becomes the active brain running the agent. (Built on the provider abstraction, #1; the casual name
+  doubles as an addressing target — see #5.)
   - **Attributed shared transcript.** One conversation log where every turn is tagged with its
     source (the user, or a specific LLM by name). All LLMs read this shared, attributed history, so
     a newly-active LLM can **reference and comment on what another LLM said** ("Gemini suggested a
