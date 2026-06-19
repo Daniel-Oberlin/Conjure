@@ -428,6 +428,8 @@
         this._ref = [];             // [{id, sem, ext:[w,h], pos:Vector3, nyaw, orient}] in the reference frame
         this._Tmat = null;          // Matrix4: refSpace → reference frame (authoritative once _haveT)
         this._haveT = false;
+        this._lostSince = 0;        // when registration last lost its lock (0 = locked)
+        this._reloc = false;        // showing the passthrough "re-localizing" fallback?
         this._refSeq = 0;           // counter for minting brand-new surface ids
         var self = this;
         orientLog("room-capture init — page (re)loaded, reference reset (ref=0)");  // DEBUG
@@ -486,6 +488,43 @@
         var r = window.RoomSnap.register(AFRAME.THREE, cur, this._ref);
         this._regStat = r.stat;
         return r.Tmat;
+      },
+      // While registration can't lock (the Quest's planes are inconsistent after a sleep/relocalization),
+      // the world is parked at a stale, WRONG frame. After a few seconds of that, reveal AR passthrough
+      // (hide the virtual world + sky) with a headset-locked hint so you can safely step out of the play
+      // boundary and back in — which forces the Quest to re-localize and lets registration re-lock.
+      // Auto-restores the moment a confident lock returns.
+      _markLost: function (time) {
+        if (!this._lostSince) this._lostSince = time;
+        if (!this._reloc && time - this._lostSince > 3000) this._relocalize(true);
+      },
+      _relocalize: function (on) {
+        this._reloc = on;
+        orientLog("RELOCALIZING " + (on ? "ON — revealing passthrough + hint" : "OFF — re-locked"));  // DEBUG
+        var root = document.getElementById("world-root"), sky = document.getElementById("sky");
+        if (on) {
+          if (root) root.setAttribute("visible", false);     // hide the stale/wrong virtual world…
+          if (sky) sky.setAttribute("visible", false);       // …and the sky, so AR passthrough shows
+          document.querySelectorAll("[data-scaffold]").forEach(function (el) { el.setAttribute("visible", false); });
+        } else {
+          if (root) root.setAttribute("visible", true);
+          applyImmersion();                                  // restore sky/scaffold for the current mode
+        }
+        this._hint(on);
+      },
+      _hint: function (on) {
+        var el = document.getElementById("reloc-hint");
+        if (on && !el) {
+          var cam = document.querySelector("a-camera") || document.querySelector("[camera]");
+          if (!cam) return;
+          el = document.createElement("a-entity");
+          el.id = "reloc-hint";
+          el.setAttribute("position", "0 0 -1.5");           // locked ~1.5 m in front of the headset
+          el.setAttribute("text", { value: "Re-localizing…\nstep out of your play area and back in",
+            align: "center", color: "#ffcc55", width: 1.6, baseline: "center" });
+          cam.appendChild(el);
+        }
+        if (el) el.setAttribute("visible", on);
       },
       tick: function (time) {
         var sceneEl = this.el.sceneEl, frame = sceneEl.frame;
@@ -562,6 +601,7 @@
         if (levelA > 0 && levelY < 0.98) {
           this._regStat = "settling ny=" + levelY.toFixed(2);
           orientLog("SETTLING ny=" + levelY.toFixed(2) + " — gravity not reconverged, holding");  // DEBUG
+          this._markLost(time);
           this.lastPost = time - 1700; return;
         }
 
@@ -573,7 +613,8 @@
               + (docSurfaces ? docSurfaces.length : "none") + ")"
             : "HOLD not-locked (" + this._regStat + ")"))
           + " | ref=" + this._ref.length + " haveT=" + this._haveT);  // DEBUG
-        if (!reg && !canEstablish) { this.lastPost = time - 1700; return; }   // seeded/running but not locked → hold
+        if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - 1700; return; }   // not locked → hold
+        if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }   // re-locked → restore
         var registered = !!reg, Tmat;
         if (reg) { Tmat = this._Tmat = reg; this._haveT = true; }
         else { Tmat = this._anchorInv || new THREE.Matrix4(); this._Tmat = Tmat; this._haveT = true; }  // establish fresh
