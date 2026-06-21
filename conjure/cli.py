@@ -6,6 +6,7 @@ The world server must be running (`python -m conjure`). Two ways to drive it:
         conjure-cli asset "oak tree" --size 7
         conjure-cli image "an oil painting of a red dragon"
         conjure-cli skybox "a misty pine forest"
+        conjure-cli grounded-skybox "a meadow you can stand in"
         conjure-cli add box --color red --pos 0 1 -3
         conjure-cli world
 
@@ -163,6 +164,23 @@ def cmd_skybox(s: Settings, a) -> None:
         _say(procured, a.verbose, "")
         return
     _say(_post(s, "/set_skybox", {"image_id": procured["image_id"]}), a.verbose, "set skybox")
+
+
+def cmd_grounded_skybox(s: Settings, a) -> None:
+    gen_body = {"prompt": a.prompt}
+    if a.generator:
+        gen_body["generator"] = a.generator
+    _working("generating grounded skybox (high-res — this can take a minute)…")
+    procured = _post(s, "/images/grounded_skybox", gen_body)
+    if procured.get("ok") is False:
+        _say(procured, a.verbose, "")
+        return
+    set_body = {"image_id": procured["image_id"]}
+    if a.height is not None:
+        set_body["height"] = a.height
+    if a.radius is not None:
+        set_body["radius"] = a.radius
+    _say(_post(s, "/set_grounded_skybox", set_body), a.verbose, "set grounded skybox")
 
 
 def cmd_texture(s: Settings, a) -> None:
@@ -323,6 +341,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("skybox", help="generate a 360 skybox"); a.set_defaults(fn=cmd_skybox)
     a.add_argument("prompt"); a.add_argument("--generator", help="force an image generator")
+
+    a = sub.add_parser("grounded-skybox", help="generate a 360 skybox projected onto the floor")
+    a.set_defaults(fn=cmd_grounded_skybox)
+    a.add_argument("prompt"); a.add_argument("--generator", help="force an image generator")
+    a.add_argument("--height", type=float, help="metres above the ground (default 1.6)")
+    a.add_argument("--radius", type=float, help="ground reach before the horizon (default 30)")
 
     a = sub.add_parser("texture", help="map a generated image onto a room surface"); a.set_defaults(fn=cmd_texture)
     a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")

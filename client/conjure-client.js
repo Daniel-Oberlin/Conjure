@@ -161,7 +161,8 @@
   var roomState = { active: false, passthrough: false, defaultVisible: false,
                     annotations: false, annotationDims: false,
                     edgesVisible: true, edgeColor: INFO_COLOR, edgeOpacity: 1,
-                    annotationColor: INFO_COLOR, annotationOpacity: 1 };
+                    annotationColor: INFO_COLOR, annotationOpacity: 1,
+                    skybox: false, grounded: false };
 
   // A floating, camera-facing label on a surface: "<semantic> (<friendly id>)", with dimensions only
   // when room.annotationDims is on. Toggled by environment.room.annotations so you can read each
@@ -204,14 +205,21 @@
   function applyImmersion() {
     // The synthetic holodeck shell (grid floor/walls) + the void sky belong ONLY to "unbounded VR"
     // (room inactive). Whenever the room is active — AR passthrough OR a virtual room — hide them so
-    // you see the room, not the grid/void competing with it. (In AR the a-sky would also occlude the
-    // passthrough camera, so it must be hidden there too.)
+    // you see the room, not the grid/void competing with it. (In AR the void a-sky would also occlude
+    // the passthrough camera, so it must be hidden there too.)
     var inRoom = roomState.active;
     document.querySelectorAll("[data-scaffold]").forEach(function (el) {
       el.setAttribute("visible", !inRoom);
     });
+    // Exception: a custom skybox IMAGE *is* the chosen environment, so keep it visible even with the
+    // room active — its opaque sphere deliberately wraps/occludes passthrough so you see the skybox,
+    // not the physical room. Only the void color sky is restricted to unbounded VR. A GROUNDED skybox
+    // replaces the plain sphere with a ground-projected dome, so when it's active hide the sphere and
+    // show the grounded mesh instead (it likewise wraps the scene whenever the room is active).
     var sky = document.getElementById("sky");
-    if (sky) sky.setAttribute("visible", !inRoom);
+    if (sky) sky.setAttribute("visible", !roomState.grounded && (roomState.skybox || !inRoom));
+    var grounded = document.getElementById("grounded-sky");
+    if (grounded) grounded.setAttribute("visible", roomState.grounded);
     var reals = document.querySelectorAll("[data-real]");
     reals.forEach(function (el) {
       applyRealVisibility(el);
@@ -288,14 +296,32 @@
   function applyEnv(env) {
     env = env || {};
     var sky = document.getElementById("sky");
-    if (sky) {
-      if (env.sky && env.sky.src) {
+    var groundedSky = document.getElementById("grounded-sky");
+    if (sky && (env.sky || env.background)) {
+      if (env.sky && env.sky.src && env.sky.grounded) {
+        // Grounded skybox: a ground-projected dome (see grounded-skybox.js) replaces the plain sphere
+        // so you stand on the scene's floor. Drive the component; immersion hides the sphere for it.
+        if (groundedSky) groundedSky.setAttribute("grounded-sky", {
+          src: env.sky.src,
+          height: env.sky.height || 1.6,
+          radius: env.sky.radius || 30,
+        });
+        roomState.skybox = true;
+        roomState.grounded = true;
+      } else if (env.sky && env.sky.src) {
         // 360 equirectangular image: set the full material so the texture isn't tinted and renders
-        // on the inside of the sky sphere.
+        // on the inside of the sky sphere. Mark a custom skybox so immersion keeps it visible (it
+        // wraps the scene even when the room is active — see applyImmersion).
         sky.setAttribute("material", { shader: "flat", side: "back", color: "#FFFFFF", src: env.sky.src });
+        if (groundedSky) groundedSky.setAttribute("grounded-sky", { src: "" });   // tear down any grounded dome
+        roomState.skybox = true;
+        roomState.grounded = false;
       } else {
         var color = (env.sky && env.sky.color) || env.background;
         if (color) sky.setAttribute("material", { shader: "flat", side: "back", color: color, src: "" });
+        if (groundedSky) groundedSky.setAttribute("grounded-sky", { src: "" });
+        roomState.skybox = false;   // back to the void color sky → only shows in unbounded VR
+        roomState.grounded = false;
       }
     }
     if (env.fog) document.querySelector("a-scene").setAttribute("fog", env.fog);
@@ -504,9 +530,11 @@
         // A low-frequency, useful signal: tracking lost its lock (passthrough fallback shown) / recovered.
         debugLog("track", on ? "lost lock — showing passthrough + hint" : "re-locked — restoring world");
         var root = document.getElementById("world-root"), sky = document.getElementById("sky");
+        var groundedSky = document.getElementById("grounded-sky");
         if (on) {
           if (root) root.setAttribute("visible", false);     // hide the stale/wrong virtual world…
           if (sky) sky.setAttribute("visible", false);       // …and the sky, so AR passthrough shows
+          if (groundedSky) groundedSky.setAttribute("visible", false);   // …and any grounded skybox
           document.querySelectorAll("[data-scaffold]").forEach(function (el) { el.setAttribute("visible", false); });
         } else {
           if (root) root.setAttribute("visible", true);

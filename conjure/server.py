@@ -13,6 +13,7 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .config import get_settings
+from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .schema import Patch
 from .world import WorldStore
@@ -38,6 +40,7 @@ LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settin
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 ASSET_CACHE = ROOT / ".cache" / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
+LIBRARY_DB = ROOT / ".cache" / "library.db"   # durable asset catalog (docs/asset-library-plan.md)
 # scripts/tunnel.sh writes the current cloudflared URL here; /tunnel redirects to it (a short, fixed
 # LAN address you can type on the Quest instead of the long random trycloudflare URL each session).
 TUNNEL_FILE = ROOT / ".cache" / "tunnel_url"
@@ -49,6 +52,15 @@ clients: set[WebSocket] = set()
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
+# Durable catalog of every procured asset. On first run, seed it from whatever's already on disk so
+# pre-existing cache files become reusable (idempotent; only scans when the catalog is empty). The
+# backfill is best-effort — a catalog hiccup must never stop the world server from booting.
+library = AssetLibrary(LIBRARY_DB)
+try:
+    if library.count() == 0:
+        library.backfill(ASSET_CACHE, store.doc)
+except Exception as exc:  # noqa: BLE001
+    print(f"[conjure] asset-library backfill skipped: {exc}")
 # Every configured image generator (keyed by casual name "Gemini"/"Chat"); the procurement
 # endpoints mediate which one services a request (conjure.llm.select_generator).
 image_generators = build_image_generators(settings)
@@ -57,7 +69,7 @@ TARGET_SIZE_M = 1.8  # fit a placed model's largest dimension to ~this many mete
 
 # --- image store: procurement is decoupled from scene use. Procuring an image caches its bytes and
 # registers an ImageRecord; scene tools (place_image/set_skybox) reference it by id. -------------
-PROCURE_OPS = ("generate", "edit", "outpaint", "skybox", "skybox_from")
+PROCURE_OPS = ("generate", "edit", "outpaint", "skybox", "skybox_from", "grounded_skybox")
 
 
 @dataclass
@@ -102,6 +114,15 @@ def _normalize(record, pos: list[float], target_m: float) -> tuple[list[float], 
     return position, [s, s, s]
 
 
+def _kind_for_op(op: str) -> str:
+    """The catalog `kind` for a procured image, by how it was made."""
+    if op in ("skybox", "skybox_from"):
+        return "skybox"
+    if op == "grounded_skybox":
+        return "grounded_skybox"
+    return "image"
+
+
 def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     """Write a procured image to the content store and register an ImageRecord; return it."""
     ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
@@ -111,6 +132,11 @@ def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h, provider=result.provider,
                       model=result.model, prompt=prompt, op=op, transparent=transparent)
     IMAGES[image_id] = rec
+    # Write through to the durable catalog (keyed on the prompt = intent), so reuse can find it later
+    # and its provenance survives a restart.
+    library.upsert(image_id, kind=_kind_for_op(op), source=f"cache://{image_id}", filename=image_id,
+                   label=prompt, prompt=prompt, params={"op": op, "transparent": transparent},
+                   provider=result.provider, model=result.model, width=w, height=h)
     return rec
 
 
@@ -126,8 +152,17 @@ def _get_image(image_id: str):
     rec = IMAGES.get(image_id)
     if rec is None:
         w, h, transparent = _img_meta(data)
+        # Recover provenance from the catalog (survives restart) rather than the old "?" placeholders.
+        cat = library.get(image_id) or {}
+        op = "?"
+        if cat.get("params_json"):
+            try:
+                op = json.loads(cat["params_json"]).get("op", "?")
+            except (ValueError, TypeError):
+                pass
         rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h,
-                          provider="?", model="?", prompt="", op="?", transparent=transparent)
+                          provider=cat.get("provider") or "?", model=cat.get("model") or "?",
+                          prompt=cat.get("prompt") or "", op=op, transparent=transparent)
         IMAGES[image_id] = rec
     return rec, data, None
 
@@ -191,10 +226,12 @@ async def index() -> HTMLResponse:
     html = (CLIENT_DIR / "index.html").read_text()
     cm = int((CLIENT_DIR / "conjure-client.js").stat().st_mtime)
     sm = int((CLIENT_DIR / "room-snap.js").stat().st_mtime)
-    v = max(cm, sm)                          # badge reflects the newest of the two scripts
+    gm = int((CLIENT_DIR / "grounded-skybox.js").stat().st_mtime)
+    v = max(cm, sm, gm)                       # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
+    html = html.replace("/static/grounded-skybox.js", f"/static/grounded-skybox.js?v={gm}")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     # Tell the client whether debug logging is on, so it doesn't POST diagnostics when it's off.
     flag = "true" if settings.debug_log else "false"
@@ -224,6 +261,12 @@ async def client_js() -> FileResponse:
 async def room_snap_js() -> FileResponse:
     # Explicit no-store route for the snapping module (loaded before conjure-client.js).
     return FileResponse(CLIENT_DIR / "room-snap.js", media_type="application/javascript", headers=_NO_STORE)
+
+
+@app.get("/static/grounded-skybox.js")
+async def grounded_skybox_js() -> FileResponse:
+    # Explicit no-store route for the grounded-skybox module (loaded before conjure-client.js).
+    return FileResponse(CLIENT_DIR / "grounded-skybox.js", media_type="application/javascript", headers=_NO_STORE)
 
 
 @app.get("/world")
@@ -517,6 +560,16 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
         await _broadcast({"type": "patch", "patch": store.apply_patch([{"op": "remove", "id": eid}], origin="asset")})
         return {"ok": False, "error": detail}
 
+    # Catalog the model keyed on the search query (its intent) so it's reusable later; touch it so
+    # recency reflects this use. licence/attribution are captured for the legal record.
+    model_id = f"{record.hash}.glb"
+    library.upsert(model_id, kind="model", source=f"cache://{model_id}", filename=model_id,
+                   label=record.title, query=req.query, licence=record.licence,
+                   attribution=record.attribution, creator=record.creator,
+                   attributes={"tris": record.tris, "bbox_min": record.bbox_min,
+                               "bbox_max": record.bbox_max})
+    library.touch(model_id)
+
     # 3. Swap the placeholder for the real glTF model (auto-scaled to sit on the floor),
     #    carrying license + attribution.
     model_pos, model_scale = _normalize(record, pos, req.size_m or TARGET_SIZE_M)
@@ -567,6 +620,17 @@ _SKYBOX_FROM_PROMPT = (
     "the scene all the way around. Keep its style, palette, and mood. Centered horizon, no people, "
     "no text, no borders."
 )
+# A grounded skybox projects the panorama's LOWER hemisphere onto a flat ground at your feet, so the
+# bottom of the image must read as believable, near-flat, evenly-textured ground (grass, sand, stone,
+# floor) — not a distorted smear or a distant horizon line. Tweak this freely; it's independent of the
+# plain skybox prompt above.
+_GROUNDED_SKYBOX_PROMPT = (
+    "A seamless equirectangular 360-degree panorama for a VR skybox you can stand inside of: {p}. "
+    "The lower portion of the image is the GROUND directly beneath the viewer and must be a continuous, "
+    "flat, evenly-lit ground surface (e.g. grass, sand, stone, dirt, or floor) that reads naturally when "
+    "looked straight down at — no distortion, no seams, no objects directly underfoot. Centered horizon, "
+    "evenly lit, no people, no text, no watermark, no borders."
+)
 
 
 @app.get("/images/generators")
@@ -608,6 +672,17 @@ async def images_skybox(req: SkyboxImageRequest) -> dict:
     full = _SKYBOX_PROMPT.format(p=req.prompt)
     return await _procure(
         "skybox", prompt=req.prompt, requested=req.generator, transparent=False,
+        run=lambda g: g.generate(full, aspect_ratio="21:9", image_size=settings.skybox_size,
+                                 model=settings.skybox_model))
+
+
+@app.post("/images/grounded_skybox")
+async def images_grounded_skybox(req: SkyboxImageRequest) -> dict:
+    # Same 4K equirectangular pipeline as /images/skybox, but with the grounded prompt (well-defined,
+    # flat ground) so the projected floor looks right. set_grounded_skybox then applies it.
+    full = _GROUNDED_SKYBOX_PROMPT.format(p=req.prompt)
+    return await _procure(
+        "grounded_skybox", prompt=req.prompt, requested=req.generator, transparent=False,
         run=lambda g: g.generate(full, aspect_ratio="21:9", image_size=settings.skybox_size,
                                  model=settings.skybox_model))
 
@@ -776,6 +851,47 @@ async def set_skybox(req: SetSkyboxRequest) -> dict:
     patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": rec.url}}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
     return {"ok": True, "sky": rec.url, "image_id": rec.id}
+
+
+# Ground-projected skybox: the panorama's lower hemisphere is warped flat onto the floor (client-side,
+# see grounded-skybox.js) so you stand ON the scene instead of floating above a distant floor. `height`
+# (the implied capture height, ≈ standing eye height) and `radius` (the dome size in metres) are the
+# two tunables; defaults match the rig's eye height and a comfortably-larger-than-a-room dome.
+class SetGroundedSkyboxRequest(BaseModel):
+    image_id: str
+    height: float = 1.6
+    radius: float = 30.0
+
+
+@app.post("/set_grounded_skybox")
+async def set_grounded_skybox(req: SetGroundedSkyboxRequest) -> dict:
+    """Wrap the scene in a procured image as a GROUNDED skybox (projected onto the floor at your feet)."""
+    rec, _, err = _get_image(req.image_id)
+    if err:
+        return {"ok": False, "error": err}
+    sky = {"src": rec.url, "grounded": True, "height": req.height, "radius": req.radius}
+    patch = store.apply_patch([{"op": "env", "set": {"sky": sky}}], origin="image")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "sky": rec.url, "image_id": rec.id}
+
+
+class AnnotateAssetRequest(BaseModel):
+    id: str                                  # the catalog asset id (an image_id, or "<hash>.glb")
+    note: Optional[str] = None
+    tags: Optional[str] = None
+    favorite: Optional[bool] = None
+    rating: Optional[int] = None
+    default_for: Optional[str] = None        # pin an alias: "dog" → this asset (a reuse override)
+
+
+@app.post("/annotate_asset")
+async def annotate_asset(req: AnnotateAssetRequest) -> dict:
+    """Record the user's own curation of a library asset (notes/tags/favorite/rating + a 'default for
+    X' alias). No scene effect — it just makes the asset more findable and reusable later."""
+    if not library.annotate(req.id, note=req.note, tags=req.tags, favorite=req.favorite,
+                             rating=req.rating, default_for=req.default_for):
+        return {"ok": False, "error": f"no asset {req.id!r} in the library"}
+    return {"ok": True, "id": req.id}
 
 
 # --- scene editors (hybrid): one-call edits of an image already in the scene (entity id). They

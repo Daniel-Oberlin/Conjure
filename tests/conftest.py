@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 from conjure.assets import AssetRecord
+from conjure.library import AssetLibrary
 from conjure.llm import ImageCapabilities, ImageResult
 
 
@@ -115,6 +116,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "image_generators", {"Gemini": FakeImageGenerator()})
     monkeypatch.setattr(server, "IMAGES", {})  # clean image store per test
     monkeypatch.setattr(server, "resolver", None)
+    monkeypatch.setattr(server, "library", AssetLibrary(tmp_path / "library.db"))  # isolated catalog
     # (friendly ids are derived from the surface id now — no counter to reset)
     server.clients.clear()
     return server

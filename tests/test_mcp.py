@@ -76,6 +76,25 @@ async def test_set_skybox_tool_takes_image_id(monkeypatch):
 
 
 @respx.mock
+async def test_annotate_asset_tool_forwards_curation(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/annotate_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("annotate_asset")(id="s.png", note="my favorite city skybox", default_for="city sky")
+    assert json.loads(route.calls.last.request.content) == {
+        "id": "s.png", "note": "my favorite city skybox", "default_for": "city sky"}
+
+
+@respx.mock
+async def test_set_grounded_skybox_omits_unset_dims_but_forwards_overrides(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/set_grounded_skybox").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("set_grounded_skybox")(image_id="g.png")
+    assert json.loads(route.calls.last.request.content) == {"image_id": "g.png"}   # defaults left to server
+    await _tool("set_grounded_skybox")(image_id="g.png", height=6.0, radius=60.0)
+    assert json.loads(route.calls.last.request.content) == {"image_id": "g.png", "height": 6.0, "radius": 60.0}
+
+
+@respx.mock
 async def test_edit_scene_image_tool_is_entity_keyed(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     route = respx.post("http://world/edit_image").mock(return_value=httpx.Response(200, json={"ok": True}))

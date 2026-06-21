@@ -387,6 +387,22 @@ async def generate_skybox_image(prompt: str, generator: Optional[str] = None) ->
 
 
 @mcp.tool()
+async def generate_grounded_skybox_image(prompt: str, generator: Optional[str] = None) -> str:
+    """Generate a 360° panorama for a GROUNDED skybox and return its image_id (does NOT apply it).
+
+    Then call set_grounded_skybox with the returned image_id. Prefer this over generate_skybox_image
+    when the user wants to STAND ON the scene's ground (a landscape they're standing in — 'put me in a
+    meadow', 'stand me on the surface of Mars') rather than just be surrounded by a distant backdrop:
+    its lower hemisphere is projected onto the floor at your feet. generator: optional.
+    """
+    out = await _post("/images/grounded_skybox", _body(prompt=prompt, generator=generator), timeout=200.0)
+    if not out.get("ok"):
+        return f"Couldn't generate grounded skybox image: {out.get('error', 'unknown error')}."
+    return (f"Generated grounded skybox image_id={out['image_id']} ({out['provider']}). "
+            f"Call set_grounded_skybox with this image_id to wrap the scene.")
+
+
+@mcp.tool()
 async def edit_image(
     image_id: str,
     prompt: str,
@@ -494,6 +510,53 @@ async def set_skybox(image_id: str) -> str:
     if not out.get("ok"):
         return f"Couldn't set the skybox: {out.get('error', 'unknown error')}."
     return "Wrapped the scene in that image as a 360° skybox."
+
+
+@mcp.tool()
+async def annotate_asset(
+    id: str,
+    note: Optional[str] = None,
+    tags: Optional[str] = None,
+    favorite: Optional[bool] = None,
+    rating: Optional[int] = None,
+    default_for: Optional[str] = None,
+) -> str:
+    """Record the user's OWN thoughts about an asset so it's easy to recall later (no scene change).
+
+    Use when the user expresses a preference or memory about a specific asset (an image_id, or a
+    model/skybox id from the library): 'remember this as my favorite city skybox' (note + favorite),
+    'this is an important family photo' (note + rating), 'make this my default dog' (default_for='dog'
+    — pins an alias so a later 'add a dog' reuses exactly this one). note: freeform text; tags:
+    comma/space-separated keywords; favorite: bool; rating: 0–5; default_for: the word/phrase this
+    asset should be the default for.
+    """
+    out = await _post("/annotate_asset", _body(id=id, note=note, tags=tags, favorite=favorite,
+                                               rating=rating, default_for=default_for))
+    if not out.get("ok"):
+        return f"Couldn't annotate that asset: {out.get('error', 'unknown error')}."
+    return "Noted — I'll remember that."
+
+
+@mcp.tool()
+async def set_grounded_skybox(
+    image_id: str,
+    height: Optional[float] = None,
+    radius: Optional[float] = None,
+) -> str:
+    """Wrap the scene in a procured image (by image_id from generate_grounded_skybox_image) as a
+    GROUNDED skybox — its lower half is projected onto the floor so the user stands ON the scene
+    instead of floating above a distant horizon. Use the grounded image generated for this purpose.
+
+    height (metres, default 1.6): the implied height the panorama was 'shot' from — RAISE it (e.g. 3, 6)
+    if the user wants the ground to feel further below / to stand taller above it, LOWER it (e.g. 1) to
+    sit closer to the ground. radius (metres, default 30): how far the projected ground extends before
+    curving up to the horizon — INCREASE it (e.g. 60) for a wider open vista, decrease for an enclosed
+    feel. Only pass these when the user asks about scale/height/distance; otherwise omit for the defaults.
+    """
+    out = await _post("/set_grounded_skybox", _body(image_id=image_id, height=height, radius=radius))
+    if not out.get("ok"):
+        return f"Couldn't set the grounded skybox: {out.get('error', 'unknown error')}."
+    return "Wrapped the scene in that image as a grounded skybox — you're standing on it."
 
 
 # --- One-shot scene edits (act on an image already in the scene, by entity id) ------------------

@@ -479,6 +479,8 @@ def _supports(gen: ImageGenerator, op: str) -> bool:
     caps = gen.capabilities
     if op == "skybox_from":  # turning an existing image into a skybox needs both
         return {"edit", "skybox"} <= caps.operations
+    if op == "grounded_skybox":  # same high-res equirectangular generation as a plain skybox
+        return "skybox" in caps.operations
     return op in caps.operations
 
 

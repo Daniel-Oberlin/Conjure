@@ -140,6 +140,51 @@ def test_set_skybox_takes_an_id(srv, client):
     assert sky["src"] == f"/assets/{r.json()['image_id']}"
 
 
+def test_generated_image_is_cataloged(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
+    cat = srv.library.get(iid)
+    assert cat and cat["kind"] == "image" and cat["prompt"] == "a red dragon" and cat["provider"] == "Gemini"
+
+
+def test_image_metadata_survives_restart(srv, client):
+    iid = client.post("/images/skybox", json={"prompt": "a sunset beach"}).json()["image_id"]
+    srv.IMAGES.clear()                       # simulate a restart: in-memory store gone, catalog persists
+    rec, _, err = srv._get_image(iid)
+    assert err is None
+    assert rec.provider == "Gemini" and rec.prompt == "a sunset beach"  # recovered, not "?"
+
+
+def test_placed_model_is_cataloged(srv, client):
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    client.post("/place_asset", json={"query": "oak tree", "size_m": 2})
+    cat = srv.library.get(f"{ASSET_RECORD.hash}.glb")
+    assert cat and cat["kind"] == "model" and cat["query"] == "oak tree"
+    assert cat["licence"] == ASSET_RECORD.licence and cat["use_count"] == 1
+
+
+def test_annotate_asset_records_curation_and_alias(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "a shiba inu"}).json()["image_id"]
+    r = client.post("/annotate_asset", json={"id": iid, "note": "my default dog", "favorite": True,
+                                             "default_for": "dog"})
+    assert r.json()["ok"] is True
+    cat = srv.library.get(iid)
+    assert cat["notes"] == "my default dog" and cat["favorite"] == 1
+    assert srv.library.resolve_alias("dog") == iid      # alias pinned → reuse override
+
+
+def test_annotate_unknown_asset_errors(srv, client):
+    assert client.post("/annotate_asset", json={"id": "nope.png", "note": "x"}).json()["ok"] is False
+
+
+def test_set_grounded_skybox_marks_the_env(srv, client):
+    r = client.post("/images/grounded_skybox", json={"prompt": "a meadow"})
+    assert r.json()["ok"] is True
+    assert client.post("/set_grounded_skybox", json={"image_id": r.json()["image_id"]}).json()["ok"] is True
+    sky = client.get("/world").json()["environment"]["sky"]
+    assert sky["src"] == f"/assets/{r.json()['image_id']}"
+    assert sky["grounded"] is True and sky["height"] == 1.6 and sky["radius"] == 30.0
+
+
 def test_list_generators_reports_capabilities_and_defaults(srv, client):
     body = client.get("/images/generators").json()
     assert body["ok"] and [g["name"] for g in body["generators"]] == ["Gemini"]
@@ -179,9 +224,10 @@ def test_expected_routes_exist(srv):
     # Contract: the endpoints the MCP tools + client depend on must exist.
     paths = {getattr(r, "path", None) for r in srv.app.routes}
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
-              "/outpaint_image", "/set_skybox", "/skybox_from_image", "/assets/{filename}", "/ws",
-              "/images/generators", "/images/generate", "/images/skybox", "/images/edit",
-              "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",
+              "/outpaint_image", "/set_skybox", "/set_grounded_skybox", "/annotate_asset",
+              "/skybox_from_image", "/assets/{filename}", "/ws",
+              "/images/generators", "/images/generate", "/images/skybox", "/images/grounded_skybox",
+              "/images/edit", "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",
               "/texture_surface", "/style_surface", "/tunnel"):
         assert p in paths, f"missing route {p}"
 
