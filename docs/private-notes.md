@@ -1,13 +1,18 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
-## Environment
-- Need a name for skybox, skydone, panorama, containing box, holodeck
- - Environment?  Theater?  Boundary?  Enclosure? Holodeck?
-- Problem with Skyboxes, the floor is way below us
-- Implement skydome, panorama, holodeck, containing box
+# Architecture
+- Namespace for assets, collections, data, etc: "/scoped/builder", "/global/music-collection/"
 
-## AR
-- Make a bounding box around the outside of the rooms so that there is no leakage from the real world.  This can be hidden or colored separately. (maybe don't need this now that walls are tight?)
+# Graphics
+- Lighting
+
+# Utility
+- Show "Loading image..." at top of page, pulsing between transparent and info color
+- Logging everything (with switch) for debugging
+- Turn on optional timestamps to CLI messages
+- Logging and instrumentation so that we can profile and see what's taking the time
+- Maybe this is done in the CLI, maybe you can query the logs in the CLI with natural language
+- Compass?
 
 ## Performance & Bugs
 - I can sometimes hear internal thinking "let me check the room data", "
@@ -26,16 +31,10 @@
 - Vehicle
 - etc.
 
-# Graphics
-- Lighting
-
-# Utility
-- Compass?
-
 ## Dynamic content
 - Fireflies
 - What do we call dynamic modules?
-- Animation for pending box (sending dynamic code to the headset- Dynamic code should be deterministic and anchored to a precise timestamp for consistency across multiple headsets
+- Animation for pending box sending dynamic code to the headset- Dynamic code should be deterministic and anchored to a precise timestamp for consistency across multiple headsets
 - Keep store of created content, version controlled?
 - Water picture
 - Milkdrop style animations on ceiling, in stereo, planetarium style or in front of you
@@ -46,7 +45,11 @@
 - Point clouds
 - Album covers and art
 
-## Appllications
+## Environment
+- Generalize under "Environment Map" concept
+- Implement skydome, panorama, holodeck, containing box
+
+## Applications
 - What are applications?
 - LLM app (agent), world app (world module), headset app (headset module) (can share a namespace)
 - Infocom Zmachine
@@ -65,21 +68,10 @@
 - Don't hard-code deterministic commands — query the MCP server to build the list dynamically
 - Add a `help` command that displays available commands (decoupling)
 
-## Shell Mode
-- Speaking or typing "conjure open shell" starts a non-LLM shell
-- Deterministic parsing — use existing handoff logic as a model
-- Extend to: limiting LLM access, removing LLM from roster, other system changes
-- "exit", "close", "leave", etc. returns to normal mode
-- CLI prompt: `conjure>` or `conjure:shell>`
-
 ## 3D Models
 - Abstract model provider with capabilities
 - Smithsonian and other sources
 - Point clouds
-
-## Utility
-- Logging and instrumentation so that we can profile and see what's taking the time
-- Maybe this is done in the CLI, maybe you can query the logs in the CLI with natural language
 
 ## Depolyment and infrastructure
 - Put into container?
