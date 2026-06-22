@@ -150,6 +150,11 @@ record. This belongs to the NAS subsystem (stubbed), but the schema anticipates 
   Conjure cache store** — keep its public interface clean and app-agnostic. **Extract the shared
   toolkit when the photo store lands (Phase 5)**, generalizing from two real implementations rather
   than one imagined one.
+- **Per-agent scoping is a cross-cutting layer over this and the world store** — see
+  `persistence-model.md`. Each agent works inside `private/<agent>/…`, scope is a capability injected
+  by the runtime (never an LLM tool param), and **worlds live in a separate document store**, not the
+  asset catalog. A `scope` field gets added to the asset schema when Phase 2 touches it; enforcement
+  is deferred to the second agent.
 
 ### Conjure cache store (what Phase 0 built)
 
