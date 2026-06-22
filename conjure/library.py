@@ -298,6 +298,17 @@ class AssetLibrary:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
 
+    def assets_missing_embedding(self, kind: Optional[str] = None) -> list[dict]:
+        """Assets with no vector yet (e.g. everything backfilled before embeddings existed). Used by
+        the reindex pass to embed the existing catalog."""
+        with self._lock:
+            q = "SELECT * FROM assets WHERE embed_model IS NULL"
+            args: list[Any] = []
+            if kind:
+                q += " AND kind=?"
+                args.append(kind)
+            return [dict(r) for r in self._db.execute(q, args).fetchall()]
+
     def search(self, text: Optional[str] = None, *, kind: Optional[str] = None,
                limit: int = 20) -> list[dict]:
         """Phase-0 staged lookup: a user **alias** override first, then exact intent match, then FTS5

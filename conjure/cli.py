@@ -208,6 +208,16 @@ def cmd_style(s: Settings, a) -> None:
     _say(_post(s, "/style_surface", body), a.verbose, f"styled {a.target}")
 
 
+def cmd_reindex(s: Settings, a) -> None:
+    body = {"kind": a.kind} if a.kind else {}
+    r = _post(s, "/library/reindex", body)
+    if r.get("ok") is False:
+        _say(r, a.verbose, "")
+        return
+    print(f"reindex: queued {r.get('queued', 0)} asset(s) for embedding "
+          "(runs in the background on the server)")
+
+
 def cmd_annotate(s: Settings, a) -> None:
     sets = {"room.annotations": a.state != "off", "room.annotationDims": bool(a.dims)}
     if a.color is not None:
@@ -327,6 +337,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("world", help="print the current world").set_defaults(fn=cmd_world)
+
+    a = sub.add_parser("reindex", help="embed cataloged assets that have no vector yet")
+    a.set_defaults(fn=cmd_reindex)
+    a.add_argument("--kind", help="restrict to image | model | skybox | …")
 
     a = sub.add_parser("add", help="add a primitive shape"); a.set_defaults(fn=cmd_add)
     a.add_argument("shape"); a.add_argument("--color", default="white"); a.add_argument("--name"); _pos(a)

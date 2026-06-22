@@ -392,6 +392,18 @@ NAS ingestion pipeline (scan-in-place, captioning, thumbnails); face detection/r
 clustering and person naming; ANN graduation (LanceDB/FAISS); knowledge-graph queries
 (people/places/events) and any move to a dedicated graph DB; shared/remote cache tier across devices.
 
+**Captioning (polish):** embedding gives **visual-similarity vectors only** — no readable text. So
+assets with no prompt/title (e.g. the bare backfilled images) are findable by *vector* (and by text
+via the shared space) but show a blank label in `search_library` and don't match keyword/FTS. A
+**captioning pass** — a VLM (local, or Gemini/Claude vision) over each image → store the caption in
+`label`/`notes`/`tags` → FTS-indexed — would give readable labels + keyword search. Complementary to
+embedding, costs a generative call per image. Deferred; it's the same derived-text layer the NAS needs
+(§13), so build it once. (The `reindex` pass below embeds only — no captions.)
+
+**Catalog reindex (done):** `conjure-cli reindex` / `POST /library/reindex` embeds cataloged assets
+that have no vector yet (images from pixels, models from title text) — a one-time pass so the existing
+library becomes similarity-searchable. Runs off the request path; embed-only.
+
 **`reject` semantics (polish):** `reject(asset, query)` is a **per-query exclusion from reuse search
 only** — it drops that asset from `find()` results for the *exact normalized* query string. It is
 intentionally narrow today: not fuzzy/semantic (rejecting "starship enterprise" doesn't cover "the

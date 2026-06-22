@@ -248,6 +248,31 @@ def test_correct_asset_relabels_and_rejects(srv, client):
     assert not any(c["id"] == mid for c in after["candidates"])  # excluded after reject
 
 
+def test_library_reindex_embeds_missing_assets(srv, client, tmp_path):
+    import io
+
+    from PIL import Image
+
+    from conjure.embeddings import FakeEmbedder
+    if not srv.library.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    srv.embedder = FakeEmbedder(dim=8)
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buf, "PNG")
+    (tmp_path / "img.png").write_bytes(buf.getvalue())              # bytes the image embed reads
+    srv.library.upsert("img.png", kind="image", filename="img.png", prompt="a red square")
+    srv.library.upsert("oak.glb", kind="model", filename="oak.glb", label="Oak Tree", query="oak")
+
+    r = client.post("/library/reindex", json={}).json()
+    assert r["ok"] and r["queued"] == 2
+    assert srv.library.get("img.png")["embed_model"] == "fake"     # image embedded from pixels
+    assert srv.library.get("oak.glb")["embed_model"] == "fake"     # model embedded from its title
+
+
+def test_library_reindex_without_embedder_errors(srv, client):
+    assert client.post("/library/reindex", json={}).json()["ok"] is False  # embedder is None by default
+
+
 def test_set_grounded_skybox_marks_the_env(srv, client):
     r = client.post("/images/grounded_skybox", json={"prompt": "a meadow"})
     assert r.json()["ok"] is True
@@ -297,7 +322,7 @@ def test_expected_routes_exist(srv):
     paths = {getattr(r, "path", None) for r in srv.app.routes}
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
               "/outpaint_image", "/set_skybox", "/set_grounded_skybox", "/annotate_asset",
-              "/library/search", "/place_cached_asset", "/correct_asset",
+              "/library/search", "/place_cached_asset", "/correct_asset", "/library/reindex",
               "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/grounded_skybox",
               "/images/edit", "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",

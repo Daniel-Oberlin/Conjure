@@ -113,6 +113,27 @@ def _embed_asset(id: str, *, image: bytes | None = None, text: str | None = None
             task.add_done_callback(_embed_tasks.discard)
             return
     _embed_now(id, image=image, text=text)
+
+
+def _embed_one(asset: dict) -> None:
+    """Embed a single catalog row (used by reindex): images from their bytes, models from their title
+    text. Reads bytes lazily so a batch doesn't hold every image in memory at once."""
+    kind, fn = asset.get("kind"), asset.get("filename")
+    if kind == "model":
+        text = asset.get("label") or asset.get("query")
+        if text:
+            _embed_now(asset["id"], text=text)
+    elif fn and (ASSET_CACHE / fn).exists():
+        _embed_now(asset["id"], image=(ASSET_CACHE / fn).read_bytes())
+
+
+async def _reindex_bg(assets: list[dict]) -> None:
+    n = 0
+    for a in assets:
+        async with _embed_lock:                   # serialize with normal write-through embeds
+            await asyncio.to_thread(_embed_one, a)
+        n += 1
+    print(f"[conjure] reindex: embedded {n} catalog asset(s)")
 # Every configured image generator (keyed by casual name "Gemini"/"Chat"); the procurement
 # endpoints mediate which one services a request (conjure.llm.select_generator).
 image_generators = build_image_generators(settings)
@@ -741,6 +762,28 @@ async def correct_asset(req: CorrectAssetRequest) -> dict:
     if req.reject_for:
         library.reject(req.id, req.reject_for)
     return {"ok": True, "id": req.id}
+
+
+class ReindexRequest(BaseModel):
+    kind: Optional[str] = None       # optionally restrict to image | model | …
+
+
+@app.post("/library/reindex")
+async def library_reindex(req: ReindexRequest) -> dict:
+    """Embed cataloged assets that have no vector yet (e.g. everything backfilled before embeddings) —
+    a one-time pass so the existing library becomes searchable by similarity. Runs off the request
+    path; returns how many were queued."""
+    if embedder is None:
+        return {"ok": False, "error": "no embedder — install the optional 'embed' dependency group"}
+    targets = library.assets_missing_embedding(kind=req.kind)
+    if _EMBED_BACKGROUND:
+        task = asyncio.create_task(_reindex_bg(targets))
+        _embed_tasks.add(task)
+        task.add_done_callback(_embed_tasks.discard)
+    else:
+        for a in targets:
+            _embed_one(a)
+    return {"ok": True, "queued": len(targets)}
 
 
 # --- procurement: produce/transform an image, return an id; NO scene effect ---------------------
