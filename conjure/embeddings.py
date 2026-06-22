@@ -88,7 +88,11 @@ class SigLipEmbedder:
         self._proc = AutoProcessor.from_pretrained(self.name)
 
     def _finish(self, feat) -> list[float]:
-        out = (feat[0] / feat[0].norm()).tolist()   # L2-normalize → cosine order == L2 order in vec0
+        # transformers 5.x returns a BaseModelOutputWithPooling (use .pooler_output); older versions
+        # returned the projected tensor directly. Either way take the [batch=1] row, then L2-normalize
+        # (so cosine order == L2 order in vec0).
+        t = getattr(feat, "pooler_output", feat)[0]
+        out = (t / t.norm()).tolist()
         self.dim = len(out)
         return out
 

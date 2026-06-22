@@ -266,10 +266,12 @@ Notes:
 - **Deps:** `sqlite-vec` added to **core**; `torch`+`transformers` in the optional **`conjure[embed]`**
   group (not core). Config: `embed_backend`/`embed_model` (env-overridable).
 - Tests: `test_embeddings.py` + vector tests in `test_library.py` + write-through in `test_server.py`
-  (full suite green). *Caveat:* the SigLIP torch path is written but not runtime-exercised here (torch
-  not installed); the interface, fake backend, vector store/search, write-through, and graceful
-  degradation are all tested — the torch backend needs a one-time real-model smoke test on a capable
-  host before relying on it.
+  (full suite green).
+- **SigLIP torch path verified** ✅ via `scripts/smoke_embed.py` on Apple Silicon (transformers 5.x,
+  SigLIP 2 base): unit vectors @ correct dim, text↔text semantics order correctly, and **text↔image
+  alignment** holds (red/blue swatch vs colour-word). Fixed one real bug in the process — transformers
+  5.x returns `BaseModelOutputWithPooling`, so the embedder now reads `.pooler_output` (the old
+  `feat[0]` grabbed `last_hidden_state`). Re-run after `pip install -e ".[embed]"` to verify on a host.
 
 ### Phase 2 — Library tools (explicit, director-facing)
 - `search_library(query?, image_id?, kind?)` MCP tool → **read-only**; returns
