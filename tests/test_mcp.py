@@ -76,6 +76,34 @@ async def test_set_skybox_tool_takes_image_id(monkeypatch):
 
 
 @respx.mock
+async def test_search_library_tool_summarizes_candidates(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.post("http://world/library/search").mock(return_value=httpx.Response(200, json={
+        "ok": True, "confidence_tier": "strong",
+        "candidates": [{"id": "d.png", "kind": "image", "match": "exact", "label": "a red dragon"}]}))
+    out = await _tool("search_library")(query="a red dragon")
+    assert "strong" in out and "d.png" in out
+
+
+@respx.mock
+async def test_place_cached_asset_tool_forwards_id(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/place_cached_asset").mock(
+        return_value=httpx.Response(200, json={"ok": True, "id": "ent_1", "title": "Oak Tree"}))
+    await _tool("place_cached_asset")(id="oak.glb", size_m=2.0)
+    assert json.loads(route.calls.last.request.content) == {"id": "oak.glb", "size_m": 2.0}
+
+
+@respx.mock
+async def test_correct_asset_tool_forwards_relabel_and_reject(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/correct_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("correct_asset")(id="x.glb", label="X-Wing", reject_for="starship enterprise")
+    assert json.loads(route.calls.last.request.content) == {
+        "id": "x.glb", "label": "X-Wing", "reject_for": "starship enterprise"}
+
+
+@respx.mock
 async def test_annotate_asset_tool_forwards_curation(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     route = respx.post("http://world/annotate_asset").mock(return_value=httpx.Response(200, json={"ok": True}))

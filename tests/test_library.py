@@ -106,6 +106,40 @@ def test_relations_are_unique(tmp_path):
     assert rows == 1
 
 
+def test_find_tiers_exact_and_alias_strong_fts_weak_none(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("oak.glb", kind="model", label="Oak Tree", query="oak tree")
+    lib.upsert("hill.glb", kind="model", label="a big oak on a hill", query="a big oak on a hill")
+    assert lib.find("oak tree")["confidence_tier"] == "strong"        # exact intent match
+    assert lib.find("zebra unicorn")["confidence_tier"] == "none"     # nothing
+    # "oak" matches the hill model on FTS but nothing exactly → weak
+    weak = lib.find("oak")
+    assert weak["confidence_tier"] == "weak" and any(c["id"] == "hill.glb" for c in weak["candidates"])
+    lib.set_alias("tree", "oak.glb")
+    assert lib.find("tree")["confidence_tier"] == "strong"            # alias is authoritative
+
+
+def test_find_excludes_rejected_assets(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("xwing.glb", kind="model", label="X-Wing", query="starship enterprise")  # wrong fetch
+    assert any(c["id"] == "xwing.glb" for c in lib.find("starship enterprise")["candidates"])
+    lib.reject("xwing.glb", "starship enterprise")
+    res = lib.find("starship enterprise")
+    assert not any(c["id"] == "xwing.glb" for c in res["candidates"]) and res["confidence_tier"] == "none"
+
+
+def test_find_more_like_this_via_query_vec(tmp_path):
+    lib = _lib(tmp_path)
+    if not lib.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    for aid, vec in [("a.png", [1.0, 0.0]), ("b.png", [0.0, 1.0])]:
+        lib.upsert(aid, kind="image", prompt=aid)
+        lib.add_embedding(aid, vec, "fake")
+    res = lib.find(query_vec=[0.96, 0.05])           # image-only query, no text
+    assert res["candidates"][0]["id"] == "a.png" and res["candidates"][0]["match"] == "vector"
+    assert res["confidence_tier"] == "weak"          # semantic-only → weak (no exact/alias)
+
+
 def test_backfill_seeds_images_and_models_idempotently(tmp_path):
     cache = tmp_path / "assets"
     cache.mkdir()

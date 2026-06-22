@@ -210,6 +210,44 @@ def test_annotate_unknown_asset_errors(srv, client):
     assert client.post("/annotate_asset", json={"id": "nope.png", "note": "x"}).json()["ok"] is False
 
 
+def test_library_search_returns_tiered_candidates(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
+    r = client.post("/library/search", json={"query": "a red dragon"}).json()
+    assert r["ok"] and r["confidence_tier"] == "strong"          # exact intent match
+    assert any(c["id"] == iid for c in r["candidates"])
+    assert client.post("/library/search", json={"query": "nonexistent thing"}).json()["confidence_tier"] == "none"
+
+
+def test_place_cached_asset_reuses_a_model(srv, client, tmp_path):
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    client.post("/place_asset", json={"query": "oak tree", "size_m": 2})   # catalogs the model
+    (tmp_path / f"{ASSET_RECORD.hash}.glb").write_bytes(b"glTF" + bytes(8))  # its bytes in the cache
+    r = client.post("/place_cached_asset", json={"id": f"{ASSET_RECORD.hash}.glb", "size_m": 2}).json()
+    assert r["ok"] is True
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert ent["components"]["gltf-model"] == f"/assets/{ASSET_RECORD.hash}.glb"
+    assert ent["transform"]["scale"] == [0.5, 0.5, 0.5]          # bbox 4 tall, size_m 2 → scale 0.5
+
+
+def test_place_cached_asset_rejects_non_model(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "x"}).json()["image_id"]
+    r = client.post("/place_cached_asset", json={"id": iid}).json()
+    assert r["ok"] is False and "not a model" in r["error"]
+
+
+def test_correct_asset_relabels_and_rejects(srv, client):
+    # an X-wing wrongly cataloged under "starship enterprise"
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    client.post("/place_asset", json={"query": "starship enterprise", "size_m": 2})
+    mid = f"{ASSET_RECORD.hash}.glb"
+    assert client.post("/library/search", json={"query": "starship enterprise"}).json()["confidence_tier"] == "strong"
+    r = client.post("/correct_asset", json={"id": mid, "label": "X-Wing", "reject_for": "starship enterprise"})
+    assert r.json()["ok"] is True
+    assert srv.library.get(mid)["label"] == "X-Wing"            # relabeled
+    after = client.post("/library/search", json={"query": "starship enterprise"}).json()
+    assert not any(c["id"] == mid for c in after["candidates"])  # excluded after reject
+
+
 def test_set_grounded_skybox_marks_the_env(srv, client):
     r = client.post("/images/grounded_skybox", json={"prompt": "a meadow"})
     assert r.json()["ok"] is True
@@ -259,6 +297,7 @@ def test_expected_routes_exist(srv):
     paths = {getattr(r, "path", None) for r in srv.app.routes}
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
               "/outpaint_image", "/set_skybox", "/set_grounded_skybox", "/annotate_asset",
+              "/library/search", "/place_cached_asset", "/correct_asset",
               "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/grounded_skybox",
               "/images/edit", "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",

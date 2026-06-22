@@ -1,6 +1,7 @@
 # Asset Library — implementation plan
 
-**Status:** Phases 0–1 **done** (catalog + embeddings/vector search landed & tested); Phases 2–3 next.
+**Status:** Phases 0–2 **done** (catalog + embeddings + director-facing reuse/correction tools);
+Phase 3 (director prompt policy) landed alongside Phase 2. Phases 4–5 deferred.
 **Scope of first pass:** Phases 0–3 (foundation + embeddings + tools + prompt). Phases 4–5 deferred.
 
 Turn the passive content-addressed byte cache into an **explicit, director-controlled asset
@@ -273,7 +274,12 @@ Notes:
   5.x returns `BaseModelOutputWithPooling`, so the embedder now reads `.pooler_output` (the old
   `feat[0]` grabbed `last_hidden_state`). Re-run after `pip install -e ".[embed]"` to verify on a host.
 
-### Phase 2 — Library tools (explicit, director-facing)
+### Phase 2 — Library tools (explicit, director-facing) ✅ DONE
+*(Phase 3 director prompt policy landed with it.)* Implemented: `library.find()` (tiered, reject-aware),
+`reject()`, the `scope` seam (schema v4, written as `private/builder`); endpoints `/library/search`,
+`/place_cached_asset`, `/correct_asset`; MCP tools `search_library` / `place_cached_asset` /
+`correct_asset`; and the reuse-before-create policy in `agents/builder/prompt.md`. Query embedding runs
+off the loop. Tests across library/server/mcp; full suite green.
 - `search_library(query?, image_id?, kind?)` MCP tool → **read-only**; returns
   `{candidates: [{id, kind, label, created, last_used, licence, match}], confidence_tier}` where
   tier ∈ `strong|weak|none` is **computed server-side** from staged matching (exact → FTS5 → vector
@@ -384,6 +390,14 @@ Update `agents/builder/prompt.md`:
 NAS ingestion pipeline (scan-in-place, captioning, thumbnails); face detection/recognition/
 clustering and person naming; ANN graduation (LanceDB/FAISS); knowledge-graph queries
 (people/places/events) and any move to a dedicated graph DB; shared/remote cache tier across devices.
+
+**`reject` semantics (polish):** `reject(asset, query)` is a **per-query exclusion from reuse search
+only** — it drops that asset from `find()` results for the *exact normalized* query string. It is
+intentionally narrow today: not fuzzy/semantic (rejecting "starship enterprise" doesn't cover "the
+enterprise"), not applied to image/vector-only queries, and **it does not gate the web fetch** — so
+after a reject, `place_asset` can still re-fetch the same wrong model from Poly Pizza. Full fix is the
+combination (reject + relabel + alias the right model); deeper options if needed later: fuzzy/semantic
+reject, and gating the fetch path (ties into the candidate-selection follow-up below).
 
 **Better model fetch (follow-up):** today `AssetResolver` takes Poly Pizza's `results[0]` verbatim
 (no relevance gate, no LLM in the loop) — the root cause of the X-wing-for-Enterprise mismatch. Since

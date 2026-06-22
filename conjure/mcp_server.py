@@ -338,6 +338,79 @@ async def place_asset(
     )
 
 
+# --- Asset library: REUSE before creating anew ------------------------------------------------
+# Before generating an image / fetching a model, you may search what's already been made. Reuse is
+# always explicit (these tools) — never automatic. See the library policy in the system prompt.
+
+@mcp.tool()
+async def search_library(
+    query: Optional[str] = None,
+    image_id: Optional[str] = None,
+    kind: Optional[str] = None,
+) -> str:
+    """Search assets already in the library to REUSE one instead of making a new one.
+
+    Use when the user references something they likely made before ('the dragon from earlier', 'my
+    castle'), or to check before creating when reuse would be natural. query: the text intent ('an
+    oak tree'); OR image_id: an existing asset to find more like it ('more like that'). kind:
+    optionally restrict to image | model | skybox | grounded_skybox.
+
+    Returns candidates + a CONFIDENCE tier: 'strong' (an exact match or a user default — safe to
+    reuse), 'weak' (only fuzzy/semantic hits — reuse only if clearly right, else offer or generate),
+    'none' (nothing — generate/fetch fresh). Then reuse: a model via place_cached_asset(id), an image
+    via place_image(image_id), a skybox via set_skybox(image_id)/set_grounded_skybox(image_id).
+    """
+    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind))
+    if not out.get("ok"):
+        return f"Library search failed: {out.get('error', 'unknown error')}."
+    cands, tier = out.get("candidates", []), out.get("confidence_tier", "none")
+    if not cands:
+        return "No matching asset in the library (confidence: none) — generate or fetch a new one."
+    lines = [f"- {c['id']} ({c['kind']}, match={c['match']}): "
+             f"{c.get('label') or c.get('prompt') or c.get('query') or '—'}"
+             f"{(' [' + c['licence'] + ']') if c.get('licence') else ''}" for c in cands[:8]]
+    return f"Library matches (confidence: {tier}):\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def place_cached_asset(
+    id: str,
+    size_m: Optional[float] = None,
+    position: Optional[list[float]] = None,
+    name: Optional[str] = None,
+) -> str:
+    """Place a MODEL already in the library by id (from search_library) — reuse, no web fetch.
+
+    For reusing images use place_image(image_id); for skyboxes set_skybox/set_grounded_skybox. size_m:
+    real-world largest dimension in metres (as in place_asset); position: [x,y,z] (auto-sits on floor).
+    """
+    out = await _post("/place_cached_asset", _body(id=id, size_m=size_m, position=position, name=name))
+    if not out.get("ok"):
+        return f"Couldn't reuse {id!r}: {out.get('error', 'unknown error')}."
+    return f"Reused {out.get('title')!r} as {out['id']}."
+
+
+@mcp.tool()
+async def correct_asset(
+    id: str,
+    label: Optional[str] = None,
+    query: Optional[str] = None,
+    tags: Optional[str] = None,
+    reject_for: Optional[str] = None,
+) -> str:
+    """Fix a wrong asset match so it doesn't recur (e.g. an X-wing came back for 'starship enterprise').
+
+    label/query/tags: rewrite the asset's description to what it actually is. reject_for: a query this
+    asset should NEVER match again (e.g. reject_for='starship enterprise' on that X-wing). Use when the
+    user points out a mismatch.
+    """
+    out = await _post("/correct_asset",
+                      _body(id=id, label=label, query=query, tags=tags, reject_for=reject_for))
+    if not out.get("ok"):
+        return f"Couldn't correct {id!r}: {out.get('error', 'unknown error')}."
+    return "Fixed — updated the library so that won't recur."
+
+
 # --- Image procurement (produce/transform an image, get back an image_id) ----------------------
 # Procurement is decoupled from scene use: these make/transform an image and return an `image_id`
 # you then pass to place_image / set_skybox. The `generator` arg is OPTIONAL — omit it to use the

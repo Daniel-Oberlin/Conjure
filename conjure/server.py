@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 from uuid import uuid4
 
@@ -43,6 +44,9 @@ SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 ASSET_CACHE = ROOT / ".cache" / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
 LIBRARY_DB = ROOT / ".cache" / "library.db"   # durable asset catalog (docs/asset-library-plan.md)
+# The agent namespace assets are written under (docs/persistence-model.md). A data seam for now —
+# single agent, no enforcement yet; the builder is the only writer.
+DEFAULT_SCOPE = "private/builder"
 # scripts/tunnel.sh writes the current cloudflared URL here; /tunnel redirects to it (a short, fixed
 # LAN address you can type on the Quest instead of the long random trycloudflare URL each session).
 TUNNEL_FILE = ROOT / ".cache" / "tunnel_url"
@@ -60,7 +64,7 @@ resolver: AssetResolver | None = (
 library = AssetLibrary(LIBRARY_DB)
 try:
     if library.count() == 0:
-        library.backfill(ASSET_CACHE, store.doc)
+        library.backfill(ASSET_CACHE, store.doc, scope=DEFAULT_SCOPE)
 except Exception as exc:  # noqa: BLE001
     print(f"[conjure] asset-library backfill skipped: {exc}")
 # The embedder is None unless the optional torch/transformers are installed — then vector write-through
@@ -171,6 +175,21 @@ def _kind_for_op(op: str) -> str:
     return "image"
 
 
+def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
+                     bbox_min, bbox_max, pos, size_m) -> dict:
+    """Build the `add` op for a glTF model entity, auto-scaled to sit on the floor and carrying its
+    license/attribution. Shared by /place_asset (web) and /place_cached_asset (library reuse)."""
+    rec = SimpleNamespace(bbox_min=bbox_min, bbox_max=bbox_max)
+    model_pos, model_scale = _normalize(rec, pos, size_m or TARGET_SIZE_M)
+    return {"op": "add", "entity": {
+        "id": eid,
+        "transform": {"position": model_pos, "scale": model_scale},
+        "components": {"gltf-model": f"/assets/{model_id}"},
+        "meta": {"title": title, "license": licence, "attribution": attribution, "creator": creator,
+                 "source": source, "tris": tris, "generated": False},
+    }}
+
+
 def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     """Write a procured image to the content store and register an ImageRecord; return it."""
     ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
@@ -182,8 +201,9 @@ def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     IMAGES[image_id] = rec
     # Write through to the durable catalog (keyed on the prompt = intent), so reuse can find it later
     # and its provenance survives a restart.
-    library.upsert(image_id, kind=_kind_for_op(op), source=f"cache://{image_id}", filename=image_id,
-                   label=prompt, prompt=prompt, params={"op": op, "transparent": transparent},
+    library.upsert(image_id, kind=_kind_for_op(op), scope=DEFAULT_SCOPE, source=f"cache://{image_id}",
+                   filename=image_id, label=prompt, prompt=prompt,
+                   params={"op": op, "transparent": transparent},
                    provider=result.provider, model=result.model, width=w, height=h)
     _embed_asset(image_id, image=result.data)   # embed the pixels into the shared space (best-effort)
     return rec
@@ -612,8 +632,8 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
     # Catalog the model keyed on the search query (its intent) so it's reusable later; touch it so
     # recency reflects this use. licence/attribution are captured for the legal record.
     model_id = f"{record.hash}.glb"
-    library.upsert(model_id, kind="model", source=f"cache://{model_id}", filename=model_id,
-                   label=record.title, query=req.query, licence=record.licence,
+    library.upsert(model_id, kind="model", scope=DEFAULT_SCOPE, source=f"cache://{model_id}",
+                   filename=model_id, label=record.title, query=req.query, licence=record.licence,
                    attribution=record.attribution, creator=record.creator,
                    attributes={"tris": record.tris, "bbox_min": record.bbox_min,
                                "bbox_max": record.bbox_max})
@@ -622,26 +642,12 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
 
     # 3. Swap the placeholder for the real glTF model (auto-scaled to sit on the floor),
     #    carrying license + attribution.
-    model_pos, model_scale = _normalize(record, pos, req.size_m or TARGET_SIZE_M)
     swap = [
         {"op": "remove", "id": eid},
-        {
-            "op": "add",
-            "entity": {
-                "id": eid,
-                "transform": {"position": model_pos, "scale": model_scale},
-                "components": {"gltf-model": f"/assets/{record.hash}.glb"},
-                "meta": {
-                    "title": record.title,
-                    "license": record.licence,
-                    "attribution": record.attribution,
-                    "creator": record.creator,
-                    "source": "poly.pizza",
-                    "tris": record.tris,
-                    "generated": False,
-                },
-            },
-        },
+        _model_entity_op(eid, model_id, title=record.title, licence=record.licence,
+                         attribution=record.attribution, creator=record.creator, tris=record.tris,
+                         source="poly.pizza", bbox_min=record.bbox_min, bbox_max=record.bbox_max,
+                         pos=pos, size_m=req.size_m),
     ]
     await _broadcast({"type": "patch", "patch": store.apply_patch(swap, origin="asset")})
     return {
@@ -652,6 +658,89 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
         "licence": record.licence,
         "attribution": record.attribution,
     }
+
+
+# --- asset library: explicit, director-driven reuse over the catalog (docs/asset-library-plan.md §7).
+#     search_library (read-only) → tiered candidates; place_cached_asset → reuse a model by id;
+#     correct_asset → relabel / reject a mismatch. The director searches BEFORE going to the web. -----
+
+class LibrarySearchRequest(BaseModel):
+    query: Optional[str] = None      # text intent ("an oak tree"), OR
+    image_id: Optional[str] = None   # an asset already in the catalog → "more like this"
+    kind: Optional[str] = None       # image | model | skybox | … (optional filter)
+
+
+@app.post("/library/search")
+async def library_search(req: LibrarySearchRequest) -> dict:
+    """Find reusable assets by intent. Returns tiered candidates (strong/weak/none) so the director
+    decides reuse vs. generate. Read-only — no scene effect."""
+    qvec = None
+    if embedder is not None:                         # embed the query off the loop (semantic stage)
+        if req.query:
+            qvec = await asyncio.to_thread(embedder.embed_text, req.query)
+        elif req.image_id:
+            a = library.get(req.image_id)
+            fn = a and a.get("filename")
+            if fn and (ASSET_CACHE / fn).exists():
+                data = (ASSET_CACHE / fn).read_bytes()
+                qvec = await asyncio.to_thread(embedder.embed_image, data)
+    return {"ok": True, **library.find(text=req.query, query_vec=qvec, kind=req.kind)}
+
+
+class PlaceCachedAssetRequest(BaseModel):
+    id: str                                  # a model asset id from search_library ("<hash>.glb")
+    position: Optional[list[float]] = None
+    size_m: Optional[float] = None
+    name: Optional[str] = None
+
+
+@app.post("/place_cached_asset")
+async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
+    """Place a MODEL already in the library by id — the reuse counterpart to place_asset (no web
+    fetch). Images reuse place_image; skyboxes reuse set_skybox/set_grounded_skybox."""
+    rec = library.get(req.id)
+    if rec is None:
+        return {"ok": False, "error": f"no asset {req.id!r} in the library"}
+    if rec["kind"] != "model":
+        return {"ok": False, "error": f"{req.id!r} is a {rec['kind']}, not a model — "
+                "use place_image (images) or set_skybox (skyboxes)"}
+    if not (ASSET_CACHE / req.id).exists():
+        return {"ok": False, "error": f"bytes for {req.id!r} are missing from the cache"}
+    attrs = json.loads(rec["attributes"] or "{}")
+    eid = req.name or f"ent_asset_{uuid4().hex[:6]}"
+    pos = req.position or [0.0, 0.0, -3.0]
+    op = _model_entity_op(eid, req.id, title=rec["label"], licence=rec["licence"],
+                          attribution=rec["attribution"], creator=rec["creator"],
+                          tris=attrs.get("tris"), source="library", bbox_min=attrs.get("bbox_min"),
+                          bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m)
+    await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
+    library.touch(req.id)
+    return {"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]}
+
+
+class CorrectAssetRequest(BaseModel):
+    id: str
+    label: Optional[str] = None       # rewrite the machine description …
+    query: Optional[str] = None
+    tags: Optional[str] = None
+    reject_for: Optional[str] = None  # … and/or exclude this asset from future matches on a query
+
+
+@app.post("/correct_asset")
+async def correct_asset(req: CorrectAssetRequest) -> dict:
+    """Fix a mismatch (e.g. an X-wing returned for 'starship enterprise'): relabel its description
+    and/or reject it for a query so it won't match that again. No scene effect."""
+    if library.get(req.id) is None:
+        return {"ok": False, "error": f"no asset {req.id!r} in the library"}
+    fields = {k: v for k, v in (("label", req.label), ("query", req.query), ("tags", req.tags))
+              if v is not None}
+    if not fields and not req.reject_for:
+        return {"ok": False, "error": "nothing to correct (pass label/query/tags or reject_for)"}
+    if fields:
+        library.upsert(req.id, **fields)
+    if req.reject_for:
+        library.reject(req.id, req.reject_for)
+    return {"ok": True, "id": req.id}
 
 
 # --- procurement: produce/transform an image, return an id; NO scene effect ---------------------

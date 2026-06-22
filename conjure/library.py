@@ -35,7 +35,7 @@ except Exception:                     # noqa: BLE001
 
 # Bump when the schema changes. The cache catalog is regenerable (backfill rebuilds it from the bytes
 # on disk), so on a version mismatch we drop & recreate rather than migrate in place.
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 # faces/persons are reserved now (sub-image entities + named clusters) so the NAS seam is honest;
 # they stay empty until the NAS ingestion subsystem (Phase 5) populates them.
@@ -43,6 +43,8 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY,
   kind TEXT,                       -- image | model | skybox | grounded_skybox | audio | photo | …
+  scope TEXT,                      -- per-agent namespace, e.g. private/builder (persistence-model.md);
+                                   --   a data seam now — enforcement arrives with the second agent
   source TEXT,                     -- cache://<id> | nas://<path> | https://…
   filename TEXT,                   -- physical name under .cache/assets (NULL for external sources)
   label TEXT,                      -- machine display name: prompt (images) or title/query (models)
@@ -77,7 +79,7 @@ _TABLES = ("assets_fts", "assets_vec", "assets", "aliases", "relations", "faces"
 # Columns a caller may set via upsert kwargs (everything except id, attributes, and the lifecycle
 # bookkeeping). `attributes` is handled separately so it can be *merged* rather than replaced.
 _UPSERT_COLS = (
-    "kind", "source", "filename", "label", "prompt", "query", "params_json",
+    "kind", "scope", "source", "filename", "label", "prompt", "query", "params_json",
     "provider", "model", "width", "height", "licence", "attribution", "creator",
     "notes", "tags", "rating", "favorite", "embed_model", "embed_dim",
 )
@@ -359,8 +361,42 @@ class AssetLibrary:
                     pass  # malformed MATCH — earlier results still stand
         return results[:limit]
 
+    def reject(self, asset_id: str, query: str) -> None:
+        """Record that `asset_id` is the WRONG answer for `query` (e.g. the X-wing for 'starship
+        enterprise') — a `reject` relation that `find()` filters out of future matches for it."""
+        self.add_relation(asset_id, normalize(query), "reject")
+
+    def find(self, text: Optional[str] = None, *, query_vec: Optional[list[float]] = None,
+             kind: Optional[str] = None, limit: int = 20) -> dict:
+        """The director-facing reuse query: staged match (alias → exact → FTS → vector), rejects
+        filtered out, with a server-computed **confidence tier** so the LLM never thresholds a raw
+        score. Returns {"candidates": [...], "confidence_tier": "strong"|"weak"|"none"}.
+
+        - strong: an authoritative hit (a user alias, or an exact intent match) — safe to reuse.
+        - weak:   only fuzzy hits (keyword/semantic) — offer, don't assume.
+        - none:   nothing — generate/fetch fresh.
+        """
+        cands = self.search(text, kind=kind, limit=limit) if text else []
+        seen = {c["id"] for c in cands}
+        if query_vec:
+            for v in self.vector_search(query_vec, kind=kind, limit=limit):
+                if v["id"] not in seen:
+                    seen.add(v["id"])
+                    cands.append(v)
+        if text:                                  # drop assets the user rejected for this query
+            norm = normalize(text)
+            with self._lock:
+                rejected = {r["from_id"] for r in self._db.execute(
+                    "SELECT from_id FROM relations WHERE to_id=? AND type='reject'", (norm,)).fetchall()}
+            cands = [c for c in cands if c["id"] not in rejected]
+        cands = cands[:limit]
+        strong = any(c["match"] in ("alias", "exact") for c in cands)
+        tier = "strong" if strong else ("weak" if cands else "none")
+        return {"candidates": cands, "confidence_tier": tier}
+
     # ---- one-time migration -------------------------------------------------------------------
-    def backfill(self, asset_cache: str | Path, world_doc: Optional[dict] = None) -> int:
+    def backfill(self, asset_cache: str | Path, world_doc: Optional[dict] = None,
+                 scope: Optional[str] = None) -> int:
         """Seed the catalog from the existing on-disk cache (+ the world doc, to recover prompts for
         already-placed images). Idempotent: skips ids already present. Returns rows added."""
         asset_cache = Path(asset_cache)
@@ -372,13 +408,13 @@ class AssetLibrary:
                 ext = p.suffix.lower()
                 if ext in (".png", ".jpg", ".jpeg", ".webp"):
                     w, h = _image_dims(p)
-                    self.upsert(p.name, kind="image", source=f"cache://{p.name}",
+                    self.upsert(p.name, kind="image", scope=scope, source=f"cache://{p.name}",
                                 filename=p.name, width=w, height=h)
                     added += 1
                 elif ext == ".glb":
                     m = _read_sidecar(p.with_suffix(".json"))
-                    self.upsert(p.name, kind="model", source=f"cache://{p.name}", filename=p.name,
-                                label=m.get("title"), query=m.get("title"),
+                    self.upsert(p.name, kind="model", scope=scope, source=f"cache://{p.name}",
+                                filename=p.name, label=m.get("title"), query=m.get("title"),
                                 attributes={"tris": m.get("tris"), "bbox_min": m.get("bbox_min"),
                                             "bbox_max": m.get("bbox_max")},
                                 licence=m.get("licence"), attribution=m.get("attribution"),
