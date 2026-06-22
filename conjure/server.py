@@ -12,6 +12,7 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -66,10 +67,18 @@ except Exception as exc:  # noqa: BLE001
 # is simply skipped and the catalog runs on FTS/exact only. Lazy: no model loads until first embed.
 embedder = build_embedder(settings)
 
+# Embedding is an *enrichment*, not part of procurement, so in production it runs OFF the request path:
+# the asset is already procured/returned, and its vector lands a beat later (exact/FTS still match it
+# immediately; only semantic search for that one asset is briefly eventual). A lock serializes model
+# access (one forward pass at a time); a thread keeps the blocking torch call off the event loop.
+# Tests flip _EMBED_BACKGROUND off for deterministic, inline write-through.
+_EMBED_BACKGROUND = True
+_embed_lock = asyncio.Lock()
+_embed_tasks: set[asyncio.Task] = set()   # strong refs so fire-and-forget tasks aren't GC'd mid-flight
 
-def _embed_asset(id: str, *, image: bytes | None = None, text: str | None = None) -> None:
-    """Best-effort: embed an asset into the shared space and store its vector. Never raises into the
-    request path (embedding is an enrichment, not a requirement)."""
+
+def _embed_now(id: str, *, image: bytes | None = None, text: str | None = None) -> None:
+    """Blocking embed + store. Never raises (enrichment, not a requirement)."""
     if embedder is None:
         return
     try:
@@ -77,6 +86,29 @@ def _embed_asset(id: str, *, image: bytes | None = None, text: str | None = None
         library.add_embedding(id, vec, embedder.name)
     except Exception as exc:  # noqa: BLE001
         print(f"[conjure] embed failed for {id}: {exc}")
+
+
+async def _embed_bg(id: str, *, image: bytes | None = None, text: str | None = None) -> None:
+    async with _embed_lock:                       # one model forward pass at a time
+        await asyncio.to_thread(_embed_now, id, image=image, text=text)
+
+
+def _embed_asset(id: str, *, image: bytes | None = None, text: str | None = None) -> None:
+    """Schedule an asset's embedding. Off the request path when a loop is running (prod); inline
+    otherwise (tests / no loop)."""
+    if embedder is None:
+        return
+    if _EMBED_BACKGROUND:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass                                  # no running loop → fall through to inline
+        else:
+            task = asyncio.create_task(_embed_bg(id, image=image, text=text))
+            _embed_tasks.add(task)
+            task.add_done_callback(_embed_tasks.discard)
+            return
+    _embed_now(id, image=image, text=text)
 # Every configured image generator (keyed by casual name "Gemini"/"Chat"); the procurement
 # endpoints mediate which one services a request (conjure.llm.select_generator).
 image_generators = build_image_generators(settings)

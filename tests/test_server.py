@@ -161,6 +161,25 @@ def test_generated_image_is_embedded_when_embedder_present(srv, client):
     assert any(h["id"] == iid for h in hits)                              # and it's searchable
 
 
+async def test_background_embed_lands_after_return(srv):
+    """In prod mode the embed runs off the request path: scheduled, not done on return; lands once
+    awaited. (exact/FTS still match the asset immediately — only its vector is briefly eventual.)"""
+    import asyncio
+
+    from conjure.embeddings import FakeEmbedder
+
+    if not srv.library.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    srv.embedder = FakeEmbedder(dim=8)
+    srv._EMBED_BACKGROUND = True
+    srv.library.upsert("x.png", kind="image", prompt="x")
+
+    srv._embed_asset("x.png", text="x")                       # returns immediately (schedules a task)
+    assert srv.library.get("x.png")["embed_model"] is None    # not embedded yet — it's off-path
+    await asyncio.gather(*srv._embed_tasks)                    # let the background embed complete
+    assert srv.library.get("x.png")["embed_model"] == "fake"  # vector landed after the return
+
+
 def test_image_metadata_survives_restart(srv, client):
     iid = client.post("/images/skybox", json={"prompt": "a sunset beach"}).json()["image_id"]
     srv.IMAGES.clear()                       # simulate a restart: in-memory store gone, catalog persists
