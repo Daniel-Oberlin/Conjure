@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 
+import pytest
 from PIL import Image
 
 from conjure.library import AssetLibrary, normalize
@@ -124,6 +125,33 @@ def test_backfill_seeds_images_and_models_idempotently(tmp_path):
     assert mdl["kind"] == "model" and mdl["licence"] == "CC-BY" and mdl["query"] == "Oak Tree"
     assert json.loads(mdl["attributes"])["tris"] == 900   # kind-specific field lives in attributes
     assert lib.backfill(cache) == 0  # nothing new the second time
+
+
+def test_vector_search_returns_nearest_and_records_space(tmp_path):
+    lib = _lib(tmp_path)
+    if not lib.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    for aid in ("a.png", "b.png", "c.png"):
+        lib.upsert(aid, kind="image", prompt=aid)
+    lib.add_embedding("a.png", [1.0, 0.0, 0.0], "fake")
+    lib.add_embedding("b.png", [0.9, 0.1, 0.0], "fake")
+    lib.add_embedding("c.png", [0.0, 0.0, 1.0], "fake")
+    hits = lib.vector_search([1.0, 0.0, 0.0], limit=2)
+    assert [h["id"] for h in hits] == ["a.png", "b.png"] and hits[0]["match"] == "vector"
+    assert hits[0]["distance"] <= hits[1]["distance"]
+    rec = lib.get("a.png")
+    assert rec["embed_model"] == "fake" and rec["embed_dim"] == 3   # space recorded for comparability
+
+
+def test_vector_search_filters_by_kind(tmp_path):
+    lib = _lib(tmp_path)
+    if not lib.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    lib.upsert("img.png", kind="image", prompt="x")
+    lib.upsert("mdl.glb", kind="model", query="x")
+    lib.add_embedding("img.png", [1.0, 0.0], "fake")
+    lib.add_embedding("mdl.glb", [1.0, 0.0], "fake")
+    assert [h["id"] for h in lib.vector_search([1.0, 0.0], kind="model")] == ["mdl.glb"]
 
 
 def test_backfill_recovers_prompt_from_world_doc(tmp_path):

@@ -1,6 +1,6 @@
 # Asset Library — implementation plan
 
-**Status:** Phase 0 **done** (catalog foundation landed & tested); Phases 1–3 next.
+**Status:** Phases 0–1 **done** (catalog + embeddings/vector search landed & tested); Phases 2–3 next.
 **Scope of first pass:** Phases 0–3 (foundation + embeddings + tools + prompt). Phases 4–5 deferred.
 
 Turn the passive content-addressed byte cache into an **explicit, director-controlled asset
@@ -246,15 +246,25 @@ Notes:
   ("remember this as my favorite", "make this my default dog" → an alias override).
 - Tests: `tests/test_library.py` + integration in `test_server.py`/`test_mcp.py` (full suite green).
 
-### Phase 1 — Embeddings
-- New `conjure/embeddings.py` → `Embedder` interface with swappable backends. Ship the **local torch
-  + transformers SigLIP** backend first (lazy-loaded, offline); leave **ONNX** and **hosted** backends
-  as drop-in implementations of the same interface (ONNX = the lean/Pi deploy path once the model is
-  frozen; hosted = the no-local-ML path).
-- Embed images from pixels, models from title text (shared space). Store vectors in `assets_vec`
-  (sqlite-vec), recording `embed_model`/`embed_dim` (§6).
-- torch/transformers go in an **optional dependency group** (`conjure[embed]`) — *not* core. Config:
-  backend, model name, dim, device. Optional-import guarded; deterministic fake embedder for tests.
+### Phase 1 — Embeddings ✅ DONE
+- New `conjure/embeddings.py` → `Embedder` protocol with swappable backends: **SigLipEmbedder**
+  (local torch+transformers, lazy — no torch import until first embed) and **FakeEmbedder**
+  (deterministic, dep-free, for tests). `build_embedder(settings)` selects by `embed_backend`
+  (`auto`/`siglip`/`fake`/`none`) and returns **None** when torch is absent → server degrades to
+  FTS/exact, ML-free. ONNX/hosted remain drop-in implementations of the same protocol (future).
+- **Vector storage/search in `library.py`** via sqlite-vec: `add_embedding(id, vec, model)` (lazy
+  `assets_vec` vec0 table at the embedding dim; records `embed_model`/`embed_dim`) and
+  `vector_search(vec, kind?, limit)` (L2 KNN on unit vectors → cosine order, kind-filtered). Gated on
+  the extension — degrades cleanly if absent. Schema → v3 (auto-rebuilds the regenerable catalog).
+- **Write-through** (`server.py` `_embed_asset`): images embed their pixels, models their title text;
+  best-effort (never breaks the request path), skipped when no embedder.
+- **Deps:** `sqlite-vec` added to **core**; `torch`+`transformers` in the optional **`conjure[embed]`**
+  group (not core). Config: `embed_backend`/`embed_model` (env-overridable).
+- Tests: `test_embeddings.py` + vector tests in `test_library.py` + write-through in `test_server.py`
+  (full suite green). *Caveat:* the SigLIP torch path is written but not runtime-exercised here (torch
+  not installed); the interface, fake backend, vector store/search, write-through, and graceful
+  degradation are all tested — the torch backend needs a one-time real-model smoke test on a capable
+  host before relying on it.
 
 ### Phase 2 — Library tools (explicit, director-facing)
 - `search_library(query?, image_id?, kind?)` MCP tool → **read-only**; returns
@@ -272,10 +282,17 @@ Notes:
   "remember this as my favorite city skybox" (note/favorite), "make this my default dog"
   (`default_for` → an `aliases` row), "important family photo" (note + rating). A visible, narrated
   action, consistent with the explicit-tool philosophy — it makes the library feel like memory.
-- **Staged matching honors aliases first:** an `aliases` hit ("dog" → pinned id) is an authoritative
-  **STRONG** override, ahead of exact/FTS/vector. Then ranking within matches: score → `favorite`/
-  `rating` → `last_used` (recency) → quality (licence cleanliness, tris in range, resolution). Tier
-  thresholds in `config.py`.
+- `correct_asset(id, label?, query?, tags?, reject_for?)` → the **correction loop** for mismatches
+  (the real case: "starship enterprise" fetched an X-wing — Poly Pizza had no Enterprise and we took
+  `results[0]` verbatim). Lets the director **rewrite the wrong machine description** (`label`/
+  `query`/`tags`) so it stops masquerading, and/or **`reject_for="starship enterprise"`** to record a
+  negative association (a `reject` relation) that **excludes** that asset from future matches on the
+  query. Where `annotate_asset` only *adds* curation, this *fixes* or *excludes*.
+- **Staged matching honors aliases first, and skips rejects:** an `aliases` hit ("dog" → pinned id)
+  is an authoritative **STRONG** override, ahead of exact/FTS/vector; assets with a `reject` relation
+  for the query are filtered out. Then ranking within matches: score → `favorite`/`rating` →
+  `last_used` (recency) → quality (licence cleanliness, tris in range, resolution). Tier thresholds
+  in `config.py`.
 
 ### Phase 3 — Director policy (prompt engineering)
 Update `agents/builder/prompt.md`:
@@ -360,6 +377,13 @@ Update `agents/builder/prompt.md`:
 NAS ingestion pipeline (scan-in-place, captioning, thumbnails); face detection/recognition/
 clustering and person naming; ANN graduation (LanceDB/FAISS); knowledge-graph queries
 (people/places/events) and any move to a dedicated graph DB; shared/remote cache tier across devices.
+
+**Better model fetch (follow-up):** today `AssetResolver` takes Poly Pizza's `results[0]` verbatim
+(no relevance gate, no LLM in the loop) — the root cause of the X-wing-for-Enterprise mismatch. Since
+we already pull `Limit: 8`, a follow-up would return the candidates to the director to **pick** (or
+reject all → "no real Enterprise found; generate one, or use this X-wing?"), preventing the wrong
+download rather than only correcting it after. Kept separate from Phase 2 — it reshapes the fetch
+path more deeply than the reuse/correction tooling.
 
 Note on similarity *kinds*: CLIP/SigLIP query-by-image is **semantic** ("another beach sunset"), not
 pixel-exact. True near-duplicate detection (cache dedup, NAS dedup) wants a **perceptual hash

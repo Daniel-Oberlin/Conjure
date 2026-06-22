@@ -14,6 +14,7 @@ dependencies = [
     "google-genai>=1.0",
     "openai>=1.40",
     "pillow>=10.0",
+    "sqlite-vec>=0.1.6",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,14 @@ dependencies = [
 # Some of these pull large deps (torch etc.) and need system libs — see docs/setup.md.
 voice = [
     "pipecat-ai[anthropic,whisper,kokoro,silero,local]>=1.3.0",
+]
+# Asset-library embeddings (docs/asset-library-plan.md §4). Local SigLIP via torch+transformers —
+# heavy (multi-GB), so kept OUT of the core install. The server runs ML-free without it (catalog on
+# FTS/exact); install this to enable semantic / image-similarity search. Use the CPU torch wheel on
+# non-GPU hosts to avoid the CUDA download.
+embed = [
+    "torch>=2.2",
+    "transformers>=4.45",
 ]
 dev = [
     "pytest>=8",

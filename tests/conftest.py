@@ -117,6 +117,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "IMAGES", {})  # clean image store per test
     monkeypatch.setattr(server, "resolver", None)
     monkeypatch.setattr(server, "library", AssetLibrary(tmp_path / "library.db"))  # isolated catalog
+    monkeypatch.setattr(server, "embedder", None)  # no embeddings by default; tests set a FakeEmbedder
     # (friendly ids are derived from the surface id now — no counter to reset)
     server.clients.clear()
     return server

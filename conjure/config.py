@@ -48,6 +48,10 @@ class Settings:
     openai_director_model: str = "gpt-4.1"           # OpenAI ("Chat") director model
     openai_image_model: str = "gpt-image-1"          # OpenAI image generator model
     debug_log: bool = True                           # append client diagnostics to temp/conjure.log
+    # Asset-library embeddings (docs/asset-library-plan.md §4). "auto" uses local SigLIP when the
+    # optional torch/transformers are installed, else stays off; "fake"/"none" for tests/disable.
+    embed_backend: str = "auto"
+    embed_model: str = "google/siglip2-so400m-patch14-384"
 
 
 def get_settings() -> Settings:
@@ -73,4 +77,6 @@ def get_settings() -> Settings:
         openai_director_model=os.environ.get("CONJURE_OPENAI_DIRECTOR_MODEL", "gpt-4.1"),
         openai_image_model=os.environ.get("CONJURE_OPENAI_IMAGE_MODEL", "gpt-image-1"),
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
+        embed_backend=os.environ.get("CONJURE_EMBED_BACKEND", "auto"),
+        embed_model=os.environ.get("CONJURE_EMBED_MODEL", "google/siglip2-so400m-patch14-384"),
     )

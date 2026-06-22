@@ -26,9 +26,16 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+try:                                  # optional: vector search. Absent ⇒ catalog still works (FTS/exact)
+    import sqlite_vec
+    from sqlite_vec import serialize_float32
+except Exception:                     # noqa: BLE001
+    sqlite_vec = None
+    serialize_float32 = None
+
 # Bump when the schema changes. The cache catalog is regenerable (backfill rebuilds it from the bytes
 # on disk), so on a version mismatch we drop & recreate rather than migrate in place.
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 # faces/persons are reserved now (sub-image entities + named clusters) so the NAS seam is honest;
 # they stay empty until the NAS ingestion subsystem (Phase 5) populates them.
@@ -61,9 +68,11 @@ CREATE TABLE IF NOT EXISTS relations (
 CREATE TABLE IF NOT EXISTS persons (id TEXT PRIMARY KEY, name TEXT);
 CREATE TABLE IF NOT EXISTS faces (id TEXT PRIMARY KEY, asset_id TEXT, bbox TEXT, person_id TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS assets_fts USING fts5(id UNINDEXED, label, prompt, query, notes, tags);
+CREATE TABLE IF NOT EXISTS vec_meta (dim INTEGER);   -- dim of the live assets_vec table (Phase 1)
 """
 
-_TABLES = ("assets_fts", "assets", "aliases", "relations", "faces", "persons")
+# assets_vec is created lazily (its dim depends on the embedder, and it needs the sqlite-vec extension).
+_TABLES = ("assets_fts", "assets_vec", "assets", "aliases", "relations", "faces", "persons", "vec_meta")
 
 # Columns a caller may set via upsert kwargs (everything except id, attributes, and the lifecycle
 # bookkeeping). `attributes` is handled separately so it can be *merged* rather than replaced.
@@ -96,6 +105,15 @@ class AssetLibrary:
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
+        self._vec = False                              # vector search available? (sqlite-vec loaded)
+        if sqlite_vec is not None:
+            try:
+                self._db.enable_load_extension(True)
+                sqlite_vec.load(self._db)
+                self._db.enable_load_extension(False)
+                self._vec = True
+            except Exception:                          # noqa: BLE001 — degrade to FTS/exact only
+                self._vec = False
         ver = self._db.execute("PRAGMA user_version").fetchone()[0]
         if ver != _SCHEMA_VERSION:                       # fresh OR stale schema → (re)build from disk
             for t in _TABLES:
@@ -206,6 +224,67 @@ class AssetLibrary:
             self._db.execute("INSERT OR IGNORE INTO relations (from_id, to_id, type) VALUES (?,?,?)",
                              (from_id, to_id, type))
             self._db.commit()
+
+    # ---- vectors (Phase 1) --------------------------------------------------------------------
+    @property
+    def has_vectors(self) -> bool:
+        return self._vec
+
+    def _ensure_vec_table(self, dim: int) -> None:
+        """Create assets_vec at `dim` on first use. If a different-dim table exists (the model/space
+        changed — an `embed_model` swap), drop & recreate; the corpus then needs re-embedding. Caller
+        holds the lock."""
+        row = self._db.execute("SELECT dim FROM vec_meta LIMIT 1").fetchone()
+        cur = row["dim"] if row else None
+        if cur == dim:
+            return
+        if cur is not None:
+            self._db.execute("DROP TABLE IF EXISTS assets_vec")
+            self._db.execute("DELETE FROM vec_meta")
+        self._db.execute(
+            f"CREATE VIRTUAL TABLE assets_vec USING vec0(asset_id TEXT PRIMARY KEY, kind TEXT, "
+            f"embedding float[{dim}])")
+        self._db.execute("INSERT INTO vec_meta (dim) VALUES (?)", (dim,))
+
+    def add_embedding(self, id: str, vector: list[float], model: str) -> None:
+        """Store an asset's embedding (expects an already-normalized vector) and record its space
+        (`embed_model`/`embed_dim`). No-op if sqlite-vec isn't available or the vector is empty."""
+        if not self._vec or not vector:
+            return
+        with self._lock:
+            self._ensure_vec_table(len(vector))
+            krow = self._db.execute("SELECT kind FROM assets WHERE id=?", (id,)).fetchone()
+            kind = krow["kind"] if krow else None
+            self._db.execute("DELETE FROM assets_vec WHERE asset_id=?", (id,))
+            self._db.execute("INSERT INTO assets_vec (asset_id, kind, embedding) VALUES (?,?,?)",
+                             (id, kind, serialize_float32(vector)))
+            self._db.execute("UPDATE assets SET embed_model=?, embed_dim=? WHERE id=?",
+                             (model, len(vector), id))
+            self._db.commit()
+
+    def vector_search(self, query_vec: list[float], *, kind: Optional[str] = None,
+                      limit: int = 20) -> list[dict]:
+        """KNN over the embedding space; each result carries `distance` (L2 on unit vectors → cosine
+        order) and `match="vector"`. Empty list if vectors aren't available/populated. The reuse-tier
+        layer (Phase 2) maps distance → strong/weak/none."""
+        if not self._vec or not query_vec:
+            return []
+        with self._lock:
+            if self._db.execute("SELECT dim FROM vec_meta LIMIT 1").fetchone() is None:
+                return []
+            q = ("SELECT asset_id AS id, distance FROM assets_vec WHERE embedding MATCH ? "
+                 + ("AND kind=? " if kind else "") + "ORDER BY distance LIMIT ?")
+            args: list[Any] = [serialize_float32(query_vec)] + ([kind] if kind else []) + [limit]
+            hits = self._db.execute(q, args).fetchall()
+            out = []
+            for h in hits:
+                a = self._db.execute("SELECT * FROM assets WHERE id=?", (h["id"],)).fetchone()
+                if a:
+                    d = dict(a)
+                    d["distance"] = h["distance"]
+                    d["match"] = "vector"
+                    out.append(d)
+        return out
 
     # ---- reads --------------------------------------------------------------------------------
     def get(self, id: str) -> Optional[dict]:

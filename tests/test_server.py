@@ -1,6 +1,8 @@
 """Integration tests for the world-server endpoints (the seams our MCP tools + client depend on),
 with external services faked. No network, no keys, no LLM."""
 
+import pytest
+
 from conftest import ASSET_RECORD, FakeAssetResolver
 
 from conjure.schema import Patch
@@ -144,6 +146,19 @@ def test_generated_image_is_cataloged(srv, client):
     iid = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
     cat = srv.library.get(iid)
     assert cat and cat["kind"] == "image" and cat["prompt"] == "a red dragon" and cat["provider"] == "Gemini"
+
+
+def test_generated_image_is_embedded_when_embedder_present(srv, client):
+    from conjure.embeddings import FakeEmbedder
+
+    if not srv.library.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    srv.embedder = FakeEmbedder(dim=8)
+    iid = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
+    cat = srv.library.get(iid)
+    assert cat["embed_model"] == "fake" and cat["embed_dim"] == 8         # vector written through
+    hits = srv.library.vector_search(srv.embedder.embed_image(b"anything"))
+    assert any(h["id"] == iid for h in hits)                              # and it's searchable
 
 
 def test_image_metadata_survives_restart(srv, client):

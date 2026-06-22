@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .config import get_settings
+from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .schema import Patch
@@ -61,6 +62,21 @@ try:
         library.backfill(ASSET_CACHE, store.doc)
 except Exception as exc:  # noqa: BLE001
     print(f"[conjure] asset-library backfill skipped: {exc}")
+# The embedder is None unless the optional torch/transformers are installed — then vector write-through
+# is simply skipped and the catalog runs on FTS/exact only. Lazy: no model loads until first embed.
+embedder = build_embedder(settings)
+
+
+def _embed_asset(id: str, *, image: bytes | None = None, text: str | None = None) -> None:
+    """Best-effort: embed an asset into the shared space and store its vector. Never raises into the
+    request path (embedding is an enrichment, not a requirement)."""
+    if embedder is None:
+        return
+    try:
+        vec = embedder.embed_image(image) if image is not None else embedder.embed_text(text or "")
+        library.add_embedding(id, vec, embedder.name)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[conjure] embed failed for {id}: {exc}")
 # Every configured image generator (keyed by casual name "Gemini"/"Chat"); the procurement
 # endpoints mediate which one services a request (conjure.llm.select_generator).
 image_generators = build_image_generators(settings)
@@ -137,6 +153,7 @@ def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     library.upsert(image_id, kind=_kind_for_op(op), source=f"cache://{image_id}", filename=image_id,
                    label=prompt, prompt=prompt, params={"op": op, "transparent": transparent},
                    provider=result.provider, model=result.model, width=w, height=h)
+    _embed_asset(image_id, image=result.data)   # embed the pixels into the shared space (best-effort)
     return rec
 
 
@@ -569,6 +586,7 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
                    attributes={"tris": record.tris, "bbox_min": record.bbox_min,
                                "bbox_max": record.bbox_max})
     library.touch(model_id)
+    _embed_asset(model_id, text=record.title)   # models embed their title text (shared space)
 
     # 3. Swap the placeholder for the real glTF model (auto-scaled to sit on the floor),
     #    carrying license + attribution.
