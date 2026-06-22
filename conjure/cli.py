@@ -214,7 +214,8 @@ def cmd_reindex(s: Settings, a) -> None:
     if r.get("ok") is False:
         _say(r, a.verbose, "")
         return
-    print(f"reindex: queued {r.get('queued', 0)} asset(s) for embedding "
+    cleared = f", cleared {r['cleared']} stale" if r.get("cleared") else ""
+    print(f"reindex: queued {r.get('queued', 0)} asset(s) for embedding{cleared} "
           "(runs in the background on the server)")
 
 
