@@ -79,6 +79,11 @@ embedder = build_embedder(settings)
 _EMBED_BACKGROUND = True
 _embed_lock = asyncio.Lock()
 _embed_tasks: set[asyncio.Task] = set()   # strong refs so fire-and-forget tasks aren't GC'd mid-flight
+# Only VISUAL assets go in the vector index (embedded from pixels). SigLIP text↔text similarity sits
+# at a much higher scale than text↔image, so mixing text-derived vectors (e.g. model titles) would
+# make them dominate every text query and bury the images. Models are matched by FTS/exact on their
+# title instead (plan §1; visual model embedding via thumbnails is a noted follow-up).
+_VISUAL_KINDS = {"image", "skybox", "grounded_skybox", "photo"}
 
 
 def _embed_now(id: str, *, image: bytes | None = None, text: str | None = None) -> None:
@@ -116,14 +121,11 @@ def _embed_asset(id: str, *, image: bytes | None = None, text: str | None = None
 
 
 def _embed_one(asset: dict) -> None:
-    """Embed a single catalog row (used by reindex): images from their bytes, models from their title
-    text. Reads bytes lazily so a batch doesn't hold every image in memory at once."""
-    kind, fn = asset.get("kind"), asset.get("filename")
-    if kind == "model":
-        text = asset.get("label") or asset.get("query")
-        if text:
-            _embed_now(asset["id"], text=text)
-    elif fn and (ASSET_CACHE / fn).exists():
+    """Embed a single VISUAL catalog row (used by reindex) from its bytes. Reads bytes lazily so a
+    batch doesn't hold every image in memory at once. Non-visual assets (models) are skipped — they're
+    matched by FTS/exact on their title, not by vector (see _VISUAL_KINDS)."""
+    fn = asset.get("filename")
+    if asset.get("kind") in _VISUAL_KINDS and fn and (ASSET_CACHE / fn).exists():
         _embed_now(asset["id"], image=(ASSET_CACHE / fn).read_bytes())
 
 
@@ -659,7 +661,7 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
                    attributes={"tris": record.tris, "bbox_min": record.bbox_min,
                                "bbox_max": record.bbox_max})
     library.touch(model_id)
-    _embed_asset(model_id, text=record.title)   # models embed their title text (shared space)
+    # Models are NOT vector-embedded — found by FTS/exact on their title (see _VISUAL_KINDS).
 
     # 3. Swap the placeholder for the real glTF model (auto-scaled to sit on the floor),
     #    carrying license + attribution.
@@ -775,7 +777,13 @@ async def library_reindex(req: ReindexRequest) -> dict:
     path; returns how many were queued."""
     if embedder is None:
         return {"ok": False, "error": "no embedder — install the optional 'embed' dependency group"}
-    targets = library.assets_missing_embedding(kind=req.kind)
+    # Self-healing: the vector index should hold exactly the VISUAL assets. Clear any text-derived
+    # vectors that crept in (e.g. earlier model-title embeddings), then embed visual assets missing one.
+    cleared = 0
+    for a in library.embedded_nonvisual(_VISUAL_KINDS):
+        library.clear_embedding(a["id"])
+        cleared += 1
+    targets = [a for a in library.assets_missing_embedding(kind=req.kind) if a["kind"] in _VISUAL_KINDS]
     if _EMBED_BACKGROUND:
         task = asyncio.create_task(_reindex_bg(targets))
         _embed_tasks.add(task)
@@ -783,7 +791,7 @@ async def library_reindex(req: ReindexRequest) -> dict:
     else:
         for a in targets:
             _embed_one(a)
-    return {"ok": True, "queued": len(targets)}
+    return {"ok": True, "queued": len(targets), "cleared": cleared}
 
 
 # --- procurement: produce/transform an image, return an id; NO scene effect ---------------------

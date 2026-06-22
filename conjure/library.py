@@ -309,6 +309,26 @@ class AssetLibrary:
                 args.append(kind)
             return [dict(r) for r in self._db.execute(q, args).fetchall()]
 
+    def embedded_nonvisual(self, visual_kinds) -> list[dict]:
+        """Embedded assets whose kind is NOT visual — i.e. vectors that don't belong in the (image)
+        index. Text-derived vectors (e.g. model titles) sit at a different similarity scale and would
+        dominate a text query, so they're cleared out (see plan §1)."""
+        ph = ",".join("?" for _ in visual_kinds)
+        with self._lock:
+            q = f"SELECT id, kind FROM assets WHERE embed_model IS NOT NULL AND kind NOT IN ({ph})"
+            return [dict(r) for r in self._db.execute(q, list(visual_kinds)).fetchall()]
+
+    def clear_embedding(self, id: str) -> None:
+        """Remove an asset's vector and forget its space (so reindex won't think it's embedded)."""
+        with self._lock:
+            if self._vec:
+                try:
+                    self._db.execute("DELETE FROM assets_vec WHERE asset_id=?", (id,))
+                except sqlite3.OperationalError:
+                    pass                       # assets_vec not created yet — nothing to delete
+            self._db.execute("UPDATE assets SET embed_model=NULL, embed_dim=NULL WHERE id=?", (id,))
+            self._db.commit()
+
     def search(self, text: Optional[str] = None, *, kind: Optional[str] = None,
                limit: int = 20) -> list[dict]:
         """Phase-0 staged lookup: a user **alias** override first, then exact intent match, then FTS5

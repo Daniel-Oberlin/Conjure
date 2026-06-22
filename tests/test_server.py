@@ -264,9 +264,22 @@ def test_library_reindex_embeds_missing_assets(srv, client, tmp_path):
     srv.library.upsert("oak.glb", kind="model", filename="oak.glb", label="Oak Tree", query="oak")
 
     r = client.post("/library/reindex", json={}).json()
-    assert r["ok"] and r["queued"] == 2
+    assert r["ok"] and r["queued"] == 1                            # only the image (visual)
     assert srv.library.get("img.png")["embed_model"] == "fake"     # image embedded from pixels
-    assert srv.library.get("oak.glb")["embed_model"] == "fake"     # model embedded from its title
+    assert srv.library.get("oak.glb")["embed_model"] is None       # models are NOT vector-embedded
+
+
+def test_library_reindex_clears_stale_model_vectors(srv, client):
+    from conjure.embeddings import FakeEmbedder
+    if not srv.library.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    srv.embedder = FakeEmbedder(dim=8)
+    srv.library.upsert("m.glb", kind="model", label="Oak Tree")
+    srv.library.add_embedding("m.glb", [1.0] + [0.0] * 7, "fake")  # a stale text-derived model vector
+    assert srv.library.get("m.glb")["embed_model"] == "fake"
+    r = client.post("/library/reindex", json={}).json()
+    assert r["cleared"] >= 1
+    assert srv.library.get("m.glb")["embed_model"] is None          # purged from the visual index
 
 
 def test_library_reindex_without_embedder_errors(srv, client):

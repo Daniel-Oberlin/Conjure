@@ -77,7 +77,12 @@ Two separate jobs that scale differently:
 We are committed to the NAS, so we adopt a **CLIP-family shared space from the start** (text and
 image embeddings land in the same space → query text can match image *content*, not just typed
 prompts). Default: a local **SigLIP** model (a `so400m` / SigLIP 2 checkpoint), lazy-loaded, offline.
-3D models embed their title text (coexists in the shared space).
+**The vector index is VISUAL-only** (images/skyboxes, embedded from pixels). 3D models are **not**
+vector-embedded — found by FTS/exact on their title instead. Why: SigLIP text↔text similarity sits at
+a much higher scale than text↔image, so text-derived vectors (model titles) would dominate every text
+query and bury the images (confirmed live: a text query gave model-title vectors distance ~0.69 vs
+image vectors ~1.33). Proper visual model embedding via **rendered thumbnails** is a noted follow-up
+(§12).
 
 **Why SigLIP over OpenCLIP (decided — quality over footprint):** SigLIP's sigmoid loss gives better
 **recall per parameter** — for the same query it surfaces more of the genuinely-matching items and
@@ -262,8 +267,8 @@ Notes:
   `assets_vec` vec0 table at the embedding dim; records `embed_model`/`embed_dim`) and
   `vector_search(vec, kind?, limit)` (L2 KNN on unit vectors → cosine order, kind-filtered). Gated on
   the extension — degrades cleanly if absent. Schema → v3 (auto-rebuilds the regenerable catalog).
-- **Write-through** (`server.py` `_embed_asset`): images embed their pixels, models their title text;
-  best-effort (never breaks the request path), skipped when no embedder.
+- **Write-through** (`server.py` `_embed_asset`): VISUAL assets (images/skyboxes) embed their pixels;
+  models are not vector-embedded (FTS/exact on title). Best-effort, skipped when no embedder.
 - **Deps:** `sqlite-vec` added to **core**; `torch`+`transformers` in the optional **`conjure[embed]`**
   group (not core). Config: `embed_backend`/`embed_model` (env-overridable).
 - Tests: `test_embeddings.py` + vector tests in `test_library.py` + write-through in `test_server.py`
@@ -392,6 +397,12 @@ NAS ingestion pipeline (scan-in-place, captioning, thumbnails); face detection/r
 clustering and person naming; ANN graduation (LanceDB/FAISS); knowledge-graph queries
 (people/places/events) and any move to a dedicated graph DB; shared/remote cache tier across devices.
 
+**Visual model embedding (follow-up):** models are currently matched by FTS/exact on their title only
+(they're kept out of the visual vector index — see §4). To make them semantically searchable
+("a large deciduous tree" → an oak model) and image-similarity-searchable, render each GLB to a
+thumbnail and image-embed *that*, so models join the image space at a consistent scale. Needs a
+GLB→PNG renderer (trimesh/pyrender). Deferred.
+
 **Captioning (polish):** embedding gives **visual-similarity vectors only** — no readable text. So
 assets with no prompt/title (e.g. the bare backfilled images) are findable by *vector* (and by text
 via the shared space) but show a blank label in `search_library` and don't match keyword/FTS. A
@@ -401,8 +412,9 @@ embedding, costs a generative call per image. Deferred; it's the same derived-te
 (§13), so build it once. (The `reindex` pass below embeds only — no captions.)
 
 **Catalog reindex (done):** `conjure-cli reindex` / `POST /library/reindex` embeds cataloged assets
-that have no vector yet (images from pixels, models from title text) — a one-time pass so the existing
-library becomes similarity-searchable. Runs off the request path; embed-only.
+that have no vector yet (visual assets, embedded from pixels) — a one-time pass so the existing library
+becomes similarity-searchable. Self-healing: also clears any non-visual (model-title) vectors that
+crept in. Runs off the request path; embed-only.
 
 **`reject` semantics (polish):** `reject(asset, query)` is a **per-query exclusion from reuse search
 only** — it drops that asset from `find()` results for the *exact normalized* query string. It is
