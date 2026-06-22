@@ -1,7 +1,7 @@
 # Asset Library — implementation plan
 
-**Status:** Phases 0–2 **done** (catalog + embeddings + director-facing reuse/correction tools);
-Phase 3 (director prompt policy) landed alongside Phase 2. Phases 4–5 deferred.
+**Status:** Phases 0–3 **done** (catalog + embeddings + director-facing reuse/correction tools +
+director prompt policy). First-pass scope complete. Phases 4–5 deferred.
 **Scope of first pass:** Phases 0–3 (foundation + embeddings + tools + prompt). Phases 4–5 deferred.
 
 Turn the passive content-addressed byte cache into an **explicit, director-controlled asset
@@ -307,8 +307,9 @@ off the loop. Tests across library/server/mcp; full suite green.
   `last_used` (recency) → quality (licence cleanliness, tris in range, resolution). Tier thresholds
   in `config.py`.
 
-### Phase 3 — Director policy (prompt engineering)
-Update `agents/builder/prompt.md`:
+### Phase 3 — Director policy (prompt engineering) ✅ DONE
+Implemented in `agents/builder/prompt.md` — incl. the unified "a different one" → page the cached
+candidates before generating, many-matches auto-pick, and light reuse announcement:
 - **Intent signals:** *generate* (creation/novelty verbs → never search), *recall* (definite
   reference / memory language → search, expect a hit), *ambiguous* (indefinite → search, decide by
   tier).
