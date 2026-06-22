@@ -7,12 +7,19 @@
 - Lighting
 
 # Utility
-- Show "Loading image..." at top of page, pulsing between transparent and info color
+- General status area to top - clock on right with adjustable widgets:
+ - Clock (right default)
+ - Date (right default)
+ - Agent:LLM (right)
+ - Status: Loading skybox, Loading image, Idle (left)
+ - compass (center)
+ - world "/scoped/builder/firstroom"
+ - show or hide
+ - conjure show status, conjure hide clock, conjure clock center
 - Logging everything (with switch) for debugging
 - Turn on optional timestamps to CLI messages
 - Logging and instrumentation so that we can profile and see what's taking the time
 - Maybe this is done in the CLI, maybe you can query the logs in the CLI with natural language
-- Compass?
 
 ## Performance & Bugs
 - I can sometimes hear internal thinking "let me check the room data", "
