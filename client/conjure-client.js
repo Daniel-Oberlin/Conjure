@@ -405,12 +405,17 @@
     (patch.ops || []).forEach(function (op) {
       if (op.op === "add") {
         applyEntity(op.entity);
+        debugLog("patch", "add " + op.entity.id + " [" +
+          Object.keys((op.entity.components) || {}).join(",") + "]");
       } else if (op.op === "remove") {
         var el = document.getElementById(op.id);
         if (el && el.parentNode) el.parentNode.removeChild(el);
+        debugLog("patch", "remove " + op.id + " found=" + !!el);   // found=false ⇒ silent no-op
       } else if (op.op === "update") {
         var t = document.getElementById(op.id);
         if (t) Object.keys(op.set).forEach(function (p) { setPath(t, p, op.set[p]); });
+        debugLog("patch", "update " + op.id + " found=" + !!t + " {" +
+          Object.keys(op.set || {}).join(",") + "}");           // found=false ⇒ silent no-op
       } else if (op.op === "env") {
         applyEnv(nest(op.set));
       }

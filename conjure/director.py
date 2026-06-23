@@ -207,10 +207,10 @@ class Director:
     async def _execute_tool(self, name: str, args: dict, on_tool: Optional[OnTool]) -> str:
         if on_tool:
             await on_tool(name, args)
-        await self._log("tool", f"{name}({json.dumps(args, default=str)[:400]})")
+        await self._log("tool", f"{name}({json.dumps(args, default=str)[:600]})")
         out = await self._session.call_tool(name, args)
         text = "".join(getattr(c, "text", "") for c in out.content)
-        await self._log("tool", f"  -> {text[:300]}")
+        await self._log("tool", f"  -> {text[:2000]}")   # roomy enough to see a full query_world
         return text
 
     async def _fetch_context(self) -> str:
