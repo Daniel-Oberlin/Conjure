@@ -118,6 +118,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "resolver", None)
     monkeypatch.setattr(server, "library", AssetLibrary(tmp_path / "library.db"))  # isolated catalog
     monkeypatch.setattr(server, "embedder", None)  # no embeddings by default; tests set a FakeEmbedder
+    monkeypatch.setattr(server, "captioner", None)  # no captioner by default; tests set a FakeCaptioner
     monkeypatch.setattr(server, "_EMBED_BACKGROUND", False)  # inline write-through → deterministic in tests
     # (friendly ids are derived from the surface id now — no counter to reset)
     server.clients.clear()

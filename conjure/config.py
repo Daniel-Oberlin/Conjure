@@ -52,6 +52,10 @@ class Settings:
     # optional torch/transformers are installed, else stays off; "fake"/"none" for tests/disable.
     embed_backend: str = "auto"
     embed_model: str = "google/siglip2-so400m-patch14-384"
+    # Caption backfill for assets with no label (docs/asset-library-plan.md §12). Gemini multimodal by
+    # default; "none"/"fake" to disable/test.
+    caption_provider: str = "gemini"
+    caption_model: str = "gemini-2.5-flash"
 
 
 def get_settings() -> Settings:
@@ -79,4 +83,6 @@ def get_settings() -> Settings:
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         embed_backend=os.environ.get("CONJURE_EMBED_BACKEND", "auto"),
         embed_model=os.environ.get("CONJURE_EMBED_MODEL", "google/siglip2-so400m-patch14-384"),
+        caption_provider=os.environ.get("CONJURE_CAPTION_PROVIDER", "gemini"),
+        caption_model=os.environ.get("CONJURE_CAPTION_MODEL", "gemini-2.5-flash"),
     )

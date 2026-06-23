@@ -286,6 +286,32 @@ def test_library_reindex_without_embedder_errors(srv, client):
     assert client.post("/library/reindex", json={}).json()["ok"] is False  # embedder is None by default
 
 
+def test_caption_backfills_labels_and_makes_them_keyword_searchable(srv, client, tmp_path):
+    import io
+
+    from PIL import Image
+
+    from conjure.captioner import FakeCaptioner
+    srv.captioner = FakeCaptioner()
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buf, "PNG")
+    (tmp_path / "bare.png").write_bytes(buf.getvalue())
+    srv.library.upsert("bare.png", kind="image", filename="bare.png")   # no label
+    srv.library.upsert("kept.png", kind="image", filename="kept.png", label="a red dragon")
+
+    r = client.post("/library/caption", json={}).json()
+    assert r["ok"] and r["queued"] == 1                                  # only the bare one
+    cap = srv.library.get("bare.png")["label"]
+    assert cap and cap.startswith("image ")                              # fake caption stored as label
+    assert srv.library.get("kept.png")["label"] == "a red dragon"        # existing label untouched
+    token = cap.split()[-1]                                              # the unique hex in the caption
+    assert any(c["id"] == "bare.png" for c in srv.library.search(token))  # keyword-searchable now
+
+
+def test_caption_without_captioner_errors(srv, client):
+    assert client.post("/library/caption", json={}).json()["ok"] is False  # captioner None by default
+
+
 def test_retag_skyboxes_makes_them_findable_by_kind(srv, client):
     srv.library.upsert("pano.png", kind="image", width=2100, height=900, prompt="a sunset beach")
     r = client.post("/library/retag-skyboxes", json={}).json()
@@ -345,7 +371,7 @@ def test_expected_routes_exist(srv):
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
               "/outpaint_image", "/set_skybox", "/set_grounded_skybox", "/annotate_asset",
               "/library/search", "/place_cached_asset", "/correct_asset", "/library/reindex",
-              "/library/retag-skyboxes",
+              "/library/retag-skyboxes", "/library/caption",
               "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/grounded_skybox",
               "/images/edit", "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",

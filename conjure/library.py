@@ -309,6 +309,13 @@ class AssetLibrary:
                 args.append(kind)
             return [dict(r) for r in self._db.execute(q, args).fetchall()]
 
+    def assets_missing_caption(self, kinds) -> list[dict]:
+        """Visual assets with no label (the bare backfilled images) — targets for the caption pass."""
+        ph = ",".join("?" for _ in kinds)
+        with self._lock:
+            q = (f"SELECT * FROM assets WHERE (label IS NULL OR label='') AND kind IN ({ph})")
+            return [dict(r) for r in self._db.execute(q, list(kinds)).fetchall()]
+
     def embedded_nonvisual(self, visual_kinds) -> list[dict]:
         """Embedded assets whose kind is NOT visual — i.e. vectors that don't belong in the (image)
         index. Text-derived vectors (e.g. model titles) sit at a different similarity scale and would

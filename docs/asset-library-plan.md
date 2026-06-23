@@ -403,13 +403,15 @@ clustering and person naming; ANN graduation (LanceDB/FAISS); knowledge-graph qu
 thumbnail and image-embed *that*, so models join the image space at a consistent scale. Needs a
 GLB→PNG renderer (trimesh/pyrender). Deferred.
 
-**Captioning (polish):** embedding gives **visual-similarity vectors only** — no readable text. So
-assets with no prompt/title (e.g. the bare backfilled images) are findable by *vector* (and by text
-via the shared space) but show a blank label in `search_library` and don't match keyword/FTS. A
-**captioning pass** — a VLM (local, or Gemini/Claude vision) over each image → store the caption in
-`label`/`notes`/`tags` → FTS-indexed — would give readable labels + keyword search. Complementary to
-embedding, costs a generative call per image. Deferred; it's the same derived-text layer the NAS needs
-(§13), so build it once. (The `reindex` pass below embeds only — no captions.)
+**Captioning (done):** embedding gives **visual-similarity vectors only** — no readable text, so bare
+backfilled images (no prompt/title) showed a blank label in `search_library` and didn't match
+keyword/FTS (semantic vector search already found them). `conjure/captioner.py` adds an **image→text**
+pass: `conjure-cli caption` / `POST /library/caption` describes assets with no label (Gemini
+multimodal by default — `Captioner` is swappable; skybox-vs-image prompts) and stores the caption in
+`label` (→ readable in results + FTS keyword search), marking `attributes.captioned`. Existing labels
+are left untouched; off the request path; targets only label-less visual assets. This is the same
+derived-text layer the NAS will reuse (§13). Going forward, generated assets carry their prompt as the
+label, so this won't recur.
 
 **Catalog reindex (done):** `conjure-cli reindex` / `POST /library/reindex` embeds cataloged assets
 that have no vector yet (visual assets, embedded from pixels) — a one-time pass so the existing library

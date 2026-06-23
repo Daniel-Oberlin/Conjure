@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .assets import AssetResolver
+from .captioner import build_captioner
 from .config import get_settings
 from .embeddings import build_embedder
 from .library import AssetLibrary
@@ -136,6 +137,36 @@ async def _reindex_bg(assets: list[dict]) -> None:
             await asyncio.to_thread(_embed_one, a)
         n += 1
     print(f"[conjure] reindex: embedded {n} catalog asset(s)")
+
+
+# Caption backfill — fills the `label` of bare assets (no prompt/title) via image→text vision, so they
+# read in search results and match keyword/FTS. None unless a provider/key is configured.
+captioner = build_captioner(settings)
+
+
+async def _caption_one(asset: dict) -> None:
+    """Caption one asset and store it as the label. Best-effort (never raises into the pass)."""
+    if captioner is None:
+        return
+    fn = asset.get("filename")
+    if not (fn and (ASSET_CACHE / fn).exists()):
+        return
+    mime = MEDIA_TYPES.get(Path(fn).suffix.lower(), "image/png")
+    try:
+        text = await captioner.caption((ASSET_CACHE / fn).read_bytes(), mime=mime,
+                                       skybox=asset.get("kind") in ("skybox", "grounded_skybox"))
+        if text:
+            library.upsert(asset["id"], label=text, attributes={"captioned": True})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[conjure] caption failed for {asset['id']}: {exc}")
+
+
+async def _caption_bg(assets: list[dict]) -> None:
+    n = 0
+    for a in assets:
+        await _caption_one(a)                      # serial — gentle on the provider's rate limits
+        n += 1
+    print(f"[conjure] caption: described {n} asset(s)")
 # Every configured image generator (keyed by casual name "Gemini"/"Chat"); the procurement
 # endpoints mediate which one services a request (conjure.llm.select_generator).
 image_generators = build_image_generators(settings)
@@ -803,6 +834,23 @@ async def library_reindex(req: ReindexRequest) -> dict:
         for a in targets:
             _embed_one(a)
     return {"ok": True, "queued": len(targets), "cleared": cleared}
+
+
+@app.post("/library/caption")
+async def library_caption() -> dict:
+    """Backfill labels for assets that have none (the bare backfilled images) via image→text vision,
+    so they read in search results and match keyword search. One-time; runs off the request path."""
+    if captioner is None:
+        return {"ok": False, "error": "no captioner — set CONJURE_CAPTION_PROVIDER and the provider key"}
+    targets = library.assets_missing_caption(_VISUAL_KINDS)
+    if _EMBED_BACKGROUND:
+        task = asyncio.create_task(_caption_bg(targets))
+        _embed_tasks.add(task)
+        task.add_done_callback(_embed_tasks.discard)
+    else:
+        for a in targets:
+            await _caption_one(a)
+    return {"ok": True, "queued": len(targets)}
 
 
 # --- procurement: produce/transform an image, return an id; NO scene effect ---------------------

@@ -140,6 +140,15 @@ def test_find_more_like_this_via_query_vec(tmp_path):
     assert res["confidence_tier"] == "weak"          # semantic-only → weak (no exact/alias)
 
 
+def test_assets_missing_caption_targets_bare_visual_assets(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("bare.png", kind="image")                           # no label → needs a caption
+    lib.upsert("labeled.png", kind="image", label="a red dragon")  # has one → skip
+    lib.upsert("m.glb", kind="model", label="Oak Tree")            # model (has a title) → skip
+    ids = {a["id"] for a in lib.assets_missing_caption(("image", "skybox", "grounded_skybox", "photo"))}
+    assert ids == {"bare.png"}
+
+
 def test_retag_wide_images_as_skyboxes(tmp_path):
     lib = _lib(tmp_path)
     lib.upsert("pano.png", kind="image", width=2100, height=900, prompt="a sunset beach")  # 2.33:1

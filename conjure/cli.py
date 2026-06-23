@@ -219,6 +219,15 @@ def cmd_reindex(s: Settings, a) -> None:
           "(runs in the background on the server)")
 
 
+def cmd_caption(s: Settings, a) -> None:
+    r = _post(s, "/library/caption", {})
+    if r.get("ok") is False:
+        _say(r, a.verbose, "")
+        return
+    print(f"caption: queued {r.get('queued', 0)} asset(s) for description "
+          "(runs in the background on the server)")
+
+
 def cmd_retag_skyboxes(s: Settings, a) -> None:
     body = {"min_aspect": a.min_aspect} if a.min_aspect is not None else {}
     r = _post(s, "/library/retag-skyboxes", body)
@@ -355,6 +364,9 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("retag-skyboxes", help="re-tag wide backfilled images as skyboxes")
     a.set_defaults(fn=cmd_retag_skyboxes)
     a.add_argument("--min-aspect", dest="min_aspect", type=float, help="width/height threshold (default 1.9)")
+
+    sub.add_parser("caption", help="backfill labels for assets with none (image→text via Gemini)") \
+        .set_defaults(fn=cmd_caption)
 
     a = sub.add_parser("add", help="add a primitive shape"); a.set_defaults(fn=cmd_add)
     a.add_argument("shape"); a.add_argument("--color", default="white"); a.add_argument("--name"); _pos(a)
