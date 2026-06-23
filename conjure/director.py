@@ -28,6 +28,7 @@ Routing (deterministic — no tokens, fully testable):
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import sys
@@ -187,11 +188,30 @@ class Director:
         ) if others else ""
         return self._prompt.format(name=name) + roster_line
 
+    async def _log(self, tag: str, msg: str) -> None:
+        """Best-effort diagnostic line → the world server's /client_log (same temp/conjure.log + console
+        as client logs, single writer, gated by debug_log). Captures the conversation so director
+        behaviour — which tools it calls, with what args, and what they return — is reviewable later.
+        Never raises into the turn."""
+        if not getattr(self._settings, "debug_log", False):   # settings None in lightweight tests
+            return
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.post(f"{self._settings.world_url}/client_log",
+                                  json={"tag": tag, "msg": msg})
+        except Exception:
+            pass
+
     async def _execute_tool(self, name: str, args: dict, on_tool: Optional[OnTool]) -> str:
         if on_tool:
             await on_tool(name, args)
+        await self._log("tool", f"{name}({json.dumps(args, default=str)[:400]})")
         out = await self._session.call_tool(name, args)
-        return "".join(getattr(c, "text", "") for c in out.content)
+        text = "".join(getattr(c, "text", "") for c in out.content)
+        await self._log("tool", f"  -> {text[:300]}")
+        return text
 
     async def _fetch_context(self) -> str:
         """Prefetch the agent's `context` MCP resources (e.g. `room://current`) and return them as a
@@ -218,6 +238,7 @@ class Director:
         """Route one user utterance to an LLM, run its turn (with tools), record the attributed
         transcript, and return the final reply. `on_text(text, final=, speaker=)` receives reply
         text as it's produced; `on_tool(name, args)` fires before each tool call."""
+        await self._log("you", text.strip())
         route = route_turn(text, self.roster, self.active)
         prev_active = self.active
         if route.persistent:
@@ -253,4 +274,5 @@ class Director:
             raise
         self.transcript.append(Turn("user", text.strip()))
         self.transcript.append(Turn(route.target, final))
+        await self._log(route.target, final.strip())
         return final

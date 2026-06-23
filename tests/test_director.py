@@ -154,6 +154,22 @@ async def test_one_shot_address_does_not_change_active():
     assert d.roster["Gemini"].seen[0]["user_text"] == "make a picture of a cat"
 
 
+async def test_director_logs_utterance_tool_calls_and_reply():
+    d = _director(Claude=FakeLLM("Claude", tool=("place_asset", {"query": "oak tree"})))
+    events: list[tuple[str, str]] = []
+
+    async def cap(tag, msg):
+        events.append((tag, msg))
+
+    d._log = cap                                              # capture instead of POSTing
+    await d.handle("add an oak tree")
+    assert ("you", "add an oak tree") in events              # the user's request
+    assert any(t == "tool" and m.startswith("place_asset(") and "oak tree" in m
+               for t, m in events)                           # the tool call + its args
+    assert any(t == "tool" and m.strip().startswith("->") for t, m in events)  # the tool result
+    assert any(t == "Claude" and "done" in m for t, m in events)               # the director's reply
+
+
 async def test_emit_and_tools_are_wired_through():
     seen, gemini = [], FakeLLM("Gemini")
     d = _director(active="Gemini", Gemini=gemini)
