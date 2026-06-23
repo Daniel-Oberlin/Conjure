@@ -322,8 +322,13 @@ def cmd_say(s: Settings, a) -> None:
     asyncio.run(_director(s, once, a.verbose))
 
 
+# Whole-line inputs that leave the REPL (case-insensitive). Exact match only, so "exit the room" is
+# still passed through as an instruction.
+_QUIT_WORDS = {":q", ":quit", "q", "quit", "exit", "bye", "goodbye"}
+
+
 def cmd_repl(s: Settings, a) -> None:
-    print("Conjure REPL — type an instruction (':q' to quit).\n"
+    print("Conjure REPL — type an instruction ('exit' or 'quit' to leave).\n"
           "Switch LLM with 'let me talk to Gemini' or address one for a turn ('Claude, make a cat').\n"
           "Type 'conjure open shell' for deterministic commands (switch agent/llm, status, …).")
 
@@ -336,7 +341,7 @@ def cmd_repl(s: Settings, a) -> None:
                 print()
                 return
             line = line.strip()
-            if line in (":q", ":quit"):
+            if line.lower() in _QUIT_WORDS:
                 return
             if line:
                 yield line
