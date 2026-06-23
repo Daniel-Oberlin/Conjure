@@ -140,6 +140,19 @@ def test_find_more_like_this_via_query_vec(tmp_path):
     assert res["confidence_tier"] == "weak"          # semantic-only → weak (no exact/alias)
 
 
+def test_retag_wide_images_as_skyboxes(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("pano.png", kind="image", width=2100, height=900, prompt="a sunset beach")  # 2.33:1
+    lib.upsert("square.png", kind="image", width=512, height=512, prompt="a cat")          # 1:1
+    if lib.has_vectors:
+        lib.add_embedding("pano.png", [1.0, 0.0], "fake")
+    assert lib.retag_skyboxes() == 1
+    assert lib.get("pano.png")["kind"] == "skybox"      # wide → skybox
+    assert lib.get("square.png")["kind"] == "image"     # square stays an image
+    if lib.has_vectors:                                  # vector's kind metadata fixed in place
+        assert any(h["id"] == "pano.png" for h in lib.vector_search([1.0, 0.0], kind="skybox"))
+
+
 def test_backfill_seeds_images_and_models_idempotently(tmp_path):
     cache = tmp_path / "assets"
     cache.mkdir()

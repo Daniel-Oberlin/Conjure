@@ -416,6 +416,13 @@ that have no vector yet (visual assets, embedded from pixels) — a one-time pas
 becomes similarity-searchable. Self-healing: also clears any non-visual (model-title) vectors that
 crept in. Runs off the request path; embed-only.
 
+**Skybox re-tag (done):** the early backfill couldn't tell a skybox `.png` from a regular image, so
+historical skyboxes were tagged `kind='image'` and a `kind='skybox'` search missed them.
+`conjure-cli retag-skyboxes` / `POST /library/retag-skyboxes` re-tags wide images (aspect ≥ 1.9 —
+equirectangular panoramas) as `skybox`, fixing the vector's `kind` metadata in place (no re-embed).
+The director is nudged to pass `kind='skybox'`/`'grounded_skybox'`/`'model'` when the user means a
+specific type. (Going forward, generated skyboxes are tagged correctly at creation.)
+
 **`reject` semantics (polish):** `reject(asset, query)` is a **per-query exclusion from reuse search
 only** — it drops that asset from `find()` results for the *exact normalized* query string. It is
 intentionally narrow today: not fuzzy/semantic (rejecting "starship enterprise" doesn't cover "the

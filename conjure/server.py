@@ -766,6 +766,17 @@ async def correct_asset(req: CorrectAssetRequest) -> dict:
     return {"ok": True, "id": req.id}
 
 
+class RetagSkyboxesRequest(BaseModel):
+    min_aspect: float = 1.9          # images at least this wide (≈ equirectangular) → skyboxes
+
+
+@app.post("/library/retag-skyboxes")
+async def library_retag_skyboxes(req: RetagSkyboxesRequest) -> dict:
+    """One-time backfill cleanup: re-tag wide image-kind assets (panoramas) as skyboxes so they're
+    findable by kind='skybox'. The early backfill couldn't distinguish them from regular images."""
+    return {"ok": True, "retagged": library.retag_skyboxes(min_aspect=req.min_aspect)}
+
+
 class ReindexRequest(BaseModel):
     kind: Optional[str] = None       # optionally restrict to image | model | …
 

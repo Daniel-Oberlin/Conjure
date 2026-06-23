@@ -219,6 +219,15 @@ def cmd_reindex(s: Settings, a) -> None:
           "(runs in the background on the server)")
 
 
+def cmd_retag_skyboxes(s: Settings, a) -> None:
+    body = {"min_aspect": a.min_aspect} if a.min_aspect is not None else {}
+    r = _post(s, "/library/retag-skyboxes", body)
+    if r.get("ok") is False:
+        _say(r, a.verbose, "")
+        return
+    print(f"re-tagged {r.get('retagged', 0)} wide image(s) as skyboxes")
+
+
 def cmd_annotate(s: Settings, a) -> None:
     sets = {"room.annotations": a.state != "off", "room.annotationDims": bool(a.dims)}
     if a.color is not None:
@@ -342,6 +351,10 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("reindex", help="embed cataloged assets that have no vector yet")
     a.set_defaults(fn=cmd_reindex)
     a.add_argument("--kind", help="restrict to image | model | skybox | …")
+
+    a = sub.add_parser("retag-skyboxes", help="re-tag wide backfilled images as skyboxes")
+    a.set_defaults(fn=cmd_retag_skyboxes)
+    a.add_argument("--min-aspect", dest="min_aspect", type=float, help="width/height threshold (default 1.9)")
 
     a = sub.add_parser("add", help="add a primitive shape"); a.set_defaults(fn=cmd_add)
     a.add_argument("shape"); a.add_argument("--color", default="white"); a.add_argument("--name"); _pos(a)

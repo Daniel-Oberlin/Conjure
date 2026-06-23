@@ -318,6 +318,26 @@ class AssetLibrary:
             q = f"SELECT id, kind FROM assets WHERE embed_model IS NOT NULL AND kind NOT IN ({ph})"
             return [dict(r) for r in self._db.execute(q, list(visual_kinds)).fetchall()]
 
+    def retag_skyboxes(self, min_aspect: float = 1.9) -> int:
+        """Backfill cleanup: an early backfill couldn't tell a skybox `.png` from a regular image, so
+        all became kind='image'. Wide images (aspect ≥ min_aspect — equirectangular panoramas, e.g.
+        the 21:9 skybox output) are almost certainly skyboxes; re-tag them kind='skybox' and fix the
+        vector's `kind` metadata in place (the embedding is unchanged) so kind-filtered search finds
+        them. Returns the count re-tagged."""
+        with self._lock:
+            ids = [r["id"] for r in self._db.execute(
+                "SELECT id FROM assets WHERE kind='image' AND width IS NOT NULL AND height > 0 "
+                "AND (CAST(width AS REAL) / height) >= ?", (min_aspect,)).fetchall()]
+            for id in ids:
+                self._db.execute("UPDATE assets SET kind='skybox' WHERE id=?", (id,))
+                if self._vec:
+                    try:
+                        self._db.execute("UPDATE assets_vec SET kind='skybox' WHERE asset_id=?", (id,))
+                    except sqlite3.OperationalError:
+                        pass                       # no vector for this asset yet — nothing to fix
+            self._db.commit()
+        return len(ids)
+
     def clear_embedding(self, id: str) -> None:
         """Remove an asset's vector and forget its space (so reindex won't think it's embedded)."""
         with self._lock:

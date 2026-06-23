@@ -286,6 +286,15 @@ def test_library_reindex_without_embedder_errors(srv, client):
     assert client.post("/library/reindex", json={}).json()["ok"] is False  # embedder is None by default
 
 
+def test_retag_skyboxes_makes_them_findable_by_kind(srv, client):
+    srv.library.upsert("pano.png", kind="image", width=2100, height=900, prompt="a sunset beach")
+    r = client.post("/library/retag-skyboxes", json={}).json()
+    assert r["ok"] and r["retagged"] == 1
+    assert srv.library.get("pano.png")["kind"] == "skybox"
+    res = client.post("/library/search", json={"query": "a sunset beach", "kind": "skybox"}).json()
+    assert any(c["id"] == "pano.png" for c in res["candidates"])  # now found specifically as a skybox
+
+
 def test_set_grounded_skybox_marks_the_env(srv, client):
     r = client.post("/images/grounded_skybox", json={"prompt": "a meadow"})
     assert r.json()["ok"] is True
@@ -336,6 +345,7 @@ def test_expected_routes_exist(srv):
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
               "/outpaint_image", "/set_skybox", "/set_grounded_skybox", "/annotate_asset",
               "/library/search", "/place_cached_asset", "/correct_asset", "/library/reindex",
+              "/library/retag-skyboxes",
               "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/grounded_skybox",
               "/images/edit", "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",
