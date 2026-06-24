@@ -28,6 +28,36 @@ async def test_place_asset_tool_payload(monkeypatch):
 
 
 @respx.mock
+async def test_world_resource_lists_only_placed_objects(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
+        "name": "Holodeck", "rev": 5, "entities": [
+            {"id": "floor", "meta": {"scaffold": True}, "components": {"geometry": {"primitive": "plane"}}},
+            {"id": "real_wall_1", "meta": {"real": True, "semantic": "wall"}, "transform": {"position": [0, 1, -2]}},
+            {"id": "ent_asset_1", "meta": {"title": "Oak Tree"}, "components": {"gltf-model": "/assets/x.glb"},
+             "transform": {"position": [0, 0, -3]}},
+            {"id": "img_1", "meta": {"prompt": "a dragon"}, "components": {"material": {"src": "/assets/d.png"}},
+             "transform": {"position": [1, 1, -2]}},
+        ], "environment": {}}))
+    out = await _tool("world_resource")()
+    assert "ent_asset_1" in out and "Oak Tree" in out        # placed model listed
+    assert "img_1" in out and "a dragon" in out              # placed image listed
+    assert "floor" not in out and "real_wall_1" not in out   # scaffold + real surfaces excluded
+
+
+@respx.mock
+async def test_query_world_dumps_everything(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
+        "name": "Holodeck", "rev": 5, "entities": [
+            {"id": "floor", "meta": {"scaffold": True}, "components": {"geometry": {"primitive": "plane"}}},
+            {"id": "ent_asset_1", "meta": {"title": "Oak Tree"}, "components": {"gltf-model": "/assets/x.glb"}},
+        ], "environment": {"sky": {"color": "#000"}}}))
+    out = await _tool("query_world")()
+    assert "floor" in out and "ent_asset_1" in out and "environment" in out  # full dump incl. scaffold
+
+
+@respx.mock
 async def test_generate_image_tool_payload(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     route = respx.post("http://world/images/generate").mock(

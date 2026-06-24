@@ -5,5 +5,5 @@
   "mcp_servers": [
     { "server": "world", "access": "all" }
   ],
-  "context": ["room://current"]
+  "context": ["room://current", "world://current"]
 }

@@ -52,31 +52,31 @@ async def _get(path: str, timeout: float = 10.0) -> dict:
         return resp.json()
 
 
+def _entity_line(e: dict) -> str:
+    """'<id>: <what it is> at <pos>' — shared by query_world and the world://current resource."""
+    comps = e.get("components", {})
+    meta = e.get("meta", {})
+    pos = e.get("transform", {}).get("position")
+    if meta.get("real"):
+        desc = f"REAL {meta.get('semantic', 'surface')} (room surface — restyle/hide/mount, don't move)"
+    elif "gltf-model" in comps:
+        desc = f"model {meta.get('title', '?')!r}"
+    elif comps.get("material", {}).get("src"):
+        desc = f"image {(meta.get('prompt') or meta.get('title') or '?')!r}"
+    else:
+        prim = comps.get("geometry", {}).get("primitive", "?")
+        color = comps.get("material", {}).get("color", "?")
+        desc = f"{prim} {color}"
+    return f"{e['id']}: {desc} at {pos}"
+
+
 @mcp.tool()
 async def query_world() -> str:
-    """Summarize the current world (entities + environment). Read this before editing."""
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(f"{BASE}/world")
-        resp.raise_for_status()
-        doc = resp.json()
-    lines = [
-        f"World {doc.get('name', '')!r} (rev {doc['rev']}), {len(doc['entities'])} entities:"
-    ]
-    for e in doc["entities"]:
-        comps = e.get("components", {})
-        meta = e.get("meta", {})
-        pos = e.get("transform", {}).get("position")
-        if meta.get("real"):
-            desc = f"REAL {meta.get('semantic', 'surface')} (room surface — restyle/hide/mount, don't move)"
-        elif "gltf-model" in comps:
-            desc = f"model {meta.get('title', '?')!r}"
-        elif comps.get("material", {}).get("src"):
-            desc = f"image {(meta.get('prompt') or meta.get('title') or '?')!r}"
-        else:
-            prim = comps.get("geometry", {}).get("primitive", "?")
-            color = comps.get("material", {}).get("color", "?")
-            desc = f"{prim} {color}"
-        lines.append(f"  - {e['id']}: {desc} at {pos}")
+    """Full world dump (every entity + environment). RARELY needed — your placed objects are already in
+    the Live context each turn; use this only for detail the summary omits, or a very large scene."""
+    doc = await _get("/world")
+    lines = [f"World {doc.get('name', '')!r} (rev {doc['rev']}), {len(doc['entities'])} entities:"]
+    lines += [f"  - {_entity_line(e)}" for e in doc["entities"]]
     lines.append(f"environment: {doc.get('environment', {})}")
     return "\n".join(lines)
 
@@ -131,6 +131,20 @@ async def room_resource() -> str:
     """The live real-room summary — injected each turn into agents that list `room://current` in their
     context (so the builder sees the room without a query_room round-trip)."""
     return await _room_summary()
+
+
+@mcp.resource("world://current")
+async def world_resource() -> str:
+    """Live summary of PLACED virtual objects (the models/images/skyboxes you've added) — injected each
+    turn so the builder references them by id without a query_world round-trip. Excludes scaffold and
+    real surfaces (real surfaces are already in room://current)."""
+    doc = await _get("/world")
+    placed = [e for e in doc["entities"]
+              if not (e.get("meta", {}).get("real") or e.get("meta", {}).get("scaffold"))]
+    if not placed:
+        return "No objects placed in the world yet."
+    return ("Placed objects (reference these directly by id — no need to query the world):\n"
+            + "\n".join(f"  - {_entity_line(e)}" for e in placed))
 
 
 @mcp.tool()
@@ -641,7 +655,7 @@ async def edit_scene_image(id: str, prompt: str) -> str:
     """Edit an image ALREADY in the scene, in place — conversational editing.
 
     Use for changes to a picture already hanging, e.g. 'make the dragon blue', 'add a full moon',
-    'make it nighttime'. id: the image entity id (find via query_world). One step (no image_id
+    'make it nighttime'. id: the image entity id (in the Live context). One step (no image_id
     needed). Only works on images, not 3D models or the skybox.
     """
     out = await _post("/edit_image", {"id": id, "prompt": prompt})
@@ -654,8 +668,7 @@ async def edit_scene_image(id: str, prompt: str) -> str:
 async def widen_scene_image(id: str, aspect: Optional[str] = None, prompt: Optional[str] = None) -> str:
     """Extend (outpaint) an image ALREADY in the scene to a wider frame, in place.
 
-    Use for 'make the painting wider', 'show more of the landscape'. id: the image entity id (find
-    via query_world). aspect: '16:9' (default) or '21:9'. prompt: optional guidance for the new area.
+    Use for 'make the painting wider', 'show more of the landscape'. id: the image entity id (in the Live context). aspect: '16:9' (default) or '21:9'. prompt: optional guidance for the new area.
     """
     out = await _post("/outpaint_image", _body(id=id, aspect=aspect, prompt=prompt))
     if not out.get("ok"):
@@ -667,8 +680,7 @@ async def widen_scene_image(id: str, aspect: Optional[str] = None, prompt: Optio
 async def skybox_from_scene_image(id: str) -> str:
     """Turn an image ALREADY in the scene into the surrounding 360° sky.
 
-    Use for 'make that painting the sky', 'put me inside that scene'. id: the image entity id (find
-    via query_world).
+    Use for 'make that painting the sky', 'put me inside that scene'. id: the image entity id (in the Live context).
     """
     out = await _post("/skybox_from_image", {"id": id}, timeout=200.0)
     if not out.get("ok"):
