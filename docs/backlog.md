@@ -32,3 +32,43 @@ offsets `position.y` so `box.min.y === 0` (floor). Notes:
 
 **Open decision:** "flip upside down" → **stand on head** (re-seated on the floor, lean) vs. **hover
 inverted** where she was (head down at original head height). Grounding gives the former.
+
+---
+
+## Image upside-down when framed in a window (wall art is fine)
+
+**Status:** open · noticed 2026-06-24 · **needs Quest testing**
+
+**Symptom:** `place_image(on_surface=<window>)` hangs the image **upside down**; on a wall-art surface
+it's correct and quick.
+
+**Cause:** `place_image` (`server.py:1060`) **adopts the captured surface's `rotation` verbatim** for
+the image plane. Wall-art planes are captured upright/inward-facing; **window** planes come back with
+a flipped orientation (the headset's plane detection inverts their up/normal), so the image inherits
+the flip. Capture-side quirk, not the placement math per se.
+
+**Proposed fix:** don't trust the captured rotation for image orientation — compute an **upright,
+room-inward-facing** mounting rotation (normal toward the room interior, zero roll) from the surface
+position + room center, used for *all* on-surface placements. Alt: normalize window/door surface
+rotations at ingest so "up" is consistent. Either way, **verify on a Quest** (window orientation is
+device/capture-dependent; can't confirm blind).
+
+## Grounded skyboxes indistinguishable from regular in the library
+
+**Status:** open · noticed 2026-06-24
+
+**Symptom:** generated two grounded skyboxes, but the director finds none — `search_library(
+kind="grounded_skybox")` returns nothing; all 15 skyboxes are kind `skybox`.
+
+**Cause:** the **forward path is correct** (`generate_grounded_skybox_image` → op `grounded_skybox` →
+kind `grounded_skybox`). But the two existing ones are **data-lost**: backfill records no `op` (→ all
+`image`), then `retag-skyboxes` flipped wide images → `skybox`, and the aspect heuristic can't tell
+grounded from regular. So they're buried as plain `skybox`. (Grounded-ness *does* matter — applying a
+regular city skybox as grounded would smear the ground — so we can't just collapse it into "an
+application choice".)
+
+**Proposed fix:** make **`set_grounded_skybox(image_id)` re-tag** that asset's catalog kind →
+`grounded_skybox` (usage informs the catalog) — auto-recovers the existing two the moment they're
+applied grounded, and keeps the catalog truthful. Optionally also a way to set kind directly
+(extend `correct_asset` with a `kind` field) for manual marking. Forward generation already tags
+correctly, so this is mainly about the backfilled/retagged history.
