@@ -164,6 +164,7 @@ async def test_director_logs_utterance_tool_calls_and_reply():
     d._log = cap                                              # capture instead of POSTing
     await d.handle("add an oak tree")
     assert ("you", "add an oak tree") in events              # the user's request
+    assert ("say", "Claude on it") in events                 # intermediate ack/narration ([say])
     assert any(t == "tool" and m.startswith("place_asset(") and "oak tree" in m
                for t, m in events)                           # the tool call + its args
     assert any(t == "tool" and m.strip().startswith("->") for t, m in events)  # the tool result

@@ -250,6 +250,11 @@ class Director:
             f"line as {route.target}; don't build anything yet.")
 
         async def emit(t, *, final):
+            # Log intermediate spoken text (acks like "On it", and any pre-tool narration) as [say];
+            # the final reply is logged once below under the speaker tag. This is what surfaces e.g. a
+            # "let me check the world model" preamble that otherwise only reaches TTS, never the log.
+            if not final and t and t.strip():
+                await self._log("say", t.strip())
             if on_text:
                 await on_text(t, final=final, speaker=route.target)
 
