@@ -116,6 +116,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "image_generators", {"Gemini": FakeImageGenerator()})
     monkeypatch.setattr(server, "IMAGES", {})  # clean image store per test
     monkeypatch.setattr(server, "resolver", None)
+    monkeypatch.setattr(server, "_surface_absence", {})  # fresh capture-debounce state per test
     monkeypatch.setattr(server, "library", AssetLibrary(tmp_path / "library.db"))  # isolated catalog
     monkeypatch.setattr(server, "embedder", None)  # no embeddings by default; tests set a FakeEmbedder
     monkeypatch.setattr(server, "captioner", None)  # no captioner by default; tests set a FakeCaptioner

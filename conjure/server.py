@@ -404,6 +404,7 @@ async def reset_world() -> dict:
     once a headset is back in AR."""
     global store
     store = WorldStore.load(SAMPLE_WORLD)
+    _surface_absence.clear()                 # fresh room session
     await _broadcast({"type": "snapshot", "world": store.doc})
     return {"ok": True, "rev": store.doc["rev"]}
 
@@ -493,11 +494,20 @@ def _default_surface_material(semantic: str) -> dict:
     return mat
 
 
+# A capture on resume-from-idle (or a momentary tracking blip) is often SPARSE — plane/mesh detection
+# re-populates gradually. With replace=True, removing a surface a single such capture missed deletes a
+# valid wall AND resets its director styling (the re-add path uses default material → invisible). So
+# debounce removals: only prune a surface after it's been absent from this many CONSECUTIVE captures.
+_REMOVE_AFTER_ABSENT = 3
+_surface_absence: dict[str, int] = {}
+
+
 @app.post("/room")
 async def ingest_room(req: RoomUpdate) -> dict:
     """Ingest captured room geometry from the room **authority** headset. Existing surfaces are
-    *updated* in place (preserving director style); new ones added; with replace=True, stale ones
-    removed. Sets environment.room (boundary, active, authority)."""
+    *updated* in place (preserving director style); new ones added; with replace=True, stale ones are
+    removed only after being absent from several consecutive captures (so a sparse resume capture
+    doesn't wipe valid surfaces). Sets environment.room (boundary, active, authority)."""
     room = store.doc["environment"].get("room", {})
     authority = room.get("authorityClientId")
     if authority and authority != req.client_id:
@@ -508,7 +518,16 @@ async def ingest_room(req: RoomUpdate) -> dict:
     ops: list[dict] = []
 
     if req.replace:
-        ops += [{"op": "remove", "id": eid} for eid in existing if eid not in new_ids]
+        for eid in existing:
+            if eid in new_ids:
+                _surface_absence.pop(eid, None)               # seen → reset its absence streak
+            else:
+                n = _surface_absence.get(eid, 0) + 1
+                if n >= _REMOVE_AFTER_ABSENT:                 # gone for real → prune
+                    ops.append({"op": "remove", "id": eid})
+                    _surface_absence.pop(eid, None)
+                else:
+                    _surface_absence[eid] = n                 # transient drop → keep it this round
 
     for s in req.surfaces:
         if s.id in existing:  # update geometry/pose in place — keep the entity's material (style)

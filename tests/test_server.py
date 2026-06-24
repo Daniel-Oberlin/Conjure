@@ -429,15 +429,17 @@ def test_wall_holes_update_on_recapture(srv, client):
 
 
 def test_friendly_id_stable_after_remove_readd(srv, client):
-    # The friendly number is derived from the surface id (real_wall_1 → 1), so a surface that vanishes
-    # (transient tracking loss → replace removes it) and comes back keeps the SAME number by
-    # construction — no climbing, no put-down/pick-up renumbering.
+    # The friendly number is derived from the surface id (real_wall_1 → 1), so a surface that's pruned
+    # and comes back keeps the SAME number by construction — no climbing, no put-down/pick-up renumber.
     def fid():
         return next(e for e in _entities(client) if e["id"] == "real_wall_1")["meta"]["friendly_id"]
     wall = {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}
     client.post("/room", json={"client_id": "h1", "surfaces": [wall]})
     first = fid()
-    client.post("/room", json={"client_id": "h1", "surfaces": []})          # wall drops out
+    client.post("/room", json={"client_id": "h1", "surfaces": []})           # one sparse capture
+    assert any(e["id"] == "real_wall_1" for e in _entities(client))          # transient drop is kept
+    for _ in range(srv._REMOVE_AFTER_ABSENT):                                # sustained absence → pruned
+        client.post("/room", json={"client_id": "h1", "surfaces": []})
     assert not any(e["id"] == "real_wall_1" for e in _entities(client))
     client.post("/room", json={"client_id": "h1", "surfaces": [wall]})       # and returns
     assert fid() == first                                                    # same number, not higher
@@ -550,12 +552,15 @@ def test_style_surface_needs_color_or_opacity(srv, client):
     assert client.post("/style_surface", json={"target": "wall"}).json()["ok"] is False
 
 
-def test_room_replace_removes_stale_surfaces(srv, client):
+def test_room_replace_prunes_only_after_repeated_absence(srv, client):
     client.post("/room", json={"client_id": "h1", "surfaces": [
         {"id": "a", "semantic": "wall", "position": [0, 1, -2]},
         {"id": "b", "semantic": "wall", "position": [1, 1, -2]}]})
-    client.post("/room", json={"client_id": "h1", "surfaces": [
-        {"id": "a", "semantic": "wall", "position": [0, 1, -2]}]})
+    just_a = {"client_id": "h1", "surfaces": [{"id": "a", "semantic": "wall", "position": [0, 1, -2]}]}
+    client.post("/room", json=just_a)                                 # b missing from ONE capture
+    assert {"a", "b"} <= {e["id"] for e in _entities(client)}         # survives the transient drop
+    for _ in range(srv._REMOVE_AFTER_ABSENT):                         # sustained absence → genuinely gone
+        client.post("/room", json=just_a)
     ids = {e["id"] for e in _entities(client)}
     assert "a" in ids and "b" not in ids
 
