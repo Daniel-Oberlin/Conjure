@@ -83,7 +83,8 @@ otherwise (a) is defensible.
 **Symptom:** `search_library` (reuse) returns assets from *all* scopes, but `query_assets`/`update_asset`/
 `delete_asset` see only the caller's scope. So the two can disagree on what exists (live: search found
 2 apples, query found 1), which confused the director. Today it's masked because everything ends up in
-`private/builder` (single agent + the `adopt_unscoped` heal), but it's a real inconsistency.
+`private/builder` (single agent — every row is written with that scope at ingest), but it's a real
+inconsistency.
 
 **Fix:** scope `library.find()` too — thread the agent's scope through `/library/search` →
 `find()`/`search()`/`vector_search()` (add `AND scope=?` to each stage) and the `search_library` tool
