@@ -67,3 +67,25 @@ def test_update_unknown_entity_raises():
     s = store()
     with pytest.raises(ValueError):
         s.apply_patch([{"op": "update", "id": "nope", "set": {"transform.position": [1, 1, 1]}}])
+
+
+def test_save_load_roundtrips_the_doc(tmp_path):
+    s = store()
+    s.apply_patch([{"op": "add", "entity": {"id": "box", "components": {"geometry": {"primitive": "box"}}}}])
+    s.apply_patch([{"op": "env", "set": {"room.edgesVisible": False}}])
+    path = tmp_path / "world.json"
+    s.save(path)
+    loaded = WorldStore.load(path)
+    assert loaded.doc["rev"] == s.doc["rev"]
+    assert any(e["id"] == "box" for e in loaded.doc["entities"])
+    assert loaded.doc["environment"]["room"]["edgesVisible"] is False
+
+
+def test_save_is_atomic_no_partial_file_on_reopen(tmp_path):
+    s = store()
+    path = tmp_path / "world.json"
+    s.save(path)
+    s.apply_patch([{"op": "add", "entity": {"id": "e2", "components": {}}}])
+    s.save(path)                                    # overwrite must fully replace, not append
+    assert WorldStore.load(path).doc["rev"] == s.doc["rev"]
+    assert not (tmp_path / "world.json.tmp").exists()  # temp cleaned up via rename

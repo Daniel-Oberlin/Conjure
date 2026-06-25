@@ -109,6 +109,7 @@ def srv(tmp_path, monkeypatch):
     from conjure.world import WorldStore
 
     monkeypatch.setattr(server, "ASSET_CACHE", tmp_path)
+    monkeypatch.setattr(server, "WORLD_STATE", tmp_path / "world.json")  # keep autosave/reset off the repo
     monkeypatch.setattr(
         server, "store",
         WorldStore({"id": "test", "name": "Test", "rev": 0, "environment": {"sky": {"color": "#000"}}, "entities": []}),

@@ -42,6 +42,9 @@ ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
 LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settings.debug_log)
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
+# Durable home of the single active world (docs/persistence-model.md §4/§6 — step 1, single-world
+# durability). When the scoped multi-world store lands this generalizes to .cache/worlds/<scope>/<name>.json.
+WORLD_STATE = ROOT / ".cache" / "world.json"
 ASSET_CACHE = ROOT / ".cache" / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
 LIBRARY_DB = ROOT / ".cache" / "library.db"   # durable asset catalog (docs/asset-library-plan.md)
@@ -60,8 +63,19 @@ def _has_alpha(im) -> bool:
     return "transparency" in im.info
 
 
+def _load_world() -> WorldStore:
+    """Boot into the saved active world if there is one, else the empty starter. A corrupt/unreadable
+    save must never block startup — fall back to the sample and let the next change re-persist."""
+    if WORLD_STATE.exists():
+        try:
+            return WorldStore.load(WORLD_STATE)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[conjure] saved world unreadable ({exc}); starting from the sample world")
+    return WorldStore.load(SAMPLE_WORLD)
+
+
 settings = get_settings()  # loads .env
-store = WorldStore.load(SAMPLE_WORLD)
+store = _load_world()
 clients: set[WebSocket] = set()
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
@@ -206,6 +220,41 @@ def _friendly_id_for(surface_id: str) -> int:
     return int(tail) if tail.isdigit() else 0
 
 app = FastAPI(title="Conjure", version="0.0.1")
+
+# Single-world durability: a background task writes the active world to disk whenever its rev advances.
+# Polling debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one write —
+# and it touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
+_AUTOSAVE_INTERVAL = 1.0
+_autosave_task: asyncio.Task | None = None
+
+
+async def _autosave_loop() -> None:
+    saved_rev = store.doc.get("rev")
+    while True:
+        await asyncio.sleep(_AUTOSAVE_INTERVAL)
+        rev = store.doc.get("rev")               # re-reads the module global (reset_world rebinds it)
+        if rev != saved_rev:
+            try:
+                store.save(WORLD_STATE)
+                saved_rev = rev
+            except Exception as exc:  # noqa: BLE001 — autosave must never crash the server
+                print(f"[conjure] world autosave failed: {exc}")
+
+
+@app.on_event("startup")
+async def _start_autosave() -> None:
+    global _autosave_task
+    _autosave_task = asyncio.create_task(_autosave_loop())
+
+
+@app.on_event("shutdown")
+async def _stop_autosave() -> None:
+    if _autosave_task is not None:
+        _autosave_task.cancel()
+    try:
+        store.save(WORLD_STATE)               # flush the latest state on a clean shutdown
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _normalize(record, pos: list[float], target_m: float) -> tuple[list[float], list[float]]:
@@ -404,6 +453,7 @@ async def reset_world() -> dict:
     global store
     store = WorldStore.load(SAMPLE_WORLD)
     _surface_absence.clear()                 # fresh room session
+    store.save(WORLD_STATE)                   # persist the reset so it survives a restart
     await _broadcast({"type": "snapshot", "world": store.doc})
     return {"ok": True, "rev": store.doc["rev"]}
 

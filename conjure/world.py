@@ -51,6 +51,15 @@ class WorldStore:
         doc = World.model_validate(raw).model_dump()
         return cls(doc)
 
+    def save(self, path: str | Path) -> None:
+        """Atomically persist the current doc as JSON (durability for the active world). Written via a
+        temp file + rename so a crash mid-write can't corrupt the saved world."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.doc))
+        tmp.replace(path)
+
     def apply_patch(self, ops: list[dict], origin: str = "user") -> dict:
         """Validate + apply ops, compute inverse, bump rev. Returns the broadcastable patch.
 
