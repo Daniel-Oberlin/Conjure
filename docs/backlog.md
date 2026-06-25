@@ -6,6 +6,28 @@ delete them here) when done.
 
 ---
 
+## Orphaned cache files after asset deletion — need a prune/GC sweep
+
+**Status:** open · noticed 2026-06-25
+
+**Symptom:** deleting an asset removes its catalog row (+ FTS/aliases/relations/vector) but **leaves the
+file** in `.cache/assets/`. So deleting assets accumulates orphaned bytes on disk (live: 2 files left
+after 2 deletions).
+
+**Cause (by design, not a bug):** `library.delete()` and `/delete_asset` are catalog-only — the
+docstring spells it out ("bytes kept"). The cache is content-addressed (filename = sha256 of bytes),
+and a placed entity references `/assets/<hash>` directly in the world doc, *independent* of the catalog
+row. Unlinking on delete would 404 a texture still used by the live scene.
+
+**Proposed fix:** a separate, deliberate **prune/GC sweep** (NOT coupled into delete_asset). Remove
+cache files that have **no catalog row AND no reference in the world doc** (scan entity material src /
+gltf-model paths). **Dry-run by default** (list what it would delete); `--apply` to actually unlink.
+Would also mop up the already-orphaned files. Expose as a maintenance command/endpoint alongside
+reindex / retag-skyboxes / caption.
+
+**Open decision:** should it also consider OTHER worlds/scopes' references once multi-agent lands? For
+now a single live world doc is the only reference set; revisit when scopes hold separate worlds.
+
 ## Director re-queries for ids it already has in context
 
 **Status:** open · noticed 2026-06-25 during live director testing
