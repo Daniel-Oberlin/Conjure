@@ -276,3 +276,35 @@ def test_backfill_recovers_prompt_from_world_doc(tmp_path):
     lib = _lib(tmp_path)
     lib.backfill(cache, world)
     assert lib.get("img1.png")["prompt"] == "a sunset"
+
+
+def test_transparent_column_roundtrips_and_missing_query(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("op.png", kind="image", filename="op.png", label="opaque", transparent=0)
+    lib.upsert("tr.png", kind="image", filename="tr.png", label="cutout", transparent=1)
+    lib.upsert("un.png", kind="image", filename="un.png", label="unchecked")  # transparent stays NULL
+    assert lib.get("tr.png")["transparent"] == 1
+    assert lib.get("op.png")["transparent"] == 0
+    assert lib.get("un.png")["transparent"] is None
+    # only the un-checked row (NULL) with a filename is a backfill target
+    assert [a["id"] for a in lib.images_missing_transparency()] == ["un.png"]
+
+
+def test_migration_v4_to_v5_adds_column_without_wiping_data(tmp_path):
+    """A schema bump must ALTER, never DROP — captions/curation aren't recoverable from cache files."""
+    import sqlite3
+    path = tmp_path / "library.db"
+    raw = sqlite3.connect(str(path))
+    raw.execute("CREATE TABLE assets (id TEXT PRIMARY KEY, kind TEXT, label TEXT, "
+                "filename TEXT, scope TEXT, notes TEXT)")
+    raw.execute("INSERT INTO assets (id, kind, label, notes) VALUES "
+                "('keep.png','image','my dragon','my favorite')")
+    raw.execute("PRAGMA user_version = 4")
+    raw.commit()
+    raw.close()
+
+    lib = AssetLibrary(path)                      # opens at v4 → must migrate in place
+    rec = lib.get("keep.png")
+    assert rec is not None and rec["label"] == "my dragon" and rec["notes"] == "my favorite"
+    assert "transparent" in rec and rec["transparent"] is None     # column added, unchecked
+    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 5

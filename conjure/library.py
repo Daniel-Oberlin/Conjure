@@ -35,7 +35,7 @@ except Exception:                     # noqa: BLE001
 
 # Bump when the schema changes. The cache catalog is regenerable (backfill rebuilds it from the bytes
 # on disk), so on a version mismatch we drop & recreate rather than migrate in place.
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 # faces/persons are reserved now (sub-image entities + named clusters) so the NAS seam is honest;
 # they stay empty until the NAS ingestion subsystem (Phase 5) populates them.
@@ -54,8 +54,9 @@ CREATE TABLE IF NOT EXISTS assets (
   provider TEXT,
   model TEXT,
   width INTEGER, height INTEGER,   -- common visual dims (NULL for non-visual kinds)
+  transparent INTEGER,             -- image has a real alpha channel (decal/sticker); NULL = unchecked
   licence TEXT, attribution TEXT, creator TEXT,
-  attributes TEXT,                 -- kind-specific JSON: {tris,bbox}·model {transparent}·image {bpm,key}·audio
+  attributes TEXT,                 -- kind-specific JSON: {tris,bbox}·model {bpm,key}·audio
   notes TEXT, tags TEXT,           -- USER CURATION (FTS-indexed): "my favorite city skybox", keywords
   rating INTEGER, favorite INTEGER,-- ⭐ 0–5 / boolean — filter & rank
   embed_model TEXT, embed_dim INTEGER,   -- which model/space this asset's vector is in (Phase 1)
@@ -80,7 +81,7 @@ _TABLES = ("assets_fts", "assets_vec", "assets", "aliases", "relations", "faces"
 # bookkeeping). `attributes` is handled separately so it can be *merged* rather than replaced.
 _UPSERT_COLS = (
     "kind", "scope", "source", "filename", "label", "prompt", "query", "params_json",
-    "provider", "model", "width", "height", "licence", "attribution", "creator",
+    "provider", "model", "width", "height", "transparent", "licence", "attribution", "creator",
     "notes", "tags", "rating", "favorite", "embed_model", "embed_dim",
 )
 
@@ -117,12 +118,29 @@ class AssetLibrary:
             except Exception:                          # noqa: BLE001 — degrade to FTS/exact only
                 self._vec = False
         ver = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if ver != _SCHEMA_VERSION:                       # fresh OR stale schema → (re)build from disk
-            for t in _TABLES:
-                self._db.execute(f"DROP TABLE IF EXISTS {t}")
-            self._db.executescript(_SCHEMA)
+        if ver != _SCHEMA_VERSION:
+            if not self._migrate(ver):                   # try in-place upgrade; preserves data
+                for t in _TABLES:                        # fresh/unrecognised → (re)build from disk
+                    self._db.execute(f"DROP TABLE IF EXISTS {t}")
+                self._db.executescript(_SCHEMA)
             self._db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._db.commit()
+
+    def _migrate(self, ver: int) -> bool:
+        """Upgrade an existing catalog in place, preserving its data. Returns True on success; False
+        when the DB is fresh or its version is unrecognised, signalling the caller to rebuild from
+        scratch. We ALTER rather than DROP for known versions because captions and user curation are
+        not recoverable from the content-addressed cache files — only a destructive last resort drops."""
+        has_assets = self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='assets'").fetchone()
+        if not has_assets:
+            return False                                 # nothing to preserve → fresh build
+        if ver == 4:                                     # v4 → v5: transparency promoted to a column
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(assets)")}
+            if "transparent" not in cols:
+                self._db.execute("ALTER TABLE assets ADD COLUMN transparent INTEGER")
+            return True
+        return False                                     # older/unknown → safe rebuild
 
     # ---- writes -------------------------------------------------------------------------------
     def upsert(self, id: str, *, kind: Optional[str] = None, params: Optional[dict] = None,
@@ -315,6 +333,14 @@ class AssetLibrary:
         with self._lock:
             q = (f"SELECT * FROM assets WHERE (label IS NULL OR label='') AND kind IN ({ph})")
             return [dict(r) for r in self._db.execute(q, list(kinds)).fetchall()]
+
+    def images_missing_transparency(self) -> list[dict]:
+        """Image assets whose alpha hasn't been checked yet (transparent IS NULL) and that have a
+        cached file to inspect — targets for the one-shot transparency backfill."""
+        with self._lock:
+            q = ("SELECT id, filename FROM assets WHERE kind='image' AND transparent IS NULL "
+                 "AND filename IS NOT NULL AND filename!=''")
+            return [dict(r) for r in self._db.execute(q).fetchall()]
 
     def embedded_nonvisual(self, visual_kinds) -> list[dict]:
         """Embedded assets whose kind is NOT visual — i.e. vectors that don't belong in the (image)

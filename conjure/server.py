@@ -53,6 +53,20 @@ DEFAULT_SCOPE = "private/builder"
 TUNNEL_FILE = ROOT / ".cache" / "tunnel_url"
 MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
 
+def _has_alpha(im) -> bool:
+    """True if an opened PIL image carries real (non-opaque) transparency."""
+    if im.mode in ("RGBA", "LA"):
+        return im.getchannel("A").getextrema()[0] < 255   # some pixel non-opaque
+    return "transparency" in im.info
+
+
+def _file_has_alpha(path) -> bool:
+    """Open a stored image and report whether it's transparent (for the startup backfill)."""
+    from PIL import Image
+    with Image.open(path) as im:
+        return _has_alpha(im)
+
+
 settings = get_settings()  # loads .env
 store = WorldStore.load(SAMPLE_WORLD)
 clients: set[WebSocket] = set()
@@ -69,6 +83,18 @@ try:
     adopted = library.adopt_unscoped(DEFAULT_SCOPE)   # heal legacy NULL-scope rows (pre-scope backfills)
     if adopted:
         print(f"[conjure] adopted {adopted} unscoped asset(s) into {DEFAULT_SCOPE}")
+    checked = 0                                       # one-shot: detect alpha for un-checked images
+    for a in library.images_missing_transparency():
+        fp = ASSET_CACHE / a["filename"]
+        if not fp.exists():
+            continue
+        try:
+            library.upsert(a["id"], transparent=1 if _file_has_alpha(fp) else 0)
+            checked += 1
+        except Exception:  # noqa: BLE001 — a single unreadable image must not stall startup
+            continue
+    if checked:
+        print(f"[conjure] backfilled transparency for {checked} image(s)")
 except Exception as exc:  # noqa: BLE001
     print(f"[conjure] asset-library backfill skipped: {exc}")
 # The embedder is None unless the optional torch/transformers are installed — then vector write-through
@@ -261,7 +287,8 @@ def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     library.upsert(image_id, kind=_kind_for_op(op), scope=DEFAULT_SCOPE, source=f"cache://{image_id}",
                    filename=image_id, label=prompt, prompt=prompt,
                    params={"op": op, "transparent": transparent},
-                   provider=result.provider, model=result.model, width=w, height=h)
+                   provider=result.provider, model=result.model, width=w, height=h,
+                   transparent=1 if transparent else 0)
     _embed_asset(image_id, image=result.data)   # embed the pixels into the shared space (best-effort)
     return rec
 
@@ -334,12 +361,7 @@ def _img_meta(data: bytes) -> tuple[int, int, bool]:
     from PIL import Image
 
     with Image.open(io.BytesIO(data)) as im:
-        w, h = im.size
-        if im.mode in ("RGBA", "LA"):
-            transparent = im.getchannel("A").getextrema()[0] < 255  # some pixel non-opaque
-        else:
-            transparent = "transparency" in im.info
-        return w, h, transparent
+        return im.size[0], im.size[1], _has_alpha(im)
 
 
 _NO_STORE = {"Cache-Control": "no-store"}  # avoid stale client during active dev
