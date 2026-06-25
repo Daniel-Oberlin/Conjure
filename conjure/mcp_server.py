@@ -454,7 +454,9 @@ async def generate_image(
         prompt=prompt, aspect_ratio=aspect_ratio, transparent=transparent, generator=generator))
     if not out.get("ok"):
         return f"Couldn't generate image: {out.get('error', 'unknown error')}."
-    return (f"Generated image_id={out['image_id']} ({out['provider']}, {out.get('w')}x{out.get('h')}). "
+    # Full provenance in the result (so the log shows which generator/model ran, dims, and alpha):
+    return (f"Generated image_id={out['image_id']} via {out['provider']}/{out.get('model', '?')} "
+            f"({out.get('w')}x{out.get('h')}, transparent={transparent}). "
             f"Call place_image with this image_id to hang it.")
 
 

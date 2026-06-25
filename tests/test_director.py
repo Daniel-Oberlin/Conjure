@@ -161,14 +161,15 @@ async def test_director_logs_utterance_tool_calls_and_reply():
     async def cap(tag, msg):
         events.append((tag, msg))
 
+    d.agent = type("Agent", (), {"name": "builder", "context": []})()  # so log tags read builder.claude
     d._log = cap                                              # capture instead of POSTing
     await d.handle("add an oak tree")
-    assert ("you", "add an oak tree") in events              # the user's request
-    assert ("say", "Claude on it") in events                 # intermediate ack/narration ([say])
-    assert any(t == "tool" and m.startswith("place_asset(") and "oak tree" in m
-               for t, m in events)                           # the tool call + its args
-    assert any(t == "tool" and m.strip().startswith("->") for t, m in events)  # the tool result
-    assert any(t == "Claude" and "done" in m for t, m in events)               # the director's reply
+    assert ("you", "add an oak tree") in events                          # the user's request
+    assert ("builder.claude", "Claude on it") in events                 # intermediate speech, attributed
+    assert any(t == "builder.claude/tool" and m.startswith("place_asset(") and "oak tree" in m
+               for t, m in events)                                       # tool call, attributed to agent.llm
+    assert any(t == "builder.claude/tool" and m.strip().startswith("->") for t, m in events)  # tool result
+    assert any(t == "builder.claude" and "done" in m for t, m in events)                       # final reply
 
 
 async def test_emit_and_tools_are_wired_through():

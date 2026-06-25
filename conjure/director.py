@@ -204,13 +204,13 @@ class Director:
         except Exception:
             pass
 
-    async def _execute_tool(self, name: str, args: dict, on_tool: Optional[OnTool]) -> str:
+    async def _execute_tool(self, name: str, args: dict, on_tool: Optional[OnTool], who: str) -> str:
         if on_tool:
             await on_tool(name, args)
-        await self._log("tool", f"{name}({json.dumps(args, default=str)[:600]})")
+        await self._log(f"{who}/tool", f"{name}({json.dumps(args, default=str)[:600]})")
         out = await self._session.call_tool(name, args)
         text = "".join(getattr(c, "text", "") for c in out.content)
-        await self._log("tool", f"  -> {text[:2000]}")   # roomy enough to see a full query_world
+        await self._log(f"{who}/tool", f"  -> {text[:2000]}")   # roomy enough to see a full query_world
         return text
 
     async def _fetch_context(self) -> str:
@@ -240,6 +240,8 @@ class Director:
         text as it's produced; `on_tool(name, args)` fires before each tool call."""
         await self._log("you", text.strip())
         route = route_turn(text, self.roster, self.active)
+        # Attribute every LLM line to <agent>.<llm> (e.g. builder.claude); tool lines get a /tool suffix.
+        who = f"{getattr(self.agent, 'name', 'agent')}.{route.target.lower()}"
         prev_active = self.active
         if route.persistent:
             self.active = route.target
@@ -250,16 +252,16 @@ class Director:
             f"line as {route.target}; don't build anything yet.")
 
         async def emit(t, *, final):
-            # Log intermediate spoken text (acks like "On it", and any pre-tool narration) as [say];
-            # the final reply is logged once below under the speaker tag. This is what surfaces e.g. a
-            # "let me check the world model" preamble that otherwise only reaches TTS, never the log.
+            # Log intermediate spoken text (acks like "On it", and any pre-tool narration) under the
+            # agent.llm tag; the final reply is logged once below under the same tag. This is what
+            # surfaces e.g. a "let me check the world model" preamble that otherwise only reaches TTS.
             if not final and t and t.strip():
-                await self._log("say", t.strip())
+                await self._log(who, t.strip())
             if on_text:
                 await on_text(t, final=final, speaker=route.target)
 
         async def execute(n, a):
-            return await self._execute_tool(n, a, on_tool)
+            return await self._execute_tool(n, a, on_tool, who)
 
         system = self._system_for(route.target) + await self._fetch_context()
         try:
@@ -279,5 +281,5 @@ class Director:
             raise
         self.transcript.append(Turn("user", text.strip()))
         self.transcript.append(Turn(route.target, final))
-        await self._log(route.target, final.strip())
+        await self._log(who, final.strip())
         return final
