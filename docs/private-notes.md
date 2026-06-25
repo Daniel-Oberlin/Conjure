@@ -1,7 +1,7 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
-# Architecture
-- Namespace for assets, collections, data, etc: "/scoped/builder", "/global/music-collection/"
+## Bugs
+- Weird transparent rectangle area barely visible
 
 # Graphics
 - Lighting
@@ -16,13 +16,6 @@
  - world "/scoped/builder/firstroom"
  - show or hide
  - conjure show status, conjure hide clock, conjure clock center
-- Logging everything (with switch) for debugging
-- Turn on optional timestamps to CLI messages
-- Logging and instrumentation so that we can profile and see what's taking the time
-- Maybe this is done in the CLI, maybe you can query the logs in the CLI with natural language
-
-## Performance & Bugs
-- I can sometimes hear internal thinking "let me check the room data", "
 
 ## Web
 - Perform web requests
@@ -60,7 +53,6 @@
 - What are applications?
 - LLM app (agent), world app (world module), headset app (headset module) (can share a namespace)
 - Infocom Zmachine
-- namespace for worlds: "/worlds/", agents, builders can be scoped to subdirectories
 - "persona" is like an agent, but only a prompt and access to context, like a participant in a role playing game
 
 ## Persistance
