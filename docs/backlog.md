@@ -6,6 +6,30 @@ delete them here) when done.
 
 ---
 
+## Director re-queries for ids it already has in context
+
+**Status:** open · noticed 2026-06-25 during live director testing
+
+**Symptom:** the director re-runs `query_assets`/`search_library` for data it retrieved a turn or two
+earlier and still has in context. Live: it listed the 3 transparent images *with ids*, then on "place
+them left to right" announced "let me look those up properly first!" and ran the identical query again
+to get ids it already had. Cheap and correct (fast local SQL, right result) — a papercut, not a defect.
+
+**Cause:** the reuse nudge exists in the prompt ("REUSE ids you already retrieved; don't re-run
+query_assets for something you just listed") but doesn't hold reliably. Two reasons: (1) it's one
+clause buried in a single ~600-word run-on paragraph, so it gets diluted; (2) the model defaults to
+"verify before acting" — describing felt low-stakes, *placing* felt like a commit, so it re-confirmed.
+Suppressing a cheap idempotent re-lookup is inherently soft for a prompt nudge.
+
+**Options:** (a) leave it — cheap and correct; (b) hoist the reuse rule into a prominent standalone
+line — low risk, diminishing returns (the nudge already exists once); (c) **restructure the whole
+builder prompt** from one wall-of-text paragraph into scannable sections / a "Rules" block — the real
+fix, since right now every behavioral rule competes inside one paragraph. (c) is behavioral (can't be
+unit-tested) and risks nudging other behaviors, so it needs a live test pass.
+
+**Lean:** (c) is the high-leverage move if these "nudge didn't stick" papercuts keep recurring;
+otherwise (a) is defensible.
+
 ## `search_library` is unscoped while the maintenance tools are scoped
 
 **Status:** open · noticed 2026-06-25
