@@ -33,8 +33,9 @@ except Exception:                     # noqa: BLE001
     sqlite_vec = None
     serialize_float32 = None
 
-# Bump when the schema changes. The cache catalog is regenerable (backfill rebuilds it from the bytes
-# on disk), so on a version mismatch we drop & recreate rather than migrate in place.
+# Bump when the schema changes, and add a branch to _migrate() to upgrade existing data in place
+# (ALTER, not DROP — captions/embeddings/curation aren't recoverable from the cache bytes). The
+# destructive rebuild is a last resort for a fresh or unrecognised DB only.
 _SCHEMA_VERSION = 5
 
 # faces/persons are reserved now (sub-image entities + named clusters) so the NAS seam is honest;
@@ -334,14 +335,6 @@ class AssetLibrary:
             q = (f"SELECT * FROM assets WHERE (label IS NULL OR label='') AND kind IN ({ph})")
             return [dict(r) for r in self._db.execute(q, list(kinds)).fetchall()]
 
-    def images_missing_transparency(self) -> list[dict]:
-        """Image assets whose alpha hasn't been checked yet (transparent IS NULL) and that have a
-        cached file to inspect — targets for the one-shot transparency backfill."""
-        with self._lock:
-            q = ("SELECT id, filename FROM assets WHERE kind='image' AND transparent IS NULL "
-                 "AND filename IS NOT NULL AND filename!=''")
-            return [dict(r) for r in self._db.execute(q).fetchall()]
-
     def embedded_nonvisual(self, visual_kinds) -> list[dict]:
         """Embedded assets whose kind is NOT visual — i.e. vectors that don't belong in the (image)
         index. Text-derived vectors (e.g. model titles) sit at a different similarity scale and would
@@ -370,15 +363,6 @@ class AssetLibrary:
                         pass                       # no vector for this asset yet — nothing to fix
             self._db.commit()
         return len(ids)
-
-    def adopt_unscoped(self, scope: str) -> int:
-        """Assign `scope` to legacy assets that have none — e.g. anything backfilled before the scope
-        column existed. Without this they're orphaned: NULL matches no agent's scoped view, so the
-        scoped maintenance tools (query/update/delete) can't see them. Idempotent; returns rows fixed."""
-        with self._lock:
-            n = self._db.execute("UPDATE assets SET scope=? WHERE scope IS NULL", (scope,)).rowcount
-            self._db.commit()
-        return n
 
     def set_kind(self, id: str, kind: str) -> None:
         """Change an asset's kind, keeping the vector index's kind metadata in sync (so kind-filtered
@@ -567,53 +551,3 @@ class AssetLibrary:
         strong = any(c["match"] in ("alias", "exact") for c in cands)
         tier = "strong" if strong else ("weak" if cands else "none")
         return {"candidates": cands, "confidence_tier": tier}
-
-    # ---- one-time migration -------------------------------------------------------------------
-    def backfill(self, asset_cache: str | Path, world_doc: Optional[dict] = None,
-                 scope: Optional[str] = None) -> int:
-        """Seed the catalog from the existing on-disk cache (+ the world doc, to recover prompts for
-        already-placed images). Idempotent: skips ids already present. Returns rows added."""
-        asset_cache = Path(asset_cache)
-        added = 0
-        if asset_cache.is_dir():
-            for p in sorted(asset_cache.iterdir()):
-                if not p.is_file() or self.get(p.name):
-                    continue
-                ext = p.suffix.lower()
-                if ext in (".png", ".jpg", ".jpeg", ".webp"):
-                    w, h = _image_dims(p)
-                    self.upsert(p.name, kind="image", scope=scope, source=f"cache://{p.name}",
-                                filename=p.name, width=w, height=h)
-                    added += 1
-                elif ext == ".glb":
-                    m = _read_sidecar(p.with_suffix(".json"))
-                    self.upsert(p.name, kind="model", scope=scope, source=f"cache://{p.name}",
-                                filename=p.name, label=m.get("title"), query=m.get("title"),
-                                attributes={"tris": m.get("tris"), "bbox_min": m.get("bbox_min"),
-                                            "bbox_max": m.get("bbox_max")},
-                                licence=m.get("licence"), attribution=m.get("attribution"),
-                                creator=m.get("creator"))
-                    added += 1
-        for ent in (world_doc or {}).get("entities", []):
-            meta = ent.get("meta") or {}
-            iid, prompt = meta.get("image_id"), meta.get("prompt")
-            if iid and prompt and self.get(iid):
-                self.upsert(iid, label=prompt, prompt=prompt)
-        return added
-
-
-def _image_dims(path: Path) -> tuple[Optional[int], Optional[int]]:
-    try:
-        from PIL import Image
-
-        with Image.open(path) as im:
-            return im.size
-    except Exception:
-        return None, None
-
-
-def _read_sidecar(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}

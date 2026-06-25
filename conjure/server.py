@@ -60,43 +60,17 @@ def _has_alpha(im) -> bool:
     return "transparency" in im.info
 
 
-def _file_has_alpha(path) -> bool:
-    """Open a stored image and report whether it's transparent (for the startup backfill)."""
-    from PIL import Image
-    with Image.open(path) as im:
-        return _has_alpha(im)
-
-
 settings = get_settings()  # loads .env
 store = WorldStore.load(SAMPLE_WORLD)
 clients: set[WebSocket] = set()
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
-# Durable catalog of every procured asset. On first run, seed it from whatever's already on disk so
-# pre-existing cache files become reusable (idempotent; only scans when the catalog is empty). The
-# backfill is best-effort — a catalog hiccup must never stop the world server from booting.
+# Durable catalog of every procured asset. Rows are written at ingest (generation/placement) with all
+# fields set — scope, transparency, provenance — and the schema upgrades non-destructively (library.py
+# _migrate), so no startup heal/seed pass is needed. Back up library.db to protect curation; a lost
+# catalog is not rebuilt from the cache files (they carry none of the captions/embeddings/curation).
 library = AssetLibrary(LIBRARY_DB)
-try:
-    if library.count() == 0:
-        library.backfill(ASSET_CACHE, store.doc, scope=DEFAULT_SCOPE)
-    adopted = library.adopt_unscoped(DEFAULT_SCOPE)   # heal legacy NULL-scope rows (pre-scope backfills)
-    if adopted:
-        print(f"[conjure] adopted {adopted} unscoped asset(s) into {DEFAULT_SCOPE}")
-    checked = 0                                       # one-shot: detect alpha for un-checked images
-    for a in library.images_missing_transparency():
-        fp = ASSET_CACHE / a["filename"]
-        if not fp.exists():
-            continue
-        try:
-            library.upsert(a["id"], transparent=1 if _file_has_alpha(fp) else 0)
-            checked += 1
-        except Exception:  # noqa: BLE001 — a single unreadable image must not stall startup
-            continue
-    if checked:
-        print(f"[conjure] backfilled transparency for {checked} image(s)")
-except Exception as exc:  # noqa: BLE001
-    print(f"[conjure] asset-library backfill skipped: {exc}")
 # The embedder is None unless the optional torch/transformers are installed — then vector write-through
 # is simply skipped and the catalog runs on FTS/exact only. Lazy: no model loads until first embed.
 embedder = build_embedder(settings)

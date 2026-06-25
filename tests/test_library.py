@@ -162,17 +162,6 @@ def test_retag_wide_images_as_skyboxes(tmp_path):
         assert any(h["id"] == "pano.png" for h in lib.vector_search([1.0, 0.0], kind="skybox"))
 
 
-def test_adopt_unscoped_heals_legacy_rows(tmp_path):
-    lib = _lib(tmp_path)
-    lib.upsert("legacy.png", kind="image", prompt="x")                       # no scope → NULL
-    lib.upsert("new.png", kind="image", scope="private/builder", prompt="y")
-    assert lib.adopt_unscoped("private/builder") == 1                         # only the NULL one
-    assert lib.get("legacy.png")["scope"] == "private/builder"
-    ids = {r["id"] for r in lib.query("SELECT id FROM assets", scope="private/builder")}
-    assert ids == {"legacy.png", "new.png"}                                  # now both visible to a scoped query
-    assert lib.adopt_unscoped("private/builder") == 0                        # idempotent
-
-
 def test_update_enforces_scope_and_syncs_kind(tmp_path):
     lib = _lib(tmp_path)
     lib.upsert("m.png", kind="skybox", scope="private/builder", label="beach")
@@ -217,27 +206,6 @@ def test_query_is_scoped_and_select_only(tmp_path):
         lib.query("SELECT * FROM main.assets", scope="private/builder")  # bypass rejected
 
 
-def test_backfill_seeds_images_and_models_idempotently(tmp_path):
-    cache = tmp_path / "assets"
-    cache.mkdir()
-    buf = io.BytesIO()
-    Image.new("RGB", (8, 6), "blue").save(buf, "PNG")
-    (cache / "img1.png").write_bytes(buf.getvalue())
-    (cache / "mdl1.glb").write_bytes(b"glTF" + bytes(8))
-    (cache / "mdl1.json").write_text(json.dumps(
-        {"title": "Oak Tree", "licence": "CC-BY", "attribution": "by T", "creator": "T", "tris": 900}))
-
-    lib = _lib(tmp_path)
-    added = lib.backfill(cache)
-    assert added == 2
-    img = lib.get("img1.png")
-    assert img["kind"] == "image" and img["width"] == 8 and img["height"] == 6
-    mdl = lib.get("mdl1.glb")
-    assert mdl["kind"] == "model" and mdl["licence"] == "CC-BY" and mdl["query"] == "Oak Tree"
-    assert json.loads(mdl["attributes"])["tris"] == 900   # kind-specific field lives in attributes
-    assert lib.backfill(cache) == 0  # nothing new the second time
-
-
 def test_vector_search_returns_nearest_and_records_space(tmp_path):
     lib = _lib(tmp_path)
     if not lib.has_vectors:
@@ -265,20 +233,7 @@ def test_vector_search_filters_by_kind(tmp_path):
     assert [h["id"] for h in lib.vector_search([1.0, 0.0], kind="model")] == ["mdl.glb"]
 
 
-def test_backfill_recovers_prompt_from_world_doc(tmp_path):
-    cache = tmp_path / "assets"
-    cache.mkdir()
-    buf = io.BytesIO()
-    Image.new("RGB", (4, 4), "red").save(buf, "PNG")
-    (cache / "img1.png").write_bytes(buf.getvalue())
-    world = {"entities": [{"id": "e1", "meta": {"image_id": "img1.png", "prompt": "a sunset"}}]}
-
-    lib = _lib(tmp_path)
-    lib.backfill(cache, world)
-    assert lib.get("img1.png")["prompt"] == "a sunset"
-
-
-def test_transparent_column_roundtrips_and_missing_query(tmp_path):
+def test_transparent_column_roundtrips(tmp_path):
     lib = _lib(tmp_path)
     lib.upsert("op.png", kind="image", filename="op.png", label="opaque", transparent=0)
     lib.upsert("tr.png", kind="image", filename="tr.png", label="cutout", transparent=1)
@@ -286,8 +241,6 @@ def test_transparent_column_roundtrips_and_missing_query(tmp_path):
     assert lib.get("tr.png")["transparent"] == 1
     assert lib.get("op.png")["transparent"] == 0
     assert lib.get("un.png")["transparent"] is None
-    # only the un-checked row (NULL) with a filename is a backfill target
-    assert [a["id"] for a in lib.images_missing_transparency()] == ["un.png"]
 
 
 def test_migration_v4_to_v5_adds_column_without_wiping_data(tmp_path):
