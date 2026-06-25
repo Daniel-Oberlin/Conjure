@@ -1190,7 +1190,8 @@ async def edit_image(req: EditSceneImageRequest) -> dict:
           "set": {"components.material.src": new.url, "meta.image_id": new.id, "meta.prompt": req.prompt}}],
         origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "id": req.id, "image_id": new.id}
+    return {"ok": True, "id": req.id, "image_id": new.id,
+            "provider": new.provider, "model": new.model, "w": new.w, "h": new.h}
 
 
 class OutpaintSceneRequest(BaseModel):
@@ -1223,7 +1224,8 @@ async def outpaint_image(req: OutpaintSceneRequest) -> dict:
                   "meta.image_id": new.id}}],
         origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "id": req.id, "image_id": new.id}
+    return {"ok": True, "id": req.id, "image_id": new.id,
+            "provider": new.provider, "model": new.model, "w": new.w, "h": new.h}
 
 
 class SkyboxFromSceneRequest(BaseModel):
@@ -1247,7 +1249,8 @@ async def skybox_from_image(req: SkyboxFromSceneRequest) -> dict:
     new = IMAGES[out["image_id"]]
     patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": new.url}}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "sky": new.url, "image_id": new.id}
+    return {"ok": True, "sky": new.url, "image_id": new.id,
+            "provider": new.provider, "model": new.model, "w": new.w, "h": new.h}
 
 
 @app.websocket("/ws")

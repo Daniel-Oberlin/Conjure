@@ -45,6 +45,13 @@ async def _post(path: str, body: dict[str, Any], timeout: float = 150.0) -> dict
         return resp.json()
 
 
+def _gen_info(out: dict) -> str:
+    """Provenance for a generated/edited image result (logged + shown to the LLM): which generator/
+    model produced it and at what size."""
+    dims = f" ({out['w']}x{out['h']})" if out.get("w") and out.get("h") else ""
+    return f"{out.get('provider', '?')}/{out.get('model', '?')}{dims}"
+
+
 async def _get(path: str, timeout: float = 10.0) -> dict:
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.get(f"{BASE}{path}")
@@ -455,8 +462,7 @@ async def generate_image(
     if not out.get("ok"):
         return f"Couldn't generate image: {out.get('error', 'unknown error')}."
     # Full provenance in the result (so the log shows which generator/model ran, dims, and alpha):
-    return (f"Generated image_id={out['image_id']} via {out['provider']}/{out.get('model', '?')} "
-            f"({out.get('w')}x{out.get('h')}, transparent={transparent}). "
+    return (f"Generated image_id={out['image_id']} via {_gen_info(out)}, transparent={transparent}. "
             f"Call place_image with this image_id to hang it.")
 
 
@@ -471,7 +477,7 @@ async def generate_skybox_image(prompt: str, generator: Optional[str] = None) ->
     out = await _post("/images/skybox", _body(prompt=prompt, generator=generator), timeout=200.0)
     if not out.get("ok"):
         return f"Couldn't generate skybox image: {out.get('error', 'unknown error')}."
-    return (f"Generated skybox image_id={out['image_id']} ({out['provider']}). "
+    return (f"Generated skybox image_id={out['image_id']} via {_gen_info(out)}. "
             f"Call set_skybox with this image_id to wrap the scene.")
 
 
@@ -487,7 +493,7 @@ async def generate_grounded_skybox_image(prompt: str, generator: Optional[str] =
     out = await _post("/images/grounded_skybox", _body(prompt=prompt, generator=generator), timeout=200.0)
     if not out.get("ok"):
         return f"Couldn't generate grounded skybox image: {out.get('error', 'unknown error')}."
-    return (f"Generated grounded skybox image_id={out['image_id']} ({out['provider']}). "
+    return (f"Generated grounded skybox image_id={out['image_id']} via {_gen_info(out)}. "
             f"Call set_grounded_skybox with this image_id to wrap the scene.")
 
 
@@ -507,7 +513,7 @@ async def edit_image(
         image_id=image_id, prompt=prompt, transparent=transparent, generator=generator))
     if not out.get("ok"):
         return f"Couldn't edit image: {out.get('error', 'unknown error')}."
-    return f"Edited → image_id={out['image_id']} ({out['provider']})."
+    return f"Edited → image_id={out['image_id']} via {_gen_info(out)}, transparent={transparent}."
 
 
 @mcp.tool()
@@ -526,7 +532,7 @@ async def outpaint_image(
         image_id=image_id, aspect=aspect, prompt=prompt, generator=generator))
     if not out.get("ok"):
         return f"Couldn't outpaint image: {out.get('error', 'unknown error')}."
-    return f"Outpainted → image_id={out['image_id']} ({out['provider']})."
+    return f"Outpainted → image_id={out['image_id']} via {_gen_info(out)} (aspect {aspect or '16:9'})."
 
 
 @mcp.tool()
@@ -539,7 +545,7 @@ async def skybox_from_image(image_id: str, generator: Optional[str] = None) -> s
     out = await _post("/images/skybox_from", _body(image_id=image_id, generator=generator), timeout=200.0)
     if not out.get("ok"):
         return f"Couldn't build a skybox image: {out.get('error', 'unknown error')}."
-    return (f"Built skybox image_id={out['image_id']} ({out['provider']}). "
+    return (f"Built skybox image_id={out['image_id']} via {_gen_info(out)}. "
             f"Call set_skybox with this image_id.")
 
 
@@ -663,7 +669,7 @@ async def edit_scene_image(id: str, prompt: str) -> str:
     out = await _post("/edit_image", {"id": id, "prompt": prompt})
     if not out.get("ok"):
         return f"Couldn't edit {id!r}: {out.get('error', 'unknown error')}."
-    return f"Updated the image {id}."
+    return f"Updated image {id} → {out['image_id']} via {_gen_info(out)}."
 
 
 @mcp.tool()
@@ -675,7 +681,7 @@ async def widen_scene_image(id: str, aspect: Optional[str] = None, prompt: Optio
     out = await _post("/outpaint_image", _body(id=id, aspect=aspect, prompt=prompt))
     if not out.get("ok"):
         return f"Couldn't widen {id!r}: {out.get('error', 'unknown error')}."
-    return f"Extended the image {id}."
+    return f"Extended image {id} → {out['image_id']} via {_gen_info(out)} (aspect {aspect or '16:9'})."
 
 
 @mcp.tool()
@@ -687,7 +693,7 @@ async def skybox_from_scene_image(id: str) -> str:
     out = await _post("/skybox_from_image", {"id": id}, timeout=200.0)
     if not out.get("ok"):
         return f"Couldn't build a skybox from {id!r}: {out.get('error', 'unknown error')}."
-    return "Wrapped the scene in that image as a 360° skybox."
+    return f"Wrapped the scene as a 360° skybox (image {out['image_id']} via {_gen_info(out)})."
 
 
 @mcp.tool()

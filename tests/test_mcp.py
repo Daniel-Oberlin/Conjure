@@ -155,9 +155,11 @@ async def test_set_grounded_skybox_omits_unset_dims_but_forwards_overrides(monke
 @respx.mock
 async def test_edit_scene_image_tool_is_entity_keyed(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    route = respx.post("http://world/edit_image").mock(return_value=httpx.Response(200, json={"ok": True}))
-    await _tool("edit_scene_image")(id="ent_image_1", prompt="make it night")
+    route = respx.post("http://world/edit_image").mock(return_value=httpx.Response(200, json={
+        "ok": True, "id": "ent_image_1", "image_id": "n.png", "provider": "Gemini", "w": 1024, "h": 1024}))
+    out = await _tool("edit_scene_image")(id="ent_image_1", prompt="make it night")
     assert json.loads(route.calls.last.request.content) == {"id": "ent_image_1", "prompt": "make it night"}
+    assert "n.png" in out and "Gemini" in out          # result carries the new id + provenance
 
 
 @respx.mock
