@@ -70,9 +70,11 @@ def _entity_line(e: dict) -> str:
     if meta.get("real"):
         desc = f"REAL {meta.get('semantic', 'surface')} (room surface — restyle/hide/mount, don't move)"
     elif "gltf-model" in comps:
-        desc = f"model {meta.get('title', '?')!r}"
+        aid = meta.get("asset_id") or comps["gltf-model"].rsplit("/", 1)[-1]
+        desc = f"model {meta.get('title', '?')!r} [asset {aid}]"
     elif comps.get("material", {}).get("src"):
-        desc = f"image {(meta.get('prompt') or meta.get('title') or '?')!r}"
+        aid = meta.get("image_id") or comps["material"]["src"].rsplit("/", 1)[-1]
+        desc = f"image {(meta.get('prompt') or meta.get('title') or '?')!r} [asset {aid}]"
     else:
         prim = comps.get("geometry", {}).get("primitive", "?")
         color = comps.get("material", {}).get("color", "?")

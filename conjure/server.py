@@ -288,7 +288,7 @@ def _get_image(image_id: str):
                 pass
         rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h,
                           provider=cat.get("provider") or "?", model=cat.get("model") or "?",
-                          prompt=cat.get("prompt") or "", op=op, transparent=transparent)
+                          prompt=cat.get("prompt") or cat.get("label") or "", op=op, transparent=transparent)
         IMAGES[image_id] = rec
     return rec, data, None
 

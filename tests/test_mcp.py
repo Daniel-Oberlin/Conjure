@@ -36,12 +36,13 @@ async def test_world_resource_lists_only_placed_objects(monkeypatch):
             {"id": "real_wall_1", "meta": {"real": True, "semantic": "wall"}, "transform": {"position": [0, 1, -2]}},
             {"id": "ent_asset_1", "meta": {"title": "Oak Tree"}, "components": {"gltf-model": "/assets/x.glb"},
              "transform": {"position": [0, 0, -3]}},
-            {"id": "img_1", "meta": {"prompt": "a dragon"}, "components": {"material": {"src": "/assets/d.png"}},
-             "transform": {"position": [1, 1, -2]}},
+            {"id": "img_1", "meta": {"prompt": "a dragon", "image_id": "d.png"},
+             "components": {"material": {"src": "/assets/d.png"}}, "transform": {"position": [1, 1, -2]}},
         ], "environment": {}}))
     out = await _tool("world_resource")()
     assert "ent_asset_1" in out and "Oak Tree" in out        # placed model listed
     assert "img_1" in out and "a dragon" in out              # placed image listed
+    assert "[asset d.png]" in out and "[asset x.glb]" in out  # library asset id linked for scene→library mapping
     assert "floor" not in out and "real_wall_1" not in out   # scaffold + real surfaces excluded
 
 
