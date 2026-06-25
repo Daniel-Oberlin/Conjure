@@ -6,6 +6,30 @@ delete them here) when done.
 
 ---
 
+## Models placed "facing me" come out 180° backwards
+
+**Status:** open · noticed 2026-06-25 during live director testing · **sign needs Quest confirm**
+
+**Symptom:** "lay out models of people in a circle around me, facing me" placed the circle correctly
+but rotated every figure 180° so they faced *away*. Consistent 180° (not random per-model) ⇒ a single
+convention error, not noise.
+
+**Cause:** `place_asset`/`place_cached_asset` take an LLM-computed `rotation` (server.py:464), so the
+director freehand-computes the yaw to face center — and the forward axis is inverted. The prompt says
+"session forward is −Z," but a GLB character at rotation [0,0,0] faces +Z, so "rotate to face center"
+flips sign and everyone turns their back. Images never hit this: `place_image` has **no rotation
+param** — it plants the plane at a fixed server-side orientation, so the LLM does no facing trig.
+
+**Proposed fix:** mirror the `on_surface` pattern (server computes orientation, LLM doesn't). Add a
+`face` option to `place_asset`/`place_cached_asset` — `face_toward: [x,y,z]` or `face: "user"` — and
+compute the yaw server-side so the model's forward points at the target. Then "facing me" needs zero
+LLM trig and the convention lives in one function (a one-line flip to correct once verified on device).
+Consistent with the prompt's existing "DON'T hand-compute a position or rotation" rule, which currently
+only covers images-on-surfaces.
+
+**Open decision:** the exact yaw **sign** is orientation math — confirm on a Quest before trusting it
+(same caveat as the window-upside-down item).
+
 ## Orphaned cache files after asset deletion — need a prune/GC sweep
 
 **Status:** open · noticed 2026-06-25
