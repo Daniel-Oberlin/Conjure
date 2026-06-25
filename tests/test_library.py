@@ -162,6 +162,17 @@ def test_retag_wide_images_as_skyboxes(tmp_path):
         assert any(h["id"] == "pano.png" for h in lib.vector_search([1.0, 0.0], kind="skybox"))
 
 
+def test_adopt_unscoped_heals_legacy_rows(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("legacy.png", kind="image", prompt="x")                       # no scope → NULL
+    lib.upsert("new.png", kind="image", scope="private/builder", prompt="y")
+    assert lib.adopt_unscoped("private/builder") == 1                         # only the NULL one
+    assert lib.get("legacy.png")["scope"] == "private/builder"
+    ids = {r["id"] for r in lib.query("SELECT id FROM assets", scope="private/builder")}
+    assert ids == {"legacy.png", "new.png"}                                  # now both visible to a scoped query
+    assert lib.adopt_unscoped("private/builder") == 0                        # idempotent
+
+
 def test_update_enforces_scope_and_syncs_kind(tmp_path):
     lib = _lib(tmp_path)
     lib.upsert("m.png", kind="skybox", scope="private/builder", label="beach")

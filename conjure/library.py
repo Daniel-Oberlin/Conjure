@@ -345,6 +345,15 @@ class AssetLibrary:
             self._db.commit()
         return len(ids)
 
+    def adopt_unscoped(self, scope: str) -> int:
+        """Assign `scope` to legacy assets that have none — e.g. anything backfilled before the scope
+        column existed. Without this they're orphaned: NULL matches no agent's scoped view, so the
+        scoped maintenance tools (query/update/delete) can't see them. Idempotent; returns rows fixed."""
+        with self._lock:
+            n = self._db.execute("UPDATE assets SET scope=? WHERE scope IS NULL", (scope,)).rowcount
+            self._db.commit()
+        return n
+
     def set_kind(self, id: str, kind: str) -> None:
         """Change an asset's kind, keeping the vector index's kind metadata in sync (so kind-filtered
         vector search stays correct — same dual-write as retag_skyboxes)."""

@@ -66,6 +66,9 @@ library = AssetLibrary(LIBRARY_DB)
 try:
     if library.count() == 0:
         library.backfill(ASSET_CACHE, store.doc, scope=DEFAULT_SCOPE)
+    adopted = library.adopt_unscoped(DEFAULT_SCOPE)   # heal legacy NULL-scope rows (pre-scope backfills)
+    if adopted:
+        print(f"[conjure] adopted {adopted} unscoped asset(s) into {DEFAULT_SCOPE}")
 except Exception as exc:  # noqa: BLE001
     print(f"[conjure] asset-library backfill skipped: {exc}")
 # The embedder is None unless the optional torch/transformers are installed — then vector write-through
