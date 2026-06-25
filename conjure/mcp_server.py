@@ -22,6 +22,9 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
+# The agent's catalog scope — a CAPABILITY injected by the director at MCP-server launch (env), NOT an
+# LLM tool argument. Every maintenance call carries it so the world server can enforce per-agent scope.
+SCOPE = os.environ.get("CONJURE_SCOPE", "private/builder")
 
 mcp = FastMCP("conjure-world")
 
@@ -411,25 +414,71 @@ async def place_cached_asset(
     return f"Reused {out.get('title')!r} as {out['id']}."
 
 
+# --- Catalog maintenance: inspect / update / delete library assets ----------------------------
+# query_assets reads (read-only SQL, scoped to you); update_asset is the single writer (fields,
+# kind, "default for X" alias, reject-for-a-query); delete_asset removes one. All are scoped to your
+# own assets. Use these for fixing the library ("relabel that x-wing", "make this my default dog",
+# "delete the duplicate", "how many transparent images do I have").
+
 @mcp.tool()
-async def correct_asset(
+async def query_assets(sql: str) -> str:
+    """Run a READ-ONLY SQL query over your asset catalog (SELECT or PRAGMA only) — for inspecting,
+    counting, or finding assets to fix. You only see your own assets.
+
+    The main table is `assets` (columns include: id, kind, source, label, prompt, query, params_json,
+    provider, model, width, height, licence, attribution, notes, tags, rating, favorite, embed_model,
+    created_at, last_used, use_count). Use `PRAGMA table_info(assets)` to list columns. Examples:
+    "SELECT kind, COUNT(*) FROM assets GROUP BY kind"; "SELECT id, label FROM assets WHERE label IS NULL".
+    """
+    out = await _post("/query_assets", _body(sql=sql, scope=SCOPE))
+    if not out.get("ok"):
+        return f"Query failed: {out.get('error', 'unknown error')}."
+    rows = out.get("rows", [])
+    if not rows:
+        return "0 rows."
+    head = list(rows[0].keys())
+    lines = [" | ".join(head)] + [" | ".join(str(r.get(c, "")) for c in head) for r in rows[:50]]
+    return f"{len(rows)} row(s):\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def update_asset(
     id: str,
     label: Optional[str] = None,
     query: Optional[str] = None,
     tags: Optional[str] = None,
+    notes: Optional[str] = None,
+    kind: Optional[str] = None,
+    rating: Optional[int] = None,
+    favorite: Optional[bool] = None,
+    default_for: Optional[str] = None,
     reject_for: Optional[str] = None,
 ) -> str:
-    """Fix a wrong asset match so it doesn't recur (e.g. an X-wing came back for 'starship enterprise').
+    """Update a library asset (one tool for all catalog fixes/curation). Pass only what you want to change.
 
-    label/query/tags: rewrite the asset's description to what it actually is. reject_for: a query this
-    asset should NEVER match again (e.g. reject_for='starship enterprise' on that X-wing). Use when the
-    user points out a mismatch.
+    label/query/tags/notes: the asset's description + keywords + freeform note. kind: re-tag it
+    (image | model | skybox | grounded_skybox | audio | photo) — e.g. mark a skybox as grounded.
+    rating (0–5)/favorite: your rating. default_for: make this the default for a phrase ('dog' →
+    reused when the user says 'add a dog'). reject_for: a query this asset should NEVER match again
+    (e.g. an x-wing wrongly returned for 'starship enterprise'). Covers 'remember this as my favorite',
+    'make this my default dog', 'relabel that', 'reject it for X'.
     """
-    out = await _post("/correct_asset",
-                      _body(id=id, label=label, query=query, tags=tags, reject_for=reject_for))
+    out = await _post("/update_asset", _body(
+        id=id, scope=SCOPE, label=label, query=query, tags=tags, notes=notes, kind=kind,
+        rating=rating, favorite=favorite, default_for=default_for, reject_for=reject_for))
     if not out.get("ok"):
-        return f"Couldn't correct {id!r}: {out.get('error', 'unknown error')}."
-    return "Fixed — updated the library so that won't recur."
+        return f"Couldn't update {id!r}: {out.get('error', 'unknown error')}."
+    return "Updated."
+
+
+@mcp.tool()
+async def delete_asset(id: str) -> str:
+    """Delete an asset from your library catalog (its entry, aliases, and search index). The cached
+    file is left on disk. Use to remove a bad or duplicate asset ('delete that duplicate woman model')."""
+    out = await _post("/delete_asset", _body(id=id, scope=SCOPE))
+    if not out.get("ok"):
+        return f"Couldn't delete {id!r}: {out.get('error', 'unknown error')}."
+    return f"Deleted {id} from the library."
 
 
 # --- Image procurement (produce/transform an image, get back an image_id) ----------------------
@@ -605,31 +654,6 @@ async def set_skybox(image_id: str) -> str:
     if not out.get("ok"):
         return f"Couldn't set the skybox: {out.get('error', 'unknown error')}."
     return "Wrapped the scene in that image as a 360° skybox."
-
-
-@mcp.tool()
-async def annotate_asset(
-    id: str,
-    note: Optional[str] = None,
-    tags: Optional[str] = None,
-    favorite: Optional[bool] = None,
-    rating: Optional[int] = None,
-    default_for: Optional[str] = None,
-) -> str:
-    """Record the user's OWN thoughts about an asset so it's easy to recall later (no scene change).
-
-    Use when the user expresses a preference or memory about a specific asset (an image_id, or a
-    model/skybox id from the library): 'remember this as my favorite city skybox' (note + favorite),
-    'this is an important family photo' (note + rating), 'make this my default dog' (default_for='dog'
-    — pins an alias so a later 'add a dog' reuses exactly this one). note: freeform text; tags:
-    comma/space-separated keywords; favorite: bool; rating: 0–5; default_for: the word/phrase this
-    asset should be the default for.
-    """
-    out = await _post("/annotate_asset", _body(id=id, note=note, tags=tags, favorite=favorite,
-                                               rating=rating, default_for=default_for))
-    if not out.get("ok"):
-        return f"Couldn't annotate that asset: {out.get('error', 'unknown error')}."
-    return "Noted — I'll remember that."
 
 
 @mcp.tool()

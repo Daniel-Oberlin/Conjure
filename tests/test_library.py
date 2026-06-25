@@ -162,6 +162,50 @@ def test_retag_wide_images_as_skyboxes(tmp_path):
         assert any(h["id"] == "pano.png" for h in lib.vector_search([1.0, 0.0], kind="skybox"))
 
 
+def test_update_enforces_scope_and_syncs_kind(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("m.png", kind="skybox", scope="private/builder", label="beach")
+    if lib.has_vectors:
+        lib.add_embedding("m.png", [1.0, 0.0], "fake")
+    ok, err = lib.update("m.png", scope="private/dm", kind="grounded_skybox")
+    assert not ok and "scope" in err                              # wrong scope refused
+    ok, _ = lib.update("m.png", scope="private/builder", kind="grounded_skybox", favorite=True)
+    assert ok
+    rec = lib.get("m.png")
+    assert rec["kind"] == "grounded_skybox" and rec["favorite"] == 1
+    if lib.has_vectors:                                           # vector's kind metadata synced too
+        assert any(h["id"] == "m.png" for h in lib.vector_search([1.0, 0.0], kind="grounded_skybox"))
+
+
+def test_delete_cleans_up_row_alias_relation_and_vector(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("a.png", kind="image", prompt="x")
+    lib.set_alias("dog", "a.png")
+    lib.add_relation("b.png", "a.png", "derived_from")
+    if lib.has_vectors:
+        lib.add_embedding("a.png", [1.0, 0.0], "fake")
+    ok, _ = lib.delete("a.png")
+    assert ok and lib.get("a.png") is None
+    assert lib.resolve_alias("dog") is None                       # alias removed
+    rel = lib._db.execute("SELECT COUNT(*) FROM relations WHERE from_id='a.png' OR to_id='a.png'").fetchone()[0]
+    assert rel == 0                                               # relations removed
+    if lib.has_vectors:
+        assert not lib.vector_search([1.0, 0.0])                  # vector removed
+
+
+def test_query_is_scoped_and_select_only(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("a.png", kind="image", scope="private/builder", label="mine")
+    lib.upsert("b.png", kind="image", scope="private/dm", label="theirs")
+    rows = lib.query("SELECT id FROM assets", scope="private/builder")
+    assert [r["id"] for r in rows] == ["a.png"]                   # only my scope's rows
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        lib.query("DELETE FROM assets", scope="private/builder")  # writes rejected
+    with _pytest.raises(ValueError):
+        lib.query("SELECT * FROM main.assets", scope="private/builder")  # bypass rejected
+
+
 def test_backfill_seeds_images_and_models_idempotently(tmp_path):
     cache = tmp_path / "assets"
     cache.mkdir()

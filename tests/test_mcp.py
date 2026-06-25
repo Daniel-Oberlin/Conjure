@@ -125,21 +125,34 @@ async def test_place_cached_asset_tool_forwards_id(monkeypatch):
 
 
 @respx.mock
-async def test_correct_asset_tool_forwards_relabel_and_reject(monkeypatch):
+async def test_update_asset_tool_forwards_fields_with_scope(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    route = respx.post("http://world/correct_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
-    await _tool("correct_asset")(id="x.glb", label="X-Wing", reject_for="starship enterprise")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/update_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("update_asset")(id="x.glb", label="X-Wing", reject_for="starship enterprise")
     assert json.loads(route.calls.last.request.content) == {
-        "id": "x.glb", "label": "X-Wing", "reject_for": "starship enterprise"}
+        "id": "x.glb", "scope": "private/builder", "label": "X-Wing", "reject_for": "starship enterprise"}
 
 
 @respx.mock
-async def test_annotate_asset_tool_forwards_curation(monkeypatch):
+async def test_delete_asset_tool_forwards_id_with_scope(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    route = respx.post("http://world/annotate_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
-    await _tool("annotate_asset")(id="s.png", note="my favorite city skybox", default_for="city sky")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/delete_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("delete_asset")(id="dup.glb")
+    assert json.loads(route.calls.last.request.content) == {"id": "dup.glb", "scope": "private/builder"}
+
+
+@respx.mock
+async def test_query_assets_tool_forwards_sql_with_scope(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/query_assets").mock(return_value=httpx.Response(200, json={
+        "ok": True, "rows": [{"kind": "image", "n": 3}]}))
+    out = await _tool("query_assets")(sql="SELECT kind, COUNT(*) AS n FROM assets GROUP BY kind")
     assert json.loads(route.calls.last.request.content) == {
-        "id": "s.png", "note": "my favorite city skybox", "default_for": "city sky"}
+        "sql": "SELECT kind, COUNT(*) AS n FROM assets GROUP BY kind", "scope": "private/builder"}
+    assert "image" in out and "3" in out                     # rows rendered for the LLM
 
 
 @respx.mock

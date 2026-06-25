@@ -345,6 +345,87 @@ class AssetLibrary:
             self._db.commit()
         return len(ids)
 
+    def set_kind(self, id: str, kind: str) -> None:
+        """Change an asset's kind, keeping the vector index's kind metadata in sync (so kind-filtered
+        vector search stays correct — same dual-write as retag_skyboxes)."""
+        with self._lock:
+            self._db.execute("UPDATE assets SET kind=? WHERE id=?", (kind, id))
+            if self._vec:
+                try:
+                    self._db.execute("UPDATE assets_vec SET kind=? WHERE asset_id=?", (kind, id))
+                except sqlite3.OperationalError:
+                    pass
+            self._db.commit()
+
+    def update(self, id: str, *, scope: Optional[str] = None, kind: Optional[str] = None,
+               default_for: Optional[str] = None, reject_for: Optional[str] = None,
+               favorite: Optional[bool] = None, **fields: Any) -> tuple[bool, Optional[str]]:
+        """The single invariant-preserving mutator (subsumes the old correct_asset/annotate_asset). Sets
+        scalar fields (label/query/tags/notes/rating via upsert → FTS synced), `kind` (→ vector kind
+        synced), a `default_for` alias, and/or a `reject_for` exclusion. If `scope` is given, the asset
+        must be in it. Returns (ok, error)."""
+        rec = self.get(id)
+        if rec is None:
+            return False, f"no asset {id!r}"
+        if scope is not None and rec.get("scope") != scope:
+            return False, f"asset {id!r} is not in your scope"
+        sets = {k: v for k, v in fields.items() if k in _UPSERT_COLS and v is not None}
+        if favorite is not None:
+            sets["favorite"] = 1 if favorite else 0
+        if sets:
+            self.upsert(id, **sets)
+        if kind is not None:
+            self.set_kind(id, kind)
+        if default_for:
+            self.set_alias(default_for, id)
+        if reject_for:
+            self.reject(id, reject_for)
+        return True, None
+
+    def delete(self, id: str, *, scope: Optional[str] = None) -> tuple[bool, Optional[str]]:
+        """Remove an asset from the catalog: its row, FTS entry, aliases, relations, and vector. (Bytes
+        in the cache are left — regenerable, and may still be referenced by a placed entity.) Scope-
+        enforced. Returns (ok, error)."""
+        rec = self.get(id)
+        if rec is None:
+            return False, f"no asset {id!r}"
+        if scope is not None and rec.get("scope") != scope:
+            return False, f"asset {id!r} is not in your scope"
+        with self._lock:
+            self._db.execute("DELETE FROM assets WHERE id=?", (id,))
+            self._db.execute("DELETE FROM assets_fts WHERE id=?", (id,))
+            self._db.execute("DELETE FROM aliases WHERE asset_id=?", (id,))
+            self._db.execute("DELETE FROM relations WHERE from_id=? OR to_id=?", (id, id))
+            if self._vec:
+                try:
+                    self._db.execute("DELETE FROM assets_vec WHERE asset_id=?", (id,))
+                except sqlite3.OperationalError:
+                    pass
+            self._db.commit()
+        return True, None
+
+    def query(self, sql: str, *, scope: str, limit: int = 200) -> list[dict]:
+        """Read-only SQL over the catalog, **scoped to `scope`**: runs on a fresh read-only connection
+        where `assets` is a temp view filtered to the scope (so the caller can only see its own rows),
+        with SELECT/PRAGMA-only + single-statement validation. Raises ValueError on a disallowed query."""
+        s = sql.strip().rstrip(";").strip()
+        low = s.lower()
+        if not (low.startswith("select") or low.startswith("pragma")):
+            raise ValueError("only SELECT / PRAGMA queries are allowed")
+        if ";" in s:
+            raise ValueError("only a single statement is allowed")
+        if re.search(r"\b(attach|detach)\b|\bmain\s*\.|\btemp\s*\.|pragma\s+\w+\s*=", low):
+            raise ValueError("disallowed (no ATTACH, schema-qualified tables, or PRAGMA writes)")
+        if not re.fullmatch(r"[\w/.-]+", scope or ""):     # scope is inlined into the view → sanitize
+            raise ValueError("bad scope")
+        ro = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+        ro.row_factory = sqlite3.Row
+        try:
+            ro.execute(f"CREATE TEMP VIEW assets AS SELECT * FROM main.assets WHERE scope = '{scope}'")
+            return [dict(r) for r in ro.execute(s).fetchmany(limit)]
+        finally:
+            ro.close()
+
     def clear_embedding(self, id: str) -> None:
         """Remove an asset's vector and forget its space (so reindex won't think it's embedded)."""
         with self._lock:

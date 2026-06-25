@@ -196,18 +196,43 @@ def test_placed_model_is_cataloged(srv, client):
     assert cat["licence"] == ASSET_RECORD.licence and cat["use_count"] == 1
 
 
-def test_annotate_asset_records_curation_and_alias(srv, client):
+def test_update_asset_sets_fields_kind_and_alias(srv, client):
     iid = client.post("/images/generate", json={"prompt": "a shiba inu"}).json()["image_id"]
-    r = client.post("/annotate_asset", json={"id": iid, "note": "my default dog", "favorite": True,
-                                             "default_for": "dog"})
+    r = client.post("/update_asset", json={"id": iid, "notes": "my default dog", "favorite": True,
+                                           "kind": "photo", "default_for": "dog"})
     assert r.json()["ok"] is True
     cat = srv.library.get(iid)
-    assert cat["notes"] == "my default dog" and cat["favorite"] == 1
+    assert cat["notes"] == "my default dog" and cat["favorite"] == 1 and cat["kind"] == "photo"
     assert srv.library.resolve_alias("dog") == iid      # alias pinned → reuse override
 
 
-def test_annotate_unknown_asset_errors(srv, client):
-    assert client.post("/annotate_asset", json={"id": "nope.png", "note": "x"}).json()["ok"] is False
+def test_update_asset_unknown_errors(srv, client):
+    assert client.post("/update_asset", json={"id": "nope.png", "notes": "x"}).json()["ok"] is False
+
+
+def test_update_asset_out_of_scope_is_refused(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "x"}).json()["image_id"]  # scope private/builder
+    r = client.post("/update_asset", json={"id": iid, "scope": "private/dungeonmaster", "notes": "z"})
+    assert r.json()["ok"] is False and "scope" in r.json()["error"]
+
+
+def test_delete_asset_removes_from_catalog(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
+    assert client.post("/delete_asset", json={"id": iid}).json()["ok"] is True
+    assert srv.library.get(iid) is None
+    assert client.post("/delete_asset", json={"id": iid}).json()["ok"] is False   # gone now
+
+
+def test_query_assets_is_scoped_and_read_only(srv, client):
+    client.post("/images/generate", json={"prompt": "a red dragon"})
+    rows = client.post("/query_assets", json={"sql": "SELECT COUNT(*) AS n FROM assets"}).json()
+    assert rows["ok"] and rows["rows"][0]["n"] >= 1
+    # a different scope sees none of builder's assets
+    other = client.post("/query_assets", json={
+        "sql": "SELECT COUNT(*) AS n FROM assets", "scope": "private/dungeonmaster"}).json()
+    assert other["rows"][0]["n"] == 0
+    # writes are rejected
+    assert client.post("/query_assets", json={"sql": "DELETE FROM assets"}).json()["ok"] is False
 
 
 def test_library_search_returns_tiered_candidates(srv, client):
@@ -235,13 +260,13 @@ def test_place_cached_asset_rejects_non_model(srv, client):
     assert r["ok"] is False and "not a model" in r["error"]
 
 
-def test_correct_asset_relabels_and_rejects(srv, client):
+def test_update_asset_relabels_and_rejects(srv, client):
     # an X-wing wrongly cataloged under "starship enterprise"
     srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
     client.post("/place_asset", json={"query": "starship enterprise", "size_m": 2})
     mid = f"{ASSET_RECORD.hash}.glb"
     assert client.post("/library/search", json={"query": "starship enterprise"}).json()["confidence_tier"] == "strong"
-    r = client.post("/correct_asset", json={"id": mid, "label": "X-Wing", "reject_for": "starship enterprise"})
+    r = client.post("/update_asset", json={"id": mid, "label": "X-Wing", "reject_for": "starship enterprise"})
     assert r.json()["ok"] is True
     assert srv.library.get(mid)["label"] == "X-Wing"            # relabeled
     after = client.post("/library/search", json={"query": "starship enterprise"}).json()
@@ -369,9 +394,9 @@ def test_expected_routes_exist(srv):
     # Contract: the endpoints the MCP tools + client depend on must exist.
     paths = {getattr(r, "path", None) for r in srv.app.routes}
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
-              "/outpaint_image", "/set_skybox", "/set_grounded_skybox", "/annotate_asset",
-              "/library/search", "/place_cached_asset", "/correct_asset", "/library/reindex",
-              "/library/retag-skyboxes", "/library/caption",
+              "/outpaint_image", "/set_skybox", "/set_grounded_skybox",
+              "/library/search", "/place_cached_asset", "/query_assets", "/update_asset",
+              "/delete_asset", "/library/reindex", "/library/retag-skyboxes", "/library/caption",
               "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/grounded_skybox",
               "/images/edit", "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",

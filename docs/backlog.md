@@ -67,8 +67,9 @@ grounded from regular. So they're buried as plain `skybox`. (Grounded-ness *does
 regular city skybox as grounded would smear the ground — so we can't just collapse it into "an
 application choice".)
 
-**Proposed fix:** make **`set_grounded_skybox(image_id)` re-tag** that asset's catalog kind →
-`grounded_skybox` (usage informs the catalog) — auto-recovers the existing two the moment they're
-applied grounded, and keeps the catalog truthful. Optionally also a way to set kind directly
-(extend `correct_asset` with a `kind` field) for manual marking. Forward generation already tags
-correctly, so this is mainly about the backfilled/retagged history.
+**Partial fix shipped:** manual re-tagging is now possible — `update_asset(id, kind='grounded_skybox')`
+(or "re-tag this skybox as grounded" to the agent). So the existing two are fixable by hand.
+
+**Remaining nice-to-have:** make **`set_grounded_skybox(image_id)` re-tag** the asset's kind →
+`grounded_skybox` automatically (usage informs the catalog) — so applying one grounded keeps the
+catalog truthful without manual marking. Forward generation already tags correctly.

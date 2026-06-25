@@ -109,12 +109,14 @@ def route_turn(text: str, roster, active: str) -> Route:
 
 # --------------------------------------------------------------------------- the director
 
-def _stdio_params(spec: ServerSpec, settings: Settings):
-    """Build stdio launch params from a registry ServerSpec: map a bare 'python' to this interpreter
-    and substitute ${world_url} in the env (so the registry stays interpreter-/host-agnostic)."""
+def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder"):
+    """Build stdio launch params from a registry ServerSpec: map a bare 'python' to this interpreter,
+    substitute ${world_url} in the env, and inject the agent's catalog SCOPE as a capability (so the
+    MCP server's maintenance tools are scoped to this agent — persistence-model.md, not an LLM arg)."""
     from mcp import StdioServerParameters
     command = sys.executable if spec.command in ("python", "python3") else spec.command
     env = {**os.environ, **{k: v.replace("${world_url}", settings.world_url) for k, v in spec.env.items()}}
+    env["CONJURE_SCOPE"] = f"private/{agent}"
     return StdioServerParameters(command=command, args=list(spec.args), env=env)
 
 
@@ -161,7 +163,7 @@ class Director:
             raise RuntimeError(
                 f"agent {agent!r}: v1 launches exactly one MCP server (got {len(specs)}: "
                 f"{[s.name for s in specs]}).")
-        params = _stdio_params(specs[0], settings)
+        params = _stdio_params(specs[0], settings, agent)
 
         close_errlog = None
         if errlog is None:

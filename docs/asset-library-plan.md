@@ -281,10 +281,16 @@ Notes:
 
 ### Phase 2 — Library tools (explicit, director-facing) ✅ DONE
 *(Phase 3 director prompt policy landed with it.)* Implemented: `library.find()` (tiered, reject-aware),
-`reject()`, the `scope` seam (schema v4, written as `private/builder`); endpoints `/library/search`,
-`/place_cached_asset`, `/correct_asset`; MCP tools `search_library` / `place_cached_asset` /
-`correct_asset`; and the reuse-before-create policy in `agents/builder/prompt.md`. Query embedding runs
-off the loop. Tests across library/server/mcp; full suite green.
+the `scope` seam (schema v4, written as `private/builder`); `search_library` / `place_cached_asset`;
+and the reuse-before-create policy in `agents/builder/prompt.md`. Query embedding runs off the loop.
+
+**Maintenance tools (consolidated):** the earlier `correct_asset`/`annotate_asset` (which overlapped)
+were retired into a single scoped CRUD set — **`query_assets`** (read-only SQL, scope-filtered via a
+temp view on a RO connection), **`update_asset`** (the one mutator: label/query/tags/notes/kind/rating/
+favorite + `default_for` alias + `reject_for`; keeps FTS + vector-kind + aliases consistent via
+`library.update()`), and **`delete_asset`** (`library.delete()`). The agent's **scope is a capability**
+injected at MCP-server launch (`CONJURE_SCOPE` env, not an LLM arg) and enforced per-id on writes/
+deletes and via the scoped view on reads. Tests across library/server/mcp; full suite green.
 - `search_library(query?, image_id?, kind?)` MCP tool → **read-only**; returns
   `{candidates: [{id, kind, label, created, last_used, licence, match}], confidence_tier}` where
   tier ∈ `strong|weak|none` is **computed server-side** from staged matching (exact → FTS5 → vector
@@ -384,8 +390,11 @@ candidates before generating, many-matches auto-pick, and light reuse announceme
    domain. (Principle 6, §5.)
 5. ✅ **Shared contract over separate stores** — common Asset/repository interface; toolkit extracted
    at Phase 5 from two real stores; stores app-agnostic; one pinned embedding space. (Principle 7, §5.)
-6. ✅ **User curation first-class** — `notes`/`tags`/`rating`/`favorite` + `aliases` override, via an
-   `annotate_asset` tool; unifies with NAS-imported curation. (Principle 8, §6–7.)
+6. ✅ **User curation first-class** — `notes`/`tags`/`rating`/`favorite` + `aliases` override, via the
+   consolidated **`update_asset`** tool (replaced the overlapping `annotate_asset`/`correct_asset`);
+   unifies with NAS-imported curation. (Principle 8, §6–7.)
+8. ✅ **Scoped catalog maintenance** — `query_assets` (RO SQL) / `update_asset` / `delete_asset`, with
+   the agent's scope injected as a capability at MCP launch and enforced server-side. (§7.)
 7. ✅ **Embedder backend posture** — model = SigLIP; backend swappable behind the `Embedder`
    interface. **torch+transformers = dev default**, isolated as optional group `conjure[embed]`;
    **ONNX = lean/Pi deploy** (export once frozen); **hosted = thin/offline-incapable**. torch is one

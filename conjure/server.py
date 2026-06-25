@@ -791,29 +791,60 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
     return {"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]}
 
 
-class CorrectAssetRequest(BaseModel):
+# --- catalog maintenance: scoped CRUD over the asset library (docs/asset-library-plan.md). The
+#     `scope` on each request is set by the agent's MCP server (a capability, not an LLM arg) and
+#     enforced here. query_assets is read-only + scope-filtered; update/delete are per-id scope-checked.
+
+class QueryAssetsRequest(BaseModel):
+    sql: str
+    scope: str = DEFAULT_SCOPE
+
+
+@app.post("/query_assets")
+async def query_assets(req: QueryAssetsRequest) -> dict:
+    """Read-only SQL over the catalog, scoped to the caller (SELECT/PRAGMA only, single statement)."""
+    try:
+        return {"ok": True, "rows": library.query(req.sql, scope=req.scope)}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — surface a bad query, don't 500
+        return {"ok": False, "error": f"query failed: {exc}"}
+
+
+class UpdateAssetRequest(BaseModel):
     id: str
-    label: Optional[str] = None       # rewrite the machine description …
+    scope: str = DEFAULT_SCOPE
+    label: Optional[str] = None
     query: Optional[str] = None
     tags: Optional[str] = None
-    reject_for: Optional[str] = None  # … and/or exclude this asset from future matches on a query
+    notes: Optional[str] = None
+    kind: Optional[str] = None
+    rating: Optional[int] = None
+    favorite: Optional[bool] = None
+    default_for: Optional[str] = None   # pin an alias ("dog" → this asset)
+    reject_for: Optional[str] = None    # exclude this asset from a query's matches
 
 
-@app.post("/correct_asset")
-async def correct_asset(req: CorrectAssetRequest) -> dict:
-    """Fix a mismatch (e.g. an X-wing returned for 'starship enterprise'): relabel its description
-    and/or reject it for a query so it won't match that again. No scene effect."""
-    if library.get(req.id) is None:
-        return {"ok": False, "error": f"no asset {req.id!r} in the library"}
-    fields = {k: v for k, v in (("label", req.label), ("query", req.query), ("tags", req.tags))
-              if v is not None}
-    if not fields and not req.reject_for:
-        return {"ok": False, "error": "nothing to correct (pass label/query/tags or reject_for)"}
-    if fields:
-        library.upsert(req.id, **fields)
-    if req.reject_for:
-        library.reject(req.id, req.reject_for)
-    return {"ok": True, "id": req.id}
+@app.post("/update_asset")
+async def update_asset(req: UpdateAssetRequest) -> dict:
+    """The single catalog mutator: set fields / kind / alias / reject on an asset (scope-checked).
+    Keeps FTS + vector-kind + aliases consistent (subsumes the old correct_asset/annotate_asset)."""
+    ok, err = library.update(req.id, scope=req.scope, label=req.label, query=req.query, tags=req.tags,
+                             notes=req.notes, kind=req.kind, rating=req.rating, favorite=req.favorite,
+                             default_for=req.default_for, reject_for=req.reject_for)
+    return {"ok": True, "id": req.id} if ok else {"ok": False, "error": err}
+
+
+class DeleteAssetRequest(BaseModel):
+    id: str
+    scope: str = DEFAULT_SCOPE
+
+
+@app.post("/delete_asset")
+async def delete_asset(req: DeleteAssetRequest) -> dict:
+    """Remove an asset from the catalog (row + aliases/relations/vector; bytes kept). Scope-checked."""
+    ok, err = library.delete(req.id, scope=req.scope)
+    return {"ok": True, "id": req.id} if ok else {"ok": False, "error": err}
 
 
 class RetagSkyboxesRequest(BaseModel):
@@ -1141,25 +1172,6 @@ async def set_grounded_skybox(req: SetGroundedSkyboxRequest) -> dict:
     patch = store.apply_patch([{"op": "env", "set": {"sky": sky}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
     return {"ok": True, "sky": rec.url, "image_id": rec.id}
-
-
-class AnnotateAssetRequest(BaseModel):
-    id: str                                  # the catalog asset id (an image_id, or "<hash>.glb")
-    note: Optional[str] = None
-    tags: Optional[str] = None
-    favorite: Optional[bool] = None
-    rating: Optional[int] = None
-    default_for: Optional[str] = None        # pin an alias: "dog" → this asset (a reuse override)
-
-
-@app.post("/annotate_asset")
-async def annotate_asset(req: AnnotateAssetRequest) -> dict:
-    """Record the user's own curation of a library asset (notes/tags/favorite/rating + a 'default for
-    X' alias). No scene effect — it just makes the asset more findable and reusable later."""
-    if not library.annotate(req.id, note=req.note, tags=req.tags, favorite=req.favorite,
-                             rating=req.rating, default_for=req.default_for):
-        return {"ok": False, "error": f"no asset {req.id!r} in the library"}
-    return {"ok": True, "id": req.id}
 
 
 # --- scene editors (hybrid): one-call edits of an image already in the scene (entity id). They
