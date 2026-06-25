@@ -12,9 +12,10 @@ of data with *different* stores — but they share one scoping layer.
 ## 1. Namespace
 
 ```
-<visibility>/<agent>/<category>/<name>
+<visibility>/<agent>/<category>/<name…>
 
   private/builder/worlds/bladerunner1
+  private/dungeonmaster/worlds/castle-quest/dining-hall   ← worlds may nest (a hierarchical name)
   private/builder/assets/<hash>.glb
   public/builder/assets/<hash>.glb        ← documented use case; not built yet
   private/dungeonmaster/worlds/...         ← future agent; never sees builder's private content
@@ -24,7 +25,12 @@ of data with *different* stores — but they share one scoping layer.
   can see it). Private = only this agent; public = world-readable, this-agent-writable.
 - **agent** — `builder`, `dungeonmaster`, … the owning agent.
 - **category** — `assets` | `worlds` | `state`. **Routes to the typed store** (§4–5).
-- **name** — content hash (assets) or a chosen name (worlds).
+- **name** — content hash (assets), or a chosen name (worlds). A world name may be a **hierarchical
+  path** (`castle-quest/dining-hall`) so an agent can organize its worlds in a tree. Each segment is
+  slug-normalized independently (case/spaces/underscores/hyphens interchangeable) and traversal
+  (`..`) is rejected, so a world is always confined to its scope. The trust boundary is still the
+  `<visibility>/<agent>` prefix — that's runtime-injected and never an LLM argument; the world *path*
+  below it is user/agent-chosen and freely structured.
 
 ## 2. Scope is a capability, not a parameter (the security crux)
 
