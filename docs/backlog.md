@@ -136,24 +136,3 @@ room-inward-facing** mounting rotation (normal toward the room interior, zero ro
 position + room center, used for *all* on-surface placements. Alt: normalize window/door surface
 rotations at ingest so "up" is consistent. Either way, **verify on a Quest** (window orientation is
 device/capture-dependent; can't confirm blind).
-
-## Grounded skyboxes indistinguishable from regular in the library
-
-**Status:** open · noticed 2026-06-24
-
-**Symptom:** generated two grounded skyboxes, but the director finds none — `search_library(
-kind="grounded_skybox")` returns nothing; all 15 skyboxes are kind `skybox`.
-
-**Cause:** the **forward path is correct** (`generate_grounded_skybox_image` → op `grounded_skybox` →
-kind `grounded_skybox`). But the two existing ones are **data-lost**: backfill records no `op` (→ all
-`image`), then `retag-skyboxes` flipped wide images → `skybox`, and the aspect heuristic can't tell
-grounded from regular. So they're buried as plain `skybox`. (Grounded-ness *does* matter — applying a
-regular city skybox as grounded would smear the ground — so we can't just collapse it into "an
-application choice".)
-
-**Partial fix shipped:** manual re-tagging is now possible — `update_asset(id, kind='grounded_skybox')`
-(or "re-tag this skybox as grounded" to the agent). So the existing two are fixable by hand.
-
-**Remaining nice-to-have:** make **`set_grounded_skybox(image_id)` re-tag** the asset's kind →
-`grounded_skybox` automatically (usage informs the catalog) — so applying one grounded keeps the
-catalog truthful without manual marking. Forward generation already tags correctly.
