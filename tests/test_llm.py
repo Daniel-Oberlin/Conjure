@@ -256,7 +256,7 @@ def _registry(**keys):
 
 def test_default_routes_to_gemini_for_every_op():
     reg = _registry(google_api_key="g", openai_api_key="o")
-    for op in ("generate", "edit", "outpaint", "skybox", "skybox_from"):
+    for op in ("generate", "edit", "outpaint", "skybox", "skybox_from", "grounded_skybox"):
         gen, err = select_generator(reg, op)
         assert err is None and gen.name == "Gemini", op
 

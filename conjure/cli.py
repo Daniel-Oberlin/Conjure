@@ -6,6 +6,7 @@ The world server must be running (`python -m conjure`). Two ways to drive it:
         conjure-cli asset "oak tree" --size 7
         conjure-cli image "an oil painting of a red dragon"
         conjure-cli skybox "a misty pine forest"
+        conjure-cli grounded-skybox "a meadow you can stand in"
         conjure-cli add box --color red --pos 0 1 -3
         conjure-cli world
 
@@ -165,6 +166,23 @@ def cmd_skybox(s: Settings, a) -> None:
     _say(_post(s, "/set_skybox", {"image_id": procured["image_id"]}), a.verbose, "set skybox")
 
 
+def cmd_grounded_skybox(s: Settings, a) -> None:
+    gen_body = {"prompt": a.prompt}
+    if a.generator:
+        gen_body["generator"] = a.generator
+    _working("generating grounded skybox (high-res — this can take a minute)…")
+    procured = _post(s, "/images/grounded_skybox", gen_body)
+    if procured.get("ok") is False:
+        _say(procured, a.verbose, "")
+        return
+    set_body = {"image_id": procured["image_id"]}
+    if a.height is not None:
+        set_body["height"] = a.height
+    if a.radius is not None:
+        set_body["radius"] = a.radius
+    _say(_post(s, "/set_grounded_skybox", set_body), a.verbose, "set grounded skybox")
+
+
 def cmd_texture(s: Settings, a) -> None:
     # generate an image, then map it onto a room surface (floor/ceiling/wall/all)
     gen_body = {"prompt": a.prompt}
@@ -188,6 +206,35 @@ def cmd_style(s: Settings, a) -> None:
     if a.opacity is not None:
         body["opacity"] = a.opacity
     _say(_post(s, "/style_surface", body), a.verbose, f"styled {a.target}")
+
+
+def cmd_reindex(s: Settings, a) -> None:
+    body = {"kind": a.kind} if a.kind else {}
+    r = _post(s, "/library/reindex", body)
+    if r.get("ok") is False:
+        _say(r, a.verbose, "")
+        return
+    cleared = f", cleared {r['cleared']} stale" if r.get("cleared") else ""
+    print(f"reindex: queued {r.get('queued', 0)} asset(s) for embedding{cleared} "
+          "(runs in the background on the server)")
+
+
+def cmd_caption(s: Settings, a) -> None:
+    r = _post(s, "/library/caption", {})
+    if r.get("ok") is False:
+        _say(r, a.verbose, "")
+        return
+    print(f"caption: queued {r.get('queued', 0)} asset(s) for description "
+          "(runs in the background on the server)")
+
+
+def cmd_retag_skyboxes(s: Settings, a) -> None:
+    body = {"min_aspect": a.min_aspect} if a.min_aspect is not None else {}
+    r = _post(s, "/library/retag-skyboxes", body)
+    if r.get("ok") is False:
+        _say(r, a.verbose, "")
+        return
+    print(f"re-tagged {r.get('retagged', 0)} wide image(s) as skyboxes")
 
 
 def cmd_annotate(s: Settings, a) -> None:
@@ -275,8 +322,13 @@ def cmd_say(s: Settings, a) -> None:
     asyncio.run(_director(s, once, a.verbose))
 
 
+# Whole-line inputs that leave the REPL (case-insensitive). Exact match only, so "exit the room" is
+# still passed through as an instruction.
+_QUIT_WORDS = {":q", ":quit", "q", "quit", "exit", "bye", "goodbye"}
+
+
 def cmd_repl(s: Settings, a) -> None:
-    print("Conjure REPL — type an instruction (':q' to quit).\n"
+    print("Conjure REPL — type an instruction ('exit' or 'quit' to leave).\n"
           "Switch LLM with 'let me talk to Gemini' or address one for a turn ('Claude, make a cat').\n"
           "Type 'conjure open shell' for deterministic commands (switch agent/llm, status, …).")
 
@@ -289,7 +341,7 @@ def cmd_repl(s: Settings, a) -> None:
                 print()
                 return
             line = line.strip()
-            if line in (":q", ":quit"):
+            if line.lower() in _QUIT_WORDS:
                 return
             if line:
                 yield line
@@ -310,6 +362,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("world", help="print the current world").set_defaults(fn=cmd_world)
 
+    a = sub.add_parser("reindex", help="embed cataloged assets that have no vector yet")
+    a.set_defaults(fn=cmd_reindex)
+    a.add_argument("--kind", help="restrict to image | model | skybox | …")
+
+    a = sub.add_parser("retag-skyboxes", help="re-tag wide backfilled images as skyboxes")
+    a.set_defaults(fn=cmd_retag_skyboxes)
+    a.add_argument("--min-aspect", dest="min_aspect", type=float, help="width/height threshold (default 1.9)")
+
+    sub.add_parser("caption", help="backfill labels for assets with none (image→text via Gemini)") \
+        .set_defaults(fn=cmd_caption)
+
     a = sub.add_parser("add", help="add a primitive shape"); a.set_defaults(fn=cmd_add)
     a.add_argument("shape"); a.add_argument("--color", default="white"); a.add_argument("--name"); _pos(a)
 
@@ -323,6 +386,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("skybox", help="generate a 360 skybox"); a.set_defaults(fn=cmd_skybox)
     a.add_argument("prompt"); a.add_argument("--generator", help="force an image generator")
+
+    a = sub.add_parser("grounded-skybox", help="generate a 360 skybox projected onto the floor")
+    a.set_defaults(fn=cmd_grounded_skybox)
+    a.add_argument("prompt"); a.add_argument("--generator", help="force an image generator")
+    a.add_argument("--height", type=float, help="metres above the ground (default 1.6)")
+    a.add_argument("--radius", type=float, help="ground reach before the horizon (default 30)")
 
     a = sub.add_parser("texture", help="map a generated image onto a room surface"); a.set_defaults(fn=cmd_texture)
     a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")

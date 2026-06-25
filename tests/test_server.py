@@ -1,6 +1,8 @@
 """Integration tests for the world-server endpoints (the seams our MCP tools + client depend on),
 with external services faked. No network, no keys, no LLM."""
 
+import pytest
+
 from conftest import ASSET_RECORD, FakeAssetResolver
 
 from conjure.schema import Patch
@@ -140,6 +142,219 @@ def test_set_skybox_takes_an_id(srv, client):
     assert sky["src"] == f"/assets/{r.json()['image_id']}"
 
 
+def test_generated_image_is_cataloged(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
+    cat = srv.library.get(iid)
+    assert cat and cat["kind"] == "image" and cat["prompt"] == "a red dragon" and cat["provider"] == "Gemini"
+
+
+def test_generated_image_is_embedded_when_embedder_present(srv, client):
+    from conjure.embeddings import FakeEmbedder
+
+    if not srv.library.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    srv.embedder = FakeEmbedder(dim=8)
+    iid = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
+    cat = srv.library.get(iid)
+    assert cat["embed_model"] == "fake" and cat["embed_dim"] == 8         # vector written through
+    hits = srv.library.vector_search(srv.embedder.embed_image(b"anything"))
+    assert any(h["id"] == iid for h in hits)                              # and it's searchable
+
+
+async def test_background_embed_lands_after_return(srv):
+    """In prod mode the embed runs off the request path: scheduled, not done on return; lands once
+    awaited. (exact/FTS still match the asset immediately — only its vector is briefly eventual.)"""
+    import asyncio
+
+    from conjure.embeddings import FakeEmbedder
+
+    if not srv.library.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    srv.embedder = FakeEmbedder(dim=8)
+    srv._EMBED_BACKGROUND = True
+    srv.library.upsert("x.png", kind="image", prompt="x")
+
+    srv._embed_asset("x.png", text="x")                       # returns immediately (schedules a task)
+    assert srv.library.get("x.png")["embed_model"] is None    # not embedded yet — it's off-path
+    await asyncio.gather(*srv._embed_tasks)                    # let the background embed complete
+    assert srv.library.get("x.png")["embed_model"] == "fake"  # vector landed after the return
+
+
+def test_image_metadata_survives_restart(srv, client):
+    iid = client.post("/images/skybox", json={"prompt": "a sunset beach"}).json()["image_id"]
+    srv.IMAGES.clear()                       # simulate a restart: in-memory store gone, catalog persists
+    rec, _, err = srv._get_image(iid)
+    assert err is None
+    assert rec.provider == "Gemini" and rec.prompt == "a sunset beach"  # recovered, not "?"
+
+
+def test_placed_model_is_cataloged(srv, client):
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    client.post("/place_asset", json={"query": "oak tree", "size_m": 2})
+    cat = srv.library.get(f"{ASSET_RECORD.hash}.glb")
+    assert cat and cat["kind"] == "model" and cat["query"] == "oak tree"
+    assert cat["licence"] == ASSET_RECORD.licence and cat["use_count"] == 1
+
+
+def test_update_asset_sets_fields_kind_and_alias(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "a shiba inu"}).json()["image_id"]
+    r = client.post("/update_asset", json={"id": iid, "notes": "my default dog", "favorite": True,
+                                           "kind": "photo", "default_for": "dog"})
+    assert r.json()["ok"] is True
+    cat = srv.library.get(iid)
+    assert cat["notes"] == "my default dog" and cat["favorite"] == 1 and cat["kind"] == "photo"
+    assert srv.library.resolve_alias("dog") == iid      # alias pinned → reuse override
+
+
+def test_update_asset_unknown_errors(srv, client):
+    assert client.post("/update_asset", json={"id": "nope.png", "notes": "x"}).json()["ok"] is False
+
+
+def test_update_asset_out_of_scope_is_refused(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "x"}).json()["image_id"]  # scope private/builder
+    r = client.post("/update_asset", json={"id": iid, "scope": "private/dungeonmaster", "notes": "z"})
+    assert r.json()["ok"] is False and "scope" in r.json()["error"]
+
+
+def test_delete_asset_removes_from_catalog(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
+    assert client.post("/delete_asset", json={"id": iid}).json()["ok"] is True
+    assert srv.library.get(iid) is None
+    assert client.post("/delete_asset", json={"id": iid}).json()["ok"] is False   # gone now
+
+
+def test_query_assets_is_scoped_and_read_only(srv, client):
+    client.post("/images/generate", json={"prompt": "a red dragon"})
+    rows = client.post("/query_assets", json={"sql": "SELECT COUNT(*) AS n FROM assets"}).json()
+    assert rows["ok"] and rows["rows"][0]["n"] >= 1
+    # a different scope sees none of builder's assets
+    other = client.post("/query_assets", json={
+        "sql": "SELECT COUNT(*) AS n FROM assets", "scope": "private/dungeonmaster"}).json()
+    assert other["rows"][0]["n"] == 0
+    # writes are rejected
+    assert client.post("/query_assets", json={"sql": "DELETE FROM assets"}).json()["ok"] is False
+
+
+def test_library_search_returns_tiered_candidates(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
+    r = client.post("/library/search", json={"query": "a red dragon"}).json()
+    assert r["ok"] and r["confidence_tier"] == "strong"          # exact intent match
+    assert any(c["id"] == iid for c in r["candidates"])
+    assert client.post("/library/search", json={"query": "nonexistent thing"}).json()["confidence_tier"] == "none"
+
+
+def test_place_cached_asset_reuses_a_model(srv, client, tmp_path):
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    client.post("/place_asset", json={"query": "oak tree", "size_m": 2})   # catalogs the model
+    (tmp_path / f"{ASSET_RECORD.hash}.glb").write_bytes(b"glTF" + bytes(8))  # its bytes in the cache
+    r = client.post("/place_cached_asset", json={"id": f"{ASSET_RECORD.hash}.glb", "size_m": 2}).json()
+    assert r["ok"] is True
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert ent["components"]["gltf-model"] == f"/assets/{ASSET_RECORD.hash}.glb"
+    assert ent["transform"]["scale"] == [0.5, 0.5, 0.5]          # bbox 4 tall, size_m 2 → scale 0.5
+
+
+def test_place_cached_asset_rejects_non_model(srv, client):
+    iid = client.post("/images/generate", json={"prompt": "x"}).json()["image_id"]
+    r = client.post("/place_cached_asset", json={"id": iid}).json()
+    assert r["ok"] is False and "not a model" in r["error"]
+
+
+def test_update_asset_relabels_and_rejects(srv, client):
+    # an X-wing wrongly cataloged under "starship enterprise"
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    client.post("/place_asset", json={"query": "starship enterprise", "size_m": 2})
+    mid = f"{ASSET_RECORD.hash}.glb"
+    assert client.post("/library/search", json={"query": "starship enterprise"}).json()["confidence_tier"] == "strong"
+    r = client.post("/update_asset", json={"id": mid, "label": "X-Wing", "reject_for": "starship enterprise"})
+    assert r.json()["ok"] is True
+    assert srv.library.get(mid)["label"] == "X-Wing"            # relabeled
+    after = client.post("/library/search", json={"query": "starship enterprise"}).json()
+    assert not any(c["id"] == mid for c in after["candidates"])  # excluded after reject
+
+
+def test_library_reindex_embeds_missing_assets(srv, client, tmp_path):
+    import io
+
+    from PIL import Image
+
+    from conjure.embeddings import FakeEmbedder
+    if not srv.library.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    srv.embedder = FakeEmbedder(dim=8)
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buf, "PNG")
+    (tmp_path / "img.png").write_bytes(buf.getvalue())              # bytes the image embed reads
+    srv.library.upsert("img.png", kind="image", filename="img.png", prompt="a red square")
+    srv.library.upsert("oak.glb", kind="model", filename="oak.glb", label="Oak Tree", query="oak")
+
+    r = client.post("/library/reindex", json={}).json()
+    assert r["ok"] and r["queued"] == 1                            # only the image (visual)
+    assert srv.library.get("img.png")["embed_model"] == "fake"     # image embedded from pixels
+    assert srv.library.get("oak.glb")["embed_model"] is None       # models are NOT vector-embedded
+
+
+def test_library_reindex_clears_stale_model_vectors(srv, client):
+    from conjure.embeddings import FakeEmbedder
+    if not srv.library.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    srv.embedder = FakeEmbedder(dim=8)
+    srv.library.upsert("m.glb", kind="model", label="Oak Tree")
+    srv.library.add_embedding("m.glb", [1.0] + [0.0] * 7, "fake")  # a stale text-derived model vector
+    assert srv.library.get("m.glb")["embed_model"] == "fake"
+    r = client.post("/library/reindex", json={}).json()
+    assert r["cleared"] >= 1
+    assert srv.library.get("m.glb")["embed_model"] is None          # purged from the visual index
+
+
+def test_library_reindex_without_embedder_errors(srv, client):
+    assert client.post("/library/reindex", json={}).json()["ok"] is False  # embedder is None by default
+
+
+def test_caption_backfills_labels_and_makes_them_keyword_searchable(srv, client, tmp_path):
+    import io
+
+    from PIL import Image
+
+    from conjure.captioner import FakeCaptioner
+    srv.captioner = FakeCaptioner()
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buf, "PNG")
+    (tmp_path / "bare.png").write_bytes(buf.getvalue())
+    srv.library.upsert("bare.png", kind="image", filename="bare.png")   # no label
+    srv.library.upsert("kept.png", kind="image", filename="kept.png", label="a red dragon")
+
+    r = client.post("/library/caption", json={}).json()
+    assert r["ok"] and r["queued"] == 1                                  # only the bare one
+    cap = srv.library.get("bare.png")["label"]
+    assert cap and cap.startswith("image ")                              # fake caption stored as label
+    assert srv.library.get("kept.png")["label"] == "a red dragon"        # existing label untouched
+    token = cap.split()[-1]                                              # the unique hex in the caption
+    assert any(c["id"] == "bare.png" for c in srv.library.search(token))  # keyword-searchable now
+
+
+def test_caption_without_captioner_errors(srv, client):
+    assert client.post("/library/caption", json={}).json()["ok"] is False  # captioner None by default
+
+
+def test_retag_skyboxes_makes_them_findable_by_kind(srv, client):
+    srv.library.upsert("pano.png", kind="image", width=2100, height=900, prompt="a sunset beach")
+    r = client.post("/library/retag-skyboxes", json={}).json()
+    assert r["ok"] and r["retagged"] == 1
+    assert srv.library.get("pano.png")["kind"] == "skybox"
+    res = client.post("/library/search", json={"query": "a sunset beach", "kind": "skybox"}).json()
+    assert any(c["id"] == "pano.png" for c in res["candidates"])  # now found specifically as a skybox
+
+
+def test_set_grounded_skybox_marks_the_env(srv, client):
+    r = client.post("/images/grounded_skybox", json={"prompt": "a meadow"})
+    assert r.json()["ok"] is True
+    assert client.post("/set_grounded_skybox", json={"image_id": r.json()["image_id"]}).json()["ok"] is True
+    sky = client.get("/world").json()["environment"]["sky"]
+    assert sky["src"] == f"/assets/{r.json()['image_id']}"
+    assert sky["grounded"] is True and sky["height"] == 1.6 and sky["radius"] == 30.0
+
+
 def test_list_generators_reports_capabilities_and_defaults(srv, client):
     body = client.get("/images/generators").json()
     assert body["ok"] and [g["name"] for g in body["generators"]] == ["Gemini"]
@@ -179,9 +394,12 @@ def test_expected_routes_exist(srv):
     # Contract: the endpoints the MCP tools + client depend on must exist.
     paths = {getattr(r, "path", None) for r in srv.app.routes}
     for p in ("/", "/world", "/patch", "/place_asset", "/place_image", "/edit_image",
-              "/outpaint_image", "/set_skybox", "/skybox_from_image", "/assets/{filename}", "/ws",
-              "/images/generators", "/images/generate", "/images/skybox", "/images/edit",
-              "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",
+              "/outpaint_image", "/set_skybox", "/set_grounded_skybox",
+              "/library/search", "/place_cached_asset", "/query_assets", "/update_asset",
+              "/delete_asset", "/library/reindex", "/library/retag-skyboxes", "/library/caption",
+              "/skybox_from_image", "/assets/{filename}", "/ws",
+              "/images/generators", "/images/generate", "/images/skybox", "/images/grounded_skybox",
+              "/images/edit", "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",
               "/texture_surface", "/style_surface", "/tunnel"):
         assert p in paths, f"missing route {p}"
 
@@ -236,15 +454,17 @@ def test_wall_holes_update_on_recapture(srv, client):
 
 
 def test_friendly_id_stable_after_remove_readd(srv, client):
-    # The friendly number is derived from the surface id (real_wall_1 → 1), so a surface that vanishes
-    # (transient tracking loss → replace removes it) and comes back keeps the SAME number by
-    # construction — no climbing, no put-down/pick-up renumbering.
+    # The friendly number is derived from the surface id (real_wall_1 → 1), so a surface that's pruned
+    # and comes back keeps the SAME number by construction — no climbing, no put-down/pick-up renumber.
     def fid():
         return next(e for e in _entities(client) if e["id"] == "real_wall_1")["meta"]["friendly_id"]
     wall = {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}
     client.post("/room", json={"client_id": "h1", "surfaces": [wall]})
     first = fid()
-    client.post("/room", json={"client_id": "h1", "surfaces": []})          # wall drops out
+    client.post("/room", json={"client_id": "h1", "surfaces": []})           # one sparse capture
+    assert any(e["id"] == "real_wall_1" for e in _entities(client))          # transient drop is kept
+    for _ in range(srv._REMOVE_AFTER_ABSENT):                                # sustained absence → pruned
+        client.post("/room", json={"client_id": "h1", "surfaces": []})
     assert not any(e["id"] == "real_wall_1" for e in _entities(client))
     client.post("/room", json={"client_id": "h1", "surfaces": [wall]})       # and returns
     assert fid() == first                                                    # same number, not higher
@@ -357,12 +577,15 @@ def test_style_surface_needs_color_or_opacity(srv, client):
     assert client.post("/style_surface", json={"target": "wall"}).json()["ok"] is False
 
 
-def test_room_replace_removes_stale_surfaces(srv, client):
+def test_room_replace_prunes_only_after_repeated_absence(srv, client):
     client.post("/room", json={"client_id": "h1", "surfaces": [
         {"id": "a", "semantic": "wall", "position": [0, 1, -2]},
         {"id": "b", "semantic": "wall", "position": [1, 1, -2]}]})
-    client.post("/room", json={"client_id": "h1", "surfaces": [
-        {"id": "a", "semantic": "wall", "position": [0, 1, -2]}]})
+    just_a = {"client_id": "h1", "surfaces": [{"id": "a", "semantic": "wall", "position": [0, 1, -2]}]}
+    client.post("/room", json=just_a)                                 # b missing from ONE capture
+    assert {"a", "b"} <= {e["id"] for e in _entities(client)}         # survives the transient drop
+    for _ in range(srv._REMOVE_AFTER_ABSENT):                         # sustained absence → genuinely gone
+        client.post("/room", json=just_a)
     ids = {e["id"] for e in _entities(client)}
     assert "a" in ids and "b" not in ids
 

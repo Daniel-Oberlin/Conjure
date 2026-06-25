@@ -22,7 +22,6 @@
         body: JSON.stringify({ tag: tag, msg: msg }) }).catch(function () {});
     } catch (e) { /* never let logging break a frame */ }
   }
-  function orientLog(msg) { debugLog("orient", msg); }
 
   // Custom component: a flat grid of lines in the entity's local X-Y plane (rotate -90 on X for a
   // floor). Used for the holodeck grid; also available to generated content.
@@ -162,7 +161,8 @@
   var roomState = { active: false, passthrough: false, defaultVisible: false,
                     annotations: false, annotationDims: false,
                     edgesVisible: true, edgeColor: INFO_COLOR, edgeOpacity: 1,
-                    annotationColor: INFO_COLOR, annotationOpacity: 1 };
+                    annotationColor: INFO_COLOR, annotationOpacity: 1,
+                    skybox: false, grounded: false };
 
   // A floating, camera-facing label on a surface: "<semantic> (<friendly id>)", with dimensions only
   // when room.annotationDims is on. Toggled by environment.room.annotations so you can read each
@@ -205,14 +205,21 @@
   function applyImmersion() {
     // The synthetic holodeck shell (grid floor/walls) + the void sky belong ONLY to "unbounded VR"
     // (room inactive). Whenever the room is active — AR passthrough OR a virtual room — hide them so
-    // you see the room, not the grid/void competing with it. (In AR the a-sky would also occlude the
-    // passthrough camera, so it must be hidden there too.)
+    // you see the room, not the grid/void competing with it. (In AR the void a-sky would also occlude
+    // the passthrough camera, so it must be hidden there too.)
     var inRoom = roomState.active;
     document.querySelectorAll("[data-scaffold]").forEach(function (el) {
       el.setAttribute("visible", !inRoom);
     });
+    // Exception: a custom skybox IMAGE *is* the chosen environment, so keep it visible even with the
+    // room active — its opaque sphere deliberately wraps/occludes passthrough so you see the skybox,
+    // not the physical room. Only the void color sky is restricted to unbounded VR. A GROUNDED skybox
+    // replaces the plain sphere with a ground-projected dome, so when it's active hide the sphere and
+    // show the grounded mesh instead (it likewise wraps the scene whenever the room is active).
     var sky = document.getElementById("sky");
-    if (sky) sky.setAttribute("visible", !inRoom);
+    if (sky) sky.setAttribute("visible", !roomState.grounded && (roomState.skybox || !inRoom));
+    var grounded = document.getElementById("grounded-sky");
+    if (grounded) grounded.setAttribute("visible", roomState.grounded);
     var reals = document.querySelectorAll("[data-real]");
     reals.forEach(function (el) {
       applyRealVisibility(el);
@@ -289,14 +296,32 @@
   function applyEnv(env) {
     env = env || {};
     var sky = document.getElementById("sky");
-    if (sky) {
-      if (env.sky && env.sky.src) {
+    var groundedSky = document.getElementById("grounded-sky");
+    if (sky && (env.sky || env.background)) {
+      if (env.sky && env.sky.src && env.sky.grounded) {
+        // Grounded skybox: a ground-projected dome (see grounded-skybox.js) replaces the plain sphere
+        // so you stand on the scene's floor. Drive the component; immersion hides the sphere for it.
+        if (groundedSky) groundedSky.setAttribute("grounded-sky", {
+          src: env.sky.src,
+          height: env.sky.height || 1.6,
+          radius: env.sky.radius || 30,
+        });
+        roomState.skybox = true;
+        roomState.grounded = true;
+      } else if (env.sky && env.sky.src) {
         // 360 equirectangular image: set the full material so the texture isn't tinted and renders
-        // on the inside of the sky sphere.
+        // on the inside of the sky sphere. Mark a custom skybox so immersion keeps it visible (it
+        // wraps the scene even when the room is active — see applyImmersion).
         sky.setAttribute("material", { shader: "flat", side: "back", color: "#FFFFFF", src: env.sky.src });
+        if (groundedSky) groundedSky.setAttribute("grounded-sky", { src: "" });   // tear down any grounded dome
+        roomState.skybox = true;
+        roomState.grounded = false;
       } else {
         var color = (env.sky && env.sky.color) || env.background;
         if (color) sky.setAttribute("material", { shader: "flat", side: "back", color: color, src: "" });
+        if (groundedSky) groundedSky.setAttribute("grounded-sky", { src: "" });
+        roomState.skybox = false;   // back to the void color sky → only shows in unbounded VR
+        roomState.grounded = false;
       }
     }
     if (env.fog) document.querySelector("a-scene").setAttribute("fog", env.fog);
@@ -329,8 +354,6 @@
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
     if (reals.length) docSurfaces = reals;     // available to seed the room frame on reload
     console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)");
-    orientLog("snapshot carried " + reals.length + " real surfaces → seed "
-      + (reals.length >= 3 ? "READY" : "too small (won't seed)"));  // DEBUG
   }
 
   // Apply a single dotted-path set from an `update` op.
@@ -382,12 +405,17 @@
     (patch.ops || []).forEach(function (op) {
       if (op.op === "add") {
         applyEntity(op.entity);
+        debugLog("patch", "add " + op.entity.id + " [" +
+          Object.keys((op.entity.components) || {}).join(",") + "]");
       } else if (op.op === "remove") {
         var el = document.getElementById(op.id);
         if (el && el.parentNode) el.parentNode.removeChild(el);
+        debugLog("patch", "remove " + op.id + " found=" + !!el);   // found=false ⇒ silent no-op
       } else if (op.op === "update") {
         var t = document.getElementById(op.id);
         if (t) Object.keys(op.set).forEach(function (p) { setPath(t, p, op.set[p]); });
+        debugLog("patch", "update " + op.id + " found=" + !!t + " {" +
+          Object.keys(op.set || {}).join(",") + "}");           // found=false ⇒ silent no-op
       } else if (op.op === "env") {
         applyEnv(nest(op.set));
       }
@@ -440,13 +468,9 @@
         this._reloc = false;        // showing the passthrough "re-localizing" fallback?
         this._refSeq = 0;           // counter for minting brand-new surface ids
         var self = this;
-        orientLog("room-capture init — page (re)loaded, reference reset (ref=0)");  // DEBUG
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
         // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
-        this._onReset = function () {
-          orientLog("refspace RESET (recenter / boundary re-entry) → forcing re-capture");  // DEBUG
-          self.lastPost = 0;
-        };
+        this._onReset = function () { self.lastPost = 0; };
       },
       // Force an immediate re-capture (manual realign — see the /room/realign signal below).
       recapture: function () { this.lastPost = 0; },
@@ -508,11 +532,14 @@
       },
       _relocalize: function (on) {
         this._reloc = on;
-        orientLog("RELOCALIZING " + (on ? "ON — revealing passthrough + hint" : "OFF — re-locked"));  // DEBUG
+        // A low-frequency, useful signal: tracking lost its lock (passthrough fallback shown) / recovered.
+        debugLog("track", on ? "lost lock — showing passthrough + hint" : "re-locked — restoring world");
         var root = document.getElementById("world-root"), sky = document.getElementById("sky");
+        var groundedSky = document.getElementById("grounded-sky");
         if (on) {
           if (root) root.setAttribute("visible", false);     // hide the stale/wrong virtual world…
           if (sky) sky.setAttribute("visible", false);       // …and the sky, so AR passthrough shows
+          if (groundedSky) groundedSky.setAttribute("visible", false);   // …and any grounded skybox
           document.querySelectorAll("[data-scaffold]").forEach(function (el) { el.setAttribute("visible", false); });
         } else {
           if (root) root.setAttribute("visible", true);
@@ -608,7 +635,6 @@
         });
         if (levelA > 0 && levelY < 0.98) {
           this._regStat = "settling ny=" + levelY.toFixed(2);
-          orientLog("SETTLING ny=" + levelY.toFixed(2) + " — gravity not reconverged, holding");  // DEBUG
           this._markLost(time);
           this.lastPost = time - 1700; return;
         }
@@ -616,11 +642,6 @@
         // Recover the frame transform; on the first capture bootstrap the reference, otherwise require a
         // confident registration — a low-confidence result means we're not locked, so hold + retry fast.
         var reg = this._register(cur), canEstablish = this._ref.length === 0;
-        orientLog("frame: " + (reg ? "REGISTERED (" + this._regStat + ")"
-          : (canEstablish ? "ESTABLISH-FRESH — no seed yet (ref=0, docSurfaces="
-              + (docSurfaces ? docSurfaces.length : "none") + ")"
-            : "HOLD not-locked (" + this._regStat + ")"))
-          + " | ref=" + this._ref.length + " haveT=" + this._haveT);  // DEBUG
         if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - 1700; return; }   // not locked → hold
         if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }   // re-locked → restore
         var registered = !!reg, Tmat;

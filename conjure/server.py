@@ -12,12 +12,15 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 from uuid import uuid4
 
@@ -27,7 +30,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .assets import AssetResolver
+from .captioner import build_captioner
 from .config import get_settings
+from .embeddings import build_embedder
+from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .schema import Patch
 from .world import WorldStore
@@ -38,10 +44,21 @@ LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settin
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 ASSET_CACHE = ROOT / ".cache" / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
+LIBRARY_DB = ROOT / ".cache" / "library.db"   # durable asset catalog (docs/asset-library-plan.md)
+# The agent namespace assets are written under (docs/persistence-model.md). A data seam for now —
+# single agent, no enforcement yet; the builder is the only writer.
+DEFAULT_SCOPE = "private/builder"
 # scripts/tunnel.sh writes the current cloudflared URL here; /tunnel redirects to it (a short, fixed
 # LAN address you can type on the Quest instead of the long random trycloudflare URL each session).
 TUNNEL_FILE = ROOT / ".cache" / "tunnel_url"
 MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+
+def _has_alpha(im) -> bool:
+    """True if an opened PIL image carries real (non-opaque) transparency."""
+    if im.mode in ("RGBA", "LA"):
+        return im.getchannel("A").getextrema()[0] < 255   # some pixel non-opaque
+    return "transparency" in im.info
+
 
 settings = get_settings()  # loads .env
 store = WorldStore.load(SAMPLE_WORLD)
@@ -49,6 +66,110 @@ clients: set[WebSocket] = set()
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
+# Durable catalog of every procured asset. Rows are written at ingest (generation/placement) with all
+# fields set — scope, transparency, provenance — and the schema upgrades non-destructively (library.py
+# _migrate), so no startup heal/seed pass is needed. Back up library.db to protect curation; a lost
+# catalog is not rebuilt from the cache files (they carry none of the captions/embeddings/curation).
+library = AssetLibrary(LIBRARY_DB)
+# The embedder is None unless the optional torch/transformers are installed — then vector write-through
+# is simply skipped and the catalog runs on FTS/exact only. Lazy: no model loads until first embed.
+embedder = build_embedder(settings)
+
+# Embedding is an *enrichment*, not part of procurement, so in production it runs OFF the request path:
+# the asset is already procured/returned, and its vector lands a beat later (exact/FTS still match it
+# immediately; only semantic search for that one asset is briefly eventual). A lock serializes model
+# access (one forward pass at a time); a thread keeps the blocking torch call off the event loop.
+# Tests flip _EMBED_BACKGROUND off for deterministic, inline write-through.
+_EMBED_BACKGROUND = True
+_embed_lock = asyncio.Lock()
+_embed_tasks: set[asyncio.Task] = set()   # strong refs so fire-and-forget tasks aren't GC'd mid-flight
+# Only VISUAL assets go in the vector index (embedded from pixels). SigLIP text↔text similarity sits
+# at a much higher scale than text↔image, so mixing text-derived vectors (e.g. model titles) would
+# make them dominate every text query and bury the images. Models are matched by FTS/exact on their
+# title instead (plan §1; visual model embedding via thumbnails is a noted follow-up).
+_VISUAL_KINDS = {"image", "skybox", "grounded_skybox", "photo"}
+
+
+def _embed_now(id: str, *, image: bytes | None = None, text: str | None = None) -> None:
+    """Blocking embed + store. Never raises (enrichment, not a requirement)."""
+    if embedder is None:
+        return
+    try:
+        vec = embedder.embed_image(image) if image is not None else embedder.embed_text(text or "")
+        library.add_embedding(id, vec, embedder.name)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[conjure] embed failed for {id}: {exc}")
+
+
+async def _embed_bg(id: str, *, image: bytes | None = None, text: str | None = None) -> None:
+    async with _embed_lock:                       # one model forward pass at a time
+        await asyncio.to_thread(_embed_now, id, image=image, text=text)
+
+
+def _embed_asset(id: str, *, image: bytes | None = None, text: str | None = None) -> None:
+    """Schedule an asset's embedding. Off the request path when a loop is running (prod); inline
+    otherwise (tests / no loop)."""
+    if embedder is None:
+        return
+    if _EMBED_BACKGROUND:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass                                  # no running loop → fall through to inline
+        else:
+            task = asyncio.create_task(_embed_bg(id, image=image, text=text))
+            _embed_tasks.add(task)
+            task.add_done_callback(_embed_tasks.discard)
+            return
+    _embed_now(id, image=image, text=text)
+
+
+def _embed_one(asset: dict) -> None:
+    """Embed a single VISUAL catalog row (used by reindex) from its bytes. Reads bytes lazily so a
+    batch doesn't hold every image in memory at once. Non-visual assets (models) are skipped — they're
+    matched by FTS/exact on their title, not by vector (see _VISUAL_KINDS)."""
+    fn = asset.get("filename")
+    if asset.get("kind") in _VISUAL_KINDS and fn and (ASSET_CACHE / fn).exists():
+        _embed_now(asset["id"], image=(ASSET_CACHE / fn).read_bytes())
+
+
+async def _reindex_bg(assets: list[dict]) -> None:
+    n = 0
+    for a in assets:
+        async with _embed_lock:                   # serialize with normal write-through embeds
+            await asyncio.to_thread(_embed_one, a)
+        n += 1
+    print(f"[conjure] reindex: embedded {n} catalog asset(s)")
+
+
+# Caption backfill — fills the `label` of bare assets (no prompt/title) via image→text vision, so they
+# read in search results and match keyword/FTS. None unless a provider/key is configured.
+captioner = build_captioner(settings)
+
+
+async def _caption_one(asset: dict) -> None:
+    """Caption one asset and store it as the label. Best-effort (never raises into the pass)."""
+    if captioner is None:
+        return
+    fn = asset.get("filename")
+    if not (fn and (ASSET_CACHE / fn).exists()):
+        return
+    mime = MEDIA_TYPES.get(Path(fn).suffix.lower(), "image/png")
+    try:
+        text = await captioner.caption((ASSET_CACHE / fn).read_bytes(), mime=mime,
+                                       skybox=asset.get("kind") in ("skybox", "grounded_skybox"))
+        if text:
+            library.upsert(asset["id"], label=text, attributes={"captioned": True})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[conjure] caption failed for {asset['id']}: {exc}")
+
+
+async def _caption_bg(assets: list[dict]) -> None:
+    n = 0
+    for a in assets:
+        await _caption_one(a)                      # serial — gentle on the provider's rate limits
+        n += 1
+    print(f"[conjure] caption: described {n} asset(s)")
 # Every configured image generator (keyed by casual name "Gemini"/"Chat"); the procurement
 # endpoints mediate which one services a request (conjure.llm.select_generator).
 image_generators = build_image_generators(settings)
@@ -57,7 +178,7 @@ TARGET_SIZE_M = 1.8  # fit a placed model's largest dimension to ~this many mete
 
 # --- image store: procurement is decoupled from scene use. Procuring an image caches its bytes and
 # registers an ImageRecord; scene tools (place_image/set_skybox) reference it by id. -------------
-PROCURE_OPS = ("generate", "edit", "outpaint", "skybox", "skybox_from")
+PROCURE_OPS = ("generate", "edit", "outpaint", "skybox", "skybox_from", "grounded_skybox")
 
 
 @dataclass
@@ -102,6 +223,30 @@ def _normalize(record, pos: list[float], target_m: float) -> tuple[list[float], 
     return position, [s, s, s]
 
 
+def _kind_for_op(op: str) -> str:
+    """The catalog `kind` for a procured image, by how it was made."""
+    if op in ("skybox", "skybox_from"):
+        return "skybox"
+    if op == "grounded_skybox":
+        return "grounded_skybox"
+    return "image"
+
+
+def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
+                     bbox_min, bbox_max, pos, size_m) -> dict:
+    """Build the `add` op for a glTF model entity, auto-scaled to sit on the floor and carrying its
+    license/attribution. Shared by /place_asset (web) and /place_cached_asset (library reuse)."""
+    rec = SimpleNamespace(bbox_min=bbox_min, bbox_max=bbox_max)
+    model_pos, model_scale = _normalize(rec, pos, size_m or TARGET_SIZE_M)
+    return {"op": "add", "entity": {
+        "id": eid,
+        "transform": {"position": model_pos, "scale": model_scale},
+        "components": {"gltf-model": f"/assets/{model_id}"},
+        "meta": {"title": title, "license": licence, "attribution": attribution, "creator": creator,
+                 "source": source, "tris": tris, "generated": False},
+    }}
+
+
 def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     """Write a procured image to the content store and register an ImageRecord; return it."""
     ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
@@ -111,6 +256,14 @@ def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h, provider=result.provider,
                       model=result.model, prompt=prompt, op=op, transparent=transparent)
     IMAGES[image_id] = rec
+    # Write through to the durable catalog (keyed on the prompt = intent), so reuse can find it later
+    # and its provenance survives a restart.
+    library.upsert(image_id, kind=_kind_for_op(op), scope=DEFAULT_SCOPE, source=f"cache://{image_id}",
+                   filename=image_id, label=prompt, prompt=prompt,
+                   params={"op": op, "transparent": transparent},
+                   provider=result.provider, model=result.model, width=w, height=h,
+                   transparent=1 if transparent else 0)
+    _embed_asset(image_id, image=result.data)   # embed the pixels into the shared space (best-effort)
     return rec
 
 
@@ -126,8 +279,17 @@ def _get_image(image_id: str):
     rec = IMAGES.get(image_id)
     if rec is None:
         w, h, transparent = _img_meta(data)
+        # Recover provenance from the catalog (survives restart) rather than the old "?" placeholders.
+        cat = library.get(image_id) or {}
+        op = "?"
+        if cat.get("params_json"):
+            try:
+                op = json.loads(cat["params_json"]).get("op", "?")
+            except (ValueError, TypeError):
+                pass
         rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h,
-                          provider="?", model="?", prompt="", op="?", transparent=transparent)
+                          provider=cat.get("provider") or "?", model=cat.get("model") or "?",
+                          prompt=cat.get("prompt") or cat.get("label") or "", op=op, transparent=transparent)
         IMAGES[image_id] = rec
     return rec, data, None
 
@@ -173,12 +335,7 @@ def _img_meta(data: bytes) -> tuple[int, int, bool]:
     from PIL import Image
 
     with Image.open(io.BytesIO(data)) as im:
-        w, h = im.size
-        if im.mode in ("RGBA", "LA"):
-            transparent = im.getchannel("A").getextrema()[0] < 255  # some pixel non-opaque
-        else:
-            transparent = "transparency" in im.info
-        return w, h, transparent
+        return im.size[0], im.size[1], _has_alpha(im)
 
 
 _NO_STORE = {"Cache-Control": "no-store"}  # avoid stale client during active dev
@@ -191,10 +348,12 @@ async def index() -> HTMLResponse:
     html = (CLIENT_DIR / "index.html").read_text()
     cm = int((CLIENT_DIR / "conjure-client.js").stat().st_mtime)
     sm = int((CLIENT_DIR / "room-snap.js").stat().st_mtime)
-    v = max(cm, sm)                          # badge reflects the newest of the two scripts
+    gm = int((CLIENT_DIR / "grounded-skybox.js").stat().st_mtime)
+    v = max(cm, sm, gm)                       # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
+    html = html.replace("/static/grounded-skybox.js", f"/static/grounded-skybox.js?v={gm}")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     # Tell the client whether debug logging is on, so it doesn't POST diagnostics when it's off.
     flag = "true" if settings.debug_log else "false"
@@ -226,6 +385,12 @@ async def room_snap_js() -> FileResponse:
     return FileResponse(CLIENT_DIR / "room-snap.js", media_type="application/javascript", headers=_NO_STORE)
 
 
+@app.get("/static/grounded-skybox.js")
+async def grounded_skybox_js() -> FileResponse:
+    # Explicit no-store route for the grounded-skybox module (loaded before conjure-client.js).
+    return FileResponse(CLIENT_DIR / "grounded-skybox.js", media_type="application/javascript", headers=_NO_STORE)
+
+
 @app.get("/world")
 async def world() -> dict:
     return store.doc
@@ -238,6 +403,7 @@ async def reset_world() -> dict:
     once a headset is back in AR."""
     global store
     store = WorldStore.load(SAMPLE_WORLD)
+    _surface_absence.clear()                 # fresh room session
     await _broadcast({"type": "snapshot", "world": store.doc})
     return {"ok": True, "rev": store.doc["rev"]}
 
@@ -327,11 +493,20 @@ def _default_surface_material(semantic: str) -> dict:
     return mat
 
 
+# A capture on resume-from-idle (or a momentary tracking blip) is often SPARSE — plane/mesh detection
+# re-populates gradually. With replace=True, removing a surface a single such capture missed deletes a
+# valid wall AND resets its director styling (the re-add path uses default material → invisible). So
+# debounce removals: only prune a surface after it's been absent from this many CONSECUTIVE captures.
+_REMOVE_AFTER_ABSENT = 3
+_surface_absence: dict[str, int] = {}
+
+
 @app.post("/room")
 async def ingest_room(req: RoomUpdate) -> dict:
     """Ingest captured room geometry from the room **authority** headset. Existing surfaces are
-    *updated* in place (preserving director style); new ones added; with replace=True, stale ones
-    removed. Sets environment.room (boundary, active, authority)."""
+    *updated* in place (preserving director style); new ones added; with replace=True, stale ones are
+    removed only after being absent from several consecutive captures (so a sparse resume capture
+    doesn't wipe valid surfaces). Sets environment.room (boundary, active, authority)."""
     room = store.doc["environment"].get("room", {})
     authority = room.get("authorityClientId")
     if authority and authority != req.client_id:
@@ -342,7 +517,16 @@ async def ingest_room(req: RoomUpdate) -> dict:
     ops: list[dict] = []
 
     if req.replace:
-        ops += [{"op": "remove", "id": eid} for eid in existing if eid not in new_ids]
+        for eid in existing:
+            if eid in new_ids:
+                _surface_absence.pop(eid, None)               # seen → reset its absence streak
+            else:
+                n = _surface_absence.get(eid, 0) + 1
+                if n >= _REMOVE_AFTER_ABSENT:                 # gone for real → prune
+                    ops.append({"op": "remove", "id": eid})
+                    _surface_absence.pop(eid, None)
+                else:
+                    _surface_absence[eid] = n                 # transient drop → keep it this round
 
     for s in req.surfaces:
         if s.id in existing:  # update geometry/pose in place — keep the entity's material (style)
@@ -517,28 +701,25 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
         await _broadcast({"type": "patch", "patch": store.apply_patch([{"op": "remove", "id": eid}], origin="asset")})
         return {"ok": False, "error": detail}
 
+    # Catalog the model keyed on the search query (its intent) so it's reusable later; touch it so
+    # recency reflects this use. licence/attribution are captured for the legal record.
+    model_id = f"{record.hash}.glb"
+    library.upsert(model_id, kind="model", scope=DEFAULT_SCOPE, source=f"cache://{model_id}",
+                   filename=model_id, label=record.title, query=req.query, licence=record.licence,
+                   attribution=record.attribution, creator=record.creator,
+                   attributes={"tris": record.tris, "bbox_min": record.bbox_min,
+                               "bbox_max": record.bbox_max})
+    library.touch(model_id)
+    # Models are NOT vector-embedded — found by FTS/exact on their title (see _VISUAL_KINDS).
+
     # 3. Swap the placeholder for the real glTF model (auto-scaled to sit on the floor),
     #    carrying license + attribution.
-    model_pos, model_scale = _normalize(record, pos, req.size_m or TARGET_SIZE_M)
     swap = [
         {"op": "remove", "id": eid},
-        {
-            "op": "add",
-            "entity": {
-                "id": eid,
-                "transform": {"position": model_pos, "scale": model_scale},
-                "components": {"gltf-model": f"/assets/{record.hash}.glb"},
-                "meta": {
-                    "title": record.title,
-                    "license": record.licence,
-                    "attribution": record.attribution,
-                    "creator": record.creator,
-                    "source": "poly.pizza",
-                    "tris": record.tris,
-                    "generated": False,
-                },
-            },
-        },
+        _model_entity_op(eid, model_id, title=record.title, licence=record.licence,
+                         attribution=record.attribution, creator=record.creator, tris=record.tris,
+                         source="poly.pizza", bbox_min=record.bbox_min, bbox_max=record.bbox_max,
+                         pos=pos, size_m=req.size_m),
     ]
     await _broadcast({"type": "patch", "patch": store.apply_patch(swap, origin="asset")})
     return {
@@ -549,6 +730,176 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
         "licence": record.licence,
         "attribution": record.attribution,
     }
+
+
+# --- asset library: explicit, director-driven reuse over the catalog (docs/asset-library-plan.md §7).
+#     search_library (read-only) → tiered candidates; place_cached_asset → reuse a model by id;
+#     correct_asset → relabel / reject a mismatch. The director searches BEFORE going to the web. -----
+
+class LibrarySearchRequest(BaseModel):
+    query: Optional[str] = None      # text intent ("an oak tree"), OR
+    image_id: Optional[str] = None   # an asset already in the catalog → "more like this"
+    kind: Optional[str] = None       # image | model | skybox | … (optional filter)
+
+
+@app.post("/library/search")
+async def library_search(req: LibrarySearchRequest) -> dict:
+    """Find reusable assets by intent. Returns tiered candidates (strong/weak/none) so the director
+    decides reuse vs. generate. Read-only — no scene effect."""
+    qvec = None
+    if embedder is not None:                         # embed the query off the loop (semantic stage)
+        if req.query:
+            qvec = await asyncio.to_thread(embedder.embed_text, req.query)
+        elif req.image_id:
+            a = library.get(req.image_id)
+            fn = a and a.get("filename")
+            if fn and (ASSET_CACHE / fn).exists():
+                data = (ASSET_CACHE / fn).read_bytes()
+                qvec = await asyncio.to_thread(embedder.embed_image, data)
+    return {"ok": True, **library.find(text=req.query, query_vec=qvec, kind=req.kind)}
+
+
+class PlaceCachedAssetRequest(BaseModel):
+    id: str                                  # a model asset id from search_library ("<hash>.glb")
+    position: Optional[list[float]] = None
+    size_m: Optional[float] = None
+    name: Optional[str] = None
+
+
+@app.post("/place_cached_asset")
+async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
+    """Place a MODEL already in the library by id — the reuse counterpart to place_asset (no web
+    fetch). Images reuse place_image; skyboxes reuse set_skybox/set_grounded_skybox."""
+    rec = library.get(req.id)
+    if rec is None:
+        return {"ok": False, "error": f"no asset {req.id!r} in the library"}
+    if rec["kind"] != "model":
+        return {"ok": False, "error": f"{req.id!r} is a {rec['kind']}, not a model — "
+                "use place_image (images) or set_skybox (skyboxes)"}
+    if not (ASSET_CACHE / req.id).exists():
+        return {"ok": False, "error": f"bytes for {req.id!r} are missing from the cache"}
+    attrs = json.loads(rec["attributes"] or "{}")
+    eid = req.name or f"ent_asset_{uuid4().hex[:6]}"
+    pos = req.position or [0.0, 0.0, -3.0]
+    op = _model_entity_op(eid, req.id, title=rec["label"], licence=rec["licence"],
+                          attribution=rec["attribution"], creator=rec["creator"],
+                          tris=attrs.get("tris"), source="library", bbox_min=attrs.get("bbox_min"),
+                          bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m)
+    await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
+    library.touch(req.id)
+    return {"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]}
+
+
+# --- catalog maintenance: scoped CRUD over the asset library (docs/asset-library-plan.md). The
+#     `scope` on each request is set by the agent's MCP server (a capability, not an LLM arg) and
+#     enforced here. query_assets is read-only + scope-filtered; update/delete are per-id scope-checked.
+
+class QueryAssetsRequest(BaseModel):
+    sql: str
+    scope: str = DEFAULT_SCOPE
+
+
+@app.post("/query_assets")
+async def query_assets(req: QueryAssetsRequest) -> dict:
+    """Read-only SQL over the catalog, scoped to the caller (SELECT/PRAGMA only, single statement)."""
+    try:
+        return {"ok": True, "rows": library.query(req.sql, scope=req.scope)}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — surface a bad query, don't 500
+        return {"ok": False, "error": f"query failed: {exc}"}
+
+
+class UpdateAssetRequest(BaseModel):
+    id: str
+    scope: str = DEFAULT_SCOPE
+    label: Optional[str] = None
+    query: Optional[str] = None
+    tags: Optional[str] = None
+    notes: Optional[str] = None
+    kind: Optional[str] = None
+    rating: Optional[int] = None
+    favorite: Optional[bool] = None
+    default_for: Optional[str] = None   # pin an alias ("dog" → this asset)
+    reject_for: Optional[str] = None    # exclude this asset from a query's matches
+
+
+@app.post("/update_asset")
+async def update_asset(req: UpdateAssetRequest) -> dict:
+    """The single catalog mutator: set fields / kind / alias / reject on an asset (scope-checked).
+    Keeps FTS + vector-kind + aliases consistent (subsumes the old correct_asset/annotate_asset)."""
+    ok, err = library.update(req.id, scope=req.scope, label=req.label, query=req.query, tags=req.tags,
+                             notes=req.notes, kind=req.kind, rating=req.rating, favorite=req.favorite,
+                             default_for=req.default_for, reject_for=req.reject_for)
+    return {"ok": True, "id": req.id} if ok else {"ok": False, "error": err}
+
+
+class DeleteAssetRequest(BaseModel):
+    id: str
+    scope: str = DEFAULT_SCOPE
+
+
+@app.post("/delete_asset")
+async def delete_asset(req: DeleteAssetRequest) -> dict:
+    """Remove an asset from the catalog (row + aliases/relations/vector; bytes kept). Scope-checked."""
+    ok, err = library.delete(req.id, scope=req.scope)
+    return {"ok": True, "id": req.id} if ok else {"ok": False, "error": err}
+
+
+class RetagSkyboxesRequest(BaseModel):
+    min_aspect: float = 1.9          # images at least this wide (≈ equirectangular) → skyboxes
+
+
+@app.post("/library/retag-skyboxes")
+async def library_retag_skyboxes(req: RetagSkyboxesRequest) -> dict:
+    """One-time backfill cleanup: re-tag wide image-kind assets (panoramas) as skyboxes so they're
+    findable by kind='skybox'. The early backfill couldn't distinguish them from regular images."""
+    return {"ok": True, "retagged": library.retag_skyboxes(min_aspect=req.min_aspect)}
+
+
+class ReindexRequest(BaseModel):
+    kind: Optional[str] = None       # optionally restrict to image | model | …
+
+
+@app.post("/library/reindex")
+async def library_reindex(req: ReindexRequest) -> dict:
+    """Embed cataloged assets that have no vector yet (e.g. everything backfilled before embeddings) —
+    a one-time pass so the existing library becomes searchable by similarity. Runs off the request
+    path; returns how many were queued."""
+    if embedder is None:
+        return {"ok": False, "error": "no embedder — install the optional 'embed' dependency group"}
+    # Self-healing: the vector index should hold exactly the VISUAL assets. Clear any text-derived
+    # vectors that crept in (e.g. earlier model-title embeddings), then embed visual assets missing one.
+    cleared = 0
+    for a in library.embedded_nonvisual(_VISUAL_KINDS):
+        library.clear_embedding(a["id"])
+        cleared += 1
+    targets = [a for a in library.assets_missing_embedding(kind=req.kind) if a["kind"] in _VISUAL_KINDS]
+    if _EMBED_BACKGROUND:
+        task = asyncio.create_task(_reindex_bg(targets))
+        _embed_tasks.add(task)
+        task.add_done_callback(_embed_tasks.discard)
+    else:
+        for a in targets:
+            _embed_one(a)
+    return {"ok": True, "queued": len(targets), "cleared": cleared}
+
+
+@app.post("/library/caption")
+async def library_caption() -> dict:
+    """Backfill labels for assets that have none (the bare backfilled images) via image→text vision,
+    so they read in search results and match keyword search. One-time; runs off the request path."""
+    if captioner is None:
+        return {"ok": False, "error": "no captioner — set CONJURE_CAPTION_PROVIDER and the provider key"}
+    targets = library.assets_missing_caption(_VISUAL_KINDS)
+    if _EMBED_BACKGROUND:
+        task = asyncio.create_task(_caption_bg(targets))
+        _embed_tasks.add(task)
+        task.add_done_callback(_embed_tasks.discard)
+    else:
+        for a in targets:
+            await _caption_one(a)
+    return {"ok": True, "queued": len(targets)}
 
 
 # --- procurement: produce/transform an image, return an id; NO scene effect ---------------------
@@ -566,6 +917,17 @@ _SKYBOX_FROM_PROMPT = (
     "Turn this image into a seamless equirectangular 360-degree panorama for a VR skybox, extending "
     "the scene all the way around. Keep its style, palette, and mood. Centered horizon, no people, "
     "no text, no borders."
+)
+# A grounded skybox projects the panorama's LOWER hemisphere onto a flat ground at your feet, so the
+# bottom of the image must read as believable, near-flat, evenly-textured ground (grass, sand, stone,
+# floor) — not a distorted smear or a distant horizon line. Tweak this freely; it's independent of the
+# plain skybox prompt above.
+_GROUNDED_SKYBOX_PROMPT = (
+    "A seamless equirectangular 360-degree panorama for a VR skybox you can stand inside of: {p}. "
+    "The lower portion of the image is the GROUND directly beneath the viewer and must be a continuous, "
+    "flat, evenly-lit ground surface (e.g. grass, sand, stone, dirt, or floor) that reads naturally when "
+    "looked straight down at — no distortion, no seams, no objects directly underfoot. Centered horizon, "
+    "evenly lit, no people, no text, no watermark, no borders."
 )
 
 
@@ -608,6 +970,17 @@ async def images_skybox(req: SkyboxImageRequest) -> dict:
     full = _SKYBOX_PROMPT.format(p=req.prompt)
     return await _procure(
         "skybox", prompt=req.prompt, requested=req.generator, transparent=False,
+        run=lambda g: g.generate(full, aspect_ratio="21:9", image_size=settings.skybox_size,
+                                 model=settings.skybox_model))
+
+
+@app.post("/images/grounded_skybox")
+async def images_grounded_skybox(req: SkyboxImageRequest) -> dict:
+    # Same 4K equirectangular pipeline as /images/skybox, but with the grounded prompt (well-defined,
+    # flat ground) so the projected floor looks right. set_grounded_skybox then applies it.
+    full = _GROUNDED_SKYBOX_PROMPT.format(p=req.prompt)
+    return await _procure(
+        "grounded_skybox", prompt=req.prompt, requested=req.generator, transparent=False,
         run=lambda g: g.generate(full, aspect_ratio="21:9", image_size=settings.skybox_size,
                                  model=settings.skybox_model))
 
@@ -778,6 +1151,28 @@ async def set_skybox(req: SetSkyboxRequest) -> dict:
     return {"ok": True, "sky": rec.url, "image_id": rec.id}
 
 
+# Ground-projected skybox: the panorama's lower hemisphere is warped flat onto the floor (client-side,
+# see grounded-skybox.js) so you stand ON the scene instead of floating above a distant floor. `height`
+# (the implied capture height, ≈ standing eye height) and `radius` (the dome size in metres) are the
+# two tunables; defaults match the rig's eye height and a comfortably-larger-than-a-room dome.
+class SetGroundedSkyboxRequest(BaseModel):
+    image_id: str
+    height: float = 1.6
+    radius: float = 30.0
+
+
+@app.post("/set_grounded_skybox")
+async def set_grounded_skybox(req: SetGroundedSkyboxRequest) -> dict:
+    """Wrap the scene in a procured image as a GROUNDED skybox (projected onto the floor at your feet)."""
+    rec, _, err = _get_image(req.image_id)
+    if err:
+        return {"ok": False, "error": err}
+    sky = {"src": rec.url, "grounded": True, "height": req.height, "radius": req.radius}
+    patch = store.apply_patch([{"op": "env", "set": {"sky": sky}}], origin="image")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "sky": rec.url, "image_id": rec.id}
+
+
 # --- scene editors (hybrid): one-call edits of an image already in the scene (entity id). They
 #     procure a new image from the entity's current one, then apply it — convenience over the
 #     procure→place flow for the common conversational case. ---------------------------------------
@@ -806,7 +1201,8 @@ async def edit_image(req: EditSceneImageRequest) -> dict:
           "set": {"components.material.src": new.url, "meta.image_id": new.id, "meta.prompt": req.prompt}}],
         origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "id": req.id, "image_id": new.id}
+    return {"ok": True, "id": req.id, "image_id": new.id,
+            "provider": new.provider, "model": new.model, "w": new.w, "h": new.h}
 
 
 class OutpaintSceneRequest(BaseModel):
@@ -839,7 +1235,8 @@ async def outpaint_image(req: OutpaintSceneRequest) -> dict:
                   "meta.image_id": new.id}}],
         origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "id": req.id, "image_id": new.id}
+    return {"ok": True, "id": req.id, "image_id": new.id,
+            "provider": new.provider, "model": new.model, "w": new.w, "h": new.h}
 
 
 class SkyboxFromSceneRequest(BaseModel):
@@ -863,7 +1260,8 @@ async def skybox_from_image(req: SkyboxFromSceneRequest) -> dict:
     new = IMAGES[out["image_id"]]
     patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": new.url}}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "sky": new.url, "image_id": new.id}
+    return {"ok": True, "sky": new.url, "image_id": new.id,
+            "provider": new.provider, "model": new.model, "w": new.w, "h": new.h}
 
 
 @app.websocket("/ws")

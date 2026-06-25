@@ -17,6 +17,8 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 10 | Mesh/geometry generation strategy | OPEN | — |
 | 11 | Capability tiers: vendor-neutral baseline, device features as extensions | ✅ RESOLVED | Quest features are opt-in extensions w/ neutral fallbacks |
 | 12 | Vehicle motion: full physics engine vs parametric/arcade models | OPEN | — |
+| 13 | Image procurement decoupled from scene use; capability-aware generators | ✅ RESOLVED | Procure→reference by id; generators mediated by capability |
+| 14 | Per-agent persistence scoping; asset store vs world/document store | 🔶 DESIGNED | private/public namespaces; scope = capability; worlds in a separate store |
 
 ---
 
@@ -245,3 +247,29 @@ lets the director and the mediator choose well.
   server-side in a single director round-trip; the id-based procurement tools enable the general flow.
 - An in-memory **image store** (id → bytes/dims/provenance) over the content-addressed cache; entities
   carry `meta.image_id`. Names/roles for the roster + generators live in **one place** (`ROSTER`).
+
+---
+
+### 14. Per-agent persistence scoping; asset store vs world/document store — 🔶 DESIGNED
+**Choice:** A single **persistence service, scoped per agent**, hosting several **typed** stores.
+Agents work inside `private/<agent>/…` and never see each other's private content; `public/<agent>/…`
+is world-readable (documented, not built). **Worlds are a separate document store**, not the asset
+catalog. Full design in **`docs/persistence-model.md`**; the asset store is `asset-library-plan.md`.
+
+**Why:**
+- **Scope = capability, not a parameter.** The runtime binds each agent's scope and injects it
+  server-side; LLM-visible tools have no scope arg, so a prompt-injection can't name another scope.
+  Rides on the capability model (#7).
+- **Different data, different stores.** Assets are content-addressed, immutable, semantically
+  searchable media (embeddings central). Worlds are *named, mutable, versioned documents* that
+  *reference* assets — an evolution of `WorldStore` (no embeddings). Cramming worlds into the media
+  catalog is the same category error as the cache/NAS split.
+- **Public = reference in place** (copy-to-private to pin). Content-addressing makes bytes immutable,
+  so a public reference can't be silently mutated; copy-to-private guards only against unpublish /
+  metadata drift.
+
+**Implications (seams now; enforcement later):**
+- Add a `scope` field to the asset catalog when Phase 2 touches the schema (cheap data seam).
+- Defer enforcement (scoped handles + capability injection), the world store (named save/load/version),
+  public visibility, and any `state` KV store until the **second agent** actually lands — building them
+  before that is speculative.

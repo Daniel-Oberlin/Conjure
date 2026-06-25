@@ -28,6 +28,7 @@ Routing (deterministic — no tokens, fully testable):
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import sys
@@ -108,12 +109,14 @@ def route_turn(text: str, roster, active: str) -> Route:
 
 # --------------------------------------------------------------------------- the director
 
-def _stdio_params(spec: ServerSpec, settings: Settings):
-    """Build stdio launch params from a registry ServerSpec: map a bare 'python' to this interpreter
-    and substitute ${world_url} in the env (so the registry stays interpreter-/host-agnostic)."""
+def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder"):
+    """Build stdio launch params from a registry ServerSpec: map a bare 'python' to this interpreter,
+    substitute ${world_url} in the env, and inject the agent's catalog SCOPE as a capability (so the
+    MCP server's maintenance tools are scoped to this agent — persistence-model.md, not an LLM arg)."""
     from mcp import StdioServerParameters
     command = sys.executable if spec.command in ("python", "python3") else spec.command
     env = {**os.environ, **{k: v.replace("${world_url}", settings.world_url) for k, v in spec.env.items()}}
+    env["CONJURE_SCOPE"] = f"private/{agent}"
     return StdioServerParameters(command=command, args=list(spec.args), env=env)
 
 
@@ -160,7 +163,7 @@ class Director:
             raise RuntimeError(
                 f"agent {agent!r}: v1 launches exactly one MCP server (got {len(specs)}: "
                 f"{[s.name for s in specs]}).")
-        params = _stdio_params(specs[0], settings)
+        params = _stdio_params(specs[0], settings, agent)
 
         close_errlog = None
         if errlog is None:
@@ -187,11 +190,30 @@ class Director:
         ) if others else ""
         return self._prompt.format(name=name) + roster_line
 
-    async def _execute_tool(self, name: str, args: dict, on_tool: Optional[OnTool]) -> str:
+    async def _log(self, tag: str, msg: str) -> None:
+        """Best-effort diagnostic line → the world server's /client_log (same temp/conjure.log + console
+        as client logs, single writer, gated by debug_log). Captures the conversation so director
+        behaviour — which tools it calls, with what args, and what they return — is reviewable later.
+        Never raises into the turn."""
+        if not getattr(self._settings, "debug_log", False):   # settings None in lightweight tests
+            return
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.post(f"{self._settings.world_url}/client_log",
+                                  json={"tag": tag, "msg": msg})
+        except Exception:
+            pass
+
+    async def _execute_tool(self, name: str, args: dict, on_tool: Optional[OnTool], who: str) -> str:
         if on_tool:
             await on_tool(name, args)
+        await self._log(f"{who}/tool", f"{name}({json.dumps(args, default=str)[:600]})")
         out = await self._session.call_tool(name, args)
-        return "".join(getattr(c, "text", "") for c in out.content)
+        text = "".join(getattr(c, "text", "") for c in out.content)
+        await self._log(f"{who}/tool", f"  -> {text[:2000]}")   # roomy enough to see a full query_world
+        return text
 
     async def _fetch_context(self) -> str:
         """Prefetch the agent's `context` MCP resources (e.g. `room://current`) and return them as a
@@ -218,7 +240,10 @@ class Director:
         """Route one user utterance to an LLM, run its turn (with tools), record the attributed
         transcript, and return the final reply. `on_text(text, final=, speaker=)` receives reply
         text as it's produced; `on_tool(name, args)` fires before each tool call."""
+        await self._log("you", text.strip())
         route = route_turn(text, self.roster, self.active)
+        # Attribute every LLM line to <agent>.<llm> (e.g. builder.claude); tool lines get a /tool suffix.
+        who = f"{getattr(self.agent, 'name', 'agent')}.{route.target.lower()}"
         prev_active = self.active
         if route.persistent:
             self.active = route.target
@@ -229,11 +254,16 @@ class Director:
             f"line as {route.target}; don't build anything yet.")
 
         async def emit(t, *, final):
+            # Log intermediate spoken text (acks like "On it", and any pre-tool narration) under the
+            # agent.llm tag; the final reply is logged once below under the same tag. This is what
+            # surfaces e.g. a "let me check the world model" preamble that otherwise only reaches TTS.
+            if not final and t and t.strip():
+                await self._log(who, t.strip())
             if on_text:
                 await on_text(t, final=final, speaker=route.target)
 
         async def execute(n, a):
-            return await self._execute_tool(n, a, on_tool)
+            return await self._execute_tool(n, a, on_tool, who)
 
         system = self._system_for(route.target) + await self._fetch_context()
         try:
@@ -253,4 +283,5 @@ class Director:
             raise
         self.transcript.append(Turn("user", text.strip()))
         self.transcript.append(Turn(route.target, final))
+        await self._log(who, final.strip())
         return final

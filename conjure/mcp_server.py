@@ -22,6 +22,9 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
+# The agent's catalog scope — a CAPABILITY injected by the director at MCP-server launch (env), NOT an
+# LLM tool argument. Every maintenance call carries it so the world server can enforce per-agent scope.
+SCOPE = os.environ.get("CONJURE_SCOPE", "private/builder")
 
 mcp = FastMCP("conjure-world")
 
@@ -45,6 +48,13 @@ async def _post(path: str, body: dict[str, Any], timeout: float = 150.0) -> dict
         return resp.json()
 
 
+def _gen_info(out: dict) -> str:
+    """Provenance for a generated/edited image result (logged + shown to the LLM): which generator/
+    model produced it and at what size."""
+    dims = f" ({out['w']}x{out['h']})" if out.get("w") and out.get("h") else ""
+    return f"{out.get('provider', '?')}/{out.get('model', '?')}{dims}"
+
+
 async def _get(path: str, timeout: float = 10.0) -> dict:
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.get(f"{BASE}{path}")
@@ -52,31 +62,33 @@ async def _get(path: str, timeout: float = 10.0) -> dict:
         return resp.json()
 
 
+def _entity_line(e: dict) -> str:
+    """'<id>: <what it is> at <pos>' — shared by query_world and the world://current resource."""
+    comps = e.get("components", {})
+    meta = e.get("meta", {})
+    pos = e.get("transform", {}).get("position")
+    if meta.get("real"):
+        desc = f"REAL {meta.get('semantic', 'surface')} (room surface — restyle/hide/mount, don't move)"
+    elif "gltf-model" in comps:
+        aid = meta.get("asset_id") or comps["gltf-model"].rsplit("/", 1)[-1]
+        desc = f"model {meta.get('title', '?')!r} [asset {aid}]"
+    elif comps.get("material", {}).get("src"):
+        aid = meta.get("image_id") or comps["material"]["src"].rsplit("/", 1)[-1]
+        desc = f"image {(meta.get('prompt') or meta.get('title') or '?')!r} [asset {aid}]"
+    else:
+        prim = comps.get("geometry", {}).get("primitive", "?")
+        color = comps.get("material", {}).get("color", "?")
+        desc = f"{prim} {color}"
+    return f"{e['id']}: {desc} at {pos}"
+
+
 @mcp.tool()
 async def query_world() -> str:
-    """Summarize the current world (entities + environment). Read this before editing."""
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(f"{BASE}/world")
-        resp.raise_for_status()
-        doc = resp.json()
-    lines = [
-        f"World {doc.get('name', '')!r} (rev {doc['rev']}), {len(doc['entities'])} entities:"
-    ]
-    for e in doc["entities"]:
-        comps = e.get("components", {})
-        meta = e.get("meta", {})
-        pos = e.get("transform", {}).get("position")
-        if meta.get("real"):
-            desc = f"REAL {meta.get('semantic', 'surface')} (room surface — restyle/hide/mount, don't move)"
-        elif "gltf-model" in comps:
-            desc = f"model {meta.get('title', '?')!r}"
-        elif comps.get("material", {}).get("src"):
-            desc = f"image {(meta.get('prompt') or meta.get('title') or '?')!r}"
-        else:
-            prim = comps.get("geometry", {}).get("primitive", "?")
-            color = comps.get("material", {}).get("color", "?")
-            desc = f"{prim} {color}"
-        lines.append(f"  - {e['id']}: {desc} at {pos}")
+    """Full world dump (every entity + environment). RARELY needed — your placed objects are already in
+    the Live context each turn; use this only for detail the summary omits, or a very large scene."""
+    doc = await _get("/world")
+    lines = [f"World {doc.get('name', '')!r} (rev {doc['rev']}), {len(doc['entities'])} entities:"]
+    lines += [f"  - {_entity_line(e)}" for e in doc["entities"]]
     lines.append(f"environment: {doc.get('environment', {})}")
     return "\n".join(lines)
 
@@ -131,6 +143,20 @@ async def room_resource() -> str:
     """The live real-room summary — injected each turn into agents that list `room://current` in their
     context (so the builder sees the room without a query_room round-trip)."""
     return await _room_summary()
+
+
+@mcp.resource("world://current")
+async def world_resource() -> str:
+    """Live summary of PLACED virtual objects (the models/images/skyboxes you've added) — injected each
+    turn so the builder references them by id without a query_world round-trip. Excludes scaffold and
+    real surfaces (real surfaces are already in room://current)."""
+    doc = await _get("/world")
+    placed = [e for e in doc["entities"]
+              if not (e.get("meta", {}).get("real") or e.get("meta", {}).get("scaffold"))]
+    if not placed:
+        return "No objects placed in the world yet."
+    return ("Placed objects (reference these directly by id — no need to query the world):\n"
+            + "\n".join(f"  - {_entity_line(e)}" for e in placed))
 
 
 @mcp.tool()
@@ -338,6 +364,125 @@ async def place_asset(
     )
 
 
+# --- Asset library: REUSE before creating anew ------------------------------------------------
+# Before generating an image / fetching a model, you may search what's already been made. Reuse is
+# always explicit (these tools) — never automatic. See the library policy in the system prompt.
+
+@mcp.tool()
+async def search_library(
+    query: Optional[str] = None,
+    image_id: Optional[str] = None,
+    kind: Optional[str] = None,
+) -> str:
+    """Search assets already in the library to REUSE one instead of making a new one.
+
+    Use when the user references something they likely made before ('the dragon from earlier', 'my
+    castle'), or to check before creating when reuse would be natural. query: the text intent ('an
+    oak tree'); OR image_id: an existing asset to find more like it ('more like that'). kind:
+    optionally restrict to image | model | skybox | grounded_skybox.
+
+    Returns candidates + a CONFIDENCE tier: 'strong' (an exact match or a user default — safe to
+    reuse), 'weak' (only fuzzy/semantic hits — reuse only if clearly right, else offer or generate),
+    'none' (nothing — generate/fetch fresh). Then reuse: a model via place_cached_asset(id), an image
+    via place_image(image_id), a skybox via set_skybox(image_id)/set_grounded_skybox(image_id).
+    """
+    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind))
+    if not out.get("ok"):
+        return f"Library search failed: {out.get('error', 'unknown error')}."
+    cands, tier = out.get("candidates", []), out.get("confidence_tier", "none")
+    if not cands:
+        return "No matching asset in the library (confidence: none) — generate or fetch a new one."
+    lines = [f"- {c['id']} ({c['kind']}, match={c['match']}): "
+             f"{c.get('label') or c.get('prompt') or c.get('query') or '—'}"
+             f"{(' [' + c['licence'] + ']') if c.get('licence') else ''}" for c in cands[:8]]
+    return f"Library matches (confidence: {tier}):\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def place_cached_asset(
+    id: str,
+    size_m: Optional[float] = None,
+    position: Optional[list[float]] = None,
+    name: Optional[str] = None,
+) -> str:
+    """Place a MODEL already in the library by id (from search_library) — reuse, no web fetch.
+
+    For reusing images use place_image(image_id); for skyboxes set_skybox/set_grounded_skybox. size_m:
+    real-world largest dimension in metres (as in place_asset); position: [x,y,z] (auto-sits on floor).
+    """
+    out = await _post("/place_cached_asset", _body(id=id, size_m=size_m, position=position, name=name))
+    if not out.get("ok"):
+        return f"Couldn't reuse {id!r}: {out.get('error', 'unknown error')}."
+    return f"Reused {out.get('title')!r} as {out['id']}."
+
+
+# --- Catalog maintenance: inspect / update / delete library assets ----------------------------
+# query_assets reads (read-only SQL, scoped to you); update_asset is the single writer (fields,
+# kind, "default for X" alias, reject-for-a-query); delete_asset removes one. All are scoped to your
+# own assets. Use these for fixing the library ("relabel that x-wing", "make this my default dog",
+# "delete the duplicate", "how many transparent images do I have").
+
+@mcp.tool()
+async def query_assets(sql: str) -> str:
+    """Run a READ-ONLY SQL query over your asset catalog (SELECT or PRAGMA only) — for inspecting,
+    counting, or finding assets to fix. You only see your own assets.
+
+    The main table is `assets` (columns include: id, kind, source, label, prompt, query, params_json,
+    provider, model, width, height, licence, attribution, notes, tags, rating, favorite, embed_model,
+    created_at, last_used, use_count). Use `PRAGMA table_info(assets)` to list columns. Examples:
+    "SELECT kind, COUNT(*) FROM assets GROUP BY kind"; "SELECT id, label FROM assets WHERE label IS NULL".
+    """
+    out = await _post("/query_assets", _body(sql=sql, scope=SCOPE))
+    if not out.get("ok"):
+        return f"Query failed: {out.get('error', 'unknown error')}."
+    rows = out.get("rows", [])
+    if not rows:
+        return "0 rows."
+    head = list(rows[0].keys())
+    lines = [" | ".join(head)] + [" | ".join(str(r.get(c, "")) for c in head) for r in rows[:50]]
+    return f"{len(rows)} row(s):\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def update_asset(
+    id: str,
+    label: Optional[str] = None,
+    query: Optional[str] = None,
+    tags: Optional[str] = None,
+    notes: Optional[str] = None,
+    kind: Optional[str] = None,
+    rating: Optional[int] = None,
+    favorite: Optional[bool] = None,
+    default_for: Optional[str] = None,
+    reject_for: Optional[str] = None,
+) -> str:
+    """Update a library asset (one tool for all catalog fixes/curation). Pass only what you want to change.
+
+    label/query/tags/notes: the asset's description + keywords + freeform note. kind: re-tag it
+    (image | model | skybox | grounded_skybox | audio | photo) — e.g. mark a skybox as grounded.
+    rating (0–5)/favorite: your rating. default_for: make this the default for a phrase ('dog' →
+    reused when the user says 'add a dog'). reject_for: a query this asset should NEVER match again
+    (e.g. an x-wing wrongly returned for 'starship enterprise'). Covers 'remember this as my favorite',
+    'make this my default dog', 'relabel that', 'reject it for X'.
+    """
+    out = await _post("/update_asset", _body(
+        id=id, scope=SCOPE, label=label, query=query, tags=tags, notes=notes, kind=kind,
+        rating=rating, favorite=favorite, default_for=default_for, reject_for=reject_for))
+    if not out.get("ok"):
+        return f"Couldn't update {id!r}: {out.get('error', 'unknown error')}."
+    return "Updated."
+
+
+@mcp.tool()
+async def delete_asset(id: str) -> str:
+    """Delete an asset from your library catalog (its entry, aliases, and search index). The cached
+    file is left on disk. Use to remove a bad or duplicate asset ('delete that duplicate woman model')."""
+    out = await _post("/delete_asset", _body(id=id, scope=SCOPE))
+    if not out.get("ok"):
+        return f"Couldn't delete {id!r}: {out.get('error', 'unknown error')}."
+    return f"Deleted {id} from the library."
+
+
 # --- Image procurement (produce/transform an image, get back an image_id) ----------------------
 # Procurement is decoupled from scene use: these make/transform an image and return an `image_id`
 # you then pass to place_image / set_skybox. The `generator` arg is OPTIONAL — omit it to use the
@@ -367,7 +512,8 @@ async def generate_image(
         prompt=prompt, aspect_ratio=aspect_ratio, transparent=transparent, generator=generator))
     if not out.get("ok"):
         return f"Couldn't generate image: {out.get('error', 'unknown error')}."
-    return (f"Generated image_id={out['image_id']} ({out['provider']}, {out.get('w')}x{out.get('h')}). "
+    # Full provenance in the result (so the log shows which generator/model ran, dims, and alpha):
+    return (f"Generated image_id={out['image_id']} via {_gen_info(out)}, transparent={transparent}. "
             f"Call place_image with this image_id to hang it.")
 
 
@@ -382,8 +528,24 @@ async def generate_skybox_image(prompt: str, generator: Optional[str] = None) ->
     out = await _post("/images/skybox", _body(prompt=prompt, generator=generator), timeout=200.0)
     if not out.get("ok"):
         return f"Couldn't generate skybox image: {out.get('error', 'unknown error')}."
-    return (f"Generated skybox image_id={out['image_id']} ({out['provider']}). "
+    return (f"Generated skybox image_id={out['image_id']} via {_gen_info(out)}. "
             f"Call set_skybox with this image_id to wrap the scene.")
+
+
+@mcp.tool()
+async def generate_grounded_skybox_image(prompt: str, generator: Optional[str] = None) -> str:
+    """Generate a 360° panorama for a GROUNDED skybox and return its image_id (does NOT apply it).
+
+    Then call set_grounded_skybox with the returned image_id. Prefer this over generate_skybox_image
+    when the user wants to STAND ON the scene's ground (a landscape they're standing in — 'put me in a
+    meadow', 'stand me on the surface of Mars') rather than just be surrounded by a distant backdrop:
+    its lower hemisphere is projected onto the floor at your feet. generator: optional.
+    """
+    out = await _post("/images/grounded_skybox", _body(prompt=prompt, generator=generator), timeout=200.0)
+    if not out.get("ok"):
+        return f"Couldn't generate grounded skybox image: {out.get('error', 'unknown error')}."
+    return (f"Generated grounded skybox image_id={out['image_id']} via {_gen_info(out)}. "
+            f"Call set_grounded_skybox with this image_id to wrap the scene.")
 
 
 @mcp.tool()
@@ -402,7 +564,7 @@ async def edit_image(
         image_id=image_id, prompt=prompt, transparent=transparent, generator=generator))
     if not out.get("ok"):
         return f"Couldn't edit image: {out.get('error', 'unknown error')}."
-    return f"Edited → image_id={out['image_id']} ({out['provider']})."
+    return f"Edited → image_id={out['image_id']} via {_gen_info(out)}, transparent={transparent}."
 
 
 @mcp.tool()
@@ -421,7 +583,7 @@ async def outpaint_image(
         image_id=image_id, aspect=aspect, prompt=prompt, generator=generator))
     if not out.get("ok"):
         return f"Couldn't outpaint image: {out.get('error', 'unknown error')}."
-    return f"Outpainted → image_id={out['image_id']} ({out['provider']})."
+    return f"Outpainted → image_id={out['image_id']} via {_gen_info(out)} (aspect {aspect or '16:9'})."
 
 
 @mcp.tool()
@@ -434,7 +596,7 @@ async def skybox_from_image(image_id: str, generator: Optional[str] = None) -> s
     out = await _post("/images/skybox_from", _body(image_id=image_id, generator=generator), timeout=200.0)
     if not out.get("ok"):
         return f"Couldn't build a skybox image: {out.get('error', 'unknown error')}."
-    return (f"Built skybox image_id={out['image_id']} ({out['provider']}). "
+    return (f"Built skybox image_id={out['image_id']} via {_gen_info(out)}. "
             f"Call set_skybox with this image_id.")
 
 
@@ -496,6 +658,28 @@ async def set_skybox(image_id: str) -> str:
     return "Wrapped the scene in that image as a 360° skybox."
 
 
+@mcp.tool()
+async def set_grounded_skybox(
+    image_id: str,
+    height: Optional[float] = None,
+    radius: Optional[float] = None,
+) -> str:
+    """Wrap the scene in a procured image (by image_id from generate_grounded_skybox_image) as a
+    GROUNDED skybox — its lower half is projected onto the floor so the user stands ON the scene
+    instead of floating above a distant horizon. Use the grounded image generated for this purpose.
+
+    height (metres, default 1.6): the implied height the panorama was 'shot' from — RAISE it (e.g. 3, 6)
+    if the user wants the ground to feel further below / to stand taller above it, LOWER it (e.g. 1) to
+    sit closer to the ground. radius (metres, default 30): how far the projected ground extends before
+    curving up to the horizon — INCREASE it (e.g. 60) for a wider open vista, decrease for an enclosed
+    feel. Only pass these when the user asks about scale/height/distance; otherwise omit for the defaults.
+    """
+    out = await _post("/set_grounded_skybox", _body(image_id=image_id, height=height, radius=radius))
+    if not out.get("ok"):
+        return f"Couldn't set the grounded skybox: {out.get('error', 'unknown error')}."
+    return "Wrapped the scene in that image as a grounded skybox — you're standing on it."
+
+
 # --- One-shot scene edits (act on an image already in the scene, by entity id) ------------------
 # Convenience over the procure→place flow for the common conversational case: these procure a new
 # image from the entity's current one and apply it in a single call.
@@ -505,39 +689,37 @@ async def edit_scene_image(id: str, prompt: str) -> str:
     """Edit an image ALREADY in the scene, in place — conversational editing.
 
     Use for changes to a picture already hanging, e.g. 'make the dragon blue', 'add a full moon',
-    'make it nighttime'. id: the image entity id (find via query_world). One step (no image_id
+    'make it nighttime'. id: the image entity id (in the Live context). One step (no image_id
     needed). Only works on images, not 3D models or the skybox.
     """
     out = await _post("/edit_image", {"id": id, "prompt": prompt})
     if not out.get("ok"):
         return f"Couldn't edit {id!r}: {out.get('error', 'unknown error')}."
-    return f"Updated the image {id}."
+    return f"Updated image {id} → {out['image_id']} via {_gen_info(out)}."
 
 
 @mcp.tool()
 async def widen_scene_image(id: str, aspect: Optional[str] = None, prompt: Optional[str] = None) -> str:
     """Extend (outpaint) an image ALREADY in the scene to a wider frame, in place.
 
-    Use for 'make the painting wider', 'show more of the landscape'. id: the image entity id (find
-    via query_world). aspect: '16:9' (default) or '21:9'. prompt: optional guidance for the new area.
+    Use for 'make the painting wider', 'show more of the landscape'. id: the image entity id (in the Live context). aspect: '16:9' (default) or '21:9'. prompt: optional guidance for the new area.
     """
     out = await _post("/outpaint_image", _body(id=id, aspect=aspect, prompt=prompt))
     if not out.get("ok"):
         return f"Couldn't widen {id!r}: {out.get('error', 'unknown error')}."
-    return f"Extended the image {id}."
+    return f"Extended image {id} → {out['image_id']} via {_gen_info(out)} (aspect {aspect or '16:9'})."
 
 
 @mcp.tool()
 async def skybox_from_scene_image(id: str) -> str:
     """Turn an image ALREADY in the scene into the surrounding 360° sky.
 
-    Use for 'make that painting the sky', 'put me inside that scene'. id: the image entity id (find
-    via query_world).
+    Use for 'make that painting the sky', 'put me inside that scene'. id: the image entity id (in the Live context).
     """
     out = await _post("/skybox_from_image", {"id": id}, timeout=200.0)
     if not out.get("ok"):
         return f"Couldn't build a skybox from {id!r}: {out.get('error', 'unknown error')}."
-    return "Wrapped the scene in that image as a 360° skybox."
+    return f"Wrapped the scene as a 360° skybox (image {out['image_id']} via {_gen_info(out)})."
 
 
 @mcp.tool()

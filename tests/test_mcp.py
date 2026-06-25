@@ -28,6 +28,37 @@ async def test_place_asset_tool_payload(monkeypatch):
 
 
 @respx.mock
+async def test_world_resource_lists_only_placed_objects(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
+        "name": "Holodeck", "rev": 5, "entities": [
+            {"id": "floor", "meta": {"scaffold": True}, "components": {"geometry": {"primitive": "plane"}}},
+            {"id": "real_wall_1", "meta": {"real": True, "semantic": "wall"}, "transform": {"position": [0, 1, -2]}},
+            {"id": "ent_asset_1", "meta": {"title": "Oak Tree"}, "components": {"gltf-model": "/assets/x.glb"},
+             "transform": {"position": [0, 0, -3]}},
+            {"id": "img_1", "meta": {"prompt": "a dragon", "image_id": "d.png"},
+             "components": {"material": {"src": "/assets/d.png"}}, "transform": {"position": [1, 1, -2]}},
+        ], "environment": {}}))
+    out = await _tool("world_resource")()
+    assert "ent_asset_1" in out and "Oak Tree" in out        # placed model listed
+    assert "img_1" in out and "a dragon" in out              # placed image listed
+    assert "[asset d.png]" in out and "[asset x.glb]" in out  # library asset id linked for scene→library mapping
+    assert "floor" not in out and "real_wall_1" not in out   # scaffold + real surfaces excluded
+
+
+@respx.mock
+async def test_query_world_dumps_everything(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
+        "name": "Holodeck", "rev": 5, "entities": [
+            {"id": "floor", "meta": {"scaffold": True}, "components": {"geometry": {"primitive": "plane"}}},
+            {"id": "ent_asset_1", "meta": {"title": "Oak Tree"}, "components": {"gltf-model": "/assets/x.glb"}},
+        ], "environment": {"sky": {"color": "#000"}}}))
+    out = await _tool("query_world")()
+    assert "floor" in out and "ent_asset_1" in out and "environment" in out  # full dump incl. scaffold
+
+
+@respx.mock
 async def test_generate_image_tool_payload(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     route = respx.post("http://world/images/generate").mock(
@@ -76,11 +107,73 @@ async def test_set_skybox_tool_takes_image_id(monkeypatch):
 
 
 @respx.mock
+async def test_search_library_tool_summarizes_candidates(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.post("http://world/library/search").mock(return_value=httpx.Response(200, json={
+        "ok": True, "confidence_tier": "strong",
+        "candidates": [{"id": "d.png", "kind": "image", "match": "exact", "label": "a red dragon"}]}))
+    out = await _tool("search_library")(query="a red dragon")
+    assert "strong" in out and "d.png" in out
+
+
+@respx.mock
+async def test_place_cached_asset_tool_forwards_id(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/place_cached_asset").mock(
+        return_value=httpx.Response(200, json={"ok": True, "id": "ent_1", "title": "Oak Tree"}))
+    await _tool("place_cached_asset")(id="oak.glb", size_m=2.0)
+    assert json.loads(route.calls.last.request.content) == {"id": "oak.glb", "size_m": 2.0}
+
+
+@respx.mock
+async def test_update_asset_tool_forwards_fields_with_scope(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/update_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("update_asset")(id="x.glb", label="X-Wing", reject_for="starship enterprise")
+    assert json.loads(route.calls.last.request.content) == {
+        "id": "x.glb", "scope": "private/builder", "label": "X-Wing", "reject_for": "starship enterprise"}
+
+
+@respx.mock
+async def test_delete_asset_tool_forwards_id_with_scope(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/delete_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("delete_asset")(id="dup.glb")
+    assert json.loads(route.calls.last.request.content) == {"id": "dup.glb", "scope": "private/builder"}
+
+
+@respx.mock
+async def test_query_assets_tool_forwards_sql_with_scope(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/query_assets").mock(return_value=httpx.Response(200, json={
+        "ok": True, "rows": [{"kind": "image", "n": 3}]}))
+    out = await _tool("query_assets")(sql="SELECT kind, COUNT(*) AS n FROM assets GROUP BY kind")
+    assert json.loads(route.calls.last.request.content) == {
+        "sql": "SELECT kind, COUNT(*) AS n FROM assets GROUP BY kind", "scope": "private/builder"}
+    assert "image" in out and "3" in out                     # rows rendered for the LLM
+
+
+@respx.mock
+async def test_set_grounded_skybox_omits_unset_dims_but_forwards_overrides(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/set_grounded_skybox").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("set_grounded_skybox")(image_id="g.png")
+    assert json.loads(route.calls.last.request.content) == {"image_id": "g.png"}   # defaults left to server
+    await _tool("set_grounded_skybox")(image_id="g.png", height=6.0, radius=60.0)
+    assert json.loads(route.calls.last.request.content) == {"image_id": "g.png", "height": 6.0, "radius": 60.0}
+
+
+@respx.mock
 async def test_edit_scene_image_tool_is_entity_keyed(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    route = respx.post("http://world/edit_image").mock(return_value=httpx.Response(200, json={"ok": True}))
-    await _tool("edit_scene_image")(id="ent_image_1", prompt="make it night")
+    route = respx.post("http://world/edit_image").mock(return_value=httpx.Response(200, json={
+        "ok": True, "id": "ent_image_1", "image_id": "n.png", "provider": "Gemini", "w": 1024, "h": 1024}))
+    out = await _tool("edit_scene_image")(id="ent_image_1", prompt="make it night")
     assert json.loads(route.calls.last.request.content) == {"id": "ent_image_1", "prompt": "make it night"}
+    assert "n.png" in out and "Gemini" in out          # result carries the new id + provenance
 
 
 @respx.mock
