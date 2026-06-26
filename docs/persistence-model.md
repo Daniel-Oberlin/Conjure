@@ -143,7 +143,10 @@ content).
 **The real room is a shared live layer, not per-world.** Captured surfaces (`meta.real` entities) are
 the same physical room regardless of the active world, so they're a live layer merged into whatever
 world is active — *not* snapshotted into each world. "Edges on/off" is then a pure per-world display
-preference over that shared layer.
+preference over that shared layer. **This was decided but NOT yet built** — the initial multi-world
+store persists the room *inside* each world doc, which caused a recurring class of "live state frozen
+per-world" bugs (stale/sparse rooms, re-capture churn, the authority lockout). The full design — shared
+geometry + per-world style overlay, with the durable/session split — is in **`shared-room-layer.md`**.
 
 **Undo/redo rides the inverses we already compute.** `apply_patch` already records an inverse for
 every op (`world.py`); undo is a cursor over that history plus a tool, not a new subsystem. The real
