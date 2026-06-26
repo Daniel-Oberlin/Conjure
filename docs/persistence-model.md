@@ -155,12 +155,12 @@ branching are a separate, later feature** (a different shape: snapshots, not an 
 ## 7. Status — built vs. deferred
 
 - **Built:** the asset catalog (`conjure/library.py`), now **scoped** (a `scope` field per entry;
-  single-agent today). **Single-world durability** — autosave-on-change + load-on-boot for the one
-  active world (`WorldStore.save` / `_load_world` in `server.py`); step 1 of §6.
-- **Next (the actual "before the second agent" work):** the scoped **world store** — generalize the
-  single saved world into named save/load/list/switch under `private/<agent>/worlds/<name>`, plus the
-  constructor/default-world hooks. This is what a second agent needs to own its own worlds.
-- **Independent / any time:** session **undo/redo** (rides the existing inverses; blocks nothing).
+  single-agent today). The **scoped, hierarchical world store** — `WorldRepository` (named/nestable
+  worlds at `.cache/worlds/<scope>/<name>.json`, normalized recall, per-scope active pointer),
+  autosave-on-change, boot-into-last-active-or-`default`, the `list/new/switch/delete` endpoints +
+  MCP tools, and the `agent.json` `on_create` constructor run at world creation. Scope is carried in
+  the request body (server-side default for now; capability-injected when the second agent lands).
+- **Next:** session **undo/redo** (rides the existing inverses; blocks nothing) — independent, any time.
 - **Deferred until the second agent (e.g. the RPG dungeonmaster) actually lands:**
   - scope **enforcement** — scoped handles + capability injection by the runtime (no scope in LLM
     tools), per §2;
@@ -168,6 +168,6 @@ branching are a separate, later feature** (a different shape: snapshots, not an 
   - any `state` store;
   - durable world **versioning / checkpoints / branching**.
 
-Build order is incremental: single-world durability (done) → scoped multi-world + constructor →
+Build order is incremental: single-world durability → scoped multi-world + constructor (both done) →
 undo/redo whenever → durable versioning later. Each step's primitive is reused by the next (the saved
 active world *is* what the repository wraps with naming + scope).

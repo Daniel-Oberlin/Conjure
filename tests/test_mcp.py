@@ -333,3 +333,35 @@ async def test_tool_reports_failure(monkeypatch):
     respx.post("http://world/place_asset").mock(return_value=httpx.Response(200, json={"ok": False, "error": "boom"}))
     out = await _tool("place_asset")(query="x", size_m=1)
     assert "boom" in out or "Couldn't" in out
+
+
+@respx.mock
+async def test_new_world_tool_forwards_name_with_scope(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/worlds/new").mock(
+        return_value=httpx.Response(200, json={"ok": True, "world": "castle-quest/dining-hall"}))
+    out = await _tool("new_world")(name="Castle Quest/Dining Hall")
+    assert json.loads(route.calls.last.request.content) == {
+        "name": "Castle Quest/Dining Hall", "scope": "private/builder"}
+    assert "castle-quest/dining-hall" in out
+
+
+@respx.mock
+async def test_list_worlds_tool_marks_active(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    respx.post("http://world/worlds/list").mock(return_value=httpx.Response(200, json={
+        "ok": True, "worlds": ["blade-runner-1", "default"], "active": "blade-runner-1"}))
+    out = await _tool("list_worlds")()
+    assert "blade-runner-1" in out and "default" in out and "*" in out   # active marked
+
+
+@respx.mock
+async def test_switch_world_tool_reports_error(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    respx.post("http://world/worlds/switch").mock(
+        return_value=httpx.Response(200, json={"ok": False, "error": "no world 'nope'"}))
+    out = await _tool("switch_world")(name="nope")
+    assert "Couldn't switch" in out and "nope" in out

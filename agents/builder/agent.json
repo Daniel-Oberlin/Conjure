@@ -5,5 +5,11 @@
   "mcp_servers": [
     { "server": "world", "access": "all" }
   ],
-  "context": ["room://current", "world://current"]
+  "context": ["room://current", "world://current"],
+  "world": {
+    "on_create": [
+      { "cmd": "show_edges", "args": { "on": true } }
+    ],
+    "on_exit": []
+  }
 }

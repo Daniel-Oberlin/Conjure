@@ -483,6 +483,54 @@ async def delete_asset(id: str) -> str:
     return f"Deleted {id} from the library."
 
 
+# --- Worlds (your own scoped, named, nestable worlds) ------------------------------------------
+# Each world is a separate holodeck you can build up, save, and return to. Names can be hierarchical
+# ('castle-quest/dining-hall') to organize them. Recall is forgiving — case, spaces, underscores and
+# hyphens don't matter — but you should list_worlds first and match the user's words to a real name.
+
+@mcp.tool()
+async def list_worlds() -> str:
+    """List your saved worlds (and which one is active). Call this before switching so you match the
+    user's description ('the dining hall', 'that blade runner world') to a real world name."""
+    out = await _post("/worlds/list", _body(scope=SCOPE))
+    names = out.get("worlds", [])
+    if not names:
+        return "No saved worlds yet."
+    active = out.get("active")
+    return "Worlds:\n" + "\n".join(f"  {'* ' if n == active else '  '}{n}" for n in names) + \
+        ("\n(* = active)" if active in names else "")
+
+
+@mcp.tool()
+async def new_world(name: str) -> str:
+    """Create a new, empty world and switch to it. `name` may be hierarchical to organize worlds
+    ('castle-quest/dining-hall'). The new world starts from your agent's default setup."""
+    out = await _post("/worlds/new", _body(name=name, scope=SCOPE))
+    if not out.get("ok"):
+        return f"Couldn't create {name!r}: {out.get('error', 'unknown error')}."
+    return f"Created and switched to '{out.get('world', name)}'."
+
+
+@mcp.tool()
+async def switch_world(name: str) -> str:
+    """Switch to one of your existing worlds (saving the current one first). Match `name` to a real
+    world from list_worlds; formatting/case doesn't need to be exact."""
+    out = await _post("/worlds/switch", _body(name=name, scope=SCOPE))
+    if not out.get("ok"):
+        return f"Couldn't switch to {name!r}: {out.get('error', 'unknown error')}."
+    return f"Switched to '{out.get('world', name)}'."
+
+
+@mcp.tool()
+async def delete_world(name: str) -> str:
+    """Delete one of your worlds permanently. You can't delete the world you're currently in — switch
+    away first."""
+    out = await _post("/worlds/delete", _body(name=name, scope=SCOPE))
+    if not out.get("ok"):
+        return f"Couldn't delete {name!r}: {out.get('error', 'unknown error')}."
+    return f"Deleted world '{name}'."
+
+
 # --- Image procurement (produce/transform an image, get back an image_id) ----------------------
 # Procurement is decoupled from scene use: these make/transform an image and return an `image_id`
 # you then pass to place_image / set_skybox. The `generator` arg is OPTIONAL — omit it to use the

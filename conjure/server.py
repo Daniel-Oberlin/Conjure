@@ -36,15 +36,15 @@ from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .schema import Patch
-from .world import WorldStore
+from .world import WorldRepository, WorldStore, world_path
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
 LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settings.debug_log)
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
-# Durable home of the single active world (docs/persistence-model.md §4/§6 — step 1, single-world
-# durability). When the scoped multi-world store lands this generalizes to .cache/worlds/<scope>/<name>.json.
-WORLD_STATE = ROOT / ".cache" / "world.json"
+AGENTS_DIR = ROOT / "agents"
+# Scoped, hierarchical world store (docs/persistence-model.md §4/§6): .cache/worlds/<scope>/<name>.json.
+WORLDS_DIR = ROOT / ".cache" / "worlds"
 ASSET_CACHE = ROOT / ".cache" / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
 LIBRARY_DB = ROOT / ".cache" / "library.db"   # durable asset catalog (docs/asset-library-plan.md)
@@ -63,19 +63,67 @@ def _has_alpha(im) -> bool:
     return "transparency" in im.info
 
 
-def _load_world() -> WorldStore:
-    """Boot into the saved active world if there is one, else the empty starter. A corrupt/unreadable
-    save must never block startup — fall back to the sample and let the next change re-persist."""
-    if WORLD_STATE.exists():
+# World constructor: a per-agent macro of ordinary server operations, run once at world *creation*
+# (docs/persistence-model.md §6). Each command maps to the same env/patch effect the director's tools
+# produce; the set grows as constructors need more. The builder shows real-room edges by default; the
+# future dungeonmaster turns them off — same mechanism, different agent.json.
+_WORLD_COMMANDS = {
+    "show_edges": lambda a: [{"op": "env", "set": {"room.edgesVisible": bool(a.get("on", True))}}],
+    "show_annotations": lambda a: [{"op": "env", "set": {"room.annotations": bool(a.get("on", False))}}],
+    "set_sky_color": lambda a: [{"op": "env", "set": {"sky": {"color": a.get("color", "#000000")}}}],
+}
+
+
+def _agent_world_config(scope: str) -> dict:
+    """The owning agent's `world` block from agents/<agent>/agent.json (agent = the scope's last
+    segment). Missing/unreadable → no hooks."""
+    agent = (scope or "").rsplit("/", 1)[-1]
+    try:
+        return json.loads((AGENTS_DIR / agent / "agent.json").read_text()).get("world") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _new_world_store(scope: str) -> WorldStore:
+    """A fresh world: the blank starter + the owning agent's on_create constructor (run once)."""
+    s = WorldStore.load(SAMPLE_WORLD)
+    ops: list[dict] = []
+    for cmd in _agent_world_config(scope).get("on_create", []):
+        fn = _WORLD_COMMANDS.get(cmd.get("cmd"))
+        if fn:
+            ops.extend(fn(cmd.get("args") or {}))
+    if ops:
+        s.apply_patch(ops, origin="constructor")
+    return s
+
+
+def _boot_world() -> tuple[str, str, WorldStore]:
+    """Resume the last-active world for the default scope, else create its `default` (running the
+    constructor). One-time courtesy: adopt a step-1 single-world file (.cache/world.json) as `default`."""
+    scope = DEFAULT_SCOPE
+    active = worlds.get_active(scope)
+    if active and worlds.exists(scope, active):
         try:
-            return WorldStore.load(WORLD_STATE)
+            return scope, active, worlds.load(scope, active)
         except Exception as exc:  # noqa: BLE001
-            print(f"[conjure] saved world unreadable ({exc}); starting from the sample world")
-    return WorldStore.load(SAMPLE_WORLD)
+            print(f"[conjure] active world {active!r} unreadable ({exc}); creating a fresh default")
+    legacy = ROOT / ".cache" / "world.json"
+    if not worlds.list(scope) and legacy.exists():
+        try:
+            s = WorldStore.load(legacy)
+            print("[conjure] adopted .cache/world.json as the 'default' world")
+        except Exception:  # noqa: BLE001
+            s = _new_world_store(scope)
+    else:
+        s = _new_world_store(scope)
+    worlds.save(scope, "default", s)
+    worlds.set_active(scope, "default")
+    return scope, "default", s
 
 
 settings = get_settings()  # loads .env
-store = _load_world()
+worlds = WorldRepository(WORLDS_DIR)
+active_scope, active_world, store = _boot_world()   # active_scope/active_world track the live world
 clients: set[WebSocket] = set()
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
@@ -221,21 +269,25 @@ def _friendly_id_for(surface_id: str) -> int:
 
 app = FastAPI(title="Conjure", version="0.0.1")
 
-# Single-world durability: a background task writes the active world to disk whenever its rev advances.
-# Polling debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one write —
-# and it touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
+# Durability: a background task writes the active world to its file whenever its rev advances. Polling
+# debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one write — and it
+# touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
 _AUTOSAVE_INTERVAL = 1.0
 _autosave_task: asyncio.Task | None = None
+
+
+def _save_active() -> None:
+    worlds.save(active_scope, active_world, store)
 
 
 async def _autosave_loop() -> None:
     saved_rev = store.doc.get("rev")
     while True:
         await asyncio.sleep(_AUTOSAVE_INTERVAL)
-        rev = store.doc.get("rev")               # re-reads the module global (reset_world rebinds it)
+        rev = store.doc.get("rev")               # re-reads the globals (reset/switch rebind them)
         if rev != saved_rev:
             try:
-                store.save(WORLD_STATE)
+                _save_active()
                 saved_rev = rev
             except Exception as exc:  # noqa: BLE001 — autosave must never crash the server
                 print(f"[conjure] world autosave failed: {exc}")
@@ -252,7 +304,7 @@ async def _stop_autosave() -> None:
     if _autosave_task is not None:
         _autosave_task.cancel()
     try:
-        store.save(WORLD_STATE)               # flush the latest state on a clean shutdown
+        _save_active()                        # flush the latest state on a clean shutdown
     except Exception:  # noqa: BLE001
         pass
 
@@ -447,15 +499,78 @@ async def world() -> dict:
 
 @app.post("/reset")
 async def reset_world() -> dict:
-    """Reset to the empty starter holodeck — clears all entities + environment (incl. any captured
-    room) and broadcasts a fresh snapshot so every client reloads. The room re-captures on its own
-    once a headset is back in AR."""
+    """Reset the ACTIVE world to the empty starter (+ the agent's constructor) — clears all entities +
+    environment (incl. any captured room) and broadcasts a fresh snapshot. The room re-captures on its
+    own once a headset is back in AR. The world keeps its name; only its contents are wiped."""
     global store
-    store = WorldStore.load(SAMPLE_WORLD)
+    store = _new_world_store(active_scope)
     _surface_absence.clear()                 # fresh room session
-    store.save(WORLD_STATE)                   # persist the reset so it survives a restart
+    _save_active()                            # persist the reset so it survives a restart
     await _broadcast({"type": "snapshot", "world": store.doc})
     return {"ok": True, "rev": store.doc["rev"]}
+
+
+# ---- world management (scoped; scope is injected server-side, never an LLM argument) ----------------
+async def _switch_to(scope: str, name: str, store_override: WorldStore | None = None) -> dict:
+    """Make (scope, name) the live world: persist the outgoing one, set the incoming as `store`, record
+    it as active, and broadcast a snapshot so the headset reloads. `store_override` installs a freshly
+    built world (new_world) instead of loading from disk."""
+    global store, active_scope, active_world
+    name = world_path(name)                   # canonical path, so `active` matches list() + the pointer
+    _save_active()                            # don't lose the outgoing world's latest edits
+    store = store_override if store_override is not None else worlds.load(scope, name)
+    active_scope, active_world = scope, name
+    worlds.save(scope, name, store)
+    worlds.set_active(scope, name)
+    _surface_absence.clear()                  # the room re-syncs into the newly active world
+    await _broadcast({"type": "snapshot", "world": store.doc})
+    return {"ok": True, "world": name, "rev": store.doc["rev"]}
+
+
+class WorldRef(BaseModel):
+    name: str
+    scope: str = DEFAULT_SCOPE
+
+
+class ScopeRef(BaseModel):
+    scope: str = DEFAULT_SCOPE
+
+
+@app.post("/worlds/list")
+async def worlds_list(req: ScopeRef) -> dict:
+    return {"ok": True, "worlds": worlds.list(req.scope), "active": active_world if req.scope == active_scope else worlds.get_active(req.scope)}
+
+
+@app.post("/worlds/new")
+async def worlds_new(req: WorldRef) -> dict:
+    """Create a new (optionally nested) world from the agent's constructor and switch to it. Refuses to
+    clobber an existing world of the same canonical name."""
+    try:
+        if worlds.exists(req.scope, req.name):
+            return {"ok": False, "error": f"world {req.name!r} already exists — switch to it instead"}
+        return await _switch_to(req.scope, req.name, store_override=_new_world_store(req.scope))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/worlds/switch")
+async def worlds_switch(req: WorldRef) -> dict:
+    try:
+        if not worlds.exists(req.scope, req.name):
+            return {"ok": False, "error": f"no world {req.name!r} (create it with new_world)"}
+        return await _switch_to(req.scope, req.name)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/worlds/delete")
+async def worlds_delete(req: WorldRef) -> dict:
+    try:
+        if req.scope == active_scope and world_path(req.name) == active_world:
+            return {"ok": False, "error": "can't delete the active world — switch away first"}
+        return {"ok": worlds.delete(req.scope, req.name), "world": req.name}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/patch")
