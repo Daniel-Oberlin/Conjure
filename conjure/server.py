@@ -97,6 +97,16 @@ def _new_world_store(scope: str) -> WorldStore:
     return s
 
 
+def _reset_room_authority(s: WorldStore) -> None:
+    """Room authority (the one headset allowed to report geometry) is LIVE-session state, not durable.
+    Each client mints a fresh id per page load, so a *persisted* authority from a past session names a
+    dead headset — and ingest_room would reject the live headset's captures forever (it can't match the
+    stale id). Clear it whenever a world becomes active so the live headset reclaims it on next capture."""
+    room = (s.doc.get("environment") or {}).get("room")
+    if isinstance(room, dict) and room.get("authorityClientId"):
+        room["authorityClientId"] = None
+
+
 def _boot_world() -> tuple[str, str, WorldStore]:
     """Resume the last-active world for the default scope, else create its `default` (running the
     constructor). One-time courtesy: adopt a step-1 single-world file (.cache/world.json) as `default`."""
@@ -104,7 +114,9 @@ def _boot_world() -> tuple[str, str, WorldStore]:
     active = worlds.get_active(scope)
     if active and worlds.exists(scope, active):
         try:
-            return scope, active, worlds.load(scope, active)
+            s = worlds.load(scope, active)
+            _reset_room_authority(s)
+            return scope, active, s
         except Exception as exc:  # noqa: BLE001
             print(f"[conjure] active world {active!r} unreadable ({exc}); creating a fresh default")
     legacy = ROOT / ".cache" / "world.json"
@@ -116,6 +128,7 @@ def _boot_world() -> tuple[str, str, WorldStore]:
             s = _new_world_store(scope)
     else:
         s = _new_world_store(scope)
+    _reset_room_authority(s)
     worlds.save(scope, "default", s)
     worlds.set_active(scope, "default")
     return scope, "default", s
@@ -519,6 +532,7 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     name = world_path(name)                   # canonical path, so `active` matches list() + the pointer
     _save_active()                            # don't lose the outgoing world's latest edits
     store = store_override if store_override is not None else worlds.load(scope, name)
+    _reset_room_authority(store)              # a stale authority would lock the live headset out
     active_scope, active_world = scope, name
     worlds.save(scope, name, store)
     worlds.set_active(scope, name)

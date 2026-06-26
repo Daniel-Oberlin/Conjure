@@ -651,3 +651,28 @@ def test_world_supports_nested_names(srv, client):
     r = client.post("/worlds/new", json={"name": "Castle Quest/Dining Hall"}).json()
     assert r["world"] == "castle-quest/dining-hall"
     assert "castle-quest/dining-hall" in client.post("/worlds/list", json={}).json()["worlds"]
+
+
+def test_reset_room_authority_clears_stale_id(srv):
+    from conjure.world import WorldStore
+    s = WorldStore({"id": "x", "name": "x", "rev": 0, "entities": [],
+                    "environment": {"room": {"authorityClientId": "hs_dead"}}})
+    srv._reset_room_authority(s)
+    assert s.doc["environment"]["room"]["authorityClientId"] is None
+    srv._reset_room_authority(WorldStore({"id": "y", "name": "y", "rev": 0, "entities": [],
+                                          "environment": {}}))   # no room/env → must not raise
+
+
+def test_switching_into_a_world_drops_its_stale_authority(srv, client):
+    from conjure.world import WorldStore
+    # a world saved by a PAST session, pinned to a now-dead headset id
+    srv.worlds.save("private/builder", "old-room", WorldStore(
+        {"id": "o", "name": "o", "rev": 1, "entities": [],
+         "environment": {"room": {"active": True, "authorityClientId": "hs_dead"}}}))
+    assert client.post("/worlds/switch", json={"name": "old-room"}).json()["ok"]
+    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] is None
+    # a NEW headset id can now capture (before the fix this was rejected forever)
+    r = client.post("/room", json={"client_id": "hs_new", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]}]}).json()
+    assert r["ok"] is True
+    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] == "hs_new"
