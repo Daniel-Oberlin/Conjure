@@ -3,6 +3,9 @@
 ## Bugs
 - Weird transparent rectangle area barely visible
 
+# Prompts
+= Is it ok to format and organize prompts.md to make it properly readable and maintainable by a human?
+
 # Graphics
 - Lighting
 
