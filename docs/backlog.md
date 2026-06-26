@@ -8,7 +8,14 @@ delete them here) when done.
 
 ## Director claims a surface restyle is done without calling the tool ("the couch")
 
-**Status:** open · noticed 2026-06-26 during live multi-world testing · **needs repro**
+**Status:** open · noticed 2026-06-26 · **CONFIRMED hallucination** (repro'd both ways)
+
+**Confirmation (clean session, same couch):** "surface 41 green" → director called `show_surface(real_couch_41)`
+then `style_surface(real_couch_41, green)` → `Styled 1 surface(s)` → couch turned green. Same surface,
+same world — works when the tool is actually called. So the failing turn was purely the director
+emitting "Done" without calling `style_surface`. Likely contributing factor: the failing turn was in a
+DEGRADED-tracking session with the every-2s re-ingest flood (noisy context); the successful one was a
+clean restart with no flood. So the prompt guardrail is the fix; reducing context noise may also help.
 
 **Symptom:** "Make the couch green" → director replies "Done — the couch is now green!" but nothing
 changes. Reported as couch-specific and reproducible; other surfaces (tables, walls) restyle fine.
