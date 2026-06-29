@@ -28,7 +28,7 @@ import uuid
 
 import httpx
 
-from .config import Settings, get_settings
+from .config import DEFAULT_USER, Settings, get_settings
 from .director import Director
 from .shell import Shell
 
@@ -290,13 +290,13 @@ def cmd_skybox_from(s: Settings, a) -> None:
 
 # --------------------------------------------------------------------------- director (text)
 
-async def _director(s: Settings, make_instructions, verbose: bool) -> None:
+async def _director(s: Settings, make_instructions, verbose: bool, user: str = DEFAULT_USER) -> None:
     """Drive the shell (conjure.shell) — which wraps the agent (conjure.director). `make_instructions`
     is a factory `shell -> async iterator of strings` (so the interactive prompt can reflect shell
     state). The shell owns deterministic commands + LLM switching; the agent builds the world; the CLI
     only decides how to print."""
     errlog = sys.stderr if verbose else None
-    async with Director.connect(s, errlog=errlog) as director:
+    async with Director.connect(s, user=user, errlog=errlog) as director:
         shell = Shell(director, s)
         multi = len(director.roster) > 1  # show who's speaking once there's more than one LLM
 
@@ -319,7 +319,7 @@ async def _director(s: Settings, make_instructions, verbose: bool) -> None:
 def cmd_say(s: Settings, a) -> None:
     async def once(_shell):
         yield " ".join(a.text)
-    asyncio.run(_director(s, once, a.verbose))
+    asyncio.run(_director(s, once, a.verbose, a.user))
 
 
 # Whole-line inputs that leave the REPL (case-insensitive). Exact match only, so "exit the room" is
@@ -346,7 +346,7 @@ def cmd_repl(s: Settings, a) -> None:
             if line:
                 yield line
 
-    asyncio.run(_director(s, lines, a.verbose))
+    asyncio.run(_director(s, lines, a.verbose, a.user))
 
 
 # --------------------------------------------------------------------------- argparse
@@ -358,6 +358,7 @@ def _pos(p):
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="conjure-cli", description="Drive the Conjure world from the terminal.")
     p.add_argument("-v", "--verbose", action="store_true", help="show tool calls and library logs")
+    p.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("world", help="print the current world").set_defaults(fn=cmd_world)

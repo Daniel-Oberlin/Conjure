@@ -21,10 +21,12 @@ from uuid import uuid4
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from .config import DEFAULT_USER, scope_for
+
 BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
-# The agent's catalog scope — a CAPABILITY injected by the director at MCP-server launch (env), NOT an
-# LLM tool argument. Every maintenance call carries it so the world server can enforce per-agent scope.
-SCOPE = os.environ.get("CONJURE_SCOPE", "private/builder")
+# The catalog scope <user>/agents/<agent> — a CAPABILITY injected by the director at MCP-server launch
+# (env), NOT an LLM tool argument. Every maintenance call carries it so the world server enforces scope.
+SCOPE = os.environ.get("CONJURE_SCOPE", scope_for(DEFAULT_USER, "builder"))
 
 mcp = FastMCP("conjure-world")
 

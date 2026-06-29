@@ -111,7 +111,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "ASSET_CACHE", tmp_path)
     # Isolated world store + active pointers so autosave/reset/switch stay off the repo.
     monkeypatch.setattr(server, "worlds", WorldRepository(tmp_path / "worlds"))
-    monkeypatch.setattr(server, "active_scope", "private/builder")
+    monkeypatch.setattr(server, "active_scope", server.DEFAULT_SCOPE)
     monkeypatch.setattr(server, "active_world", "default")
     monkeypatch.setattr(
         server, "store",

@@ -666,7 +666,7 @@ def test_reset_room_authority_clears_stale_id(srv):
 def test_switching_into_a_world_drops_its_stale_authority(srv, client):
     from conjure.world import WorldStore
     # a world saved by a PAST session, pinned to a now-dead headset id
-    srv.worlds.save("private/builder", "old-room", WorldStore(
+    srv.worlds.save(srv.DEFAULT_SCOPE, "old-room", WorldStore(
         {"id": "o", "name": "o", "rev": 1, "entities": [],
          "environment": {"room": {"active": True, "authorityClientId": "hs_dead"}}}))
     assert client.post("/worlds/switch", json={"name": "old-room"}).json()["ok"]
@@ -676,3 +676,27 @@ def test_switching_into_a_world_drops_its_stale_authority(srv, client):
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]}]}).json()
     assert r["ok"] is True
     assert client.get("/world").json()["environment"]["room"]["authorityClientId"] == "hs_new"
+
+
+def test_migrate_world_dirs_moves_pre_user_layout(srv, tmp_path):
+    root = tmp_path / "worlds"
+    (root / "private" / "builder").mkdir(parents=True)
+    (root / "private" / "builder" / "default.json").write_text("{}")
+    (root / "private" / "builder" / "_active.txt").write_text("new-room")
+    srv._migrate_world_dirs(root)
+    moved = root / "daniel" / "agents" / "builder"
+    assert (moved / "default.json").exists()
+    assert (moved / "_active.txt").read_text() == "new-room"
+    assert not (root / "private").exists()                 # emptied old tree pruned
+    srv._migrate_world_dirs(root)                          # idempotent — no error, no change
+    assert (moved / "default.json").exists()
+
+
+def test_tunnel_user_route_carries_user(srv, client, tmp_path, monkeypatch):
+    tf = tmp_path / "tunnel_url"
+    tf.write_text("https://x.trycloudflare.com")
+    monkeypatch.setattr(srv, "TUNNEL_FILE", tf)
+    r = client.get("/tunnel/bob", follow_redirects=False)
+    assert r.status_code == 307 and "user=bob" in r.headers["location"]
+    r2 = client.get("/tunnel", follow_redirects=False)     # default user → no user param appended
+    assert "user=" not in r2.headers["location"]

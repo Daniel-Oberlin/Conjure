@@ -243,21 +243,24 @@ def test_transparent_column_roundtrips(tmp_path):
     assert lib.get("un.png")["transparent"] is None
 
 
-def test_migration_v4_to_v5_adds_column_without_wiping_data(tmp_path):
-    """A schema bump must ALTER, never DROP — captions/curation aren't recoverable from cache files."""
+def test_migration_v4_to_v6_preserves_data_reworks_scope_and_adds_public(tmp_path):
+    """A schema bump must ALTER, never DROP — and v4→v6 cumulatively adds transparent (v5), the public
+    flag, and rewrites scope to user-first <user>/agents/<agent> (v6)."""
     import sqlite3
     path = tmp_path / "library.db"
     raw = sqlite3.connect(str(path))
     raw.execute("CREATE TABLE assets (id TEXT PRIMARY KEY, kind TEXT, label TEXT, "
                 "filename TEXT, scope TEXT, notes TEXT)")
-    raw.execute("INSERT INTO assets (id, kind, label, notes) VALUES "
-                "('keep.png','image','my dragon','my favorite')")
+    raw.execute("INSERT INTO assets (id, kind, label, scope, notes) VALUES "
+                "('keep.png','image','my dragon','private/builder','my favorite')")
     raw.execute("PRAGMA user_version = 4")
     raw.commit()
     raw.close()
 
-    lib = AssetLibrary(path)                      # opens at v4 → must migrate in place
+    lib = AssetLibrary(path)                      # opens at v4 → cumulative migrate to v6
     rec = lib.get("keep.png")
     assert rec is not None and rec["label"] == "my dragon" and rec["notes"] == "my favorite"
-    assert "transparent" in rec and rec["transparent"] is None     # column added, unchecked
-    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert "transparent" in rec and rec["transparent"] is None     # v4→v5 column
+    assert rec["public"] == 1                                      # v5→v6 flag, default public
+    assert rec["scope"] == "daniel/agents/builder"                 # v5→v6 user-first scope rewrite
+    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 6

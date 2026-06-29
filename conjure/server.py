@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .captioner import build_captioner
-from .config import get_settings
+from .config import DEFAULT_USER, get_settings, scope_for
 from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
@@ -48,9 +48,9 @@ WORLDS_DIR = ROOT / ".cache" / "worlds"
 ASSET_CACHE = ROOT / ".cache" / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
 LIBRARY_DB = ROOT / ".cache" / "library.db"   # durable asset catalog (docs/asset-library-plan.md)
-# The agent namespace assets are written under (docs/persistence-model.md). A data seam for now —
-# single agent, no enforcement yet; the builder is the only writer.
-DEFAULT_SCOPE = "private/builder"
+# The scope new assets/worlds are written under: <user>/agents/<agent> (docs/spaces-and-users-plan.md
+# §3). A data seam for now — single user/agent, no enforcement yet; the builder is the only writer.
+DEFAULT_SCOPE = scope_for(DEFAULT_USER, "builder")
 # scripts/tunnel.sh writes the current cloudflared URL here; /tunnel redirects to it (a short, fixed
 # LAN address you can type on the Quest instead of the long random trycloudflare URL each session).
 TUNNEL_FILE = ROOT / ".cache" / "tunnel_url"
@@ -107,6 +107,28 @@ def _reset_room_authority(s: WorldStore) -> None:
         room["authorityClientId"] = None
 
 
+def _migrate_world_dirs(root: Path) -> None:
+    """One-time: move worlds from the pre-user layout `<root>/private/<agent>/` to the user-first
+    `<root>/<DEFAULT_USER>/agents/<agent>/` (docs/spaces-and-users-plan.md §9). Idempotent — only acts
+    when the old dir exists and the destination doesn't; prunes the emptied `private/` tree."""
+    old_root = root / "private"
+    if not old_root.is_dir():
+        return
+    for agent_dir in sorted(old_root.iterdir()):
+        if not agent_dir.is_dir():
+            continue
+        dest = root / DEFAULT_USER / "agents" / agent_dir.name
+        if dest.exists():
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        agent_dir.rename(dest)
+        print(f"[conjure] migrated worlds {agent_dir} -> {dest}")
+    try:
+        old_root.rmdir()                          # remove the now-empty private/ tree (no-op if not empty)
+    except OSError:
+        pass
+
+
 def _boot_world() -> tuple[str, str, WorldStore]:
     """Resume the last-active world for the default scope, else create its `default` (running the
     constructor). One-time courtesy: adopt a step-1 single-world file (.cache/world.json) as `default`."""
@@ -136,6 +158,7 @@ def _boot_world() -> tuple[str, str, WorldStore]:
 
 settings = get_settings()  # loads .env
 worlds = WorldRepository(WORLDS_DIR)
+_migrate_world_dirs(WORLDS_DIR)                     # pre-user layout → <user>/agents/<agent> (one-time)
 active_scope, active_world, store = _boot_world()   # active_scope/active_world track the live world
 clients: set[WebSocket] = set()
 resolver: AssetResolver | None = (
@@ -476,13 +499,17 @@ async def index() -> HTMLResponse:
 
 
 @app.get("/tunnel")
-async def tunnel() -> RedirectResponse:
+@app.get("/tunnel/{user}")
+async def tunnel(user: str = DEFAULT_USER) -> RedirectResponse:
     """Redirect to the current cloudflared tunnel URL (written by scripts/tunnel.sh). Lets you type a
     short, fixed LAN address (http://<this-machine>:<port>/tunnel) on the Quest instead of the long
-    random trycloudflare URL that changes every session."""
+    random trycloudflare URL that changes every session. `/tunnel/<user>` logs that user in for the web
+    session by carrying it through as `?user=<user>` (the headset client reads it)."""
     url = TUNNEL_FILE.read_text().strip() if TUNNEL_FILE.exists() else ""
     if not url:
         raise HTTPException(status_code=404, detail="No tunnel running — start one with scripts/tunnel.sh")
+    if user and user != DEFAULT_USER:
+        url = url + ("&" if "?" in url else "?") + "user=" + user
     # Temporary (the URL changes each run) + no-store so the browser never caches a stale tunnel.
     return RedirectResponse(url, status_code=307, headers=_NO_STORE)
 

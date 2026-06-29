@@ -6,6 +6,28 @@ delete them here) when done.
 
 ---
 
+## Module-level startup mutates live `.cache` at import (incl. under pytest)
+
+**Status:** open · noticed 2026-06-26 during Phase 1 (users/namespace) · **had a real near-miss**
+
+**Symptom:** `import conjure.server` runs filesystem-mutating startup at module top level —
+`library = AssetLibrary(LIBRARY_DB)` (runs schema migrations), `_migrate_world_dirs(WORLDS_DIR)`, and
+`_boot_world()` (can create/save a world). So **every test run and every dev import touches the real
+`.cache`.** During Phase 1 this stranded the real worlds: repeated dev imports of half-written code
+created a stub `daniel/agents/builder/default.json` (0 surfaces, from the legacy `world.json`
+adoption), which then made `_migrate_world_dirs`'s `dest.exists()` guard **skip** moving the real
+`private/builder` rooms. Recovered by hand (moved the real dir over the stub).
+
+**Why it's risky:** migrations and a dir-move running at import means tests/CI/dev mutate live user
+data; the dir-migration's skip-if-dest-exists can also half-apply if a partial dest exists.
+
+**Proposed fix:** move startup side effects (library open + migrations, world-dir migration, `_boot_world`)
+out of module top level into a **lifespan/startup hook** (or a lazy init called by `__main__`/uvicorn),
+so `import conjure.server` is side-effect-free. Tests then drive a clean temp `.cache` via the fixture
+*before* any startup runs. Pre-existing pattern (old code ran `_boot_world`/heals at import too), but the
+dir-moving migration made it bite. Consider also making `_migrate_world_dirs` merge rather than skip when
+a partial dest exists.
+
 ## Director claims a surface restyle is done without calling the tool ("the couch")
 
 **Status:** open · noticed 2026-06-26 · **CONFIRMED hallucination** (repro'd both ways)
