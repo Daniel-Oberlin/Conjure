@@ -1,8 +1,10 @@
 # Shared room layer — design
 
-**Status:** DESIGN (not yet built). Extends `persistence-model.md` §6 (world lifecycle) and
-`room-model.md` (capture/registration). Resolves the per-world-room problem (issue #3 in our testing)
-and the whole class of "session state frozen into the durable world doc" regressions.
+**Status:** DESIGN, now **subsumed by `spaces-and-users-plan.md`** — a *space* IS this shared room
+layer, made first-class (user-owned + geolocated). This doc remains the detailed treatment of the
+geometry/style **compose-vs-persist** mechanics (durable world doc vs. live geometry); the spaces plan
+is the umbrella. Extends `persistence-model.md` §6 and `room-model.md`. Resolves the per-world-room
+problem and the class of "session state frozen into the durable world doc" regressions.
 
 ## 1. Motivation
 
