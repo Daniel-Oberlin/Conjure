@@ -14,6 +14,16 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# The default logged-in user when none is specified (--user / the /tunnel/<user> route).
+# No security — users are identity only (docs/spaces-and-users-plan.md).
+DEFAULT_USER = "daniel"
+
+
+def scope_for(user: str, agent: str) -> str:
+    """The capability scope a (user, agent) pair operates under: `<user>/agents/<agent>`
+    (docs/spaces-and-users-plan.md §3). Injected by the runtime, never an LLM argument."""
+    return f"{user}/agents/{agent}"
+
 
 def load_env() -> None:
     """Load `.env` from the repo root into the process environment, if present."""

@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from .config import DEFAULT_USER
+
 try:                                  # optional: vector search. Absent ⇒ catalog still works (FTS/exact)
     import sqlite_vec
     from sqlite_vec import serialize_float32
@@ -36,7 +38,7 @@ except Exception:                     # noqa: BLE001
 # Bump when the schema changes, and add a branch to _migrate() to upgrade existing data in place
 # (ALTER, not DROP — captions/embeddings/curation aren't recoverable from the cache bytes). The
 # destructive rebuild is a last resort for a fresh or unrecognised DB only.
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 # faces/persons are reserved now (sub-image entities + named clusters) so the NAS seam is honest;
 # they stay empty until the NAS ingestion subsystem (Phase 5) populates them.
@@ -44,8 +46,9 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY,
   kind TEXT,                       -- image | model | skybox | grounded_skybox | audio | photo | …
-  scope TEXT,                      -- per-agent namespace, e.g. private/builder (persistence-model.md);
+  scope TEXT,                      -- capability namespace <user>/agents/<agent> (spaces-and-users-plan.md);
                                    --   a data seam now — enforcement arrives with the second agent
+  public INTEGER DEFAULT 1,        -- visibility flag (NOT a path segment): 1 = world-readable, 0 = private
   source TEXT,                     -- cache://<id> | nas://<path> | https://…
   filename TEXT,                   -- physical name under .cache/assets (NULL for external sources)
   label TEXT,                      -- machine display name: prompt (images) or title/query (models)
@@ -81,7 +84,7 @@ _TABLES = ("assets_fts", "assets_vec", "assets", "aliases", "relations", "faces"
 # Columns a caller may set via upsert kwargs (everything except id, attributes, and the lifecycle
 # bookkeeping). `attributes` is handled separately so it can be *merged* rather than replaced.
 _UPSERT_COLS = (
-    "kind", "scope", "source", "filename", "label", "prompt", "query", "params_json",
+    "kind", "scope", "public", "source", "filename", "label", "prompt", "query", "params_json",
     "provider", "model", "width", "height", "transparent", "licence", "attribution", "creator",
     "notes", "tags", "rating", "favorite", "embed_model", "embed_dim",
 )
@@ -134,14 +137,18 @@ class AssetLibrary:
         not recoverable from the content-addressed cache files — only a destructive last resort drops."""
         has_assets = self._db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='assets'").fetchone()
-        if not has_assets:
-            return False                                 # nothing to preserve → fresh build
-        if ver == 4:                                     # v4 → v5: transparency promoted to a column
-            cols = {r[1] for r in self._db.execute("PRAGMA table_info(assets)")}
-            if "transparent" not in cols:
-                self._db.execute("ALTER TABLE assets ADD COLUMN transparent INTEGER")
-            return True
-        return False                                     # older/unknown → safe rebuild
+        if not has_assets or ver < 4:
+            return False                                 # fresh / pre-v4 unknown → rebuild from scratch
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(assets)")}
+        if ver <= 4 and "transparent" not in cols:       # v4 → v5: transparency promoted to a column
+            self._db.execute("ALTER TABLE assets ADD COLUMN transparent INTEGER")
+        if ver <= 5:                                     # v5 → v6: public flag + user-first scope
+            if "public" not in cols:
+                self._db.execute("ALTER TABLE assets ADD COLUMN public INTEGER DEFAULT 1")
+            # `private/<agent>` → `<DEFAULT_USER>/agents/<agent>` (substr(.,9) drops "private/")
+            self._db.execute("UPDATE assets SET scope = ? || substr(scope, 9) WHERE scope LIKE 'private/%'",
+                             (f"{DEFAULT_USER}/agents/",))
+        return True                                      # migrated in place (cumulative)
 
     # ---- writes -------------------------------------------------------------------------------
     def upsert(self, id: str, *, kind: Optional[str] = None, params: Optional[dict] = None,

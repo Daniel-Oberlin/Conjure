@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 from .agents import AgentDef, ServerSpec, load_agent, load_server_registry, scoped_roster
-from .config import Settings
+from .config import DEFAULT_USER, Settings, scope_for
 from .llm import LLM, ToolSpec, Turn, build_roster
 
 # Shared system prompt for the builder agent. It lives in the agent's prompt_file
@@ -109,14 +109,14 @@ def route_turn(text: str, roster, active: str) -> Route:
 
 # --------------------------------------------------------------------------- the director
 
-def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder"):
+def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", user: str = DEFAULT_USER):
     """Build stdio launch params from a registry ServerSpec: map a bare 'python' to this interpreter,
-    substitute ${world_url} in the env, and inject the agent's catalog SCOPE as a capability (so the
-    MCP server's maintenance tools are scoped to this agent — persistence-model.md, not an LLM arg)."""
+    substitute ${world_url} in the env, and inject the (user, agent) catalog SCOPE as a capability (so
+    the MCP server's maintenance tools are scoped to this user+agent — never an LLM arg)."""
     from mcp import StdioServerParameters
     command = sys.executable if spec.command in ("python", "python3") else spec.command
     env = {**os.environ, **{k: v.replace("${world_url}", settings.world_url) for k, v in spec.env.items()}}
-    env["CONJURE_SCOPE"] = f"private/{agent}"
+    env["CONJURE_SCOPE"] = scope_for(user, agent)
     return StdioServerParameters(command=command, args=list(spec.args), env=env)
 
 
@@ -135,7 +135,8 @@ class Director:
 
     @classmethod
     @contextlib.asynccontextmanager
-    async def connect(cls, settings: Settings, *, agent: str = "builder", errlog=None):
+    async def connect(cls, settings: Settings, *, agent: str = "builder", user: str = DEFAULT_USER,
+                      errlog=None):
         """Load the `agent` definition, open its MCP server(s) over stdio, and build the (scoped)
         roster. Yields a ready Director driving that agent.
 
@@ -163,7 +164,7 @@ class Director:
             raise RuntimeError(
                 f"agent {agent!r}: v1 launches exactly one MCP server (got {len(specs)}: "
                 f"{[s.name for s in specs]}).")
-        params = _stdio_params(specs[0], settings, agent)
+        params = _stdio_params(specs[0], settings, agent, user)
 
         close_errlog = None
         if errlog is None:
