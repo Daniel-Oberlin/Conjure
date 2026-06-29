@@ -736,5 +736,21 @@
     el.textContent = el.textContent.trim() + (m ? "  ✓ js v" + m[1] : "  ✓ js");
   }
 
-  window.addEventListener("load", function () { connect(); setupARButton(); markVersion(); });
+  // Report the headset's coarse location once so the server can stamp / pick the physical space it
+  // belongs to (docs/spaces-and-users-plan.md §7). Best-effort: needs HTTPS + the user's permission;
+  // silently skipped if denied or unavailable (the space just stays un-geolocated).
+  function reportGeolocation() {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      fetch("/geolocation", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat: pos.coords.latitude, lon: pos.coords.longitude,
+                               accuracy: pos.coords.accuracy }),
+      }).catch(function () {});
+    }, function () {}, { maximumAge: 600000, timeout: 10000 });
+  }
+
+  window.addEventListener("load", function () {
+    connect(); setupARButton(); markVersion(); reportGeolocation();
+  });
 })();

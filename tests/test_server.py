@@ -789,3 +789,29 @@ def test_legacy_embedded_world_migrates_geometry_into_a_space(srv, client):
     assert wd["environment"]["space"] == "home"                            # world references the space
     sp = srv.spaces.load("daniel", "home")
     assert any(s["id"] == "real_table_2" for s in sp["surfaces"])          # geometry in the space
+
+
+# ---- geolocation (Phase 3a) ---------------------------------------------------------------------
+def test_nearest_space_picks_closest_and_skips_ungeolocated(srv):
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
+                                        "geolocation": {"lat": 37.7749, "lon": -122.4194}, "surfaces": []})
+    srv.spaces.save("daniel", "office", {"owner": "daniel", "name": "office", "public": True,
+                                         "geolocation": {"lat": 40.7128, "lon": -74.0060}, "surfaces": []})
+    srv.spaces.save("daniel", "void", {"owner": "daniel", "name": "void", "public": True,
+                                       "geolocation": None, "surfaces": []})            # skipped (no geo)
+    near = srv._nearest_space("daniel", 37.78, -122.42)          # ~near SF home
+    assert near[0] == "home" and near[1] < 2000                  # within ~2 km
+    assert srv._nearest_space("daniel", 40.71, -74.01)[0] == "office"
+    assert srv._nearest_space("bob", 0, 0) is None               # no spaces → None
+
+
+def test_geolocation_stamps_active_space_once(srv, client):
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
+                                       "geolocation": None, "surfaces": []})
+    r = client.post("/geolocation", json={"lat": 51.5, "lon": -0.12, "accuracy": 65}).json()
+    assert r["ok"] and r["stamped"] == "home"
+    assert srv.spaces.load("daniel", "home")["geolocation"]["lat"] == 51.5
+    # a second report doesn't overwrite an already-located space (selection is step 3b)
+    r2 = client.post("/geolocation", json={"lat": 1.0, "lon": 2.0}).json()
+    assert r2["ok"] and r2["stamped"] is None
+    assert srv.spaces.load("daniel", "home")["geolocation"]["lat"] == 51.5

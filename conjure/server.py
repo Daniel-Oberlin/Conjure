@@ -621,6 +621,30 @@ class ScopeRef(BaseModel):
     scope: str = DEFAULT_SCOPE
 
 
+class GeoReport(BaseModel):
+    lat: float
+    lon: float
+    accuracy: Optional[float] = None
+
+
+@app.post("/geolocation")
+async def report_geolocation(req: GeoReport) -> dict:
+    """A connected client reports its coarse location (the headset's `navigator.geolocation`). Step 3a:
+    stamp the ACTIVE space's geolocation if it has none yet — i.e. "you're physically in this space."
+    Nearest-space SELECTION / switching is step 3b (docs/spaces-and-users-plan.md §7)."""
+    if spaces is None:
+        return {"ok": False, "error": "no space store"}
+    user = active_scope.split("/", 1)[0]
+    if not spaces.exists(user, active_space):
+        return {"ok": False, "error": "no active space"}
+    sp = spaces.load(user, active_space)
+    if not sp.get("geolocation"):
+        sp["geolocation"] = {"lat": req.lat, "lon": req.lon, "accuracy": req.accuracy}
+        spaces.save(user, active_space, sp)
+        return {"ok": True, "stamped": active_space}
+    return {"ok": True, "stamped": None}          # already located; selection comes in step 3b
+
+
 @app.post("/worlds/list")
 async def worlds_list(req: ScopeRef) -> dict:
     return {"ok": True, "worlds": worlds.list(req.scope), "active": active_world if req.scope == active_scope else worlds.get_active(req.scope)}
@@ -840,6 +864,30 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, WorldStore
     composed = WorldStore(_compose(world_doc, space))
     _reset_room_authority(composed)
     return space_name, composed
+
+
+def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great-circle distance in metres between two (lat, lon) points."""
+    r = 6371000.0
+    lat1, lat2 = math.radians(a[0]), math.radians(b[0])
+    dlat, dlon = math.radians(b[0] - a[0]), math.radians(b[1] - a[1])
+    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(h)))
+
+
+def _nearest_space(user: str, lat: float, lon: float) -> tuple[str, float] | None:
+    """The user's space nearest (lat, lon) and its distance in metres, or None. Skips spaces that have
+    no stored geolocation yet. A coarse prefilter (geolocation is ~hundreds of feet) — the registration
+    vote is the fine 'are you actually in this space?' check (docs/spaces-and-users-plan.md §7)."""
+    best = None
+    for name in spaces.list(user):
+        g = spaces.load(user, name).get("geolocation")
+        if not g:
+            continue
+        d = _haversine_m((lat, lon), (g["lat"], g["lon"]))
+        if best is None or d < best[1]:
+            best = (name, d)
+    return best
 
 
 # A capture on resume-from-idle (or a momentary tracking blip) is often SPARSE — plane/mesh detection
