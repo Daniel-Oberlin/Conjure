@@ -13,6 +13,7 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import hashlib
 import json
@@ -322,7 +323,27 @@ def _friendly_id_for(surface_id: str) -> int:
     tail = surface_id.rsplit("_", 1)[-1]
     return int(tail) if tail.isdigit() else 0
 
-app = FastAPI(title="Conjure", version="0.0.1")
+@contextlib.asynccontextmanager
+async def _lifespan(app):
+    """Startup/shutdown (replaces the deprecated on_event hooks). On startup: open the catalog + boot
+    the active world (skipped if a test fixture already wired the globals) and start the autosave loop.
+    On shutdown: stop autosave and flush the active world. Only fires under a real run / `with TestClient`."""
+    global _autosave_task
+    if library is None:
+        _init_state()
+    _autosave_task = asyncio.create_task(_autosave_loop())
+    try:
+        yield
+    finally:
+        if _autosave_task is not None:
+            _autosave_task.cancel()
+        try:
+            _save_active()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+app = FastAPI(title="Conjure", version="0.0.1", lifespan=_lifespan)
 
 # Durability: a background task writes the active world to its file whenever its rev advances. Polling
 # debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one write — and it
@@ -362,22 +383,6 @@ async def _autosave_loop() -> None:
                 print(f"[conjure] world autosave failed: {exc}")
 
 
-@app.on_event("startup")
-async def _on_startup() -> None:
-    global _autosave_task
-    if library is None:                  # not already wired by a test fixture → real startup
-        _init_state()
-    _autosave_task = asyncio.create_task(_autosave_loop())
-
-
-@app.on_event("shutdown")
-async def _stop_autosave() -> None:
-    if _autosave_task is not None:
-        _autosave_task.cancel()
-    try:
-        _save_active()                        # flush the latest state on a clean shutdown
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def _normalize(record, pos: list[float], target_m: float) -> tuple[list[float], list[float]]:
