@@ -496,11 +496,11 @@ async def test_realign_broadcasts_recapture(srv):
             self.sent.append(m)
 
     ws = FakeWS()
-    srv.clients.add(ws)
+    srv.clients[ws] = "daniel"
     try:
         await srv.realign_room()
     finally:
-        srv.clients.discard(ws)
+        srv.clients.pop(ws, None)
     assert ws.sent and ws.sent[-1]["type"] == "recapture"
 
 
@@ -599,11 +599,11 @@ async def test_patch_is_broadcast_to_clients(srv):
             self.sent.append(message)
 
     ws = FakeWS()
-    srv.clients.add(ws)
+    srv.clients[ws] = "daniel"
     try:
         await srv.post_patch(Patch(ops=[{"op": "add", "entity": {"id": "c", "components": {}}}]))
     finally:
-        srv.clients.discard(ws)
+        srv.clients.pop(ws, None)
     assert ws.sent and ws.sent[-1]["type"] == "patch"
     assert ws.sent[-1]["patch"]["ops"][0]["op"] == "add"
 
@@ -839,3 +839,23 @@ def test_geolocation_new_location_creates_a_space(srv, client):
     assert srv.active_space == "space-2"
     sp = srv.spaces.load("daniel", "space-2")
     assert sp["geolocation"]["lat"] == 51.5 and sp["surfaces"] == []
+
+
+# ---- Phase 4 step 1: per-connection user + public-join gate --------------------------------------
+def test_ws_owner_and_public_guest_receive_the_world(srv, client):
+    with client.websocket_connect("/ws?user=daniel") as ws:        # owner
+        assert ws.receive_json()["type"] == "snapshot"
+    with client.websocket_connect("/ws?user=bob") as ws:           # guest, world public by default
+        assert ws.receive_json()["type"] == "snapshot"
+    with client.websocket_connect("/ws") as ws:                    # no user → default (owner)
+        assert ws.receive_json()["type"] == "snapshot"
+
+
+def test_ws_guest_refused_private_world_gets_info_and_no_broadcast(srv, client):
+    srv.store.doc.setdefault("environment", {})["public"] = False
+    with client.websocket_connect("/ws?user=bob") as ws:           # guest + private → info, no world
+        msg = ws.receive_json()
+        assert msg["type"] == "info" and "private" in msg["msg"] and "daniel" in msg["msg"]
+        assert "bob" not in srv.clients.values()                   # not joined → excluded from broadcasts
+    with client.websocket_connect("/ws?user=daniel") as ws:        # owner still gets in
+        assert ws.receive_json()["type"] == "snapshot"

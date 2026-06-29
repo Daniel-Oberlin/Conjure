@@ -423,15 +423,33 @@
     console.log("[conjure] patch rev", patch.rev, "from", patch.origin);
   }
 
+  // The logged-in user, from the /tunnel/<user> route (which redirects with ?user=). Default otherwise.
+  function currentUser() { return new URLSearchParams(location.search).get("user") || ""; }
+
+  // A simple info banner (info color), e.g. when a guest is refused a private world (Phase 4 §3).
+  function showInfo(text) {
+    var el = document.getElementById("conjure-info");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "conjure-info";
+      el.style.cssText = "position:fixed;top:0;left:0;right:0;padding:12px;text-align:center;z-index:9999;"
+        + "font:16px/1.4 sans-serif;color:" + INFO_COLOR + ";background:rgba(0,0,0,0.72);";
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+  }
+
   function connect() {
     var proto = location.protocol === "https:" ? "wss" : "ws";
-    var ws = new WebSocket(proto + "://" + location.host + "/ws");
-    ws.onopen = function () { console.log("[conjure] connected"); };
+    var u = currentUser();
+    var ws = new WebSocket(proto + "://" + location.host + "/ws" + (u ? "?user=" + encodeURIComponent(u) : ""));
+    ws.onopen = function () { console.log("[conjure] connected" + (u ? " as " + u : "")); };
     ws.onclose = function () { console.log("[conjure] disconnected — retrying in 2s"); setTimeout(connect, 2000); };
     ws.onmessage = function (ev) {
       var msg = JSON.parse(ev.data);
       if (msg.type === "snapshot") applySnapshot(msg.world);
       else if (msg.type === "patch") applyPatch(msg.patch);
+      else if (msg.type === "info") showInfo(msg.msg);    // e.g. "'<world>' is private — ask <owner>…"
       else if (msg.type === "recapture") {                // realign request → re-capture the room
         var sc = document.querySelector("a-scene");
         var rc = sc && sc.components && sc.components["room-capture"];

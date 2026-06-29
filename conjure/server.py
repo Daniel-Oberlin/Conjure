@@ -91,6 +91,7 @@ def _agent_world_config(scope: str) -> dict:
 def _new_world_store(scope: str) -> WorldStore:
     """A fresh world: the blank starter + the owning agent's on_create constructor (run once)."""
     s = WorldStore.load(SAMPLE_WORLD)
+    s.doc.setdefault("environment", {})["public"] = True          # worlds are public by default (§4)
     ops: list[dict] = []
     for cmd in _agent_world_config(scope).get("on_create", []):
         fn = _WORLD_COMMANDS.get(cmd.get("cmd"))
@@ -161,7 +162,7 @@ def _boot_world() -> tuple[str, str, WorldStore]:
 
 
 settings = get_settings()  # loads .env
-clients: set[WebSocket] = set()
+clients: "dict[WebSocket, str]" = {}     # connected render clients → their user (owner or guest)
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
@@ -1708,8 +1709,15 @@ async def skybox_from_image(req: SkyboxFromSceneRequest) -> dict:
 @app.websocket("/ws")
 async def ws(websocket: WebSocket) -> None:
     await websocket.accept()
-    clients.add(websocket)
-    await websocket.send_json({"type": "snapshot", "world": store.doc})
+    user = websocket.query_params.get("user") or DEFAULT_USER     # from the /tunnel/<user> route's ?user=
+    owner = active_scope.split("/", 1)[0]
+    public = bool((store.doc.get("environment", {}) or {}).get("public", True))   # worlds default public
+    if user == owner or public:
+        clients[websocket] = user                                # joined → gets the world + broadcasts
+        await websocket.send_json({"type": "snapshot", "world": store.doc})
+    else:                                                        # guest + private world → no world, info msg
+        await websocket.send_json({"type": "info", "level": "info",
+            "msg": f"'{active_world}' is private — ask {owner} to make it public."})
     try:
         while True:
             # Phase 0: client->server intents (behaviors/input) are ignored for now.
@@ -1717,18 +1725,18 @@ async def ws(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        clients.discard(websocket)
+        clients.pop(websocket, None)
 
 
 async def _broadcast(message: dict) -> None:
     dead = []
-    for ws_ in clients:
+    for ws_ in list(clients):
         try:
             await ws_.send_json(message)
         except Exception:
             dead.append(ws_)
     for d in dead:
-        clients.discard(d)
+        clients.pop(d, None)
 
 
 class ClientLog(BaseModel):
