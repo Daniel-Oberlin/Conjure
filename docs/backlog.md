@@ -6,6 +6,20 @@ delete them here) when done.
 
 ---
 
+## World index for cross-user public discovery
+
+**Status:** open · noted 2026-06-29 (deferred during Phase 4 design)
+
+**Why:** worlds are separate JSON files. Listing *your own* worlds is a cheap directory scan
+(`worlds.list(scope)` reads filenames, not contents — fine). But **"all public worlds available to me"**
+across *other* users means scanning everyone's dirs and opening each candidate to check
+`environment.public`. No cross-user browse exists yet, so it's not needed — but it won't scale.
+
+**Fix when a browse feature lands:** a small **world index** — a catalog table of
+`owner / name / public / space` derived from the world docs (the docs stay the source of truth), exactly
+like the asset catalog. Turns "filesystem walk + read each" into one indexed lookup. Keep it in sync on
+world save/delete. Defer until cross-user world discovery is actually a feature.
+
 ## Director claims a surface restyle is done without calling the tool ("the couch")
 
 **Status:** open · noticed 2026-06-26 · **CONFIRMED hallucination** (repro'd both ways)
