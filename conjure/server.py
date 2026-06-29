@@ -13,6 +13,7 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import math
@@ -711,6 +712,60 @@ def _default_surface_material(semantic: str) -> dict:
     elif sem == "window":
         mat.update(color="#cfe6ff", opacity=0.18, transparent=True)
     return mat
+
+
+# ---- space ↔ world composition (docs/spaces-and-users-plan.md §5/§6) -------------------------------
+# A SPACE owns the real-surface geometry (+ a base material) and the boundary, shared across a user's
+# worlds. A WORLD owns placed objects, display prefs, and per-surface style OVERRIDES (material that
+# differs from the space's base), keyed by surface id in environment.room.surfaceStyles. The live
+# store.doc stays the COMPOSED shape below (so client/patch/director are unchanged); only persistence
+# splits — _compose on load, _decompose on save.
+
+def _compose(world_doc: dict, space: dict) -> dict:
+    """Live doc: the world's placed entities + prefs, merged with the space's real-surface geometry —
+    each surface's material = the space's base, overridden by world.environment.room.surfaceStyles[id].
+    Boundary comes from the space. The surfaceStyles map and `space` ref are persistence-only (dropped)."""
+    doc = copy.deepcopy(world_doc)
+    room = doc.setdefault("environment", {}).setdefault("room", {})
+    styles = room.pop("surfaceStyles", {}) or {}
+    doc.pop("space", None)
+    placed = [e for e in doc.get("entities", []) if not e.get("meta", {}).get("real")]
+    reals = []
+    for s in space.get("surfaces", []):
+        e = copy.deepcopy(s)
+        ov = styles.get(e.get("id"))
+        if ov:
+            comps = e.setdefault("components", {})
+            comps["material"] = {**comps.get("material", {}), **ov}
+        reals.append(e)
+    doc["entities"] = placed + reals
+    if space.get("boundary") is not None:
+        room["boundary"] = space["boundary"]
+    return doc
+
+
+def _decompose(composed: dict, space: dict) -> dict:
+    """Inverse of _compose for persistence: the world doc to save — placed entities + prefs + the
+    `surfaceStyles` overrides (each real surface's material where it differs from the space's base).
+    Real-surface GEOMETRY + boundary are the space's job (persisted separately)."""
+    doc = copy.deepcopy(composed)
+    base = {s["id"]: s.get("components", {}).get("material", {}) for s in space.get("surfaces", [])}
+    overrides, placed = {}, []
+    for e in doc.get("entities", []):
+        if e.get("meta", {}).get("real"):
+            mat = e.get("components", {}).get("material", {})
+            if mat and mat != base.get(e.get("id")):
+                overrides[e["id"]] = mat
+        else:
+            placed.append(e)
+    doc["entities"] = placed
+    room = doc.setdefault("environment", {}).setdefault("room", {})
+    room.pop("boundary", None)
+    if overrides:
+        room["surfaceStyles"] = overrides
+    else:
+        room.pop("surfaceStyles", None)
+    return doc
 
 
 # A capture on resume-from-idle (or a momentary tracking blip) is often SPARSE — plane/mesh detection

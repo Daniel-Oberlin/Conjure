@@ -700,3 +700,50 @@ def test_tunnel_user_route_carries_user(srv, client, tmp_path, monkeypatch):
     assert r.status_code == 307 and "user=bob" in r.headers["location"]
     r2 = client.get("/tunnel", follow_redirects=False)     # default user → no user param appended
     assert "user=" not in r2.headers["location"]
+
+
+# ---- space <-> world composition (Phase 2) ------------------------------------------------------
+def _space_doc():
+    base = {"shader": "flat", "color": "#888", "side": "double", "opacity": 1.0}
+    return {"owner": "daniel", "name": "home", "boundary": {"floorPolygon": [[0, 0]], "height": 2.6},
+            "surfaces": [
+                {"id": "real_wall_0", "meta": {"real": True, "semantic": "wall"},
+                 "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]},
+                                                                       "material": dict(base)}},
+                {"id": "real_couch_41", "meta": {"real": True, "semantic": "couch"},
+                 "transform": {"position": [1, 0.5, 0]}, "components": {"surface": {"extent": [2, 0.8]},
+                                                                        "material": dict(base)}}]}
+
+
+def test_compose_merges_space_geometry_with_world_overrides(srv):
+    space = _space_doc()
+    world = {"rev": 5, "entities": [{"id": "ent_dragon", "meta": {"generated": True}, "components": {}}],
+             "environment": {"sky": {"color": "#001"}, "room": {"edgesVisible": True,
+                             "surfaceStyles": {"real_couch_41": {"color": "green", "visible": True}}}},
+             "space": "daniel/spaces/home"}
+    doc = srv._compose(world, space)
+    ids = {e["id"] for e in doc["entities"]}
+    assert ids == {"ent_dragon", "real_wall_0", "real_couch_41"}     # placed + space geometry
+    couch = next(e for e in doc["entities"] if e["id"] == "real_couch_41")
+    assert couch["components"]["material"]["color"] == "green"        # world override applied
+    wall = next(e for e in doc["entities"] if e["id"] == "real_wall_0")
+    assert wall["components"]["material"]["color"] == "#888"          # no override → space base
+    assert doc["environment"]["room"]["boundary"]["height"] == 2.6    # boundary from space
+    assert "surfaceStyles" not in doc["environment"]["room"]          # overlay not broadcast
+    assert "space" not in doc                                         # ref not broadcast
+
+
+def test_decompose_extracts_only_real_overrides_and_round_trips(srv):
+    space = _space_doc()
+    world = {"rev": 5, "entities": [{"id": "ent_dragon", "meta": {"generated": True}, "components": {}}],
+             "environment": {"room": {"edgesVisible": True,
+                             "surfaceStyles": {"real_couch_41": {"color": "green", "visible": True}}}}}
+    composed = srv._compose(world, space)
+    back = srv._decompose(composed, space)
+    assert [e["id"] for e in back["entities"]] == ["ent_dragon"]      # geometry stripped, placed kept
+    styles = back["environment"]["room"]["surfaceStyles"]
+    assert set(styles) == {"real_couch_41"}                          # only the OVERRIDDEN surface recorded
+    assert styles["real_couch_41"]["color"] == "green" and styles["real_couch_41"]["visible"] is True
+    assert "boundary" not in back["environment"]["room"]             # boundary belongs to the space
+    # round-trip: re-composing reproduces the same rendered surfaces (materials + geometry)
+    assert srv._compose(back, space)["entities"] == composed["entities"]
