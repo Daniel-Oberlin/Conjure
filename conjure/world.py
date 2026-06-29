@@ -212,3 +212,57 @@ class WorldRepository:
         d = self._scope_dir(scope)
         d.mkdir(parents=True, exist_ok=True)
         (d / "_active.txt").write_text(world_path(name))
+
+
+class SpaceStore:
+    """Named, **USER-owned** physical spaces on disk: ``<root>/<user>/<name>.json`` (docs/
+    spaces-and-users-plan.md §5). A *space* is the captured real geometry — `surfaces` (geometry +
+    default materials) + `boundary` + meta (`owner`, `public`, `geolocation`) — shared across all of a
+    user's worlds, *not* a full WorldStore doc and *not* per-agent. The owner's headset is its capture
+    authority. Stored as a plain JSON dict; a per-user ``_active.txt`` records the live space."""
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root)
+
+    def _user_dir(self, user: str) -> Path:
+        if not user or user in (".", "..") or not _SCOPE_PART.fullmatch(user):
+            raise ValueError(f"bad user {user!r}")
+        return self.root / user
+
+    def _path(self, user: str, name: str) -> Path:
+        return self._user_dir(user) / f"{slug(name)}.json"
+
+    def list(self, user: str) -> list[str]:
+        d = self._user_dir(user)
+        return sorted(p.stem for p in d.glob("*.json")) if d.is_dir() else []
+
+    def exists(self, user: str, name: str) -> bool:
+        return self._path(user, name).exists()
+
+    def load(self, user: str, name: str) -> dict:
+        return json.loads(self._path(user, name).read_text())
+
+    def save(self, user: str, name: str, space: dict) -> None:
+        p = self._path(user, name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")           # atomic write (temp + rename)
+        tmp.write_text(json.dumps(space))
+        tmp.replace(p)
+
+    def delete(self, user: str, name: str) -> bool:
+        p = self._path(user, name)
+        if not p.exists():
+            return False
+        p.unlink()
+        if self.get_active(user) == slug(name):
+            (self._user_dir(user) / "_active.txt").unlink(missing_ok=True)
+        return True
+
+    def get_active(self, user: str) -> str | None:
+        p = self._user_dir(user) / "_active.txt"
+        return (p.read_text().strip() or None) if p.exists() else None
+
+    def set_active(self, user: str, name: str) -> None:
+        d = self._user_dir(user)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "_active.txt").write_text(slug(name))

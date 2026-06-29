@@ -175,3 +175,45 @@ def test_repository_neutralizes_punctuation_but_rejects_traversal(tmp_path):
     for bad_scope in ("../../etc", "private/..", ""):
         with pytest.raises(ValueError):
             repo.list(bad_scope)
+
+
+def _space(name="home"):
+    return {"owner": "daniel", "name": name, "public": True, "geolocation": None,
+            "surfaces": [{"id": "real_wall_0", "meta": {"real": True, "semantic": "wall"}}],
+            "boundary": {"floorPolygon": [[0, 0], [3, 0], [3, 3]], "height": 2.6}}
+
+
+def test_spacestore_save_list_load_delete(tmp_path):
+    from conjure.world import SpaceStore
+    s = SpaceStore(tmp_path)
+    assert s.list("daniel") == []
+    s.save("daniel", "Home", _space("Home"))
+    assert s.list("daniel") == ["home"]                      # name slugified
+    assert s.exists("daniel", "home")
+    sp = s.load("daniel", "HOME")                            # recall is case/format-insensitive
+    assert sp["boundary"]["height"] == 2.6 and len(sp["surfaces"]) == 1
+    assert s.delete("daniel", "home") is True and s.list("daniel") == []
+
+
+def test_spacestore_is_per_user(tmp_path):
+    from conjure.world import SpaceStore
+    s = SpaceStore(tmp_path)
+    s.save("daniel", "home", _space())
+    s.save("alice", "home", _space())                        # same name, different owner
+    assert s.list("daniel") == ["home"] and s.list("alice") == ["home"]
+    s.delete("daniel", "home")
+    assert s.list("alice") == ["home"]                       # untouched
+
+
+def test_spacestore_active_pointer_and_bad_user(tmp_path):
+    from conjure.world import SpaceStore
+    s = SpaceStore(tmp_path)
+    s.save("daniel", "home", _space())
+    assert s.get_active("daniel") is None
+    s.set_active("daniel", "Home")
+    assert s.get_active("daniel") == "home"                  # canonical slug
+    s.delete("daniel", "home")
+    assert s.get_active("daniel") is None                    # pointer cleared with its target
+    for bad in ("../etc", "a/b", ".", ""):
+        with pytest.raises(ValueError):
+            s.list(bad)
