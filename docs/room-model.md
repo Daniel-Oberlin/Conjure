@@ -296,13 +296,44 @@ across the flip** (vs 1/47 before). The WebXR anchor is now just the **bootstrap
 capture; a `reset` event forces immediate re-registration. This is exactly the §8b registration path, so
 the same machinery serves multi-user co-location.
 
+**How `_register` recovers the frame — a Hough/RANSAC-style vote (`client/room-snap.js`).** The hard
+part is a chicken-and-egg: you need the transform to know which detected plane is which reference
+surface, but you need correspondences to find the transform. It's solved by **consensus, not
+proximity** — so it works no matter how far the frame jumped (the ~167° flip included), and it never
+uses the nearest-surface 0.5 m match (that's the *post*-registration id step in `conjure-client.js`
+Pass B). The trust gate upstream guarantees a level floor, so gravity/pitch/roll are pinned and the only
+unknowns are **yaw about up + an x/z translation**:
+
+1. **Yaw — by normal-direction histogram.** For every same-semantic, similar-size *vertical* pair
+   (current ↔ reference), record the delta of their normal yaws. A global rotation θ shifts *every* true
+   pair's normal by the same θ, so real pairs pile into one 6° histogram bin while mismatches scatter —
+   the modal peak(s) are the candidate yaw(s). Position-free, so any offset is fine.
+2. **Translation — by grid vote.** For each candidate yaw, rotate the current positions and bin the
+   implied `ref.pos − R·cur.pos` over same-size pairs into a 0.25 m grid; the densest cell is the
+   consensus translation.
+3. **Score — by inliers.** Build the (yaw, translation) transform, project all planes, count how many
+   land within 0.4 m of a same-semantic reference; keep the best candidate, and **accept only if ≥ 4
+   inliers and ≥ 40 % of detected planes** — else return no-lock (hold the last good frame / passthrough).
+
+Because acceptance requires a genuine consensus, **a failed registration doubles as a "you're not in
+this space" signal**: a different physical space — or too sparse a capture (fewer than 3 reference
+surfaces / voting pairs) — produces no dominant peak and few inliers. That's the seam a future
+load-time space-consistency check (`spaces-and-users-plan.md` §7) would build on, with the caveat that
+"different space" and "bad tracking" both surface as the same no-lock.
+
 **Cross-session persistence (next).** Persist the anchor handle
 (`anchor.requestPersistentHandle()` → store the UUID) and restore it next session
 (`session.restorePersistentAnchors`/`restorePersistentAnchor`), re-localizing the saved world onto the
 same physical anchor. With content already anchor-relative, the world reloads fixed to the real room
 (vision's "persistent rooms"; spec §3). Pairs with Phase 6 memory (where the world doc is persisted).
 
-## 8b. Shared world frame — multi-user co-location 🟡 design / 🔴 platform dependency
+## 8b. Shared world frame — multi-user co-location 🟡 design
+
+> **Now the technical core of `spaces-and-users-plan.md` §8.** Key correction to the marker below: this
+> does **not** require a platform shared-anchor. A guest registers its own planes onto the **same
+> persistent space geometry** (§8a, the register vote), solving its own `_Tmat` into the shared
+> reference frame — so content co-locates with no Quest "Shared Spaces" dependency. The remaining work
+> is matcher robustness for the guest's partial/extra planes, and presence avatars.
 
 **One model, N perceptions.** There is exactly **one** world model (the server doc) in exactly **one**
 coordinate frame (the authority's anchor frame, §8a). A secondary headset does **not** build its own

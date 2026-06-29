@@ -49,6 +49,20 @@
   // the SHIFT in surface-normal directions, needing no prior pairing. Returns {Tmat, stat}: Tmat is a
   // Matrix4 (refSpace → reference frame) when confident, else null (caller holds the last frame). `stat`
   // is a short diagnostic string.
+  // Frame registration — recover the rigid transform (yaw about gravity + x/z translation) that maps the
+  // CURRENT detected planes onto the persistent reference constellation, so surface ids survive a tracking
+  // relocalization (boundary re-entry flips the frame ~167° + ~3 m; see docs/room-model.md §8a).
+  //
+  // A Hough/RANSAC-style VOTE, not a nearest-match: it must run before any correspondence is known and no
+  // matter how far the frame jumped, so it never relies on proximity (the 0.5 m id match happens AFTER, in
+  // conjure-client.js Pass B). The upstream trust gate guarantees a level floor, so only yaw + x/z
+  // translation are free:
+  //   1. yaw — histogram the normal-yaw delta over same-semantic, similar-size vertical pairs: a global
+  //      rotation shifts every true pair by the same θ, so real pairs pile into one bin (top-3 peaks tried).
+  //   2. translation — per candidate yaw, grid-vote the densest (ref.pos − R·cur.pos) over same-size pairs.
+  //   3. score — count planes landing within 0.4 m of a same-semantic reference; accept the best only if
+  //      >=4 inliers AND >=40%, else null (caller holds the last good frame). A genuinely different space
+  //      yields no consensus, so a null doubles as a "not in this space" signal (room-model.md §8a).
   function register(THREE, cur, ref) {
     var UP = new THREE.Vector3(0, 1, 0);
     if (ref.length < 3) return { Tmat: null, stat: "ref<3" };

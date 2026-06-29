@@ -11,25 +11,35 @@ of data with *different* stores — but they share one scoping layer.
 
 ## 1. Namespace
 
-```
-<visibility>/<agent>/<category>/<name>
+> **Reworked — `spaces-and-users-plan.md` §3 is authoritative.** The model is now **user-first**, and
+> **visibility is a per-item `public` flag, not a path segment**.
 
-  private/builder/worlds/bladerunner1
-  private/builder/assets/<hash>.glb
-  public/builder/assets/<hash>.glb        ← documented use case; not built yet
-  private/dungeonmaster/worlds/...         ← future agent; never sees builder's private content
+```
+/<user>/[agents/<agent>/]<category>/<name>      + public: bool per item
+
+  /daniel/spaces/home                                       ← spaces are USER-owned (physical, agent-agnostic)
+  /daniel/agents/builder/worlds/bladerunner1                ← worlds/assets/state are agent-owned under a user
+  /daniel/agents/builder/worlds/castle-quest/dining-hall    ← world names may still nest
+  /daniel/agents/builder/assets/<hash>.glb
 ```
 
-- **visibility** — `private` | `public`. The real axis (everything is "scoped"; the question is who
-  can see it). Private = only this agent; public = world-readable, this-agent-writable.
-- **agent** — `builder`, `dungeonmaster`, … the owning agent.
+- **user** — the owner; the top segment. Drives ownership + the public/private split.
+- **agent** — `builder`, `dungeonmaster`, … the owning agent (under a user).
+- **visibility** — a per-item **`public` flag** (NOT a path segment): default public; a new item inherits
+  the active world's visibility; cross-user read = owner-or-public (plan §4).
 - **category** — `assets` | `worlds` | `state`. **Routes to the typed store** (§4–5).
-- **name** — content hash (assets) or a chosen name (worlds).
+- **name** — content hash (assets), or a chosen name (worlds). A world name may be a **hierarchical
+  path** (`castle-quest/dining-hall`) so an agent can organize its worlds in a tree. Each segment is
+  slug-normalized independently (case/spaces/underscores/hyphens interchangeable) and traversal
+  (`..`) is rejected, so a world is always confined to its scope. The trust boundary is the
+  `<user>/agents/<agent>` prefix — runtime-injected, never an LLM argument; the world *path* below it is
+  user/agent-chosen and freely structured, and `public` is a flag, not part of the prefix.
 
 ## 2. Scope is a capability, not a parameter (the security crux)
 
-What makes this *securely* scoped: the scope is **bound by the trusted runtime per agent and injected
-server-side — never a tool argument the LLM fills in.** If a tool took `scope=…`, the model (or a
+What makes this *securely* scoped: the scope (now **`<user>/agents/<agent>`** — the logged-in user from
+`--user` / the `/tunnel/<user>` route, plus the agent from its MCP launch) is **bound by the trusted
+runtime and injected server-side — never a tool argument the LLM fills in.** If a tool took `scope=…`, the model (or a
 prompt-injection hidden in some asset's text/notes) could pass another agent's scope and read it.
 
 - The MCP / agent runtime holds the agent's scope (from how the agent was launched / its capability
@@ -77,8 +87,8 @@ reasoning as "segregate by domain" in `asset-library-plan.md` §5):
 
 So `bladerunner1` is a **named, mutable, versioned document** that *points at* assets by id — it does
 **not** live in the content-addressed media catalog. Its natural home is an **evolution of the existing
-`WorldStore`**: today that loads a single `sample_world.json` and is ephemeral; world persistence adds
-named **save / load / list / version** under a scope. It's *simpler* than the asset catalog (no
+`WorldStore`**: it now loads a single saved world and autosaves it (single-world durability — §6); the
+scoped world store adds named **save / load / list / switch** under a scope. It's *simpler* than the asset catalog (no
 embeddings, no similarity search) precisely because worlds are named documents, not searchable media.
 
 A third **generic `state` store** (agent memory / settings — a scoped KV/doc store) can appear later
@@ -102,18 +112,70 @@ reference *within one scope*. The `<category>` segment is the dispatch key.
 So: the asset store does **not** become the general persistence store. The general persistence need
 (worlds, agent state) is met by **separate stores** that share the scoping layer and the service.
 
-## 6. Status — built vs. deferred
+## 6. World lifecycle — durability, constructor, undo
 
-- **Built:** the asset catalog (`conjure/library.py`) — currently **unscoped** (single-agent).
-- **Now (cheap, when Phase 2 touches the schema):** add a `scope` field to the asset catalog so
-  entries carry visibility/owner — the data seam, ahead of enforcement.
+How a world comes into being, gets set up per agent, persists, and is walked back. Decisions settled
+2026-06-25.
+
+**Durability (autosave on change).** The active world is written to disk whenever its `rev` advances.
+A background poll debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one
+write — and touches no `apply_patch` call site. On boot the saved world loads (corrupt/missing → the
+sample). There is **no** rebuild-from-cache: a lost world doc is lost, so it's backed up like any file.
+
+**Constructor / destructor = a macro of existing server commands.** A per-agent setup is an ordered
+list of the *same operations the director already calls* (`show_edges`, `style_surface`, `set_skybox`,
+…), declared in `agent.json` — not per-agent code, not a static state blob (a command can encode
+dynamic setup a blob can't). The builder's constructor sets edges visible; the future dungeonmaster's
+sets them off — same mechanism.
+
+```jsonc
+// agents/<agent>/agent.json
+"world": { "on_create": [ { "cmd": "show_edges", "args": { "on": true } } ], "on_exit": [] }
+```
+
+**It runs at creation only, and bakes into the doc.** Because display state (`environment.room.edgesVisible`,
+`room.annotations`, sky, …) is *in the world document*, **load = restore** is sufficient — the
+constructor is **not** re-run on load, so it never clobbers a world's later customizations. The
+destructor (`on_exit`) is for persistence/cleanup on switch-away; often empty since autosave handles
+saving.
+
+**Default world = blank base + constructor.** First instantiation of an agent (no worlds yet) creates
+`default`, runs `on_create`, makes it active. The constructor *is* the per-agent starting definition;
+no separate seed file is required (an agent may still ship a richer seed doc if it wants pre-placed
+content).
+
+**The real room is a shared live layer, not per-world.** Captured surfaces (`meta.real` entities) are
+the same physical room regardless of the active world, so they're a live layer merged into whatever
+world is active — *not* snapshotted into each world. "Edges on/off" is then a pure per-world display
+preference over that shared layer. **This was decided but NOT yet built** — the initial multi-world
+store persists the room *inside* each world doc, which caused a recurring class of "live state frozen
+per-world" bugs (stale/sparse rooms, re-capture churn, the authority lockout). The full design — the
+real room as a first-class, user-owned **space** (shared geometry + per-world style overlay, durable/
+session split) — is in **`spaces-and-users-plan.md`**.
+
+**Undo/redo rides the inverses we already compute.** `apply_patch` already records an inverse for
+every op (`world.py`); undo is a cursor over that history plus a tool, not a new subsystem. The real
+work is **action grouping** (one director turn = one undoable unit, not N patches) and **origin
+filtering** (never undo an automatic room-recapture or embedding write-through). MVP: session-level,
+in-memory, voice-accessible ("undo that"). **Durable cross-restart history and named checkpoints /
+branching are a separate, later feature** (a different shape: snapshots, not an inverse log).
+
+## 7. Status — built vs. deferred
+
+- **Built:** the asset catalog (`conjure/library.py`), now **scoped** (a `scope` field per entry;
+  single-agent today). The **scoped, hierarchical world store** — `WorldRepository` (named/nestable
+  worlds at `.cache/worlds/<scope>/<name>.json`, normalized recall, per-scope active pointer),
+  autosave-on-change, boot-into-last-active-or-`default`, the `list/new/switch/delete` endpoints +
+  MCP tools, and the `agent.json` `on_create` constructor run at world creation. Scope is carried in
+  the request body (server-side default for now; capability-injected when the second agent lands).
+- **Next:** session **undo/redo** (rides the existing inverses; blocks nothing) — independent, any time.
 - **Deferred until the second agent (e.g. the RPG dungeonmaster) actually lands:**
   - scope **enforcement** — scoped handles + capability injection by the runtime (no scope in LLM
     tools), per §2;
-  - the **world store** (named save/load/list/version on `WorldStore`);
   - **public** visibility + reference-in-place + copy-to-private;
-  - any `state` store.
+  - any `state` store;
+  - durable world **versioning / checkpoints / branching**.
 
-Building the enforcement and the world store before there's a second agent or a save-world request
-would be speculative; the model is documented so the seams (a `scope` field, capability-bound handles,
-category dispatch) are in place when those features arrive.
+Build order is incremental: single-world durability → scoped multi-world + constructor (both done) →
+undo/redo whenever → durable versioning later. Each step's primitive is reused by the next (the saved
+active world *is* what the repository wraps with naming + scope).

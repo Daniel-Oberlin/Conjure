@@ -101,8 +101,10 @@ with something you can actually experience on the Quest.
   patches) — cheap if done now, a rewrite if retrofitted.
 - **Phase 2:** addressing gate (wake word + PTT) + audio capture (shared room device with
   diarization, or per-headset mics) so the director only acts on agent-directed speech.
-- **Dedicated milestone:** co-location (Quest "Shared Spaces" extension + neutral fallback) +
-  presence avatars — *two people in one room see the same campfire in the same physical spot.*
+- **Dedicated milestone — users + spaces + co-location (`spaces-and-users-plan.md`).** Primitive users
+  own first-class **spaces** (the shared room layer); a second user joins a public world and co-locates
+  via shared-geometry registration (**no** Quest "Shared Spaces" dependency) + presence avatars —
+  *two people in one room see the same campfire in the same physical spot.*
 - **Future:** remote voice bridge over Tailscale relay (decisions.md #3 tier 3, #9).
 
 ## Modules (extensibility — slot in once the MCP-client-of-many plumbing exists, ~Phase 2+)

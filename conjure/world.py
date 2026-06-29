@@ -9,10 +9,35 @@ full patch to broadcast.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from .schema import Entity, World
+
+_SCOPE_PART = re.compile(r"[\w.-]+")
+
+
+def slug(name: str) -> str:
+    """Canonical key for a single world-name segment. Case-insensitive; spaces, underscores and hyphens
+    are interchangeable; other punctuation is dropped — so 'Blade Runner', 'blade_runner' and
+    'BLADE-RUNNER' all resolve to the same segment. Raises if nothing usable remains."""
+    s = re.sub(r"[\s_-]+", "-", (name or "").strip().lower())
+    s = re.sub(r"[^a-z0-9-]", "", s).strip("-")
+    if not s:
+        raise ValueError(f"bad world name segment {name!r}")
+    return s
+
+
+def world_path(name: str) -> str:
+    """Canonical, **hierarchical** key for a world: '/'-separated segments, each slugified — so an agent
+    can organize worlds in a tree ('castle-quest/dining-hall'). Each segment normalizes independently
+    (case/spaces/underscores/hyphens), and traversal ('..') or empty segments are rejected, so a world
+    can never escape its scope dir. Returns a posix relative path (no leading slash, no extension)."""
+    segs = [slug(s) for s in (name or "").split("/") if s.strip()]
+    if not segs:
+        raise ValueError(f"bad world name {name!r}")
+    return "/".join(segs)
 
 _MISSING = object()
 
@@ -50,6 +75,15 @@ class WorldStore:
         raw = json.loads(Path(path).read_text())
         doc = World.model_validate(raw).model_dump()
         return cls(doc)
+
+    def save(self, path: str | Path) -> None:
+        """Atomically persist the current doc as JSON (durability for the active world). Written via a
+        temp file + rename so a crash mid-write can't corrupt the saved world."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.doc))
+        tmp.replace(path)
 
     def apply_patch(self, ops: list[dict], origin: str = "user") -> dict:
         """Validate + apply ops, compute inverse, bump rev. Returns the broadcastable patch.
@@ -116,3 +150,65 @@ class WorldStore:
         for op in ops:
             if "op" not in op:
                 raise ValueError("patch op missing 'op'")
+
+
+class WorldRepository:
+    """Named world documents on disk under a scope: ``<root>/<scope>/<name>.json``.
+
+    Scope is a **trusted, runtime-injected namespace** (``private/builder``) — never an LLM argument —
+    and is validated component-by-component so it can't escape the root. World ``name`` is user-chosen
+    (voice), so it's validated to a safe charset (no path separators / traversal). A tiny per-scope
+    ``_active.txt`` pointer records which world is live, so a restart resumes where you were.
+    """
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root)
+
+    def _scope_dir(self, scope: str) -> Path:
+        parts = (scope or "").split("/")
+        if not parts or any(p in ("", ".", "..") or not _SCOPE_PART.fullmatch(p) for p in parts):
+            raise ValueError(f"bad scope {scope!r}")
+        return self.root.joinpath(*parts)
+
+    def _path(self, scope: str, name: str) -> Path:
+        return self._scope_dir(scope) / f"{world_path(name)}.json"
+
+    def list(self, scope: str) -> list[str]:
+        """All worlds in the scope, as canonical hierarchical paths ('castle-quest/dining-hall'),
+        recursively. The per-scope '_active.txt' pointer isn't a world, so it's never listed."""
+        d = self._scope_dir(scope)
+        if not d.is_dir():
+            return []
+        return sorted(p.relative_to(d).as_posix()[: -len(".json")] for p in d.rglob("*.json"))
+
+    def exists(self, scope: str, name: str) -> bool:
+        return self._path(scope, name).exists()
+
+    def load(self, scope: str, name: str) -> "WorldStore":
+        return WorldStore.load(self._path(scope, name))
+
+    def save(self, scope: str, name: str, store: "WorldStore") -> None:
+        store.save(self._path(scope, name))
+
+    def delete(self, scope: str, name: str) -> bool:
+        p = self._path(scope, name)
+        if not p.exists():
+            return False
+        p.unlink()
+        if self.get_active(scope) == world_path(name):
+            (self._scope_dir(scope) / "_active.txt").unlink(missing_ok=True)
+        scope_dir = self._scope_dir(scope)                 # prune now-empty parent folders in the tree
+        d = p.parent
+        while d != scope_dir and d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+            d = d.parent
+        return True
+
+    def get_active(self, scope: str) -> str | None:
+        p = self._scope_dir(scope) / "_active.txt"
+        return (p.read_text().strip() or None) if p.exists() else None
+
+    def set_active(self, scope: str, name: str) -> None:
+        d = self._scope_dir(scope)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "_active.txt").write_text(world_path(name))

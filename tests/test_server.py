@@ -606,3 +606,73 @@ async def test_patch_is_broadcast_to_clients(srv):
         srv.clients.discard(ws)
     assert ws.sent and ws.sent[-1]["type"] == "patch"
     assert ws.sent[-1]["patch"]["ops"][0]["op"] == "add"
+
+
+# ---- scoped multi-world store -------------------------------------------------------------------
+def test_world_new_switch_list_isolate_state(srv, client):
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {"id": "in_default", "components": {}}}]})
+    r = client.post("/worlds/new", json={"name": "Blade Runner 1"}).json()
+    assert r["ok"] and r["world"] == "blade-runner-1"            # name normalized to a slug
+    assert "in_default" not in {e["id"] for e in _entities(client)}   # new world starts clean
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {"id": "in_blade", "components": {}}}]})
+
+    lst = client.post("/worlds/list", json={}).json()
+    assert set(lst["worlds"]) == {"default", "blade-runner-1"} and lst["active"] == "blade-runner-1"
+
+    client.post("/worlds/switch", json={"name": "default"})      # outgoing world saved, default restored
+    ids = {e["id"] for e in _entities(client)}
+    assert "in_default" in ids and "in_blade" not in ids
+    client.post("/worlds/switch", json={"name": "blade runner 1"})  # loose formatting still resolves
+    assert "in_blade" in {e["id"] for e in _entities(client)}
+
+
+def test_world_new_refuses_duplicate_canonical_name(srv, client):
+    client.post("/worlds/new", json={"name": "metropolis"})
+    r = client.post("/worlds/new", json={"name": "Metropolis"}).json()   # same slug
+    assert r["ok"] is False and "exists" in r["error"]
+
+
+def test_world_cannot_delete_active_then_can_after_switch(srv, client):
+    client.post("/worlds/new", json={"name": "temp"})             # active = temp
+    assert client.post("/worlds/delete", json={"name": "temp"}).json()["ok"] is False
+    client.post("/worlds/switch", json={"name": "default"})
+    assert client.post("/worlds/delete", json={"name": "temp"}).json()["ok"] is True
+    assert "temp" not in client.post("/worlds/list", json={}).json()["worlds"]
+
+
+def test_world_constructor_runs_on_create(srv, client):
+    # builder's agent.json on_create turns real-room edges on; a fresh world bakes that into its doc
+    client.post("/worlds/new", json={"name": "fresh"})
+    env = client.get("/world").json()["environment"]
+    assert env.get("room", {}).get("edgesVisible") is True
+
+
+def test_world_supports_nested_names(srv, client):
+    r = client.post("/worlds/new", json={"name": "Castle Quest/Dining Hall"}).json()
+    assert r["world"] == "castle-quest/dining-hall"
+    assert "castle-quest/dining-hall" in client.post("/worlds/list", json={}).json()["worlds"]
+
+
+def test_reset_room_authority_clears_stale_id(srv):
+    from conjure.world import WorldStore
+    s = WorldStore({"id": "x", "name": "x", "rev": 0, "entities": [],
+                    "environment": {"room": {"authorityClientId": "hs_dead"}}})
+    srv._reset_room_authority(s)
+    assert s.doc["environment"]["room"]["authorityClientId"] is None
+    srv._reset_room_authority(WorldStore({"id": "y", "name": "y", "rev": 0, "entities": [],
+                                          "environment": {}}))   # no room/env → must not raise
+
+
+def test_switching_into_a_world_drops_its_stale_authority(srv, client):
+    from conjure.world import WorldStore
+    # a world saved by a PAST session, pinned to a now-dead headset id
+    srv.worlds.save("private/builder", "old-room", WorldStore(
+        {"id": "o", "name": "o", "rev": 1, "entities": [],
+         "environment": {"room": {"active": True, "authorityClientId": "hs_dead"}}}))
+    assert client.post("/worlds/switch", json={"name": "old-room"}).json()["ok"]
+    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] is None
+    # a NEW headset id can now capture (before the fix this was rejected forever)
+    r = client.post("/room", json={"client_id": "hs_new", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]}]}).json()
+    assert r["ok"] is True
+    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] == "hs_new"

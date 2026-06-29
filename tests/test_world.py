@@ -67,3 +67,111 @@ def test_update_unknown_entity_raises():
     s = store()
     with pytest.raises(ValueError):
         s.apply_patch([{"op": "update", "id": "nope", "set": {"transform.position": [1, 1, 1]}}])
+
+
+def test_save_load_roundtrips_the_doc(tmp_path):
+    s = store()
+    s.apply_patch([{"op": "add", "entity": {"id": "box", "components": {"geometry": {"primitive": "box"}}}}])
+    s.apply_patch([{"op": "env", "set": {"room.edgesVisible": False}}])
+    path = tmp_path / "world.json"
+    s.save(path)
+    loaded = WorldStore.load(path)
+    assert loaded.doc["rev"] == s.doc["rev"]
+    assert any(e["id"] == "box" for e in loaded.doc["entities"])
+    assert loaded.doc["environment"]["room"]["edgesVisible"] is False
+
+
+def test_save_is_atomic_no_partial_file_on_reopen(tmp_path):
+    s = store()
+    path = tmp_path / "world.json"
+    s.save(path)
+    s.apply_patch([{"op": "add", "entity": {"id": "e2", "components": {}}}])
+    s.save(path)                                    # overwrite must fully replace, not append
+    assert WorldStore.load(path).doc["rev"] == s.doc["rev"]
+    assert not (tmp_path / "world.json.tmp").exists()  # temp cleaned up via rename
+
+
+def _doc(name="W"):
+    return {"id": "t", "name": name, "rev": 0, "environment": {}, "entities": []}
+
+
+def test_repository_save_list_load_delete(tmp_path):
+    from conjure.world import WorldRepository
+    repo = WorldRepository(tmp_path)
+    assert repo.list("private/builder") == []
+    s = WorldStore(_doc("Blade Runner"))
+    s.apply_patch([{"op": "add", "entity": {"id": "rain", "components": {}}}])
+    repo.save("private/builder", "bladerunner1", s)
+    assert repo.list("private/builder") == ["bladerunner1"]
+    assert repo.exists("private/builder", "bladerunner1")
+    loaded = repo.load("private/builder", "bladerunner1")
+    assert any(e["id"] == "rain" for e in loaded.doc["entities"])
+    assert repo.delete("private/builder", "bladerunner1") is True
+    assert repo.list("private/builder") == []
+
+
+def test_repository_scope_isolation(tmp_path):
+    from conjure.world import WorldRepository
+    repo = WorldRepository(tmp_path)
+    repo.save("private/builder", "w", WorldStore(_doc()))
+    repo.save("private/dungeonmaster", "w", WorldStore(_doc()))
+    assert repo.list("private/builder") == ["w"]
+    assert repo.list("private/dungeonmaster") == ["w"]          # same name, separate scopes
+    repo.delete("private/builder", "w")
+    assert repo.list("private/dungeonmaster") == ["w"]          # untouched
+
+
+def test_repository_active_pointer_roundtrips_and_clears_on_delete(tmp_path):
+    from conjure.world import WorldRepository
+    repo = WorldRepository(tmp_path)
+    repo.save("private/builder", "home", WorldStore(_doc()))
+    assert repo.get_active("private/builder") is None
+    repo.set_active("private/builder", "home")
+    assert repo.get_active("private/builder") == "home"
+    repo.delete("private/builder", "home")
+    assert repo.get_active("private/builder") is None          # pointer cleared with its target
+    assert repo.list("private/builder") == []                 # _active.txt not listed as a world
+
+
+def test_repository_recall_is_normalized(tmp_path):
+    from conjure.world import WorldRepository
+    repo = WorldRepository(tmp_path)
+    repo.save("private/builder", "Blade Runner 1", WorldStore(_doc("Blade Runner 1")))
+    # case / spaces / underscores / hyphens are all interchangeable on recall
+    for variant in ("blade runner 1", "BLADE_RUNNER_1", "blade-runner-1", "Blade-Runner 1"):
+        assert repo.exists("private/builder", variant)
+        assert repo.load("private/builder", variant) is not None
+    assert repo.list("private/builder") == ["blade-runner-1"]   # one canonical slug, no dupes
+
+
+def test_repository_supports_nested_world_paths(tmp_path):
+    from conjure.world import WorldRepository
+    repo = WorldRepository(tmp_path)
+    repo.save("private/dm", "Castle Quest/Dining Hall", WorldStore(_doc()))
+    repo.save("private/dm", "castle quest/throne room", WorldStore(_doc()))
+    repo.save("private/dm", "default", WorldStore(_doc()))
+    assert repo.list("private/dm") == ["castle-quest/dining-hall", "castle-quest/throne-room", "default"]
+    # nested recall is normalized per segment, just like flat names
+    assert repo.exists("private/dm", "Castle_Quest / Dining-Hall")
+    assert (tmp_path / "private" / "dm" / "castle-quest" / "dining-hall.json").exists()
+    # a node can be both a leaf world and a parent of others
+    repo.save("private/dm", "castle-quest", WorldStore(_doc()))
+    assert "castle-quest" in repo.list("private/dm")
+    repo.delete("private/dm", "castle-quest/throne-room")
+    assert "castle-quest/dining-hall" in repo.list("private/dm")   # sibling untouched
+
+
+def test_repository_neutralizes_punctuation_but_rejects_traversal(tmp_path):
+    from conjure.world import WorldRepository
+    repo = WorldRepository(tmp_path)
+    # stray punctuation in a flat name is stripped to a safe slug
+    repo.save("private/builder", "My World!", WorldStore(_doc()))
+    assert (tmp_path / "private" / "builder" / "my-world.json").exists()
+    # explicit traversal segments / empties are rejected — a world can't escape its scope
+    for bad in ("../evil", "castle/../secret", ".", "", "  ", "/"):
+        with pytest.raises(ValueError):
+            repo.save("private/builder", bad, WorldStore(_doc()))
+    assert not (tmp_path / "evil.json").exists() and not (tmp_path / "private" / "secret.json").exists()
+    for bad_scope in ("../../etc", "private/..", ""):
+        with pytest.raises(ValueError):
+            repo.list(bad_scope)

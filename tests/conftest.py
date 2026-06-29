@@ -106,9 +106,13 @@ def srv(tmp_path, monkeypatch):
     """The world-server module with a clean world, temp asset cache, and a fake image generator.
     Tests set `srv.resolver` per scenario."""
     import conjure.server as server
-    from conjure.world import WorldStore
+    from conjure.world import WorldRepository, WorldStore
 
     monkeypatch.setattr(server, "ASSET_CACHE", tmp_path)
+    # Isolated world store + active pointers so autosave/reset/switch stay off the repo.
+    monkeypatch.setattr(server, "worlds", WorldRepository(tmp_path / "worlds"))
+    monkeypatch.setattr(server, "active_scope", "private/builder")
+    monkeypatch.setattr(server, "active_world", "default")
     monkeypatch.setattr(
         server, "store",
         WorldStore({"id": "test", "name": "Test", "rev": 0, "environment": {"sky": {"color": "#000"}}, "entities": []}),

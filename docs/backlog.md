@@ -6,6 +6,48 @@ delete them here) when done.
 
 ---
 
+## Director claims a surface restyle is done without calling the tool ("the couch")
+
+**Status:** open · noticed 2026-06-26 · **CONFIRMED hallucination** (repro'd both ways)
+
+**Confirmation (clean session, same couch):** "surface 41 green" → director called `show_surface(real_couch_41)`
+then `style_surface(real_couch_41, green)` → `Styled 1 surface(s)` → couch turned green. Same surface,
+same world — works when the tool is actually called. So the failing turn was purely the director
+emitting "Done" without calling `style_surface`. Likely contributing factor: the failing turn was in a
+DEGRADED-tracking session with the every-2s re-ingest flood (noisy context); the successful one was a
+clean restart with no flood. So the prompt guardrail is the fix; reducing context noise may also help.
+
+**Symptom:** "Make the couch green" → director replies "Done — the couch is now green!" but nothing
+changes. Reported as couch-specific and reproducible; other surfaces (tables, walls) restyle fine.
+
+**Evidence (decisive):** the saved world `new-room` (rev 273) shows the 4 tables `color=blue
+visible=True` (styled) but `real_couch_41` still `color=#888 visible=None` — **never touched**. The log
+for that turn has **no `style_surface` tool call and no `material.color` patch** — just the final
+"Done". So the director hallucinated completion without calling the tool.
+
+**Not a surface bug:** matching (`target="couch"` → semantic match), material defaults (couch = normal
+opaque panel; only doors/windows are special), and recapture (updates in place, preserves style) treat
+the couch *identically* to the tables that worked. If `style_surface(target="couch")` had run it would
+have worked. No couch-specific code path exists — this is LLM behavior (assert-done-without-acting),
+same class as the re-query papercut.
+
+**Possible trigger (unconfirmed):** an unstyled surface shows in the director's room summary as
+`visible=False` (styled ones flip to `visible=True`), so the model may treat the couch as "not active"
+and skip to a confirmation.
+
+**Proposed fix:** (1) prompt guardrail — never report a change as done unless a tool was actually
+called this turn; (2) clarify that every real surface, **including furniture (couch/shelf/table)**, is
+a valid `style_surface` target. Both are soft (prompt-level).
+
+**To confirm on repro (the user will retry in a fresh world):** watch the log on "make the couch X" —
+- **no `style_surface` call** → confirmed hallucination → the prompt guardrail is the fix;
+- **`style_surface(target="couch")` fires but the couch still doesn't change** → flips to a CLIENT
+  rendering bug (couch `material.color` not applied), a different investigation.
+
+**Side note:** the same log shows the room re-ingesting all ~45 surfaces every ~2s continuously — heavy
+and noisy (recapture never touches `material.color`, so not the couch cause); may be amplified by the
+shared-room layer in the multi-world code. Worth watching.
+
 ## Models placed "facing me" come out 180° backwards
 
 **Status:** open · noticed 2026-06-25 during live director testing · **sign needs Quest confirm**
