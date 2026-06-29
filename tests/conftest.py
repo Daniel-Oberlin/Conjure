@@ -115,6 +115,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "active_scope", server.DEFAULT_SCOPE)
     monkeypatch.setattr(server, "active_world", "default")
     monkeypatch.setattr(server, "active_space", "home")
+    monkeypatch.setattr(server, "_geo_selected", False)   # fresh session: geolocation selection re-runs
     monkeypatch.setattr(
         server, "store",
         WorldStore({"id": "test", "name": "Test", "rev": 0, "environment": {"sky": {"color": "#000"}}, "entities": []}),

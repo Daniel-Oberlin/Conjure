@@ -185,7 +185,8 @@ def _init_state() -> None:
     """Open the catalog (runs schema migrations), migrate the world layout, and boot the active world.
     All filesystem-mutating — so it runs on server startup, not at import. Idempotent enough to re-run.
     Back up library.db to protect curation: a lost catalog is NOT rebuilt from the cache files."""
-    global library, worlds, spaces, store, active_scope, active_world, active_space
+    global library, worlds, spaces, store, active_scope, active_world, active_space, _geo_selected
+    _geo_selected = False                            # a fresh session re-selects on first geolocation report
     library = AssetLibrary(LIBRARY_DB)
     worlds = WorldRepository(WORLDS_DIR)
     spaces = SpaceStore(SPACES_DIR)
@@ -350,6 +351,7 @@ app = FastAPI(title="Conjure", version="0.0.1", lifespan=_lifespan)
 # touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
 _AUTOSAVE_INTERVAL = 1.0
 _autosave_task: asyncio.Task | None = None
+_geo_selected = False               # nearest-space selection runs ONCE per session (first geolocation report)
 
 
 def _save_active() -> None:
@@ -363,6 +365,7 @@ def _save_active() -> None:
          "surfaces": [], "boundary": None}
     fresh = _space_from_world_doc(user, active_space, store.doc)       # geometry + boundary, default-materialed
     space["surfaces"], space["boundary"] = fresh["surfaces"], fresh["boundary"]
+    space["last_scope"], space["last_world"] = active_scope, active_world   # for nearest-space selection
     spaces.save(user, active_space, space)
     spaces.set_active(user, active_space)                             # keep the user's current physical space current
     world_doc = _decompose(store.doc, space)                          # overrides diffed vs the (default) base
@@ -627,22 +630,63 @@ class GeoReport(BaseModel):
     accuracy: Optional[float] = None
 
 
+_NEAR_M = 150.0                     # within this distance of a space's geolocation ⇒ "the same space"
+
+
+def _unique_space_name(user: str) -> str:
+    existing = set(spaces.list(user))
+    i = len(existing) + 1
+    while f"space-{i}" in existing:
+        i += 1
+    return f"space-{i}"
+
+
 @app.post("/geolocation")
 async def report_geolocation(req: GeoReport) -> dict:
-    """A connected client reports its coarse location (the headset's `navigator.geolocation`). Step 3a:
-    stamp the ACTIVE space's geolocation if it has none yet — i.e. "you're physically in this space."
-    Nearest-space SELECTION / switching is step 3b (docs/spaces-and-users-plan.md §7)."""
-    if spaces is None:
+    """A connected client reports its coarse location (the headset's `navigator.geolocation`). Selection
+    runs ONCE per session (first report) — never mid-session, so GPS jitter can't yank you between worlds
+    (docs/spaces-and-users-plan.md §7). Order: (1) active space un-located → you're in it, stamp it;
+    (2) within ~150 m of a *different* space → auto-switch to its last-active world; (3) somewhere new →
+    create a fresh space + default world here. Geolocation is the coarse prefilter; the client's
+    registration vote is the fine 'are you actually in this space?' confirm."""
+    global _geo_selected
+    if spaces is None or worlds is None:
         return {"ok": False, "error": "no space store"}
     user = active_scope.split("/", 1)[0]
-    if not spaces.exists(user, active_space):
-        return {"ok": False, "error": "no active space"}
-    sp = spaces.load(user, active_space)
-    if not sp.get("geolocation"):
-        sp["geolocation"] = {"lat": req.lat, "lon": req.lon, "accuracy": req.accuracy}
-        spaces.save(user, active_space, sp)
-        return {"ok": True, "stamped": active_space}
-    return {"ok": True, "stamped": None}          # already located; selection comes in step 3b
+    geo = {"lat": req.lat, "lon": req.lon, "accuracy": req.accuracy}
+    if _geo_selected:
+        return {"ok": True, "selected": False}        # already chose this session
+    _geo_selected = True
+
+    # (1) the active space has no location yet → you're physically in it
+    if spaces.exists(user, active_space):
+        sp = spaces.load(user, active_space)
+        if not sp.get("geolocation"):
+            sp["geolocation"] = geo
+            spaces.save(user, active_space, sp)
+            return {"ok": True, "stamped": active_space}
+
+    near = _nearest_space(user, req.lat, req.lon)
+    # (2) near an existing space
+    if near and near[1] <= _NEAR_M:
+        if near[0] == active_space:
+            return {"ok": True, "space": active_space}     # already here
+        sp = spaces.load(user, near[0])
+        scope, w = sp.get("last_scope", active_scope), sp.get("last_world")
+        if w and worlds.exists(scope, w):
+            out = await _switch_to(scope, w)               # auto-switch into that space's last world
+            out["space"] = near[0]
+            return out
+    # (3) somewhere new → create a fresh space + default world and switch into it
+    new_space = _unique_space_name(user)
+    spaces.save(user, new_space, {"owner": user, "name": new_space, "public": True,
+                                  "geolocation": geo, "surfaces": [], "boundary": None})
+    spaces.set_active(user, new_space)
+    fresh = _new_world_store(active_scope)
+    fresh.doc.setdefault("environment", {})["space"] = new_space
+    out = await _switch_to(active_scope, new_space, store_override=fresh)   # world named after the space
+    out["created_space"] = new_space
+    return out
 
 
 @app.post("/worlds/list")

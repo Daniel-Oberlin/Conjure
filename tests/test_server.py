@@ -805,13 +805,37 @@ def test_nearest_space_picks_closest_and_skips_ungeolocated(srv):
     assert srv._nearest_space("bob", 0, 0) is None               # no spaces → None
 
 
-def test_geolocation_stamps_active_space_once(srv, client):
+def test_geolocation_stamps_active_space_then_no_op_within_session(srv, client):
     srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
                                        "geolocation": None, "surfaces": []})
     r = client.post("/geolocation", json={"lat": 51.5, "lon": -0.12, "accuracy": 65}).json()
-    assert r["ok"] and r["stamped"] == "home"
+    assert r["ok"] and r["stamped"] == "home"                       # active space un-located → stamped
     assert srv.spaces.load("daniel", "home")["geolocation"]["lat"] == 51.5
-    # a second report doesn't overwrite an already-located space (selection is step 3b)
+    # selection runs ONCE per session — a later report is a no-op (no mid-session switching)
     r2 = client.post("/geolocation", json={"lat": 1.0, "lon": 2.0}).json()
-    assert r2["ok"] and r2["stamped"] is None
+    assert r2 == {"ok": True, "selected": False}
     assert srv.spaces.load("daniel", "home")["geolocation"]["lat"] == 51.5
+
+
+def test_geolocation_session_start_switches_to_nearby_space(srv, client):
+    from conjure.world import WorldStore
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
+                                       "geolocation": {"lat": 37.77, "lon": -122.42}, "surfaces": []})
+    srv.spaces.save("daniel", "office", {"owner": "daniel", "name": "office", "public": True,
+                                         "geolocation": {"lat": 40.71, "lon": -74.0}, "surfaces": [],
+                                         "last_scope": srv.DEFAULT_SCOPE, "last_world": "office-world"})
+    srv.worlds.save(srv.DEFAULT_SCOPE, "office-world", WorldStore(
+        {"id": "o", "name": "office-world", "rev": 1, "environment": {"space": "office"}, "entities": []}))
+    r = client.post("/geolocation", json={"lat": 40.71, "lon": -74.0}).json()    # report from NY
+    assert r["ok"] and r.get("space") == "office" and r["world"] == "office-world"
+    assert srv.active_world == "office-world" and srv.active_space == "office"
+
+
+def test_geolocation_new_location_creates_a_space(srv, client):
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
+                                       "geolocation": {"lat": 37.77, "lon": -122.42}, "surfaces": []})
+    r = client.post("/geolocation", json={"lat": 51.5, "lon": -0.12}).json()     # London — far from home
+    assert r["ok"] and r.get("created_space") == "space-2"
+    assert srv.active_space == "space-2"
+    sp = srv.spaces.load("daniel", "space-2")
+    assert sp["geolocation"]["lat"] == 51.5 and sp["surfaces"] == []
