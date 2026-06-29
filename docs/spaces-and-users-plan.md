@@ -97,6 +97,10 @@ user. Every item carries a `public: bool` flag (§4).
 
 ## 8. Co-location
 
+> **Detailed Phase-4 design: `co-location-plan.md`** — per-connection user identity, the public-join
+> gate, authority = space owner, presence avatars, the matcher-robustness work, **and a desktop-browser
+> guest mode** (no AR) for testing co-location with a single headset.
+
 - **Join flow.** A guest opens the **owner's** running server via the tunnel under their *own* name
   (`…/tunnel/bob` on Alice's server) → Alice's server now holds two connections: owner `alice`
   (authority) + guest `bob`. If the active world is **public**, Bob receives the snapshot (space

@@ -1,0 +1,120 @@
+# Co-location — Phase 4 design
+
+**Status:** DESIGN (Phase 4 of `docs/spaces-and-users-plan.md` §8). Two users inhabit the same space.
+Builds on spaces (Phase 2) + the registration vote (`room-model.md` §8a/§8b). Also formalizes the one
+remaining loose end: **room authority = the space owner**.
+
+## 1. What it delivers
+
+- A **second user joins** a public world owned by another user and is **co-located** — they see the same
+  content in the same physical spot — via **shared-geometry registration**, no platform "Shared Spaces".
+- **Presence avatars** so they can see each other (the sphere-on-box from spaces-plan §8).
+- A **desktop-browser guest mode** (no AR) for *testing without a second headset*: the guest is dropped
+  in **to the right of the owner** and can move around with mouse/keyboard.
+
+## 2. Per-connection user identity
+
+Today `/ws` connections are anonymous. Phase 4 tags each connection with a **user**:
+- The web client's user comes from the tunnel (`/tunnel/<user>` → `?user=<user>`); it passes it on the
+  socket: `…/ws?user=<user>` (default user if absent).
+- The server records `user` per `WebSocket` in `clients`.
+- The **owner** = the active space's owner (`active_scope`'s user). A connection whose `user == owner`
+  is the **owner**; anyone else is a **guest**.
+
+(The CLI/voice *director* also has a user, but co-location is about the rendering clients on `/ws`.)
+
+## 3. Guest join + the public gate
+
+- **Worlds gain a `public` flag** (default `true`, per spaces-plan §4). Stored in the world doc; since
+  the `World` model ignores unknown top-level keys, it lives under `environment.public` (like `space`).
+- On `/ws` connect:
+  - **owner** → send the snapshot as today.
+  - **guest + active world public** → send the snapshot (they join).
+  - **guest + active world private** → send an **info message** (rendered in the info color: "'<world>'
+    is private — ask <owner> to make it public"), and **no** world. Keep the socket open so the owner
+    making it public can push a snapshot later.
+
+## 4. Authority = space owner (folds in loose-end #1)
+
+Geometry capture is the owner's alone:
+- `ingest_room` accepts a `/room` post **only from the space owner** (the posting client's user ==
+  `space.owner`). A guest's capture is rejected — guests **register against** the geometry, never
+  re-capture it.
+- This supersedes the per-client-id authority (which was session-state we reset on activation); the
+  owner *user* is the durable authority, the client-id stays only as a within-owner continuity detail.
+
+## 5. Co-location for an AR guest (no platform anchors)
+
+The shared world/space lives in **one reference frame** (the owner's, anchored to their physical room).
+A guest's AR headset **registers its own detected planes onto the same persistent space geometry** (the
+Hough/RANSAC vote, `room-model.md` §8a) → solves its *own* `_Tmat` into that shared frame → content
+lands at the same physical spot for both. The only requirement: the guest detects **enough of the same
+surfaces** (≥4 inliers / 40%). The **matcher robustness for partial/extra planes is the real work**
+(§8).
+
+## 6. Desktop-guest test mode (no AR) — the new requirement
+
+A guest in a *desktop browser* has no XR session, no tracking, no plane detection — so it can't register.
+Instead it joins as a **virtual occupant** in the world's reference frame directly:
+
+- Detect "not immersive AR" → **desktop-guest mode**.
+- Render the world in the reference frame **directly** (`#world-root` at identity — no registration; the
+  space geometry + placed objects are at their reference-frame coordinates).
+- **Spawn to the right of the owner:** take the owner's latest presence pose `P`, compute the owner's
+  local **right** vector, place the guest camera at `P.position + right · offset` (≈1.2 m) at standing
+  height, facing the owner's direction. (If the owner hasn't broadcast a pose yet, spawn at a sensible
+  default and stay put once placed.)
+- Enable **desktop navigation** (A-Frame `look-controls` + `wasd-controls`) so the guest can move and
+  look around.
+- Broadcast the guest camera's pose as presence.
+
+Result: owner (AR) and guest (desktop) share the space frame; **each sees the other's avatar; both move
+freely.** A complete co-location loop with one headset.
+
+## 7. Presence avatars
+
+- A new `/ws` message — **presence**: each client sends its head/camera pose **in the reference frame**
+  at ~10 Hz; the server **relays** it to the other clients tagged by user. On disconnect, a `presence`
+  with the user removed.
+- Frame: the **AR** client transforms its headset pose by `_Tmat` into the reference frame; the
+  **desktop** client's camera is already in the reference frame.
+- Each client renders the *other* users as the **avatar**: a vertical box (square footprint, side 2·R)
+  on the floor + a sphere radius R at the head, sphere floating a few cm above the box (R≈0.13, gap≈0.03;
+  tunable), optionally labelled with the username.
+
+## 8. Matcher robustness (the hard part)
+
+A guest's headset sees a *different* plane set (missing/extra) than the owner captured. The register vote
+must lock on partial overlap: looser size tolerances, more candidate yaws, graceful behavior at marginal
+inliers, and not polluting the reference with a guest's stray planes. This is the one piece that needs
+real on-device iteration; everything else is testable in the browser first.
+
+## 9. What changes
+
+**Server:** per-connection `user` on `/ws`; world `public` flag + the join gate; `ingest_room` authority
+= space owner; a **presence relay** (receive a pose, fan out to the others).
+**Client:** pass `user` on the socket; **presence** (broadcast own pose in the reference frame, render
+other-user avatars); **desktop-guest mode** (detect no-XR, spawn right-of-owner, desktop nav).
+
+## 10. Open questions / risks
+
+- **Matcher robustness** (AR co-location) — the main risk; deferred to last so the rest lands first.
+- **Guests are read-only** on the world (inhabit + presence); the owner edits. Guest-driven editing
+  (their own director on the shared world) is a later question.
+- **`public` on worlds** — add to the `World` schema vs. keep in `environment`. Leaning `environment`
+  (no schema churn, survives validation like `space`).
+- **Multiple guests** — the relay supports N; we test with 1 first.
+- **Desktop-guest spawn** — offset/facing are tunables.
+
+## 11. Build plan (front-load the browser-testable pieces)
+
+1. **Per-connection user on `/ws` + world `public` flag + the join gate** (public → snapshot; private →
+   info message). Server-testable.
+2. **Presence** — broadcast + relay + avatar render. Testable with **two browser tabs**.
+3. **Desktop-guest mode** — spawn-right-of-owner + desktop nav. Testable: owner tab + guest tab (the
+   thing you asked for).
+4. **Authority = space owner** — the `ingest_room` gate.
+5. **AR co-location + matcher robustness** — on-device, the hard part, last.
+
+Steps 1–3 give a fully working, **browser-only** co-location demo (two tabs, presence, move around)
+before any headset work — and they're the foundation the AR path (4–5) sits on.
