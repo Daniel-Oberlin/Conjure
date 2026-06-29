@@ -157,21 +157,33 @@ def _boot_world() -> tuple[str, str, WorldStore]:
 
 
 settings = get_settings()  # loads .env
-worlds = WorldRepository(WORLDS_DIR)
-_migrate_world_dirs(WORLDS_DIR)                     # pre-user layout → <user>/agents/<agent> (one-time)
-active_scope, active_world, store = _boot_world()   # active_scope/active_world track the live world
 clients: set[WebSocket] = set()
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
-# Durable catalog of every procured asset. Rows are written at ingest (generation/placement) with all
-# fields set — scope, transparency, provenance — and the schema upgrades non-destructively (library.py
-# _migrate), so no startup heal/seed pass is needed. Back up library.db to protect curation; a lost
-# catalog is not rebuilt from the cache files (they carry none of the captions/embeddings/curation).
-library = AssetLibrary(LIBRARY_DB)
+# Filesystem-mutating, stateful singletons — opened by _init_state() on SERVER STARTUP, never at import,
+# so `import conjure.server` (tests, dev, tooling) can't run schema migrations / move world dirs / write
+# to the real .cache. They're None until startup; the test fixture sets them directly (startup never
+# fires under a plain TestClient). See docs/backlog.md (the import-time-startup hazard).
+library: "AssetLibrary | None" = None
+worlds: "WorldRepository | None" = None
+store: "WorldStore | None" = None
+active_scope: str = DEFAULT_SCOPE
+active_world: str = "default"
 # The embedder is None unless the optional torch/transformers are installed — then vector write-through
 # is simply skipped and the catalog runs on FTS/exact only. Lazy: no model loads until first embed.
 embedder = build_embedder(settings)
+
+
+def _init_state() -> None:
+    """Open the catalog (runs schema migrations), migrate the world layout, and boot the active world.
+    All filesystem-mutating — so it runs on server startup, not at import. Idempotent enough to re-run.
+    Back up library.db to protect curation: a lost catalog is NOT rebuilt from the cache files."""
+    global library, worlds, store, active_scope, active_world
+    library = AssetLibrary(LIBRARY_DB)
+    worlds = WorldRepository(WORLDS_DIR)
+    _migrate_world_dirs(WORLDS_DIR)                  # pre-user layout → <user>/agents/<agent> (one-time)
+    active_scope, active_world, store = _boot_world()
 
 # Embedding is an *enrichment*, not part of procurement, so in production it runs OFF the request path:
 # the asset is already procured/returned, and its vector lands a beat later (exact/FTS still match it
@@ -330,8 +342,10 @@ async def _autosave_loop() -> None:
 
 
 @app.on_event("startup")
-async def _start_autosave() -> None:
+async def _on_startup() -> None:
     global _autosave_task
+    if library is None:                  # not already wired by a test fixture → real startup
+        _init_state()
     _autosave_task = asyncio.create_task(_autosave_loop())
 
 
