@@ -25,8 +25,23 @@ Today `/ws` connections are anonymous. Phase 4 tags each connection with a **use
 
 ## 3. Guest join + the public gate
 
-- **Worlds gain a `public` flag** (default `true`, per spaces-plan §4). Stored in the world doc; since
-  the `World` model ignores unknown top-level keys, it lives under `environment.public` (like `space`).
+**Worlds gain a `public` flag** (default `true`, per spaces-plan §4), stored under `environment.public`
+(like `space` — the `World` model ignores unknown top-level keys, so environment is the safe home).
+
+**Why that's fine for querying, and how queries work.** After Phase 2 a world doc is *tiny* — placed
+objects + style overrides + prefs + the `space`/`public` refs (the 45-surface geometry moved to the
+space). So reading docs is cheap, and the two queries you'd want are simple:
+- **"my worlds"** → `worlds.list(<my-scope>)` — a directory listing of `.cache/worlds/<my-scope>/`. To
+  show each one's public status, read its (tiny) doc.
+- **"worlds available to me"** → *my* worlds ∪ *other users'* **public** worlds — scan the other users'
+  world dirs and keep the ones whose `environment.public` is true. Cheap at small scale.
+
+For **Phase 4 itself, no cross-user world query is needed**: a guest connects to a *specific* owner's
+running server and joins whatever world is **active** (if public) — not a catalog browse. A "browse all
+public worlds" feature is future, and if world counts ever grow enough that scanning is slow, we add a
+small **world index** (a catalog table of owner/name/public/space, derived from the docs — like the
+asset catalog), with the doc staying the source of truth. Not needed now.
+
 - On `/ws` connect:
   - **owner** → send the snapshot as today.
   - **guest + active world public** → send the snapshot (they join).
@@ -34,14 +49,28 @@ Today `/ws` connections are anonymous. Phase 4 tags each connection with a **use
     is private — ask <owner> to make it public"), and **no** world. Keep the socket open so the owner
     making it public can push a snapshot later.
 
-## 4. Authority = space owner (folds in loose-end #1)
+## 4. Authority = space owner, and **owner-only writes** (folds in loose-end #1)
 
-Geometry capture is the owner's alone:
-- `ingest_room` accepts a `/room` post **only from the space owner** (the posting client's user ==
-  `space.owner`). A guest's capture is rejected — guests **register against** the geometry, never
-  re-capture it.
-- This supersedes the per-client-id authority (which was session-state we reset on activation); the
-  owner *user* is the durable authority, the client-id stays only as a within-owner continuity detail.
+Only the owner may change the space *or* the world; everyone else is read-only. **Enforced
+server-side** — *no prompt changes* (the LLM never sees this; it's a capability boundary).
+
+- **Geometry capture.** `ingest_room` accepts a `/room` post **only from the space owner** (posting
+  user == `space.owner`). A guest's capture is rejected — guests **register against** the geometry,
+  never re-capture it. Supersedes the per-client-id authority (the client-id becomes a within-owner
+  continuity detail).
+- **All world mutations.** Every world-changing endpoint (`/patch`, `/place_asset`, `/place_image`,
+  `/style_surface`, `/show_surface`, `/texture_surface`, `/edit_image`, `/outpaint_image`, `/set_skybox`,
+  `/set_grounded_skybox`, `/reset`, `/room`, `/worlds/new|switch|delete`, …) requires the requester to be
+  the **active world's owner** (`active_scope`'s user). Read endpoints (`/world`, `/worlds/list`,
+  `/geolocation`, `/client_log`, presence) are open to guests.
+- **How identity reaches the API (no prompt, no per-tool churn).** The MCP client `_post` attaches the
+  caller's user (from `CONJURE_SCOPE`) as a header (`X-Conjure-User`) on *every* request; a small
+  FastAPI dependency on the mutating routes checks `header-user == owner` and returns **403** otherwise.
+  The owner's director always sends it; guests have no director on this server, and their browser client
+  only hits read/`/room`/presence routes. **Interim policy:** a *missing* header (e.g. the direct dev
+  `conjure` CLI) is treated as the owner — convenience now; tighten to "require it" once the guest path
+  is real if we want strict deny-by-default.
+- This lands with the authority work (build step 4), since it's the same "owner-only" boundary.
 
 ## 5. Co-location for an AR guest (no platform anchors)
 
