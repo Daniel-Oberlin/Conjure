@@ -747,3 +747,45 @@ def test_decompose_extracts_only_real_overrides_and_round_trips(srv):
     assert "boundary" not in back["environment"]["room"]             # boundary belongs to the space
     # round-trip: re-composing reproduces the same rendered surfaces (materials + geometry)
     assert srv._compose(back, space)["entities"] == composed["entities"]
+
+
+def test_room_geometry_is_shared_across_worlds_styling_is_per_world(srv, client):
+    # capture a room and style the couch in the current ('default') world
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_couch_1", "semantic": "couch", "position": [1, 0.5, 0], "extent": [2, 0.8]},
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}]})
+    client.post("/style_surface", json={"target": "couch", "color": "green"})
+    couch = next(e for e in _entities(client) if e["id"] == "real_couch_1")
+    assert couch["components"]["material"]["color"] == "green"
+    # a NEW world shares the same physical room geometry, but not 'default's styling
+    assert client.post("/worlds/new", json={"name": "blade"}).json()["ok"]
+    ids = {e["id"] for e in _entities(client)}
+    assert {"real_couch_1", "real_wall_1"} <= ids                       # the room followed us
+    here = next(e for e in _entities(client) if e["id"] == "real_couch_1")
+    assert here["components"]["material"]["color"] != "green"           # styling is per-world
+    # switch back to 'default' → the couch is green again (per-world override restored)
+    client.post("/worlds/switch", json={"name": "default"})
+    back = next(e for e in _entities(client) if e["id"] == "real_couch_1")
+    assert back["components"]["material"]["color"] == "green"
+
+
+def test_legacy_embedded_world_migrates_geometry_into_a_space(srv, client):
+    from conjure.world import WorldStore
+    # a pre-Phase-2 world doc: real surfaces embedded, a styled one, no space ref
+    srv.worlds.save(srv.DEFAULT_SCOPE, "legacy", WorldStore({
+        "id": "l", "name": "legacy", "rev": 3, "environment": {"room": {"boundary": {"height": 2.6}}},
+        "entities": [
+            {"id": "ent_box", "meta": {"generated": True}, "components": {}},
+            {"id": "real_table_2", "meta": {"real": True, "semantic": "table"},
+             "transform": {"position": [0, 0.5, -1]},
+             "components": {"surface": {"extent": [1, 1]}, "material": {"color": "blue", "visible": True}}}]}))
+    client.post("/worlds/switch", json={"name": "legacy"})
+    # geometry surfaced in the live doc; the blue style preserved as a per-world override
+    table = next(e for e in _entities(client) if e["id"] == "real_table_2")
+    assert table["components"]["material"]["color"] == "blue"
+    # the world doc on disk now has NO embedded geometry — it lives in the space
+    wd = srv.worlds.load(srv.DEFAULT_SCOPE, "legacy").doc
+    assert not any(e.get("meta", {}).get("real") for e in wd["entities"])   # geometry stripped
+    assert wd["environment"]["space"] == "home"                            # world references the space
+    sp = srv.spaces.load("daniel", "home")
+    assert any(s["id"] == "real_table_2" for s in sp["surfaces"])          # geometry in the space

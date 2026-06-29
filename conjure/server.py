@@ -37,7 +37,7 @@ from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .schema import Patch
-from .world import WorldRepository, WorldStore, world_path
+from .world import SpaceStore, WorldRepository, WorldStore, world_path
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
@@ -46,6 +46,8 @@ SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 AGENTS_DIR = ROOT / "agents"
 # Scoped, hierarchical world store (docs/persistence-model.md §4/§6): .cache/worlds/<scope>/<name>.json.
 WORLDS_DIR = ROOT / ".cache" / "worlds"
+# User-owned physical spaces (docs/spaces-and-users-plan.md §5): .cache/spaces/<user>/<name>.json.
+SPACES_DIR = ROOT / ".cache" / "spaces"
 ASSET_CACHE = ROOT / ".cache" / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
 LIBRARY_DB = ROOT / ".cache" / "library.db"   # durable asset catalog (docs/asset-library-plan.md)
@@ -168,9 +170,11 @@ resolver: AssetResolver | None = (
 # fires under a plain TestClient). See docs/backlog.md (the import-time-startup hazard).
 library: "AssetLibrary | None" = None
 worlds: "WorldRepository | None" = None
+spaces: "SpaceStore | None" = None
 store: "WorldStore | None" = None
 active_scope: str = DEFAULT_SCOPE
 active_world: str = "default"
+active_space: str = "home"          # the space the active world is composed against
 # The embedder is None unless the optional torch/transformers are installed — then vector write-through
 # is simply skipped and the catalog runs on FTS/exact only. Lazy: no model loads until first embed.
 embedder = build_embedder(settings)
@@ -180,11 +184,13 @@ def _init_state() -> None:
     """Open the catalog (runs schema migrations), migrate the world layout, and boot the active world.
     All filesystem-mutating — so it runs on server startup, not at import. Idempotent enough to re-run.
     Back up library.db to protect curation: a lost catalog is NOT rebuilt from the cache files."""
-    global library, worlds, store, active_scope, active_world
+    global library, worlds, spaces, store, active_scope, active_world, active_space
     library = AssetLibrary(LIBRARY_DB)
     worlds = WorldRepository(WORLDS_DIR)
+    spaces = SpaceStore(SPACES_DIR)
     _migrate_world_dirs(WORLDS_DIR)                  # pre-user layout → <user>/agents/<agent> (one-time)
-    active_scope, active_world, store = _boot_world()
+    active_scope, active_world, raw = _boot_world()
+    active_space, store = _activate(active_scope, active_world, raw)   # compose (+ migrate geometry → space)
 
 # Embedding is an *enrichment*, not part of procurement, so in production it runs OFF the request path:
 # the asset is already procured/returned, and its vector lands a beat later (exact/FTS still match it
@@ -326,7 +332,21 @@ _autosave_task: asyncio.Task | None = None
 
 
 def _save_active() -> None:
-    worlds.save(active_scope, active_world, store)
+    """Persist the live composed doc by SPLITTING it: real-surface geometry + boundary → the active
+    space; placed objects + display prefs + per-surface style overrides → the active world doc."""
+    if store is None or worlds is None or spaces is None:
+        return
+    user = active_scope.split("/", 1)[0]
+    space = spaces.load(user, active_space) if spaces.exists(user, active_space) else \
+        {"owner": user, "name": active_space, "public": True, "geolocation": None,
+         "surfaces": [], "boundary": None}
+    fresh = _space_from_world_doc(user, active_space, store.doc)       # geometry + boundary, default-materialed
+    space["surfaces"], space["boundary"] = fresh["surfaces"], fresh["boundary"]
+    spaces.save(user, active_space, space)
+    spaces.set_active(user, active_space)                             # keep the user's current physical space current
+    world_doc = _decompose(store.doc, space)                          # overrides diffed vs the (default) base
+    world_doc.setdefault("environment", {})["space"] = active_space
+    worlds.save(active_scope, active_world, WorldStore(world_doc))
 
 
 async def _autosave_loop() -> None:
@@ -558,7 +578,12 @@ async def reset_world() -> dict:
     environment (incl. any captured room) and broadcasts a fresh snapshot. The room re-captures on its
     own once a headset is back in AR. The world keeps its name; only its contents are wiped."""
     global store
-    store = _new_world_store(active_scope)
+    raw = _new_world_store(active_scope)      # empty starter world (placed content + prefs only)
+    user = active_scope.split("/", 1)[0]
+    space = spaces.load(user, active_space) if (spaces and spaces.exists(user, active_space)) \
+        else {"surfaces": [], "boundary": None}
+    store = WorldStore(_compose(raw.doc, space))   # keep the physical room; clear only the world's content
+    _reset_room_authority(store)
     _surface_absence.clear()                 # fresh room session
     _save_active()                            # persist the reset so it survives a restart
     await _broadcast({"type": "snapshot", "world": store.doc})
@@ -570,13 +595,12 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     """Make (scope, name) the live world: persist the outgoing one, set the incoming as `store`, record
     it as active, and broadcast a snapshot so the headset reloads. `store_override` installs a freshly
     built world (new_world) instead of loading from disk."""
-    global store, active_scope, active_world
+    global store, active_scope, active_world, active_space
     name = world_path(name)                   # canonical path, so `active` matches list() + the pointer
-    _save_active()                            # don't lose the outgoing world's latest edits
-    store = store_override if store_override is not None else worlds.load(scope, name)
-    _reset_room_authority(store)              # a stale authority would lock the live headset out
+    _save_active()                            # split + persist the outgoing world (+ its space)
+    raw = store_override if store_override is not None else worlds.load(scope, name)
     active_scope, active_world = scope, name
-    worlds.save(scope, name, store)
+    active_space, store = _activate(scope, name, raw)   # compose the incoming world against its space
     worlds.set_active(scope, name)
     _surface_absence.clear()                  # the room re-syncs into the newly active world
     await _broadcast({"type": "snapshot", "world": store.doc})
@@ -726,9 +750,11 @@ def _compose(world_doc: dict, space: dict) -> dict:
     each surface's material = the space's base, overridden by world.environment.room.surfaceStyles[id].
     Boundary comes from the space. The surfaceStyles map and `space` ref are persistence-only (dropped)."""
     doc = copy.deepcopy(world_doc)
-    room = doc.setdefault("environment", {}).setdefault("room", {})
-    styles = room.pop("surfaceStyles", {}) or {}
+    env = doc.setdefault("environment", {})
+    env.pop("space", None)
     doc.pop("space", None)
+    room = env.setdefault("room", {})
+    styles = room.pop("surfaceStyles", {}) or {}
     placed = [e for e in doc.get("entities", []) if not e.get("meta", {}).get("real")]
     reals = []
     for s in space.get("surfaces", []):
@@ -766,6 +792,49 @@ def _decompose(composed: dict, space: dict) -> dict:
     else:
         room.pop("surfaceStyles", None)
     return doc
+
+
+def _space_from_world_doc(user: str, name: str, doc: dict) -> dict:
+    """Build a space from a (legacy, geometry-embedded) world doc: real surfaces become the space's
+    geometry with per-semantic DEFAULT materials (styling stays per-world as surfaceStyles), plus the
+    boundary. The space is user-owned and public by default (spaces-and-users-plan.md §5)."""
+    surfaces = []
+    for e in doc.get("entities", []):
+        if e.get("meta", {}).get("real"):
+            s = copy.deepcopy(e)
+            s.setdefault("components", {})["material"] = _default_surface_material(
+                s.get("meta", {}).get("semantic", "surface"))
+            surfaces.append(s)
+    boundary = (doc.get("environment", {}).get("room", {}) or {}).get("boundary")
+    return {"owner": user, "name": name, "public": True, "geolocation": None,
+            "surfaces": surfaces, "boundary": boundary}
+
+
+def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, WorldStore]:
+    """Resolve the world's space and compose the live doc. On first load of a LEGACY geometry-embedded
+    world, migrate it: extract its surfaces into a shared user space (reusing the user's existing space —
+    same physical room), record its styling as surfaceStyles, strip the geometry, and persist the
+    migrated world. Returns (space_name, composed store) with room authority reset (session state)."""
+    user = scope.split("/", 1)[0]
+    doc = world.doc
+    space_name = (doc.get("environment", {}) or {}).get("space")
+    if space_name and spaces.exists(user, space_name):
+        space, world_doc = spaces.load(user, space_name), doc          # already migrated
+    else:
+        space_name = space_name or spaces.get_active(user) or "home"
+        space = spaces.load(user, space_name) if spaces.exists(user, space_name) else None
+        if space and space.get("surfaces"):
+            pass                                                       # reuse the shared physical room
+        else:                                                          # no shared geometry yet → seed it
+            space = _space_from_world_doc(user, space_name, doc)
+            spaces.save(user, space_name, space)
+            spaces.set_active(user, space_name)
+        world_doc = _decompose(doc, space)                             # legacy styling → overrides; strip geometry
+        world_doc.setdefault("environment", {})["space"] = space_name
+        worlds.save(scope, name, WorldStore(world_doc))                # persist the geometry-free world
+    composed = WorldStore(_compose(world_doc, space))
+    _reset_room_authority(composed)
+    return space_name, composed
 
 
 # A capture on resume-from-idle (or a momentary tracking blip) is often SPARSE — plane/mesh detection
