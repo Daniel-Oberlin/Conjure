@@ -118,6 +118,24 @@ must lock on partial overlap: looser size tolerances, more candidate yaws, grace
 inliers, and not polluting the reference with a guest's stray planes. This is the one piece that needs
 real on-device iteration; everything else is testable in the browser first.
 
+## 8a. Cross-scope public assets (shared catalog on one server)
+
+Scenario: you bring your **laptop** to a friend's; the friend logs in as a *separate user*
+(`--user friend`), creates his own space + world, and wants to use **your public assets**. This is the
+intended use of the asset `public` flag — and on one machine it's mostly already there:
+
+- **Bytes are shared.** The cache is content-addressed and global on disk (`persistence-model.md` §2):
+  `/assets/<hash>` serves any hash regardless of scope. The friend's world referencing your asset by
+  hash already resolves — same laptop.
+- **The gap is catalog *visibility*.** The library *reads* (`find` / `search_library` / `query_assets`)
+  are scoped to the caller's `<user>/agents/<agent>`, so the friend can't *discover* your public assets.
+
+**The feature:** make reads return **caller's scope ∪ `public=1`** (referenced in place; copy-to-private
+to pin). This also fixes the existing inconsistency that **`search_library` is unscoped while the
+maintenance tools are scoped** — both become "own-scope ∪ public". Writes stay own-scope only. Touches
+the library read methods + the `search_library`/`place_cached_asset` path (carry `SCOPE`). No prompt or
+write-path changes; **not** cross-machine federation (that's a separate, bigger future item).
+
 ## 9. What changes
 
 **Server:** per-connection `user` on `/ws`; world `public` flag + the join gate; `ingest_room` authority
@@ -144,6 +162,8 @@ other-user avatars); **desktop-guest mode** (detect no-XR, spawn right-of-owner,
    thing you asked for).
 4. **Authority = space owner** — the `ingest_room` gate.
 5. **AR co-location + matcher robustness** — on-device, the hard part, last.
+6. **Cross-scope public asset reads** (§8a) — independent of the presence/AR work; a friend on your
+   laptop building with your public assets. Slot in any time.
 
 Steps 1–3 give a fully working, **browser-only** co-location demo (two tabs, presence, move around)
 before any headset work — and they're the foundation the AR path (4–5) sits on.
