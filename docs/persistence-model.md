@@ -11,31 +11,35 @@ of data with *different* stores — but they share one scoping layer.
 
 ## 1. Namespace
 
-```
-<visibility>/<agent>/<category>/<name…>
+> **Reworked — `spaces-and-users-plan.md` §3 is authoritative.** The model is now **user-first**, and
+> **visibility is a per-item `public` flag, not a path segment**.
 
-  private/builder/worlds/bladerunner1
-  private/dungeonmaster/worlds/castle-quest/dining-hall   ← worlds may nest (a hierarchical name)
-  private/builder/assets/<hash>.glb
-  public/builder/assets/<hash>.glb        ← documented use case; not built yet
-  private/dungeonmaster/worlds/...         ← future agent; never sees builder's private content
+```
+/<user>/[agents/<agent>/]<category>/<name>      + public: bool per item
+
+  /daniel/spaces/home                                       ← spaces are USER-owned (physical, agent-agnostic)
+  /daniel/agents/builder/worlds/bladerunner1                ← worlds/assets/state are agent-owned under a user
+  /daniel/agents/builder/worlds/castle-quest/dining-hall    ← world names may still nest
+  /daniel/agents/builder/assets/<hash>.glb
 ```
 
-- **visibility** — `private` | `public`. The real axis (everything is "scoped"; the question is who
-  can see it). Private = only this agent; public = world-readable, this-agent-writable.
-- **agent** — `builder`, `dungeonmaster`, … the owning agent.
+- **user** — the owner; the top segment. Drives ownership + the public/private split.
+- **agent** — `builder`, `dungeonmaster`, … the owning agent (under a user).
+- **visibility** — a per-item **`public` flag** (NOT a path segment): default public; a new item inherits
+  the active world's visibility; cross-user read = owner-or-public (plan §4).
 - **category** — `assets` | `worlds` | `state`. **Routes to the typed store** (§4–5).
 - **name** — content hash (assets), or a chosen name (worlds). A world name may be a **hierarchical
   path** (`castle-quest/dining-hall`) so an agent can organize its worlds in a tree. Each segment is
   slug-normalized independently (case/spaces/underscores/hyphens interchangeable) and traversal
-  (`..`) is rejected, so a world is always confined to its scope. The trust boundary is still the
-  `<visibility>/<agent>` prefix — that's runtime-injected and never an LLM argument; the world *path*
-  below it is user/agent-chosen and freely structured.
+  (`..`) is rejected, so a world is always confined to its scope. The trust boundary is the
+  `<user>/agents/<agent>` prefix — runtime-injected, never an LLM argument; the world *path* below it is
+  user/agent-chosen and freely structured, and `public` is a flag, not part of the prefix.
 
 ## 2. Scope is a capability, not a parameter (the security crux)
 
-What makes this *securely* scoped: the scope is **bound by the trusted runtime per agent and injected
-server-side — never a tool argument the LLM fills in.** If a tool took `scope=…`, the model (or a
+What makes this *securely* scoped: the scope (now **`<user>/agents/<agent>`** — the logged-in user from
+`--user` / the `/tunnel/<user>` route, plus the agent from its MCP launch) is **bound by the trusted
+runtime and injected server-side — never a tool argument the LLM fills in.** If a tool took `scope=…`, the model (or a
 prompt-injection hidden in some asset's text/notes) could pass another agent's scope and read it.
 
 - The MCP / agent runtime holds the agent's scope (from how the agent was launched / its capability
@@ -145,8 +149,9 @@ the same physical room regardless of the active world, so they're a live layer m
 world is active — *not* snapshotted into each world. "Edges on/off" is then a pure per-world display
 preference over that shared layer. **This was decided but NOT yet built** — the initial multi-world
 store persists the room *inside* each world doc, which caused a recurring class of "live state frozen
-per-world" bugs (stale/sparse rooms, re-capture churn, the authority lockout). The full design — shared
-geometry + per-world style overlay, with the durable/session split — is in **`shared-room-layer.md`**.
+per-world" bugs (stale/sparse rooms, re-capture churn, the authority lockout). The full design — the
+real room as a first-class, user-owned **space** (shared geometry + per-world style overlay, durable/
+session split) — is in **`spaces-and-users-plan.md`**.
 
 **Undo/redo rides the inverses we already compute.** `apply_patch` already records an inverse for
 every op (`world.py`); undo is a cursor over that history plus a tool, not a new subsystem. The real

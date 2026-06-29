@@ -318,7 +318,7 @@ unknowns are **yaw about up + an x/z translation**:
 Because acceptance requires a genuine consensus, **a failed registration doubles as a "you're not in
 this space" signal**: a different physical space — or too sparse a capture (fewer than 3 reference
 surfaces / voting pairs) — produces no dominant peak and few inliers. That's the seam a future
-load-time space-consistency check (`shared-room-layer.md` §6) would build on, with the caveat that
+load-time space-consistency check (`spaces-and-users-plan.md` §7) would build on, with the caveat that
 "different space" and "bad tracking" both surface as the same no-lock.
 
 **Cross-session persistence (next).** Persist the anchor handle
@@ -327,7 +327,13 @@ load-time space-consistency check (`shared-room-layer.md` §6) would build on, w
 same physical anchor. With content already anchor-relative, the world reloads fixed to the real room
 (vision's "persistent rooms"; spec §3). Pairs with Phase 6 memory (where the world doc is persisted).
 
-## 8b. Shared world frame — multi-user co-location 🟡 design / 🔴 platform dependency
+## 8b. Shared world frame — multi-user co-location 🟡 design
+
+> **Now the technical core of `spaces-and-users-plan.md` §8.** Key correction to the marker below: this
+> does **not** require a platform shared-anchor. A guest registers its own planes onto the **same
+> persistent space geometry** (§8a, the register vote), solving its own `_Tmat` into the shared
+> reference frame — so content co-locates with no Quest "Shared Spaces" dependency. The remaining work
+> is matcher robustness for the guest's partial/extra planes, and presence avatars.
 
 **One model, N perceptions.** There is exactly **one** world model (the server doc) in exactly **one**
 coordinate frame (the authority's anchor frame, §8a). A secondary headset does **not** build its own

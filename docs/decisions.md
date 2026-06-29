@@ -273,3 +273,29 @@ catalog. Full design in **`docs/persistence-model.md`**; the asset store is `ass
 - Defer enforcement (scoped handles + capability injection), the world store (named save/load/version),
   public visibility, and any `state` KV store until the **second agent** actually lands — building them
   before that is speculative.
+
+### 15. Users, spaces, and a user-first namespace — 🔶 DESIGNED
+**Choice:** Introduce primitive **users** (a username, no auth) and first-class **spaces** (a physical
+environment — captured surfaces + boundary — owned by a user, with an approximate geolocation; the
+owner's headset is the capture authority). Rework the namespace to **user-first** —
+`/<user>/[agents/<agent>/]<category>/<name>` — and make **visibility a per-item `public` flag, not a
+path segment**. Worlds associate with a space (or `<void>`). Default public; visibility inherits the
+active world. A second user may **join a public world** and co-locate. Full plan in
+**`docs/spaces-and-users-plan.md`**.
+
+**Why:**
+- **A "space" is the shared room layer made first-class** (resolves the per-world-room duplication and
+  the class of "live state frozen in the durable world doc" bugs — stale rooms, re-capture churn, the
+  authority lockout). Authority = space owner falls out cleanly.
+- **Visibility as a flag, not a path segment:** content-addressed assets can't path-encode it;
+  publishing must not relocate an item or break references; access is a clean predicate
+  (`owner == requester OR public`). (HIGH-in-path was considered and rejected.)
+- **Co-location needs no platform anchor:** both headsets register their own planes onto the *same*
+  space geometry (the §register vote), so content co-locates without Quest "Shared Spaces." The real
+  cost is matcher robustness for partial/extra planes.
+- **Geolocation** (confirmed available in the Quest browser, ~hundreds of feet) is a coarse prefilter
+  for "which space am I in"; the geometry-registration vote is the fine discriminator.
+
+**Implications:** supersedes #14's agent-first namespace; migration moves existing `private/builder`
+data to user `daniel` and extracts the embedded room surfaces into `daniel`'s first space. Phased
+build (5 phases) in the plan; Phase 1 (users + namespace + migration) is foundational and user-invisible.

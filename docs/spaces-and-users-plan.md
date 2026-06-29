@@ -1,8 +1,8 @@
 # Spaces & Users — plan
 
-**Status:** PLAN (design agreed 2026-06-26; not yet built). Supersedes `shared-room-layer.md` (a *space*
-is the shared room layer, made first-class) and reworks the namespace in `persistence-model.md` §1.
-No security — users are identity only.
+**Status:** PLAN (design agreed 2026-06-26; not yet built). Realizes the **shared room layer** as a
+first-class, user-owned concept (it absorbed the earlier shared-room-layer design) and reworks the
+namespace in `persistence-model.md` §1. No security — users are identity only.
 
 ## 1. What's new
 
@@ -11,7 +11,7 @@ Three concepts and a namespace rework:
 - **Users** — primitive identity (a username, no auth). The system has one "logged-in" user per
   connection. Drives ownership and the public/private split.
 - **Spaces** — a *physical* environment (the captured real surfaces + boundary), **owned by a user**,
-  with an approximate **geolocation**. This is `shared-room-layer.md` realized: geometry stored once,
+  with an approximate **geolocation**. This is the shared room layer realized: geometry stored once,
   not per-world. The owner's headset is always the space's capture **authority**.
 - **Worlds are associated with a space** (or the **`<void>`** space, for purely-virtual worlds with no
   physical tie). A world = a space's geometry + the world's own placed objects, surface-style overlay,
@@ -68,13 +68,13 @@ user. Every item carries a `public: bool` flag (§4).
 
 - **Record:** `Space { id, owner, name, public, geolocation {lat, lon, accuracy}, surfaces[], boundary }`.
   Stored at `/<user>/spaces/<name>` → `.cache/spaces/<user>/<name>.json`. Geometry + default materials
-  only (per-world styling lives in the world's overlay, per `shared-room-layer.md`).
+  only (per-world styling lives in the world's overlay — §6).
 - **Authority = owner's headset.** Only the owner may report/update a space's geometry (`ingest_room`
   checks the connection's user == space owner). Guests register *against* it, never re-capture it.
 - **One active space per server** (agreed). The owner's session has exactly one space live.
 - **`<void>`** — a sentinel space with no surfaces / no geolocation, for worlds with no physical tie
   (e.g. a grounded-skybox landscape). Worlds in `<void>` render pure-virtual.
-- **Compose/decompose** (from `shared-room-layer.md`): the in-memory `store.doc` stays fully composed
+- **Compose/decompose:** the in-memory `store.doc` stays fully composed
   (space geometry + the active world's `surfaceStyles` + placed entities + prefs); only persistence
   splits — geometry → the space file, styling/placed/prefs → the world file. Client/patch/director
   paths unchanged.
@@ -132,7 +132,7 @@ One-time, idempotent:
    per-connection user identity, scope → `/<user>/agents/<agent>`, `public` column/flag, migrate to
    `daniel`. Re-addressing only — no new behavior. *Touches:* cli, server, mcp launch, library, world
    repo, conftest, migration.
-2. **Spaces first-class** (the shared-room-layer). Space store; `ingest_room` → active space; authority =
+2. **Spaces first-class** (the shared room layer). Space store; `ingest_room` → active space; authority =
    owner; worlds reference a space (+ `<void>`); compose/decompose. *Touches:* server, world/space
    stores, persistence; migration creates `daniel`'s first space.
 3. **Geolocation + nearest-space-on-load.** Capture on creation; nearest + geometry-confirm on start.
