@@ -6,6 +6,36 @@ delete them here) when done.
 
 ---
 
+## Semantic (embedding) matches are capped at "weak" — calibrate distance → tier
+
+**Status:** open · noted 2026-06-30
+
+**Symptom:** "I made an image of a key, but reuse shows it as a **weak** match." Embedding search
+already *surfaces* the right asset (cross-modal text→image), but it can never be a confident/strong hit.
+
+**Why (by design, today):** `library.find()` decides the confidence tier from **match TYPE**, not the
+embedding distance: `strong = any(match in ("alias","exact"))`. A `vector` hit (like an `fts` hit) is
+never in that set, so semantic similarity is structurally capped at **weak**, however close it is. The
+`distance` is computed and returned but never thresholded. This is intentional — strong = "safe to
+auto-reuse without asking," reserved for *intent* signals (you typed the stored description verbatim, or
+you pinned the phrase via `default_for`) — semantic "near" doesn't reliably mean "the asset you meant" (a
+"key" query is also near a padlock / door handle / keyboard). A generated image stores `label = prompt =`
+the full generation prompt, so a short later query ("key") only ever hits via FTS/vector ⇒ weak.
+
+Note the doc/impl wrinkle: `vector_search`'s docstring claims "the reuse-tier layer maps distance →
+strong/weak/none," but `find()` never maps distance — only match-type. The calibrated mapping was never
+built.
+
+**Proposed fix (future):** a **calibrated** distance→tier rule — e.g. "a `vector` hit with distance < X
+⇒ strong" (and a mid band ⇒ weak). Needs empirical tuning of X on real catalog data (and likely
+per-kind, since distances aren't calibrated across categories), so treat it as **opt-in** until it's seen
+to behave. Until then, the workaround is to give an asset real intent: `update_asset(id, default_for="key")`
+(pin → alias/strong) or `update_asset(id, label="key")` (exact/strong). Possible adjacent nudge: when the
+user clearly *names* what they're generating ("make me a key"), auto-pin `default_for` so it's instantly
+strong-reusable (behavioral — needs a live test).
+
+**Open decision:** calibrate a global X vs. per-kind thresholds; and whether to auto-pin on naming.
+
 ## World index for cross-user public discovery (scale the existing walk)
 
 **Status:** open (perf only) · noted 2026-06-29 · **walk shipped 2026-06-30**
