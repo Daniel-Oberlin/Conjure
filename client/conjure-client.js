@@ -796,22 +796,25 @@
     el.textContent = el.textContent.trim() + (m ? "  ✓ js v" + m[1] : "  ✓ js");
   }
 
-  // Report the headset's coarse location once so the server can stamp / pick the physical space it
-  // belongs to (docs/spaces-and-users-plan.md §7). Best-effort: needs HTTPS + the user's permission;
-  // silently skipped if denied or unavailable (the space just stays un-geolocated).
+  // Report the headset's coarse location so the server can stamp / pick the physical space it belongs
+  // to (docs/spaces-and-users-plan.md §7). Fired only on ENTERING AR — a desktop viewer/guest isn't
+  // physically in a space, so it must NOT drive space selection (it just joins the active world).
+  // Best-effort: needs HTTPS + permission; silently skipped if denied or unavailable.
   function reportGeolocation() {
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(function (pos) {
       fetch("/geolocation", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lat: pos.coords.latitude, lon: pos.coords.longitude,
-                               accuracy: pos.coords.accuracy }),
+                               accuracy: pos.coords.accuracy, user: currentUser() || undefined }),
       }).catch(function () {});
     }, function () {}, { maximumAge: 600000, timeout: 10000 });
   }
 
   window.addEventListener("load", function () {
-    connect(); setupARButton(); markVersion(); reportGeolocation();
+    connect(); setupARButton(); markVersion();
     setInterval(presenceTick, 100);                 // ~10 Hz head-pose broadcast (presence)
+    var sc = document.querySelector("a-scene");      // report location only from a real AR session
+    if (sc) sc.addEventListener("enter-vr", reportGeolocation);
   });
 })();

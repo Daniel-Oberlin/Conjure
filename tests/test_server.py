@@ -871,3 +871,13 @@ def test_presence_relayed_to_others_and_leave_on_disconnect(srv, client):
             assert m["type"] == "presence" and m["user"] == "daniel" and m["pose"]["p"] == [1, 1.6, 2]
         leave = ws1.receive_json()                                  # bob disconnected → his avatar drops
         assert leave["type"] == "presence_leave" and leave["user"] == "bob"
+
+
+def test_geolocation_from_a_guest_does_not_reselect(srv, client):
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
+                                       "geolocation": None, "surfaces": []})
+    # a GUEST (bob) reporting a wildly different location must NOT move daniel's active space
+    r = client.post("/geolocation", json={"lat": 51.5, "lon": -0.12, "user": "bob"}).json()
+    assert r == {"ok": True, "selected": False}
+    assert srv.spaces.load("daniel", "home")["geolocation"] is None      # untouched
+    assert srv.active_space == "home"

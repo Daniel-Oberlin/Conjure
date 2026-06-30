@@ -629,6 +629,7 @@ class GeoReport(BaseModel):
     lat: float
     lon: float
     accuracy: Optional[float] = None
+    user: Optional[str] = None       # who's reporting; only the space OWNER's location drives selection
 
 
 _NEAR_M = 150.0                     # within this distance of a space's geolocation ⇒ "the same space"
@@ -654,6 +655,8 @@ async def report_geolocation(req: GeoReport) -> dict:
     if spaces is None or worlds is None:
         return {"ok": False, "error": "no space store"}
     user = active_scope.split("/", 1)[0]
+    if req.user and req.user != user:                 # a guest's location must not re-select the space
+        return {"ok": True, "selected": False}
     geo = {"lat": req.lat, "lon": req.lon, "accuracy": req.accuracy}
     if _geo_selected:
         return {"ok": True, "selected": False}        # already chose this session
