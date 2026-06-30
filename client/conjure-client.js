@@ -465,10 +465,11 @@
   }
 
   // The avatar entity is parked at the HEAD position and yawed to the headset's heading, so the body box
-  // and head turn as one. Two white "eyes" sit half-embedded on the front of the head sphere, 45° apart
+  // and head turn as one. Two info-color "eyes" sit half-embedded on the front of the head sphere, 45° apart
   // (±22.5° from the look direction); they live on a child entity that pitches with the head, so you can
   // read both the yaw (whole avatar turns) and the up/down gaze (eyes ride up/down the sphere).
-  var EYE_R = 0.045, EYE_S = Math.sin(Math.PI / 8), EYE_C = Math.cos(Math.PI / 8);   // 22.5°
+  //var EYE_R = 0.045, EYE_S = Math.sin(Math.PI / 8), EYE_C = Math.cos(Math.PI / 8);   // 22.5°
+  var EYE_R = 0.03, EYE_S = Math.sin(Math.PI / 12), EYE_C = Math.cos(Math.PI / 12); 
   function setAvatar(user, pose) {
     if (!pose || !pose.p) return;
     var wr = document.getElementById("world-root"); if (!wr) return;
@@ -480,8 +481,8 @@
       el.innerHTML = '<a-sphere class="head" radius="' + R_AV + '" color="' + INFO_COLOR + '"></a-sphere>'
         + '<a-box class="body" width="0.26" depth="0.26" color="' + INFO_COLOR + '" opacity="0.85"></a-box>'
         + '<a-entity class="eyes">'
-        +   '<a-sphere class="eye" position="' + lx + ' 0 ' + ez + '" radius="' + EYE_R + '" color="#ffffff"></a-sphere>'
-        +   '<a-sphere class="eye" position="' + rx + ' 0 ' + ez + '" radius="' + EYE_R + '" color="#ffffff"></a-sphere>'
+        +   '<a-sphere class="eye" position="' + lx + ' 0 ' + ez + '" radius="' + EYE_R + '" color="' + INFO_COLOR + '"></a-sphere>'
+        +   '<a-sphere class="eye" position="' + rx + ' 0 ' + ez + '" radius="' + EYE_R + '" color="' + INFO_COLOR + '"></a-sphere>'
         + '</a-entity>';
       wr.appendChild(el);
     }
