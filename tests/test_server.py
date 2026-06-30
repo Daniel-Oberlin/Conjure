@@ -932,6 +932,80 @@ def test_presence_relayed_to_others_and_leave_on_disconnect(srv, client):
         assert leave["type"] == "presence_leave" and leave["user"] == "bob"
 
 
+def test_gaze_from_pose_derives_forward():
+    from conjure.server import _gaze_from_pose
+    # identity orientation → looking down -Z from the origin
+    g = _gaze_from_pose({"p": [0, 1.6, 0], "q": [0, 0, 0, 1]})
+    assert g["origin"] == [0.0, 1.6, 0.0]
+    assert g["forward"][0] == 0 and g["forward"][1] == 0 and round(g["forward"][2], 6) == -1.0
+    # 90° yaw about +Y → looking down -X
+    import math
+    s = math.sin(math.pi / 4)
+    g2 = _gaze_from_pose({"p": [0, 1.6, 0], "q": [0, s, 0, s]})
+    assert round(g2["forward"][0], 6) == -1.0 and round(g2["forward"][2], 6) == 0.0
+    assert _gaze_from_pose({"p": [0, 0, 0]}) is None        # no quaternion → no gaze
+
+
+def test_presence_stores_and_clears_gaze(srv, client):
+    with client.websocket_connect("/ws?user=daniel") as ws:
+        ws.receive_json()                                   # snapshot
+        ws.send_json({"type": "presence", "pose": {"p": [1, 1.6, 2], "q": [0, 0, 0, 1]}})
+        # the server records where daniel is looking
+        import time as _t
+        for _ in range(50):
+            if "daniel" in srv.gaze:
+                break
+            _t.sleep(0.005)
+        assert srv.gaze["daniel"]["origin"] == [1.0, 1.6, 2.0]
+        assert round(srv.gaze["daniel"]["forward"][2], 6) == -1.0
+    assert "daniel" not in srv.gaze                         # cleared when the last socket closes
+
+
+def _set_gaze(srv, user="daniel", origin=(0, 1.6, 0)):
+    srv.gaze[user] = {"origin": list(origin), "forward": [0, 0, -1],
+                      "right": [1, 0, 0], "up": [0, 1, 0]}
+
+
+def test_view_relative_resolves_directions(srv, client):
+    _set_gaze(srv)
+    def pt(d):
+        return client.post("/view_relative", json={"direction": d, "distance": 1.0},
+                           headers={"X-Conjure-User": "daniel"}).json()
+    assert pt("forward")["point"] == [0.0, 1.6, -1.0]
+    assert pt("back")["point"] == [0.0, 1.6, 1.0]
+    assert pt("right")["point"] == [1.0, 1.6, 0.0]
+    assert pt("left")["point"] == [-1.0, 1.6, 0.0]
+    assert pt("up")["point"] == [0.0, 2.6, 0.0]
+    assert pt("down")["point"] == [0.0, 0.6, 0.0]
+    assert pt("sideways")["ok"] is False               # bad direction
+
+
+def test_view_relative_raycasts_the_surface_youre_looking_at(srv, client):
+    _set_gaze(srv)
+    # a wall 3 m ahead (-Z), facing the viewer (normal +Z, rotation 0), 2 m wide x 2.5 m tall
+    srv.store.doc["entities"].append({
+        "id": "real_wall_7", "transform": {"position": [0, 1.6, -3], "rotation": [0, 0, 0]},
+        "components": {"surface": {"extent": [2.0, 2.5]}}, "meta": {"real": True, "semantic": "wall", "friendly_id": 7}})
+    r = client.post("/view_relative", json={"direction": "forward"},
+                    headers={"X-Conjure-User": "daniel"}).json()
+    assert r["ok"] and r["surface"]["id"] == "real_wall_7" and r["surface"]["distance"] == 3.0
+    # looking the other way → no surface that way
+    assert client.post("/view_relative", json={"direction": "back"},
+                       headers={"X-Conjure-User": "daniel"}).json()["surface"] is None
+
+
+def test_view_relative_lists_nearby_objects_and_needs_gaze(srv, client):
+    _set_gaze(srv)
+    srv.store.doc["entities"].append({                  # an object 1 m ahead
+        "id": "ent_lamp", "transform": {"position": [0, 1.6, -1]}, "meta": {"title": "brass lamp"}})
+    r = client.post("/view_relative", json={"direction": "forward"},
+                    headers={"X-Conjure-User": "daniel"}).json()
+    assert any(n["id"] == "ent_lamp" and n["title"] == "brass lamp" for n in r["nearby"])
+    # a user with no live view → graceful error
+    assert client.post("/view_relative", json={"direction": "forward"},
+                       headers={"X-Conjure-User": "ghost"}).json()["ok"] is False
+
+
 def test_geolocation_from_a_guest_does_not_reselect(srv, client):
     srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
                                        "geolocation": None, "surfaces": []})

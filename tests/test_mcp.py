@@ -157,6 +157,19 @@ async def test_set_world_visibility_tool_forwards_and_reports_published(monkeypa
 
 
 @respx.mock
+async def test_view_relative_tool_forwards_and_formats(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/view_relative").mock(return_value=httpx.Response(200, json={
+        "ok": True, "direction": "forward", "distance": 1.0, "point": [0.0, 1.6, -1.0],
+        "surface": {"id": "real_wall_7", "semantic": "wall", "friendly_id": 7, "distance": 3.0},
+        "nearby": [{"id": "ent_lamp", "title": "brass lamp", "distance": 1.0}]}))
+    out = await _tool("view_relative")(direction="forward", distance=1.0)
+    assert json.loads(route.calls.last.request.content) == {"direction": "forward", "distance": 1.0}
+    assert "1.6" in out and "real_wall_7" in out and "brass lamp" in out   # point + surface + nearby relayed
+
+
+@respx.mock
 async def test_delete_asset_tool_forwards_id_with_scope(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     monkeypatch.setattr(m, "SCOPE", "private/builder")

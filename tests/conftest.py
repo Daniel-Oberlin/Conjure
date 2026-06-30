@@ -130,6 +130,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_EMBED_BACKGROUND", False)  # inline write-through → deterministic in tests
     # (friendly ids are derived from the surface id now — no counter to reset)
     server.clients.clear()
+    server.gaze.clear()
     return server
 
 

@@ -27,7 +27,7 @@ from types import SimpleNamespace
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -164,6 +164,8 @@ def _boot_world() -> tuple[str, str, WorldStore]:
 
 settings = get_settings()  # loads .env
 clients: "dict[WebSocket, str]" = {}     # connected render clients → their user (owner or guest)
+gaze: "dict[str, dict]" = {}             # user → {"origin": [x,y,z], "forward": [x,y,z]} in the reference
+                                         # frame, from presence — where each headset is looking (Phase 4)
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
@@ -1714,6 +1716,96 @@ def _forward(rotation: list[float]) -> list[float]:
     return [math.cos(x) * math.sin(y), -math.sin(x), math.cos(x) * math.cos(y)]
 
 
+# --- view-relative geometry (gaze): resolve a point/probe relative to where a user is looking ------
+def _dot(a: list[float], b: list[float]) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _plane_basis(rotation: list[float]) -> tuple[list[float], list[float], list[float]]:
+    """(normal, in-plane right, in-plane up) of an <a-plane> at A-Frame euler `rotation` (degrees;
+    roll ignored, like _forward). normal is the plane's +Z; right/up are its +X/+Y."""
+    rx, ry = math.radians(rotation[0]), math.radians(rotation[1])
+    cx, sx, cy, sy = math.cos(rx), math.sin(rx), math.cos(ry), math.sin(ry)
+    return [cx * sy, -sx, cx * cy], [cy, 0.0, -sy], [sx * sy, cx, sx * cy]
+
+
+def _ray_surface(origin: list[float], direction: list[float]) -> Optional[dict]:
+    """Nearest REAL room surface a ray (from `origin` along unit `direction`) hits within its extent —
+    'the wall I'm looking at'. Returns {id, semantic, friendly_id, distance, point} or None."""
+    best = None
+    for e in store.doc["entities"]:
+        m = e.get("meta", {})
+        if not m.get("real"):
+            continue
+        surf = e.get("components", {}).get("surface", {})
+        extent, pos = surf.get("extent"), e.get("transform", {}).get("position")
+        if not (extent and len(extent) >= 2 and pos):
+            continue
+        normal, right, up = _plane_basis(e.get("transform", {}).get("rotation") or [0, 0, 0])
+        denom = _dot(direction, normal)
+        if abs(denom) < 1e-6:
+            continue                                       # ray parallel to the plane
+        rel = [pos[i] - origin[i] for i in range(3)]
+        t = _dot(rel, normal) / denom
+        if t <= 1e-3:
+            continue                                       # behind the viewer
+        hit = [origin[i] + direction[i] * t for i in range(3)]
+        d = [hit[i] - pos[i] for i in range(3)]
+        if abs(_dot(d, right)) <= extent[0] / 2 + 1e-3 and abs(_dot(d, up)) <= extent[1] / 2 + 1e-3:
+            if best is None or t < best["distance"]:
+                best = {"id": e["id"], "semantic": m.get("semantic"), "friendly_id": m.get("friendly_id"),
+                        "distance": round(t, 3), "point": [round(c, 3) for c in hit]}
+    return best
+
+
+def _nearby_entities(point: list[float], radius: float) -> list[dict]:
+    """Placed (non-real) objects within `radius` of `point`, nearest first — 'what's over there'."""
+    out = []
+    for e in store.doc["entities"]:
+        m = e.get("meta", {})
+        if m.get("real"):
+            continue
+        pos = e.get("transform", {}).get("position")
+        if not pos or len(pos) < 3:
+            continue
+        dist = math.dist(point, pos)
+        if dist <= radius:
+            out.append({"id": e["id"], "title": m.get("title") or m.get("prompt"), "distance": round(dist, 3)})
+    out.sort(key=lambda x: x["distance"])
+    return out
+
+
+_VIEW_DIRS = {"forward", "back", "left", "right", "up", "down"}
+
+
+class ViewRelativeRequest(BaseModel):
+    direction: str = "forward"            # forward|back|left|right|up|down (forward = where you're looking)
+    distance: float = 1.0                 # metres along that direction
+
+
+@app.post("/view_relative")
+async def view_relative(req: ViewRelativeRequest, request: Request) -> dict:
+    """Resolve a point relative to the requesting user's live head pose, and probe what's there:
+    '1 m in front of me', 'the wall I'm looking at', 'what's behind me'. The frame is the user's own
+    head (forward = look dir incl. pitch; left/right/up/down head-relative). Gaze comes from presence,
+    keyed to the X-Conjure-User header."""
+    user = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
+    g = gaze.get(user)
+    if not g:
+        return {"ok": False, "error": "no live view for you yet — connect a headset/session and look around first"}
+    d = (req.direction or "forward").strip().lower()
+    if d not in _VIEW_DIRS:
+        return {"ok": False, "error": f"direction must be one of {sorted(_VIEW_DIRS)}"}
+    vec = {"forward": g["forward"], "back": [-c for c in g["forward"]],
+           "right": g["right"], "left": [-c for c in g["right"]],
+           "up": g["up"], "down": [-c for c in g["up"]]}[d]
+    origin = g["origin"]
+    point = [round(origin[i] + vec[i] * req.distance, 3) for i in range(3)]
+    return {"ok": True, "direction": d, "distance": req.distance, "origin": origin,
+            "direction_vec": [round(c, 4) for c in vec], "point": point,
+            "surface": _ray_surface(origin, vec), "nearby": _nearby_entities(point, 1.5)}
+
+
 class PlaceImageRequest(BaseModel):
     image_id: str
     position: Optional[list[float]] = None
@@ -1918,13 +2010,36 @@ async def ws(websocket: WebSocket) -> None:
             except (ValueError, TypeError):
                 continue
             if msg.get("type") == "presence":                    # relay this client's pose to the others
-                await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": msg.get("pose")})
+                pose = msg.get("pose")
+                g = _gaze_from_pose(pose)
+                if g:
+                    gaze[user] = g                               # remember where this user is looking
+                await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": pose})
     except WebSocketDisconnect:
         pass
     finally:
         clients.pop(websocket, None)
+        if user not in clients.values():                         # last socket for this user gone
+            gaze.pop(user, None)
         if joined:
             await _broadcast({"type": "presence_leave", "user": user})   # drop their avatar everywhere
+
+
+def _gaze_from_pose(pose: dict | None) -> dict | None:
+    """Derive {origin, forward} (reference frame) from a presence pose {p, q}. `forward` is the head's
+    -Z (look direction) rotated by the quaternion q=[x,y,z,w]. Used to resolve 'the wall I'm looking at'
+    and 'in front of me'."""
+    if not pose:
+        return None
+    p, q = pose.get("p"), pose.get("q")
+    if not (p and q and len(p) == 3 and len(q) == 4):
+        return None
+    x, y, z, w = q
+    forward = [-2 * (w * y + x * z), 2 * (w * x - y * z), -1 + 2 * (x * x + y * y)]   # head -Z
+    right = [1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)]       # head +X
+    up = [2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)]          # head +Y
+    return {"origin": [float(p[0]), float(p[1]), float(p[2])],
+            "forward": forward, "right": right, "up": up}
 
 
 def _snapshot_msg() -> dict:

@@ -6,6 +6,39 @@ delete them here) when done.
 
 ---
 
+## On-surface placed content is stranded by a room re-registration
+
+**Status:** open · noted 2026-06-30 (diagnosed from daniel's `new-room`)
+
+**Symptom:** images "disappeared" from wall-art frames 5 and 12 while the one on 39 stayed. The
+director correctly insisted they were still there.
+
+**Diagnosis (data intact — render/anchor bug, NOT data loss):** the three wall images are placed
+**floating image planes** (`place_image on_surface` → a separate `ent_image_*` entity ~2 cm in front of
+the surface), and all three are still in the world doc with valid bytes + catalog rows. But each plane is
+now offset **0.12–0.31 m** from its `wall_art` frame — far more than the 2 cm placement applies. So the
+**space geometry was re-registered/re-captured after placement**: the surfaces moved, but the planes
+(stored in **absolute reference-frame coordinates**) stayed put and drifted off their frames (some onto/
+behind a wall face → read as "gone"). Same family as the boundary-frame-flip issue: placed content is
+anchored to absolute coords, so a re-registration shifts the room out from under it.
+
+**Why some survive:** offset magnitude doesn't predict visibility (the surviving calf was *more* off than
+the vanished bear), so the live render detail (drifted behind a wall face / off the visible side / a
+texture-load hiccup) varies per plane; not determinable from the static doc.
+
+**Proposed fix:** anchor on-surface content to its surface instead of to absolute coords — either (a)
+**parent** the `ent_image` to its `real_*` surface entity (child transform, so it rides re-capture moves),
+or (b) on re-registration, **re-anchor** placed-on-surface entities by snapping each to its (nearest /
+recorded) surface's new pose. (a) is cleaner if we record which surface an on-surface image belongs to
+(store `meta.on_surface = <surface id>` at place time). Free-floating `place_image` (no `on_surface`) stays
+absolute — only on-surface placements re-anchor.
+
+**Immediate remediation (one-off):** a re-snap pass that moves each on-surface `ent_image` to
+`surface_pos + 2 cm·normal` with the surface's rotation — fixes already-stranded images like new-room's.
+
+**Open decision:** parenting (a) vs re-anchor-on-event (b); and whether to record `meta.on_surface` going
+forward so we know each image's home surface.
+
 ## Semantic (embedding) matches are capped at "weak" — calibrate distance → tier
 
 **Status:** open · noted 2026-06-30

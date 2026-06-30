@@ -432,6 +432,37 @@ async def place_cached_asset(
     return f"Reused {out.get('title')!r} as {out['id']}." + _notice(out)
 
 
+@mcp.tool()
+async def view_relative(direction: str = "forward", distance: float = 1.0) -> str:
+    """Resolve a point relative to where the USER is and looking RIGHT NOW (their live headset pose),
+    and report what's there. Use this whenever the user refers to space from their own viewpoint —
+    'in front of me', 'behind me', 'to my left/right', 'above/below me', 'the wall I'm looking at'.
+
+    direction: forward | back | left | right | up | down. `forward` is the actual look direction
+    (includes looking up/down); left/right/up/down are relative to the head. distance: metres along it
+    (default 1).
+
+    Returns a world `point` you pass straight to a place tool's `position` (e.g. place_cached_asset/
+    place_image/place_asset) — DON'T hand-compute it. Also returns `surface` (the nearest room surface
+    the ray hits — style/texture it by its id) and `nearby` placed objects. Needs the user connected
+    with a live view (an active session)."""
+    out = await _post("/view_relative", _body(direction=direction, distance=distance))
+    if not out.get("ok"):
+        return f"Couldn't resolve that view: {out.get('error', 'unknown error')}."
+    p = out["point"]
+    lines = [f"Point {out['distance']} m {out['direction']} of the user: "
+             f"[{p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}] — use as `position` to place there."]
+    s = out.get("surface")
+    lines.append(
+        f"Surface that way: {s.get('semantic')} #{s.get('friendly_id')} (id {s['id']}), "
+        f"{s['distance']:.2f} m away — target it by id to style/texture it." if s
+        else "No room surface that way within reach.")
+    nb = out.get("nearby") or []
+    if nb:
+        lines.append("Nearby objects: " + ", ".join(f"{n.get('title') or n['id']} ({n['distance']:.1f} m)" for n in nb))
+    return "\n".join(lines)
+
+
 # --- Catalog maintenance: inspect / update / delete library assets ----------------------------
 # query_assets reads (read-only SQL, scoped to you); update_asset is the single writer (fields,
 # kind, "default for X" alias, reject-for-a-query); delete_asset removes one. All are scoped to your
