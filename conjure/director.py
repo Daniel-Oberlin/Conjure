@@ -199,7 +199,10 @@ class Director:
             f"but you can't edit a world you don't own. Worlds are PUBLIC by default; make one private "
             f"(or public again) with set_world_visibility(public=…), or create a private one via "
             f"new_world(name, public=False). If a tool refuses an edit to another user's world, relay it "
-            f"plainly; never invent a name collision or claim a capability (like private worlds) is absent."
+            f"plainly; never invent a name collision or claim a capability (like private worlds) is absent. "
+            f"Library ASSETS work the same way: public by default (others on this server can reuse them), "
+            f"and you can flip one with update_asset(id, public=…) — but only for assets YOU own; another "
+            f"user's asset that merely shows up in your searches stays theirs."
         )
         return self._prompt.format(name=name) + roster_line + identity_line
 

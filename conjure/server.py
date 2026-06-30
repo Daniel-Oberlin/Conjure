@@ -1349,6 +1349,7 @@ class UpdateAssetRequest(BaseModel):
     kind: Optional[str] = None
     rating: Optional[int] = None
     favorite: Optional[bool] = None
+    public: Optional[bool] = None       # catalog visibility (others' reads see your public assets)
     default_for: Optional[str] = None   # pin an alias ("dog" → this asset)
     reject_for: Optional[str] = None    # exclude this asset from a query's matches
 
@@ -1359,7 +1360,7 @@ async def update_asset(req: UpdateAssetRequest) -> dict:
     Keeps FTS + vector-kind + aliases consistent (subsumes the old correct_asset/annotate_asset)."""
     ok, err = library.update(req.id, scope=req.scope, label=req.label, query=req.query, tags=req.tags,
                              notes=req.notes, kind=req.kind, rating=req.rating, favorite=req.favorite,
-                             default_for=req.default_for, reject_for=req.reject_for)
+                             public=req.public, default_for=req.default_for, reject_for=req.reject_for)
     return {"ok": True, "id": req.id} if ok else {"ok": False, "error": err}
 
 

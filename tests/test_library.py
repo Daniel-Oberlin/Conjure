@@ -206,6 +206,23 @@ def test_query_is_scoped_and_select_only(tmp_path):
         lib.query("SELECT * FROM main.assets", scope="daniel/agents/builder")  # bypass rejected
 
 
+def test_update_sets_public_and_is_scope_checked(tmp_path):
+    lib = _lib(tmp_path)
+    me, friend = "daniel/agents/builder", "friend/agents/builder"
+    lib.upsert("mine.png", kind="image", scope=me, label="bridge", query="bridge")
+    lib.upsert("theirs.png", kind="image", scope=friend, label="theirs")
+    # make my asset private → it drops out of another scope's reads
+    ok, err = lib.update("mine.png", scope=me, public=False)
+    assert ok and err is None and lib.get("mine.png")["public"] == 0
+    assert "mine.png" not in {r["id"] for r in lib.query("SELECT id FROM assets", scope=friend)}
+    # share it again
+    lib.update("mine.png", scope=me, public=True)
+    assert "mine.png" in {r["id"] for r in lib.query("SELECT id FROM assets", scope=friend)}
+    # I can't change someone else's asset (only shows up via public reads)
+    ok, err = lib.update("theirs.png", scope=me, public=False)
+    assert not ok and "scope" in err
+
+
 def test_reads_return_own_scope_plus_public(tmp_path):
     """Cross-scope public reads (co-location §8a): a caller sees its own rows + any user's public rows,
     but never another scope's private rows — across query/search/find."""

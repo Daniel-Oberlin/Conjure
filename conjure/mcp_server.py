@@ -460,21 +460,25 @@ async def update_asset(
     kind: Optional[str] = None,
     rating: Optional[int] = None,
     favorite: Optional[bool] = None,
+    public: Optional[bool] = None,
     default_for: Optional[str] = None,
     reject_for: Optional[str] = None,
 ) -> str:
     """Update a library asset (one tool for all catalog fixes/curation). Pass only what you want to change.
+    You can only change your OWN assets (one in your library scope).
 
     label/query/tags/notes: the asset's description + keywords + freeform note. kind: re-tag it
     (image | model | skybox | grounded_skybox | audio | photo) — e.g. mark a skybox as grounded.
-    rating (0–5)/favorite: your rating. default_for: make this the default for a phrase ('dog' →
+    rating (0–5)/favorite: your rating. public: catalog visibility — assets are PUBLIC by default (others
+    on this server can discover and reuse them); set public=False to make one private (only you can find
+    it), or public=True to share it again. default_for: make this the default for a phrase ('dog' →
     reused when the user says 'add a dog'). reject_for: a query this asset should NEVER match again
     (e.g. an x-wing wrongly returned for 'starship enterprise'). Covers 'remember this as my favorite',
-    'make this my default dog', 'relabel that', 'reject it for X'.
+    'make this my default dog', 'relabel that', 'reject it for X', 'make that image private'.
     """
     out = await _post("/update_asset", _body(
         id=id, scope=SCOPE, label=label, query=query, tags=tags, notes=notes, kind=kind,
-        rating=rating, favorite=favorite, default_for=default_for, reject_for=reject_for))
+        rating=rating, favorite=favorite, public=public, default_for=default_for, reject_for=reject_for))
     if not out.get("ok"):
         return f"Couldn't update {id!r}: {out.get('error', 'unknown error')}."
     return "Updated."

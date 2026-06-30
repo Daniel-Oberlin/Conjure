@@ -392,11 +392,13 @@ class AssetLibrary:
 
     def update(self, id: str, *, scope: Optional[str] = None, kind: Optional[str] = None,
                default_for: Optional[str] = None, reject_for: Optional[str] = None,
-               favorite: Optional[bool] = None, **fields: Any) -> tuple[bool, Optional[str]]:
+               favorite: Optional[bool] = None, public: Optional[bool] = None,
+               **fields: Any) -> tuple[bool, Optional[str]]:
         """The single invariant-preserving mutator (subsumes the old correct_asset/annotate_asset). Sets
         scalar fields (label/query/tags/notes/rating via upsert → FTS synced), `kind` (→ vector kind
-        synced), a `default_for` alias, and/or a `reject_for` exclusion. If `scope` is given, the asset
-        must be in it. Returns (ok, error)."""
+        synced), `public` (catalog visibility: others' reads see your public assets — co-location §8a),
+        a `default_for` alias, and/or a `reject_for` exclusion. If `scope` is given, the asset must be in
+        it (you can only curate your OWN assets). Returns (ok, error)."""
         rec = self.get(id)
         if rec is None:
             return False, f"no asset {id!r}"
@@ -405,6 +407,8 @@ class AssetLibrary:
         sets = {k: v for k, v in fields.items() if k in _UPSERT_COLS and v is not None}
         if favorite is not None:
             sets["favorite"] = 1 if favorite else 0
+        if public is not None:
+            sets["public"] = 1 if public else 0
         if sets:
             self.upsert(id, **sets)
         if kind is not None:
