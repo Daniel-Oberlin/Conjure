@@ -6,6 +6,33 @@ delete them here) when done.
 
 ---
 
+## Multi-observer room fusion — refine the shared model from every headset (server-side)
+
+**Status:** future feature · noted 2026-06-30 (deferred while building register-only guests, co-location §5)
+
+**Idea:** today the room geometry has a single writer — the authority (space owner) captures + posts; a
+guest **localizes against a frozen copy** of that geometry and never contributes (register-only — see
+`room-model.md` §8b). That's correct for co-location: the shared `_ref` constellation *defines* the shared
+frame, so a guest mutating it locally would only desync (its `/room` posts are 403'd, so the change never
+reaches the authority) and feed a drift loop. But a guest is *also* observing the same real room, so its
+observations could legitimately **improve** the one model (better extents, corrected drift, "the room
+changed since capture").
+
+**Why it must be server-side (not local `_ref` mutation):** to stay co-located there must remain exactly
+**one** authoritative model, **one** frame, and **one** id-owner. So fusion flows through the single
+writer: guest sends observations → **server** fuses them into the one model → re-broadcasts → *both*
+headsets re-seed `_ref` from the updated geometry. Local mutation isn't a cheap version of this — it's
+silent divergence + feedback drift (the exact bug register-only fixes).
+
+**Sketch:** a guest posts its registered observations to a NON-authoritative endpoint (e.g.
+`/room/observe`, not `/room`); the server fuses (weighted update of surface poses/extents, conservative
+mint of genuinely-new surfaces) into the authoritative doc and broadcasts. Needs: confidence weighting,
+guard against a mis-registered guest corrupting the model, and the authority's right to override.
+
+**Open decisions:** trust model (does a guest need the owner's consent to refine?); fuse continuously vs.
+on explicit "rescan together"; how to reconcile a genuinely *changed* room (furniture moved) vs. noise.
+Defer until register-only co-location is solid and the need is real.
+
 ## On-surface placed content is stranded by a room re-registration
 
 **Status:** open · noted 2026-06-30 (diagnosed from daniel's `new-room`)
