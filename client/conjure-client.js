@@ -423,15 +423,97 @@
     console.log("[conjure] patch rev", patch.rev, "from", patch.origin);
   }
 
+  // The logged-in user, from the /tunnel/<user> route (which redirects with ?user=). Default otherwise.
+  function currentUser() { return new URLSearchParams(location.search).get("user") || ""; }
+
+  // A simple info banner (info color), e.g. when a guest is refused a private world (Phase 4 §3).
+  function showInfo(text) {
+    var el = document.getElementById("conjure-info");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "conjure-info";
+      el.style.cssText = "position:fixed;top:0;left:0;right:0;padding:12px;text-align:center;z-index:9999;"
+        + "font:16px/1.4 sans-serif;color:" + INFO_COLOR + ";background:rgba(0,0,0,0.72);";
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+  }
+
+  // --- presence (Phase 4 §7): show the other users as a sphere-on-box avatar, co-located in the shared
+  // reference frame (#world-root), and broadcast our own head/camera pose ~10 Hz. Pose is expressed in
+  // #world-root's local frame so it aligns for everyone (AR: world-root is parked at the registered
+  // frame; desktop: world-root is at identity, so it's just the camera pose).
+  var socket = null, R_AV = 0.13, GAP_AV = 0.03, worldOwner = null, guestSpawned = false;
+
+  // Desktop-guest spawn (Phase 4 §6): a guest viewing on a desktop browser (no AR) isn't physically in
+  // the space, so drop them just to the OWNER's right the first time the owner's pose arrives, then let
+  // wasd/mouse take over. Desktop only (in AR the headset places you); #world-root is identity on
+  // desktop, so the owner's world-frame pose is also the scene-frame position for the rig.
+  function maybeSpawnGuest(ownerPose) {
+    if (guestSpawned || !ownerPose || !ownerPose.p) return;
+    var me = currentUser();
+    if (!me || me === worldOwner) return;                 // only a *guest* spawns relative to the owner
+    var sc = document.querySelector("a-scene");
+    if (sc && sc.is && sc.is("vr-mode")) return;          // AR session → the headset positions you
+    var rig = document.getElementById("rig"); if (!rig) return;
+    var THREE = AFRAME.THREE;
+    var q = new THREE.Quaternion(ownerPose.q[0], ownerPose.q[1], ownerPose.q[2], ownerPose.q[3]);
+    var right = new THREE.Vector3(1, 0, 0).applyQuaternion(q); right.y = 0; right.normalize();
+    var p = ownerPose.p;
+    rig.object3D.position.set(p[0] + right.x * 1.2, 0, p[2] + right.z * 1.2);   // 1.2 m to the owner's right
+    guestSpawned = true;
+  }
+
+  function setAvatar(user, pose) {
+    if (!pose || !pose.p) return;
+    var wr = document.getElementById("world-root"); if (!wr) return;
+    var el = document.getElementById("avatar-" + user);
+    if (!el) {
+      el = document.createElement("a-entity"); el.id = "avatar-" + user;
+      el.innerHTML = '<a-sphere class="head" radius="' + R_AV + '" color="' + INFO_COLOR + '"></a-sphere>'
+        + '<a-box class="body" width="0.26" depth="0.26" color="' + INFO_COLOR + '" opacity="0.85"></a-box>';
+      wr.appendChild(el);
+    }
+    var hx = pose.p[0], hy = pose.p[1], hz = pose.p[2], h = Math.max(0.1, hy - R_AV - GAP_AV);
+    el.querySelector(".head").setAttribute("position", hx + " " + hy + " " + hz);
+    var body = el.querySelector(".body");
+    body.setAttribute("height", h);
+    body.setAttribute("position", hx + " " + (h / 2) + " " + hz);
+  }
+  function removeAvatar(user) {
+    var el = document.getElementById("avatar-" + user);
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+  }
+  function presenceTick() {
+    if (!socket || socket.readyState !== 1) return;
+    var sc = document.querySelector("a-scene"), wr = document.getElementById("world-root");
+    var cam = sc && sc.camera;
+    if (!cam || !wr) return;
+    var THREE = AFRAME.THREE, p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    cam.updateMatrixWorld();
+    var m = new THREE.Matrix4().multiplyMatrices(   // camera world pose → world-root local frame
+      new THREE.Matrix4().copy(wr.object3D.matrixWorld).invert(), cam.matrixWorld);
+    m.decompose(p, q, s);
+    socket.send(JSON.stringify({ type: "presence", pose: { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] } }));
+  }
+
   function connect() {
     var proto = location.protocol === "https:" ? "wss" : "ws";
-    var ws = new WebSocket(proto + "://" + location.host + "/ws");
-    ws.onopen = function () { console.log("[conjure] connected"); };
+    var u = currentUser();
+    var ws = new WebSocket(proto + "://" + location.host + "/ws" + (u ? "?user=" + encodeURIComponent(u) : ""));
+    socket = ws;
+    ws.onopen = function () { console.log("[conjure] connected" + (u ? " as " + u : "")); };
     ws.onclose = function () { console.log("[conjure] disconnected — retrying in 2s"); setTimeout(connect, 2000); };
     ws.onmessage = function (ev) {
       var msg = JSON.parse(ev.data);
-      if (msg.type === "snapshot") applySnapshot(msg.world);
+      if (msg.type === "snapshot") { worldOwner = msg.owner || worldOwner; applySnapshot(msg.world); }
       else if (msg.type === "patch") applyPatch(msg.patch);
+      else if (msg.type === "info") showInfo(msg.msg);    // e.g. "'<world>' is private — ask <owner>…"
+      else if (msg.type === "presence") {
+        setAvatar(msg.user, msg.pose);
+        if (msg.user === worldOwner) maybeSpawnGuest(msg.pose);   // a guest drops in to the owner's right
+      }
+      else if (msg.type === "presence_leave") removeAvatar(msg.user);
       else if (msg.type === "recapture") {                // realign request → re-capture the room
         var sc = document.querySelector("a-scene");
         var rc = sc && sc.components && sc.components["room-capture"];
@@ -694,7 +776,8 @@
         var boundary = null;
         if (floor) { delete floor._area; boundary = floor; }
         fetch("/room", {
-          method: "POST", headers: { "Content-Type": "application/json" },
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Conjure-User": currentUser() || "" },
           body: JSON.stringify({ client_id: this.clientId, surfaces: surfaces, boundary: boundary, replace: true }),
         }).catch(function (e) { console.warn("[conjure] room post failed", e); });
       },
@@ -736,21 +819,25 @@
     el.textContent = el.textContent.trim() + (m ? "  ✓ js v" + m[1] : "  ✓ js");
   }
 
-  // Report the headset's coarse location once so the server can stamp / pick the physical space it
-  // belongs to (docs/spaces-and-users-plan.md §7). Best-effort: needs HTTPS + the user's permission;
-  // silently skipped if denied or unavailable (the space just stays un-geolocated).
+  // Report the headset's coarse location so the server can stamp / pick the physical space it belongs
+  // to (docs/spaces-and-users-plan.md §7). Fired only on ENTERING AR — a desktop viewer/guest isn't
+  // physically in a space, so it must NOT drive space selection (it just joins the active world).
+  // Best-effort: needs HTTPS + permission; silently skipped if denied or unavailable.
   function reportGeolocation() {
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(function (pos) {
       fetch("/geolocation", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lat: pos.coords.latitude, lon: pos.coords.longitude,
-                               accuracy: pos.coords.accuracy }),
+                               accuracy: pos.coords.accuracy, user: currentUser() || undefined }),
       }).catch(function () {});
     }, function () {}, { maximumAge: 600000, timeout: 10000 });
   }
 
   window.addEventListener("load", function () {
-    connect(); setupARButton(); markVersion(); reportGeolocation();
+    connect(); setupARButton(); markVersion();
+    setInterval(presenceTick, 100);                 // ~10 Hz head-pose broadcast (presence)
+    var sc = document.querySelector("a-scene");      // report location only from a real AR session
+    if (sc) sc.addEventListener("enter-vr", reportGeolocation);
   });
 })();

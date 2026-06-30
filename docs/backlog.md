@@ -6,6 +6,50 @@ delete them here) when done.
 
 ---
 
+## Semantic (embedding) matches are capped at "weak" — calibrate distance → tier
+
+**Status:** open · noted 2026-06-30
+
+**Symptom:** "I made an image of a key, but reuse shows it as a **weak** match." Embedding search
+already *surfaces* the right asset (cross-modal text→image), but it can never be a confident/strong hit.
+
+**Why (by design, today):** `library.find()` decides the confidence tier from **match TYPE**, not the
+embedding distance: `strong = any(match in ("alias","exact"))`. A `vector` hit (like an `fts` hit) is
+never in that set, so semantic similarity is structurally capped at **weak**, however close it is. The
+`distance` is computed and returned but never thresholded. This is intentional — strong = "safe to
+auto-reuse without asking," reserved for *intent* signals (you typed the stored description verbatim, or
+you pinned the phrase via `default_for`) — semantic "near" doesn't reliably mean "the asset you meant" (a
+"key" query is also near a padlock / door handle / keyboard). A generated image stores `label = prompt =`
+the full generation prompt, so a short later query ("key") only ever hits via FTS/vector ⇒ weak.
+
+Note the doc/impl wrinkle: `vector_search`'s docstring claims "the reuse-tier layer maps distance →
+strong/weak/none," but `find()` never maps distance — only match-type. The calibrated mapping was never
+built.
+
+**Proposed fix (future):** a **calibrated** distance→tier rule — e.g. "a `vector` hit with distance < X
+⇒ strong" (and a mid band ⇒ weak). Needs empirical tuning of X on real catalog data (and likely
+per-kind, since distances aren't calibrated across categories), so treat it as **opt-in** until it's seen
+to behave. Until then, the workaround is to give an asset real intent: `update_asset(id, default_for="key")`
+(pin → alias/strong) or `update_asset(id, label="key")` (exact/strong). Possible adjacent nudge: when the
+user clearly *names* what they're generating ("make me a key"), auto-pin `default_for` so it's instantly
+strong-reusable (behavioral — needs a live test).
+
+**Open decision:** calibrate a global X vs. per-kind thresholds; and whether to auto-pin on naming.
+
+## World index for cross-user public discovery (scale the existing walk)
+
+**Status:** open (perf only) · noted 2026-06-29 · **walk shipped 2026-06-30**
+
+**Shipped:** cross-user discovery now works — `WorldRepository.list_public()` scans every
+`<root>/*/agents/*` dir, reads each doc, and returns the public ones tagged by owner; `/worlds/list`
+returns them as `available`, and `switch_world(name, owner=…)` enters another user's public world. This
+is the "filesystem walk + read each" approach.
+
+**Remaining (perf):** the walk reads *every* world doc on each `list_worlds` call — fine at small scale,
+won't scale. When discovery gets heavy, add a derived **world index** — a catalog table of
+`owner / name / public / space` from the docs (docs stay source of truth), kept in sync on world
+save/delete — turning the walk into one indexed lookup. Defer until it actually hurts.
+
 ## Director claims a surface restyle is done without calling the tool ("the couch")
 
 **Status:** open · noticed 2026-06-26 · **CONFIRMED hallucination** (repro'd both ways)
@@ -117,21 +161,6 @@ unit-tested) and risks nudging other behaviors, so it needs a live test pass.
 
 **Lean:** (c) is the high-leverage move if these "nudge didn't stick" papercuts keep recurring;
 otherwise (a) is defensible.
-
-## `search_library` is unscoped while the maintenance tools are scoped
-
-**Status:** open · noticed 2026-06-25
-
-**Symptom:** `search_library` (reuse) returns assets from *all* scopes, but `query_assets`/`update_asset`/
-`delete_asset` see only the caller's scope. So the two can disagree on what exists (live: search found
-2 apples, query found 1), which confused the director. Today it's masked because everything ends up in
-`private/builder` (single agent — every row is written with that scope at ingest), but it's a real
-inconsistency.
-
-**Fix:** scope `library.find()` too — thread the agent's scope through `/library/search` →
-`find()`/`search()`/`vector_search()` (add `AND scope=?` to each stage) and the `search_library` tool
-(carry `SCOPE` like the maintenance tools). Then reuse and maintenance see the same per-agent set.
-Matters for multi-agent; deferred until then.
 
 ## Rotated/placed objects clip through the floor
 

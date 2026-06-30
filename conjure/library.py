@@ -291,27 +291,34 @@ class AssetLibrary:
             self._db.commit()
 
     def vector_search(self, query_vec: list[float], *, kind: Optional[str] = None,
-                      limit: int = 20) -> list[dict]:
+                      scope: Optional[str] = None, limit: int = 20) -> list[dict]:
         """KNN over the embedding space; each result carries `distance` (L2 on unit vectors → cosine
         order) and `match="vector"`. Empty list if vectors aren't available/populated. The reuse-tier
-        layer (Phase 2) maps distance → strong/weak/none."""
+        layer (Phase 2) maps distance → strong/weak/none. If `scope` is given, results are limited to
+        the caller's own scope ∪ `public=1` (visibility lives on the row, not the vector index, so we
+        over-fetch KNN and filter — co-location-plan.md §8a)."""
         if not self._vec or not query_vec:
             return []
+        k = limit if scope is None else limit * 4       # over-fetch so private rows don't crowd out visible ones
         with self._lock:
             if self._db.execute("SELECT dim FROM vec_meta LIMIT 1").fetchone() is None:
                 return []
             q = ("SELECT asset_id AS id, distance FROM assets_vec WHERE embedding MATCH ? "
                  + ("AND kind=? " if kind else "") + "ORDER BY distance LIMIT ?")
-            args: list[Any] = [serialize_float32(query_vec)] + ([kind] if kind else []) + [limit]
+            args: list[Any] = [serialize_float32(query_vec)] + ([kind] if kind else []) + [k]
             hits = self._db.execute(q, args).fetchall()
             out = []
             for h in hits:
                 a = self._db.execute("SELECT * FROM assets WHERE id=?", (h["id"],)).fetchone()
                 if a:
+                    if scope is not None and a["scope"] != scope and not a["public"]:
+                        continue                        # another scope's private asset — not visible to this caller
                     d = dict(a)
                     d["distance"] = h["distance"]
                     d["match"] = "vector"
                     out.append(d)
+                    if len(out) >= limit:
+                        break
         return out
 
     # ---- reads --------------------------------------------------------------------------------
@@ -385,11 +392,13 @@ class AssetLibrary:
 
     def update(self, id: str, *, scope: Optional[str] = None, kind: Optional[str] = None,
                default_for: Optional[str] = None, reject_for: Optional[str] = None,
-               favorite: Optional[bool] = None, **fields: Any) -> tuple[bool, Optional[str]]:
+               favorite: Optional[bool] = None, public: Optional[bool] = None,
+               **fields: Any) -> tuple[bool, Optional[str]]:
         """The single invariant-preserving mutator (subsumes the old correct_asset/annotate_asset). Sets
         scalar fields (label/query/tags/notes/rating via upsert → FTS synced), `kind` (→ vector kind
-        synced), a `default_for` alias, and/or a `reject_for` exclusion. If `scope` is given, the asset
-        must be in it. Returns (ok, error)."""
+        synced), `public` (catalog visibility: others' reads see your public assets — co-location §8a),
+        a `default_for` alias, and/or a `reject_for` exclusion. If `scope` is given, the asset must be in
+        it (you can only curate your OWN assets). Returns (ok, error)."""
         rec = self.get(id)
         if rec is None:
             return False, f"no asset {id!r}"
@@ -398,6 +407,8 @@ class AssetLibrary:
         sets = {k: v for k, v in fields.items() if k in _UPSERT_COLS and v is not None}
         if favorite is not None:
             sets["favorite"] = 1 if favorite else 0
+        if public is not None:
+            sets["public"] = 1 if public else 0
         if sets:
             self.upsert(id, **sets)
         if kind is not None:
@@ -431,9 +442,10 @@ class AssetLibrary:
         return True, None
 
     def query(self, sql: str, *, scope: str, limit: int = 200) -> list[dict]:
-        """Read-only SQL over the catalog, **scoped to `scope`**: runs on a fresh read-only connection
-        where `assets` is a temp view filtered to the scope (so the caller can only see its own rows),
-        with SELECT/PRAGMA-only + single-statement validation. Raises ValueError on a disallowed query."""
+        """Read-only SQL over the catalog, **scoped to `scope` ∪ `public=1`**: runs on a fresh read-only
+        connection where `assets` is a temp view of the caller's own rows plus every world-readable row
+        (a friend on the same server discovers your public assets — co-location-plan §8a), with
+        SELECT/PRAGMA-only + single-statement validation. Raises ValueError on a disallowed query."""
         s = sql.strip().rstrip(";").strip()
         low = s.lower()
         if not (low.startswith("select") or low.startswith("pragma")):
@@ -447,7 +459,8 @@ class AssetLibrary:
         ro = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
         ro.row_factory = sqlite3.Row
         try:
-            ro.execute(f"CREATE TEMP VIEW assets AS SELECT * FROM main.assets WHERE scope = '{scope}'")
+            ro.execute(f"CREATE TEMP VIEW assets AS SELECT * FROM main.assets "
+                       f"WHERE scope = '{scope}' OR public = 1")
             return [dict(r) for r in ro.execute(s).fetchmany(limit)]
         finally:
             ro.close()
@@ -464,12 +477,17 @@ class AssetLibrary:
             self._db.commit()
 
     def search(self, text: Optional[str] = None, *, kind: Optional[str] = None,
-               limit: int = 20) -> list[dict]:
+               scope: Optional[str] = None, limit: int = 20) -> list[dict]:
         """Phase-0 staged lookup: a user **alias** override first, then exact intent match, then FTS5
         keyword match (label/prompt/query/notes/tags); recency-ordered. (The confidence-tier + vector
-        stages layer on top in Phases 1–2.) Each result carries a `match` label of how it was found."""
+        stages layer on top in Phases 1–2.) Each result carries a `match` label of how it was found.
+        If `scope` is given, results are limited to the caller's own scope ∪ `public=1` rows (a friend
+        on the same server discovers your public assets, not your private ones — co-location-plan §8a)."""
         results: list[dict] = []
         seen: set[str] = set()
+        sc = " AND (scope=? OR public=1)" if scope else ""        # own scope ∪ public (alias for join tables: a.*)
+        sca = " AND (a.scope=? OR a.public=1)" if scope else ""
+        scv: list[Any] = [scope] if scope else []
 
         def add(rows, how: str) -> None:
             for r in rows:
@@ -482,10 +500,8 @@ class AssetLibrary:
 
         with self._lock:
             if not text:
-                q, args = "SELECT * FROM assets", []
-                if kind:
-                    q += " WHERE kind=?"
-                    args.append(kind)
+                q = "SELECT * FROM assets WHERE 1=1" + (" AND kind=?" if kind else "") + sc
+                args: list[Any] = ([kind] if kind else []) + scv
                 q += " ORDER BY last_used DESC LIMIT ?"
                 args.append(limit)
                 add(self._db.execute(q, args).fetchall(), "recent")
@@ -493,10 +509,11 @@ class AssetLibrary:
 
             norm = normalize(text)
             # 1. alias override — "dog" → the pinned asset, ahead of everything else.
+            aargs: list[Any] = [norm] + ([kind] if kind else []) + scv
             alias_rows = self._db.execute(
                 "SELECT a.* FROM aliases al JOIN assets a ON a.id=al.asset_id WHERE al.alias=?"
-                + (" AND a.kind=?" if kind else ""),
-                (norm, kind) if kind else (norm,),
+                + (" AND a.kind=?" if kind else "") + sca,
+                aargs,
             ).fetchall()
             add(alias_rows, "alias")
 
@@ -507,6 +524,8 @@ class AssetLibrary:
             if kind:
                 q += " AND kind=?"
                 args.append(kind)
+            q += sc
+            args += scv
             add(self._db.execute(q + " ORDER BY favorite DESC, last_used DESC", args).fetchall(), "exact")
 
             # 3. FTS keyword match (now covers notes/tags too).
@@ -518,6 +537,8 @@ class AssetLibrary:
                 if kind:
                     fq += " AND a.kind=?"
                     fargs.append(kind)
+                fq += sca
+                fargs += scv
                 fq += " ORDER BY rank LIMIT ?"
                 fargs.append(limit)
                 try:
@@ -532,7 +553,7 @@ class AssetLibrary:
         self.add_relation(asset_id, normalize(query), "reject")
 
     def find(self, text: Optional[str] = None, *, query_vec: Optional[list[float]] = None,
-             kind: Optional[str] = None, limit: int = 20) -> dict:
+             kind: Optional[str] = None, scope: Optional[str] = None, limit: int = 20) -> dict:
         """The director-facing reuse query: staged match (alias → exact → FTS → vector), rejects
         filtered out, with a server-computed **confidence tier** so the LLM never thresholds a raw
         score. Returns {"candidates": [...], "confidence_tier": "strong"|"weak"|"none"}.
@@ -541,10 +562,10 @@ class AssetLibrary:
         - weak:   only fuzzy hits (keyword/semantic) — offer, don't assume.
         - none:   nothing — generate/fetch fresh.
         """
-        cands = self.search(text, kind=kind, limit=limit) if text else []
+        cands = self.search(text, kind=kind, scope=scope, limit=limit) if text else []
         seen = {c["id"] for c in cands}
         if query_vec:
-            for v in self.vector_search(query_vec, kind=kind, limit=limit):
+            for v in self.vector_search(query_vec, kind=kind, scope=scope, limit=limit):
                 if v["id"] not in seen:
                     seen.add(v["id"])
                     cands.append(v)

@@ -123,7 +123,7 @@ def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", 
 class Director:
     def __init__(self, settings: Settings, session, roster: dict[str, LLM], active: str,
                  tools: Optional[list[ToolSpec]] = None, prompt: str = DIRECTOR_PROMPT,
-                 agent: Optional[AgentDef] = None):
+                 agent: Optional[AgentDef] = None, user: str = DEFAULT_USER):
         self._settings = settings
         self._session = session          # MCP ClientSession (or a stand-in in tests)
         self.roster = roster
@@ -131,6 +131,7 @@ class Director:
         self._tools = tools or []
         self._prompt = prompt
         self.agent = agent               # the loaded agent def (None in lightweight tests)
+        self.user = user                 # the logged-in user this director acts as (owns its spaces/worlds)
         self.transcript: list[Turn] = []
 
     @classmethod
@@ -176,7 +177,7 @@ class Director:
                     tools = [ToolSpec(t.name, t.description or "", t.inputSchema)
                              for t in (await session.list_tools()).tools]
                     yield cls(settings, session, roster, active, tools,
-                              prompt=agentdef.prompt, agent=agentdef)
+                              prompt=agentdef.prompt, agent=agentdef, user=user)
         finally:
             if close_errlog is not None:
                 close_errlog.close()
@@ -189,7 +190,26 @@ class Director:
             f"meant for you. In the transcript, assistant lines prefixed like [Name] were said by "
             f"another AI — unprefixed assistant lines are yours; you may reference what they said."
         ) if others else ""
-        return self._prompt.format(name=name) + roster_line
+        identity_line = (
+            f" The logged-in user you act for is '{self.user}' — if asked who is logged in / who they "
+            f"are, that's the answer. Worlds and spaces belong to whoever created them. You can freely "
+            f"create and switch worlds (everyone present comes along) and edit any world you own. You "
+            f"can ALSO see and enter other users' PUBLIC worlds — list_worlds shows them under 'other "
+            f"users' public worlds', and switch_world(name, owner='<their-username>') takes you there — "
+            f"but you can't edit a world you don't own. Worlds are PUBLIC by default; make one private "
+            f"(or public again) with set_world_visibility(public=…), or create a private one via "
+            f"new_world(name, public=False). If a tool refuses an edit to another user's world, relay it "
+            f"plainly; never invent a name collision or claim a capability (like private worlds) is absent. "
+            f"Library ASSETS work the same way: public by default (others on this server can reuse them), "
+            f"and you can flip one with update_asset(id, public=…) — but only for assets YOU own; another "
+            f"user's asset that merely shows up in your searches stays theirs. An asset's owner is the user "
+            f"in its `scope` column (the part before '/agents/'), readable via query_assets — so state who "
+            f"owns one from that rather than guessing or saying you can't tell. A PUBLIC world can only "
+            f"contain PUBLIC assets (so a visitor sees the whole scene), so placing your private asset into "
+            f"a public world — or making a world public — publishes the assets it uses; the tool tells you "
+            f"when it does, and you should pass that along."
+        )
+        return self._prompt.format(name=name) + roster_line + identity_line
 
     async def _log(self, tag: str, msg: str) -> None:
         """Best-effort diagnostic line → the world server's /client_log (same temp/conjure.log + console

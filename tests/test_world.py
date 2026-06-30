@@ -110,6 +110,20 @@ def test_repository_save_list_load_delete(tmp_path):
     assert repo.list("private/builder") == []
 
 
+def test_repository_list_public_discovers_across_users(tmp_path):
+    from conjure.world import WorldRepository
+    repo = WorldRepository(tmp_path)
+    repo.save("daniel/agents/builder", "default", WorldStore(_doc()))                 # daniel, public (default)
+    repo.save("friend/agents/builder", "test-world", WorldStore(_doc()))              # friend, public
+    priv = _doc(); priv["environment"]["public"] = False
+    repo.save("friend/agents/builder", "secret", WorldStore(priv))                    # friend, private
+    avail = repo.list_public(exclude_scope="friend/agents/builder")                   # friend looks outward
+    assert {(w["owner"], w["name"]) for w in avail} == {("daniel", "default")}        # only daniel's public
+    seen = repo.list_public()                                                         # global view
+    assert ("friend", "test-world") in {(w["owner"], w["name"]) for w in seen}
+    assert ("friend", "secret") not in {(w["owner"], w["name"]) for w in seen}        # private excluded
+
+
 def test_repository_scope_isolation(tmp_path):
     from conjure.world import WorldRepository
     repo = WorldRepository(tmp_path)

@@ -16,6 +16,7 @@ class FakeDirector:
         self.active = "Claude"
         self.agent = type("A", (), {"name": "builder"})()
         self._tools = [object(), object()]
+        self.user = "daniel"
         self.handled = []
 
     async def handle(self, text, *, on_text=None, on_tool=None):
@@ -109,6 +110,6 @@ async def test_help_and_llms_list_without_touching_the_agent():
 
 def test_prompt_reflects_mode():
     sh, d, out, on_text = _shell()
-    assert sh.prompt() == "conjure:builder.claude> "   # agent-primary; the LLM can vary
+    assert sh.prompt() == "conjure:daniel.builder.claude> "   # user · agent-primary; the LLM can vary
     sh.in_shell = True
     assert sh.prompt() == "conjure:shell> "

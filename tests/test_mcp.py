@@ -136,6 +136,27 @@ async def test_update_asset_tool_forwards_fields_with_scope(monkeypatch):
 
 
 @respx.mock
+async def test_update_asset_tool_forwards_public(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/update_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await _tool("update_asset")(id="pear.png", public=False)
+    assert json.loads(route.calls.last.request.content) == {
+        "id": "pear.png", "scope": "private/builder", "public": False}
+
+
+@respx.mock
+async def test_set_world_visibility_tool_forwards_and_reports_published(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    route = respx.post("http://world/worlds/visibility").mock(return_value=httpx.Response(200, json={
+        "ok": True, "world": "home", "public": True, "published_assets": ["a pear"]}))
+    out = await _tool("set_world_visibility")(public=True)
+    assert json.loads(route.calls.last.request.content) == {"public": True, "scope": "private/builder"}
+    assert "public" in out and "a pear" in out               # reports the auto-published assets to the user
+
+
+@respx.mock
 async def test_delete_asset_tool_forwards_id_with_scope(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     monkeypatch.setattr(m, "SCOPE", "private/builder")
@@ -343,7 +364,7 @@ async def test_new_world_tool_forwards_name_with_scope(monkeypatch):
         return_value=httpx.Response(200, json={"ok": True, "world": "castle-quest/dining-hall"}))
     out = await _tool("new_world")(name="Castle Quest/Dining Hall")
     assert json.loads(route.calls.last.request.content) == {
-        "name": "Castle Quest/Dining Hall", "scope": "private/builder"}
+        "name": "Castle Quest/Dining Hall", "scope": "private/builder", "public": True}
     assert "castle-quest/dining-hall" in out
 
 

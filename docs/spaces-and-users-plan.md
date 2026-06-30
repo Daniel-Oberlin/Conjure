@@ -97,6 +97,10 @@ user. Every item carries a `public: bool` flag (§4).
 
 ## 8. Co-location
 
+> **Detailed Phase-4 design: `co-location-plan.md`** — per-connection user identity, the public-join
+> gate, authority = space owner, presence avatars, the matcher-robustness work, **and a desktop-browser
+> guest mode** (no AR) for testing co-location with a single headset.
+
 - **Join flow.** A guest opens the **owner's** running server via the tunnel under their *own* name
   (`…/tunnel/bob` on Alice's server) → Alice's server now holds two connections: owner `alice`
   (authority) + guest `bob`. If the active world is **public**, Bob receives the snapshot (space
@@ -140,8 +144,13 @@ One-time, idempotent:
 4. **Co-location.** Guest join (public-only, else info message); guest registers to served geometry;
    presence avatars; matcher robustness. *Touches:* server (multi-connection users, relay), client
    (presence render, robustness).
-5. **Visibility polish.** Default-public + inheritance + public-uses-public guard + "make a private
-   world". *Touches:* server (access predicate + invariant), prompt.
+5. **Visibility polish.** ✅ DONE. Default-public + inheritance (new assets inherit the active world's
+   visibility, first-insert only) + "make a private world" (set_world_visibility / new_world public=…) +
+   per-asset toggle (update_asset public=…) + the **public-uses-public guard**: a public world may
+   reference only public assets, enforced by auto-publishing the owner's private assets when they're
+   placed into a public world OR when a world is made public (the director relays the notice). Reachable
+   only for the owner's own assets (another user's private asset can't be read to place), so no privacy
+   leak. *Touched:* server (`_ensure_referenced_public` / `_publish_world_assets`), MCP tools, prompt.
 
 ## 11. Open questions / risks
 

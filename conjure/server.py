@@ -21,13 +21,14 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -91,6 +92,7 @@ def _agent_world_config(scope: str) -> dict:
 def _new_world_store(scope: str) -> WorldStore:
     """A fresh world: the blank starter + the owning agent's on_create constructor (run once)."""
     s = WorldStore.load(SAMPLE_WORLD)
+    s.doc.setdefault("environment", {})["public"] = True          # worlds are public by default (§4)
     ops: list[dict] = []
     for cmd in _agent_world_config(scope).get("on_create", []):
         fn = _WORLD_COMMANDS.get(cmd.get("cmd"))
@@ -161,7 +163,7 @@ def _boot_world() -> tuple[str, str, WorldStore]:
 
 
 settings = get_settings()  # loads .env
-clients: set[WebSocket] = set()
+clients: "dict[WebSocket, str]" = {}     # connected render clients → their user (owner or guest)
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
@@ -346,6 +348,61 @@ async def _lifespan(app):
 
 app = FastAPI(title="Conjure", version="0.0.1", lifespan=_lifespan)
 
+# Edit-rights follow ownership (co-location-plan.md §4): only the ACTIVE world's owner may change the
+# scene content of the shared world. Enforced server-side, never via the prompt — the MCP client and the
+# headset attach an `X-Conjure-User` header; a non-owner hitting these routes gets 403. A *missing*
+# header (the direct dev CLI) is treated as the owner (interim convenience). Reads, scoped catalog ops,
+# procurement, and **world navigation** (`/worlds/new`, `/worlds/switch`) are NOT gated: anyone may
+# create or switch worlds and everyone comes along — but a created/switched-into world is in the caller's
+# OWN scope, so the caller becomes its owner and only *then* can edit it. This lets a guest spin up and
+# build their own worlds with everyone present, while another user's curated world stays protected. (A
+# consent/permission model to relax further — co-edit someone else's world — is a later tightening.)
+_OWNER_ONLY_PATHS = {
+    "/reset", "/patch", "/room", "/texture_surface", "/style_surface", "/place_asset",
+    "/place_cached_asset", "/place_image", "/set_skybox", "/set_grounded_skybox",
+    "/edit_image", "/outpaint_image", "/skybox_from_image",
+}
+
+
+@app.middleware("http")
+async def _owner_only_writes(request, call_next):
+    if request.url.path in _OWNER_ONLY_PATHS:
+        who = request.headers.get("X-Conjure-User")
+        owner = active_scope.split("/", 1)[0]
+        if who and who != owner:
+            return JSONResponse(status_code=403, content={
+                "ok": False, "error": f"This world belongs to {owner}; only the owner can change it."})
+    return await call_next(request)
+
+
+# Asset ownership: a created asset belongs to WHOEVER made it (the caller), not the default user. The MCP
+# client sends its full scope as `X-Conjure-Scope`; a pure-ASGI middleware stashes it in a ContextVar
+# that the ingest paths (_store_image, model catalog) read — so guest's bridge image is owned by guest,
+# and guest can curate it (visibility, relabel). A missing header (direct dev CLI) ⇒ DEFAULT_SCOPE.
+_caller_scope: ContextVar[str] = ContextVar("caller_scope", default=DEFAULT_SCOPE)
+
+
+class _ScopeFromHeader:
+    """Pure-ASGI middleware (runs in the endpoint's own task, so the ContextVar reliably propagates —
+    unlike a BaseHTTPMiddleware, which would run the endpoint in a separate task)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            val = dict(scope.get("headers") or {}).get(b"x-conjure-scope")
+            token = _caller_scope.set(val.decode() if val else DEFAULT_SCOPE)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _caller_scope.reset(token)
+        else:
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(_ScopeFromHeader)
+
 # Durability: a background task writes the active world to its file whenever its rev advances. Polling
 # debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one write — and it
 # touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
@@ -427,6 +484,71 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
     }}
 
 
+def _inherit_visibility(asset_id: str) -> dict:
+    """`{"public": 0|1}` for a NEW asset, inherited from the active world's visibility (spaces-and-users
+    §4: created in a private world ⇒ private). Empty dict if the asset already exists — never overwrite a
+    visibility the owner set after the fact."""
+    if library.get(asset_id) is not None:
+        return {}
+    world_public = bool((store.doc.get("environment") or {}).get("public", True)) if store else True
+    return {"public": 1 if world_public else 0}
+
+
+def _ensure_referenced_public(asset_id: str) -> Optional[str]:
+    """Public-uses-public invariant (spaces-and-users §4): a public world may reference only public
+    assets, so a visitor can load the whole scene. Placing one of YOUR OWN private assets into a public
+    world publishes it (you're sharing it by placing it) and returns a notice for the director to relay;
+    no-op in a private world, or for an already-public asset / another user's asset."""
+    if store is None or not bool((store.doc.get("environment") or {}).get("public", True)):
+        return None                                   # private world ⇒ anything goes
+    rec = library.get(asset_id)
+    owner = active_scope.split("/", 1)[0]
+    if rec and not rec.get("public", 1) and (rec.get("scope") or "").split("/", 1)[0] == owner:
+        library.update(asset_id, public=True)
+        return f"Note: published your private asset '{rec.get('label') or asset_id}' so it stays visible " \
+               f"to anyone in this public world."
+    return None
+
+
+def _with_notice(out: dict, notice: Optional[str]) -> dict:
+    """Attach a public-uses-public notice to a response dict (so the MCP tool can relay it), if any."""
+    if notice:
+        out["notice"] = notice
+    return out
+
+
+def _referenced_asset_ids(doc: dict) -> set[str]:
+    """Every catalog asset id a world doc references — any '/assets/<id>' string anywhere in it (entity
+    materials, gltf-model, skybox src). A schema-agnostic walk, so new reference sites are covered free."""
+    ids: set[str] = set()
+
+    def walk(x):
+        if isinstance(x, str):
+            if "/assets/" in x:
+                ids.add(x.split("/assets/", 1)[1].split("/")[0].split("?")[0])
+        elif isinstance(x, dict):
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    walk(doc)
+    return ids
+
+
+def _publish_world_assets(doc: dict, owner: str) -> list[str]:
+    """Publish any of `owner`'s PRIVATE assets the world references (public-uses-public). Used when a
+    world is made public. Returns the labels published (for the director to report)."""
+    published = []
+    for aid in _referenced_asset_ids(doc):
+        rec = library.get(aid)
+        if rec and not rec.get("public", 1) and (rec.get("scope") or "").split("/", 1)[0] == owner:
+            library.update(aid, public=True)
+            published.append(rec.get("label") or aid)
+    return published
+
+
 def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     """Write a procured image to the content store and register an ImageRecord; return it."""
     ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
@@ -437,12 +559,14 @@ def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
                       model=result.model, prompt=prompt, op=op, transparent=transparent)
     IMAGES[image_id] = rec
     # Write through to the durable catalog (keyed on the prompt = intent), so reuse can find it later
-    # and its provenance survives a restart.
-    library.upsert(image_id, kind=_kind_for_op(op), scope=DEFAULT_SCOPE, source=f"cache://{image_id}",
+    # and its provenance survives a restart. New assets INHERIT the active world's visibility (spaces-
+    # and-users-plan §4): made in a private world ⇒ private. Only on first insert — a re-procure of the
+    # same bytes mustn't silently undo a visibility the owner set later.
+    library.upsert(image_id, kind=_kind_for_op(op), scope=_caller_scope.get(), source=f"cache://{image_id}",
                    filename=image_id, label=prompt, prompt=prompt,
                    params={"op": op, "transparent": transparent},
                    provider=result.provider, model=result.model, width=w, height=h,
-                   transparent=1 if transparent else 0)
+                   transparent=1 if transparent else 0, **_inherit_visibility(image_id))
     _embed_asset(image_id, image=result.data)   # embed the pixels into the shared space (best-effort)
     return rec
 
@@ -594,7 +718,7 @@ async def reset_world() -> dict:
     _reset_room_authority(store)
     _surface_absence.clear()                 # fresh room session
     _save_active()                            # persist the reset so it survives a restart
-    await _broadcast({"type": "snapshot", "world": store.doc})
+    await _broadcast(_snapshot_msg())
     return {"ok": True, "rev": store.doc["rev"]}
 
 
@@ -611,13 +735,15 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     active_space, store = _activate(scope, name, raw)   # compose the incoming world against its space
     worlds.set_active(scope, name)
     _surface_absence.clear()                  # the room re-syncs into the newly active world
-    await _broadcast({"type": "snapshot", "world": store.doc})
+    await _broadcast(_snapshot_msg())
     return {"ok": True, "world": name, "rev": store.doc["rev"]}
 
 
 class WorldRef(BaseModel):
     name: str
     scope: str = DEFAULT_SCOPE
+    owner: Optional[str] = None       # to switch into ANOTHER user's public world (cross-user navigation)
+    public: bool = True               # new_world: create public (default) or private
 
 
 class ScopeRef(BaseModel):
@@ -628,6 +754,7 @@ class GeoReport(BaseModel):
     lat: float
     lon: float
     accuracy: Optional[float] = None
+    user: Optional[str] = None       # who's reporting; only the space OWNER's location drives selection
 
 
 _NEAR_M = 150.0                     # within this distance of a space's geolocation ⇒ "the same space"
@@ -653,6 +780,8 @@ async def report_geolocation(req: GeoReport) -> dict:
     if spaces is None or worlds is None:
         return {"ok": False, "error": "no space store"}
     user = active_scope.split("/", 1)[0]
+    if req.user and req.user != user:                 # a guest's location must not re-select the space
+        return {"ok": True, "selected": False}
     geo = {"lat": req.lat, "lon": req.lon, "accuracy": req.accuracy}
     if _geo_selected:
         return {"ok": True, "selected": False}        # already chose this session
@@ -691,7 +820,16 @@ async def report_geolocation(req: GeoReport) -> dict:
 
 @app.post("/worlds/list")
 async def worlds_list(req: ScopeRef) -> dict:
-    return {"ok": True, "worlds": worlds.list(req.scope), "active": active_world if req.scope == active_scope else worlds.get_active(req.scope)}
+    """The caller's own worlds, plus `available` (every OTHER user's PUBLIC worlds, owner-tagged, for
+    cross-user discovery — co-location §3). `active` is the caller's OWN world that is live, or null when
+    they're currently inhabiting someone else's world; `current` is always the true live (shared) world
+    `{owner, name}` — there's one shared active world, so a visitor's last-active pointer must NOT be
+    reported as 'active' (that lied: it showed your last world while you stood in the owner's)."""
+    in_own = req.scope == active_scope
+    current = {"owner": active_scope.split("/", 1)[0], "name": active_world}
+    available = worlds.list_public(exclude_scope=req.scope)
+    return {"ok": True, "worlds": worlds.list(req.scope),
+            "active": active_world if in_own else None, "current": current, "available": available}
 
 
 @app.post("/worlds/new")
@@ -701,7 +839,9 @@ async def worlds_new(req: WorldRef) -> dict:
     try:
         if worlds.exists(req.scope, req.name):
             return {"ok": False, "error": f"world {req.name!r} already exists — switch to it instead"}
-        return await _switch_to(req.scope, req.name, store_override=_new_world_store(req.scope))
+        fresh = _new_world_store(req.scope)
+        fresh.doc.setdefault("environment", {})["public"] = req.public   # public by default; private if asked
+        return await _switch_to(req.scope, req.name, store_override=fresh)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -709,9 +849,17 @@ async def worlds_new(req: WorldRef) -> dict:
 @app.post("/worlds/switch")
 async def worlds_switch(req: WorldRef) -> dict:
     try:
-        if not worlds.exists(req.scope, req.name):
+        scope = req.scope
+        caller = req.scope.split("/", 1)[0]
+        if req.owner and req.owner != caller:                 # switching into ANOTHER user's public world
+            match = next((w for w in worlds.list_public(exclude_scope=req.scope)
+                          if w["owner"] == req.owner and w["name"] == world_path(req.name)), None)
+            if match is None:
+                return {"ok": False, "error": f"no public world {req.name!r} owned by {req.owner!r}"}
+            scope = match["scope"]                             # resolve owner+name → the owner's scope
+        if not worlds.exists(scope, req.name):
             return {"ok": False, "error": f"no world {req.name!r} (create it with new_world)"}
-        return await _switch_to(req.scope, req.name)
+        return await _switch_to(scope, req.name)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -722,6 +870,45 @@ async def worlds_delete(req: WorldRef) -> dict:
         if req.scope == active_scope and world_path(req.name) == active_world:
             return {"ok": False, "error": "can't delete the active world — switch away first"}
         return {"ok": worlds.delete(req.scope, req.name), "world": req.name}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+class WorldVisibilityRequest(BaseModel):
+    public: bool
+    scope: str = DEFAULT_SCOPE
+    name: Optional[str] = None        # default: the caller's currently-active world ("make THIS private")
+
+
+@app.post("/worlds/visibility")
+async def worlds_visibility(req: WorldVisibilityRequest) -> dict:
+    """Make one of YOUR worlds public (discoverable + visitable) or private (only you). Scope-bound —
+    you can only change a world in your own scope (like delete), so it can't be middleware-gated on the
+    active world's owner. `name` omitted ⇒ your current world (only if you actually own the active one).
+    `environment.public` drives both cross-user discovery (list_public) and the `/ws` join gate."""
+    try:
+        name = req.name
+        is_active = False
+        if not name:                                  # "make THIS world private"
+            if active_scope != req.scope:
+                return {"ok": False, "error": "you're not in one of your own worlds — name the world to change"}
+            name, is_active = active_world, True
+        else:
+            name = world_path(name)
+            is_active = (req.scope == active_scope and name == active_world)
+        owner = req.scope.split("/", 1)[0]
+        if is_active:
+            store.doc.setdefault("environment", {})["public"] = req.public
+            published = _publish_world_assets(store.doc, owner) if req.public else []
+            _save_active()
+        elif worlds.exists(req.scope, name):
+            s = worlds.load(req.scope, name)
+            s.doc.setdefault("environment", {})["public"] = req.public
+            published = _publish_world_assets(s.doc, owner) if req.public else []
+            worlds.save(req.scope, name, s)
+        else:
+            return {"ok": False, "error": f"no world {name!r}"}
+        return {"ok": True, "world": name, "public": req.public, "published_assets": published}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1030,7 +1217,7 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
     ops = [{"op": "update", "id": e["id"], "set": {**mat, "meta.image_id": rec.id}} for e in targets]
     patch = store.apply_patch(ops, origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "count": len(targets), "image_id": rec.id}
+    return _with_notice({"ok": True, "count": len(targets), "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
 _SEM_NUM = re.compile(r"^([a-z][a-z ]*?)\s*#?\s*(\d+)$")
@@ -1145,11 +1332,11 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
     # Catalog the model keyed on the search query (its intent) so it's reusable later; touch it so
     # recency reflects this use. licence/attribution are captured for the legal record.
     model_id = f"{record.hash}.glb"
-    library.upsert(model_id, kind="model", scope=DEFAULT_SCOPE, source=f"cache://{model_id}",
+    library.upsert(model_id, kind="model", scope=_caller_scope.get(), source=f"cache://{model_id}",
                    filename=model_id, label=record.title, query=req.query, licence=record.licence,
                    attribution=record.attribution, creator=record.creator,
                    attributes={"tris": record.tris, "bbox_min": record.bbox_min,
-                               "bbox_max": record.bbox_max})
+                               "bbox_max": record.bbox_max}, **_inherit_visibility(model_id))
     library.touch(model_id)
     # Models are NOT vector-embedded — found by FTS/exact on their title (see _VISUAL_KINDS).
 
@@ -1181,6 +1368,7 @@ class LibrarySearchRequest(BaseModel):
     query: Optional[str] = None      # text intent ("an oak tree"), OR
     image_id: Optional[str] = None   # an asset already in the catalog → "more like this"
     kind: Optional[str] = None       # image | model | skybox | … (optional filter)
+    scope: str = DEFAULT_SCOPE       # caller's scope (capability, set by the MCP server) → own ∪ public
 
 
 @app.post("/library/search")
@@ -1197,7 +1385,7 @@ async def library_search(req: LibrarySearchRequest) -> dict:
             if fn and (ASSET_CACHE / fn).exists():
                 data = (ASSET_CACHE / fn).read_bytes()
                 qvec = await asyncio.to_thread(embedder.embed_image, data)
-    return {"ok": True, **library.find(text=req.query, query_vec=qvec, kind=req.kind)}
+    return {"ok": True, **library.find(text=req.query, query_vec=qvec, kind=req.kind, scope=req.scope)}
 
 
 class PlaceCachedAssetRequest(BaseModel):
@@ -1228,7 +1416,8 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m)
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
-    return {"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]}
+    return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
+                        _ensure_referenced_public(req.id))
 
 
 # --- catalog maintenance: scoped CRUD over the asset library (docs/asset-library-plan.md). The
@@ -1261,6 +1450,7 @@ class UpdateAssetRequest(BaseModel):
     kind: Optional[str] = None
     rating: Optional[int] = None
     favorite: Optional[bool] = None
+    public: Optional[bool] = None       # catalog visibility (others' reads see your public assets)
     default_for: Optional[str] = None   # pin an alias ("dog" → this asset)
     reject_for: Optional[str] = None    # exclude this asset from a query's matches
 
@@ -1271,7 +1461,7 @@ async def update_asset(req: UpdateAssetRequest) -> dict:
     Keeps FTS + vector-kind + aliases consistent (subsumes the old correct_asset/annotate_asset)."""
     ok, err = library.update(req.id, scope=req.scope, label=req.label, query=req.query, tags=req.tags,
                              notes=req.notes, kind=req.kind, rating=req.rating, favorite=req.favorite,
-                             default_for=req.default_for, reject_for=req.reject_for)
+                             public=req.public, default_for=req.default_for, reject_for=req.reject_for)
     return {"ok": True, "id": req.id} if ok else {"ok": False, "error": err}
 
 
@@ -1574,7 +1764,7 @@ async def place_image(req: PlaceImageRequest) -> dict:
     else:
         ops = [_image_plane(eid, pos, width, height, material, meta, rotation)]
     await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="image")})
-    return {"ok": True, "id": eid, "image_id": rec.id}
+    return _with_notice({"ok": True, "id": eid, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
 class SetSkyboxRequest(BaseModel):
@@ -1589,7 +1779,7 @@ async def set_skybox(req: SetSkyboxRequest) -> dict:
         return {"ok": False, "error": err}
     patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": rec.url}}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "sky": rec.url, "image_id": rec.id}
+    return _with_notice({"ok": True, "sky": rec.url, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
 # Ground-projected skybox: the panorama's lower hemisphere is warped flat onto the floor (client-side,
@@ -1611,7 +1801,7 @@ async def set_grounded_skybox(req: SetGroundedSkyboxRequest) -> dict:
     sky = {"src": rec.url, "grounded": True, "height": req.height, "radius": req.radius}
     patch = store.apply_patch([{"op": "env", "set": {"sky": sky}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "sky": rec.url, "image_id": rec.id}
+    return _with_notice({"ok": True, "sky": rec.url, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
 # --- scene editors (hybrid): one-call edits of an image already in the scene (entity id). They
@@ -1708,27 +1898,56 @@ async def skybox_from_image(req: SkyboxFromSceneRequest) -> dict:
 @app.websocket("/ws")
 async def ws(websocket: WebSocket) -> None:
     await websocket.accept()
-    clients.add(websocket)
-    await websocket.send_json({"type": "snapshot", "world": store.doc})
+    user = websocket.query_params.get("user") or DEFAULT_USER     # from the /tunnel/<user> route's ?user=
+    owner = active_scope.split("/", 1)[0]
+    public = bool((store.doc.get("environment", {}) or {}).get("public", True))   # worlds default public
+    joined = (user == owner) or public
+    if joined:
+        clients[websocket] = user                                # joined → gets the world + broadcasts
+        await websocket.send_json(_snapshot_msg())
+    else:                                                        # guest + private world → no world, info msg
+        await websocket.send_json({"type": "info", "level": "info",
+            "msg": f"'{active_world}' is private — ask {owner} to make it public."})
     try:
         while True:
-            # Phase 0: client->server intents (behaviors/input) are ignored for now.
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            if not joined:
+                continue                                         # a refused guest's input is ignored
+            try:
+                msg = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            if msg.get("type") == "presence":                    # relay this client's pose to the others
+                await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": msg.get("pose")})
     except WebSocketDisconnect:
         pass
     finally:
-        clients.discard(websocket)
+        clients.pop(websocket, None)
+        if joined:
+            await _broadcast({"type": "presence_leave", "user": user})   # drop their avatar everywhere
 
 
-async def _broadcast(message: dict) -> None:
+def _snapshot_msg() -> dict:
+    """The snapshot a client receives — the world plus the active world's OWNER, so a desktop guest
+    knows whom to spawn next to (Phase 4 §6)."""
+    return {"type": "snapshot", "world": store.doc, "owner": active_scope.split("/", 1)[0]}
+
+
+async def _broadcast(message: dict, *, skip: "WebSocket | None" = None) -> None:
     dead = []
-    for ws_ in clients:
+    for ws_ in list(clients):
+        if ws_ is skip:
+            continue
         try:
             await ws_.send_json(message)
         except Exception:
             dead.append(ws_)
     for d in dead:
-        clients.discard(d)
+        clients.pop(d, None)
+
+
+async def _broadcast_others(sender: "WebSocket", message: dict) -> None:
+    await _broadcast(message, skip=sender)
 
 
 class ClientLog(BaseModel):

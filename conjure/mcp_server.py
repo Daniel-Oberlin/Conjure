@@ -43,11 +43,25 @@ def _body(**kw) -> dict[str, Any]:
     return {k: v for k, v in kw.items() if v is not None}
 
 
+_USER = SCOPE.split("/", 1)[0]   # the logged-in user, for the owner-only-writes header (server-enforced)
+
+
+_HEADERS = {"X-Conjure-User": _USER, "X-Conjure-Scope": SCOPE}   # identity (owner gate) + full asset-ownership scope
+
+
 async def _post(path: str, body: dict[str, Any], timeout: float = 150.0) -> dict:
     async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(f"{BASE}{path}", json=body)
+        resp = await client.post(f"{BASE}{path}", json=body, headers=_HEADERS)
+        if resp.status_code == 403:                  # owner-only write refused → report it, don't crash
+            return {"ok": False, "error": resp.json().get("error", "forbidden")}
         resp.raise_for_status()
         return resp.json()
+
+
+def _notice(out: dict) -> str:
+    """Suffix for a public-uses-public notice the server attached (e.g. 'published your private asset…')."""
+    n = out.get("notice")
+    return f" {n}" if n else ""
 
 
 def _gen_info(out: dict) -> str:
@@ -229,7 +243,7 @@ async def texture_surface(target: str, image_id: str, repeat: Optional[float] = 
     out = await _post("/texture_surface", _body(target=target, image_id=image_id, repeat=repeat))
     if not out.get("ok"):
         return f"Couldn't texture {target!r}: {out.get('error', 'unknown error')}."
-    return f"Mapped the image onto {out['count']} surface(s) ({target})."
+    return f"Mapped the image onto {out['count']} surface(s) ({target})." + _notice(out)
 
 
 @mcp.tool()
@@ -388,7 +402,7 @@ async def search_library(
     'none' (nothing — generate/fetch fresh). Then reuse: a model via place_cached_asset(id), an image
     via place_image(image_id), a skybox via set_skybox(image_id)/set_grounded_skybox(image_id).
     """
-    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind))
+    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind, scope=SCOPE))
     if not out.get("ok"):
         return f"Library search failed: {out.get('error', 'unknown error')}."
     cands, tier = out.get("candidates", []), out.get("confidence_tier", "none")
@@ -415,7 +429,7 @@ async def place_cached_asset(
     out = await _post("/place_cached_asset", _body(id=id, size_m=size_m, position=position, name=name))
     if not out.get("ok"):
         return f"Couldn't reuse {id!r}: {out.get('error', 'unknown error')}."
-    return f"Reused {out.get('title')!r} as {out['id']}."
+    return f"Reused {out.get('title')!r} as {out['id']}." + _notice(out)
 
 
 # --- Catalog maintenance: inspect / update / delete library assets ----------------------------
@@ -455,21 +469,25 @@ async def update_asset(
     kind: Optional[str] = None,
     rating: Optional[int] = None,
     favorite: Optional[bool] = None,
+    public: Optional[bool] = None,
     default_for: Optional[str] = None,
     reject_for: Optional[str] = None,
 ) -> str:
     """Update a library asset (one tool for all catalog fixes/curation). Pass only what you want to change.
+    You can only change your OWN assets (one in your library scope).
 
     label/query/tags/notes: the asset's description + keywords + freeform note. kind: re-tag it
     (image | model | skybox | grounded_skybox | audio | photo) — e.g. mark a skybox as grounded.
-    rating (0–5)/favorite: your rating. default_for: make this the default for a phrase ('dog' →
+    rating (0–5)/favorite: your rating. public: catalog visibility — assets are PUBLIC by default (others
+    on this server can discover and reuse them); set public=False to make one private (only you can find
+    it), or public=True to share it again. default_for: make this the default for a phrase ('dog' →
     reused when the user says 'add a dog'). reject_for: a query this asset should NEVER match again
     (e.g. an x-wing wrongly returned for 'starship enterprise'). Covers 'remember this as my favorite',
-    'make this my default dog', 'relabel that', 'reject it for X'.
+    'make this my default dog', 'relabel that', 'reject it for X', 'make that image private'.
     """
     out = await _post("/update_asset", _body(
         id=id, scope=SCOPE, label=label, query=query, tags=tags, notes=notes, kind=kind,
-        rating=rating, favorite=favorite, default_for=default_for, reject_for=reject_for))
+        rating=rating, favorite=favorite, public=public, default_for=default_for, reject_for=reject_for))
     if not out.get("ok"):
         return f"Couldn't update {id!r}: {out.get('error', 'unknown error')}."
     return "Updated."
@@ -492,35 +510,70 @@ async def delete_asset(id: str) -> str:
 
 @mcp.tool()
 async def list_worlds() -> str:
-    """List your saved worlds (and which one is active). Call this before switching so you match the
-    user's description ('the dining hall', 'that blade runner world') to a real world name."""
+    """List your saved worlds (and which one is active), plus other users' PUBLIC worlds you can visit.
+    Call this before switching so you match the user's description ('the dining hall', 'daniel's blade
+    runner world') to a real world. To switch into someone else's public world, pass its `owner` to
+    switch_world. You can enter another user's public world but can't edit it (it's theirs)."""
     out = await _post("/worlds/list", _body(scope=SCOPE))
     names = out.get("worlds", [])
-    if not names:
-        return "No saved worlds yet."
-    active = out.get("active")
-    return "Worlds:\n" + "\n".join(f"  {'* ' if n == active else '  '}{n}" for n in names) + \
-        ("\n(* = active)" if active in names else "")
+    active = out.get("active")        # the caller's OWN live world, or None when they're in someone else's
+    current = out.get("current")      # the true live (shared) world {owner, name}
+    available = out.get("available", [])
+    caller = SCOPE.split("/", 1)[0]
+    lines = []
+    if names:
+        lines.append("Your worlds:")
+        lines += [f"  {'* ' if n == active else '  '}{n}" for n in names]
+        if active in names:
+            lines.append("(* = currently active)")
+    else:
+        lines.append("You have no saved worlds yet.")
+    if current and current.get("owner") != caller:    # you're inhabiting another user's (shared) world
+        lines.append(f"\nYou're currently in {current['owner']}'s world '{current['name']}' "
+                     f"(shared — you can be here but it's not one of your own worlds).")
+    if available:
+        lines.append("\nOther users' public worlds (switch with owner=…):")
+        lines += [f"  {w['owner']}: {w['name']}" for w in available]
+    return "\n".join(lines)
 
 
 @mcp.tool()
-async def new_world(name: str) -> str:
+async def new_world(name: str, public: bool = True) -> str:
     """Create a new, empty world and switch to it. `name` may be hierarchical to organize worlds
-    ('castle-quest/dining-hall'). The new world starts from your agent's default setup."""
-    out = await _post("/worlds/new", _body(name=name, scope=SCOPE))
+    ('castle-quest/dining-hall'). The new world starts from your agent's default setup. Worlds are
+    PUBLIC by default (others can discover and visit them); pass public=False to create a PRIVATE world
+    only you can see and enter."""
+    out = await _post("/worlds/new", _body(name=name, scope=SCOPE, public=public))
     if not out.get("ok"):
         return f"Couldn't create {name!r}: {out.get('error', 'unknown error')}."
-    return f"Created and switched to '{out.get('world', name)}'."
+    return f"Created and switched to '{out.get('world', name)}' ({'public' if public else 'private'})."
 
 
 @mcp.tool()
-async def switch_world(name: str) -> str:
-    """Switch to one of your existing worlds (saving the current one first). Match `name` to a real
-    world from list_worlds; formatting/case doesn't need to be exact."""
-    out = await _post("/worlds/switch", _body(name=name, scope=SCOPE))
+async def set_world_visibility(public: bool, name: Optional[str] = None) -> str:
+    """Make a world public or private. Worlds are PUBLIC by default — others can discover them
+    (list_worlds) and visit them. Set public=False to make one PRIVATE: only you can see or enter it.
+    Defaults to your CURRENT world ('make this private'); pass `name` to target another of your worlds.
+    You can only change the visibility of worlds you own."""
+    out = await _post("/worlds/visibility", _body(public=public, scope=SCOPE, name=name))
+    if not out.get("ok"):
+        return f"Couldn't change visibility: {out.get('error', 'unknown error')}."
+    pub = out.get("published_assets") or []
+    extra = (f" Also published {len(pub)} private asset(s) it uses so visitors can see the whole scene: "
+             f"{', '.join(pub)}." if pub else "")
+    return f"World '{out.get('world', name or 'current')}' is now {'public' if public else 'private'}." + extra
+
+
+@mcp.tool()
+async def switch_world(name: str, owner: Optional[str] = None) -> str:
+    """Switch to a world (saving the current one first), bringing everyone present along. Match `name`
+    to a real world from list_worlds; formatting/case doesn't need to be exact. For one of YOUR worlds,
+    omit `owner`. To enter ANOTHER user's public world, pass their username as `owner` (e.g.
+    owner='daniel'); you can inhabit it but not edit it."""
+    out = await _post("/worlds/switch", _body(name=name, scope=SCOPE, owner=owner))
     if not out.get("ok"):
         return f"Couldn't switch to {name!r}: {out.get('error', 'unknown error')}."
-    return f"Switched to '{out.get('world', name)}'."
+    return f"Switched to '{out.get('world', name)}'" + (f" (owned by {owner})." if owner else ".")
 
 
 @mcp.tool()
@@ -695,7 +748,7 @@ async def place_image(
         image_id=image_id, position=position, size_m=size_m, name=name, on_surface=on_surface))
     if not out.get("ok"):
         return f"Couldn't place image: {out.get('error', 'unknown error')}."
-    return f"Hung image {out['image_id']} as {out['id']}."
+    return f"Hung image {out['image_id']} as {out['id']}." + _notice(out)
 
 
 @mcp.tool()
@@ -705,7 +758,7 @@ async def set_skybox(image_id: str) -> str:
     out = await _post("/set_skybox", _body(image_id=image_id))
     if not out.get("ok"):
         return f"Couldn't set the skybox: {out.get('error', 'unknown error')}."
-    return "Wrapped the scene in that image as a 360° skybox."
+    return "Wrapped the scene in that image as a 360° skybox." + _notice(out)
 
 
 @mcp.tool()
@@ -727,7 +780,7 @@ async def set_grounded_skybox(
     out = await _post("/set_grounded_skybox", _body(image_id=image_id, height=height, radius=radius))
     if not out.get("ok"):
         return f"Couldn't set the grounded skybox: {out.get('error', 'unknown error')}."
-    return "Wrapped the scene in that image as a grounded skybox — you're standing on it."
+    return "Wrapped the scene in that image as a grounded skybox — you're standing on it." + _notice(out)
 
 
 # --- One-shot scene edits (act on an image already in the scene, by entity id) ------------------

@@ -223,14 +223,72 @@ def test_delete_asset_removes_from_catalog(srv, client):
     assert client.post("/delete_asset", json={"id": iid}).json()["ok"] is False   # gone now
 
 
+def test_public_uses_public_on_placement(srv, client):
+    # build privately → a new image inherits private
+    srv.store.doc.setdefault("environment", {})["public"] = False
+    iid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]
+    assert srv.library.get(iid)["public"] == 0
+    # placing it while the world is still private is a no-op (no publish, no notice)
+    assert "notice" not in client.post("/place_image", json={"image_id": iid}).json()
+    assert srv.library.get(iid)["public"] == 0
+    # now the world is public → placing the private asset publishes it + notices
+    srv.store.doc["environment"]["public"] = True
+    r = client.post("/place_image", json={"image_id": iid}).json()
+    assert r["ok"] and "notice" in r and srv.library.get(iid)["public"] == 1
+
+
+def test_public_uses_public_on_make_world_public(srv, client):
+    srv.store.doc.setdefault("environment", {})["public"] = False
+    iid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]   # private (inherited)
+    client.post("/place_image", json={"image_id": iid})                                   # placed in the private world
+    assert srv.library.get(iid)["public"] == 0
+    # flip the world public → every private asset it references gets published, and reported
+    r = client.post("/worlds/visibility", json={"public": True, "scope": "daniel/agents/builder"}).json()
+    assert r["ok"] and r["published_assets"] == ["a pear"]
+    assert srv.library.get(iid)["public"] == 1
+
+
+def test_new_asset_inherits_active_world_visibility(srv, client):
+    # made while a PRIVATE world is active ⇒ the asset is private (the reported bug — was always public)
+    srv.store.doc.setdefault("environment", {})["public"] = False
+    iid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]
+    assert srv.library.get(iid)["public"] == 0
+    # regenerated while a PUBLIC world is active ⇒ public
+    srv.library.delete(iid)
+    srv.store.doc["environment"]["public"] = True
+    jid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]
+    assert jid == iid and srv.library.get(jid)["public"] == 1
+    # a re-procure must NOT silently undo an explicit later choice (inheritance is first-insert only)
+    srv.library.update(jid, public=False)
+    client.post("/images/generate", json={"prompt": "a pear"})
+    assert srv.library.get(jid)["public"] == 0
+
+
+def test_generated_asset_belongs_to_the_caller_not_default(srv, client):
+    # guest generates an image → it's owned by GUEST's scope (X-Conjure-Scope), not the default user
+    iid = client.post("/images/generate", json={"prompt": "a stone bridge"},
+                      headers={"X-Conjure-Scope": "guest/agents/builder"}).json()["image_id"]
+    assert srv.library.get(iid)["scope"] == "guest/agents/builder"
+    # ...so guest can curate it — making it private now passes the scope check (the reported bug)
+    r = client.post("/update_asset", json={"id": iid, "public": False,
+                                           "scope": "guest/agents/builder"}).json()
+    assert r["ok"] and srv.library.get(iid)["public"] == 0
+    # a different user still can't change it
+    assert client.post("/update_asset", json={"id": iid, "public": True,
+                                              "scope": "daniel/agents/builder"}).json()["ok"] is False
+
+
 def test_query_assets_is_scoped_and_read_only(srv, client):
-    client.post("/images/generate", json={"prompt": "a red dragon"})
+    pub = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
     rows = client.post("/query_assets", json={"sql": "SELECT COUNT(*) AS n FROM assets"}).json()
     assert rows["ok"] and rows["rows"][0]["n"] >= 1
-    # a different scope sees none of builder's assets
+    # builder also has a PRIVATE asset
+    srv.library.upsert("secret.png", kind="image", scope=srv.active_scope, label="secret", public=0)
+    # a different scope sees builder's PUBLIC asset (cross-scope public reads) but NOT the private one
     other = client.post("/query_assets", json={
-        "sql": "SELECT COUNT(*) AS n FROM assets", "scope": "private/dungeonmaster"}).json()
-    assert other["rows"][0]["n"] == 0
+        "sql": "SELECT id FROM assets", "scope": "friend/agents/builder"}).json()
+    ids = {r["id"] for r in other["rows"]}
+    assert pub in ids and "secret.png" not in ids
     # writes are rejected
     assert client.post("/query_assets", json={"sql": "DELETE FROM assets"}).json()["ok"] is False
 
@@ -496,11 +554,11 @@ async def test_realign_broadcasts_recapture(srv):
             self.sent.append(m)
 
     ws = FakeWS()
-    srv.clients.add(ws)
+    srv.clients[ws] = "daniel"
     try:
         await srv.realign_room()
     finally:
-        srv.clients.discard(ws)
+        srv.clients.pop(ws, None)
     assert ws.sent and ws.sent[-1]["type"] == "recapture"
 
 
@@ -599,11 +657,11 @@ async def test_patch_is_broadcast_to_clients(srv):
             self.sent.append(message)
 
     ws = FakeWS()
-    srv.clients.add(ws)
+    srv.clients[ws] = "daniel"
     try:
         await srv.post_patch(Patch(ops=[{"op": "add", "entity": {"id": "c", "components": {}}}]))
     finally:
-        srv.clients.discard(ws)
+        srv.clients.pop(ws, None)
     assert ws.sent and ws.sent[-1]["type"] == "patch"
     assert ws.sent[-1]["patch"]["ops"][0]["op"] == "add"
 
@@ -839,3 +897,136 @@ def test_geolocation_new_location_creates_a_space(srv, client):
     assert srv.active_space == "space-2"
     sp = srv.spaces.load("daniel", "space-2")
     assert sp["geolocation"]["lat"] == 51.5 and sp["surfaces"] == []
+
+
+# ---- Phase 4 step 1: per-connection user + public-join gate --------------------------------------
+def test_ws_owner_and_public_guest_receive_the_world(srv, client):
+    with client.websocket_connect("/ws?user=daniel") as ws:        # owner
+        snap = ws.receive_json()
+        assert snap["type"] == "snapshot" and snap["owner"] == "daniel"   # owner in snapshot (desktop-guest spawn)
+    with client.websocket_connect("/ws?user=bob") as ws:           # guest, world public by default
+        assert ws.receive_json()["type"] == "snapshot"
+    with client.websocket_connect("/ws") as ws:                    # no user → default (owner)
+        assert ws.receive_json()["type"] == "snapshot"
+
+
+def test_ws_guest_refused_private_world_gets_info_and_no_broadcast(srv, client):
+    srv.store.doc.setdefault("environment", {})["public"] = False
+    with client.websocket_connect("/ws?user=bob") as ws:           # guest + private → info, no world
+        msg = ws.receive_json()
+        assert msg["type"] == "info" and "private" in msg["msg"] and "daniel" in msg["msg"]
+        assert "bob" not in srv.clients.values()                   # not joined → excluded from broadcasts
+    with client.websocket_connect("/ws?user=daniel") as ws:        # owner still gets in
+        assert ws.receive_json()["type"] == "snapshot"
+
+
+def test_presence_relayed_to_others_and_leave_on_disconnect(srv, client):
+    with client.websocket_connect("/ws?user=daniel") as ws1:
+        ws1.receive_json()                                          # snapshot
+        with client.websocket_connect("/ws?user=bob") as ws2:
+            ws2.receive_json()                                      # snapshot
+            ws1.send_json({"type": "presence", "pose": {"p": [1, 1.6, 2], "q": [0, 0, 0, 1]}})
+            m = ws2.receive_json()                                  # relayed to the OTHER client, tagged
+            assert m["type"] == "presence" and m["user"] == "daniel" and m["pose"]["p"] == [1, 1.6, 2]
+        leave = ws1.receive_json()                                  # bob disconnected → his avatar drops
+        assert leave["type"] == "presence_leave" and leave["user"] == "bob"
+
+
+def test_geolocation_from_a_guest_does_not_reselect(srv, client):
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
+                                       "geolocation": None, "surfaces": []})
+    # a GUEST (bob) reporting a wildly different location must NOT move daniel's active space
+    r = client.post("/geolocation", json={"lat": 51.5, "lon": -0.12, "user": "bob"}).json()
+    assert r == {"ok": True, "selected": False}
+    assert srv.spaces.load("daniel", "home")["geolocation"] is None      # untouched
+    assert srv.active_space == "home"
+
+
+# ---- Phase 4 step 4: owner-only writes ----------------------------------------------------------
+def test_owner_only_writes_enforced(srv, client):
+    box = {"ops": [{"op": "add", "entity": {"id": "b", "components": {}}}]}
+    # a guest (user != owner=daniel) is refused with 403
+    r = client.post("/patch", json=box, headers={"X-Conjure-User": "bob"})
+    assert r.status_code == 403 and r.json()["ok"] is False and "daniel" in r.json()["error"]
+    # the owner is allowed
+    assert client.post("/patch", json=box, headers={"X-Conjure-User": "daniel"}).status_code == 200
+    # no header (direct dev CLI) is treated as the owner — allowed
+    assert client.post("/patch", json=box).status_code == 200
+
+
+def test_guest_cannot_edit_the_world_but_reads_are_open(srv, client):
+    # the reported bug: a guest styling a surface in the owner's world → still 403 (edit-rights follow ownership)
+    assert client.post("/style_surface", json={"target": "door", "color": "blue"},
+                       headers={"X-Conjure-User": "bob"}).status_code == 403
+    # but reads/listing stay open to guests
+    assert client.post("/worlds/list", json={}, headers={"X-Conjure-User": "bob"}).status_code == 200
+
+
+def test_guest_can_discover_and_enter_owners_public_world(srv, client):
+    # the guest creates a world (flips active to bob), so daniel's "default" gets persisted on the way out
+    client.post("/worlds/new", json={"name": "guest-world", "scope": "bob/agents/builder"},
+                headers={"X-Conjure-User": "bob"})
+    # bob lists worlds → daniel's default shows up under `available`, tagged by owner
+    listing = client.post("/worlds/list", json={"scope": "bob/agents/builder"}).json()
+    avail = {(w["owner"], w["name"]) for w in listing["available"]}
+    assert ("daniel", "default") in avail
+    # bob is currently in his own guest-world (he just created it), so it's reported active + current=bob
+    assert listing["active"] == "guest-world" and listing["current"]["owner"] == "bob"
+    # bob switches INTO daniel's public world by owner+name → everyone comes along, active = daniel's
+    r = client.post("/worlds/switch", json={"name": "default", "scope": "bob/agents/builder",
+                                            "owner": "daniel"}, headers={"X-Conjure-User": "bob"}).json()
+    assert r["ok"] and srv.active_scope == "daniel/agents/builder"
+    # ...and bob still can't edit daniel's world
+    assert client.post("/style_surface", json={"target": "wall", "color": "red"},
+                       headers={"X-Conjure-User": "bob"}).status_code == 403
+    # now bob's list reports the TRUTH: none of HIS worlds is active; the live world is daniel's (the bug)
+    relist = client.post("/worlds/list", json={"scope": "bob/agents/builder"}).json()
+    assert relist["active"] is None                                   # not his stale guest-world pointer
+    assert relist["current"] == {"owner": "daniel", "name": "default"}
+
+
+def test_world_visibility_create_private_and_toggle(srv, client):
+    sc = "bob/agents/builder"
+    # create a PRIVATE world → not discoverable by others
+    assert client.post("/worlds/new", json={"name": "secret", "scope": sc, "public": False},
+                       headers={"X-Conjure-User": "bob"}).json()["ok"]
+    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
+    assert ("bob", "secret") not in seen
+    # flip the CURRENT (active) world public → now discoverable
+    r = client.post("/worlds/visibility", json={"public": True, "scope": sc},
+                    headers={"X-Conjure-User": "bob"}).json()
+    assert r["ok"] and r["public"] is True
+    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
+    assert ("bob", "secret") in seen
+    # flip it back private
+    client.post("/worlds/visibility", json={"public": False, "scope": sc}, headers={"X-Conjure-User": "bob"})
+    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
+    assert ("bob", "secret") not in seen
+
+
+def test_new_world_defaults_public(srv, client):
+    # created with no `public` arg → public by default ⇒ discoverable by other users
+    assert client.post("/worlds/new", json={"name": "shared", "scope": "bob/agents/builder"},
+                       headers={"X-Conjure-User": "bob"}).json()["ok"]
+    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
+    assert ("bob", "shared") in seen
+
+
+def worlds_seen(client, scope):
+    return client.post("/worlds/list", json={"scope": scope}).json()["available"]
+
+
+def test_guest_may_create_and_switch_worlds_everyone_comes_along(srv, client):
+    # navigation is NOT owner-gated: a guest creates a world in their OWN scope and everyone comes along.
+    r = client.post("/worlds/new", json={"name": "guest-world", "scope": "bob/agents/builder"},
+                    headers={"X-Conjure-User": "bob"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    # having created it, the guest now owns the active world and CAN edit it (active_scope flipped to bob)
+    assert srv.active_scope == "bob/agents/builder"
+    assert client.post("/style_surface", json={"target": "wall", "color": "red"},
+                       headers={"X-Conjure-User": "bob"}).status_code == 200
+    # and switching back to daniel's world re-protects it from the guest
+    client.post("/worlds/switch", json={"name": "default", "scope": "daniel/agents/builder"},
+                headers={"X-Conjure-User": "bob"})
+    assert client.post("/style_surface", json={"target": "wall", "color": "blue"},
+                       headers={"X-Conjure-User": "bob"}).status_code == 403
