@@ -157,8 +157,11 @@ other-user avatars); **desktop-guest mode** (detect no-XR, spawn right-of-owner,
 - **Edit-rights follow ownership** (§4): a guest's director can create/switch/build **its own** worlds
   (everyone comes along) but can't edit another user's world. Letting a guest **co-edit someone else's**
   world (a consent/permission handshake) is the later tightening.
-- **`public` on worlds** — add to the `World` schema vs. keep in `environment`. Leaning `environment`
-  (no schema churn, survives validation like `space`).
+- **`public` on worlds** — DECIDED: kept in `environment.public` (no schema churn, survives validation
+  like `space`; default true). Toggleable from the director via `set_world_visibility(public=…)` and at
+  creation via `new_world(name, public=False)`; it drives both `list_public` discovery and the `/ws`
+  join gate. Scope-bound (you only change your own worlds), so it's not middleware-gated on the active
+  owner.
 - **Multiple guests** — the relay supports N; we test with 1 first.
 - **Desktop-guest spawn** — offset/facing are tunables.
 

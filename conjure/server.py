@@ -646,6 +646,7 @@ class WorldRef(BaseModel):
     name: str
     scope: str = DEFAULT_SCOPE
     owner: Optional[str] = None       # to switch into ANOTHER user's public world (cross-user navigation)
+    public: bool = True               # new_world: create public (default) or private
 
 
 class ScopeRef(BaseModel):
@@ -741,7 +742,9 @@ async def worlds_new(req: WorldRef) -> dict:
     try:
         if worlds.exists(req.scope, req.name):
             return {"ok": False, "error": f"world {req.name!r} already exists — switch to it instead"}
-        return await _switch_to(req.scope, req.name, store_override=_new_world_store(req.scope))
+        fresh = _new_world_store(req.scope)
+        fresh.doc.setdefault("environment", {})["public"] = req.public   # public by default; private if asked
+        return await _switch_to(req.scope, req.name, store_override=fresh)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -770,6 +773,42 @@ async def worlds_delete(req: WorldRef) -> dict:
         if req.scope == active_scope and world_path(req.name) == active_world:
             return {"ok": False, "error": "can't delete the active world — switch away first"}
         return {"ok": worlds.delete(req.scope, req.name), "world": req.name}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+class WorldVisibilityRequest(BaseModel):
+    public: bool
+    scope: str = DEFAULT_SCOPE
+    name: Optional[str] = None        # default: the caller's currently-active world ("make THIS private")
+
+
+@app.post("/worlds/visibility")
+async def worlds_visibility(req: WorldVisibilityRequest) -> dict:
+    """Make one of YOUR worlds public (discoverable + visitable) or private (only you). Scope-bound —
+    you can only change a world in your own scope (like delete), so it can't be middleware-gated on the
+    active world's owner. `name` omitted ⇒ your current world (only if you actually own the active one).
+    `environment.public` drives both cross-user discovery (list_public) and the `/ws` join gate."""
+    try:
+        name = req.name
+        is_active = False
+        if not name:                                  # "make THIS world private"
+            if active_scope != req.scope:
+                return {"ok": False, "error": "you're not in one of your own worlds — name the world to change"}
+            name, is_active = active_world, True
+        else:
+            name = world_path(name)
+            is_active = (req.scope == active_scope and name == active_world)
+        if is_active:
+            store.doc.setdefault("environment", {})["public"] = req.public
+            _save_active()
+        elif worlds.exists(req.scope, name):
+            s = worlds.load(req.scope, name)
+            s.doc.setdefault("environment", {})["public"] = req.public
+            worlds.save(req.scope, name, s)
+        else:
+            return {"ok": False, "error": f"no world {name!r}"}
+        return {"ok": True, "world": name, "public": req.public}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 

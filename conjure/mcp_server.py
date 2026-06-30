@@ -525,13 +525,27 @@ async def list_worlds() -> str:
 
 
 @mcp.tool()
-async def new_world(name: str) -> str:
+async def new_world(name: str, public: bool = True) -> str:
     """Create a new, empty world and switch to it. `name` may be hierarchical to organize worlds
-    ('castle-quest/dining-hall'). The new world starts from your agent's default setup."""
-    out = await _post("/worlds/new", _body(name=name, scope=SCOPE))
+    ('castle-quest/dining-hall'). The new world starts from your agent's default setup. Worlds are
+    PUBLIC by default (others can discover and visit them); pass public=False to create a PRIVATE world
+    only you can see and enter."""
+    out = await _post("/worlds/new", _body(name=name, scope=SCOPE, public=public))
     if not out.get("ok"):
         return f"Couldn't create {name!r}: {out.get('error', 'unknown error')}."
-    return f"Created and switched to '{out.get('world', name)}'."
+    return f"Created and switched to '{out.get('world', name)}' ({'public' if public else 'private'})."
+
+
+@mcp.tool()
+async def set_world_visibility(public: bool, name: Optional[str] = None) -> str:
+    """Make a world public or private. Worlds are PUBLIC by default — others can discover them
+    (list_worlds) and visit them. Set public=False to make one PRIVATE: only you can see or enter it.
+    Defaults to your CURRENT world ('make this private'); pass `name` to target another of your worlds.
+    You can only change the visibility of worlds you own."""
+    out = await _post("/worlds/visibility", _body(public=public, scope=SCOPE, name=name))
+    if not out.get("ok"):
+        return f"Couldn't change visibility: {out.get('error', 'unknown error')}."
+    return f"World '{out.get('world', name or 'current')}' is now {'public' if public else 'private'}."
 
 
 @mcp.tool()

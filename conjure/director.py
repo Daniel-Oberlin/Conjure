@@ -196,8 +196,10 @@ class Director:
             f"create and switch worlds (everyone present comes along) and edit any world you own. You "
             f"can ALSO see and enter other users' PUBLIC worlds — list_worlds shows them under 'other "
             f"users' public worlds', and switch_world(name, owner='<their-username>') takes you there — "
-            f"but you can't edit a world you don't own. If a tool refuses an edit to another user's "
-            f"world, relay it plainly; never invent a name collision or claim you can't see other users."
+            f"but you can't edit a world you don't own. Worlds are PUBLIC by default; make one private "
+            f"(or public again) with set_world_visibility(public=…), or create a private one via "
+            f"new_world(name, public=False). If a tool refuses an edit to another user's world, relay it "
+            f"plainly; never invent a name collision or claim a capability (like private worlds) is absent."
         )
         return self._prompt.format(name=name) + roster_line + identity_line
 

@@ -930,6 +930,29 @@ def test_guest_can_discover_and_enter_owners_public_world(srv, client):
     assert relist["current"] == {"owner": "daniel", "name": "default"}
 
 
+def test_world_visibility_create_private_and_toggle(srv, client):
+    sc = "bob/agents/builder"
+    # create a PRIVATE world → not discoverable by others
+    assert client.post("/worlds/new", json={"name": "secret", "scope": sc, "public": False},
+                       headers={"X-Conjure-User": "bob"}).json()["ok"]
+    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
+    assert ("bob", "secret") not in seen
+    # flip the CURRENT (active) world public → now discoverable
+    r = client.post("/worlds/visibility", json={"public": True, "scope": sc},
+                    headers={"X-Conjure-User": "bob"}).json()
+    assert r["ok"] and r["public"] is True
+    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
+    assert ("bob", "secret") in seen
+    # flip it back private
+    client.post("/worlds/visibility", json={"public": False, "scope": sc}, headers={"X-Conjure-User": "bob"})
+    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
+    assert ("bob", "secret") not in seen
+
+
+def worlds_seen(client, scope):
+    return client.post("/worlds/list", json={"scope": scope}).json()["available"]
+
+
 def test_guest_may_create_and_switch_worlds_everyone_comes_along(srv, client):
     # navigation is NOT owner-gated: a guest creates a world in their OWN scope and everyone comes along.
     r = client.post("/worlds/new", json={"name": "guest-world", "scope": "bob/agents/builder"},
