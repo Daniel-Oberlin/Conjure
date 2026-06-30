@@ -164,6 +164,8 @@ def _boot_world() -> tuple[str, str, WorldStore]:
 
 settings = get_settings()  # loads .env
 clients: "dict[WebSocket, str]" = {}     # connected render clients → their user (owner or guest)
+gaze: "dict[str, dict]" = {}             # user → {"origin": [x,y,z], "forward": [x,y,z]} in the reference
+                                         # frame, from presence — where each headset is looking (Phase 4)
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
@@ -1918,13 +1920,33 @@ async def ws(websocket: WebSocket) -> None:
             except (ValueError, TypeError):
                 continue
             if msg.get("type") == "presence":                    # relay this client's pose to the others
-                await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": msg.get("pose")})
+                pose = msg.get("pose")
+                g = _gaze_from_pose(pose)
+                if g:
+                    gaze[user] = g                               # remember where this user is looking
+                await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": pose})
     except WebSocketDisconnect:
         pass
     finally:
         clients.pop(websocket, None)
+        if user not in clients.values():                         # last socket for this user gone
+            gaze.pop(user, None)
         if joined:
             await _broadcast({"type": "presence_leave", "user": user})   # drop their avatar everywhere
+
+
+def _gaze_from_pose(pose: dict | None) -> dict | None:
+    """Derive {origin, forward} (reference frame) from a presence pose {p, q}. `forward` is the head's
+    -Z (look direction) rotated by the quaternion q=[x,y,z,w]. Used to resolve 'the wall I'm looking at'
+    and 'in front of me'."""
+    if not pose:
+        return None
+    p, q = pose.get("p"), pose.get("q")
+    if not (p and q and len(p) == 3 and len(q) == 4):
+        return None
+    x, y, z, w = q
+    forward = [-2 * (w * y + x * z), 2 * (w * x - y * z), -1 + 2 * (x * x + y * y)]
+    return {"origin": [float(p[0]), float(p[1]), float(p[2])], "forward": forward}
 
 
 def _snapshot_msg() -> dict:

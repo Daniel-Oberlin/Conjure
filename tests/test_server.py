@@ -932,6 +932,35 @@ def test_presence_relayed_to_others_and_leave_on_disconnect(srv, client):
         assert leave["type"] == "presence_leave" and leave["user"] == "bob"
 
 
+def test_gaze_from_pose_derives_forward():
+    from conjure.server import _gaze_from_pose
+    # identity orientation → looking down -Z from the origin
+    g = _gaze_from_pose({"p": [0, 1.6, 0], "q": [0, 0, 0, 1]})
+    assert g["origin"] == [0.0, 1.6, 0.0]
+    assert g["forward"][0] == 0 and g["forward"][1] == 0 and round(g["forward"][2], 6) == -1.0
+    # 90° yaw about +Y → looking down -X
+    import math
+    s = math.sin(math.pi / 4)
+    g2 = _gaze_from_pose({"p": [0, 1.6, 0], "q": [0, s, 0, s]})
+    assert round(g2["forward"][0], 6) == -1.0 and round(g2["forward"][2], 6) == 0.0
+    assert _gaze_from_pose({"p": [0, 0, 0]}) is None        # no quaternion → no gaze
+
+
+def test_presence_stores_and_clears_gaze(srv, client):
+    with client.websocket_connect("/ws?user=daniel") as ws:
+        ws.receive_json()                                   # snapshot
+        ws.send_json({"type": "presence", "pose": {"p": [1, 1.6, 2], "q": [0, 0, 0, 1]}})
+        # the server records where daniel is looking
+        import time as _t
+        for _ in range(50):
+            if "daniel" in srv.gaze:
+                break
+            _t.sleep(0.005)
+        assert srv.gaze["daniel"]["origin"] == [1.0, 1.6, 2.0]
+        assert round(srv.gaze["daniel"]["forward"][2], 6) == -1.0
+    assert "daniel" not in srv.gaze                         # cleared when the last socket closes
+
+
 def test_geolocation_from_a_guest_does_not_reselect(srv, client):
     srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
                                        "geolocation": None, "surfaces": []})

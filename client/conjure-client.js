@@ -464,21 +464,41 @@
     guestSpawned = true;
   }
 
+  // The avatar entity is parked at the HEAD position and yawed to the headset's heading, so the body box
+  // and head turn as one. Two white "eyes" sit half-embedded on the front of the head sphere, 45° apart
+  // (±22.5° from the look direction); they live on a child entity that pitches with the head, so you can
+  // read both the yaw (whole avatar turns) and the up/down gaze (eyes ride up/down the sphere).
+  var EYE_R = 0.045, EYE_S = Math.sin(Math.PI / 8), EYE_C = Math.cos(Math.PI / 8);   // 22.5°
   function setAvatar(user, pose) {
     if (!pose || !pose.p) return;
     var wr = document.getElementById("world-root"); if (!wr) return;
+    var THREE = AFRAME.THREE;
     var el = document.getElementById("avatar-" + user);
     if (!el) {
       el = document.createElement("a-entity"); el.id = "avatar-" + user;
+      var lx = (-EYE_S * R_AV).toFixed(4), rx = (EYE_S * R_AV).toFixed(4), ez = (-EYE_C * R_AV).toFixed(4);
       el.innerHTML = '<a-sphere class="head" radius="' + R_AV + '" color="' + INFO_COLOR + '"></a-sphere>'
-        + '<a-box class="body" width="0.26" depth="0.26" color="' + INFO_COLOR + '" opacity="0.85"></a-box>';
+        + '<a-box class="body" width="0.26" depth="0.26" color="' + INFO_COLOR + '" opacity="0.85"></a-box>'
+        + '<a-entity class="eyes">'
+        +   '<a-sphere class="eye" position="' + lx + ' 0 ' + ez + '" radius="' + EYE_R + '" color="#ffffff"></a-sphere>'
+        +   '<a-sphere class="eye" position="' + rx + ' 0 ' + ez + '" radius="' + EYE_R + '" color="#ffffff"></a-sphere>'
+        + '</a-entity>';
       wr.appendChild(el);
     }
     var hx = pose.p[0], hy = pose.p[1], hz = pose.p[2], h = Math.max(0.1, hy - R_AV - GAP_AV);
-    el.querySelector(".head").setAttribute("position", hx + " " + hy + " " + hz);
+    el.setAttribute("position", hx + " " + hy + " " + hz);          // entity origin = the head
+    var yawDeg = 0, pitchDeg = 0;
+    if (pose.q) {                                                   // heading from the head orientation
+      var f = new THREE.Vector3(0, 0, -1).applyQuaternion(
+        new THREE.Quaternion(pose.q[0], pose.q[1], pose.q[2], pose.q[3]));
+      yawDeg = THREE.MathUtils.radToDeg(Math.atan2(-f.x, -f.z));
+      pitchDeg = THREE.MathUtils.radToDeg(Math.asin(Math.max(-1, Math.min(1, f.y))));
+    }
+    el.setAttribute("rotation", "0 " + yawDeg + " 0");             // whole avatar yaws with the headset
+    el.querySelector(".eyes").setAttribute("rotation", pitchDeg + " 0 0");  // eyes also pitch up/down
     var body = el.querySelector(".body");
     body.setAttribute("height", h);
-    body.setAttribute("position", hx + " " + (h / 2) + " " + hz);
+    body.setAttribute("position", "0 " + ((h / 2) - hy) + " 0");   // box: floor → just below the head, local
   }
   function removeAvatar(user) {
     var el = document.getElementById("avatar-" + user);
