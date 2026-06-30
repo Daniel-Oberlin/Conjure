@@ -900,8 +900,24 @@ def test_owner_only_writes_enforced(srv, client):
 
 
 def test_guest_cannot_edit_the_world_but_reads_are_open(srv, client):
-    # the reported bug: a guest styling a surface in the owner's world → now 403
+    # the reported bug: a guest styling a surface in the owner's world → still 403 (edit-rights follow ownership)
     assert client.post("/style_surface", json={"target": "door", "color": "blue"},
                        headers={"X-Conjure-User": "bob"}).status_code == 403
     # but reads/listing stay open to guests
     assert client.post("/worlds/list", json={}, headers={"X-Conjure-User": "bob"}).status_code == 200
+
+
+def test_guest_may_create_and_switch_worlds_everyone_comes_along(srv, client):
+    # navigation is NOT owner-gated: a guest creates a world in their OWN scope and everyone comes along.
+    r = client.post("/worlds/new", json={"name": "guest-world", "scope": "bob/agents/builder"},
+                    headers={"X-Conjure-User": "bob"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    # having created it, the guest now owns the active world and CAN edit it (active_scope flipped to bob)
+    assert srv.active_scope == "bob/agents/builder"
+    assert client.post("/style_surface", json={"target": "wall", "color": "red"},
+                       headers={"X-Conjure-User": "bob"}).status_code == 200
+    # and switching back to daniel's world re-protects it from the guest
+    client.post("/worlds/switch", json={"name": "default", "scope": "daniel/agents/builder"},
+                headers={"X-Conjure-User": "bob"})
+    assert client.post("/style_surface", json={"target": "wall", "color": "blue"},
+                       headers={"X-Conjure-User": "bob"}).status_code == 403

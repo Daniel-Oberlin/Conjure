@@ -49,28 +49,39 @@ asset catalog), with the doc staying the source of truth. Not needed now.
     is private — ask <owner> to make it public"), and **no** world. Keep the socket open so the owner
     making it public can push a snapshot later.
 
-## 4. Authority = space owner, and **owner-only writes** (folds in loose-end #1)
+## 4. Authority = space owner, and **edit-rights follow ownership** (folds in loose-end #1)
 
-Only the owner may change the space *or* the world; everyone else is read-only. **Enforced
-server-side** — *no prompt changes* (the LLM never sees this; it's a capability boundary).
+Edit-rights follow **world ownership**: only the **active world's owner** (`active_scope`'s user) may
+change that world's scene content; everyone else is read-only *on it*. But **world navigation is open to
+all** — anyone may create or switch worlds and everyone present comes along — because a created/
+switched-into world lives in the *caller's own scope*, so the caller becomes its owner and only *then*
+can edit it. Net: a guest can spin up and build **their own** worlds with everyone present, while another
+user's curated world stays protected. **Enforced server-side** — *no prompt changes* (it's a capability
+boundary; the director is merely *told its username* so it can answer "who am I?" and relay a refusal
+honestly instead of inventing a name collision). A consent/permission model to relax further — letting a
+guest co-edit *someone else's* world — is a later tightening.
 
-- **Geometry capture.** `ingest_room` accepts a `/room` post **only from the space owner** (posting
-  user == `space.owner`). A guest's capture is rejected — guests **register against** the geometry,
-  never re-capture it. Supersedes the per-client-id authority (the client-id becomes a within-owner
-  continuity detail).
-- **All world mutations.** Every world-changing endpoint (`/patch`, `/place_asset`, `/place_image`,
-  `/style_surface`, `/show_surface`, `/texture_surface`, `/edit_image`, `/outpaint_image`, `/set_skybox`,
-  `/set_grounded_skybox`, `/reset`, `/room`, `/worlds/new|switch|delete`, …) requires the requester to be
-  the **active world's owner** (`active_scope`'s user). Read endpoints (`/world`, `/worlds/list`,
+- **Geometry capture.** `ingest_room` accepts a `/room` post **only from the active world's owner**. A
+  guest's capture is rejected — guests **register against** the geometry, never re-capture it. Supersedes
+  the per-client-id authority (the client-id becomes a within-owner continuity detail).
+- **Scene mutations (owner-gated).** Every scene-changing endpoint (`/patch`, `/place_asset`,
+  `/place_image`, `/style_surface`, `/show_surface`, `/texture_surface`, `/edit_image`, `/outpaint_image`,
+  `/set_skybox`, `/set_grounded_skybox`, `/reset`, `/room`) requires the requester to be the **active
+  world's owner**.
+- **World navigation (open).** `/worlds/new` and `/worlds/switch` are **not** gated — anyone creates/
+  switches (in their own scope) and everyone comes along. Read endpoints (`/world`, `/worlds/list`,
   `/geolocation`, `/client_log`, presence) are open to guests.
 - **How identity reaches the API (no prompt, no per-tool churn).** The MCP client `_post` attaches the
-  caller's user (from `CONJURE_SCOPE`) as a header (`X-Conjure-User`) on *every* request; a small
-  FastAPI dependency on the mutating routes checks `header-user == owner` and returns **403** otherwise.
-  The owner's director always sends it; guests have no director on this server, and their browser client
-  only hits read/`/room`/presence routes. **Interim policy:** a *missing* header (e.g. the direct dev
-  `conjure` CLI) is treated as the owner — convenience now; tighten to "require it" once the guest path
-  is real if we want strict deny-by-default.
-- This lands with the authority work (build step 4), since it's the same "owner-only" boundary.
+  caller's user (from `CONJURE_SCOPE`) as a header (`X-Conjure-User`) on *every* request; a FastAPI
+  middleware on the **scene-mutation** routes checks `header-user == active-world-owner` and returns
+  **403** otherwise (a guest *director* runs with `--user <guest>`; the headset/browser attaches the
+  header on `/room`). **Interim policy:** a *missing* header (the direct dev `conjure` CLI) is treated as
+  the owner — convenience now; tighten to "require it" once we want strict deny-by-default.
+- The director is **told its username** (system prompt) so it answers "who am I logged in as?" and, when
+  a scene edit is refused, relays the refusal plainly instead of inventing a cause (e.g. a name
+  collision). The CLI prompt shows it too: `conjure:<user>.<agent>.<llm>>`.
+- This landed with the authority work (build step 4); the world-navigation relaxation (open create/
+  switch) followed once a guest director was real and we chose capability over strict lock-down.
 
 ## 5. Co-location for an AR guest (no platform anchors)
 
@@ -147,8 +158,9 @@ other-user avatars); **desktop-guest mode** (detect no-XR, spawn right-of-owner,
 ## 10. Open questions / risks
 
 - **Matcher robustness** (AR co-location) — the main risk; deferred to last so the rest lands first.
-- **Guests are read-only** on the world (inhabit + presence); the owner edits. Guest-driven editing
-  (their own director on the shared world) is a later question.
+- **Edit-rights follow ownership** (§4): a guest's director can create/switch/build **its own** worlds
+  (everyone comes along) but can't edit another user's world. Letting a guest **co-edit someone else's**
+  world (a consent/permission handshake) is the later tightening.
 - **`public` on worlds** — add to the `World` schema vs. keep in `environment`. Leaning `environment`
   (no schema churn, survives validation like `space`).
 - **Multiple guests** — the relay supports N; we test with 1 first.
@@ -161,7 +173,8 @@ other-user avatars); **desktop-guest mode** (detect no-XR, spawn right-of-owner,
 2. ✅ **Presence** — broadcast + relay + avatar render. Testable with **two browser tabs**.
 3. ✅ **Desktop-guest mode** — spawn-right-of-owner + desktop nav. Testable: owner tab + guest tab (the
    thing you asked for).
-4. ✅ **Authority = space owner + owner-only writes** — the `ingest_room` gate + the mutation 403 (§4).
+4. ✅ **Authority = world owner; edit-rights follow ownership** — scene-mutation 403 + `ingest_room` gate;
+   world create/switch open to all (everyone comes along); director knows its username (§4).
 5. **AR co-location + matcher robustness** — on-device, the hard part, last. ◻️ remaining
 6. ✅ **Cross-scope public asset reads** (§8a) — done. Reads = own scope ∪ public; a friend on your
    laptop builds with your public assets.

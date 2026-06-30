@@ -123,7 +123,7 @@ def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", 
 class Director:
     def __init__(self, settings: Settings, session, roster: dict[str, LLM], active: str,
                  tools: Optional[list[ToolSpec]] = None, prompt: str = DIRECTOR_PROMPT,
-                 agent: Optional[AgentDef] = None):
+                 agent: Optional[AgentDef] = None, user: str = DEFAULT_USER):
         self._settings = settings
         self._session = session          # MCP ClientSession (or a stand-in in tests)
         self.roster = roster
@@ -131,6 +131,7 @@ class Director:
         self._tools = tools or []
         self._prompt = prompt
         self.agent = agent               # the loaded agent def (None in lightweight tests)
+        self.user = user                 # the logged-in user this director acts as (owns its spaces/worlds)
         self.transcript: list[Turn] = []
 
     @classmethod
@@ -176,7 +177,7 @@ class Director:
                     tools = [ToolSpec(t.name, t.description or "", t.inputSchema)
                              for t in (await session.list_tools()).tools]
                     yield cls(settings, session, roster, active, tools,
-                              prompt=agentdef.prompt, agent=agentdef)
+                              prompt=agentdef.prompt, agent=agentdef, user=user)
         finally:
             if close_errlog is not None:
                 close_errlog.close()
@@ -189,7 +190,14 @@ class Director:
             f"meant for you. In the transcript, assistant lines prefixed like [Name] were said by "
             f"another AI — unprefixed assistant lines are yours; you may reference what they said."
         ) if others else ""
-        return self._prompt.format(name=name) + roster_line
+        identity_line = (
+            f" The logged-in user you act for is '{self.user}' — if asked who is logged in / who they "
+            f"are, that's the answer. Worlds and spaces belong to whoever created them: you can freely "
+            f"create and switch worlds (everyone present comes along) and edit any world you own, but "
+            f"the server refuses edits to another user's world — if a tool returns such a refusal, relay "
+            f"it plainly; do not invent a name collision or other cause."
+        )
+        return self._prompt.format(name=name) + roster_line + identity_line
 
     async def _log(self, tag: str, msg: str) -> None:
         """Best-effort diagnostic line → the world server's /client_log (same temp/conjure.log + console

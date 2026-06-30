@@ -347,15 +347,19 @@ async def _lifespan(app):
 
 app = FastAPI(title="Conjure", version="0.0.1", lifespan=_lifespan)
 
-# Owner-only writes (co-location-plan.md §4): only the ACTIVE world's owner may change the shared world
-# or flip which world is active. Enforced server-side, never via the prompt — the MCP client and the
+# Edit-rights follow ownership (co-location-plan.md §4): only the ACTIVE world's owner may change the
+# scene content of the shared world. Enforced server-side, never via the prompt — the MCP client and the
 # headset attach an `X-Conjure-User` header; a non-owner hitting these routes gets 403. A *missing*
 # header (the direct dev CLI) is treated as the owner (interim convenience). Reads, scoped catalog ops,
-# procurement, and a guest's own scoped worlds are NOT gated.
+# procurement, and **world navigation** (`/worlds/new`, `/worlds/switch`) are NOT gated: anyone may
+# create or switch worlds and everyone comes along — but a created/switched-into world is in the caller's
+# OWN scope, so the caller becomes its owner and only *then* can edit it. This lets a guest spin up and
+# build their own worlds with everyone present, while another user's curated world stays protected. (A
+# consent/permission model to relax further — co-edit someone else's world — is a later tightening.)
 _OWNER_ONLY_PATHS = {
     "/reset", "/patch", "/room", "/texture_surface", "/style_surface", "/place_asset",
     "/place_cached_asset", "/place_image", "/set_skybox", "/set_grounded_skybox",
-    "/edit_image", "/outpaint_image", "/skybox_from_image", "/worlds/new", "/worlds/switch",
+    "/edit_image", "/outpaint_image", "/skybox_from_image",
 }
 
 
