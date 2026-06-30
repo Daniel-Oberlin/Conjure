@@ -132,21 +132,6 @@ unit-tested) and risks nudging other behaviors, so it needs a live test pass.
 **Lean:** (c) is the high-leverage move if these "nudge didn't stick" papercuts keep recurring;
 otherwise (a) is defensible.
 
-## `search_library` is unscoped while the maintenance tools are scoped
-
-**Status:** open · noticed 2026-06-25
-
-**Symptom:** `search_library` (reuse) returns assets from *all* scopes, but `query_assets`/`update_asset`/
-`delete_asset` see only the caller's scope. So the two can disagree on what exists (live: search found
-2 apples, query found 1), which confused the director. Today it's masked because everything ends up in
-`private/builder` (single agent — every row is written with that scope at ingest), but it's a real
-inconsistency.
-
-**Fix:** scope `library.find()` too — thread the agent's scope through `/library/search` →
-`find()`/`search()`/`vector_search()` (add `AND scope=?` to each stage) and the `search_library` tool
-(carry `SCOPE` like the maintenance tools). Then reuse and maintenance see the same per-agent set.
-Matters for multi-agent; deferred until then.
-
 ## Rotated/placed objects clip through the floor
 
 **Status:** open · noticed 2026-06-23 during live director testing

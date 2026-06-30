@@ -224,13 +224,16 @@ def test_delete_asset_removes_from_catalog(srv, client):
 
 
 def test_query_assets_is_scoped_and_read_only(srv, client):
-    client.post("/images/generate", json={"prompt": "a red dragon"})
+    pub = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
     rows = client.post("/query_assets", json={"sql": "SELECT COUNT(*) AS n FROM assets"}).json()
     assert rows["ok"] and rows["rows"][0]["n"] >= 1
-    # a different scope sees none of builder's assets
+    # builder also has a PRIVATE asset
+    srv.library.upsert("secret.png", kind="image", scope=srv.active_scope, label="secret", public=0)
+    # a different scope sees builder's PUBLIC asset (cross-scope public reads) but NOT the private one
     other = client.post("/query_assets", json={
-        "sql": "SELECT COUNT(*) AS n FROM assets", "scope": "private/dungeonmaster"}).json()
-    assert other["rows"][0]["n"] == 0
+        "sql": "SELECT id FROM assets", "scope": "friend/agents/builder"}).json()
+    ids = {r["id"] for r in other["rows"]}
+    assert pub in ids and "secret.png" not in ids
     # writes are rejected
     assert client.post("/query_assets", json={"sql": "DELETE FROM assets"}).json()["ok"] is False
 

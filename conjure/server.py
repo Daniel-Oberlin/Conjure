@@ -1207,6 +1207,7 @@ class LibrarySearchRequest(BaseModel):
     query: Optional[str] = None      # text intent ("an oak tree"), OR
     image_id: Optional[str] = None   # an asset already in the catalog → "more like this"
     kind: Optional[str] = None       # image | model | skybox | … (optional filter)
+    scope: str = DEFAULT_SCOPE       # caller's scope (capability, set by the MCP server) → own ∪ public
 
 
 @app.post("/library/search")
@@ -1223,7 +1224,7 @@ async def library_search(req: LibrarySearchRequest) -> dict:
             if fn and (ASSET_CACHE / fn).exists():
                 data = (ASSET_CACHE / fn).read_bytes()
                 qvec = await asyncio.to_thread(embedder.embed_image, data)
-    return {"ok": True, **library.find(text=req.query, query_vec=qvec, kind=req.kind)}
+    return {"ok": True, **library.find(text=req.query, query_vec=qvec, kind=req.kind, scope=req.scope)}
 
 
 class PlaceCachedAssetRequest(BaseModel):

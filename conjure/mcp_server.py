@@ -393,7 +393,7 @@ async def search_library(
     'none' (nothing — generate/fetch fresh). Then reuse: a model via place_cached_asset(id), an image
     via place_image(image_id), a skybox via set_skybox(image_id)/set_grounded_skybox(image_id).
     """
-    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind))
+    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind, scope=SCOPE))
     if not out.get("ok"):
         return f"Library search failed: {out.get('error', 'unknown error')}."
     cands, tier = out.get("candidates", []), out.get("confidence_tier", "none")

@@ -195,15 +195,32 @@ def test_delete_cleans_up_row_alias_relation_and_vector(tmp_path):
 
 def test_query_is_scoped_and_select_only(tmp_path):
     lib = _lib(tmp_path)
-    lib.upsert("a.png", kind="image", scope="private/builder", label="mine")
-    lib.upsert("b.png", kind="image", scope="private/dm", label="theirs")
-    rows = lib.query("SELECT id FROM assets", scope="private/builder")
-    assert [r["id"] for r in rows] == ["a.png"]                   # only my scope's rows
+    lib.upsert("a.png", kind="image", scope="daniel/agents/builder", label="mine")
+    lib.upsert("b.png", kind="image", scope="friend/agents/builder", label="theirs", public=0)
+    rows = lib.query("SELECT id FROM assets", scope="daniel/agents/builder")
+    assert [r["id"] for r in rows] == ["a.png"]                   # my scope; friend's PRIVATE row hidden
     import pytest as _pytest
     with _pytest.raises(ValueError):
-        lib.query("DELETE FROM assets", scope="private/builder")  # writes rejected
+        lib.query("DELETE FROM assets", scope="daniel/agents/builder")  # writes rejected
     with _pytest.raises(ValueError):
-        lib.query("SELECT * FROM main.assets", scope="private/builder")  # bypass rejected
+        lib.query("SELECT * FROM main.assets", scope="daniel/agents/builder")  # bypass rejected
+
+
+def test_reads_return_own_scope_plus_public(tmp_path):
+    """Cross-scope public reads (co-location §8a): a caller sees its own rows + any user's public rows,
+    but never another scope's private rows — across query/search/find."""
+    lib = _lib(tmp_path)
+    me, friend = "daniel/agents/builder", "friend/agents/builder"
+    lib.upsert("mine_pub.glb", kind="model", scope=me, label="my oak", query="oak tree")
+    lib.upsert("mine_priv.glb", kind="model", scope=me, label="my secret oak", query="oak tree", public=0)
+    lib.upsert("friend_pub.glb", kind="model", scope=friend, label="friend oak", query="oak tree")
+    lib.upsert("friend_priv.glb", kind="model", scope=friend, label="friend secret oak", query="oak tree", public=0)
+
+    visible = {r["id"] for r in lib.query("SELECT id FROM assets", scope=me)}
+    assert visible == {"mine_pub.glb", "mine_priv.glb", "friend_pub.glb"}   # friend's private excluded
+
+    found = {c["id"] for c in lib.find("oak tree", scope=me)["candidates"]}
+    assert "friend_pub.glb" in found and "friend_priv.glb" not in found and "mine_priv.glb" in found
 
 
 def test_vector_search_returns_nearest_and_records_space(tmp_path):

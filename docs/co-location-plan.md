@@ -118,7 +118,7 @@ must lock on partial overlap: looser size tolerances, more candidate yaws, grace
 inliers, and not polluting the reference with a guest's stray planes. This is the one piece that needs
 real on-device iteration; everything else is testable in the browser first.
 
-## 8a. Cross-scope public assets (shared catalog on one server)
+## 8a. Cross-scope public assets (shared catalog on one server) — DONE (step 6)
 
 Scenario: you bring your **laptop** to a friend's; the friend logs in as a *separate user*
 (`--user friend`), creates his own space + world, and wants to use **your public assets**. This is the
@@ -130,11 +130,12 @@ intended use of the asset `public` flag — and on one machine it's mostly alrea
 - **The gap is catalog *visibility*.** The library *reads* (`find` / `search_library` / `query_assets`)
   are scoped to the caller's `<user>/agents/<agent>`, so the friend can't *discover* your public assets.
 
-**The feature:** make reads return **caller's scope ∪ `public=1`** (referenced in place; copy-to-private
-to pin). This also fixes the existing inconsistency that **`search_library` is unscoped while the
-maintenance tools are scoped** — both become "own-scope ∪ public". Writes stay own-scope only. Touches
-the library read methods + the `search_library`/`place_cached_asset` path (carry `SCOPE`). No prompt or
-write-path changes; **not** cross-machine federation (that's a separate, bigger future item).
+**The feature (shipped):** reads now return **caller's scope ∪ `public=1`** (referenced in place;
+copy-to-private to pin). `library.find/search/vector_search/query` all take a `scope` and apply the
+`(scope=? OR public=1)` predicate; `/library/search` carries `scope`, and `search_library` sends `SCOPE`
+like the maintenance tools — so it's no longer unscoped (fixes the old search-vs-query inconsistency).
+`place_cached_asset` resolves by hash and bytes are global, so a referenced public asset already places.
+Writes stay own-scope only; no prompt changes. **Not** cross-machine federation (a separate future item).
 
 ## 9. What changes
 
@@ -155,15 +156,15 @@ other-user avatars); **desktop-guest mode** (detect no-XR, spawn right-of-owner,
 
 ## 11. Build plan (front-load the browser-testable pieces)
 
-1. **Per-connection user on `/ws` + world `public` flag + the join gate** (public → snapshot; private →
+1. ✅ **Per-connection user on `/ws` + world `public` flag + the join gate** (public → snapshot; private →
    info message). Server-testable.
-2. **Presence** — broadcast + relay + avatar render. Testable with **two browser tabs**.
-3. **Desktop-guest mode** — spawn-right-of-owner + desktop nav. Testable: owner tab + guest tab (the
+2. ✅ **Presence** — broadcast + relay + avatar render. Testable with **two browser tabs**.
+3. ✅ **Desktop-guest mode** — spawn-right-of-owner + desktop nav. Testable: owner tab + guest tab (the
    thing you asked for).
-4. **Authority = space owner** — the `ingest_room` gate.
-5. **AR co-location + matcher robustness** — on-device, the hard part, last.
-6. **Cross-scope public asset reads** (§8a) — independent of the presence/AR work; a friend on your
-   laptop building with your public assets. Slot in any time.
+4. ✅ **Authority = space owner + owner-only writes** — the `ingest_room` gate + the mutation 403 (§4).
+5. **AR co-location + matcher robustness** — on-device, the hard part, last. ◻️ remaining
+6. ✅ **Cross-scope public asset reads** (§8a) — done. Reads = own scope ∪ public; a friend on your
+   laptop builds with your public assets.
 
 Steps 1–3 give a fully working, **browser-only** co-location demo (two tabs, presence, move around)
 before any headset work — and they're the foundation the AR path (4–5) sits on.
