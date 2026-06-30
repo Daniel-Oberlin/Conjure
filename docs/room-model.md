@@ -332,8 +332,15 @@ same physical anchor. With content already anchor-relative, the world reloads fi
 > **Now the technical core of `spaces-and-users-plan.md` §8.** Key correction to the marker below: this
 > does **not** require a platform shared-anchor. A guest registers its own planes onto the **same
 > persistent space geometry** (§8a, the register vote), solving its own `_Tmat` into the shared
-> reference frame — so content co-locates with no Quest "Shared Spaces" dependency. The remaining work
-> is matcher robustness for the guest's partial/extra planes, and presence avatars.
+> reference frame — so content co-locates with no Quest "Shared Spaces" dependency.
+>
+> **Implemented (register-only guests).** `room-capture` now branches on authority: the active world's
+> owner authors as before; everyone else is **register-only** — it re-seeds its reference wholesale from
+> the authoritative broadcast each capture, solves `_Tmat`, pins `#world-root`, and **never** establishes,
+> lerp-mutates, mints, or posts geometry. This removes the feedback-drift a guest used to cause by
+> evolving its local copy of the shared reference (the "world drifts more over time" symptom). Presence
+> avatars are also done. **Remaining work: matcher robustness** for the guest's partial/extra plane set
+> (the register vote must lock on partial overlap from a different vantage).
 
 **One model, N perceptions.** There is exactly **one** world model (the server doc) in exactly **one**
 coordinate frame (the authority's anchor frame, §8a). A secondary headset does **not** build its own
