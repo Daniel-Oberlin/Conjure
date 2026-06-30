@@ -28,7 +28,7 @@ import asyncio
 import sys
 import urllib.request
 
-from .config import Settings, get_settings
+from .config import DEFAULT_USER, Settings, get_settings
 from .director import Director
 from .shell import Shell
 
@@ -45,7 +45,7 @@ def _world_reachable(url: str) -> bool:
         return False
 
 
-async def _run(settings: Settings) -> None:
+async def _run(settings: Settings, user: str = DEFAULT_USER) -> None:
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
@@ -121,7 +121,7 @@ async def _run(settings: Settings) -> None:
 
     # The shared director owns the LLM roster and the world-editing MCP tools (it spawns
     # conjure.mcp_server over stdio itself). PipeCat no longer talks to any LLM.
-    async with Director.connect(settings) as director:
+    async with Director.connect(settings, user=user) as director:
         director_proc = DirectorProcessor(Shell(director, settings))
 
         # We keep the LLM context aggregator ONLY for its end-of-turn detection and mute-while-
@@ -185,6 +185,12 @@ async def _run(settings: Settings) -> None:
 
 
 def main() -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="conjure.voice", description="Voice front-end for the Conjure director.")
+    ap.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
+    args = ap.parse_args()
+
     settings = get_settings()
 
     if not (settings.anthropic_api_key or settings.google_api_key):
@@ -197,7 +203,7 @@ def main() -> int:
         return 1
 
     try:
-        asyncio.run(_run(settings))
+        asyncio.run(_run(settings, args.user))
     except KeyboardInterrupt:
         print("\nStopped.")
     except ImportError as exc:
