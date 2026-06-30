@@ -144,8 +144,11 @@ One-time, idempotent:
 4. **Co-location.** Guest join (public-only, else info message); guest registers to served geometry;
    presence avatars; matcher robustness. *Touches:* server (multi-connection users, relay), client
    (presence render, robustness).
-5. **Visibility polish.** Default-public + inheritance + public-uses-public guard + "make a private
-   world". *Touches:* server (access predicate + invariant), prompt.
+5. **Visibility polish.** Default-public ✅ + inheritance ✅ (new assets inherit the active world's
+   visibility, first-insert only) + "make a private world" ✅ (set_world_visibility / new_world public=…) +
+   per-asset toggle ✅ (update_asset public=…). **Still pending: the public-uses-public guard** — a public
+   world should reference only public assets (forbid/warn pulling a private asset into a public world), so
+   a guest can load the whole scene. *Touches:* server (access predicate + invariant), prompt.
 
 ## 11. Open questions / risks
 

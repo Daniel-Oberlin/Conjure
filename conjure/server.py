@@ -484,6 +484,16 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
     }}
 
 
+def _inherit_visibility(asset_id: str) -> dict:
+    """`{"public": 0|1}` for a NEW asset, inherited from the active world's visibility (spaces-and-users
+    §4: created in a private world ⇒ private). Empty dict if the asset already exists — never overwrite a
+    visibility the owner set after the fact."""
+    if library.get(asset_id) is not None:
+        return {}
+    world_public = bool((store.doc.get("environment") or {}).get("public", True)) if store else True
+    return {"public": 1 if world_public else 0}
+
+
 def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     """Write a procured image to the content store and register an ImageRecord; return it."""
     ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
@@ -494,12 +504,14 @@ def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
                       model=result.model, prompt=prompt, op=op, transparent=transparent)
     IMAGES[image_id] = rec
     # Write through to the durable catalog (keyed on the prompt = intent), so reuse can find it later
-    # and its provenance survives a restart.
+    # and its provenance survives a restart. New assets INHERIT the active world's visibility (spaces-
+    # and-users-plan §4): made in a private world ⇒ private. Only on first insert — a re-procure of the
+    # same bytes mustn't silently undo a visibility the owner set later.
     library.upsert(image_id, kind=_kind_for_op(op), scope=_caller_scope.get(), source=f"cache://{image_id}",
                    filename=image_id, label=prompt, prompt=prompt,
                    params={"op": op, "transparent": transparent},
                    provider=result.provider, model=result.model, width=w, height=h,
-                   transparent=1 if transparent else 0)
+                   transparent=1 if transparent else 0, **_inherit_visibility(image_id))
     _embed_asset(image_id, image=result.data)   # embed the pixels into the shared space (best-effort)
     return rec
 
@@ -1266,7 +1278,7 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
                    filename=model_id, label=record.title, query=req.query, licence=record.licence,
                    attribution=record.attribution, creator=record.creator,
                    attributes={"tris": record.tris, "bbox_min": record.bbox_min,
-                               "bbox_max": record.bbox_max})
+                               "bbox_max": record.bbox_max}, **_inherit_visibility(model_id))
     library.touch(model_id)
     # Models are NOT vector-embedded — found by FTS/exact on their title (see _VISUAL_KINDS).
 

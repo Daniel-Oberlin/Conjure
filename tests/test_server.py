@@ -223,6 +223,22 @@ def test_delete_asset_removes_from_catalog(srv, client):
     assert client.post("/delete_asset", json={"id": iid}).json()["ok"] is False   # gone now
 
 
+def test_new_asset_inherits_active_world_visibility(srv, client):
+    # made while a PRIVATE world is active ⇒ the asset is private (the reported bug — was always public)
+    srv.store.doc.setdefault("environment", {})["public"] = False
+    iid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]
+    assert srv.library.get(iid)["public"] == 0
+    # regenerated while a PUBLIC world is active ⇒ public
+    srv.library.delete(iid)
+    srv.store.doc["environment"]["public"] = True
+    jid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]
+    assert jid == iid and srv.library.get(jid)["public"] == 1
+    # a re-procure must NOT silently undo an explicit later choice (inheritance is first-insert only)
+    srv.library.update(jid, public=False)
+    client.post("/images/generate", json={"prompt": "a pear"})
+    assert srv.library.get(jid)["public"] == 0
+
+
 def test_generated_asset_belongs_to_the_caller_not_default(srv, client):
     # guest generates an image → it's owned by GUEST's scope (X-Conjure-Scope), not the default user
     iid = client.post("/images/generate", json={"prompt": "a stone bridge"},
