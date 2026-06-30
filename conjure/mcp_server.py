@@ -503,16 +503,21 @@ async def list_worlds() -> str:
     switch_world. You can enter another user's public world but can't edit it (it's theirs)."""
     out = await _post("/worlds/list", _body(scope=SCOPE))
     names = out.get("worlds", [])
-    active = out.get("active")
+    active = out.get("active")        # the caller's OWN live world, or None when they're in someone else's
+    current = out.get("current")      # the true live (shared) world {owner, name}
     available = out.get("available", [])
+    caller = SCOPE.split("/", 1)[0]
     lines = []
     if names:
         lines.append("Your worlds:")
         lines += [f"  {'* ' if n == active else '  '}{n}" for n in names]
         if active in names:
-            lines.append("(* = active)")
+            lines.append("(* = currently active)")
     else:
         lines.append("You have no saved worlds yet.")
+    if current and current.get("owner") != caller:    # you're inhabiting another user's (shared) world
+        lines.append(f"\nYou're currently in {current['owner']}'s world '{current['name']}' "
+                     f"(shared — you can be here but it's not one of your own worlds).")
     if available:
         lines.append("\nOther users' public worlds (switch with owner=…):")
         lines += [f"  {w['owner']}: {w['name']}" for w in available]

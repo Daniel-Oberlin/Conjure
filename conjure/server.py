@@ -722,12 +722,16 @@ async def report_geolocation(req: GeoReport) -> dict:
 
 @app.post("/worlds/list")
 async def worlds_list(req: ScopeRef) -> dict:
-    """The caller's own worlds + which is active, plus `available`: every OTHER user's PUBLIC worlds
-    (cross-user discovery, co-location §3), each tagged with its owner so the director can switch into
-    one by owner+name."""
-    active = active_world if req.scope == active_scope else worlds.get_active(req.scope)
+    """The caller's own worlds, plus `available` (every OTHER user's PUBLIC worlds, owner-tagged, for
+    cross-user discovery — co-location §3). `active` is the caller's OWN world that is live, or null when
+    they're currently inhabiting someone else's world; `current` is always the true live (shared) world
+    `{owner, name}` — there's one shared active world, so a visitor's last-active pointer must NOT be
+    reported as 'active' (that lied: it showed your last world while you stood in the owner's)."""
+    in_own = req.scope == active_scope
+    current = {"owner": active_scope.split("/", 1)[0], "name": active_world}
     available = worlds.list_public(exclude_scope=req.scope)
-    return {"ok": True, "worlds": worlds.list(req.scope), "active": active, "available": available}
+    return {"ok": True, "worlds": worlds.list(req.scope),
+            "active": active_world if in_own else None, "current": current, "available": available}
 
 
 @app.post("/worlds/new")

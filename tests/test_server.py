@@ -915,6 +915,8 @@ def test_guest_can_discover_and_enter_owners_public_world(srv, client):
     listing = client.post("/worlds/list", json={"scope": "bob/agents/builder"}).json()
     avail = {(w["owner"], w["name"]) for w in listing["available"]}
     assert ("daniel", "default") in avail
+    # bob is currently in his own guest-world (he just created it), so it's reported active + current=bob
+    assert listing["active"] == "guest-world" and listing["current"]["owner"] == "bob"
     # bob switches INTO daniel's public world by owner+name → everyone comes along, active = daniel's
     r = client.post("/worlds/switch", json={"name": "default", "scope": "bob/agents/builder",
                                             "owner": "daniel"}, headers={"X-Conjure-User": "bob"}).json()
@@ -922,6 +924,10 @@ def test_guest_can_discover_and_enter_owners_public_world(srv, client):
     # ...and bob still can't edit daniel's world
     assert client.post("/style_surface", json={"target": "wall", "color": "red"},
                        headers={"X-Conjure-User": "bob"}).status_code == 403
+    # now bob's list reports the TRUTH: none of HIS worlds is active; the live world is daniel's (the bug)
+    relist = client.post("/worlds/list", json={"scope": "bob/agents/builder"}).json()
+    assert relist["active"] is None                                   # not his stale guest-world pointer
+    assert relist["current"] == {"owner": "daniel", "name": "default"}
 
 
 def test_guest_may_create_and_switch_worlds_everyone_comes_along(srv, client):
