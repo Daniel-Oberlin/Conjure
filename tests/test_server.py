@@ -223,6 +223,31 @@ def test_delete_asset_removes_from_catalog(srv, client):
     assert client.post("/delete_asset", json={"id": iid}).json()["ok"] is False   # gone now
 
 
+def test_public_uses_public_on_placement(srv, client):
+    # build privately → a new image inherits private
+    srv.store.doc.setdefault("environment", {})["public"] = False
+    iid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]
+    assert srv.library.get(iid)["public"] == 0
+    # placing it while the world is still private is a no-op (no publish, no notice)
+    assert "notice" not in client.post("/place_image", json={"image_id": iid}).json()
+    assert srv.library.get(iid)["public"] == 0
+    # now the world is public → placing the private asset publishes it + notices
+    srv.store.doc["environment"]["public"] = True
+    r = client.post("/place_image", json={"image_id": iid}).json()
+    assert r["ok"] and "notice" in r and srv.library.get(iid)["public"] == 1
+
+
+def test_public_uses_public_on_make_world_public(srv, client):
+    srv.store.doc.setdefault("environment", {})["public"] = False
+    iid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]   # private (inherited)
+    client.post("/place_image", json={"image_id": iid})                                   # placed in the private world
+    assert srv.library.get(iid)["public"] == 0
+    # flip the world public → every private asset it references gets published, and reported
+    r = client.post("/worlds/visibility", json={"public": True, "scope": "daniel/agents/builder"}).json()
+    assert r["ok"] and r["published_assets"] == ["a pear"]
+    assert srv.library.get(iid)["public"] == 1
+
+
 def test_new_asset_inherits_active_world_visibility(srv, client):
     # made while a PRIVATE world is active ⇒ the asset is private (the reported bug — was always public)
     srv.store.doc.setdefault("environment", {})["public"] = False

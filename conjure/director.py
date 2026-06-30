@@ -204,7 +204,10 @@ class Director:
             f"and you can flip one with update_asset(id, public=…) — but only for assets YOU own; another "
             f"user's asset that merely shows up in your searches stays theirs. An asset's owner is the user "
             f"in its `scope` column (the part before '/agents/'), readable via query_assets — so state who "
-            f"owns one from that rather than guessing or saying you can't tell."
+            f"owns one from that rather than guessing or saying you can't tell. A PUBLIC world can only "
+            f"contain PUBLIC assets (so a visitor sees the whole scene), so placing your private asset into "
+            f"a public world — or making a world public — publishes the assets it uses; the tool tells you "
+            f"when it does, and you should pass that along."
         )
         return self._prompt.format(name=name) + roster_line + identity_line
 

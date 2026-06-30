@@ -144,11 +144,13 @@ One-time, idempotent:
 4. **Co-location.** Guest join (public-only, else info message); guest registers to served geometry;
    presence avatars; matcher robustness. *Touches:* server (multi-connection users, relay), client
    (presence render, robustness).
-5. **Visibility polish.** Default-public ✅ + inheritance ✅ (new assets inherit the active world's
-   visibility, first-insert only) + "make a private world" ✅ (set_world_visibility / new_world public=…) +
-   per-asset toggle ✅ (update_asset public=…). **Still pending: the public-uses-public guard** — a public
-   world should reference only public assets (forbid/warn pulling a private asset into a public world), so
-   a guest can load the whole scene. *Touches:* server (access predicate + invariant), prompt.
+5. **Visibility polish.** ✅ DONE. Default-public + inheritance (new assets inherit the active world's
+   visibility, first-insert only) + "make a private world" (set_world_visibility / new_world public=…) +
+   per-asset toggle (update_asset public=…) + the **public-uses-public guard**: a public world may
+   reference only public assets, enforced by auto-publishing the owner's private assets when they're
+   placed into a public world OR when a world is made public (the director relays the notice). Reachable
+   only for the owner's own assets (another user's private asset can't be read to place), so no privacy
+   leak. *Touched:* server (`_ensure_referenced_public` / `_publish_world_assets`), MCP tools, prompt.
 
 ## 11. Open questions / risks
 

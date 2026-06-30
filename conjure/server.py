@@ -494,6 +494,61 @@ def _inherit_visibility(asset_id: str) -> dict:
     return {"public": 1 if world_public else 0}
 
 
+def _ensure_referenced_public(asset_id: str) -> Optional[str]:
+    """Public-uses-public invariant (spaces-and-users §4): a public world may reference only public
+    assets, so a visitor can load the whole scene. Placing one of YOUR OWN private assets into a public
+    world publishes it (you're sharing it by placing it) and returns a notice for the director to relay;
+    no-op in a private world, or for an already-public asset / another user's asset."""
+    if store is None or not bool((store.doc.get("environment") or {}).get("public", True)):
+        return None                                   # private world ⇒ anything goes
+    rec = library.get(asset_id)
+    owner = active_scope.split("/", 1)[0]
+    if rec and not rec.get("public", 1) and (rec.get("scope") or "").split("/", 1)[0] == owner:
+        library.update(asset_id, public=True)
+        return f"Note: published your private asset '{rec.get('label') or asset_id}' so it stays visible " \
+               f"to anyone in this public world."
+    return None
+
+
+def _with_notice(out: dict, notice: Optional[str]) -> dict:
+    """Attach a public-uses-public notice to a response dict (so the MCP tool can relay it), if any."""
+    if notice:
+        out["notice"] = notice
+    return out
+
+
+def _referenced_asset_ids(doc: dict) -> set[str]:
+    """Every catalog asset id a world doc references — any '/assets/<id>' string anywhere in it (entity
+    materials, gltf-model, skybox src). A schema-agnostic walk, so new reference sites are covered free."""
+    ids: set[str] = set()
+
+    def walk(x):
+        if isinstance(x, str):
+            if "/assets/" in x:
+                ids.add(x.split("/assets/", 1)[1].split("/")[0].split("?")[0])
+        elif isinstance(x, dict):
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    walk(doc)
+    return ids
+
+
+def _publish_world_assets(doc: dict, owner: str) -> list[str]:
+    """Publish any of `owner`'s PRIVATE assets the world references (public-uses-public). Used when a
+    world is made public. Returns the labels published (for the director to report)."""
+    published = []
+    for aid in _referenced_asset_ids(doc):
+        rec = library.get(aid)
+        if rec and not rec.get("public", 1) and (rec.get("scope") or "").split("/", 1)[0] == owner:
+            library.update(aid, public=True)
+            published.append(rec.get("label") or aid)
+    return published
+
+
 def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     """Write a procured image to the content store and register an ImageRecord; return it."""
     ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
@@ -841,16 +896,19 @@ async def worlds_visibility(req: WorldVisibilityRequest) -> dict:
         else:
             name = world_path(name)
             is_active = (req.scope == active_scope and name == active_world)
+        owner = req.scope.split("/", 1)[0]
         if is_active:
             store.doc.setdefault("environment", {})["public"] = req.public
+            published = _publish_world_assets(store.doc, owner) if req.public else []
             _save_active()
         elif worlds.exists(req.scope, name):
             s = worlds.load(req.scope, name)
             s.doc.setdefault("environment", {})["public"] = req.public
+            published = _publish_world_assets(s.doc, owner) if req.public else []
             worlds.save(req.scope, name, s)
         else:
             return {"ok": False, "error": f"no world {name!r}"}
-        return {"ok": True, "world": name, "public": req.public}
+        return {"ok": True, "world": name, "public": req.public, "published_assets": published}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1159,7 +1217,7 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
     ops = [{"op": "update", "id": e["id"], "set": {**mat, "meta.image_id": rec.id}} for e in targets]
     patch = store.apply_patch(ops, origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "count": len(targets), "image_id": rec.id}
+    return _with_notice({"ok": True, "count": len(targets), "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
 _SEM_NUM = re.compile(r"^([a-z][a-z ]*?)\s*#?\s*(\d+)$")
@@ -1358,7 +1416,8 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m)
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
-    return {"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]}
+    return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
+                        _ensure_referenced_public(req.id))
 
 
 # --- catalog maintenance: scoped CRUD over the asset library (docs/asset-library-plan.md). The
@@ -1705,7 +1764,7 @@ async def place_image(req: PlaceImageRequest) -> dict:
     else:
         ops = [_image_plane(eid, pos, width, height, material, meta, rotation)]
     await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="image")})
-    return {"ok": True, "id": eid, "image_id": rec.id}
+    return _with_notice({"ok": True, "id": eid, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
 class SetSkyboxRequest(BaseModel):
@@ -1720,7 +1779,7 @@ async def set_skybox(req: SetSkyboxRequest) -> dict:
         return {"ok": False, "error": err}
     patch = store.apply_patch([{"op": "env", "set": {"sky": {"src": rec.url}}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "sky": rec.url, "image_id": rec.id}
+    return _with_notice({"ok": True, "sky": rec.url, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
 # Ground-projected skybox: the panorama's lower hemisphere is warped flat onto the floor (client-side,
@@ -1742,7 +1801,7 @@ async def set_grounded_skybox(req: SetGroundedSkyboxRequest) -> dict:
     sky = {"src": rec.url, "grounded": True, "height": req.height, "radius": req.radius}
     patch = store.apply_patch([{"op": "env", "set": {"sky": sky}}], origin="image")
     await _broadcast({"type": "patch", "patch": patch})
-    return {"ok": True, "sky": rec.url, "image_id": rec.id}
+    return _with_notice({"ok": True, "sky": rec.url, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
 # --- scene editors (hybrid): one-call edits of an image already in the scene (entity id). They

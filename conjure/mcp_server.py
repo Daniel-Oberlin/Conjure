@@ -58,6 +58,12 @@ async def _post(path: str, body: dict[str, Any], timeout: float = 150.0) -> dict
         return resp.json()
 
 
+def _notice(out: dict) -> str:
+    """Suffix for a public-uses-public notice the server attached (e.g. 'published your private asset…')."""
+    n = out.get("notice")
+    return f" {n}" if n else ""
+
+
 def _gen_info(out: dict) -> str:
     """Provenance for a generated/edited image result (logged + shown to the LLM): which generator/
     model produced it and at what size."""
@@ -237,7 +243,7 @@ async def texture_surface(target: str, image_id: str, repeat: Optional[float] = 
     out = await _post("/texture_surface", _body(target=target, image_id=image_id, repeat=repeat))
     if not out.get("ok"):
         return f"Couldn't texture {target!r}: {out.get('error', 'unknown error')}."
-    return f"Mapped the image onto {out['count']} surface(s) ({target})."
+    return f"Mapped the image onto {out['count']} surface(s) ({target})." + _notice(out)
 
 
 @mcp.tool()
@@ -423,7 +429,7 @@ async def place_cached_asset(
     out = await _post("/place_cached_asset", _body(id=id, size_m=size_m, position=position, name=name))
     if not out.get("ok"):
         return f"Couldn't reuse {id!r}: {out.get('error', 'unknown error')}."
-    return f"Reused {out.get('title')!r} as {out['id']}."
+    return f"Reused {out.get('title')!r} as {out['id']}." + _notice(out)
 
 
 # --- Catalog maintenance: inspect / update / delete library assets ----------------------------
@@ -552,7 +558,10 @@ async def set_world_visibility(public: bool, name: Optional[str] = None) -> str:
     out = await _post("/worlds/visibility", _body(public=public, scope=SCOPE, name=name))
     if not out.get("ok"):
         return f"Couldn't change visibility: {out.get('error', 'unknown error')}."
-    return f"World '{out.get('world', name or 'current')}' is now {'public' if public else 'private'}."
+    pub = out.get("published_assets") or []
+    extra = (f" Also published {len(pub)} private asset(s) it uses so visitors can see the whole scene: "
+             f"{', '.join(pub)}." if pub else "")
+    return f"World '{out.get('world', name or 'current')}' is now {'public' if public else 'private'}." + extra
 
 
 @mcp.tool()
@@ -739,7 +748,7 @@ async def place_image(
         image_id=image_id, position=position, size_m=size_m, name=name, on_surface=on_surface))
     if not out.get("ok"):
         return f"Couldn't place image: {out.get('error', 'unknown error')}."
-    return f"Hung image {out['image_id']} as {out['id']}."
+    return f"Hung image {out['image_id']} as {out['id']}." + _notice(out)
 
 
 @mcp.tool()
@@ -749,7 +758,7 @@ async def set_skybox(image_id: str) -> str:
     out = await _post("/set_skybox", _body(image_id=image_id))
     if not out.get("ok"):
         return f"Couldn't set the skybox: {out.get('error', 'unknown error')}."
-    return "Wrapped the scene in that image as a 360° skybox."
+    return "Wrapped the scene in that image as a 360° skybox." + _notice(out)
 
 
 @mcp.tool()
@@ -771,7 +780,7 @@ async def set_grounded_skybox(
     out = await _post("/set_grounded_skybox", _body(image_id=image_id, height=height, radius=radius))
     if not out.get("ok"):
         return f"Couldn't set the grounded skybox: {out.get('error', 'unknown error')}."
-    return "Wrapped the scene in that image as a grounded skybox — you're standing on it."
+    return "Wrapped the scene in that image as a grounded skybox — you're standing on it." + _notice(out)
 
 
 # --- One-shot scene edits (act on an image already in the scene, by entity id) ------------------
