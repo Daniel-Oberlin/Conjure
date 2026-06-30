@@ -1712,7 +1712,8 @@ async def ws(websocket: WebSocket) -> None:
     user = websocket.query_params.get("user") or DEFAULT_USER     # from the /tunnel/<user> route's ?user=
     owner = active_scope.split("/", 1)[0]
     public = bool((store.doc.get("environment", {}) or {}).get("public", True))   # worlds default public
-    if user == owner or public:
+    joined = (user == owner) or public
+    if joined:
         clients[websocket] = user                                # joined → gets the world + broadcasts
         await websocket.send_json({"type": "snapshot", "world": store.doc})
     else:                                                        # guest + private world → no world, info msg
@@ -1720,23 +1721,38 @@ async def ws(websocket: WebSocket) -> None:
             "msg": f"'{active_world}' is private — ask {owner} to make it public."})
     try:
         while True:
-            # Phase 0: client->server intents (behaviors/input) are ignored for now.
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            if not joined:
+                continue                                         # a refused guest's input is ignored
+            try:
+                msg = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            if msg.get("type") == "presence":                    # relay this client's pose to the others
+                await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": msg.get("pose")})
     except WebSocketDisconnect:
         pass
     finally:
         clients.pop(websocket, None)
+        if joined:
+            await _broadcast({"type": "presence_leave", "user": user})   # drop their avatar everywhere
 
 
-async def _broadcast(message: dict) -> None:
+async def _broadcast(message: dict, *, skip: "WebSocket | None" = None) -> None:
     dead = []
     for ws_ in list(clients):
+        if ws_ is skip:
+            continue
         try:
             await ws_.send_json(message)
         except Exception:
             dead.append(ws_)
     for d in dead:
         clients.pop(d, None)
+
+
+async def _broadcast_others(sender: "WebSocket", message: dict) -> None:
+    await _broadcast(message, skip=sender)
 
 
 class ClientLog(BaseModel):

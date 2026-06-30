@@ -439,10 +439,50 @@
     el.textContent = text;
   }
 
+  // --- presence (Phase 4 §7): show the other users as a sphere-on-box avatar, co-located in the shared
+  // reference frame (#world-root), and broadcast our own head/camera pose ~10 Hz. Pose is expressed in
+  // #world-root's local frame so it aligns for everyone (AR: world-root is parked at the registered
+  // frame; desktop: world-root is at identity, so it's just the camera pose).
+  var socket = null, R_AV = 0.13, GAP_AV = 0.03;
+
+  function setAvatar(user, pose) {
+    if (!pose || !pose.p) return;
+    var wr = document.getElementById("world-root"); if (!wr) return;
+    var el = document.getElementById("avatar-" + user);
+    if (!el) {
+      el = document.createElement("a-entity"); el.id = "avatar-" + user;
+      el.innerHTML = '<a-sphere class="head" radius="' + R_AV + '" color="' + INFO_COLOR + '"></a-sphere>'
+        + '<a-box class="body" width="0.26" depth="0.26" color="' + INFO_COLOR + '" opacity="0.85"></a-box>';
+      wr.appendChild(el);
+    }
+    var hx = pose.p[0], hy = pose.p[1], hz = pose.p[2], h = Math.max(0.1, hy - R_AV - GAP_AV);
+    el.querySelector(".head").setAttribute("position", hx + " " + hy + " " + hz);
+    var body = el.querySelector(".body");
+    body.setAttribute("height", h);
+    body.setAttribute("position", hx + " " + (h / 2) + " " + hz);
+  }
+  function removeAvatar(user) {
+    var el = document.getElementById("avatar-" + user);
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+  }
+  function presenceTick() {
+    if (!socket || socket.readyState !== 1) return;
+    var sc = document.querySelector("a-scene"), wr = document.getElementById("world-root");
+    var cam = sc && sc.camera;
+    if (!cam || !wr) return;
+    var THREE = AFRAME.THREE, p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    cam.updateMatrixWorld();
+    var m = new THREE.Matrix4().multiplyMatrices(   // camera world pose → world-root local frame
+      new THREE.Matrix4().copy(wr.object3D.matrixWorld).invert(), cam.matrixWorld);
+    m.decompose(p, q, s);
+    socket.send(JSON.stringify({ type: "presence", pose: { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] } }));
+  }
+
   function connect() {
     var proto = location.protocol === "https:" ? "wss" : "ws";
     var u = currentUser();
     var ws = new WebSocket(proto + "://" + location.host + "/ws" + (u ? "?user=" + encodeURIComponent(u) : ""));
+    socket = ws;
     ws.onopen = function () { console.log("[conjure] connected" + (u ? " as " + u : "")); };
     ws.onclose = function () { console.log("[conjure] disconnected — retrying in 2s"); setTimeout(connect, 2000); };
     ws.onmessage = function (ev) {
@@ -450,6 +490,8 @@
       if (msg.type === "snapshot") applySnapshot(msg.world);
       else if (msg.type === "patch") applyPatch(msg.patch);
       else if (msg.type === "info") showInfo(msg.msg);    // e.g. "'<world>' is private — ask <owner>…"
+      else if (msg.type === "presence") setAvatar(msg.user, msg.pose);
+      else if (msg.type === "presence_leave") removeAvatar(msg.user);
       else if (msg.type === "recapture") {                // realign request → re-capture the room
         var sc = document.querySelector("a-scene");
         var rc = sc && sc.components && sc.components["room-capture"];
@@ -770,5 +812,6 @@
 
   window.addEventListener("load", function () {
     connect(); setupARButton(); markVersion(); reportGeolocation();
+    setInterval(presenceTick, 100);                 // ~10 Hz head-pose broadcast (presence)
   });
 })();

@@ -859,3 +859,15 @@ def test_ws_guest_refused_private_world_gets_info_and_no_broadcast(srv, client):
         assert "bob" not in srv.clients.values()                   # not joined → excluded from broadcasts
     with client.websocket_connect("/ws?user=daniel") as ws:        # owner still gets in
         assert ws.receive_json()["type"] == "snapshot"
+
+
+def test_presence_relayed_to_others_and_leave_on_disconnect(srv, client):
+    with client.websocket_connect("/ws?user=daniel") as ws1:
+        ws1.receive_json()                                          # snapshot
+        with client.websocket_connect("/ws?user=bob") as ws2:
+            ws2.receive_json()                                      # snapshot
+            ws1.send_json({"type": "presence", "pose": {"p": [1, 1.6, 2], "q": [0, 0, 0, 1]}})
+            m = ws2.receive_json()                                  # relayed to the OTHER client, tagged
+            assert m["type"] == "presence" and m["user"] == "daniel" and m["pose"]["p"] == [1, 1.6, 2]
+        leave = ws1.receive_json()                                  # bob disconnected → his avatar drops
+        assert leave["type"] == "presence_leave" and leave["user"] == "bob"
