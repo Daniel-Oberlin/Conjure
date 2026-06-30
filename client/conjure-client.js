@@ -776,7 +776,8 @@
         var boundary = null;
         if (floor) { delete floor._area; boundary = floor; }
         fetch("/room", {
-          method: "POST", headers: { "Content-Type": "application/json" },
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Conjure-User": currentUser() || "" },
           body: JSON.stringify({ client_id: this.clientId, surfaces: surfaces, boundary: boundary, replace: true }),
         }).catch(function (e) { console.warn("[conjure] room post failed", e); });
       },

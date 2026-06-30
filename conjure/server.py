@@ -27,7 +27,7 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -346,6 +346,28 @@ async def _lifespan(app):
 
 
 app = FastAPI(title="Conjure", version="0.0.1", lifespan=_lifespan)
+
+# Owner-only writes (co-location-plan.md §4): only the ACTIVE world's owner may change the shared world
+# or flip which world is active. Enforced server-side, never via the prompt — the MCP client and the
+# headset attach an `X-Conjure-User` header; a non-owner hitting these routes gets 403. A *missing*
+# header (the direct dev CLI) is treated as the owner (interim convenience). Reads, scoped catalog ops,
+# procurement, and a guest's own scoped worlds are NOT gated.
+_OWNER_ONLY_PATHS = {
+    "/reset", "/patch", "/room", "/texture_surface", "/style_surface", "/place_asset",
+    "/place_cached_asset", "/place_image", "/set_skybox", "/set_grounded_skybox",
+    "/edit_image", "/outpaint_image", "/skybox_from_image", "/worlds/new", "/worlds/switch",
+}
+
+
+@app.middleware("http")
+async def _owner_only_writes(request, call_next):
+    if request.url.path in _OWNER_ONLY_PATHS:
+        who = request.headers.get("X-Conjure-User")
+        owner = active_scope.split("/", 1)[0]
+        if who and who != owner:
+            return JSONResponse(status_code=403, content={
+                "ok": False, "error": f"This world belongs to {owner}; only the owner can change it."})
+    return await call_next(request)
 
 # Durability: a background task writes the active world to its file whenever its rev advances. Polling
 # debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one write — and it

@@ -882,3 +882,23 @@ def test_geolocation_from_a_guest_does_not_reselect(srv, client):
     assert r == {"ok": True, "selected": False}
     assert srv.spaces.load("daniel", "home")["geolocation"] is None      # untouched
     assert srv.active_space == "home"
+
+
+# ---- Phase 4 step 4: owner-only writes ----------------------------------------------------------
+def test_owner_only_writes_enforced(srv, client):
+    box = {"ops": [{"op": "add", "entity": {"id": "b", "components": {}}}]}
+    # a guest (user != owner=daniel) is refused with 403
+    r = client.post("/patch", json=box, headers={"X-Conjure-User": "bob"})
+    assert r.status_code == 403 and r.json()["ok"] is False and "daniel" in r.json()["error"]
+    # the owner is allowed
+    assert client.post("/patch", json=box, headers={"X-Conjure-User": "daniel"}).status_code == 200
+    # no header (direct dev CLI) is treated as the owner — allowed
+    assert client.post("/patch", json=box).status_code == 200
+
+
+def test_guest_cannot_edit_the_world_but_reads_are_open(srv, client):
+    # the reported bug: a guest styling a surface in the owner's world → now 403
+    assert client.post("/style_surface", json={"target": "door", "color": "blue"},
+                       headers={"X-Conjure-User": "bob"}).status_code == 403
+    # but reads/listing stay open to guests
+    assert client.post("/worlds/list", json={}, headers={"X-Conjure-User": "bob"}).status_code == 200
