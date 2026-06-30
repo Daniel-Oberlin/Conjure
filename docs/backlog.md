@@ -6,19 +6,19 @@ delete them here) when done.
 
 ---
 
-## World index for cross-user public discovery
+## World index for cross-user public discovery (scale the existing walk)
 
-**Status:** open · noted 2026-06-29 (deferred during Phase 4 design)
+**Status:** open (perf only) · noted 2026-06-29 · **walk shipped 2026-06-30**
 
-**Why:** worlds are separate JSON files. Listing *your own* worlds is a cheap directory scan
-(`worlds.list(scope)` reads filenames, not contents — fine). But **"all public worlds available to me"**
-across *other* users means scanning everyone's dirs and opening each candidate to check
-`environment.public`. No cross-user browse exists yet, so it's not needed — but it won't scale.
+**Shipped:** cross-user discovery now works — `WorldRepository.list_public()` scans every
+`<root>/*/agents/*` dir, reads each doc, and returns the public ones tagged by owner; `/worlds/list`
+returns them as `available`, and `switch_world(name, owner=…)` enters another user's public world. This
+is the "filesystem walk + read each" approach.
 
-**Fix when a browse feature lands:** a small **world index** — a catalog table of
-`owner / name / public / space` derived from the world docs (the docs stay the source of truth), exactly
-like the asset catalog. Turns "filesystem walk + read each" into one indexed lookup. Keep it in sync on
-world save/delete. Defer until cross-user world discovery is actually a feature.
+**Remaining (perf):** the walk reads *every* world doc on each `list_worlds` call — fine at small scale,
+won't scale. When discovery gets heavy, add a derived **world index** — a catalog table of
+`owner / name / public / space` from the docs (docs stay source of truth), kept in sync on world
+save/delete — turning the walk into one indexed lookup. Defer until it actually hurts.
 
 ## Director claims a surface restyle is done without calling the tool ("the couch")
 

@@ -192,10 +192,12 @@ class Director:
         ) if others else ""
         identity_line = (
             f" The logged-in user you act for is '{self.user}' — if asked who is logged in / who they "
-            f"are, that's the answer. Worlds and spaces belong to whoever created them: you can freely "
-            f"create and switch worlds (everyone present comes along) and edit any world you own, but "
-            f"the server refuses edits to another user's world — if a tool returns such a refusal, relay "
-            f"it plainly; do not invent a name collision or other cause."
+            f"are, that's the answer. Worlds and spaces belong to whoever created them. You can freely "
+            f"create and switch worlds (everyone present comes along) and edit any world you own. You "
+            f"can ALSO see and enter other users' PUBLIC worlds — list_worlds shows them under 'other "
+            f"users' public worlds', and switch_world(name, owner='<their-username>') takes you there — "
+            f"but you can't edit a world you don't own. If a tool refuses an edit to another user's "
+            f"world, relay it plainly; never invent a name collision or claim you can't see other users."
         )
         return self._prompt.format(name=name) + roster_line + identity_line
 

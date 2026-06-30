@@ -181,6 +181,32 @@ class WorldRepository:
             return []
         return sorted(p.relative_to(d).as_posix()[: -len(".json")] for p in d.rglob("*.json"))
 
+    def list_public(self, *, exclude_scope: str | None = None) -> list[dict]:
+        """Every PUBLIC world across *all* scopes — the cross-user 'worlds available to me' discovery
+        (co-location-plan §3). Returns `{scope, owner, name, public}` per world whose doc is public
+        (default true when the flag is absent). A filesystem walk that reads each doc — fine at small
+        scale; a derived world-index replaces it when discovery needs to scale (backlog). Scopes are
+        `<user>/agents/<agent>`, so we enumerate `<root>/*/agents/*` dirs."""
+        out: list[dict] = []
+        if not self.root.is_dir():
+            return []
+        for agent_dir in sorted(self.root.glob("*/agents/*")):
+            if not agent_dir.is_dir():
+                continue
+            scope = agent_dir.relative_to(self.root).as_posix()
+            if scope == exclude_scope:
+                continue
+            owner = scope.split("/", 1)[0]
+            for p in sorted(agent_dir.rglob("*.json")):
+                name = p.relative_to(agent_dir).as_posix()[: -len(".json")]
+                try:
+                    doc = json.loads(p.read_text())
+                except (OSError, ValueError):
+                    continue
+                if (doc.get("environment") or {}).get("public", True):
+                    out.append({"scope": scope, "owner": owner, "name": name, "public": True})
+        return out
+
     def exists(self, scope: str, name: str) -> bool:
         return self._path(scope, name).exists()
 

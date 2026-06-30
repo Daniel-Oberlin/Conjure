@@ -31,16 +31,12 @@ Today `/ws` connections are anonymous. Phase 4 tags each connection with a **use
 **Why that's fine for querying, and how queries work.** After Phase 2 a world doc is *tiny* — placed
 objects + style overrides + prefs + the `space`/`public` refs (the 45-surface geometry moved to the
 space). So reading docs is cheap, and the two queries you'd want are simple:
-- **"my worlds"** → `worlds.list(<my-scope>)` — a directory listing of `.cache/worlds/<my-scope>/`. To
-  show each one's public status, read its (tiny) doc.
-- **"worlds available to me"** → *my* worlds ∪ *other users'* **public** worlds — scan the other users'
-  world dirs and keep the ones whose `environment.public` is true. Cheap at small scale.
-
-For **Phase 4 itself, no cross-user world query is needed**: a guest connects to a *specific* owner's
-running server and joins whatever world is **active** (if public) — not a catalog browse. A "browse all
-public worlds" feature is future, and if world counts ever grow enough that scanning is slow, we add a
-small **world index** (a catalog table of owner/name/public/space, derived from the docs — like the
-asset catalog), with the doc staying the source of truth. Not needed now.
+- **"my worlds"** → `worlds.list(<my-scope>)` — a directory listing of `.cache/worlds/<my-scope>/`. *(done)*
+- **"worlds available to me"** → *my* worlds ∪ *other users'* **public** worlds. **Implemented** as
+  `WorldRepository.list_public()` (walk `<root>/*/agents/*`, read each doc, keep `environment.public` ≠
+  false), surfaced on `/worlds/list` as `available`, tagged by owner. `switch_world(name, owner=…)` then
+  enters another user's public world (everyone comes along; you can inhabit but not edit it). Cheap at
+  small scale; a derived index replaces the walk when it grows (backlog).
 
 - On `/ws` connect:
   - **owner** → send the snapshot as today.

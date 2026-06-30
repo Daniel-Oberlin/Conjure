@@ -645,6 +645,7 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
 class WorldRef(BaseModel):
     name: str
     scope: str = DEFAULT_SCOPE
+    owner: Optional[str] = None       # to switch into ANOTHER user's public world (cross-user navigation)
 
 
 class ScopeRef(BaseModel):
@@ -721,7 +722,12 @@ async def report_geolocation(req: GeoReport) -> dict:
 
 @app.post("/worlds/list")
 async def worlds_list(req: ScopeRef) -> dict:
-    return {"ok": True, "worlds": worlds.list(req.scope), "active": active_world if req.scope == active_scope else worlds.get_active(req.scope)}
+    """The caller's own worlds + which is active, plus `available`: every OTHER user's PUBLIC worlds
+    (cross-user discovery, co-location §3), each tagged with its owner so the director can switch into
+    one by owner+name."""
+    active = active_world if req.scope == active_scope else worlds.get_active(req.scope)
+    available = worlds.list_public(exclude_scope=req.scope)
+    return {"ok": True, "worlds": worlds.list(req.scope), "active": active, "available": available}
 
 
 @app.post("/worlds/new")
@@ -739,9 +745,17 @@ async def worlds_new(req: WorldRef) -> dict:
 @app.post("/worlds/switch")
 async def worlds_switch(req: WorldRef) -> dict:
     try:
-        if not worlds.exists(req.scope, req.name):
+        scope = req.scope
+        caller = req.scope.split("/", 1)[0]
+        if req.owner and req.owner != caller:                 # switching into ANOTHER user's public world
+            match = next((w for w in worlds.list_public(exclude_scope=req.scope)
+                          if w["owner"] == req.owner and w["name"] == world_path(req.name)), None)
+            if match is None:
+                return {"ok": False, "error": f"no public world {req.name!r} owned by {req.owner!r}"}
+            scope = match["scope"]                             # resolve owner+name → the owner's scope
+        if not worlds.exists(scope, req.name):
             return {"ok": False, "error": f"no world {req.name!r} (create it with new_world)"}
-        return await _switch_to(req.scope, req.name)
+        return await _switch_to(scope, req.name)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 

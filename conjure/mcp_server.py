@@ -497,15 +497,26 @@ async def delete_asset(id: str) -> str:
 
 @mcp.tool()
 async def list_worlds() -> str:
-    """List your saved worlds (and which one is active). Call this before switching so you match the
-    user's description ('the dining hall', 'that blade runner world') to a real world name."""
+    """List your saved worlds (and which one is active), plus other users' PUBLIC worlds you can visit.
+    Call this before switching so you match the user's description ('the dining hall', 'daniel's blade
+    runner world') to a real world. To switch into someone else's public world, pass its `owner` to
+    switch_world. You can enter another user's public world but can't edit it (it's theirs)."""
     out = await _post("/worlds/list", _body(scope=SCOPE))
     names = out.get("worlds", [])
-    if not names:
-        return "No saved worlds yet."
     active = out.get("active")
-    return "Worlds:\n" + "\n".join(f"  {'* ' if n == active else '  '}{n}" for n in names) + \
-        ("\n(* = active)" if active in names else "")
+    available = out.get("available", [])
+    lines = []
+    if names:
+        lines.append("Your worlds:")
+        lines += [f"  {'* ' if n == active else '  '}{n}" for n in names]
+        if active in names:
+            lines.append("(* = active)")
+    else:
+        lines.append("You have no saved worlds yet.")
+    if available:
+        lines.append("\nOther users' public worlds (switch with owner=…):")
+        lines += [f"  {w['owner']}: {w['name']}" for w in available]
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -519,13 +530,15 @@ async def new_world(name: str) -> str:
 
 
 @mcp.tool()
-async def switch_world(name: str) -> str:
-    """Switch to one of your existing worlds (saving the current one first). Match `name` to a real
-    world from list_worlds; formatting/case doesn't need to be exact."""
-    out = await _post("/worlds/switch", _body(name=name, scope=SCOPE))
+async def switch_world(name: str, owner: Optional[str] = None) -> str:
+    """Switch to a world (saving the current one first), bringing everyone present along. Match `name`
+    to a real world from list_worlds; formatting/case doesn't need to be exact. For one of YOUR worlds,
+    omit `owner`. To enter ANOTHER user's public world, pass their username as `owner` (e.g.
+    owner='daniel'); you can inhabit it but not edit it."""
+    out = await _post("/worlds/switch", _body(name=name, scope=SCOPE, owner=owner))
     if not out.get("ok"):
         return f"Couldn't switch to {name!r}: {out.get('error', 'unknown error')}."
-    return f"Switched to '{out.get('world', name)}'."
+    return f"Switched to '{out.get('world', name)}'" + (f" (owned by {owner})." if owner else ".")
 
 
 @mcp.tool()

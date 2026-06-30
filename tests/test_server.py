@@ -907,6 +907,23 @@ def test_guest_cannot_edit_the_world_but_reads_are_open(srv, client):
     assert client.post("/worlds/list", json={}, headers={"X-Conjure-User": "bob"}).status_code == 200
 
 
+def test_guest_can_discover_and_enter_owners_public_world(srv, client):
+    # the guest creates a world (flips active to bob), so daniel's "default" gets persisted on the way out
+    client.post("/worlds/new", json={"name": "guest-world", "scope": "bob/agents/builder"},
+                headers={"X-Conjure-User": "bob"})
+    # bob lists worlds → daniel's default shows up under `available`, tagged by owner
+    listing = client.post("/worlds/list", json={"scope": "bob/agents/builder"}).json()
+    avail = {(w["owner"], w["name"]) for w in listing["available"]}
+    assert ("daniel", "default") in avail
+    # bob switches INTO daniel's public world by owner+name → everyone comes along, active = daniel's
+    r = client.post("/worlds/switch", json={"name": "default", "scope": "bob/agents/builder",
+                                            "owner": "daniel"}, headers={"X-Conjure-User": "bob"}).json()
+    assert r["ok"] and srv.active_scope == "daniel/agents/builder"
+    # ...and bob still can't edit daniel's world
+    assert client.post("/style_surface", json={"target": "wall", "color": "red"},
+                       headers={"X-Conjure-User": "bob"}).status_code == 403
+
+
 def test_guest_may_create_and_switch_worlds_everyone_comes_along(srv, client):
     # navigation is NOT owner-gated: a guest creates a world in their OWN scope and everyone comes along.
     r = client.post("/worlds/new", json={"name": "guest-world", "scope": "bob/agents/builder"},
