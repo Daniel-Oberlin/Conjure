@@ -1004,6 +1004,14 @@ def test_world_visibility_create_private_and_toggle(srv, client):
     assert ("bob", "secret") not in seen
 
 
+def test_new_world_defaults_public(srv, client):
+    # created with no `public` arg → public by default ⇒ discoverable by other users
+    assert client.post("/worlds/new", json={"name": "shared", "scope": "bob/agents/builder"},
+                       headers={"X-Conjure-User": "bob"}).json()["ok"]
+    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
+    assert ("bob", "shared") in seen
+
+
 def worlds_seen(client, scope):
     return client.post("/worlds/list", json={"scope": scope}).json()["available"]
 
