@@ -202,7 +202,9 @@ class Director:
             f"plainly; never invent a name collision or claim a capability (like private worlds) is absent. "
             f"Library ASSETS work the same way: public by default (others on this server can reuse them), "
             f"and you can flip one with update_asset(id, public=…) — but only for assets YOU own; another "
-            f"user's asset that merely shows up in your searches stays theirs."
+            f"user's asset that merely shows up in your searches stays theirs. An asset's owner is the user "
+            f"in its `scope` column (the part before '/agents/'), readable via query_assets — so state who "
+            f"owns one from that rather than guessing or saying you can't tell."
         )
         return self._prompt.format(name=name) + roster_line + identity_line
 

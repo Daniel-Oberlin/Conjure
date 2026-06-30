@@ -223,6 +223,20 @@ def test_delete_asset_removes_from_catalog(srv, client):
     assert client.post("/delete_asset", json={"id": iid}).json()["ok"] is False   # gone now
 
 
+def test_generated_asset_belongs_to_the_caller_not_default(srv, client):
+    # guest generates an image → it's owned by GUEST's scope (X-Conjure-Scope), not the default user
+    iid = client.post("/images/generate", json={"prompt": "a stone bridge"},
+                      headers={"X-Conjure-Scope": "guest/agents/builder"}).json()["image_id"]
+    assert srv.library.get(iid)["scope"] == "guest/agents/builder"
+    # ...so guest can curate it — making it private now passes the scope check (the reported bug)
+    r = client.post("/update_asset", json={"id": iid, "public": False,
+                                           "scope": "guest/agents/builder"}).json()
+    assert r["ok"] and srv.library.get(iid)["public"] == 0
+    # a different user still can't change it
+    assert client.post("/update_asset", json={"id": iid, "public": True,
+                                              "scope": "daniel/agents/builder"}).json()["ok"] is False
+
+
 def test_query_assets_is_scoped_and_read_only(srv, client):
     pub = client.post("/images/generate", json={"prompt": "a red dragon"}).json()["image_id"]
     rows = client.post("/query_assets", json={"sql": "SELECT COUNT(*) AS n FROM assets"}).json()

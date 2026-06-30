@@ -46,9 +46,12 @@ def _body(**kw) -> dict[str, Any]:
 _USER = SCOPE.split("/", 1)[0]   # the logged-in user, for the owner-only-writes header (server-enforced)
 
 
+_HEADERS = {"X-Conjure-User": _USER, "X-Conjure-Scope": SCOPE}   # identity (owner gate) + full asset-ownership scope
+
+
 async def _post(path: str, body: dict[str, Any], timeout: float = 150.0) -> dict:
     async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(f"{BASE}{path}", json=body, headers={"X-Conjure-User": _USER})
+        resp = await client.post(f"{BASE}{path}", json=body, headers=_HEADERS)
         if resp.status_code == 403:                  # owner-only write refused → report it, don't crash
             return {"ok": False, "error": resp.json().get("error", "forbidden")}
         resp.raise_for_status()

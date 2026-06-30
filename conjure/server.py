@@ -21,6 +21,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -373,6 +374,35 @@ async def _owner_only_writes(request, call_next):
                 "ok": False, "error": f"This world belongs to {owner}; only the owner can change it."})
     return await call_next(request)
 
+
+# Asset ownership: a created asset belongs to WHOEVER made it (the caller), not the default user. The MCP
+# client sends its full scope as `X-Conjure-Scope`; a pure-ASGI middleware stashes it in a ContextVar
+# that the ingest paths (_store_image, model catalog) read — so guest's bridge image is owned by guest,
+# and guest can curate it (visibility, relabel). A missing header (direct dev CLI) ⇒ DEFAULT_SCOPE.
+_caller_scope: ContextVar[str] = ContextVar("caller_scope", default=DEFAULT_SCOPE)
+
+
+class _ScopeFromHeader:
+    """Pure-ASGI middleware (runs in the endpoint's own task, so the ContextVar reliably propagates —
+    unlike a BaseHTTPMiddleware, which would run the endpoint in a separate task)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            val = dict(scope.get("headers") or {}).get(b"x-conjure-scope")
+            token = _caller_scope.set(val.decode() if val else DEFAULT_SCOPE)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _caller_scope.reset(token)
+        else:
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(_ScopeFromHeader)
+
 # Durability: a background task writes the active world to its file whenever its rev advances. Polling
 # debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one write — and it
 # touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
@@ -465,7 +495,7 @@ def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     IMAGES[image_id] = rec
     # Write through to the durable catalog (keyed on the prompt = intent), so reuse can find it later
     # and its provenance survives a restart.
-    library.upsert(image_id, kind=_kind_for_op(op), scope=DEFAULT_SCOPE, source=f"cache://{image_id}",
+    library.upsert(image_id, kind=_kind_for_op(op), scope=_caller_scope.get(), source=f"cache://{image_id}",
                    filename=image_id, label=prompt, prompt=prompt,
                    params={"op": op, "transparent": transparent},
                    provider=result.provider, model=result.model, width=w, height=h,
@@ -1232,7 +1262,7 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
     # Catalog the model keyed on the search query (its intent) so it's reusable later; touch it so
     # recency reflects this use. licence/attribution are captured for the legal record.
     model_id = f"{record.hash}.glb"
-    library.upsert(model_id, kind="model", scope=DEFAULT_SCOPE, source=f"cache://{model_id}",
+    library.upsert(model_id, kind="model", scope=_caller_scope.get(), source=f"cache://{model_id}",
                    filename=model_id, label=record.title, query=req.query, licence=record.licence,
                    attribution=record.attribution, creator=record.creator,
                    attributes={"tris": record.tris, "bbox_min": record.bbox_min,
