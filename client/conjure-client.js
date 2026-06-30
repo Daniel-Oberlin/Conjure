@@ -443,7 +443,26 @@
   // reference frame (#world-root), and broadcast our own head/camera pose ~10 Hz. Pose is expressed in
   // #world-root's local frame so it aligns for everyone (AR: world-root is parked at the registered
   // frame; desktop: world-root is at identity, so it's just the camera pose).
-  var socket = null, R_AV = 0.13, GAP_AV = 0.03;
+  var socket = null, R_AV = 0.13, GAP_AV = 0.03, worldOwner = null, guestSpawned = false;
+
+  // Desktop-guest spawn (Phase 4 §6): a guest viewing on a desktop browser (no AR) isn't physically in
+  // the space, so drop them just to the OWNER's right the first time the owner's pose arrives, then let
+  // wasd/mouse take over. Desktop only (in AR the headset places you); #world-root is identity on
+  // desktop, so the owner's world-frame pose is also the scene-frame position for the rig.
+  function maybeSpawnGuest(ownerPose) {
+    if (guestSpawned || !ownerPose || !ownerPose.p) return;
+    var me = currentUser();
+    if (!me || me === worldOwner) return;                 // only a *guest* spawns relative to the owner
+    var sc = document.querySelector("a-scene");
+    if (sc && sc.is && sc.is("vr-mode")) return;          // AR session → the headset positions you
+    var rig = document.getElementById("rig"); if (!rig) return;
+    var THREE = AFRAME.THREE;
+    var q = new THREE.Quaternion(ownerPose.q[0], ownerPose.q[1], ownerPose.q[2], ownerPose.q[3]);
+    var right = new THREE.Vector3(1, 0, 0).applyQuaternion(q); right.y = 0; right.normalize();
+    var p = ownerPose.p;
+    rig.object3D.position.set(p[0] + right.x * 1.2, 0, p[2] + right.z * 1.2);   // 1.2 m to the owner's right
+    guestSpawned = true;
+  }
 
   function setAvatar(user, pose) {
     if (!pose || !pose.p) return;
@@ -487,10 +506,13 @@
     ws.onclose = function () { console.log("[conjure] disconnected — retrying in 2s"); setTimeout(connect, 2000); };
     ws.onmessage = function (ev) {
       var msg = JSON.parse(ev.data);
-      if (msg.type === "snapshot") applySnapshot(msg.world);
+      if (msg.type === "snapshot") { worldOwner = msg.owner || worldOwner; applySnapshot(msg.world); }
       else if (msg.type === "patch") applyPatch(msg.patch);
       else if (msg.type === "info") showInfo(msg.msg);    // e.g. "'<world>' is private — ask <owner>…"
-      else if (msg.type === "presence") setAvatar(msg.user, msg.pose);
+      else if (msg.type === "presence") {
+        setAvatar(msg.user, msg.pose);
+        if (msg.user === worldOwner) maybeSpawnGuest(msg.pose);   // a guest drops in to the owner's right
+      }
       else if (msg.type === "presence_leave") removeAvatar(msg.user);
       else if (msg.type === "recapture") {                // realign request → re-capture the room
         var sc = document.querySelector("a-scene");

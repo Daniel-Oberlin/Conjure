@@ -595,7 +595,7 @@ async def reset_world() -> dict:
     _reset_room_authority(store)
     _surface_absence.clear()                 # fresh room session
     _save_active()                            # persist the reset so it survives a restart
-    await _broadcast({"type": "snapshot", "world": store.doc})
+    await _broadcast(_snapshot_msg())
     return {"ok": True, "rev": store.doc["rev"]}
 
 
@@ -612,7 +612,7 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     active_space, store = _activate(scope, name, raw)   # compose the incoming world against its space
     worlds.set_active(scope, name)
     _surface_absence.clear()                  # the room re-syncs into the newly active world
-    await _broadcast({"type": "snapshot", "world": store.doc})
+    await _broadcast(_snapshot_msg())
     return {"ok": True, "world": name, "rev": store.doc["rev"]}
 
 
@@ -1718,7 +1718,7 @@ async def ws(websocket: WebSocket) -> None:
     joined = (user == owner) or public
     if joined:
         clients[websocket] = user                                # joined → gets the world + broadcasts
-        await websocket.send_json({"type": "snapshot", "world": store.doc})
+        await websocket.send_json(_snapshot_msg())
     else:                                                        # guest + private world → no world, info msg
         await websocket.send_json({"type": "info", "level": "info",
             "msg": f"'{active_world}' is private — ask {owner} to make it public."})
@@ -1739,6 +1739,12 @@ async def ws(websocket: WebSocket) -> None:
         clients.pop(websocket, None)
         if joined:
             await _broadcast({"type": "presence_leave", "user": user})   # drop their avatar everywhere
+
+
+def _snapshot_msg() -> dict:
+    """The snapshot a client receives — the world plus the active world's OWNER, so a desktop guest
+    knows whom to spawn next to (Phase 4 §6)."""
+    return {"type": "snapshot", "world": store.doc, "owner": active_scope.split("/", 1)[0]}
 
 
 async def _broadcast(message: dict, *, skip: "WebSocket | None" = None) -> None:

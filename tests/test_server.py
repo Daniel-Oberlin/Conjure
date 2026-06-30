@@ -844,7 +844,8 @@ def test_geolocation_new_location_creates_a_space(srv, client):
 # ---- Phase 4 step 1: per-connection user + public-join gate --------------------------------------
 def test_ws_owner_and_public_guest_receive_the_world(srv, client):
     with client.websocket_connect("/ws?user=daniel") as ws:        # owner
-        assert ws.receive_json()["type"] == "snapshot"
+        snap = ws.receive_json()
+        assert snap["type"] == "snapshot" and snap["owner"] == "daniel"   # owner in snapshot (desktop-guest spawn)
     with client.websocket_connect("/ws?user=bob") as ws:           # guest, world public by default
         assert ws.receive_json()["type"] == "snapshot"
     with client.websocket_connect("/ws") as ws:                    # no user → default (owner)
