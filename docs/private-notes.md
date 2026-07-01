@@ -3,9 +3,6 @@
 ## Bugs
 - Weird transparent rectangle area barely visible
 
-# Prompts
-= Is it ok to format and organize prompts.md to make it properly readable and maintainable by a human?
-
 # Graphics
 - Lighting
 
@@ -61,9 +58,6 @@
 ## Persistance
 - Preferences
  - colors
-- Asset store
-- Worlds store
- - Different worlds can map onto the same location
 - Dymamic module store
 
 ## CLI Client
