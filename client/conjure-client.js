@@ -569,6 +569,7 @@
         this._haveT = false;
         this._lostSince = 0;        // when registration last lost its lock (0 = locked)
         this._reloc = false;        // showing the passthrough "re-localizing" fallback?
+        this._lastDiag = null;      // last capture's frame (yaw/px/pz) — for the per-capture drift delta
         this._refSeq = 0;           // counter for minting brand-new surface ids
         var self = this;
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
@@ -664,6 +665,44 @@
         }
         if (el) el.setAttribute("visible", on);
       },
+      // Co-location diagnostics (debug_log only): one line + a head-locked HUD PER capture, so drift is
+      // measurable. Shows role, #reference vs #detected planes, the register vote's stat (inliers/total,
+      // candidate-yaw count, solved yaw + translation, or the no-lock reason), whether it LOCKed, and the
+      // frame's change since the previous capture (Δpos/Δyaw of _Tmat). Reading it:
+      //   • Δpos≈0, Δyaw≈0 across captures ⇒ frame is STABLE. If content still looks off, it's a STATIC
+      //     mis-registration (wrong frame) — check inliers (low ⇒ weak/ambiguous lock) → matcher work.
+      //   • Δpos/Δyaw creeping one way ⇒ frame is WALKING ⇒ unstable registration → matcher work.
+      //   • repeated "hold" with low inl=x/y ⇒ never locking (too little overlap from this vantage).
+      _diag: function (amOwner, nCur, reg) {
+        var m = reg || (this._haveT ? this._Tmat : null), dTxt = "";
+        if (m) {
+          var e = m.elements, yaw = Math.atan2(e[8], e[0]) * 180 / Math.PI, px = e[12], pz = e[14];
+          if (this._lastDiag) {
+            var dy = Math.abs(((yaw - this._lastDiag.yaw + 540) % 360) - 180);
+            var dp = Math.hypot(px - this._lastDiag.px, pz - this._lastDiag.pz);
+            dTxt = "  Δpos=" + dp.toFixed(3) + "m Δyaw=" + dy.toFixed(1) + "°";
+          }
+          this._lastDiag = { yaw: yaw, px: px, pz: pz };
+        }
+        var line = (amOwner ? "OWNER" : "GUEST") + " ref=" + this._ref.length + " cur=" + nCur
+          + "  " + (this._regStat || "?") + (reg ? "  LOCK" : "  hold") + dTxt;
+        debugLog("coloc", line);
+        this._diagHud(line);
+      },
+      _diagHud: function (text) {
+        var el = document.getElementById("coloc-hud");
+        if (!el) {
+          var cam = document.querySelector("a-camera") || document.querySelector("[camera]");
+          if (!cam) return;
+          el = document.createElement("a-entity");
+          el.id = "coloc-hud";
+          el.setAttribute("position", "0 -0.35 -1");         // head-locked, lower-center, ~1 m ahead
+          el.setAttribute("text", { value: "", align: "center", color: INFO_COLOR, width: 1.2, baseline: "center" });
+          el.setAttribute("overlay", "");                    // draw on top so passthrough/room never hides it
+          cam.appendChild(el);
+        }
+        el.setAttribute("text", "value", text);
+      },
       tick: function (time) {
         var sceneEl = this.el.sceneEl, frame = sceneEl.frame;
         if (!frame) return;
@@ -755,6 +794,7 @@
         // otherwise (and ALWAYS for a guest) require a confident registration — a low-confidence result
         // means we're not locked, so hold + retry fast. A guest can never establish a fresh frame.
         var reg = this._register(cur), canEstablish = amOwner && this._ref.length === 0;
+        if (window.CONJURE_DEBUG_LOG) this._diag(amOwner, cur.length, reg);   // one line + HUD PER capture
         if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - 1700; return; }   // not locked → hold
         if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }   // re-locked → restore
         var registered = !!reg, Tmat;
@@ -762,8 +802,7 @@
         else { Tmat = this._anchorInv || new THREE.Matrix4(); this._Tmat = Tmat; this._haveT = true; }  // establish fresh
         this._anchorInv = Tmat;
         if (!amOwner) {                                  // GUEST: localized into the shared frame — done. The
-          this.lastPost = time;                          // per-frame _updateWorldFrame keeps world-root pinned.
-          debugLog("coloc", "guest locked the shared frame (" + (this._regStat || "?") + ")");
+          this.lastPost = time;                          // per-frame _updateWorldFrame keeps world-root pinned;
           return;                                        // never author/mint/post — that's what caused the drift
         }
 
