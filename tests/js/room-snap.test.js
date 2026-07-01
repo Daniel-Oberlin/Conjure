@@ -308,7 +308,9 @@ test("canonicalFrame is deterministic and puts the room centroid at the origin",
   const a = RS.canonicalFrame(THREE, walls).Tmat, b = RS.canonicalFrame(THREE, walls).Tmat;
   assert.ok(a.elements.every((e, i) => Math.abs(e - b.elements[i]) < 1e-12), "same input ⇒ identical frame");
   const c = new THREE.Vector3(); walls.forEach((w) => c.add(w.pos)); c.multiplyScalar(1 / walls.length);
-  assert.ok(c.applyMatrix4(a).length() < 1e-6, "the room centroid maps to the origin");
+  const cc = c.clone().applyMatrix4(a);
+  assert.ok(Math.hypot(cc.x, cc.z) < 1e-6, "the room's HORIZONTAL center maps to the origin");
+  assert.ok(Math.abs(cc.y - c.y) < 1e-6, "Y is preserved (floor stays at the floor, not canonicalized)");
 });
 
 test("canonicalFrame declines with too little geometry (< 2 walls)", () => {

@@ -166,6 +166,8 @@
     var c = new THREE.Vector3();
     walls.forEach(function (w) { c.add(w.pos); });
     c.multiplyScalar(1 / walls.length);
+    c.y = 0;   // canonicalize the HORIZONTAL center + yaw only (like register) — keep the FLOOR at the floor;
+               // wall positions sit at mid-height, so translating by their y would float the world ~1.2 m up
     // Tmat: rotate refSpace by -theta about gravity (the forward wall's normal → +Z), then bring the
     // centroid to the origin. The room's canonical pose is identical every session ⇒ consistent orientation.
     var R = new THREE.Quaternion().setFromAxisAngle(UP, -theta);

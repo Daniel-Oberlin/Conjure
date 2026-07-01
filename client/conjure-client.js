@@ -204,13 +204,14 @@
   }
 
   function applyImmersion() {
-    // The synthetic holodeck shell (grid floor/walls) + the void sky belong ONLY to "unbounded VR"
-    // (room inactive). Whenever the room is active — AR passthrough OR a virtual room — hide them so
-    // you see the room, not the grid/void competing with it. (In AR the void a-sky would also occlude
-    // the passthrough camera, so it must be hidden there too.)
+    // The synthetic holodeck shell (grid floor/walls) + the void sky belong ONLY to an EMPTY "unbounded
+    // VR" (room inactive AND no chosen skybox). Hide them whenever the room is active — AR passthrough or
+    // a virtual room — OR a skybox IS the environment (an outdoor/void world), so the grid never competes
+    // with the room or the sky. (In AR the void a-sky would also occlude passthrough, so it's hidden too.)
     var inRoom = roomState.active;
+    var showScaffold = !inRoom && !roomState.skybox && !roomState.grounded;   // holodeck only in a bare void
     document.querySelectorAll("[data-scaffold]").forEach(function (el) {
-      el.setAttribute("visible", !inRoom);
+      el.setAttribute("visible", showScaffold);
     });
     // Exception: a custom skybox IMAGE *is* the chosen environment, so keep it visible even with the
     // room active — its opaque sphere deliberately wraps/occludes passthrough so you see the skybox,
