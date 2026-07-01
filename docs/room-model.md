@@ -339,8 +339,18 @@ same physical anchor. With content already anchor-relative, the world reloads fi
 > the authoritative broadcast each capture, solves `_Tmat`, pins `#world-root`, and **never** establishes,
 > lerp-mutates, mints, or posts geometry. This removes the feedback-drift a guest used to cause by
 > evolving its local copy of the shared reference (the "world drifts more over time" symptom). Presence
-> avatars are also done. **Remaining work: matcher robustness** for the guest's partial/extra plane set
-> (the register vote must lock on partial overlap from a different vantage).
+> avatars are also done.
+>
+> **Implemented (matcher robustness for partial/extra planes).** `register()` now tolerates a guest's
+> different vantage: (a) an **asymmetric size gate** admits a plane that's a PARTIAL (smaller) view of a
+> reference and only rejects a notably larger one; (b) acceptance scores **distinct reference surfaces
+> COVERED under one transform** (not fraction-of-detected), so EXTRA clutter planes can't sink the lock
+> and fragmentation can't double-count — accept on `cov ≥ 4` and `cov ≥ 0.3·ref`; (c) top-5 candidate
+> yaws (clutter can dilute the true peak). A genuinely different space still can't cover ≥4 reference
+> surfaces consistently ⇒ null ("not in this space"). **Known limit:** a symmetric room (equal opposite
+> walls) is genuinely ambiguous from one vantage — the vote can lock 180°-off (same class as the
+> boundary-flip); distinguishing features (distinct wall sizes, doors/art) resolve it. Thresholds
+> (`SIZE_TOL`, `MIN_COV`, `MIN_COV_FRAC`) are named for on-device tuning with a second headset.
 
 **One model, N perceptions.** There is exactly **one** world model (the server doc) in exactly **one**
 coordinate frame (the authority's anchor frame, §8a). A secondary headset does **not** build its own

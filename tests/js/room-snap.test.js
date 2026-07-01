@@ -233,6 +233,60 @@ test("register declines (returns null) when the reference is too small", () => {
   assert.strictEqual(stat, "ref<3");
 });
 
+// --- Multi-user co-location robustness (room-model §8): a GUEST registers its own planes onto the
+// authority's reference from a different vantage, so it sees a PARTIAL/EXTRA plane set. ---
+const rectRoom = () => {                          // room with 4 ALL-DISTINCT-width walls (breaks the 180°
+  // rotational ambiguity a symmetric rectangle has from one vantage) + floor + ceiling. Opposite widths
+  // differ by > SIZE_TOL so the size gate rules out the mirror solution → a unique transform.
+  const wall = (pos, yaw, ext) => ({ sem: "wall", pos: new THREE.Vector3(...pos), ext, nyaw: yaw, orient: "vertical" });
+  const horiz = (sem, pos, ext) => ({ sem, pos: new THREE.Vector3(...pos), ext, nyaw: 0, orient: "horizontal" });
+  return [wall([0, 1.2, -1.5], 0, [4.0, 2.4]), wall([0, 1.2, 1.5], Math.PI, [3.0, 2.4]),
+          wall([2, 1.2, 0], Math.PI / 2, [2.5, 2.4]), wall([-2, 1.2, 0], -Math.PI / 2, [1.5, 2.4]),
+          horiz("floor", [0, 0, 0], [4, 3]), horiz("ceiling", [0, 2.4, 0], [4, 3])];
+};
+const asCapture = (ref, thetaDeg, t) => {         // cur seen after the frame jumped: ref = R(theta)·cur + t
+  const Rneg = new THREE.Quaternion().setFromAxisAngle(UP, -thetaDeg * D2R);
+  return ref.map((r) => ({ sem: r.sem, ext: r.ext.slice(), orient: r.orient,
+    pos: r.pos.clone().sub(t).applyQuaternion(Rneg), nyaw: r.nyaw - thetaDeg * D2R }));
+};
+const mapsOnto = (Tmat, cur, ref, n) => {
+  for (let i = 0; i < n; i++) assert.ok(cur[i].pos.clone().applyMatrix4(Tmat).distanceTo(ref[i].pos) < 0.05,
+    "surface " + i + " maps onto its reference position");
+};
+
+test("register locks despite EXTRA clutter planes that inflate the detected count", () => {
+  const ref = rectRoom();
+  const cur = asCapture(ref, 160, new THREE.Vector3(2.5, 0, -1.0));
+  for (let i = 0; i < 12; i++) cur.push({ sem: "clutter", ext: [0.6, 0.6], orient: "vertical",  // furniture, no reference
+    pos: new THREE.Vector3((i * 1.7) % 9 - 4, 0.4 + (i % 3) * 0.6, (i * 2.3) % 7 - 3), nyaw: i * 0.7 });
+  const { Tmat, stat } = RS.register(THREE, cur, ref);
+  assert.ok(Tmat, "locks on the 6 real surfaces despite 12 clutter planes: " + stat);
+  mapsOnto(Tmat, cur, ref, ref.length);
+  assert.ok(6 < 0.4 * cur.length, "sanity: the OLD fraction-of-detected rule (40%) would have rejected this");
+});
+
+test("register locks on a PARTIAL capture (some reference surfaces missing/occluded)", () => {
+  const ref = rectRoom();
+  const cur = asCapture(ref, -95, new THREE.Vector3(-1.0, 0, 3.0)).slice(0, 4);   // only the 4 walls seen
+  const { Tmat, stat } = RS.register(THREE, cur, ref);
+  assert.ok(Tmat, "locks with only 4 of 6 surfaces visible: " + stat);
+  mapsOnto(Tmat, cur, ref, 4);
+});
+
+test("register declines when too few reference surfaces are covered (< MIN_COV)", () => {
+  const ref = rectRoom();
+  const cur = asCapture(ref, 30, new THREE.Vector3(1, 0, 1)).slice(0, 3);   // only 3 covered → below the floor
+  assert.strictEqual(RS.register(THREE, cur, ref).Tmat, null);
+});
+
+test("register declines a genuinely different (differently-sized) room", () => {
+  const ref = rectRoom();
+  const w = (pos, yaw, ext) => ({ sem: "wall", pos: new THREE.Vector3(...pos), ext, nyaw: yaw, orient: "vertical" });
+  const cur = [w([0, 1.2, -2.5], 0, [6, 2.4]), w([0, 1.2, 2.5], Math.PI, [6, 2.4]),   // a bigger room — walls
+               w([3, 1.2, 0], Math.PI / 2, [5, 2.4]), w([-3, 1.2, 0], -Math.PI / 2, [5, 2.4])];  // too large to be partials
+  assert.strictEqual(RS.register(THREE, cur, ref).Tmat, null, "different-scale room doesn't false-lock");
+});
+
 // --- Golden room: a REAL Quest capture (45 surfaces, two rooms via connecting doors). The synthetic
 // tests above encode our assumptions about the device's conventions; this one pins those assumptions to
 // the actual hardware — it feeds the captured planes (with their true normals/roll) through the same
