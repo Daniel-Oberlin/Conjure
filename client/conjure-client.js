@@ -14,8 +14,9 @@
   // Mirror a diagnostic line to the console + the server (POST /client_log → temp/conjure.log), so
   // headset-side logs are captured without remote browser debugging. Gated by a server-injected flag
   // (window.CONJURE_DEBUG_LOG ← settings.debug_log); when off, nothing is logged or sent.
-  function debugLog(tag, msg) {
-    if (!window.CONJURE_DEBUG_LOG) return;
+  function debugLog(tag, msg, on) {
+    if (on === undefined) on = window.CONJURE_DEBUG_LOG;   // callers may gate on a different flag (e.g. registration)
+    if (!on) return;
     console.log("[conjure][" + tag + "] " + msg);
     try {
       fetch("/client_log", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -686,7 +687,7 @@
         }
         var line = (amOwner ? "OWNER" : "GUEST") + " ref=" + this._ref.length + " cur=" + nCur
           + "  " + (this._regStat || "?") + (reg ? "  LOCK" : "  hold") + dTxt;
-        debugLog("coloc", line);
+        debugLog("coloc", line, window.CONJURE_DEBUG_REGISTRATION);   // gated by --debug-registration, not debug_log
         this._diagHud(line);
       },
       _diagHud: function (text) {
@@ -794,7 +795,7 @@
         // otherwise (and ALWAYS for a guest) require a confident registration — a low-confidence result
         // means we're not locked, so hold + retry fast. A guest can never establish a fresh frame.
         var reg = this._register(cur), canEstablish = amOwner && this._ref.length === 0;
-        if (window.CONJURE_DEBUG_LOG) this._diag(amOwner, cur.length, reg);   // one line + HUD PER capture
+        if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, reg);   // opt-in: one line + HUD/capture
         if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - 1700; return; }   // not locked → hold
         if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }   // re-locked → restore
         var registered = !!reg, Tmat;
