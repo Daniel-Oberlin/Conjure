@@ -6,6 +6,44 @@ delete them here) when done.
 
 ---
 
+## `view_relative` can't tell you're looking at a placed OBJECT (only room surfaces)
+
+**Status:** open · noted 2026-07-01 (diagnosed from a live session — "the LLM couldn't tell I was
+looking at the tree")
+
+**Symptom:** "what am I looking at / what model am I looking at" reliably names walls/doors but misses
+placed models. In one session the director could tell the user was looking at the **dog** and the
+**shell** but NOT the **tree** — same tool, opposite results.
+
+**Diagnosis (two-part):**
+1. **`view_relative` never ray-tests objects — only real surfaces.** `surface = _ray_surface(origin, vec)`
+   skips anything without `meta.real`, so the "what you're looking at" result can only ever be a
+   wall/door/floor. Placed models appear ONLY via `nearby = _nearby_entities(point, 1.5)` — things within
+   1.5 m of a SINGLE probe point (`origin + forward·distance`, where the director guesses `distance`).
+2. **`nearby` measures distance to the raw `transform.position` = the model's ORIGIN**, which is only a
+   good proxy for "where the object is" when the origin sits at the visible object. It worked for the dog
+   (`[1.5, 0.20, -2]`) and shell (`[0, 0, -2]`) — their origins are right where they visually are, ~2 m
+   ahead near gaze level, so the probe sphere caught them. It failed for the tree (`[0.08, 5.01, 2.8]`,
+   scale 4): that's the tree's GLB **origin ~5 m up** (the tree visually stands on the floor — NOT a
+   placement bug, confirmed with the user), so the eye-level probe point is never within 1.5 m of it. The
+   director then fell back to eyeballing coords — unreliable.
+
+**Proposed fix:** replace the origin-point-sphere with a **gaze-ray vs. each object's world bounding box**
+(position + bbox × scale) test; the nearest of {surface hit, object hit} is "what you're looking at".
+Finds an object by its BODY regardless of where the GLB pivot sits, and along the true 3-D ray (so a tree
+you tilt up to see is hit). Add an `object` field (id, title, distance) alongside `surface`.
+
+**Prerequisite (why it's not a one-liner):** placed entities **don't currently store bbox** —
+`meta.bbox_min`/`bbox_max` are `None` on the placed models (the catalog has them; `_model_entity_op`
+takes them but doesn't write them onto the entity). So first thread the model extents onto the placed
+entity (from the catalog at place time, or compute the world AABB client-side), then ray-test against it.
+
+**Also noticed (separate):** the Beagle entity has `scale=0.00` — a degenerate/near-zero scale worth a
+look on its own (may be a normalize/scale bug at placement).
+
+**Open decision:** ray-vs-AABB (needs oriented handling) vs. ray-vs-bounding-sphere (simpler, looser);
+and whether "looking at" should prefer the nearest hit or the smallest angular offset from gaze center.
+
 ## Multi-observer room fusion — refine the shared model from every headset (server-side)
 
 **Status:** future feature · noted 2026-06-30 (deferred while building register-only guests, co-location §5)
