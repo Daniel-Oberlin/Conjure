@@ -736,6 +736,20 @@
         }
         this._updateWorldFrame(frame, refSpace);            // EVERY frame: park #world-root on the frame
         this._pinSky();                                     // …and pin the sky to that SAME frame (see below)
+        // One-time render diagnostic: the actual foveation + XR framebuffer size + per-eye viewport. Tells
+        // us whether foveation is really off (peripheral-blur suspect) and whether the used viewport is a
+        // sub-rect of the framebuffer (the fuzzy right/bottom-band suspect). debug_log-gated, logged once.
+        if (window.CONJURE_DEBUG_LOG && !this._loggedRender) {
+          this._loggedRender = true;
+          try {
+            var xr = sceneEl.renderer.xr, session = xr.getSession(), bl = session && session.renderState.baseLayer;
+            var vp = "", vpose = frame.getViewerPose(refSpace);
+            if (vpose && bl) vpose.views.forEach(function (v, i) {
+              var p = bl.getViewport(v); vp += " eye" + i + "=" + p.x + "," + p.y + " " + p.width + "x" + p.height; });
+            debugLog("render", "foveation=" + xr.getFoveation()
+              + " fb=" + (bl ? bl.framebufferWidth + "x" + bl.framebufferHeight : "?") + vp);
+          } catch (e) { debugLog("render", "diag failed: " + e); }
+        }
         if (!frame.detectedPlanes) return;                  // capture needs plane detection
         if (time - this.lastPost < 2000) return;            // throttle to ~0.5 Hz
         var THREE = AFRAME.THREE, self = this, UP = new THREE.Vector3(0, 1, 0);
