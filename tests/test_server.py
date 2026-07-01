@@ -86,6 +86,41 @@ def test_place_image_on_surface_aligns_and_fits_the_frame(srv, client):
     assert 0.01 < math.dist(img["transform"]["position"], [0.7, 1.72, -1.04]) < 0.05
 
 
+def test_on_surface_image_re_anchors_when_the_surface_moves(srv, client):
+    import math
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
+         "rotation": [0.0, -41.0, 0.0], "extent": [0.5, 0.4]}]})
+    r = client.post("/place_image", json={"image_id": _procure(client), "on_surface": "wall art 18"}).json()
+    eid = r["id"]
+    img = next(e for e in _entities(client) if e["id"] == eid)
+    assert img["meta"]["on_surface"] == "real_wall_art_18"            # home surface recorded
+    p0 = img["transform"]["position"]
+    # re-capture: the surface moved ~0.7 m (a re-registration). The image must FOLLOW, not strand.
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_art_18", "semantic": "wall art", "position": [1.2, 1.6, -0.5],
+         "rotation": [0.0, -41.0, 0.0], "extent": [0.5, 0.4]}]})
+    img2 = next(e for e in _entities(client) if e["id"] == eid)
+    assert 0.01 < math.dist(img2["transform"]["position"], [1.2, 1.6, -0.5]) < 0.05   # ~2 cm off the NEW pose
+    assert math.dist(img2["transform"]["position"], p0) > 0.3         # it actually moved with the surface
+
+
+def test_reanchor_surface_images_repins_stranded_on_compose():
+    import math
+    from conjure.server import _reanchor_surface_images
+    doc = {"entities": [
+        {"id": "real_wall_5", "meta": {"real": True, "semantic": "wall"},
+         "transform": {"position": [2.0, 1.5, 0.0], "rotation": [0.0, 90.0, 0.0]},
+         "components": {"surface": {"extent": [1.0, 2.0]}}},
+        {"id": "ent_image_x", "meta": {"on_surface": "real_wall_5", "image_id": "a.png"},
+         "transform": {"position": [-9.0, -9.0, -9.0], "rotation": [0, 0, 0]},   # stranded (stale absolute pos)
+         "components": {"geometry": {"primitive": "plane", "width": 0.5, "height": 0.5}}}]}
+    _reanchor_surface_images(doc)
+    img = doc["entities"][1]
+    assert img["transform"]["rotation"] == [0.0, 90.0, 0.0]           # adopts the surface's orientation
+    assert 0.01 < math.dist(img["transform"]["position"], [2.0, 1.5, 0.0]) < 0.05   # ~2 cm in front of the wall
+
+
 def test_place_image_on_unknown_surface_errors(srv, client):
     image_id = _procure(client)
     r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 999"}).json()
