@@ -180,6 +180,9 @@ store: "WorldStore | None" = None
 active_scope: str = DEFAULT_SCOPE
 active_world: str = "default"
 active_space: str = "home"          # the space the active world is composed against
+VOID = "<void>"                     # sentinel space for an OUTDOOR/void world — not tied to a captured room;
+                                    # it shows a skybox + placed objects, and the client derives its frame
+                                    # on the fly from live walls (RoomSnap.canonicalFrame) instead of a space
 # The embedder is None unless the optional torch/transformers are installed — then vector write-through
 # is simply skipped and the catalog runs on FTS/exact only. Lazy: no model loads until first embed.
 embedder = build_embedder(settings)
@@ -417,6 +420,11 @@ def _save_active() -> None:
     """Persist the live composed doc by SPLITTING it: real-surface geometry + boundary → the active
     space; placed objects + display prefs + per-surface style overrides → the active world doc."""
     if store is None or worlds is None or spaces is None:
+        return
+    if active_space == VOID:                                        # outdoor/void world: no space to split out
+        world_doc = copy.deepcopy(store.doc)
+        world_doc.setdefault("environment", {})["space"] = VOID
+        worlds.save(active_scope, active_world, WorldStore(world_doc))
         return
     user = active_scope.split("/", 1)[0]
     space = spaces.load(user, active_space) if spaces.exists(user, active_space) else \
@@ -749,6 +757,7 @@ class WorldRef(BaseModel):
     scope: str = DEFAULT_SCOPE
     owner: Optional[str] = None       # to switch into ANOTHER user's public world (cross-user navigation)
     public: bool = True               # new_world: create public (default) or private
+    outdoor: bool = False             # new_world: an OUTDOOR/void world (skybox, no room; space = <void>)
 
 
 class ScopeRef(BaseModel):
@@ -787,6 +796,8 @@ async def report_geolocation(req: GeoReport) -> dict:
     user = active_scope.split("/", 1)[0]
     if req.user and req.user != user:                 # a guest's location must not re-select the space
         return {"ok": True, "selected": False}
+    if active_space == VOID:                           # an outdoor/void world is space-independent — don't
+        return {"ok": True, "selected": False}         # let geolocation yank you into a physical space
     geo = {"lat": req.lat, "lon": req.lon, "accuracy": req.accuracy}
     if _geo_selected:
         return {"ok": True, "selected": False}        # already chose this session
@@ -845,7 +856,10 @@ async def worlds_new(req: WorldRef) -> dict:
         if worlds.exists(req.scope, req.name):
             return {"ok": False, "error": f"world {req.name!r} already exists — switch to it instead"}
         fresh = _new_world_store(req.scope)
-        fresh.doc.setdefault("environment", {})["public"] = req.public   # public by default; private if asked
+        env = fresh.doc.setdefault("environment", {})
+        env["public"] = req.public                                      # public by default; private if asked
+        if req.outdoor:
+            env["space"] = VOID                                         # outdoor/void world — no room, canonical frame
         return await _switch_to(req.scope, req.name, store_override=fresh)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
@@ -1083,6 +1097,10 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, WorldStore
     user = scope.split("/", 1)[0]
     doc = world.doc
     space_name = (doc.get("environment", {}) or {}).get("space")
+    if space_name == VOID:                                          # outdoor/void world: no space geometry
+        composed = WorldStore(copy.deepcopy(doc))                  # nothing to compose — objects + skybox only
+        _reset_room_authority(composed)
+        return VOID, composed
     if space_name and spaces.exists(user, space_name):
         space, world_doc = spaces.load(user, space_name), doc          # already migrated
     else:

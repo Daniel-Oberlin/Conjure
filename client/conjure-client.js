@@ -204,13 +204,14 @@
   }
 
   function applyImmersion() {
-    // The synthetic holodeck shell (grid floor/walls) + the void sky belong ONLY to "unbounded VR"
-    // (room inactive). Whenever the room is active — AR passthrough OR a virtual room — hide them so
-    // you see the room, not the grid/void competing with it. (In AR the void a-sky would also occlude
-    // the passthrough camera, so it must be hidden there too.)
+    // The synthetic holodeck shell (grid floor/walls) + the void sky belong ONLY to an EMPTY "unbounded
+    // VR" (room inactive AND no chosen skybox). Hide them whenever the room is active — AR passthrough or
+    // a virtual room — OR a skybox IS the environment (an outdoor/void world), so the grid never competes
+    // with the room or the sky. (In AR the void a-sky would also occlude passthrough, so it's hidden too.)
     var inRoom = roomState.active;
+    var showScaffold = !inRoom && !roomState.skybox && !roomState.grounded;   // holodeck only in a bare void
     document.querySelectorAll("[data-scaffold]").forEach(function (el) {
-      el.setAttribute("visible", !inRoom);
+      el.setAttribute("visible", showScaffold);
     });
     // Exception: a custom skybox IMAGE *is* the chosen environment, so keep it visible even with the
     // room active — its opaque sphere deliberately wraps/occludes passthrough so you see the skybox,
@@ -347,14 +348,20 @@
   // (jumping you out of the room); instead it seeds its reference from these so its first capture
   // registers INTO the persisted frame. Stays null until a snapshot carrying real surfaces arrives.
   var docSurfaces = null;
+  // A VOID/outdoor world (environment.space === "<void>") isn't tied to a captured room — it shows a
+  // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
+  // instead of registering against stored geometry. Set from each snapshot.
+  var VOID_SPACE = "<void>", isVoidWorld = false;
 
   function applySnapshot(world) {
     root().innerHTML = "";
     (world.entities || []).forEach(applyEntity);
     applyEnv(world.environment);   // after entities, so immersion can toggle them
+    isVoidWorld = ((world.environment || {}).space === VOID_SPACE);
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
     if (reals.length) docSurfaces = reals;     // available to seed the room frame on reload
-    console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)");
+    console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)"
+      + (isVoidWorld ? " [outdoor/void]" : ""));
   }
 
   // Apply a single dotted-path set from an `update` op.
@@ -690,6 +697,20 @@
         debugLog("coloc", line, window.CONJURE_DEBUG_REGISTRATION);   // gated by --debug-registration, not debug_log
         this._diagHud(line);
       },
+      // Pin the skybox to the WORLD frame, not the headset's tracking origin. The <a-sky>/#grounded-sky
+      // live as scene children (they can't go inside #world-root — applySnapshot clears its innerHTML),
+      // so they'd otherwise render at identity in the arbitrary per-session tracking frame, making a
+      // skybox's orientation change between visits while the (registered) room stays put. Copy #world-root's
+      // orientation onto both so the sky rides the SAME persistent frame as the room. Rotation only:
+      // #world-root's rotation is a pure gravity-aligned yaw (the register vote solves yaw + x/z only), so
+      // a plain sky sphere stays viewer-centered and a grounded dome spins about vertical — its ground
+      // stays flat on the floor, just re-oriented. In a void world (world-root ≈ identity) this is a no-op.
+      _pinSky: function () {
+        var wr = document.getElementById("world-root"); if (!wr) return;
+        var q = wr.object3D.quaternion;
+        var sky = document.getElementById("sky"); if (sky) sky.object3D.quaternion.copy(q);
+        var g = document.getElementById("grounded-sky"); if (g) g.object3D.quaternion.copy(q);
+      },
       _diagHud: function (text) {
         var el = document.getElementById("coloc-hud");
         if (!el) {
@@ -714,6 +735,7 @@
           if (refSpace.addEventListener) refSpace.addEventListener("reset", this._onReset);
         }
         this._updateWorldFrame(frame, refSpace);            // EVERY frame: park #world-root on the frame
+        this._pinSky();                                     // …and pin the sky to that SAME frame (see below)
         if (!frame.detectedPlanes) return;                  // capture needs plane detection
         if (time - this.lastPost < 2000) return;            // throttle to ~0.5 Hz
         var THREE = AFRAME.THREE, self = this, UP = new THREE.Vector3(0, 1, 0);
@@ -789,6 +811,22 @@
           this._regStat = "settling ny=" + levelY.toFixed(2);
           this._markLost(time);
           this.lastPost = time - 1700; return;
+        }
+
+        // VOID/outdoor world: not tied to a captured space, so there's no reference to register against.
+        // Derive a deterministic frame from the live walls (canonicalFrame) — the same physical room
+        // canonicalizes to the same frame every visit, so the skybox holds a consistent-but-arbitrary
+        // orientation. Never capture/mint/post (a void world owns no geometry). Everyone (owner or guest)
+        // canonicalizes identically. Hold if there aren't enough walls yet.
+        if (isVoidWorld) {
+          var cf = window.RoomSnap.canonicalFrame(THREE, cur);
+          this._regStat = cf.stat;
+          if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, cf.Tmat);
+          if (!cf.Tmat) { this._markLost(time); this.lastPost = time - 1700; return; }   // too few walls → hold
+          if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }
+          this._Tmat = cf.Tmat; this._haveT = true; this._anchorInv = cf.Tmat;
+          this.lastPost = time;
+          return;
         }
 
         // Recover the frame transform; the AUTHORITY may bootstrap the reference on its first capture, but

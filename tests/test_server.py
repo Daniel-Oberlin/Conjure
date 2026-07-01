@@ -1086,6 +1086,20 @@ def test_new_world_defaults_public(srv, client):
     assert ("bob", "shared") in seen
 
 
+def test_outdoor_void_world_has_no_space(srv, client):
+    from conjure import server as S
+    assert client.post("/worlds/new", json={"name": "beach", "outdoor": True}).json()["ok"]
+    assert S.active_space == "<void>"                                  # not tied to a physical space
+    assert srv.store.doc["environment"]["space"] == "<void>"
+    assert not any(e.get("meta", {}).get("real") for e in srv.store.doc["entities"])  # no room geometry
+    # saving a void world creates NO space file and round-trips as void
+    S._save_active()
+    assert "<void>" not in srv.spaces.list("daniel")
+    assert srv.worlds.load("daniel/agents/builder", "beach").doc["environment"]["space"] == "<void>"
+    # geolocation must not yank a void world into a physical space
+    assert client.post("/geolocation", json={"lat": 40.0, "lon": -73.0}).json() == {"ok": True, "selected": False}
+
+
 def worlds_seen(client, scope):
     return client.post("/worlds/list", json={"scope": scope}).json()["available"]
 

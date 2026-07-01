@@ -377,7 +377,7 @@ async def test_new_world_tool_forwards_name_with_scope(monkeypatch):
         return_value=httpx.Response(200, json={"ok": True, "world": "castle-quest/dining-hall"}))
     out = await _tool("new_world")(name="Castle Quest/Dining Hall")
     assert json.loads(route.calls.last.request.content) == {
-        "name": "Castle Quest/Dining Hall", "scope": "private/builder", "public": True}
+        "name": "Castle Quest/Dining Hall", "scope": "private/builder", "public": True, "outdoor": False}
     assert "castle-quest/dining-hall" in out
 
 

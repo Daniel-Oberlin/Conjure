@@ -6,6 +6,28 @@ delete them here) when done.
 
 ---
 
+## Void/outdoor worlds — canonical-frame refinements (core is shipped)
+
+**Status:** open (refinements) · noted 2026-07-01 · **core shipped same day**
+
+**Shipped:** outdoor/void worlds (`new_world(outdoor=True)` → `environment.space == "<void>"`) are live —
+no room geometry, skybox + objects, geolocation won't yank them into a physical space. In AR, `room-capture`
+derives the frame on the fly with `RoomSnap.canonicalFrame` (gravity-up + wall-grid axis + largest-wall
+forward + centroid origin), never captures/posts, and `#world-root` + the skybox ride that frame → the same
+physical room canonicalizes to the same orientation each visit (invariance unit-tested).
+
+**Refinements left:**
+1. **Symmetric-room ambiguity (inherent):** no unique largest wall ⇒ no unique canonical orientation
+   (same 180° flip as `register()`). Low-stakes for a void world (only the skybox yaw moves, nothing pinned
+   to real walls), but worth a tiebreaker (a door/opening, an L-shape corner) when one exists.
+2. **Partial-capture stability:** a sparse capture (few walls) can pick a different frame than a full one.
+   Prefer a fuller view (weight by covered wall area / require ≥N walls before locking; hysteresis so it
+   doesn't hop once locked).
+3. **Optional space tie:** let an outdoor world *optionally* bind to a stored space (robust registration)
+   instead of canonicalizing — for rooms you revisit a lot and want rock-solid.
+4. **Immersion polish:** a void world currently shows whatever skybox is set (or the void color until one
+   is). Consider a sensible default / an explicit "outdoor" immersion that always occludes passthrough.
+
 ## `view_relative` can't tell you're looking at a placed OBJECT (only room surfaces)
 
 **Status:** open · noted 2026-07-01 (diagnosed from a live session — "the LLM couldn't tell I was

@@ -569,15 +569,18 @@ async def list_worlds() -> str:
 
 
 @mcp.tool()
-async def new_world(name: str, public: bool = True) -> str:
+async def new_world(name: str, public: bool = True, outdoor: bool = False) -> str:
     """Create a new, empty world and switch to it. `name` may be hierarchical to organize worlds
     ('castle-quest/dining-hall'). The new world starts from your agent's default setup. Worlds are
     PUBLIC by default (others can discover and visit them); pass public=False to create a PRIVATE world
-    only you can see and enter."""
-    out = await _post("/worlds/new", _body(name=name, scope=SCOPE, public=public))
+    only you can see and enter. Pass outdoor=True for an OUTDOOR/void world — no room geometry, just a
+    skybox + placed objects (use for 'a world set outdoors', 'floating in space', 'on a beach'); it's not
+    tied to a captured room and holds its orientation on its own."""
+    out = await _post("/worlds/new", _body(name=name, scope=SCOPE, public=public, outdoor=outdoor))
     if not out.get("ok"):
         return f"Couldn't create {name!r}: {out.get('error', 'unknown error')}."
-    return f"Created and switched to '{out.get('world', name)}' ({'public' if public else 'private'})."
+    kind = "outdoor " if outdoor else ""
+    return f"Created and switched to {kind}'{out.get('world', name)}' ({'public' if public else 'private'})."
 
 
 @mcp.tool()
