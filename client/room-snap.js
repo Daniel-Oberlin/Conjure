@@ -140,6 +140,40 @@
     return { Tmat: best.Tmat, stat: stat };
   }
 
+  // On-the-fly CANONICAL frame from live geometry — for VOID/outdoor worlds not tied to a stored space
+  // (nothing to register against). Derives a deterministic frame from the room's OWN planes, INVARIANT to
+  // the session's arbitrary tracking-origin yaw, so revisiting the same physical room recovers the same
+  // (arbitrary-but-consistent) orientation — no stored space, no identification, no persistent-anchor API.
+  // up = gravity (the trust gate guarantees a level floor); the wall grid gives the axis; the LARGEST wall
+  // picks the canonical forward; the wall centroid is the origin. Returns {Tmat: refSpace→canonical, stat}
+  // or null. KNOWN LIMIT: a symmetric room (no unique largest wall) has no unique canonical orientation —
+  // same ambiguity as register()'s 180° flip, but low-stakes for a void world (only the skybox yaw moves,
+  // no content pinned to real walls). Partial-capture stability (a fuller view winning) is a follow-up.
+  function canonicalFrame(THREE, cur) {
+    var UP = new THREE.Vector3(0, 1, 0);
+    var walls = cur.filter(function (c) { return c.orient === "vertical"; });
+    if (walls.length < 2) return { Tmat: null, stat: "walls=" + walls.length };
+    // Wall-grid axis (mod 90°), area-weighted so big/accurate walls dominate — the 4θ sum handles the 90° wrap.
+    var s4 = 0, c4 = 0;
+    walls.forEach(function (w) { var a = w.ext[0] * w.ext[1]; s4 += a * Math.sin(4 * w.nyaw); c4 += a * Math.cos(4 * w.nyaw); });
+    var grid = Math.atan2(s4, c4) / 4;
+    // Canonical forward = the grid direction nearest the LARGEST wall's outward normal (unique when one wall
+    // is biggest). Because it's the nearest of the full {grid + k·90°} set, it rotates rigidly with the
+    // session frame — so theta shifts exactly by the session yaw, which is what makes the frame invariant.
+    var big = walls[0];
+    walls.forEach(function (w) { if (w.ext[0] * w.ext[1] > big.ext[0] * big.ext[1]) big = w; });
+    var HALF_PI = Math.PI / 2, theta = grid + Math.round((big.nyaw - grid) / HALF_PI) * HALF_PI;
+    var c = new THREE.Vector3();
+    walls.forEach(function (w) { c.add(w.pos); });
+    c.multiplyScalar(1 / walls.length);
+    // Tmat: rotate refSpace by -theta about gravity (the forward wall's normal → +Z), then bring the
+    // centroid to the origin. The room's canonical pose is identical every session ⇒ consistent orientation.
+    var R = new THREE.Quaternion().setFromAxisAngle(UP, -theta);
+    var Tmat = new THREE.Matrix4().compose(c.clone().applyQuaternion(R).negate(), R, new THREE.Vector3(1, 1, 1));
+    return { Tmat: Tmat, stat: "walls=" + walls.length + " grid=" + Math.round(grid * 180 / Math.PI)
+      + "° theta=" + Math.round(theta * 180 / Math.PI) + "°" };
+  }
+
   // Square the walls. WebXR fits every plane independently, so small wall slivers around openings come
   // back a couple degrees off. The whole space shares one orthogonal grid (the rooms are square with each
   // other), so estimate it width-weighted from all walls — the big, accurate walls dominate — and snap
@@ -264,5 +298,6 @@
   }
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, uprightInset: uprightInset, register: register,
+           canonicalFrame: canonicalFrame,
            squareWalls: squareWalls, joinCorners: joinCorners, snapInsets: snapInsets };
 });

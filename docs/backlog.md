@@ -6,6 +6,35 @@ delete them here) when done.
 
 ---
 
+## Wire `canonicalFrame` into void/outdoor worlds (needs a `<void>` marker + immersion)
+
+**Status:** open · noted 2026-07-01 (the canonicalizer math is done + unit-tested; only the wiring remains)
+
+**What's done:** `RoomSnap.canonicalFrame(THREE, cur)` derives a deterministic, session-invariant frame
+from a room's own walls (gravity-up + wall-grid axis + largest-wall forward + centroid origin) so a
+VOID/outdoor world — one not tied to a stored space — recovers the SAME arbitrary-but-consistent
+orientation each visit, with no stored space, no space identification, and no persistent-anchor API.
+Proven by an invariance test (same room seen from an arbitrary session yaw/offset → same canonical pose).
+The skybox-in-world-frame fix rides on whatever frame `#world-root` ends up in, so it "just works" once
+`#world-root` is parked on the canonical frame.
+
+**What's missing (the wiring):**
+1. **A `<void>` marker.** Today a world's `environment.space` is a space name; the `<void>` value (world
+   not tied to a captured room) is design-only, not in the code. Room-capture can't just canonicalize when
+   `_ref` is empty — that path is also a *new room world* bootstrapping a capture. Need an explicit signal
+   ("this world is void/outdoor → don't capture, canonicalize") so we don't break new-room capture.
+2. **Client wiring:** in `room-capture`, when the active world is `<void>` and there are ≥2 detected walls,
+   call `canonicalFrame`, set `_Tmat`/`_haveT`, park `#world-root` (register-only-style; never author/post).
+3. **Immersion:** a void/outdoor world shows the skybox and hides the room (an "authored"/"mixed" mode),
+   even though it's using the physical room's geometry only to derive the frame.
+
+**Known limit (inherent):** a symmetric room (no unique largest wall) has no unique canonical orientation
+— same 180° ambiguity as `register()`; low-stakes for a void world (only the skybox yaw moves, no content
+on real walls). Partial-capture stability (a fuller capture winning over a sparse one) is a later refinement.
+
+**Open decision:** how a world declares itself void (`environment.space == "<void>"` vs. a dedicated flag),
+and whether an outdoor world can *optionally* tie to a stored space (robust) instead of canonicalizing.
+
 ## `view_relative` can't tell you're looking at a placed OBJECT (only room surfaces)
 
 **Status:** open · noted 2026-07-01 (diagnosed from a live session — "the LLM couldn't tell I was

@@ -279,6 +279,42 @@ test("register declines when too few reference surfaces are covered (< MIN_COV)"
   assert.strictEqual(RS.register(THREE, cur, ref).Tmat, null);
 });
 
+// --- canonicalFrame: a deterministic frame from a room's own geometry, for VOID/outdoor worlds with no
+// stored space. The point is INVARIANCE — the same physical room, seen from an arbitrary session origin,
+// must canonicalize to the SAME frame, so a void world's skybox holds orientation across visits. ---
+const mkWall = (pos, yawDeg, ext) => ({ sem: "wall", pos: new THREE.Vector3(...pos), ext,
+  nyaw: yawDeg * D2R, orient: "vertical" });
+const asymRoom = () => [mkWall([0, 1.2, -2], 0, [4.0, 2.4]), mkWall([0, 1.2, 2], 180, [3.0, 2.4]),
+  mkWall([2, 1.2, 0], 90, [2.5, 2.4]), mkWall([-2, 1.2, 0], -90, [1.5, 2.4])];   // distinct widths ⇒ unique largest
+
+test("canonicalFrame recovers the SAME canonical pose regardless of the session's yaw + offset", () => {
+  const walls = asymRoom();
+  const T1 = RS.canonicalFrame(THREE, walls).Tmat;
+  assert.ok(T1, "canonical frame found");
+  // the SAME physical room, seen next session with an arbitrary tracking-origin yaw φ + translation
+  const phi = 137 * D2R, off = new THREE.Vector3(3, 0, -2);
+  const Rphi = new THREE.Quaternion().setFromAxisAngle(UP, phi);
+  const walls2 = walls.map((w) => ({ sem: w.sem, ext: w.ext, orient: "vertical",
+    pos: w.pos.clone().applyQuaternion(Rphi).add(off), nyaw: w.nyaw + phi }));
+  const T2 = RS.canonicalFrame(THREE, walls2).Tmat;
+  for (let i = 0; i < walls.length; i++) {
+    const p1 = walls[i].pos.clone().applyMatrix4(T1), p2 = walls2[i].pos.clone().applyMatrix4(T2);
+    assert.ok(p1.distanceTo(p2) < 1e-5, "wall " + i + " canonicalizes to the same spot across sessions");
+  }
+});
+
+test("canonicalFrame is deterministic and puts the room centroid at the origin", () => {
+  const walls = asymRoom();
+  const a = RS.canonicalFrame(THREE, walls).Tmat, b = RS.canonicalFrame(THREE, walls).Tmat;
+  assert.ok(a.elements.every((e, i) => Math.abs(e - b.elements[i]) < 1e-12), "same input ⇒ identical frame");
+  const c = new THREE.Vector3(); walls.forEach((w) => c.add(w.pos)); c.multiplyScalar(1 / walls.length);
+  assert.ok(c.applyMatrix4(a).length() < 1e-6, "the room centroid maps to the origin");
+});
+
+test("canonicalFrame declines with too little geometry (< 2 walls)", () => {
+  assert.strictEqual(RS.canonicalFrame(THREE, [mkWall([0, 1.2, -2], 0, [4, 2.4])]).Tmat, null);
+});
+
 test("register declines a genuinely different (differently-sized) room", () => {
   const ref = rectRoom();
   const w = (pos, yaw, ext) => ({ sem: "wall", pos: new THREE.Vector3(...pos), ext, nyaw: yaw, orient: "vertical" });
