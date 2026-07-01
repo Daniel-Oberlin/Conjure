@@ -39,7 +39,7 @@ from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .schema import Patch
-from .world import SpaceStore, WorldRepository, WorldStore, world_path
+from .world import SpaceStore, WorldRepository, WorldStore, _set_path, world_path
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
@@ -1046,6 +1046,7 @@ def _compose(world_doc: dict, space: dict) -> dict:
     doc["entities"] = placed + reals
     if space.get("boundary") is not None:
         room["boundary"] = space["boundary"]
+    _reanchor_surface_images(doc)              # re-pin on-surface images to the (possibly moved) surfaces
     return doc
 
 
@@ -1202,6 +1203,11 @@ async def ingest_room(req: RoomUpdate) -> dict:
     if "defaultSurfaceVisible" not in room:
         env_set["room.defaultSurfaceVisible"] = False  # default: invisible references (AR-style)
     ops.append({"op": "env", "set": env_set})
+
+    # Re-pin any on-surface images to the just-captured surface poses, so a re-registration that moved a
+    # surface carries its hung images along instead of stranding them in absolute coords.
+    moved = {s.id: {"position": s.position, "rotation": s.rotation, "extent": s.extent} for s in req.surfaces}
+    ops += _reanchor_ops(store.doc, moved)
 
     patch = store.apply_patch(ops, origin="room")
     await _broadcast({"type": "patch", "patch": patch})
@@ -1720,14 +1726,18 @@ def _plane_dims(rec: ImageRecord, size: float) -> tuple[float, float]:
     return round(size * w / h, 3), size
 
 
-def _fit_dims(rec: ImageRecord, extent: list[float]) -> tuple[float, float]:
-    """Fit the image (preserving aspect) *inside* a surface's [w, h] frame — so a picture hung on a
-    wall-art surface fills its frame without stretching or overflowing."""
+def _fit_extent(aspect: float, extent: list[float]) -> tuple[float, float]:
+    """Fit an image of the given aspect (w/h), preserving it, *inside* a surface's [w, h] frame."""
     ew, eh = float(extent[0]), float(extent[1])
-    aspect = (rec.w / rec.h) if (rec.w and rec.h) else 1.0
     if ew / eh > aspect:                       # frame is wider than the image ⇒ height-limited
         return round(aspect * eh, 3), round(eh, 3)
     return round(ew, 3), round(ew / aspect, 3)  # width-limited
+
+
+def _fit_dims(rec: ImageRecord, extent: list[float]) -> tuple[float, float]:
+    """Fit the image (preserving aspect) *inside* a surface's [w, h] frame — so a picture hung on a
+    wall-art surface fills its frame without stretching or overflowing."""
+    return _fit_extent((rec.w / rec.h) if (rec.w and rec.h) else 1.0, extent)
 
 
 def _forward(rotation: list[float]) -> list[float]:
@@ -1735,6 +1745,53 @@ def _forward(rotation: list[float]) -> list[float]:
     direction the texture faces. Used to offset a hung picture a hair off its surface (no z-fight)."""
     x, y = math.radians(rotation[0]), math.radians(rotation[1])
     return [math.cos(x) * math.sin(y), -math.sin(x), math.cos(x) * math.cos(y)]
+
+
+# --- on-surface re-anchoring: keep place_image(on_surface=…) planes glued to their surface across a room
+#     re-registration/re-capture. The image entity records meta.on_surface = the surface id; we re-derive
+#     its pose (2 cm in front, adopt the surface's rotation, re-fit to the current frame) from the surface's
+#     CURRENT geometry — so when the surface moves, the image follows instead of being stranded in absolute
+#     coords (backlog: "on-surface placed content is stranded by a room re-registration").
+def _on_surface_set(spos: list[float], rot: list[float], extent, geo: dict) -> dict:
+    """The `update`-op `set` for an on-surface image pinned to a surface at `spos`/`rot` with `extent`.
+    Re-fits the image to the frame using the aspect from its current geometry `geo`."""
+    f = _forward(rot)
+    out: dict = {"transform.position": [spos[i] + 0.02 * f[i] for i in range(3)], "transform.rotation": rot}
+    if extent and geo.get("width") and geo.get("height"):
+        w, h = _fit_extent(geo["width"] / geo["height"], extent)
+        out["components.geometry.width"], out["components.geometry.height"] = w, h
+    return out
+
+
+def _reanchor_surface_images(doc: dict) -> None:
+    """Re-pin every on-surface image (meta.on_surface) to its surface's CURRENT pose, mutating `doc` in
+    place. Run at compose time (world load) so a re-registration that moved the space's surfaces never
+    leaves an image stranded off its frame."""
+    surfaces = {e["id"]: e for e in doc.get("entities", []) if e.get("meta", {}).get("real")}
+    for e in doc.get("entities", []):
+        surf = surfaces.get((e.get("meta") or {}).get("on_surface"))
+        spos = surf and surf.get("transform", {}).get("position")
+        if not spos:
+            continue
+        sets = _on_surface_set(spos, surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0],
+                               surf.get("components", {}).get("surface", {}).get("extent"),
+                               e.get("components", {}).get("geometry", {}))
+        for path, val in sets.items():
+            _set_path(e, path, val)
+
+
+def _reanchor_ops(doc: dict, moved: dict) -> list[dict]:
+    """`update` ops re-pinning on-surface images whose surface id is in `moved` (id → {position, rotation,
+    extent}, e.g. just re-captured). Used live in ingest_room so the image rides the re-captured surface."""
+    ops = []
+    for e in doc.get("entities", []):
+        s = moved.get((e.get("meta") or {}).get("on_surface"))
+        if not s or not s.get("position"):
+            continue
+        sets = _on_surface_set(s["position"], s.get("rotation") or [0.0, 0.0, 0.0], s.get("extent"),
+                               e.get("components", {}).get("geometry", {}))
+        ops.append({"op": "update", "id": e["id"], "set": sets})
+    return ops
 
 
 # --- view-relative geometry (gaze): resolve a point/probe relative to where a user is looking ------
@@ -1860,6 +1917,8 @@ async def place_image(req: PlaceImageRequest) -> dict:
     eid = req.name or f"ent_image_{uuid4().hex[:6]}"
     meta = {"generated": True, "provider": rec.provider, "model": rec.model,
             "prompt": rec.prompt, "image_id": rec.id}
+    if req.on_surface:                                 # remember the home surface so it re-anchors on re-capture
+        meta["on_surface"] = surf["id"]
     # A transparent (alpha) image must render with transparency on, or three.js shows it opaque.
     material = {"src": rec.url, "shader": "flat", "side": "double", "transparent": rec.transparent}
 
@@ -1870,9 +1929,10 @@ async def place_image(req: PlaceImageRequest) -> dict:
             "components.geometry.width": width, "components.geometry.height": height,
             "meta.image_id": rec.id, "meta.prompt": rec.prompt,
             "meta.provider": rec.provider, "meta.model": rec.model}
-        if req.on_surface:  # re-hanging on a surface ⇒ also re-align/reposition
+        if req.on_surface:  # re-hanging on a surface ⇒ also re-align/reposition + record the home surface
             sets["transform.position"] = pos
             sets["transform.rotation"] = rotation
+            sets["meta.on_surface"] = surf["id"]
         ops = [{"op": "update", "id": eid, "set": sets}]
     else:
         ops = [_image_plane(eid, pos, width, height, material, meta, rotation)]
