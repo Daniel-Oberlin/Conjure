@@ -25,8 +25,10 @@ Usage (two terminals):
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import urllib.request
+from typing import Callable, Optional
 
 from .config import DEFAULT_USER, Settings, get_settings
 from .director import Director
@@ -34,6 +36,34 @@ from .shell import Shell
 
 # PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
 PIPELINE_IDLE_TIMEOUT_SECS = 3600  # 1 hour
+
+
+def _make_wake_gate(wake_word: Optional[str]) -> Callable[[str], Optional[str]]:
+    """Wake-word gate for the voice loop. Returns fn(utterance) -> command to run, or None to ignore.
+
+    With no wake word set, every utterance passes through (today's behavior). With one (e.g. 'conjure'):
+    - 'conjure make a cat'  -> 'make a cat'  (wake word + command in one breath; then it re-waits)
+    - 'conjure' alone       -> arms; the NEXT utterance runs in full, then it re-waits
+    - anything else while unarmed -> ignored
+    Matching is case-insensitive on word boundaries; text after the wake word (stripped of leading
+    punctuation) is the command."""
+    if not wake_word or not wake_word.strip():
+        return lambda text: text
+    pattern = re.compile(r"\b" + re.escape(wake_word.strip()) + r"\b", re.IGNORECASE)
+    state = {"armed": False}
+
+    def gate(text: str) -> Optional[str]:
+        m = pattern.search(text)
+        if m:
+            after = text[m.end():].lstrip(" ,.:;!?-—").strip()
+            state["armed"] = not after            # bare wake word → arm for the next utterance
+            return after or None
+        if state["armed"]:
+            state["armed"] = False
+            return text.strip() or None
+        return None
+
+    return gate
 
 
 def _world_reachable(url: str) -> bool:
@@ -45,7 +75,7 @@ def _world_reachable(url: str) -> bool:
         return False
 
 
-async def _run(settings: Settings, user: str = DEFAULT_USER) -> None:
+async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None) -> None:
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
@@ -143,11 +173,17 @@ async def _run(settings: Settings, user: str = DEFAULT_USER) -> None:
             ),
         )
 
+        gate = _make_wake_gate(wake_word)   # wake-word mode: only phrases after the wake word reach the LLM
         @aggregator.user().event_handler("on_user_turn_stopped")
         async def _on_user_turn(aggr, strategy, message):
             text = (getattr(message, "content", "") or "").strip()
-            if text:
-                await director_proc.run_turn(text)
+            if not text:
+                return
+            cmd = gate(text)
+            if cmd:
+                await director_proc.run_turn(cmd)
+            elif wake_word:
+                print(f"[conjure] (idle — say '{wake_word}' to talk)")
 
         pipeline = Pipeline(
             [
@@ -189,6 +225,9 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(prog="conjure.voice", description="Voice front-end for the Conjure director.")
     ap.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
+    ap.add_argument("--wake-word", default=None, metavar="WORD",
+                    help="only send phrases after this wake word to the director (e.g. --wake-word conjure); "
+                         "then it waits for the wake word again")
     args = ap.parse_args()
 
     settings = get_settings()
@@ -202,8 +241,10 @@ def main() -> int:
               f"Start it first in another terminal:  python -m conjure")
         return 1
 
+    if args.wake_word:
+        print(f"🔒 Wake word active: say '{args.wake_word}' before a command.")
     try:
-        asyncio.run(_run(settings, args.user))
+        asyncio.run(_run(settings, args.user, args.wake_word))
     except KeyboardInterrupt:
         print("\nStopped.")
     except ImportError as exc:
