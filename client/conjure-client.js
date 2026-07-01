@@ -690,6 +690,20 @@
         debugLog("coloc", line, window.CONJURE_DEBUG_REGISTRATION);   // gated by --debug-registration, not debug_log
         this._diagHud(line);
       },
+      // Pin the skybox to the WORLD frame, not the headset's tracking origin. The <a-sky>/#grounded-sky
+      // live as scene children (they can't go inside #world-root — applySnapshot clears its innerHTML),
+      // so they'd otherwise render at identity in the arbitrary per-session tracking frame, making a
+      // skybox's orientation change between visits while the (registered) room stays put. Copy #world-root's
+      // orientation onto both so the sky rides the SAME persistent frame as the room. Rotation only:
+      // #world-root's rotation is a pure gravity-aligned yaw (the register vote solves yaw + x/z only), so
+      // a plain sky sphere stays viewer-centered and a grounded dome spins about vertical — its ground
+      // stays flat on the floor, just re-oriented. In a void world (world-root ≈ identity) this is a no-op.
+      _pinSky: function () {
+        var wr = document.getElementById("world-root"); if (!wr) return;
+        var q = wr.object3D.quaternion;
+        var sky = document.getElementById("sky"); if (sky) sky.object3D.quaternion.copy(q);
+        var g = document.getElementById("grounded-sky"); if (g) g.object3D.quaternion.copy(q);
+      },
       _diagHud: function (text) {
         var el = document.getElementById("coloc-hud");
         if (!el) {
@@ -714,6 +728,7 @@
           if (refSpace.addEventListener) refSpace.addEventListener("reset", this._onReset);
         }
         this._updateWorldFrame(frame, refSpace);            // EVERY frame: park #world-root on the frame
+        this._pinSky();                                     // …and pin the sky to that SAME frame (see below)
         if (!frame.detectedPlanes) return;                  // capture needs plane detection
         if (time - this.lastPost < 2000) return;            // throttle to ~0.5 Hz
         var THREE = AFRAME.THREE, self = this, UP = new THREE.Vector3(0, 1, 0);
