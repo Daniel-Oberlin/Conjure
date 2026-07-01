@@ -209,7 +209,9 @@ class Director:
             f"a public world — or making a world public — publishes the assets it uses; the tool tells you "
             f"when it does, and you should pass that along."
         )
-        return self._prompt.format(name=name) + roster_line + identity_line
+        # `.replace` (not `.format`) so the prompt can freely contain braces (markdown/code/JSON examples)
+        # without needing to escape them; the only placeholder is `{name}`.
+        return self._prompt.replace("{name}", name) + roster_line + identity_line
 
     async def _log(self, tag: str, msg: str) -> None:
         """Best-effort diagnostic line → the world server's /client_log (same temp/conjure.log + console
