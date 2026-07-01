@@ -347,14 +347,20 @@
   // (jumping you out of the room); instead it seeds its reference from these so its first capture
   // registers INTO the persisted frame. Stays null until a snapshot carrying real surfaces arrives.
   var docSurfaces = null;
+  // A VOID/outdoor world (environment.space === "<void>") isn't tied to a captured room — it shows a
+  // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
+  // instead of registering against stored geometry. Set from each snapshot.
+  var VOID_SPACE = "<void>", isVoidWorld = false;
 
   function applySnapshot(world) {
     root().innerHTML = "";
     (world.entities || []).forEach(applyEntity);
     applyEnv(world.environment);   // after entities, so immersion can toggle them
+    isVoidWorld = ((world.environment || {}).space === VOID_SPACE);
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
     if (reals.length) docSurfaces = reals;     // available to seed the room frame on reload
-    console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)");
+    console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)"
+      + (isVoidWorld ? " [outdoor/void]" : ""));
   }
 
   // Apply a single dotted-path set from an `update` op.
@@ -804,6 +810,22 @@
           this._regStat = "settling ny=" + levelY.toFixed(2);
           this._markLost(time);
           this.lastPost = time - 1700; return;
+        }
+
+        // VOID/outdoor world: not tied to a captured space, so there's no reference to register against.
+        // Derive a deterministic frame from the live walls (canonicalFrame) — the same physical room
+        // canonicalizes to the same frame every visit, so the skybox holds a consistent-but-arbitrary
+        // orientation. Never capture/mint/post (a void world owns no geometry). Everyone (owner or guest)
+        // canonicalizes identically. Hold if there aren't enough walls yet.
+        if (isVoidWorld) {
+          var cf = window.RoomSnap.canonicalFrame(THREE, cur);
+          this._regStat = cf.stat;
+          if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, cf.Tmat);
+          if (!cf.Tmat) { this._markLost(time); this.lastPost = time - 1700; return; }   // too few walls → hold
+          if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }
+          this._Tmat = cf.Tmat; this._haveT = true; this._anchorInv = cf.Tmat;
+          this.lastPost = time;
+          return;
         }
 
         // Recover the frame transform; the AUTHORITY may bootstrap the reference on its first capture, but
