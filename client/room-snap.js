@@ -67,14 +67,23 @@
     var UP = new THREE.Vector3(0, 1, 0);
     if (ref.length < 3) return { Tmat: null, stat: "ref<3" };
     function wrap(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; }
+    // Robustness for a GUEST's partial/extra plane set (room-model §8, multi-user co-location). A guest
+    // sees the room from a different vantage: some reference surfaces are MISSING (occluded) and there are
+    // EXTRA planes (furniture/clutter) with no reference. Two ideas make the vote tolerate both:
+    //  • size-compat is ASYMMETRIC — a detected plane may be a PARTIAL (smaller) view of a reference, so
+    //    only reject one notably LARGER than its candidate reference (a bigger plane isn't a partial view).
+    //  • acceptance scores DISTINCT reference surfaces COVERED (not detected-plane count): extras can't
+    //    inflate it, fragmentation can't double-count it, and missing surfaces just lower coverage. We
+    //    accept on coverage of the REFERENCE, so clutter never sinks an otherwise-solid lock.
+    var SIZE_TOL = 0.5, MIN_COV = 4, MIN_COV_FRAC = 0.3;
+    function sizeCompat(r, c) { return c.ext[0] <= r.ext[0] + SIZE_TOL && c.ext[1] <= r.ext[1] + SIZE_TOL; }
     // Step 1 — candidate yaw(s): histogram the normal-yaw delta over same-semantic, similar-size vertical
     // pairs; every true correspondence votes for the same delta, so the real yaw dominates.
     var deltas = [];
     cur.forEach(function (c) {
       if (c.orient !== "vertical") return;
       ref.forEach(function (r) {
-        if (r.orient !== "vertical" || r.sem !== c.sem) return;
-        if (Math.abs(r.ext[0] - c.ext[0]) > 0.4 || Math.abs(r.ext[1] - c.ext[1]) > 0.4) return;
+        if (r.orient !== "vertical" || r.sem !== c.sem || !sizeCompat(r, c)) return;
         deltas.push(wrap(r.nyaw - c.nyaw));
       });
     });
@@ -82,7 +91,7 @@
     var bin = Math.PI / 30, hist = {};                          // 6° bins
     deltas.forEach(function (d) { var b = Math.round(d / bin); (hist[b] = hist[b] || []).push(d); });
     var keys = Object.keys(hist).sort(function (a, b) { return hist[b].length - hist[a].length; });
-    var thetas = keys.slice(0, 3).map(function (k) {            // top 3 peaks, circular-mean each
+    var thetas = keys.slice(0, 5).map(function (k) {            // top 5 peaks (clutter can dilute the true one)
       var s = 0, c2 = 0; hist[k].forEach(function (d) { s += Math.sin(d); c2 += Math.cos(d); });
       return Math.atan2(s, c2);
     });
@@ -95,8 +104,7 @@
       cur.forEach(function (c) {
         var rc = c.pos.clone().applyQuaternion(qy);
         ref.forEach(function (r) {
-          if (r.sem !== c.sem) return;
-          if (Math.abs(r.ext[0] - c.ext[0]) > 0.3 || Math.abs(r.ext[1] - c.ext[1]) > 0.3) return;
+          if (r.sem !== c.sem || !sizeCompat(r, c)) return;
           var tx = r.pos.x - rc.x, tz = r.pos.z - rc.z;
           var k = Math.round(tx / 0.25) + "," + Math.round(tz / 0.25);
           var cell = grid[k] || (grid[k] = { sx: 0, sz: 0, n: 0 });
@@ -107,16 +115,22 @@
       if (!bestCell) return;
       var Tmat = new THREE.Matrix4().compose(
         new THREE.Vector3(bestCell.sx / bestCell.n, 0, bestCell.sz / bestCell.n), qy, new THREE.Vector3(1, 1, 1));
-      var inl = 0;
+      var claimed = new Set(), rawInl = 0;   // distinct reference surfaces covered (extras/fragmentation don't inflate)
       cur.forEach(function (c) {
-        var tp = c.pos.clone().applyMatrix4(Tmat), bd = 0.4;
-        ref.forEach(function (r) { if (r.sem === c.sem) { var d = tp.distanceTo(r.pos); if (d < bd) bd = d; } });
-        if (bd < 0.4) inl++;
+        var tp = c.pos.clone().applyMatrix4(Tmat), bd = 0.4, hit = null;
+        ref.forEach(function (r) { if (r.sem === c.sem) { var d = tp.distanceTo(r.pos); if (d < bd) { bd = d; hit = r; } } });
+        if (hit) { claimed.add(hit); rawInl++; }
       });
-      if (!best || inl > best.inl) best = { Tmat: Tmat, inl: inl };
+      var cov = claimed.size;
+      if (!best || cov > best.cov) best = { Tmat: Tmat, cov: cov, inl: rawInl };
     });
-    var stat = "inl=" + (best ? best.inl : 0) + "/" + cur.length + " dlt=" + deltas.length;
-    if (!best || best.inl < 4 || best.inl < 0.4 * cur.length) return { Tmat: null, stat: stat };
+    var cov = best ? best.cov : 0;
+    var stat = "cov=" + cov + "/" + ref.length + " inl=" + (best ? best.inl : 0) + "/" + cur.length + " dlt=" + deltas.length;
+    // Accept on DISTINCT reference COVERAGE (not fraction-of-detected): enough of the known room explained
+    // by ONE transform. Robust to EXTRA detected planes (absent from the formula) and MISSING ones (need
+    // only a fraction of the reference). A genuinely different space can't cover ≥MIN_COV surfaces of the
+    // reference under one consistent transform ⇒ null ("not in this space", room-model §8a).
+    if (!best || cov < MIN_COV || cov < MIN_COV_FRAC * ref.length) return { Tmat: null, stat: stat };
     // Append the SOLVED transform (yaw about gravity + translation) so diagnostics can tell whether a
     // relocalization actually changed the frame (yaw jumps) or registration stayed put while the world
     // shifted. Matrix4 is column-major: e[0]=cosθ, e[8]=sinθ for the Y rotation; e[12],e[14]=tx,tz.

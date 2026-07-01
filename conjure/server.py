@@ -661,9 +661,12 @@ async def index() -> HTMLResponse:
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
     html = html.replace("/static/grounded-skybox.js", f"/static/grounded-skybox.js?v={gm}")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
-    # Tell the client whether debug logging is on, so it doesn't POST diagnostics when it's off.
+    # Tell the client which diagnostics are on so it doesn't POST/HUD when off. debug_log gates general
+    # client logging; debug_registration gates the co-location registration HUD + per-capture log.
     flag = "true" if settings.debug_log else "false"
-    html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};</script>\n  </head>")
+    rflag = "true" if settings.debug_registration else "false"
+    html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
+                        f"window.CONJURE_DEBUG_REGISTRATION={rflag};</script>\n  </head>")
     return HTMLResponse(html, headers=_NO_STORE)
 
 
@@ -2073,9 +2076,9 @@ class ClientLog(BaseModel):
 @app.post("/client_log")
 async def client_log(req: ClientLog) -> dict:
     """Append a diagnostic line from the WebXR client to temp/conjure.log (and echo to the console), so
-    headset-side logs are captured without remote browser debugging. Gated by settings.debug_log
-    (CONJURE_DEBUG_LOG=0 disables it — then nothing is written and the file isn't created)."""
-    if not settings.debug_log:
+    headset-side logs are captured without remote browser debugging. Gated by settings.debug_log OR
+    settings.debug_registration (so registration diagnostics still write when only that flag is on)."""
+    if not (settings.debug_log or settings.debug_registration):
         return {"ok": True}
     line = f"{datetime.now():%Y-%m-%d %H:%M:%S} [{req.tag or 'log'}] {req.msg}"
     print(line, flush=True)

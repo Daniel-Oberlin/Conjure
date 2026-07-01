@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 from conjure.cli import _QUIT_WORDS
+from conjure.config import get_settings
+
+
+def test_debug_registration_flag_defaults_off_and_reads_env(monkeypatch):
+    monkeypatch.delenv("CONJURE_DEBUG_REGISTRATION", raising=False)
+    assert get_settings().debug_registration is False              # opt-in, off by default
+    monkeypatch.setenv("CONJURE_DEBUG_REGISTRATION", "1")
+    assert get_settings().debug_registration is True
+    monkeypatch.setenv("CONJURE_DEBUG_REGISTRATION", "off")
+    assert get_settings().debug_registration is False              # unset/bogus values stay off
 
 
 def _is_quit(line: str) -> bool:
