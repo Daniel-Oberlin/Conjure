@@ -1,8 +1,5 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
-## Bugs
-- Weird transparent rectangle area barely visible
-
 # Graphics
 - Lighting
 
@@ -69,6 +66,6 @@
 - Smithsonian and other sources
 - Point clouds
 
-## Depolyment and infrastructure
+## Deployment and infrastructure
 - Put into container?
 - Discovery for MCP servers?
