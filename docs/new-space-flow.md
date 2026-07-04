@@ -1,10 +1,26 @@
 # New-space initialization — the "new person, new place" flow
 
-**Status:** DESIGN. Fixes a confirmed gap in `spaces-and-users-plan.md §5/§7`: when a *new user* arrives
-at a *new physical location*, the space that gets created is the wrong one — anonymous, un-located, via a
-fallback path — and the user was rendering/capturing against someone else's room the whole time before that.
+**Status:** DESIGN. Reworks how a physical **space** is claimed, selected, shared, and joined — fixing a
+confirmed gap in `spaces-and-users-plan.md §5/§7`: a new user at a new location gets an anonymous,
+un-located space via a fallback path, after rendering/capturing against someone else's room.
 
-## 1. What actually happened (grounded in the Harold's-house session)
+## 1. The model (target)
+
+- **The server has no location.** It's a shared brain any user connects to. The **active space** is
+  established by the **first user to connect** to an unclaimed (empty) server, from *their* reported
+  location (browser or headset).
+- **A space is a shared physical resource, not a per-user thing.** It's owned by whoever first captured it,
+  but **any user can build their own worlds in it.** Space ownership (first capturer) is **decoupled** from
+  world ownership (world creator).
+- **Selecting/identifying a space is two-stage:** **(1) geolocation** filters to nearby candidates (coarse,
+  ~hundreds of feet — excludes far-away spaces); **(2) surface/registration match** picks the *exact* space
+  among the geo-near ones. Geolocation alone can't tell apart two rooms at the same address.
+- **Admission is tiered by how you connect** (§4): only an **AR headset** (real presence) must be
+  physically in the space; control (voice/CLI) and virtual (desktop) connections aren't.
+- **A space unlocks when everyone leaves.** While occupied, joiners must match the active space; once the
+  server is unclaimed again, the next user can establish a *different* active space from wherever they are.
+
+## 2. What actually happened (grounded in the Harold's-house session)
 
 daniel's laptop was carried to Harold's house; `--user harold` (new user) logged in. Traced from the data:
 
@@ -15,106 +31,127 @@ daniel's laptop was carried to Harold's house; `--user harold` (new user) logged
 | 3 create | `harold/harolds-world` | `home` → **harold/home ← created** | seeded EMPTY by `_activate`, owner=harold, **geo ✗** |
 | 4 capture | `harold/harolds-world` | **harold/home** | 3 surfaces landed |
 
-A space *was* created (`harold/home`), but through the **wrong path** and with **no geolocation** — so a
-return visit can't match it by GPS and would mint `space-2`, `space-3`, … (daniel already has a stray
-`space-2`). The geolocation flow **never ran for harold**.
+A space *was* created (`harold/home`) but via the **wrong path**, with **no geolocation** — so a return
+visit can't match it by GPS and would mint `space-2`, `space-3`, … The geolocation flow **never ran** for
+harold, because he wasn't the *active* user when his headset reported.
 
-## 2. How it works today (the mechanics + the gaps)
+## 3. How it works today (mechanics + the gaps)
 
-**Two disjoint space-creation paths that don't agree:**
-- **Path A — geolocation** (`/geolocation`): on the first report, case (3) "somewhere new" mints
-  `_unique_space_name` (`space-N`), owner = the **active** user, **geo-stamped**, + a fresh world. Gated:
-  `user = active_scope`'s user; a report where `req.user != user` is **ignored** (`server.py`).
-- **Path B — world creation** (`_activate`): a new user's world with no space seeds a space literally named
-  **`home`**, owner = user, **no geolocation**, no `space-N`.
+**Two disjoint space-creation paths:**
+- **Path A — geolocation** (`/geolocation`): first report, case (3) "somewhere new" mints
+  `_unique_space_name` (`space-N`), owner = the **active** user, **geo-stamped**, + a fresh world. Gated to
+  the active user; a report where `req.user != active_user` is **ignored**. Selection is **GPS-only** (no
+  surface disambiguation). Runs once per session.
+- **Path B — world creation** (`_activate`): its real job is **legacy migration** (extracting geometry
+  embedded in an old world doc into a space). But its *fallback* seeds an anonymous **`home`** space (no
+  geolocation) whenever a new world has no space — which is what wrongly won for harold.
 
 **Root gaps:**
-1. **"Logging in" doesn't set the active user.** The single global active world/scope is flipped by world
-   *switches* (via the director), not by who connects a headset/director. At boot it's daniel (or the
-   global-active pointer). So harold's geolocation is dropped (thread 2) because daniel is active.
-2. **Geolocation is scoped to the active user, once per session.** `_nearest_space(user, …)` searches only
-   the requesting user's spaces; and it's gated to the active user — so a *new* user's report does nothing.
-3. **Path B silently wins** for a new user, producing an anonymous, un-located `home` instead of a
-   geo-stamped, discoverable space.
-4. **`docSurfaces` never clears** (`applySnapshot`: `if (reals.length) docSurfaces = reals`) — switching
-   from a room world (many reals) to an empty world keeps the *previous* room's surfaces, so a capture can
-   seed its reference from the wrong room. A real defect, independent of the flow.
+1. **"Logging in" doesn't set the active user** — the one global active world is flipped by world
+   *switches*, not by who connects. So a new user's geolocation is dropped.
+2. **Geolocation is GPS-only and single-user-scoped** — `_nearest_space(user,…)` searches only the
+   requester's spaces; no surface-match disambiguation of co-located rooms.
+3. **Worlds can only reference a space in their *own owner's* scope** — `_activate` does
+   `spaces.load(world_owner, space_name)`. So you can't put your world in someone else's space.
+4. **Path B's empty-`home` fallback wins** for a new user → anonymous, un-located space.
+5. **`docSurfaces` never clears** (`applySnapshot`: `if (reals.length) docSurfaces = reals`) → switching to
+   an empty world keeps the previous room's surfaces, so a capture can seed from the wrong room. Isolated
+   defect, independent of the flow.
 
-## 3. Design decisions (the forks — with recommendations)
+## 4. Connection tiers & admission
 
-- **D1 — What determines the active space? → PHYSICAL LOCATION (geolocation), not who logged in.** The
-  server is at one physical place (the laptop). Everyone connected is co-located there. Geolocation picks
-  the one space for that place. *(Recommend.)*
-- **D2 — Whom does geolocation act for? → the CONNECTING AR user (`req.user`), not the pre-booted active
-  user.** Only AR/`enter-vr` reports geolocation (desktop guests never do), so a report means "this user is
-  physically at the laptop." Let it establish *their* space. *(Recommend; supersedes the active-user gate.)*
-- **D3 — Search scope for "am I here already?" → across ALL users, not just the requester.** So a second
-  person at the same place joins the existing space (co-location) instead of minting a duplicate. Create a
-  new space *only* when no user's space is nearby. *(Recommend.)*
-- **D4 — Ownership of a newly-minted space → the user whose report created it** (first present). Correct by
-  construction; matches "edit-rights follow ownership." *(Recommend.)*
-- **D5 — Unify creation on the geo path.** World creation must NOT silently seed an anonymous `home`. A new
-  user's first world should adopt the geolocation-selected space (creating a geo-stamped one if none). The
-  `_activate` `home` fallback becomes a last resort only when there's genuinely no location. *(Recommend.)*
-- **D6 — Boot behavior → provisional, then geolocation re-anchors.** Boot into last-active (or a neutral
-  holding state) as a placeholder; the first geolocation report switches to the correct space for wherever
-  the laptop physically is. This makes the `sparse-room-relock` global-active pointer unnecessary as a
-  primary mechanism (keep at most as a provisional pre-geolocation placeholder, or drop it). *(Recommend.)*
-- **D7 — Guest yank guard.** Because only AR reports geolocation and everyone in AR is at the laptop, a
-  *remote desktop* guest can't yank the active space (they never report). Keep desktop out of the geo path.
+"Admission to the active world" depends on whether the connection claims **physical presence** in a real room:
 
-## 4. Intended flow
+| Connection | Presence | Aligns to a real room? | Co-location gate (geo + surface) |
+|---|---|---|---|
+| **AR headset** (immersive-ar, planes, passthrough) | physical | yes | **Required** — refuse if not in the space |
+| **Voice / CLI** (director over HTTP, no render) | none (control) | no | **N/A** — admit; edits still owner-gated |
+| **Desktop VR** (browser, no AR, wasd/look) | virtual | no (world-root = identity) | **N/A** — admit; virtual avatar near owner |
 
-**New person, new place** (harold, Harold's house):
-1. Server running (booted into *some* provisional world). `harold` logs in (director `--user harold` +
-   headset `?user=harold`), enters AR.
-2. Headset reports geolocation. No space of **any** user is within ~150 m → **create a geo-stamped space
-   owned by harold** + a fresh `harold` world in it, and make it **active**.
-3. harold's headset captures the real room into *his* space (he's now the owner of the active world).
+So the co-location gate governs **only AR headsets** — the ones that render aligned to passthrough and would
+show content floating over the wrong room if mismatched. A voice/CLI user at the house and a desktop user
+across the country can both drive/inhabit the active world; only a *headset* must physically be there.
 
-**Returning to a known place** (harold, back at Harold's house next week):
-1. Geolocation matches harold's existing space → **activate its last-active world** (Path A case 2, already
-   implemented) → harold picks up where he left off; the stored geometry is the registration reference.
+**First-connection edge:** a non-AR first connection can set the coarse **location** but can't establish a
+capturable **space** (surfaces come only from an AR capture). So "first user establishes the active space"
+means *first AR user*; a non-AR first user builds in a void/virtual context until a headset fills the room.
 
-**Co-location** (daniel + harold, same room):
-1. First AR report mints/activates the space (owned by whoever reported first).
-2. The second person's report is within range of that space → **join it** (activate the same world), not a
-   duplicate. They co-locate; owner-only-writes decides who can edit.
+## 5. Design decisions
 
-## 5. Implementation plan (incremental, testable)
+- **D1 — The active space is set by the first connecting user's location; the server has none.** An empty
+  (unclaimed) server can be claimed from anywhere; boot is provisional.
+- **D2 — Two-stage space selection: geo filter → surface match.** Geolocation narrows to nearby candidates;
+  the registration vote (`RoomSnap.register` against each candidate's stored geometry) picks the exact one.
+  New work: candidate-set registration ("which of these near me do my walls match?").
+- **D3 — Spaces are shared; space-owner ≠ world-owner.** `environment.space` becomes a **fully-qualified
+  reference** (`<space-owner>/<space-name>`), so any user's world can be tied to any space. A space is owned
+  by its first capturer; worlds by their creators. "In someone else's space, build your own world" works.
+- **D4 — Admission is tiered (§4).** AR = geo + surface required; voice/CLI/desktop admitted without
+  co-location. All edits remain owner-only.
+- **D5 — Unify creation on the space.** World-creation adopts the **active, geo+surface-selected** space
+  instead of seeding an anonymous `home`. Path B's empty fallback is reserved for genuinely-no-location
+  (desktop-before-capture) worlds, which **re-home** to the real space once an AR capture establishes it.
+- **D6 — Space stays locked while occupied; unlocks when empty.** While any AR user holds the space, joiners
+  must match it; when the last user leaves, the next connection may establish a new active space.
+- **D7 — Geolocation acts for the *connecting* AR user, not the pre-booted active user.** Drop the
+  active-user gate; search candidate spaces **across all users**; join an existing one on a surface match,
+  else mint a geo-stamped space owned by the connecting user.
 
-1. **`docSurfaces` staleness fix** (client): clear it when a snapshot has no real surfaces, so a capture in
-   a fresh/empty world never seeds from the previous room. *Isolated defect; do first.*
-2. **Geolocation for the connecting user** (server `/geolocation`): drop the "ignore non-active-user"
-   gate for AR reports; search **across all users' spaces** for a nearby one (D3); on a hit for another
-   user's space, activate it (join); on no hit, mint a **geo-stamped space owned by `req.user`** + a fresh
-   world and switch into it (D2/D4).
-3. **Unify world-creation with the space** (server `_activate` / `new_world`): a new user's first world
-   adopts the active geo-stamped space instead of seeding anonymous `home` (D5). `_unique_space_name`
-   becomes the single naming path.
-4. **Boot** (server `_boot_world`): provisional resume only; rely on geolocation to re-anchor (D6). Decide
-   whether to keep or drop the global-active pointer.
-5. **Migration/cleanup**: geo-stamp or retire the existing anonymous spaces (`harold/home`,
-   `daniel/space-2`) — a one-off, or absorb on next geolocation.
+## 6. Intended flows
 
-## 6. Rolled back / held in reserve
+- **New person, new place** (harold, first time at Harold's house, empty server): harold connects in AR →
+  no space within geo range → **mint a geo-stamped space owned by harold** + a fresh world, activate it →
+  harold captures the room into *his* space.
+- **Return to a known place:** geo narrows to harold's space(s) here → surface match confirms which →
+  activate its last-active world.
+- **Two rooms, one address:** geo returns both; **surface match** disambiguates → the right room activates.
+- **Build in someone else's space:** daniel established this space; harold connects, is admitted (geo +
+  surface match), then **creates his own world tied to daniel's space** (fully-qualified ref, D3).
+- **Co-location:** second AR user passes geo + surface → **joins** the active world (no duplicate space).
+  Voice/CLI/desktop users join as control/virtual without the gate.
+- **Re-claim when empty:** everyone logs out → server unclaimed → next user establishes a new active space
+  from their location.
 
-The `sparse-room-relock` branch (3 commits, unmerged) is **rolled back** — capture was fine before Harold's
-house, so those were speculative. **Preserved for cherry-pick:**
-- `a705271` **establish-while-sparse** — a genuine capture-robustness fix (a partial first capture can
-  freeze the reference). Re-apply *only if*, after the flow is correct, a sparse first capture still
-  freezes at Harold's house.
-- `4fdd860` register-acceptance `min(MIN_COV, ref.length)` — minor; re-evaluate.
-- `1b7fb23` global-active resume — likely superseded by D6; drop unless kept as a provisional placeholder.
+## 7. Implementation plan (incremental, testable)
 
-## 7. Open questions / risks
+1. **`docSurfaces` staleness fix** (client) — clear it when a snapshot has no real surfaces. Isolated
+   defect; do first.
+2. **Fully-qualified space references** (server) — `environment.space` = `<owner>/<name>`; `_activate`/
+   `_compose`/`_save_active`/`SpaceStore` resolve a space by its own owner, not the world owner (D3). Keep
+   backward-compat for existing bare-name refs (assume world-owner's scope).
+3. **Two-stage space selection** — a server helper: given the connecting user's location + the client's
+   detected surfaces, geo-filter candidate spaces **across all users**, then pick the best **registration**
+   match; activate its last world, or mint a new geo-stamped space (D2/D7). Needs the client to send its
+   detected surfaces to the server for the match (or the server broadcasts candidates for the client to
+   vote — decide in §9).
+4. **Admission gate** (server `/ws` + `/geolocation`) — AR joiners must match the active space (geo +
+   surface); voice/CLI/desktop admitted without it (D4). Refused AR joiners get an info message.
+5. **Unify world-creation with the active space** — new worlds adopt it; retire the anonymous-`home`
+   fallback except for no-location worlds, which re-home on capture (D5).
+6. **Boot & lifecycle** — provisional boot; establish/unlock the active space on first-connect / last-leave
+   (D1/D6). Supersede the `sparse-room-relock` global-active pointer.
+7. **Migration/cleanup** — geo-stamp or retire existing anonymous spaces (`harold/home`, `daniel/space-2`).
 
-- **Cross-user nearest-space search (D3):** searching every user's spaces on each boot is a filesystem walk
-  — fine at small scale (same note as the world-index backlog); index later if needed.
-- **Whose world activates when joining another user's space?** The space's `last_world`/`last_scope` points
-  at a world+owner; the joiner may be a guest there. Confirm that's the desired default vs. the joiner's own
-  world in that space.
-- **Server-at-one-location assumption:** the model assumes the laptop is the single physical anchor. A
-  future remote/multi-location deployment breaks D1/D2 and needs revisiting.
-- **`_geo_selected` once-per-session:** with geolocation now able to *create* the active space, confirm the
-  once-per-session guard still prevents mid-session GPS jitter from re-selecting.
+## 8. Rolled back / held in reserve
+
+The `sparse-room-relock` branch (unmerged) is rolled back — capture was fine before Harold's house.
+**Preserved for cherry-pick:** `a705271` **establish-while-sparse** (real capture-robustness; re-apply only
+if a sparse first capture still freezes *after* the flow is correct). `4fdd860` register-`min` (minor) and
+`1b7fb23` global-active (superseded by D1/D6) likely dropped.
+
+## 9. Open questions / risks
+
+- **Where does the surface match run?** Client-side (server sends candidate geometries, client votes with
+  `RoomSnap.register`) vs. server-side (client sends detected planes, server runs the vote). Client-side
+  reuses existing code but needs the server to ship candidate constellations; server-side centralizes but
+  duplicates the matcher in Python. *Lean client-side.*
+- **Cross-user candidate search** is a filesystem walk over every user's spaces — fine at small scale;
+  index later (same note as the world-index backlog).
+- **Fully-qualified space refs** touch persisted world docs — need a migration/back-compat path for the
+  bare-name refs that exist today.
+- **"Locked while occupied"** needs a definition of *occupied* (any AR client on `/ws`? presence within N
+  seconds?) and what a mismatched AR joiner sees (info message + passthrough, like a private-world refusal).
+- **Who owns a space captured by a guest** in another user's active world — the guest, or the world's space
+  owner? (Ties to D3 — likely the capturer, but confirm.)
+- **Server-at-one-brain, users-anywhere:** voice/desktop users can be remote while an AR user holds the
+  space — confirm the tiers behave (e.g. a remote desktop user shouldn't be able to *re-home* the space).
