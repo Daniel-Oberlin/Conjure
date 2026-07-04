@@ -12,6 +12,12 @@ un-located space via a fallback path, after rendering/capturing against someone 
 - **A space is a shared physical resource, not a per-user thing.** It's owned by whoever first captured it,
   but **any user can build their own worlds in it.** Space ownership (first capturer) is **decoupled** from
   world ownership (world creator).
+- **Spaces are public by default; can be made private.** A *public* space lets any admitted (co-located)
+  user create their **own** worlds in it; a *private* space restricts world-creation to the **owner**.
+  Making a space private is **not retroactive** — existing worlds stay; it only blocks *new* ones by others.
+- **The physical space is established by the first *AR* user** (they alone have both a location and captured
+  surfaces). Voice/CLI/desktop connections have no surfaces, so they don't establish a space — they operate
+  on whatever's active, or a void world.
 - **Selecting/identifying a space is two-stage:** **(1) geolocation** filters to nearby candidates (coarse,
   ~hundreds of feet — excludes far-away spaces); **(2) surface/registration match** picks the *exact* space
   among the geo-near ones. Geolocation alone can't tell apart two rooms at the same address.
@@ -42,9 +48,11 @@ harold, because he wasn't the *active* user when his headset reported.
   `_unique_space_name` (`space-N`), owner = the **active** user, **geo-stamped**, + a fresh world. Gated to
   the active user; a report where `req.user != active_user` is **ignored**. Selection is **GPS-only** (no
   surface disambiguation). Runs once per session.
-- **Path B — world creation** (`_activate`): its real job is **legacy migration** (extracting geometry
-  embedded in an old world doc into a space). But its *fallback* seeds an anonymous **`home`** space (no
-  geolocation) whenever a new world has no space — which is what wrongly won for harold.
+- **Path B — world creation** (`_activate`): its real job *was* **legacy migration** (extracting geometry
+  embedded in an old world doc into a space) — now **dead code** (nothing left to port; safe to delete). Its
+  *fallback* seeds an anonymous **`home`** space (no geolocation) whenever a new world has no space — which
+  is what wrongly won for harold. **Path B is deprecated:** the legacy-migration machinery is removed; the
+  empty-`home` fallback is *replaced* by the geo-driven creation (§7), not kept.
 
 **Root gaps:**
 1. **"Logging in" doesn't set the active user** — the one global active world is flipped by world
@@ -72,14 +80,17 @@ So the co-location gate governs **only AR headsets** — the ones that render al
 show content floating over the wrong room if mismatched. A voice/CLI user at the house and a desktop user
 across the country can both drive/inhabit the active world; only a *headset* must physically be there.
 
-**First-connection edge:** a non-AR first connection can set the coarse **location** but can't establish a
-capturable **space** (surfaces come only from an AR capture). So "first user establishes the active space"
-means *first AR user*; a non-AR first user builds in a void/virtual context until a headset fills the room.
+**First-connection edge:** only an **AR** capture yields surfaces, so "first user establishes the active
+space" means the *first AR user*. A voice/CLI/desktop user who connects first has no surfaces — they build
+in a void/virtual context until a headset establishes the real space. (We already report geolocation only
+on `enter-vr`, so a desktop browser doesn't try to establish a space on load.)
 
 ## 5. Design decisions
 
-- **D1 — The active space is set by the first connecting user's location; the server has none.** An empty
-  (unclaimed) server can be claimed from anywhere; boot is provisional.
+- **D1 — The active space is set by the first *AR* user's location + capture; the server has none.** An
+  empty (unclaimed) server can be claimed from anywhere. **Boot is provisional:** the startup world is a
+  placeholder that doesn't fix the active space — the first connection (re)establishes it, so `_boot_world`'s
+  global-active pointer becomes unnecessary.
 - **D2 — Two-stage space selection: geo filter → surface match.** Geolocation narrows to nearby candidates;
   the registration vote (`RoomSnap.register` against each candidate's stored geometry) picks the exact one.
   New work: candidate-set registration ("which of these near me do my walls match?").
@@ -88,9 +99,15 @@ means *first AR user*; a non-AR first user builds in a void/virtual context unti
   by its first capturer; worlds by their creators. "In someone else's space, build your own world" works.
 - **D4 — Admission is tiered (§4).** AR = geo + surface required; voice/CLI/desktop admitted without
   co-location. All edits remain owner-only.
-- **D5 — Unify creation on the space.** World-creation adopts the **active, geo+surface-selected** space
-  instead of seeding an anonymous `home`. Path B's empty fallback is reserved for genuinely-no-location
-  (desktop-before-capture) worlds, which **re-home** to the real space once an AR capture establishes it.
+- **D5 — Unify creation on the space; drop Path B.** A new world **adopts the active, geo+surface-selected
+  space**. If there's **no active space yet** (no AR user has established one), the world is created **void**
+  (`space="<void>"`) — the honest "no room yet" answer — instead of the anonymous `home`. The legacy-
+  migration machinery is deleted. A void world can later be **re-homed** to a real space once one exists.
+- **D8 — Space visibility (public by default).** A *public* space lets any admitted user create their own
+  worlds in it; a *private* space restricts world-creation to the owner. Switching to private only affects
+  **future** world-creation — existing worlds in the space are untouched. Orthogonal to admission (joining/
+  viewing is governed by co-location + the *world's* visibility). `set_space_visibility` mirrors the
+  world/asset toggles.
 - **D6 — Space stays locked while occupied; unlocks when empty.** While any AR user holds the space, joiners
   must match it; when the last user leaves, the next connection may establish a new active space.
 - **D7 — Geolocation acts for the *connecting* AR user, not the pre-booted active user.** Drop the
@@ -114,8 +131,10 @@ means *first AR user*; a non-AR first user builds in a void/virtual context unti
 
 ## 7. Implementation plan (incremental, testable)
 
+0. **Delete the legacy-migration machinery** (`_space_from_world_doc` extraction + `_decompose`-on-load in
+   `_activate`) — dead code, nothing left to port. Isolated and safe; do immediately.
 1. **`docSurfaces` staleness fix** (client) — clear it when a snapshot has no real surfaces. Isolated
-   defect; do first.
+   defect.
 2. **Fully-qualified space references** (server) — `environment.space` = `<owner>/<name>`; `_activate`/
    `_compose`/`_save_active`/`SpaceStore` resolve a space by its own owner, not the world owner (D3). Keep
    backward-compat for existing bare-name refs (assume world-owner's scope).
@@ -126,11 +145,13 @@ means *first AR user*; a non-AR first user builds in a void/virtual context unti
    vote — decide in §9).
 4. **Admission gate** (server `/ws` + `/geolocation`) — AR joiners must match the active space (geo +
    surface); voice/CLI/desktop admitted without it (D4). Refused AR joiners get an info message.
-5. **Unify world-creation with the active space** — new worlds adopt it; retire the anonymous-`home`
-   fallback except for no-location worlds, which re-home on capture (D5).
-6. **Boot & lifecycle** — provisional boot; establish/unlock the active space on first-connect / last-leave
+5. **World-creation adopts the active space, else void; Path B fallback removed** (D5) — no more anonymous
+   `home`.
+6. **Space visibility** (D8) — a `public` flag enforced at world-creation-in-a-space; `set_space_visibility`
+   tool, mirroring the world/asset toggles.
+7. **Boot & lifecycle** — provisional boot; establish/unlock the active space on first-connect / last-leave
    (D1/D6). Supersede the `sparse-room-relock` global-active pointer.
-7. **Migration/cleanup** — geo-stamp or retire existing anonymous spaces (`harold/home`, `daniel/space-2`).
+8. **Migration/cleanup** — geo-stamp or retire existing anonymous spaces (`harold/home`, `daniel/space-2`).
 
 ## 8. Rolled back / held in reserve
 
