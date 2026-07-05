@@ -862,26 +862,28 @@ def test_room_geometry_is_shared_across_worlds_styling_is_per_world(srv, client)
     assert back["components"]["material"]["color"] == "green"
 
 
-def test_legacy_embedded_world_migrates_geometry_into_a_space(srv, client):
+def test_activate_no_longer_migrates_embedded_geometry(srv, client):
+    """new-space-flow step 0: the legacy geometry-embedded migration is gone. A pre-space world doc is
+    no longer rewritten on load, and its INLINE real surfaces are NOT resurrected — real geometry lives
+    only in the space now (fed by capture via _save_active). Objects still compose, and a world with no
+    space ref lands in 'home' (the Path B bridge, removed in step 5)."""
     from conjure.world import WorldStore
-    # a pre-Phase-2 world doc: real surfaces embedded, a styled one, no space ref
-    srv.worlds.save(srv.DEFAULT_SCOPE, "legacy", WorldStore({
+    embedded = {
         "id": "l", "name": "legacy", "rev": 3, "environment": {"room": {"boundary": {"height": 2.6}}},
         "entities": [
             {"id": "ent_box", "meta": {"generated": True}, "components": {}},
             {"id": "real_table_2", "meta": {"real": True, "semantic": "table"},
              "transform": {"position": [0, 0.5, -1]},
-             "components": {"surface": {"extent": [1, 1]}, "material": {"color": "blue", "visible": True}}}]}))
+             "components": {"surface": {"extent": [1, 1]}, "material": {"color": "blue"}}}]}
+    srv.worlds.save(srv.DEFAULT_SCOPE, "legacy", WorldStore(embedded))
     client.post("/worlds/switch", json={"name": "legacy"})
-    # geometry surfaced in the live doc; the blue style preserved as a per-world override
-    table = next(e for e in _entities(client) if e["id"] == "real_table_2")
-    assert table["components"]["material"]["color"] == "blue"
-    # the world doc on disk now has NO embedded geometry — it lives in the space
+    ids = {e["id"] for e in _entities(client)}
+    assert "ent_box" in ids                                     # placed objects compose as before
+    assert "real_table_2" not in ids                            # inline geometry is NOT migrated back in
+    assert srv.active_space == "home"                           # Path B bridge until step 5
     wd = srv.worlds.load(srv.DEFAULT_SCOPE, "legacy").doc
-    assert not any(e.get("meta", {}).get("real") for e in wd["entities"])   # geometry stripped
-    assert wd["environment"]["space"] == "home"                            # world references the space
-    sp = srv.spaces.load("daniel", "home")
-    assert any(s["id"] == "real_table_2" for s in sp["surfaces"])          # geometry in the space
+    assert any(e["id"] == "real_table_2" for e in wd["entities"])   # inline geometry NOT stripped from disk
+    assert "space" not in wd.get("environment", {})                # activate no longer stamps a space ref
 
 
 # ---- geolocation (Phase 3a) ---------------------------------------------------------------------

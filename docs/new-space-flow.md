@@ -131,10 +131,13 @@ on `enter-vr`, so a desktop browser doesn't try to establish a space on load.)
 
 ## 7. Implementation plan (incremental, testable)
 
-0. **Delete the legacy-migration machinery** (`_space_from_world_doc` extraction + `_decompose`-on-load in
-   `_activate`) — dead code, nothing left to port. Isolated and safe; do immediately.
-1. **`docSurfaces` staleness fix** (client) — clear it when a snapshot has no real surfaces. Isolated
-   defect.
+0. **✅ DONE — Delete the legacy-migration machinery** (`_space_from_world_doc` extraction + `_decompose`-
+   on-load in `_activate`) — dead code, nothing left to port. `_activate` is now **read-only** (resolve +
+   compose, no world-doc rewrite); persistence of a freshly-built world moved to `_switch_to`, where it
+   belongs. The `absent → home` Path B fallback is kept as a labelled bridge (removed in step 5).
+1. **✅ DONE — `docSurfaces` staleness fix** (client) — `applySnapshot` now clears `docSurfaces` when a
+   snapshot carries no real surfaces, so switching into an empty/void/other room can't seed the next
+   capture from the previous room's geometry. Isolated defect.
 2. **Fully-qualified space references** (server) — `environment.space` = `<owner>/<name>`; `_activate`/
    `_compose`/`_save_active`/`SpaceStore` resolve a space by its own owner, not the world owner (D3). Keep
    backward-compat for existing bare-name refs (assume world-owner's scope).

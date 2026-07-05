@@ -359,7 +359,11 @@
     applyEnv(world.environment);   // after entities, so immersion can toggle them
     isVoidWorld = ((world.environment || {}).space === VOID_SPACE);
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
-    if (reals.length) docSurfaces = reals;     // available to seed the room frame on reload
+    // Seed material for the room frame on reload (see the capture at ~L794). CLEAR it when a snapshot
+    // carries no real surfaces — otherwise switching into an empty/void world (or a DIFFERENT room)
+    // would leave the PREVIOUS room's surfaces here, and the next capture could register into the wrong
+    // frame (new-space-flow §3 gap #5: the Harold's-house cross-room seeding). Empty ⇒ nothing to seed.
+    docSurfaces = reals.length ? reals : null;
     console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)"
       + (isVoidWorld ? " [outdoor/void]" : ""));
   }
