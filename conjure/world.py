@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -239,6 +240,26 @@ class WorldRepository:
         d.mkdir(parents=True, exist_ok=True)
         (d / "_active.txt").write_text(world_path(name))
 
+    # -- admin (shell dir/delete; docs/agents.md §2) ---------------------------------------------
+    def list_users(self) -> list[str]:
+        """Every user with worlds on disk — the immediate subdirs of the root (`<root>/<user>/…`)."""
+        return sorted(p.name for p in self.root.iterdir() if p.is_dir()) if self.root.is_dir() else []
+
+    def user_scopes(self, user: str) -> list[str]:
+        """All `<user>/agents/<agent>` world-scopes for a user (worlds are addressed agent-abstracted
+        as `/<user>/worlds/<name>`, but live under a per-agent scope)."""
+        base = self._scope_dir(user) / "agents"                # validates `user`
+        return [f"{user}/agents/{p.name}" for p in sorted(base.iterdir()) if p.is_dir()] if base.is_dir() else []
+
+    def delete_user(self, user: str) -> int:
+        """Remove ALL of a user's worlds (the whole `<root>/<user>` subtree). Returns the world count."""
+        d = self._scope_dir(user)                              # validates → no traversal
+        if not d.is_dir():
+            return 0
+        n = sum(1 for _ in d.rglob("*.json"))
+        shutil.rmtree(d)
+        return n
+
 
 class SpaceStore:
     """Named, **USER-owned** physical spaces on disk: ``<root>/<user>/<name>.json`` (docs/
@@ -292,3 +313,17 @@ class SpaceStore:
         d = self._user_dir(user)
         d.mkdir(parents=True, exist_ok=True)
         (d / "_active.txt").write_text(slug(name))
+
+    # -- admin (shell dir/delete) ----------------------------------------------------------------
+    def list_users(self) -> list[str]:
+        """Every user with spaces on disk (the immediate subdirs of the root)."""
+        return sorted(p.name for p in self.root.iterdir() if p.is_dir()) if self.root.is_dir() else []
+
+    def delete_user(self, user: str) -> int:
+        """Remove ALL of a user's spaces (the whole `<root>/<user>` subtree). Returns the space count."""
+        d = self._user_dir(user)                               # validates → no traversal
+        if not d.is_dir():
+            return 0
+        n = len(list(d.glob("*.json")))
+        shutil.rmtree(d)
+        return n

@@ -331,6 +331,34 @@ class AssetLibrary:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
 
+    # -- admin (shell dir/delete; scoped by owning user = the first scope segment) -----------------
+    def list_users(self) -> list[str]:
+        """Every user owning at least one asset — the `<user>` prefix of each distinct scope."""
+        with self._lock:
+            rows = self._db.execute("SELECT DISTINCT scope FROM assets WHERE scope IS NOT NULL").fetchall()
+        return sorted({(r[0] or "").split("/", 1)[0] for r in rows} - {""})
+
+    def by_user(self, user: str, *, limit: int = 200) -> list[dict]:
+        """Assets owned by `user` (scope == user or `user/…`), most-recently-used first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM assets WHERE scope = ? OR scope LIKE ? "
+                "ORDER BY last_used DESC LIMIT ?", (user, f"{user}/%", limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_by_user(self, user: str) -> int:
+        with self._lock:
+            return self._db.execute("SELECT COUNT(*) FROM assets WHERE scope = ? OR scope LIKE ?",
+                                    (user, f"{user}/%")).fetchone()[0]
+
+    def delete_by_user(self, user: str) -> int:
+        """Remove every asset owned by `user` (row + FTS + aliases + relations + vector). Returns the
+        count. Cache bytes are left (regenerable), matching single-asset `delete`."""
+        ids = [r["id"] for r in self.by_user(user, limit=1_000_000)]
+        for i in ids:
+            self.delete(i)                                     # acquires the lock itself
+        return len(ids)
+
     def assets_missing_embedding(self, kind: Optional[str] = None) -> list[dict]:
         """Assets with no vector yet (e.g. everything backfilled before embeddings existed). Used by
         the reindex pass to embed the existing catalog."""

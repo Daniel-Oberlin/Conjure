@@ -39,7 +39,7 @@ from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .schema import Patch
-from .world import SpaceStore, WorldRepository, WorldStore, _set_path, world_path
+from .world import SpaceStore, WorldRepository, WorldStore, _set_path, slug, world_path
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
@@ -930,6 +930,199 @@ async def worlds_visibility(req: WorldVisibilityRequest) -> dict:
         return {"ok": True, "world": name, "public": req.public, "published_assets": published}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+# ---- admin: dir / delete over the user→{worlds,spaces,assets} namespace (shell only) -------------
+# A deterministic filesystem-like view/purge for dev. Paths are `/`, `/<user>`, `/<user>/<cat>`,
+# `/<user>/<cat>/<name>` where <cat> ∈ {worlds, spaces, assets}. No auth yet (docs: "security comes
+# later"); the shell requires confirmation before any delete. Deletes refuse to touch the *active*
+# world/space/user (autosave would resurrect them and leave the in-memory store inconsistent).
+_ADMIN_CATS = ("worlds", "spaces", "assets")
+_ADMIN_PART = re.compile(r"[A-Za-z0-9._-]+")
+
+
+class AdminPath(BaseModel):
+    path: str = "/"
+
+
+def _admin_split(path: str) -> list[str]:
+    return [s for s in (path or "").strip().strip("/").split("/") if s]
+
+
+def _admin_active_user() -> str:
+    return active_scope.split("/", 1)[0]
+
+
+def _admin_all_users() -> list[str]:
+    return sorted(set(worlds.list_users()) | set(spaces.list_users()) | set(library.list_users()))
+
+
+def _node(label: str, kind: str, detail: str = "", children: Optional[list] = None) -> dict:
+    n: dict = {"label": label, "kind": kind}
+    if detail:
+        n["detail"] = detail
+    if children is not None:
+        n["children"] = children
+    return n
+
+
+def _world_detail(scope: str, name: str, *, active: bool) -> str:
+    try:
+        env = worlds.load(scope, name).doc.get("environment") or {}
+    except (OSError, ValueError):
+        env = {}
+    vis = "public" if env.get("public", True) else "private"
+    sp = env.get("space") or "?"
+    return f"space={sp} · {vis}" + (" · *active*" if active else "")
+
+
+def _worlds_children(user: str) -> list[dict]:
+    out = []
+    for scope in worlds.user_scopes(user):
+        for name in worlds.list(scope):
+            live = scope == active_scope and name == active_world
+            out.append(_node(name, "world", _world_detail(scope, name, active=live)))
+    return out
+
+
+def _spaces_children(user: str) -> list[dict]:
+    live_user = user == _admin_active_user()
+    out = []
+    for name in spaces.list(user):
+        try:
+            sp = spaces.load(user, name)
+        except (OSError, ValueError):
+            sp = {}
+        n = len(sp.get("surfaces") or [])
+        geo = "geo✓" if sp.get("geolocation") else "geo✗"
+        act = " · *active*" if (live_user and name == active_space) else ""
+        out.append(_node(name, "space", f"{n} surfaces · {geo}{act}"))
+    return out
+
+
+def _assets_children(user: str, limit: int = 100) -> list[dict]:
+    rows = library.by_user(user, limit=limit + 1)
+    out = []
+    for r in rows[:limit]:
+        vis = "public" if r.get("public", 1) else "private"
+        label = f" · {r['label']}" if r.get("label") else ""
+        out.append(_node(r["id"], "asset", f"{r.get('kind', '?')} · {vis}{label}"))
+    total = library.count_by_user(user)
+    if total > limit:
+        out.append(_node(f"… (+{total - limit} more)", "note"))
+    return out
+
+
+def _user_node(user: str) -> dict:
+    return _node(user, "user", "", [
+        _node("worlds", "category", "", _worlds_children(user)),
+        _node("spaces", "category", "", _spaces_children(user)),
+        _node("assets", "category", "", _assets_children(user)),
+    ])
+
+
+@app.post("/admin/tree")
+async def admin_tree(req: AdminPath) -> dict:
+    """A nested listing of the namespace at `path` (root = every user). Shell `dir`."""
+    segs = _admin_split(req.path)
+    if not segs:
+        users = _admin_all_users()
+        return {"ok": True, "path": "/",
+                "node": _node("/", "root", f"{len(users)} users", [_user_node(u) for u in users])}
+    user = segs[0]
+    if not _ADMIN_PART.fullmatch(user):
+        return {"ok": False, "error": f"bad path segment {user!r}"}
+    if user not in _admin_all_users():
+        return {"ok": False, "error": f"no such user {user!r}"}
+    if len(segs) == 1:
+        return {"ok": True, "path": f"/{user}", "node": _user_node(user)}
+    cat = segs[1]
+    if cat not in _ADMIN_CATS:
+        return {"ok": False, "error": f"unknown category {cat!r} (worlds|spaces|assets)"}
+    builder = {"worlds": _worlds_children, "spaces": _spaces_children, "assets": _assets_children}[cat]
+    children = builder(user)
+    if len(segs) == 2:
+        return {"ok": True, "path": f"/{user}/{cat}", "node": _node(cat, "category", "", children)}
+    name = "/".join(segs[2:])                                  # a specific item (worlds may be nested)
+    key = world_path(name) if cat == "worlds" else slug(name) if cat == "spaces" else name
+    match = next((c for c in children if c["label"] == key), None)
+    if match is None:
+        return {"ok": False, "error": f"no {cat[:-1]} {name!r} for {user!r}"}
+    return {"ok": True, "path": f"/{user}/{cat}/{name}", "node": match}
+
+
+@app.post("/admin/delete")
+async def admin_delete(req: AdminPath) -> dict:
+    """Purge whatever `path` points at (user / category / single item). Shell `delete` (post-confirm)."""
+    segs = _admin_split(req.path)
+    if not segs:
+        return {"ok": False, "error": "refusing to delete everything — name a user (e.g. /alice)"}
+    user = segs[0]
+    if not _ADMIN_PART.fullmatch(user):
+        return {"ok": False, "error": f"bad path segment {user!r}"}
+    au = _admin_active_user()
+    try:
+        if len(segs) == 1:                                     # a whole user
+            if user == au:
+                return {"ok": False, "error": f"{user!r} is the active user — switch away first"}
+            nw, ns, na = worlds.delete_user(user), spaces.delete_user(user), library.delete_by_user(user)
+            return {"ok": True, "deleted": f"user {user!r}: {nw} worlds, {ns} spaces, {na} assets"}
+        cat = segs[1]
+        if cat not in _ADMIN_CATS:
+            return {"ok": False, "error": f"unknown category {cat!r} (worlds|spaces|assets)"}
+        name = "/".join(segs[2:])                              # empty ⇒ the whole category
+        if cat == "worlds":
+            return _admin_delete_worlds(user, name, au)
+        if cat == "spaces":
+            return _admin_delete_spaces(user, name, au)
+        return _admin_delete_assets(user, name)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _admin_delete_worlds(user: str, name: str, au: str) -> dict:
+    if not name:                                               # every world for the user
+        targets = [(sc, n) for sc in worlds.user_scopes(user) for n in worlds.list(sc)]
+        if any(sc == active_scope and n == active_world for sc, n in targets):
+            return {"ok": False, "error": "the active world is here — switch away first"}
+        for sc, n in targets:
+            worlds.delete(sc, n)
+        return {"ok": True, "deleted": f"{len(targets)} worlds for {user!r}"}
+    wp = world_path(name)
+    hits = [sc for sc in worlds.user_scopes(user) if worlds.exists(sc, name)]
+    if not hits:
+        return {"ok": False, "error": f"no world {name!r} for {user!r}"}
+    if any(sc == active_scope and wp == active_world for sc in hits):
+        return {"ok": False, "error": "can't delete the active world — switch away first"}
+    for sc in hits:
+        worlds.delete(sc, name)
+    return {"ok": True, "deleted": f"world {name!r} for {user!r}"}
+
+
+def _admin_delete_spaces(user: str, name: str, au: str) -> dict:
+    if not name:                                               # every space for the user
+        if user == au and active_space != VOID and active_space in spaces.list(user):
+            return {"ok": False, "error": "the active space is here — switch away first"}
+        n = spaces.delete_user(user)
+        return {"ok": True, "deleted": f"{n} spaces for {user!r}"}
+    if not spaces.exists(user, name):
+        return {"ok": False, "error": f"no space {name!r} for {user!r}"}
+    if user == au and slug(name) == active_space:
+        return {"ok": False, "error": "can't delete the active space — switch away first"}
+    spaces.delete(user, name)
+    return {"ok": True, "deleted": f"space {name!r} for {user!r}"}
+
+
+def _admin_delete_assets(user: str, name: str) -> dict:
+    if not name:                                               # every asset for the user
+        n = library.delete_by_user(user)
+        return {"ok": True, "deleted": f"{n} assets for {user!r}"}
+    rec = library.get(name)
+    sc = (rec or {}).get("scope") or ""
+    if rec is None or not (sc == user or sc.startswith(f"{user}/")):
+        return {"ok": False, "error": f"no asset {name!r} for {user!r}"}
+    ok, err = library.delete(name)
+    return {"ok": ok, "deleted": f"asset {name!r}"} if ok else {"ok": False, "error": err}
 
 
 @app.post("/patch")

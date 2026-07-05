@@ -95,7 +95,16 @@ deterministic dispatcher, *not* MCP tools. Adding a command is registering a han
 | `agents` / `llms` / `servers` | list what's available (and in scope) |
 | `whoami` / `status` | show the active pair + its scoped servers/tools |
 | `reset` / `save <name>` / `load <name>` / `realign room` | **deterministic** world ops (today these would be LLM tool calls) |
+| `dir [path]` / `delete <path>` | inspect / purge the `user→{worlds,spaces,assets}` namespace (dev admin) |
 | `help` | list commands |
+
+**`dir` / `delete` (dev admin).** A filesystem-like view + purge of the whole namespace, addressed by
+path: `/`, `/<user>`, `/<user>/<cat>`, `/<user>/<cat>/<name>` where `<cat>` ∈ `worlds | spaces |
+assets`. `dir` with no path renders the full tree for every user; a path narrows it. `delete` previews
+the target, then requires a `y` confirmation before acting, and refuses to remove the **active**
+world/space/user (autosave would resurrect them). Both hit the world server's `/admin/{tree,delete}`
+endpoints, so they act on its live state, not raw files. **No auth yet** — a security/permission gate
+comes later; this is a dev-cleanup tool (e.g. `delete /testuser`, `delete /testuser/worlds/w1`).
 
 **Migration.** Today's `route_turn` (the `"let me talk to X"` regex in `director.py`) *is* the
 embryonic shell — it already intercepts deterministically before the LLM. The refactor lifts that logic

@@ -1153,3 +1153,106 @@ def test_guest_may_create_and_switch_worlds_everyone_comes_along(srv, client):
                 headers={"X-Conjure-User": "bob"})
     assert client.post("/style_surface", json={"target": "wall", "color": "blue"},
                        headers={"X-Conjure-User": "bob"}).status_code == 403
+
+
+# ---- admin: dir / delete over the user→{worlds,spaces,assets} namespace (shell `dir`/`delete`) ------
+def _seed_worlds(srv, scope, *names):
+    from conjure.world import WorldStore
+    for n in names:
+        srv.worlds.save(scope, n, WorldStore(
+            {"id": n, "name": n, "rev": 0, "environment": {}, "entities": []}))
+
+
+def _seed_space(srv, user, name, *, geo=None, surfaces=1):
+    srv.spaces.save(user, name, {
+        "owner": user, "name": name, "public": True, "geolocation": geo,
+        "surfaces": [{"id": f"s{i}"} for i in range(surfaces)], "boundary": {}})
+
+
+def _seed_asset(srv, id, scope, **fields):
+    srv.library.upsert(id, kind="model", scope=scope, public=1, **fields)
+
+
+def test_admin_tree_root_lists_all_users_with_nested_categories(srv, client):
+    _seed_worlds(srv, "alice/agents/builder", "w1")
+    _seed_space(srv, "alice", "living-room")
+    _seed_asset(srv, "bob-asset", "bob/agents/builder", label="thing")
+    node = client.post("/admin/tree", json={"path": "/"}).json()["node"]
+    users = {c["label"] for c in node["children"]}
+    assert {"alice", "bob"} <= users
+    alice = next(c for c in node["children"] if c["label"] == "alice")
+    cats = {c["label"] for c in alice["children"]}
+    assert cats == {"worlds", "spaces", "assets"}
+    worlds = next(c for c in alice["children"] if c["label"] == "worlds")
+    assert {w["label"] for w in worlds["children"]} == {"w1"}
+
+
+def test_admin_tree_narrows_by_path(srv, client):
+    _seed_worlds(srv, "alice/agents/builder", "w1", "w2")
+    node = client.post("/admin/tree", json={"path": "/alice/worlds"}).json()["node"]
+    assert node["label"] == "worlds"
+    assert {w["label"] for w in node["children"]} == {"w1", "w2"}
+
+
+def test_admin_tree_unknown_user_errors(srv, client):
+    r = client.post("/admin/tree", json={"path": "/nobody"}).json()
+    assert r["ok"] is False and "nobody" in r["error"]
+
+
+def test_admin_delete_single_world(srv, client):
+    _seed_worlds(srv, "alice/agents/builder", "w1", "w2")
+    r = client.post("/admin/delete", json={"path": "/alice/worlds/w1"}).json()
+    assert r["ok"] is True
+    assert srv.worlds.list("alice/agents/builder") == ["w2"]
+
+
+def test_admin_delete_all_spaces(srv, client):
+    _seed_space(srv, "alice", "room-a")
+    _seed_space(srv, "alice", "room-b")
+    r = client.post("/admin/delete", json={"path": "/alice/spaces"}).json()
+    assert r["ok"] is True and "2 spaces" in r["deleted"]
+    assert srv.spaces.list("alice") == []
+
+
+def test_admin_delete_whole_user(srv, client):
+    _seed_worlds(srv, "alice/agents/builder", "w1")
+    _seed_space(srv, "alice", "room-a")
+    _seed_asset(srv, "alice-asset", "alice/agents/builder")
+    r = client.post("/admin/delete", json={"path": "/alice"}).json()
+    assert r["ok"] is True
+    assert srv.worlds.list("alice/agents/builder") == []
+    assert srv.spaces.list("alice") == []
+    assert srv.library.count_by_user("alice") == 0
+
+
+def test_admin_delete_single_asset_scoped(srv, client):
+    _seed_asset(srv, "keep", "alice/agents/builder")
+    _seed_asset(srv, "drop", "alice/agents/builder")
+    r = client.post("/admin/delete", json={"path": "/alice/assets/drop"}).json()
+    assert r["ok"] is True
+    assert srv.library.get("drop") is None and srv.library.get("keep") is not None
+
+
+def test_admin_delete_refuses_active_world(srv, client):
+    _seed_worlds(srv, srv.DEFAULT_SCOPE, "default")     # the active world, now on disk
+    r = client.post("/admin/delete", json={"path": "/daniel/worlds/default"}).json()
+    assert r["ok"] is False and "active world" in r["error"]
+    assert srv.worlds.exists(srv.DEFAULT_SCOPE, "default")
+
+
+def test_admin_delete_refuses_active_space(srv, client):
+    _seed_space(srv, "daniel", "home")                  # active_space == "home" for daniel
+    r = client.post("/admin/delete", json={"path": "/daniel/spaces/home"}).json()
+    assert r["ok"] is False and "active space" in r["error"]
+    assert srv.spaces.exists("daniel", "home")
+
+
+def test_admin_delete_refuses_active_user(srv, client):
+    _seed_worlds(srv, srv.DEFAULT_SCOPE, "w1")
+    r = client.post("/admin/delete", json={"path": "/daniel"}).json()
+    assert r["ok"] is False and "active user" in r["error"]
+
+
+def test_admin_delete_empty_path_refused(srv, client):
+    r = client.post("/admin/delete", json={"path": "/"}).json()
+    assert r["ok"] is False and "everything" in r["error"]

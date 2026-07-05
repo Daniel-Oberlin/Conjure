@@ -113,3 +113,75 @@ def test_prompt_reflects_mode():
     assert sh.prompt() == "conjure:daniel.builder.claude> "   # user · agent-primary; the LLM can vary
     sh.in_shell = True
     assert sh.prompt() == "conjure:shell> "
+
+
+# --------------------------------------------------------------------------- dir / delete (admin)
+
+def _admin_shell(responder):
+    """A shell whose /admin calls are served by `responder(action, path)` — no network."""
+    sh, d, out, on_text = _shell()
+    sh.in_shell = True
+    calls = []
+
+    async def fake_admin(action, path):
+        calls.append((action, path))
+        return responder(action, path)
+
+    sh._admin = fake_admin
+    return sh, out, on_text, calls
+
+
+async def test_dir_lists_the_namespace_via_admin():
+    node = {"label": "/", "kind": "root", "children": [{"label": "alice", "kind": "user"}]}
+    sh, out, on_text, calls = _admin_shell(lambda a, p: {"ok": True, "node": node})
+    await sh.feed("dir", on_text=on_text)
+    assert calls == [("tree", "/")]                          # bare dir → root
+    assert any("alice" in t for _, t in out)
+
+
+async def test_dir_narrows_by_path():
+    sh, out, on_text, calls = _admin_shell(
+        lambda a, p: {"ok": True, "node": {"label": "worlds", "kind": "category"}})
+    await sh.feed("dir /alice/worlds", on_text=on_text)
+    assert calls == [("tree", "/alice/worlds")]
+
+
+async def test_dir_is_not_a_command_in_agent_mode():
+    sh, d, out, on_text = _shell()                           # not in shell → needs the wake word
+    await sh.feed("dir", on_text=on_text)
+    assert d.handled == ["dir"]                              # forwarded to the agent, not run as a command
+
+
+async def test_delete_asks_before_acting_then_confirms():
+    def responder(action, path):
+        if action == "tree":
+            return {"ok": True, "node": {"label": "alice", "kind": "user",
+                                         "children": [{"label": "w1", "kind": "world"}]}}
+        return {"ok": True, "deleted": "user 'alice'"}
+
+    sh, out, on_text, calls = _admin_shell(responder)
+    await sh.feed("delete /alice", on_text=on_text)
+    assert calls == [("tree", "/alice")]                     # previewed, NOT yet deleted
+    assert sh._pending_delete == "/alice"
+    assert any("confirm" in t.lower() for _, t in out)
+    await sh.feed("y", on_text=on_text)
+    assert ("delete", "/alice") in calls and sh._pending_delete is None
+    assert any("Deleted" in t for _, t in out)
+
+
+async def test_delete_cancels_on_anything_but_yes():
+    sh, out, on_text, calls = _admin_shell(
+        lambda a, p: {"ok": True, "node": {"label": "alice", "kind": "user"}})
+    await sh.feed("delete /alice", on_text=on_text)
+    await sh.feed("no", on_text=on_text)
+    assert sh._pending_delete is None
+    assert all(a != "delete" for a, _ in calls)              # never fired
+    assert any("Cancelled" in t for _, t in out)
+
+
+async def test_delete_preview_error_does_not_arm():
+    sh, out, on_text, calls = _admin_shell(lambda a, p: {"ok": False, "error": "no such user 'ghost'"})
+    await sh.feed("delete /ghost", on_text=on_text)
+    assert sh._pending_delete is None                        # bad target → nothing armed
+    assert all(a != "delete" for a, _ in calls)
+    assert any("ghost" in t for _, t in out)
