@@ -115,6 +115,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "active_scope", server.DEFAULT_SCOPE)
     monkeypatch.setattr(server, "active_world", "default")
     monkeypatch.setattr(server, "active_space", "home")
+    monkeypatch.setattr(server, "active_space_owner", "daniel")   # owner of the active space (D3-aware)
     monkeypatch.setattr(server, "_geo_selected", False)   # fresh session: geolocation selection re-runs
     monkeypatch.setattr(
         server, "store",

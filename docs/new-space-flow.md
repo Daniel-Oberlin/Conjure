@@ -138,9 +138,17 @@ on `enter-vr`, so a desktop browser doesn't try to establish a space on load.)
 1. **✅ DONE — `docSurfaces` staleness fix** (client) — `applySnapshot` now clears `docSurfaces` when a
    snapshot carries no real surfaces, so switching into an empty/void/other room can't seed the next
    capture from the previous room's geometry. Isolated defect.
-2. **Fully-qualified space references** (server) — `environment.space` = `<owner>/<name>`; `_activate`/
-   `_compose`/`_save_active`/`SpaceStore` resolve a space by its own owner, not the world owner (D3). Keep
-   backward-compat for existing bare-name refs (assume world-owner's scope).
+
+   > ⚠️ Steps 0–1 shipped covered by the unit/JS suites but **not yet headset-regression-tested** — verify
+   > the "room shared across worlds / styling per-world" and "void→empty capture" paths on-device later.
+2. **✅ DONE — Fully-qualified space references** (server) — `environment.space` = `<owner>/<name>` (D3).
+   New `_resolve_space_ref` / `_space_ref` helpers; a new global `active_space_owner` pairs with
+   `active_space` to identify the live space's file. `_activate` returns `(owner, name, store)` and loads
+   the space from its OWNER's scope; `_save_active` persists captured geometry back to that owner's scope
+   and writes the qualified ref; `/reset` + the admin `*active*`/delete guards resolve by owner too.
+   **Back-compat:** a bare `<name>` ref resolves to the world-owner's scope, so existing docs still load;
+   they're rewritten to the qualified form on the next save. Creation still can't *target* another user's
+   space yet — that's step 5 (world-creation adopts the active space).
 3. **Two-stage space selection** — a server helper: given the connecting user's location + the client's
    detected surfaces, geo-filter candidate spaces **across all users**, then pick the best **registration**
    match; activate its last world, or mint a new geo-stamped space (D2/D7). Needs the client to send its

@@ -886,6 +886,51 @@ def test_activate_no_longer_migrates_embedded_geometry(srv, client):
     assert "space" not in wd.get("environment", {})                # activate no longer stamps a space ref
 
 
+# ---- step 2: fully-qualified space references (D3 — a world can live in another user's space) ------
+def test_resolve_space_ref_qualified_and_bare(srv):
+    assert srv._resolve_space_ref("daniel/home", "bob") == ("daniel", "home")   # fully-qualified
+    assert srv._resolve_space_ref("home", "bob") == ("bob", "home")             # bare → the world's owner
+    assert srv._space_ref("daniel", "home") == "daniel/home"
+
+
+def test_save_active_writes_fully_qualified_space_ref(srv):
+    # the active world (daniel/default) composes against daniel's 'home'; a save records the OWNER/NAME ref
+    srv._save_active()
+    wd = srv.worlds.load(srv.DEFAULT_SCOPE, "default").doc
+    assert wd["environment"]["space"] == "daniel/home"
+
+
+def test_world_can_live_in_another_users_space(srv, client):
+    """D3 / step 2: environment.space is <owner>/<name>, so bob's world can be tied to daniel's space.
+    Activating composes daniel's geometry; bob's capture persists back to DANIEL's space (not bob's),
+    and the qualified reference is preserved."""
+    from conjure.world import WorldStore
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
+        "geolocation": None, "boundary": {"height": 2.6},
+        "surfaces": [{"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
+                      "components": {"material": {"color": "#888"}}}]})
+    srv.worlds.save("bob/agents/builder", "in-daniels-room", WorldStore(
+        {"id": "b", "name": "in-daniels-room", "rev": 1,
+         "environment": {"space": "daniel/home"}, "entities": []}))
+    srv.active_space = srv.VOID          # neutralize the outgoing save so it can't clobber the seeded space
+    r = client.post("/worlds/switch", json={"name": "in-daniels-room", "scope": "bob/agents/builder"},
+                    headers={"X-Conjure-User": "bob"})
+    assert r.json()["ok"]
+    assert srv.active_space_owner == "daniel" and srv.active_space == "home"     # resolved owner+name
+    assert any(e["id"] == "real_wall_9" for e in _entities(client))             # daniel's geometry composed in
+    # bob (now the active world's owner) captures another wall → it lands in DANIEL's space
+    client.post("/room", json={"client_id": "h", "surfaces": [
+        {"id": "real_wall_9", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]},
+        {"id": "real_wall_10", "semantic": "wall", "position": [2, 1, 0], "extent": [3, 2.4]}]},
+        headers={"X-Conjure-User": "bob"})
+    srv._save_active()
+    sp = srv.spaces.load("daniel", "home")
+    assert {s["id"] for s in sp["surfaces"]} >= {"real_wall_9", "real_wall_10"}  # persisted to daniel's space
+    assert srv.spaces.list("bob") == []                                         # NOT minted in bob's scope
+    wd = srv.worlds.load("bob/agents/builder", "in-daniels-room").doc
+    assert wd["environment"]["space"] == "daniel/home"                          # qualified ref preserved
+
+
 # ---- geolocation (Phase 3a) ---------------------------------------------------------------------
 def test_nearest_space_picks_closest_and_skips_ungeolocated(srv):
     srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,

@@ -179,7 +179,10 @@ spaces: "SpaceStore | None" = None
 store: "WorldStore | None" = None
 active_scope: str = DEFAULT_SCOPE
 active_world: str = "default"
-active_space: str = "home"          # the space the active world is composed against
+active_space: str = "home"          # bare NAME of the space the active world composes against
+active_space_owner: str = DEFAULT_USER  # who OWNS that space — may differ from the active WORLD's owner
+                                    # (D3: your world can live in someone else's shared space). Together
+                                    # (active_space_owner, active_space) identify the live space's file.
 VOID = "<void>"                     # sentinel space for an OUTDOOR/void world — not tied to a captured room;
                                     # it shows a skybox + placed objects, and the client derives its frame
                                     # on the fly from live walls (RoomSnap.canonicalFrame) instead of a space
@@ -192,14 +195,15 @@ def _init_state() -> None:
     """Open the catalog (runs schema migrations), migrate the world layout, and boot the active world.
     All filesystem-mutating — so it runs on server startup, not at import. Idempotent enough to re-run.
     Back up library.db to protect curation: a lost catalog is NOT rebuilt from the cache files."""
-    global library, worlds, spaces, store, active_scope, active_world, active_space, _geo_selected
+    global library, worlds, spaces, store, active_scope, active_world, active_space, active_space_owner
+    global _geo_selected
     _geo_selected = False                            # a fresh session re-selects on first geolocation report
     library = AssetLibrary(LIBRARY_DB)
     worlds = WorldRepository(WORLDS_DIR)
     spaces = SpaceStore(SPACES_DIR)
     _migrate_world_dirs(WORLDS_DIR)                  # pre-user layout → <user>/agents/<agent> (one-time)
     active_scope, active_world, raw = _boot_world()
-    active_space, store = _activate(active_scope, active_world, raw)   # compose (+ migrate geometry → space)
+    active_space_owner, active_space, store = _activate(active_scope, active_world, raw)   # resolve + compose
 
 # Embedding is an *enrichment*, not part of procurement, so in production it runs OFF the request path:
 # the asset is already procured/returned, and its vector lands a beat later (exact/FTS still match it
@@ -426,17 +430,19 @@ def _save_active() -> None:
         world_doc.setdefault("environment", {})["space"] = VOID
         worlds.save(active_scope, active_world, WorldStore(world_doc))
         return
-    user = active_scope.split("/", 1)[0]
-    space = spaces.load(user, active_space) if spaces.exists(user, active_space) else \
-        {"owner": user, "name": active_space, "public": True, "geolocation": None,
+    # Geometry is persisted into the SPACE's OWNER's scope — not the world owner's — so a world built in
+    # someone else's space writes its captured walls back to that owner's space (D3).
+    owner = active_space_owner
+    space = spaces.load(owner, active_space) if spaces.exists(owner, active_space) else \
+        {"owner": owner, "name": active_space, "public": True, "geolocation": None,
          "surfaces": [], "boundary": None}
-    fresh = _space_from_world_doc(user, active_space, store.doc)       # geometry + boundary, default-materialed
+    fresh = _space_from_world_doc(owner, active_space, store.doc)      # geometry + boundary, default-materialed
     space["surfaces"], space["boundary"] = fresh["surfaces"], fresh["boundary"]
     space["last_scope"], space["last_world"] = active_scope, active_world   # for nearest-space selection
-    spaces.save(user, active_space, space)
-    spaces.set_active(user, active_space)                             # keep the user's current physical space current
+    spaces.save(owner, active_space, space)
+    spaces.set_active(owner, active_space)                            # keep the owner's current physical space current
     world_doc = _decompose(store.doc, space)                          # overrides diffed vs the (default) base
-    world_doc.setdefault("environment", {})["space"] = active_space
+    world_doc.setdefault("environment", {})["space"] = _space_ref(owner, active_space)   # fully-qualified (D3)
     worlds.save(active_scope, active_world, WorldStore(world_doc))
 
 
@@ -724,9 +730,9 @@ async def reset_world() -> dict:
     own once a headset is back in AR. The world keeps its name; only its contents are wiped."""
     global store
     raw = _new_world_store(active_scope)      # empty starter world (placed content + prefs only)
-    user = active_scope.split("/", 1)[0]
-    space = spaces.load(user, active_space) if (spaces and spaces.exists(user, active_space)) \
-        else {"surfaces": [], "boundary": None}
+    space = spaces.load(active_space_owner, active_space) \
+        if (spaces and active_space != VOID and spaces.exists(active_space_owner, active_space)) \
+        else {"surfaces": [], "boundary": None}   # keep the active space's geometry (from its owner's scope)
     store = WorldStore(_compose(raw.doc, space))   # keep the physical room; clear only the world's content
     _reset_room_authority(store)
     _surface_absence.clear()                 # fresh room session
@@ -740,7 +746,7 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     """Make (scope, name) the live world: persist the outgoing one, set the incoming as `store`, record
     it as active, and broadcast a snapshot so the headset reloads. `store_override` installs a freshly
     built world (new_world) instead of loading from disk."""
-    global store, active_scope, active_world, active_space
+    global store, active_scope, active_world, active_space, active_space_owner
     name = world_path(name)                   # canonical path, so `active` matches list() + the pointer
     _save_active()                            # split + persist the outgoing world (+ its space)
     raw = store_override if store_override is not None else worlds.load(scope, name)
@@ -748,7 +754,7 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
         worlds.save(scope, name, raw)         # a freshly-built world isn't on disk yet — persist it here
                                               # (activate is read-only now; creating owns persistence — step 0)
     active_scope, active_world = scope, name
-    active_space, store = _activate(scope, name, raw)   # compose the incoming world against its space
+    active_space_owner, active_space, store = _activate(scope, name, raw)   # resolve space (owner+name) + compose
     worlds.set_active(scope, name)
     _surface_absence.clear()                  # the room re-syncs into the newly active world
     await _broadcast(_snapshot_msg())
@@ -989,7 +995,6 @@ def _worlds_children(user: str) -> list[dict]:
 
 
 def _spaces_children(user: str) -> list[dict]:
-    live_user = user == _admin_active_user()
     out = []
     for name in spaces.list(user):
         try:
@@ -998,7 +1003,8 @@ def _spaces_children(user: str) -> list[dict]:
             sp = {}
         n = len(sp.get("surfaces") or [])
         geo = "geo✓" if sp.get("geolocation") else "geo✗"
-        act = " · *active*" if (live_user and name == active_space) else ""
+        # the live space is (active_space_owner, active_space) — its owner may not be the active user
+        act = " · *active*" if (user == active_space_owner and name == active_space) else ""
         out.append(_node(name, "space", f"{n} surfaces · {geo}{act}"))
     return out
 
@@ -1103,14 +1109,16 @@ def _admin_delete_worlds(user: str, name: str, au: str) -> dict:
 
 
 def _admin_delete_spaces(user: str, name: str, au: str) -> dict:
+    # the live space is (active_space_owner, active_space) — guard against removing it out from under us
+    live = user == active_space_owner and active_space != VOID
     if not name:                                               # every space for the user
-        if user == au and active_space != VOID and active_space in spaces.list(user):
+        if live and active_space in spaces.list(user):
             return {"ok": False, "error": "the active space is here — switch away first"}
         n = spaces.delete_user(user)
         return {"ok": True, "deleted": f"{n} spaces for {user!r}"}
     if not spaces.exists(user, name):
         return {"ok": False, "error": f"no space {name!r} for {user!r}"}
-    if user == au and slug(name) == active_space:
+    if live and slug(name) == active_space:
         return {"ok": False, "error": "can't delete the active space — switch away first"}
     spaces.delete(user, name)
     return {"ok": True, "deleted": f"space {name!r} for {user!r}"}
@@ -1288,51 +1296,72 @@ def _space_from_world_doc(user: str, name: str, doc: dict) -> dict:
             "surfaces": surfaces, "boundary": boundary}
 
 
-def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, WorldStore]:
+def _resolve_space_ref(ref: str, world_owner: str) -> tuple[str, str]:
+    """A world's `environment.space` references a SHARED space that may belong to ANOTHER user (D3 —
+    "build your own world in someone else's space"). Parse it into `(space_owner, space_name)`:
+
+        "<owner>/<name>"  → that owner's space (fully-qualified — the target form)
+        "<name>"          → a bare/legacy reference → the world's OWN owner (back-compat)
+
+    VOID is not a space and is handled by callers before this is reached."""
+    if "/" in ref:
+        owner, sname = ref.split("/", 1)
+        return owner, sname
+    return world_owner, ref
+
+
+def _space_ref(owner: str, name: str) -> str:
+    """The fully-qualified `environment.space` value for a space — `<owner>/<name>` (D3). Persisted so a
+    world remembers WHOSE space it's tied to, even when the space's owner isn't the world's owner."""
+    return f"{owner}/{name}"
+
+
+def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, WorldStore]:
     """Make `world` live: resolve the SPACE it references and COMPOSE the render doc against it.
 
     A world is stored geometry-free — it carries only placed objects, display prefs, and per-surface
     style overrides. The real-surface geometry + boundary live in a shared, user-owned *space* (docs/
     spaces-and-users-plan.md §5). `environment.space` points a world at its space:
 
-        VOID (\"<void>\")  → an outdoor/void world: no room to merge — objects + skybox only.
-        \"<name>\"          → a named space in the world-owner's scope (today's form).
-        absent            → no space chosen yet → the 'home' fallback (**Path B**; see below).
+        VOID ("<void>")     → an outdoor/void world: no room to merge — objects + skybox only.
+        "<owner>/<name>"    → a shared space, possibly ANOTHER user's (D3, the target form).
+        "<name>"            → a bare/legacy ref → the world-owner's own space (back-compat).
+        absent              → no space chosen yet → the 'home' fallback (**Path B**; see below).
 
     `_compose` merges the world's objects/prefs with the space's surfaces to build the doc the client
-    renders. On the way back out, `_save_active` SPLITS the live doc again (geometry → space, objects +
-    overrides → world), so geometry only ever flows world→space on real capture.
+    renders. On the way back out, `_save_active` SPLITS the live doc again (geometry → the space's owner's
+    scope, objects + overrides → the world), so geometry only ever flows world→space on real capture.
 
-    Returns `(space_name, composed_store)` with room-capture authority reset (fresh session state).
+    Returns `(space_owner, space_name, composed_store)` with room-capture authority reset (fresh session
+    state). VOID returns `(world_owner, VOID, …)` — the owner is irrelevant for a room-less world.
 
-    new-space-flow **step 0** — the old LEGACY-MIGRATION path is gone. It used to detect a world whose
-    real geometry was embedded inline (the pre-space doc format), extract it into a new space, strip the
-    world, and persist the migrated result on first load. Nothing on disk is in that format anymore, so
-    activate no longer rewrites world docs — it only resolves + composes.
-
-    Path B (the `absent → home` fallback) is a KNOWN gap kept as a bridge: a world with no space still
-    lands the user in their shared 'home' room. new-space-flow **step 5** replaces it with \"adopt the
-    active, geo+surface-selected space, else create the world VOID\" — no more anonymous 'home'.
+    new-space-flow **step 0** — the old LEGACY-MIGRATION path is gone (activate is read-only; it never
+    rewrites a world doc). **step 2** — space references are now fully-qualified `<owner>/<name>`, so a
+    world can be tied to a space owned by someone else. **step 5** (pending) replaces Path B (the
+    `absent → home` fallback) with "adopt the active, geo+surface-selected space, else create VOID".
     """
-    user = scope.split("/", 1)[0]
+    world_owner = scope.split("/", 1)[0]
     doc = world.doc
-    space_name = (doc.get("environment", {}) or {}).get("space")
-    if space_name == VOID:                                          # outdoor/void world: no room geometry
+    space_ref = (doc.get("environment", {}) or {}).get("space")
+    if space_ref == VOID:                                          # outdoor/void world: no room geometry
         composed = WorldStore(copy.deepcopy(doc))                  # nothing to merge — objects + skybox only
         _reset_room_authority(composed)
-        return VOID, composed
-    # Path B fallback (removed in step 5): a world with no space → the user's current/'home' room.
-    space_name = space_name or spaces.get_active(user) or "home"
-    if spaces.exists(user, space_name):
-        space = spaces.load(user, space_name)                      # the shared physical room
+        return world_owner, VOID, composed
+    if space_ref:
+        owner, space_name = _resolve_space_ref(space_ref, world_owner)
+    else:                                                          # Path B fallback (removed in step 5):
+        owner, space_name = world_owner, (spaces.get_active(world_owner) or "home")
+    if spaces.exists(owner, space_name):
+        space = spaces.load(owner, space_name)                     # the shared physical room
     else:                                                          # first time here → an empty shared space
-        space = {"owner": user, "name": space_name, "public": True, "geolocation": None,
+        space = {"owner": owner, "name": space_name, "public": True, "geolocation": None,
                  "surfaces": [], "boundary": None}
-        spaces.save(user, space_name, space)                       # so geolocation/discovery can see it
-        spaces.set_active(user, space_name)
+        spaces.save(owner, space_name, space)                      # so geolocation/discovery can see it
+        if owner == world_owner:
+            spaces.set_active(owner, space_name)                   # only track YOUR OWN space as current
     composed = WorldStore(_compose(doc, space))
     _reset_room_authority(composed)
-    return space_name, composed
+    return owner, space_name, composed
 
 
 def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:

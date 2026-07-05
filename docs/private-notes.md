@@ -1,5 +1,10 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
+# Prompt refactor (towards multi-agent)
+- roster line -> optional per-agent injection
+- identity line -> put into builder prompt (seems builder specific)
+- context -> optional per-agent injection
+
 # Graphics
 - Lighting
 
