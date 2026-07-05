@@ -892,9 +892,9 @@ async def select_space(req: SpaceSelect) -> dict:
     """Stage 2 (commit) of space selection — the client has voted among the /geolocation candidates:
       • **matched** → JOIN that space by switching to its last-active world (co-location / return visit).
         If the space has no world yet, mint the connecting user a default world tied to it (D3).
-      • **not matched** → establish HERE: if the active space is still un-located, stamp it with the
-        reported location; otherwise mint a fresh geo-stamped space (`space-N`) + default world owned by
-        the connecting user (D2/D7 "somewhere new"). VOID/outdoor active worlds can't be stamped → mint.
+      • **not matched** → "somewhere new": mint a fresh geo-stamped space (`space-N`) + default world owned
+        by the connecting user (D2/D7). A minted space is born with its location, so there's no separate
+        "stamp the pre-existing active space" path — spaces only ever get their geolocation at mint time.
     Commits ONCE per session so GPS jitter / repeated votes can't thrash the active space."""
     global _geo_selected
     if spaces is None or worlds is None:
@@ -917,15 +917,8 @@ async def select_space(req: SpaceSelect) -> dict:
         out["joined"] = _space_ref(req.owner, req.name)
         return out
 
-    # not matched → establish here
+    # not matched → somewhere new: mint a geo-stamped space + world owned by the connecting user
     _geo_selected = True
-    if active_space != VOID and spaces.exists(active_space_owner, active_space):
-        sp = spaces.load(active_space_owner, active_space)
-        if not sp.get("geolocation") and geo:              # (1) claim your still-un-located current space here
-            sp["geolocation"] = geo
-            spaces.save(active_space_owner, active_space, sp)
-            return {"ok": True, "stamped": _space_ref(active_space_owner, active_space)}
-    # (2) somewhere new → mint a geo-stamped space + world owned by the connecting user
     new_space = _unique_space_name(who)
     spaces.save(who, new_space, {"owner": who, "name": new_space, "public": True,
                                  "geolocation": geo, "surfaces": [], "boundary": None})

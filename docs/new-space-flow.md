@@ -154,8 +154,9 @@ on `enter-vr`, so a desktop browser doesn't try to establish a space on load.)
    (`_geo_candidates`, within `_GEO_RANGE_M`), each with its surface constellation. The client votes its
    live capture against them (`RoomSnap.selectSpace` → the `register` coverage vote, immune to the sparse-
    capture bug), then commits via `POST /space/select`: **matched** → join that space's last world (or mint
-   a world in it, D3); **no match** → stamp the still-un-located active space, else mint a fresh geo-stamped
-   `space-N` + world for the connecting user (D2/D7). Commits **once per session**. §9 resolved: matching
+   a world in it, D3); **no match** → "somewhere new": mint a fresh geo-stamped `space-N` + world for the
+   connecting user (D2/D7). A space is born WITH its location at mint time — the old "stamp the pre-existing
+   active space" bridge was retired once every space was geo-stamped. Commits **once per session**. §9 resolved: matching
    runs **client-side**, reusing `register`. (`_nearest_space`/`_NEAR_M` removed — superseded by
    `_geo_candidates`.) The "connecting user establishes when first in / space unlocks when empty" lifecycle
    is still step 7; admission (who may commit) is step 4.

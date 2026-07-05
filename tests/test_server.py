@@ -969,16 +969,10 @@ def test_space_select_matched_joins_last_world(srv, client):
     assert srv.active_space_owner == "daniel"
 
 
-def test_space_select_unmatched_stamps_unlocated_active_space(srv, client):
-    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
-                                       "geolocation": None, "surfaces": []})       # active space, un-located
-    r = client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12}).json()
-    assert r["ok"] and r["stamped"] == "daniel/home"
-    assert srv.spaces.load("daniel", "home")["geolocation"]["lat"] == 51.5
-
-
-def test_space_select_unmatched_new_location_mints_geo_stamped_space(srv, client):
-    _geo_space(srv, "daniel", "home", 37.77, -122.42)          # active space already located elsewhere
+def test_space_select_unmatched_always_mints_a_geo_stamped_space(srv, client):
+    # No match ⇒ somewhere new ⇒ mint. A space is born WITH its location (no separate "stamp the
+    # pre-existing active space" path — that bridge was retired once all spaces were geo-stamped).
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)          # active space, already located elsewhere
     r = client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12}).json()
     assert r["ok"] and r["created_space"] == "daniel/space-2"
     assert srv.active_space == "space-2" and srv.active_space_owner == "daniel"
@@ -1010,9 +1004,8 @@ def test_forced_geo_overrides_the_reported_location(srv, client, monkeypatch):
 
 
 def test_space_select_commits_once_per_session(srv, client):
-    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
-                                       "geolocation": None, "surfaces": []})
-    assert client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12}).json()["stamped"]
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    assert client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12}).json()["created_space"]
     r2 = client.post("/space/select", json={"matched": False, "lat": 1.0, "lon": 2.0}).json()
     assert r2 == {"ok": True, "selected": False}               # a second vote is ignored this session
     # and /geolocation stops offering candidates once selection is committed
