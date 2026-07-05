@@ -325,6 +325,43 @@ test("register declines a genuinely different (differently-sized) room", () => {
   assert.strictEqual(RS.register(THREE, cur, ref).Tmat, null, "different-scale room doesn't false-lock");
 });
 
+// --- selectSpace: the FINE stage of two-stage space selection (new-space-flow §3, D2/D7). Geolocation
+// hands the client a few geo-near candidate spaces in stored a-plane form; selectSpace picks which one the
+// headset is physically in via the register() coverage vote, or null ("somewhere new"). It's the geometric
+// vote — not a surface-count guess — that decides, so it's immune to the sparse-capture bug. ---
+const roomA = () => [mkWall([0, 1.2, -1.5], 0, [4, 2.4]), mkWall([0, 1.2, 1.5], 180, [3, 2.4]),
+  mkWall([2, 1.2, 0], 90, [2.5, 2.4]), mkWall([-2, 1.2, 0], -90, [1.5, 2.4])];
+const roomBsmall = () => [mkWall([0, 1, -0.8], 0, [1.2, 2]), mkWall([0, 1, 0.8], 180, [1.2, 2]),
+  mkWall([0.8, 1, 0], 90, [1.2, 2]), mkWall([-0.8, 1, 0], -90, [1.2, 2])];   // clearly different (tiny) room
+const asEntities = (room) => room.map((s, i) => ({           // cur-form → stored a-plane entity form
+  id: s.sem + "_" + i, meta: { real: true, semantic: s.sem },
+  transform: { position: [s.pos.x, s.pos.y, s.pos.z], rotation: [0, s.nyaw / D2R, 0] },
+  components: { surface: { extent: s.ext.slice() } } }));
+
+test("surfaceToRef round-trips a stored wall entity into register's constellation form", () => {
+  const r = RS.surfaceToRef(THREE, asEntities(roomA())[2]);   // the +90° wall
+  assert.strictEqual(r.orient, "vertical");
+  assert.ok(Math.abs(r.nyaw - Math.PI / 2) < 1e-6, "recovers the wall's normal yaw");
+  assert.deepStrictEqual(r.ext, [2.5, 2.4]);
+});
+
+test("selectSpace picks the candidate the capture actually matches, regardless of order", () => {
+  const cur = asCapture(roomA(), 160, new THREE.Vector3(2.5, 0, -1.0));   // a rotated/offset view of room A
+  const candidates = [{ owner: "bob", name: "b", surfaces: asEntities(roomBsmall()) },
+                      { owner: "daniel", name: "home", surfaces: asEntities(roomA()) }];
+  const hit = RS.selectSpace(THREE, cur, candidates);
+  assert.ok(hit, "a candidate matched: " + (hit && hit.stat));
+  assert.strictEqual(hit.owner, "daniel");
+  assert.strictEqual(hit.name, "home");
+});
+
+test("selectSpace returns null when the capture matches no candidate (somewhere new)", () => {
+  const cur = asCapture(roomA(), 40, new THREE.Vector3(1, 0, 1));
+  assert.strictEqual(RS.selectSpace(THREE, cur, [
+    { owner: "bob", name: "b", surfaces: asEntities(roomBsmall()) }]), null);
+  assert.strictEqual(RS.selectSpace(THREE, cur, []), null);   // and for an empty candidate set
+});
+
 // --- Golden room: a REAL Quest capture (45 surfaces, two rooms via connecting doors). The synthetic
 // tests above encode our assumptions about the device's conventions; this one pins those assumptions to
 // the actual hardware — it feeds the captured planes (with their true normals/roll) through the same

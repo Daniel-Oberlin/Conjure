@@ -352,6 +352,12 @@
   // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
   // instead of registering against stored geometry. Set from each snapshot.
   var VOID_SPACE = "<void>", isVoidWorld = false;
+  // Two-stage space selection (new-space-flow §3). On entering AR we report our coarse location and get
+  // back the geo-near candidate spaces; room-capture then votes its live geometry against them
+  // (RoomSnap.selectSpace) and commits the verdict via /space/select. `pendingSelect` holds the candidates
+  // while that vote is in flight (null when there's nothing to decide); `lastGeo` remembers the reported
+  // location so a "no match" commit can stamp/mint a space there.
+  var pendingSelect = null, lastGeo = null;
 
   function applySnapshot(world) {
     root().innerHTML = "";
@@ -831,6 +837,22 @@
           this.lastPost = time - 1700; return;
         }
 
+        // Space selection, stage 2 (new-space-flow §3): while candidates are pending, vote THIS capture
+        // against each one. A confident registration ⇒ we're in that space → join it (/space/select
+        // matched). Once the capture is rich enough that a real match WOULD have locked (≥6 walls, a few
+        // tries) but none did, we're somewhere new → commit "no match" so the server stamps/mints a space
+        // here. The geometric vote decides — not a surface count — so a sparse early capture just stays
+        // undecided and we fall through to normal behavior (register correctly DECLINES a non-matching
+        // booted room, so nothing drifts) until the capture fills in. Never runs for a void world.
+        if (pendingSelect && !isVoidWorld) {
+          var pick = window.RoomSnap.selectSpace(THREE, cur, pendingSelect.candidates);
+          if (pick) { commitSelect({ matched: true, owner: pick.owner, name: pick.name }); return; }
+          pendingSelect.tries++;
+          var nWalls = cur.filter(function (c) { return c.orient === "vertical"; }).length;
+          if (nWalls >= 6 && pendingSelect.tries >= 3) { commitSelect({ matched: false }); return; }
+          // else undecided — fall through and keep rendering the booted world until the capture fills in
+        }
+
         // VOID/outdoor world: not tied to a captured space, so there's no reference to register against.
         // Derive a deterministic frame from the live walls (canonicalFrame) — the same physical room
         // canonicalizes to the same frame every visit, so the skybox holds a consistent-but-arbitrary
@@ -958,12 +980,32 @@
   function reportGeolocation() {
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(function (pos) {
+      lastGeo = { lat: pos.coords.latitude, lon: pos.coords.longitude, user: currentUser() || undefined };
       fetch("/geolocation", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat: pos.coords.latitude, lon: pos.coords.longitude,
-                               accuracy: pos.coords.accuracy, user: currentUser() || undefined }),
+        body: JSON.stringify({ lat: lastGeo.lat, lon: lastGeo.lon, accuracy: pos.coords.accuracy,
+                               user: lastGeo.user }),
+      }).then(function (r) { return r.json(); }).then(function (resp) {
+        if (!resp || resp.selected) return;                  // already the established space this session
+        var cands = resp.candidates || [];
+        // No geo-near space at all ⇒ definitely somewhere new — commit "no match" now so the server stamps
+        // the current un-located space or mints a fresh one here (the new-person/new-place path). Otherwise
+        // arm the vote: room-capture picks the matching candidate as its capture fills in.
+        if (!cands.length) commitSelect({ matched: false });
+        else pendingSelect = { candidates: cands, tries: 0 };
       }).catch(function () {});
     }, function () {}, { maximumAge: 600000, timeout: 10000 });
+  }
+
+  // Commit stage-2 of space selection: tell the server the verdict (matched a candidate, or none), with the
+  // reported location so a no-match can stamp/mint a space there. Clears the pending vote either way.
+  function commitSelect(result) {
+    pendingSelect = null;
+    var g = lastGeo || {};
+    fetch("/space/select", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ lat: g.lat, lon: g.lon, user: g.user }, result)),
+    }).catch(function () {});
   }
 
   window.addEventListener("load", function () {

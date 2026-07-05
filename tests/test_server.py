@@ -931,54 +931,69 @@ def test_world_can_live_in_another_users_space(srv, client):
     assert wd["environment"]["space"] == "daniel/home"                          # qualified ref preserved
 
 
-# ---- geolocation (Phase 3a) ---------------------------------------------------------------------
-def test_nearest_space_picks_closest_and_skips_ungeolocated(srv):
-    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
-                                        "geolocation": {"lat": 37.7749, "lon": -122.4194}, "surfaces": []})
-    srv.spaces.save("daniel", "office", {"owner": "daniel", "name": "office", "public": True,
-                                         "geolocation": {"lat": 40.7128, "lon": -74.0060}, "surfaces": []})
-    srv.spaces.save("daniel", "void", {"owner": "daniel", "name": "void", "public": True,
-                                       "geolocation": None, "surfaces": []})            # skipped (no geo)
-    near = srv._nearest_space("daniel", 37.78, -122.42)          # ~near SF home
-    assert near[0] == "home" and near[1] < 2000                  # within ~2 km
-    assert srv._nearest_space("daniel", 40.71, -74.01)[0] == "office"
-    assert srv._nearest_space("bob", 0, 0) is None               # no spaces → None
+# ---- two-stage space selection: /geolocation (discovery) + /space/select (commit) — step 3 ----------
+def _geo_space(srv, owner, name, lat, lon, **extra):
+    srv.spaces.save(owner, name, {"owner": owner, "name": name, "public": True,
+                                  "geolocation": {"lat": lat, "lon": lon}, "surfaces": [], **extra})
 
 
-def test_geolocation_stamps_active_space_then_no_op_within_session(srv, client):
-    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
-                                       "geolocation": None, "surfaces": []})
-    r = client.post("/geolocation", json={"lat": 51.5, "lon": -0.12, "accuracy": 65}).json()
-    assert r["ok"] and r["stamped"] == "home"                       # active space un-located → stamped
-    assert srv.spaces.load("daniel", "home")["geolocation"]["lat"] == 51.5
-    # selection runs ONCE per session — a later report is a no-op (no mid-session switching)
-    r2 = client.post("/geolocation", json={"lat": 1.0, "lon": 2.0}).json()
-    assert r2 == {"ok": True, "selected": False}
-    assert srv.spaces.load("daniel", "home")["geolocation"]["lat"] == 51.5
+def test_geolocation_returns_geo_near_candidates_across_users(srv, client):
+    _geo_space(srv, "daniel", "home", 37.7749, -122.4194)      # SF
+    _geo_space(srv, "bob", "loft", 37.7750, -122.4195)         # SF, ~15 m away — a DIFFERENT user, still a candidate
+    _geo_space(srv, "daniel", "office", 40.7128, -74.0060)     # NY — far, filtered out
+    srv.spaces.save("daniel", "unlocated", {"owner": "daniel", "name": "unlocated", "public": True,
+                                            "geolocation": None, "surfaces": []})   # no GPS → never a candidate
+    r = client.post("/geolocation", json={"lat": 37.7749, "lon": -122.4194}).json()
+    assert r["ok"]
+    got = {(c["owner"], c["name"]) for c in r["candidates"]}
+    assert got == {("daniel", "home"), ("bob", "loft")}        # geo-near across users; NY + un-located excluded
+    assert r["candidates"][0]["distance_m"] <= r["candidates"][1]["distance_m"]   # nearest-first tiebreak
+    assert "surfaces" in r["candidates"][0]                    # constellation shipped for the client vote
 
 
-def test_geolocation_session_start_switches_to_nearby_space(srv, client):
+def test_geolocation_no_candidates_when_far_from_every_space(srv, client):
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    r = client.post("/geolocation", json={"lat": 51.5, "lon": -0.12}).json()      # London
+    assert r["ok"] and r["candidates"] == []
+
+
+def test_space_select_matched_joins_last_world(srv, client):
     from conjure.world import WorldStore
-    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
-                                       "geolocation": {"lat": 37.77, "lon": -122.42}, "surfaces": []})
-    srv.spaces.save("daniel", "office", {"owner": "daniel", "name": "office", "public": True,
-                                         "geolocation": {"lat": 40.71, "lon": -74.0}, "surfaces": [],
-                                         "last_scope": srv.DEFAULT_SCOPE, "last_world": "office-world"})
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               last_scope=srv.DEFAULT_SCOPE, last_world="office-world")
     srv.worlds.save(srv.DEFAULT_SCOPE, "office-world", WorldStore(
-        {"id": "o", "name": "office-world", "rev": 1, "environment": {"space": "office"}, "entities": []}))
-    r = client.post("/geolocation", json={"lat": 40.71, "lon": -74.0}).json()    # report from NY
-    assert r["ok"] and r.get("space") == "office" and r["world"] == "office-world"
+        {"id": "o", "name": "office-world", "rev": 1, "environment": {"space": "daniel/office"}, "entities": []}))
+    r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office"}).json()
+    assert r["ok"] and r["joined"] == "daniel/office"
     assert srv.active_world == "office-world" and srv.active_space == "office"
+    assert srv.active_space_owner == "daniel"
 
 
-def test_geolocation_new_location_creates_a_space(srv, client):
+def test_space_select_unmatched_stamps_unlocated_active_space(srv, client):
     srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
-                                       "geolocation": {"lat": 37.77, "lon": -122.42}, "surfaces": []})
-    r = client.post("/geolocation", json={"lat": 51.5, "lon": -0.12}).json()     # London — far from home
-    assert r["ok"] and r.get("created_space") == "space-2"
-    assert srv.active_space == "space-2"
+                                       "geolocation": None, "surfaces": []})       # active space, un-located
+    r = client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12}).json()
+    assert r["ok"] and r["stamped"] == "daniel/home"
+    assert srv.spaces.load("daniel", "home")["geolocation"]["lat"] == 51.5
+
+
+def test_space_select_unmatched_new_location_mints_geo_stamped_space(srv, client):
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)          # active space already located elsewhere
+    r = client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12}).json()
+    assert r["ok"] and r["created_space"] == "daniel/space-2"
+    assert srv.active_space == "space-2" and srv.active_space_owner == "daniel"
     sp = srv.spaces.load("daniel", "space-2")
     assert sp["geolocation"]["lat"] == 51.5 and sp["surfaces"] == []
+
+
+def test_space_select_commits_once_per_session(srv, client):
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
+                                       "geolocation": None, "surfaces": []})
+    assert client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12}).json()["stamped"]
+    r2 = client.post("/space/select", json={"matched": False, "lat": 1.0, "lon": 2.0}).json()
+    assert r2 == {"ok": True, "selected": False}               # a second vote is ignored this session
+    # and /geolocation stops offering candidates once selection is committed
+    assert client.post("/geolocation", json={"lat": 1.0, "lon": 2.0}).json()["selected"] is True
 
 
 # ---- Phase 4 step 1: per-connection user + public-join gate --------------------------------------
@@ -1088,14 +1103,14 @@ def test_view_relative_lists_nearby_objects_and_needs_gaze(srv, client):
                        headers={"X-Conjure-User": "ghost"}).json()["ok"] is False
 
 
-def test_geolocation_from_a_guest_does_not_reselect(srv, client):
-    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
-                                       "geolocation": None, "surfaces": []})
-    # a GUEST (bob) reporting a wildly different location must NOT move daniel's active space
+def test_geolocation_is_read_only_and_never_moves_the_active_space(srv, client):
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    # /geolocation only DISCOVERS candidates — even a guest's report can't stamp or switch the active
+    # space (mutation is deferred to /space/select; who's admitted to commit is step 4).
     r = client.post("/geolocation", json={"lat": 51.5, "lon": -0.12, "user": "bob"}).json()
-    assert r == {"ok": True, "selected": False}
-    assert srv.spaces.load("daniel", "home")["geolocation"] is None      # untouched
-    assert srv.active_space == "home"
+    assert r["ok"] and "candidates" in r                                 # read-only discovery
+    assert srv.spaces.load("daniel", "home")["geolocation"]["lat"] == 37.77   # untouched
+    assert srv.active_space == "home" and srv.active_space_owner == "daniel"
 
 
 # ---- Phase 4 step 4: owner-only writes ----------------------------------------------------------
@@ -1178,8 +1193,10 @@ def test_outdoor_void_world_has_no_space(srv, client):
     S._save_active()
     assert "<void>" not in srv.spaces.list("daniel")
     assert srv.worlds.load("daniel/agents/builder", "beach").doc["environment"]["space"] == "<void>"
-    # geolocation must not yank a void world into a physical space
-    assert client.post("/geolocation", json={"lat": 40.0, "lon": -73.0}).json() == {"ok": True, "selected": False}
+    # geolocation is read-only discovery — it never yanks a void world into a physical space (and the
+    # client doesn't run space-selection in a void world anyway; it uses canonicalFrame)
+    assert client.post("/geolocation", json={"lat": 40.0, "lon": -73.0}).json()["ok"]
+    assert S.active_space == "<void>"
 
 
 def worlds_seen(client, scope):

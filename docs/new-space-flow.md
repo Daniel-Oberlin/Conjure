@@ -149,11 +149,16 @@ on `enter-vr`, so a desktop browser doesn't try to establish a space on load.)
    **Back-compat:** a bare `<name>` ref resolves to the world-owner's scope, so existing docs still load;
    they're rewritten to the qualified form on the next save. Creation still can't *target* another user's
    space yet — that's step 5 (world-creation adopts the active space).
-3. **Two-stage space selection** — a server helper: given the connecting user's location + the client's
-   detected surfaces, geo-filter candidate spaces **across all users**, then pick the best **registration**
-   match; activate its last world, or mint a new geo-stamped space (D2/D7). Needs the client to send its
-   detected surfaces to the server for the match (or the server broadcasts candidates for the client to
-   vote — decide in §9).
+3. **✅ DONE — Two-stage space selection** (client-side match). Split into discovery + commit:
+   `POST /geolocation` is now **read-only** — it returns every geo-near candidate space **across all users**
+   (`_geo_candidates`, within `_GEO_RANGE_M`), each with its surface constellation. The client votes its
+   live capture against them (`RoomSnap.selectSpace` → the `register` coverage vote, immune to the sparse-
+   capture bug), then commits via `POST /space/select`: **matched** → join that space's last world (or mint
+   a world in it, D3); **no match** → stamp the still-un-located active space, else mint a fresh geo-stamped
+   `space-N` + world for the connecting user (D2/D7). Commits **once per session**. §9 resolved: matching
+   runs **client-side**, reusing `register`. (`_nearest_space`/`_NEAR_M` removed — superseded by
+   `_geo_candidates`.) The "connecting user establishes when first in / space unlocks when empty" lifecycle
+   is still step 7; admission (who may commit) is step 4.
 4. **Admission gate** (server `/ws` + `/geolocation`) — AR joiners must match the active space (geo +
    surface); voice/CLI/desktop admitted without it (D4). Refused AR joiners get an info message.
 5. **World-creation adopts the active space, else void; Path B fallback removed** (D5) — no more anonymous
@@ -173,10 +178,9 @@ if a sparse first capture still freezes *after* the flow is correct). `4fdd860` 
 
 ## 9. Open questions / risks
 
-- **Where does the surface match run?** Client-side (server sends candidate geometries, client votes with
-  `RoomSnap.register`) vs. server-side (client sends detected planes, server runs the vote). Client-side
-  reuses existing code but needs the server to ship candidate constellations; server-side centralizes but
-  duplicates the matcher in Python. *Lean client-side.*
+- **Where does the surface match run?** ✅ RESOLVED (step 3): **client-side** — `/geolocation` ships the
+  geo-near candidate constellations and the client votes with `RoomSnap.selectSpace` (reusing `register`),
+  then commits the verdict via `/space/select`. Reuses the existing, tested matcher; no Python duplicate.
 - **Cross-user candidate search** is a filesystem walk over every user's spaces — fine at small scale;
   index later (same note as the world-index backlog).
 - **Fully-qualified space refs** touch persisted world docs — need a migration/back-compat path for the

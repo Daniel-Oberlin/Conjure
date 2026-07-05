@@ -130,14 +130,49 @@
     // by ONE transform. Robust to EXTRA detected planes (absent from the formula) and MISSING ones (need
     // only a fraction of the reference). A genuinely different space can't cover ≥MIN_COV surfaces of the
     // reference under one consistent transform ⇒ null ("not in this space", room-model §8a).
-    if (!best || cov < MIN_COV || cov < MIN_COV_FRAC * ref.length) return { Tmat: null, stat: stat };
+    if (!best || cov < MIN_COV || cov < MIN_COV_FRAC * ref.length) return { Tmat: null, stat: stat, cov: cov };
     // Append the SOLVED transform (yaw about gravity + translation) so diagnostics can tell whether a
     // relocalization actually changed the frame (yaw jumps) or registration stayed put while the world
     // shifted. Matrix4 is column-major: e[0]=cosθ, e[8]=sinθ for the Y rotation; e[12],e[14]=tx,tz.
     var e = best.Tmat.elements;
     stat += " yaw=" + Math.round(Math.atan2(e[8], e[0]) * 180 / Math.PI) + "° t=("
       + e[12].toFixed(2) + "," + e[14].toFixed(2) + ")";
-    return { Tmat: best.Tmat, stat: stat };
+    return { Tmat: best.Tmat, stat: stat, cov: cov };
+  }
+
+  // Convert ONE stored/broadcast surface entity (a-plane form: transform.position/rotation in degrees,
+  // components.surface.extent, meta.semantic) into the compact constellation form register() consumes
+  // ({id, sem, ext, pos:Vector3, nyaw, orient}). The a-plane normal is its local +Z. Shared by the client's
+  // reference-seeding and by selectSpace below, so the two never diverge.
+  function surfaceToRef(THREE, e) {
+    var Z = new THREE.Vector3(0, 0, 1), d2r = THREE.MathUtils.degToRad;
+    var t = e.transform || {}, p = t.position || [0, 0, 0], r = t.rotation || [0, 0, 0];
+    var q = new THREE.Quaternion().setFromEuler(new THREE.Euler(d2r(r[0]), d2r(r[1]), d2r(r[2]), "XYZ"));
+    var nrm = Z.clone().applyQuaternion(q);
+    var ex = (e.components && e.components.surface && e.components.surface.extent) || [1, 1];
+    return { id: e.id, sem: (e.meta && e.meta.semantic) || "surface", ext: [ex[0], ex[1]],
+      pos: new THREE.Vector3(p[0], p[1], p[2]), nyaw: Math.atan2(nrm.x, nrm.z),
+      orient: Math.abs(nrm.y) > 0.7 ? "horizontal" : "vertical" };
+  }
+
+  // Two-stage space selection, fine stage (new-space-flow §3, D2/D7). Geolocation already narrowed the
+  // field to a few geo-near candidate spaces; this picks WHICH one the headset is physically in by trying
+  // to register() the live capture (cur) against each candidate's stored constellation and keeping the one
+  // with the highest reference COVERAGE. A candidate only qualifies if register() confidently locks (its
+  // coverage clears MIN_COV/MIN_COV_FRAC) — so a null return means "none of these; you're somewhere new".
+  // Robust to the sparse-capture bug by construction: it's the geometric vote, not a surface-count guess,
+  // that decides, and a too-thin `cur` simply fails to cover any candidate (caller retries as capture grows).
+  //   candidates: [{owner, name, surfaces:[a-plane entity]}]  →  {index, owner, name, cov, stat} | null
+  function selectSpace(THREE, cur, candidates) {
+    var best = null;
+    (candidates || []).forEach(function (cand, i) {
+      var ref = (cand.surfaces || []).map(function (e) { return surfaceToRef(THREE, e); });
+      var reg = register(THREE, cur, ref);
+      if (reg.Tmat && (!best || reg.cov > best.cov)) {
+        best = { index: i, owner: cand.owner, name: cand.name, cov: reg.cov, stat: reg.stat };
+      }
+    });
+    return best;
   }
 
   // On-the-fly CANONICAL frame from live geometry — for VOID/outdoor worlds not tied to a stored space
@@ -300,6 +335,6 @@
   }
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, uprightInset: uprightInset, register: register,
-           canonicalFrame: canonicalFrame,
+           canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            squareWalls: squareWalls, joinCorners: joinCorners, snapInsets: snapInsets };
 });

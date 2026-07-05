@@ -777,10 +777,20 @@ class GeoReport(BaseModel):
     lat: float
     lon: float
     accuracy: Optional[float] = None
-    user: Optional[str] = None       # who's reporting; only the space OWNER's location drives selection
+    user: Optional[str] = None       # who's reporting (the connecting AR user)
 
 
-_NEAR_M = 150.0                     # within this distance of a space's geolocation ⇒ "the same space"
+class SpaceSelect(BaseModel):
+    """The client's verdict after voting its live capture against the /geolocation candidates."""
+    matched: bool = False            # did a candidate's geometry register?
+    owner: Optional[str] = None      # the matched space's owner + name (when matched)
+    name: Optional[str] = None
+    lat: Optional[float] = None      # the reporter's location — stamps/mints the space when NOT matched
+    lon: Optional[float] = None
+    user: Optional[str] = None       # the connecting user (mints spaces/worlds in THEIR scope)
+
+
+_GEO_RANGE_M = 300.0                # coarse prefilter radius: spaces within this are surface-match candidates
 
 
 def _unique_space_name(user: str) -> str:
@@ -791,56 +801,106 @@ def _unique_space_name(user: str) -> str:
     return f"space-{i}"
 
 
+def _candidate_surface(e: dict) -> dict:
+    """Trim a stored surface entity to just the geometry the client's registration vote needs
+    (RoomSnap.surfaceToRef) — id, semantic, pose, extent. Drops materials/debug/overlays from the wire."""
+    t, comps = e.get("transform") or {}, e.get("components") or {}
+    return {"id": e.get("id"),
+            "meta": {"semantic": (e.get("meta") or {}).get("semantic", "surface")},
+            "transform": {"position": t.get("position", [0, 0, 0]), "rotation": t.get("rotation", [0, 0, 0])},
+            "components": {"surface": {"extent": ((comps.get("surface") or {}).get("extent", [1, 1]))}}}
+
+
+def _geo_candidates(lat: float, lon: float) -> list[dict]:
+    """Stage 1 of space selection (new-space-flow §3, D2/D7): every space ACROSS ALL USERS whose stored
+    geolocation is within `_GEO_RANGE_M` of (lat, lon), each with its surface constellation for the
+    client's registration vote. Geolocation only NARROWS the field (two rooms at one address both qualify);
+    the client's `RoomSnap.selectSpace` picks the exact one. Nearest-first is just a tiebreak — the
+    geometric vote, not distance, decides. A filesystem walk over every user's spaces; index later."""
+    out = []
+    for owner in spaces.list_users():
+        for name in spaces.list(owner):
+            sp = spaces.load(owner, name)
+            g = sp.get("geolocation")
+            if not g:
+                continue                                   # un-located spaces can't be matched by GPS
+            d = _haversine_m((lat, lon), (g["lat"], g["lon"]))
+            if d <= _GEO_RANGE_M:
+                out.append({"owner": owner, "name": name, "distance_m": round(d, 1),
+                            "last_scope": sp.get("last_scope"), "last_world": sp.get("last_world"),
+                            "surfaces": [_candidate_surface(s) for s in sp.get("surfaces", [])]})
+    out.sort(key=lambda c: c["distance_m"])
+    return out
+
+
 @app.post("/geolocation")
 async def report_geolocation(req: GeoReport) -> dict:
-    """A connected client reports its coarse location (the headset's `navigator.geolocation`). Selection
-    runs ONCE per session (first report) — never mid-session, so GPS jitter can't yank you between worlds
-    (docs/spaces-and-users-plan.md §7). Order: (1) active space un-located → you're in it, stamp it;
-    (2) within ~150 m of a *different* space → auto-switch to its last-active world; (3) somewhere new →
-    create a fresh space + default world here. Geolocation is the coarse prefilter; the client's
-    registration vote is the fine 'are you actually in this space?' confirm."""
+    """Stage 1 (discovery) of space selection. The AR client reports its coarse location; we return every
+    geo-near candidate space across all users (each with its surface constellation) for the client to
+    disambiguate by registration (`RoomSnap.selectSpace`) and then commit via `/space/select`. **Read-only**
+    — it never changes the active space. Selection commits ONCE per session (see `/space/select`); once
+    committed, later reports return no candidates so GPS jitter can't re-open the choice."""
+    if spaces is None:
+        return {"ok": False, "error": "no space store"}
+    if _geo_selected:
+        return {"ok": True, "selected": True, "candidates": []}
+    return {"ok": True, "candidates": _geo_candidates(req.lat, req.lon)}
+
+
+@app.post("/space/select")
+async def select_space(req: SpaceSelect) -> dict:
+    """Stage 2 (commit) of space selection — the client has voted among the /geolocation candidates:
+      • **matched** → JOIN that space by switching to its last-active world (co-location / return visit).
+        If the space has no world yet, mint the connecting user a default world tied to it (D3).
+      • **not matched** → establish HERE: if the active space is still un-located, stamp it with the
+        reported location; otherwise mint a fresh geo-stamped space (`space-N`) + default world owned by
+        the connecting user (D2/D7 "somewhere new"). VOID/outdoor active worlds can't be stamped → mint.
+    Commits ONCE per session so GPS jitter / repeated votes can't thrash the active space."""
     global _geo_selected
     if spaces is None or worlds is None:
         return {"ok": False, "error": "no space store"}
-    user = active_scope.split("/", 1)[0]
-    if req.user and req.user != user:                 # a guest's location must not re-select the space
-        return {"ok": True, "selected": False}
-    if active_space == VOID:                           # an outdoor/void world is space-independent — don't
-        return {"ok": True, "selected": False}         # let geolocation yank you into a physical space
-    geo = {"lat": req.lat, "lon": req.lon, "accuracy": req.accuracy}
     if _geo_selected:
-        return {"ok": True, "selected": False}        # already chose this session
+        return {"ok": True, "selected": False}             # already committed this session
+    who = req.user or active_scope.split("/", 1)[0]        # the connecting user (owns anything minted)
+    geo = {"lat": req.lat, "lon": req.lon} if req.lat is not None and req.lon is not None else None
+
+    # matched → join the space's last-active world (or mint one in it for the connecting user)
+    if req.matched and req.owner and req.name and spaces.exists(req.owner, req.name):
+        _geo_selected = True
+        sp = spaces.load(req.owner, req.name)
+        scope, w = sp.get("last_scope"), sp.get("last_world")
+        if w and scope and worlds.exists(scope, w):
+            out = await _switch_to(scope, w)
+        else:                                              # space exists but has no world → build one in it (D3)
+            out = await _establish_world_in(who, _space_ref(req.owner, req.name))
+        out["joined"] = _space_ref(req.owner, req.name)
+        return out
+
+    # not matched → establish here
     _geo_selected = True
-
-    # (1) the active space has no location yet → you're physically in it
-    if spaces.exists(user, active_space):
-        sp = spaces.load(user, active_space)
-        if not sp.get("geolocation"):
+    if active_space != VOID and spaces.exists(active_space_owner, active_space):
+        sp = spaces.load(active_space_owner, active_space)
+        if not sp.get("geolocation") and geo:              # (1) claim your still-un-located current space here
             sp["geolocation"] = geo
-            spaces.save(user, active_space, sp)
-            return {"ok": True, "stamped": active_space}
-
-    near = _nearest_space(user, req.lat, req.lon)
-    # (2) near an existing space
-    if near and near[1] <= _NEAR_M:
-        if near[0] == active_space:
-            return {"ok": True, "space": active_space}     # already here
-        sp = spaces.load(user, near[0])
-        scope, w = sp.get("last_scope", active_scope), sp.get("last_world")
-        if w and worlds.exists(scope, w):
-            out = await _switch_to(scope, w)               # auto-switch into that space's last world
-            out["space"] = near[0]
-            return out
-    # (3) somewhere new → create a fresh space + default world and switch into it
-    new_space = _unique_space_name(user)
-    spaces.save(user, new_space, {"owner": user, "name": new_space, "public": True,
-                                  "geolocation": geo, "surfaces": [], "boundary": None})
-    spaces.set_active(user, new_space)
-    fresh = _new_world_store(active_scope)
-    fresh.doc.setdefault("environment", {})["space"] = new_space
-    out = await _switch_to(active_scope, new_space, store_override=fresh)   # world named after the space
-    out["created_space"] = new_space
+            spaces.save(active_space_owner, active_space, sp)
+            return {"ok": True, "stamped": _space_ref(active_space_owner, active_space)}
+    # (2) somewhere new → mint a geo-stamped space + world owned by the connecting user
+    new_space = _unique_space_name(who)
+    spaces.save(who, new_space, {"owner": who, "name": new_space, "public": True,
+                                 "geolocation": geo, "surfaces": [], "boundary": None})
+    spaces.set_active(who, new_space)
+    out = await _establish_world_in(who, _space_ref(who, new_space), world_name=new_space)
+    out["created_space"] = _space_ref(who, new_space)
     return out
+
+
+async def _establish_world_in(user: str, space_ref: str, world_name: str = "default") -> dict:
+    """Create `world_name` in `user`'s scope tied to `space_ref` and switch into it — the connecting user
+    building their own world in a (possibly someone else's) space (D3)."""
+    scope = scope_for(user, "builder")
+    fresh = _new_world_store(scope)
+    fresh.doc.setdefault("environment", {})["space"] = space_ref
+    return await _switch_to(scope, world_name, store_override=fresh)
 
 
 @app.post("/worlds/list")
@@ -1371,21 +1431,6 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     dlat, dlon = math.radians(b[0] - a[0]), math.radians(b[1] - a[1])
     h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
     return 2 * r * math.asin(min(1.0, math.sqrt(h)))
-
-
-def _nearest_space(user: str, lat: float, lon: float) -> tuple[str, float] | None:
-    """The user's space nearest (lat, lon) and its distance in metres, or None. Skips spaces that have
-    no stored geolocation yet. A coarse prefilter (geolocation is ~hundreds of feet) — the registration
-    vote is the fine 'are you actually in this space?' check (docs/spaces-and-users-plan.md §7)."""
-    best = None
-    for name in spaces.list(user):
-        g = spaces.load(user, name).get("geolocation")
-        if not g:
-            continue
-        d = _haversine_m((lat, lon), (g["lat"], g["lon"]))
-        if best is None or d < best[1]:
-            best = (name, d)
-    return best
 
 
 # A capture on resume-from-idle (or a momentary tracking blip) is often SPARSE — plane/mesh detection
