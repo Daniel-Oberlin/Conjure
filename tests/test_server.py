@@ -986,6 +986,29 @@ def test_space_select_unmatched_new_location_mints_geo_stamped_space(srv, client
     assert sp["geolocation"]["lat"] == 51.5 and sp["surfaces"] == []
 
 
+def test_forced_geo_resolves_zero_space_and_bad_specs(srv, monkeypatch):
+    import dataclasses
+    force = lambda v: monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, force_geo=v))
+    force("zero")
+    assert srv._forced_geo() == (0.0, 0.0)                     # a convenient "somewhere else"
+    _geo_space(srv, "daniel", "space-0", 51.5, -0.12)
+    force("/daniel/spaces/space-0")
+    assert srv._forced_geo() == (51.5, -0.12)                  # pinned at an existing space's location
+    force("/daniel/spaces/nope")
+    assert srv._forced_geo() is None                           # unresolvable → no override (real location used)
+    force(None)
+    assert srv._forced_geo() is None                           # unset
+
+
+def test_forced_geo_overrides_the_reported_location(srv, client, monkeypatch):
+    import dataclasses
+    _geo_space(srv, "daniel", "space-0", 51.5, -0.12)          # London
+    monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, force_geo="/daniel/spaces/space-0"))
+    # the client reports SF, but --force-geo pins us at space-0 (London) → space-0 is a candidate
+    r = client.post("/geolocation", json={"lat": 37.77, "lon": -122.42}).json()
+    assert ("daniel", "space-0") in {(c["owner"], c["name"]) for c in r["candidates"]}
+
+
 def test_space_select_commits_once_per_session(srv, client):
     srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True,
                                        "geolocation": None, "surfaces": []})

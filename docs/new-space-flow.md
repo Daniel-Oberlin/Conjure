@@ -159,6 +159,11 @@ on `enter-vr`, so a desktop browser doesn't try to establish a space on load.)
    runs **client-side**, reusing `register`. (`_nearest_space`/`_NEAR_M` removed — superseded by
    `_geo_candidates`.) The "connecting user establishes when first in / space unlocks when empty" lifecycle
    is still step 7; admission (who may commit) is step 4.
+
+   > 🧪 **Testing without travelling:** the server flag `--force-geo` overrides the reported location.
+   > `--force-geo zero` pins you at (0,0) — a "somewhere else" that drives the new-place mint path;
+   > `--force-geo /daniel/spaces/space-0` pins you at that space's stored location to drive the return-visit
+   > / candidate path. (Surface matching still runs — geo only narrows.)
 4. **Admission gate** (server `/ws` + `/geolocation`) — AR joiners must match the active space (geo +
    surface); voice/CLI/desktop admitted without it (D4). Refused AR joiners get an info message.
 5. **World-creation adopts the active space, else void; Path B fallback removed** (D5) — no more anonymous

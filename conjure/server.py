@@ -204,6 +204,8 @@ def _init_state() -> None:
     _migrate_world_dirs(WORLDS_DIR)                  # pre-user layout → <user>/agents/<agent> (one-time)
     active_scope, active_world, raw = _boot_world()
     active_space_owner, active_space, store = _activate(active_scope, active_world, raw)   # resolve + compose
+    if settings.force_geo:
+        print(f"[conjure] --force-geo active: {settings.force_geo!r} — reported geolocation is overridden (test)")
 
 # Embedding is an *enrichment*, not part of procurement, so in production it runs OFF the request path:
 # the asset is already procured/returned, and its vector lands a beat later (exact/FTS still match it
@@ -833,6 +835,43 @@ def _geo_candidates(lat: float, lon: float) -> list[dict]:
     return out
 
 
+_forced_geo_warned: set[str] = set()
+
+
+def _forced_geo() -> tuple[float, float] | None:
+    """TEST override for the client's reported location (`--force-geo` / `CONJURE_FORCE_GEO`) — exercise the
+    space-selection flow from a stationary laptop:
+        "zero"                    → (0, 0): a convenient "somewhere else" (far from any real space ⇒ drives
+                                    the new-place mint path).
+        "/<user>/spaces/<name>"   → that space's stored geolocation (pretend you're back at a known place ⇒
+                                    drives the candidate / return-visit path).
+    Returns (lat, lon), or None when unset or unresolvable (a one-time warning is logged, then the real
+    reported location is used)."""
+    spec = (settings.force_geo or "").strip()
+    if not spec:
+        return None
+    if spec.lower() == "zero":
+        return (0.0, 0.0)
+    if spec.startswith("/"):                                    # /<user>/spaces/<name> (dir/delete path form)
+        segs = [s for s in spec.strip("/").split("/") if s]
+        if len(segs) == 3 and segs[1] == "spaces" and spaces and spaces.exists(segs[0], segs[2]):
+            g = spaces.load(segs[0], segs[2]).get("geolocation")
+            if g:
+                return (g["lat"], g["lon"])
+    if spec not in _forced_geo_warned:
+        _forced_geo_warned.add(spec)
+        print(f"[conjure] --force-geo {spec!r} could not be resolved (use 'zero' or /<user>/spaces/<name> "
+              f"of a geo-stamped space); using the real reported location")
+    return None
+
+
+def _apply_forced_geo(req) -> None:
+    """If --force-geo is set, override the request's reported lat/lon (test-only; see `_forced_geo`)."""
+    forced = _forced_geo()
+    if forced:
+        req.lat, req.lon = forced
+
+
 @app.post("/geolocation")
 async def report_geolocation(req: GeoReport) -> dict:
     """Stage 1 (discovery) of space selection. The AR client reports its coarse location; we return every
@@ -844,6 +883,7 @@ async def report_geolocation(req: GeoReport) -> dict:
         return {"ok": False, "error": "no space store"}
     if _geo_selected:
         return {"ok": True, "selected": True, "candidates": []}
+    _apply_forced_geo(req)                                     # test-only geolocation override (--force-geo)
     return {"ok": True, "candidates": _geo_candidates(req.lat, req.lon)}
 
 
@@ -861,6 +901,7 @@ async def select_space(req: SpaceSelect) -> dict:
         return {"ok": False, "error": "no space store"}
     if _geo_selected:
         return {"ok": True, "selected": False}             # already committed this session
+    _apply_forced_geo(req)                                  # test-only geolocation override (--force-geo)
     who = req.user or active_scope.split("/", 1)[0]        # the connecting user (owns anything minted)
     geo = {"lat": req.lat, "lon": req.lon} if req.lat is not None and req.lon is not None else None
 
