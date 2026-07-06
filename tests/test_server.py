@@ -575,20 +575,48 @@ def test_wall_holes_update_on_recapture(srv, client):
 
 
 def test_friendly_id_stable_after_remove_readd(srv, client):
-    # The friendly number is derived from the surface id (real_wall_1 → 1), so a surface that's pruned
-    # and comes back keeps the SAME number by construction — no climbing, no put-down/pick-up renumber.
+    # The friendly number is derived from the surface id (real_couch_1 → 1), so a DYNAMIC surface that's
+    # pruned and comes back keeps the SAME number by construction. (Static surfaces are never pruned — see
+    # test_static_surfaces_are_never_pruned.)
     def fid():
-        return next(e for e in _entities(client) if e["id"] == "real_wall_1")["meta"]["friendly_id"]
-    wall = {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}
-    client.post("/room", json={"client_id": "h1", "surfaces": [wall]})
+        return next(e for e in _entities(client) if e["id"] == "real_couch_1")["meta"]["friendly_id"]
+    couch = {"id": "real_couch_1", "semantic": "couch", "position": [0, 0.4, -2], "extent": [2, 0.8]}
+    client.post("/room", json={"client_id": "h1", "surfaces": [couch]})
     first = fid()
     client.post("/room", json={"client_id": "h1", "surfaces": []})           # one sparse capture
-    assert any(e["id"] == "real_wall_1" for e in _entities(client))          # transient drop is kept
+    assert any(e["id"] == "real_couch_1" for e in _entities(client))         # transient drop is kept
     for _ in range(srv._REMOVE_AFTER_ABSENT):                                # sustained absence → pruned
         client.post("/room", json={"client_id": "h1", "surfaces": []})
-    assert not any(e["id"] == "real_wall_1" for e in _entities(client))
-    client.post("/room", json={"client_id": "h1", "surfaces": [wall]})       # and returns
+    assert not any(e["id"] == "real_couch_1" for e in _entities(client))
+    client.post("/room", json={"client_id": "h1", "surfaces": [couch]})      # and returns
     assert fid() == first                                                    # same number, not higher
+
+
+def test_static_surfaces_are_never_pruned_dynamic_still_pruned(srv, client):
+    # bug B: static architecture (a wall, a mounted picture) keeps its id across detection dropouts, so a
+    # photo hung on it never orphans; furniture is still pruned after sustained absence.
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_art_1", "semantic": "wall art", "position": [0, 1.5, -2], "extent": [0.5, 0.5]},
+        {"id": "real_couch_1", "semantic": "couch", "position": [1, 0.4, 0], "extent": [2, 0.8]}]})
+    for _ in range(srv._REMOVE_AFTER_ABSENT + 2):                            # both absent, past the threshold
+        client.post("/room", json={"client_id": "h1", "surfaces": []})
+    ids = {e["id"] for e in _entities(client)}
+    assert "real_wall_art_1" in ids                                         # static kept → id stable
+    assert "real_couch_1" not in ids                                        # dynamic pruned
+
+
+def test_static_set_freezes_after_establishing_dynamic_stays_live(srv, client, monkeypatch):
+    import conjure.server as S
+    body = lambda wz, cx: {"client_id": "h1", "replace": True, "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, wz], "extent": [3, 2.4]},
+        {"id": "real_couch_1", "semantic": "couch", "position": [cx, 0.4, 0], "extent": [2, 0.8]}]}
+    client.post("/room", json=body(-2.0, 1.0))                              # establishing → both captured
+    monkeypatch.setattr(S, "_room_capture_start", S._room_capture_start - S._ESTABLISH_SECS - 1)  # established
+    client.post("/room", json=body(-2.3, 1.3))                              # move both 30 cm
+    wall = next(e for e in _entities(client) if e["id"] == "real_wall_1")
+    couch = next(e for e in _entities(client) if e["id"] == "real_couch_1")
+    assert wall["transform"]["position"][2] == -2.0                         # STATIC frozen (move ignored)
+    assert couch["transform"]["position"][0] == 1.3                         # DYNAMIC still updates
 
 
 def test_texture_surface_resolves_by_friendly_id(srv, client):
@@ -700,9 +728,9 @@ def test_style_surface_needs_color_or_opacity(srv, client):
 
 def test_room_replace_prunes_only_after_repeated_absence(srv, client):
     client.post("/room", json={"client_id": "h1", "surfaces": [
-        {"id": "a", "semantic": "wall", "position": [0, 1, -2]},
-        {"id": "b", "semantic": "wall", "position": [1, 1, -2]}]})
-    just_a = {"client_id": "h1", "surfaces": [{"id": "a", "semantic": "wall", "position": [0, 1, -2]}]}
+        {"id": "a", "semantic": "couch", "position": [0, 1, -2]},
+        {"id": "b", "semantic": "couch", "position": [1, 1, -2]}]})
+    just_a = {"client_id": "h1", "surfaces": [{"id": "a", "semantic": "couch", "position": [0, 1, -2]}]}
     client.post("/room", json=just_a)                                 # b missing from ONE capture
     assert {"a", "b"} <= {e["id"] for e in _entities(client)}         # survives the transient drop
     for _ in range(srv._REMOVE_AFTER_ABSENT):                         # sustained absence → genuinely gone
