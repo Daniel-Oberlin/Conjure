@@ -19,6 +19,7 @@ import hashlib
 import json
 import math
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from contextvars import ContextVar
@@ -1499,22 +1500,72 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 # debounce removals: only prune a surface after it's been absent from this many CONSECUTIVE captures.
 _REMOVE_AFTER_ABSENT = 3
 _surface_absence: dict[str, int] = {}
+# Room authority (the one headset allowed to report geometry) is claimed by the first capturer's
+# per-page-load client id and cleared only on world-activate/boot — so a RECONNECTING owner (fresh id)
+# used to be locked out until a restart. Fix B: an authority goes STALE after _AUTH_TTL with no post; a
+# new capturer then TAKES IT OVER. Safe because /room is already owner-only (middleware), so only the
+# active world's owner ever reaches here — the guard is just against two of their live headsets at once.
+_AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle authority holds before takeover
+_authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
+
+
+def _dist3(a: list, b: list) -> float:
+    return sum((a[i] - b[i]) ** 2 for i in range(3)) ** 0.5
+
+
+def _ang_delta_deg(a: list, b: list) -> float:
+    """Max per-axis angular difference (degrees, wrapped to ±180) between two euler triples."""
+    return max(abs(((a[i] - b[i] + 180) % 360) - 180) for i in range(3))
+
+
+def _surface_changed(e: dict, s) -> bool:
+    """Did surface `s` move/reshape meaningfully vs the stored entity `e`? Sub-threshold capture noise
+    returns False so we DON'T re-broadcast it (fix A). Without this, the authority re-posts ~every surface
+    every capture and the server rewrites all their transforms → the client rebuilds every wall mesh every
+    ~2 s: the 'pops'. Structural changes (semantic/holes/polygon) always count."""
+    t = e.get("transform") or {}
+    comps = (e.get("components") or {}).get("surface") or {}
+    if s.semantic != (e.get("meta") or {}).get("semantic"):
+        return True
+    if s.position is not None and _dist3(s.position, t.get("position") or [0, 0, 0]) > 0.03:      # > 3 cm
+        return True
+    if s.rotation is not None and _ang_delta_deg(s.rotation, t.get("rotation") or [0, 0, 0]) > 3.0:  # > 3°
+        return True
+    if s.extent is not None:
+        ee = comps.get("extent")
+        if ee is None or abs(s.extent[0] - ee[0]) > 0.05 or abs(s.extent[1] - ee[1]) > 0.05:      # > 5 cm
+            return True
+    if s.holes is not None and s.holes != comps.get("holes"):
+        return True
+    if s.polygon is not None and s.polygon != comps.get("polygon"):
+        return True
+    return False
 
 
 @app.post("/room")
 async def ingest_room(req: RoomUpdate) -> dict:
-    """Ingest captured room geometry from the room **authority** headset. Existing surfaces are
-    *updated* in place (preserving director style); new ones added; with replace=True, stale ones are
-    removed only after being absent from several consecutive captures (so a sparse resume capture
-    doesn't wipe valid surfaces). Sets environment.room (boundary, active, authority)."""
+    """Ingest captured room geometry from the room **authority** headset. Existing surfaces are updated in
+    place (preserving director style) but ONLY when they meaningfully moved (see `_surface_changed` — fix A,
+    so a settled room stops re-broadcasting and the pops go away); new ones added; with replace=True, stale
+    ones are removed after several consecutive absences. An idle authority can be TAKEN OVER after
+    `_AUTH_TTL` (fix B — a reconnecting owner isn't locked out). Sets environment.room (boundary, active,
+    authority). Broadcasts only when something actually changed."""
+    global _authority_ts
     room = store.doc["environment"].get("room", {})
     authority = room.get("authorityClientId")
+    now = time.time()
     if authority and authority != req.client_id:
-        return {"ok": False, "error": f"another headset ({authority}) is the room authority"}
+        if (now - _authority_ts) < _AUTH_TTL:                 # another headset is live → refuse
+            _slog("room", f"reject client={req.client_id} — {authority!r} holds authority "
+                          f"({now - _authority_ts:.1f}s ago)")
+            return {"ok": False, "error": f"another headset ({authority}) is the room authority"}
+        _slog("room", f"authority takeover: {authority!r} idle {now - _authority_ts:.0f}s → {req.client_id}")
+    _authority_ts = now                                       # keep/refresh authority for this client
 
     existing = {e["id"]: e for e in store.doc["entities"] if e.get("meta", {}).get("real")}
     new_ids = {s.id for s in req.surfaces}
     ops: list[dict] = []
+    changed_ids: set[str] = set()
 
     if req.replace:
         for eid in existing:
@@ -1530,6 +1581,8 @@ async def ingest_room(req: RoomUpdate) -> dict:
 
     for s in req.surfaces:
         if s.id in existing:  # update geometry/pose in place — keep the entity's material (style)
+            if not _surface_changed(existing[s.id], s):
+                continue                                      # within tolerance → don't re-broadcast (fix A)
             up: dict = {"transform.position": s.position, "meta.semantic": s.semantic}
             if s.rotation is not None:
                 up["transform.rotation"] = s.rotation
@@ -1542,24 +1595,34 @@ async def ingest_room(req: RoomUpdate) -> dict:
             if s.mesh_segment is not None:
                 up["meta.meshSegment"] = s.mesh_segment
             ops.append({"op": "update", "id": s.id, "set": up})
+            changed_ids.add(s.id)
         else:
             ops.append({"op": "add", "entity": _surface_entity(s)})
+            changed_ids.add(s.id)
 
-    env_set: dict = {"room.active": True, "room.authorityClientId": req.client_id}
-    if req.boundary is not None:
+    env_set: dict = {}                                        # only emit env changes that actually change
+    if not room.get("active"):
+        env_set["room.active"] = True
+    if room.get("authorityClientId") != req.client_id:
+        env_set["room.authorityClientId"] = req.client_id
+    if req.boundary is not None and req.boundary != room.get("boundary"):
         env_set["room.boundary"] = req.boundary
     if "defaultSurfaceVisible" not in room:
-        env_set["room.defaultSurfaceVisible"] = False  # default: invisible references (AR-style)
-    ops.append({"op": "env", "set": env_set})
+        env_set["room.defaultSurfaceVisible"] = False         # default: invisible references (AR-style)
+    if env_set:
+        ops.append({"op": "env", "set": env_set})
 
-    # Re-pin any on-surface images to the just-captured surface poses, so a re-registration that moved a
-    # surface carries its hung images along instead of stranding them in absolute coords.
-    moved = {s.id: {"position": s.position, "rotation": s.rotation, "extent": s.extent} for s in req.surfaces}
+    # Re-pin on-surface images only for surfaces that actually MOVED this capture (unchanged ones already
+    # carry their images), so a settled room adds no reanchor ops either.
+    moved = {s.id: {"position": s.position, "rotation": s.rotation, "extent": s.extent}
+             for s in req.surfaces if s.id in changed_ids}
     ops += _reanchor_ops(store.doc, moved)
 
+    if not ops:                                               # nothing changed → stay quiet (fix A: no pops)
+        return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
     patch = store.apply_patch(ops, origin="room")
     _slog("room", f"accept client={req.client_id} → {active_scope.split('/', 1)[0]}/{active_world} "
-                  f"surfaces={len(req.surfaces)} ops={len(ops)} rev={patch['rev']}")
+                  f"surfaces={len(req.surfaces)} changed={len(changed_ids)} ops={len(ops)} rev={patch['rev']}")
     await _broadcast({"type": "patch", "patch": patch})
     return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
 

@@ -499,6 +499,34 @@ def test_expected_routes_exist(srv):
 
 # --------------------------------------------------------------------------- room model
 
+def test_room_unchanged_capture_is_not_rebroadcast(srv, client):
+    # fix A: a settled room stops emitting patches — an identical re-capture makes NO new revision, so the
+    # client isn't re-applying (and rebuilding) every surface every ~2 s (the "pops").
+    body = {"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4],
+         "rotation": [0, 0, 0]}]}
+    client.post("/room", json=body)                          # first capture → adds the surface
+    rev = client.get("/world").json()["rev"]
+    client.post("/room", json=body)                          # identical → within tolerance
+    assert client.get("/world").json()["rev"] == rev         # no new patch broadcast
+    body["surfaces"][0]["position"] = [0, 1, -2.1]           # move 10 cm (> 3 cm)
+    client.post("/room", json=body)
+    assert client.get("/world").json()["rev"] > rev          # a real move DOES update
+
+
+def test_room_authority_taken_over_only_when_stale(srv, client, monkeypatch):
+    import conjure.server as S
+    body = lambda cid: {"client_id": cid, "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}]}
+    assert client.post("/room", json=body("h1")).json()["ok"] is True     # h1 claims authority
+    r = client.post("/room", json=body("h2")).json()                      # h2 while h1 is live → refused
+    assert r["ok"] is False and "authority" in r["error"]
+    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] == "h1"
+    monkeypatch.setattr(S, "_authority_ts", S._authority_ts - S._AUTH_TTL - 1)   # h1 goes idle
+    assert client.post("/room", json=body("h2")).json()["ok"] is True     # h2 takes over the stale authority
+    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] == "h2"
+
+
 def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
     body = {"client_id": "h1",
             "surfaces": [{"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2],
