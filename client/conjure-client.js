@@ -791,6 +791,24 @@
         });
         if (!cur.length) return;
 
+        // Fragmentation probe (--debug-registration): how many detected planes carry each semantic THIS
+        // capture, and how many spatial CLUSTERS they form (planes within 0.25 m are one physical thing).
+        // "wall art=9/3cl" ⇒ 9 planes but only 3 real pictures = the Quest emits ~3 planes per picture
+        // simultaneously (confirms the triplication is device-side fragmentation, not our id logic). A bare
+        // "wall art=3" (planes == clusters) would refute it.
+        if (window.CONJURE_DEBUG_REGISTRATION) {
+          var bySem = {};
+          cur.forEach(function (c) { (bySem[c.sem] = bySem[c.sem] || []).push(c.pos); });
+          var parts = Object.keys(bySem).sort().map(function (sem) {
+            var pts = bySem[sem], reps = [];
+            pts.forEach(function (p) {
+              if (!reps.some(function (r) { return r.distanceTo(p) < 0.25; })) reps.push(p);
+            });
+            return sem + "=" + pts.length + (pts.length !== reps.length ? "/" + reps.length + "cl" : "");
+          });
+          debugLog("planes", parts.join("  "), true);
+        }
+
         // Am I the room AUTHORITY? The active world's owner authors the geometry; everyone else is a
         // register-only GUEST (room-model §8b). An empty currentUser() is the dev/default user = owner
         // (matches the server treating a missing X-Conjure-User as the owner); unknown worldOwner (no
