@@ -155,7 +155,10 @@
   function surfaceToRef(THREE, e) {
     var Z = new THREE.Vector3(0, 0, 1), d2r = THREE.MathUtils.degToRad;
     var t = e.transform || {}, p = t.position || [0, 0, 0], r = t.rotation || [0, 0, 0];
-    var q = new THREE.Quaternion().setFromEuler(new THREE.Euler(d2r(r[0]), d2r(r[1]), d2r(r[2]), "XYZ"));
+    // A-Frame stores/renders euler in YXZ order (surfaces are written via eulerYXZ). Reconstruct with the
+    // SAME order — reading YXZ-stored angles as XYZ corrupts the normal for any multi-axis (tilted) surface
+    // (e.g. a picture frame), which made the same-facing gate reject it and mint a new id every session.
+    var q = new THREE.Quaternion().setFromEuler(new THREE.Euler(d2r(r[0]), d2r(r[1]), d2r(r[2]), "YXZ"));
     var nrm = Z.clone().applyQuaternion(q);
     var ex = (e.components && e.components.surface && e.components.surface.extent) || [1, 1];
     return { id: e.id, sem: (e.meta && e.meta.semantic) || "surface", ext: [ex[0], ex[1]],

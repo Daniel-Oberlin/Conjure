@@ -822,15 +822,9 @@
         if (docSurfaces && docSurfaces.length >= 3 && (!this._ref.length || !amOwner)) {
           var hadRef = this._ref.length;
           if (!amOwner) self._ref = [];                                  // guest: replace wholesale from authority
-          var Z = new THREE.Vector3(0, 0, 1), d2r = THREE.MathUtils.degToRad, mx = 0;
+          var mx = 0;
           docSurfaces.forEach(function (e) {
-            var t = e.transform || {}, p = t.position || [0, 0, 0], r = t.rotation || [0, 0, 0];
-            var q = new THREE.Quaternion().setFromEuler(new THREE.Euler(d2r(r[0]), d2r(r[1]), d2r(r[2]), "XYZ"));
-            var nrm = Z.clone().applyQuaternion(q);                       // a-plane normal is its local +Z
-            var ex = (e.components && e.components.surface && e.components.surface.extent) || [1, 1];
-            self._ref.push({ id: e.id, sem: (e.meta && e.meta.semantic) || "surface", ext: [ex[0], ex[1]],
-              pos: new THREE.Vector3(p[0], p[1], p[2]), nyaw: Math.atan2(nrm.x, nrm.z),
-              orient: Math.abs(nrm.y) > 0.7 ? "horizontal" : "vertical" });
+            self._ref.push(window.RoomSnap.surfaceToRef(THREE, e));       // one source of truth (YXZ-correct normal)
             var mm = /_(\d+)$/.exec(e.id); if (mm) mx = Math.max(mx, +mm[1] + 1);   // keep new ids unique
           });
           self._refSeq = Math.max(self._refSeq, mx);

@@ -1603,12 +1603,17 @@ async def ingest_room(req: RoomUpdate) -> dict:
     ops: list[dict] = []
     changed_ids: set[str] = set()
 
-    if req.replace:                                           # prune absent DYNAMIC surfaces only
+    # Only surfaces with on-surface content pinned to them are protected from pruning — that keeps a
+    # picture's id alive so its photo never orphans (bug B), WITHOUT keeping stray duplicate surfaces
+    # around (an over-broad "never prune static" let the euler-bug re-mints accumulate). Everything else,
+    # static or not, prunes normally on sustained absence.
+    anchored = {(e.get("meta") or {}).get("on_surface") for e in store.doc["entities"]} - {None}
+    if req.replace:
         for eid, e in existing.items():
             if eid in new_ids:
                 _surface_absence.pop(eid, None)               # seen → reset its absence streak
-            elif (e.get("meta") or {}).get("semantic") in _STATIC_SEMANTICS:
-                continue                                      # static architecture is never pruned (bug B)
+            elif eid in anchored:
+                continue                                      # a photo is pinned here → keep the id (bug B)
             else:
                 n = _surface_absence.get(eid, 0) + 1
                 if n >= _REMOVE_AFTER_ABSENT:                 # gone for real → prune

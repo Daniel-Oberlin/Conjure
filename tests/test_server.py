@@ -592,17 +592,21 @@ def test_friendly_id_stable_after_remove_readd(srv, client):
     assert fid() == first                                                    # same number, not higher
 
 
-def test_static_surfaces_are_never_pruned_dynamic_still_pruned(srv, client):
-    # bug B: static architecture (a wall, a mounted picture) keeps its id across detection dropouts, so a
-    # photo hung on it never orphans; furniture is still pruned after sustained absence.
+def test_anchored_surface_protected_from_pruning_others_still_prune(srv, client):
+    # bug B: a surface with a photo pinned to it (meta.on_surface) keeps its id across detection dropouts
+    # so the photo never orphans; an identical surface with NO content pinned prunes normally (so stray
+    # duplicate surfaces don't accumulate).
     client.post("/room", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_art_1", "semantic": "wall art", "position": [0, 1.5, -2], "extent": [0.5, 0.5]},
-        {"id": "real_couch_1", "semantic": "couch", "position": [1, 0.4, 0], "extent": [2, 0.8]}]})
-    for _ in range(srv._REMOVE_AFTER_ABSENT + 2):                            # both absent, past the threshold
+        {"id": "real_wall_art_2", "semantic": "wall art", "position": [2, 1.5, -2], "extent": [0.5, 0.5]}]})
+    srv.store.apply_patch([{"op": "add", "entity": {                        # hang a photo on art_1
+        "id": "ent_photo", "meta": {"on_surface": "real_wall_art_1"},
+        "components": {"geometry": {"primitive": "plane"}}}}])
+    for _ in range(srv._REMOVE_AFTER_ABSENT + 2):                           # both surfaces absent
         client.post("/room", json={"client_id": "h1", "surfaces": []})
     ids = {e["id"] for e in _entities(client)}
-    assert "real_wall_art_1" in ids                                         # static kept → id stable
-    assert "real_couch_1" not in ids                                        # dynamic pruned
+    assert "real_wall_art_1" in ids                                        # anchored → kept (no orphaning)
+    assert "real_wall_art_2" not in ids                                    # unanchored → pruned
 
 
 def test_static_set_freezes_after_establishing_dynamic_stays_live(srv, client, monkeypatch):
