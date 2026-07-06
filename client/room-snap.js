@@ -100,11 +100,19 @@
     var best = null;
     thetas.forEach(function (theta) {
       var qy = new THREE.Quaternion().setFromAxisAngle(UP, theta);
+      // Same-FACING gate: after applying this candidate yaw, a true correspondence's normal aligns with its
+      // reference (c.nyaw + theta ≈ r.nyaw). The two faces of a shared partition wall have centers ~0.5 m
+      // apart and OPPOSITE normals, so without this a wall can pair with / cover the wrong face — polluting
+      // the translation vote and coverage, which makes the lock jitter frame-to-frame. Only vertical faces
+      // are gated (floor/ceiling separate by semantic). ~60° tolerance (cos > 0.5) leaves ample noise room.
+      function sameFacing(c, r) {
+        return !(c.orient === "vertical" && r.orient === "vertical" && Math.cos((c.nyaw + theta) - r.nyaw) < 0.5);
+      }
       var grid = {}, bestCell = null, bestN = 0;
       cur.forEach(function (c) {
         var rc = c.pos.clone().applyQuaternion(qy);
         ref.forEach(function (r) {
-          if (r.sem !== c.sem || !sizeCompat(r, c)) return;
+          if (r.sem !== c.sem || !sizeCompat(r, c) || !sameFacing(c, r)) return;
           var tx = r.pos.x - rc.x, tz = r.pos.z - rc.z;
           var k = Math.round(tx / 0.25) + "," + Math.round(tz / 0.25);
           var cell = grid[k] || (grid[k] = { sx: 0, sz: 0, n: 0 });
@@ -118,7 +126,7 @@
       var claimed = new Set(), rawInl = 0;   // distinct reference surfaces covered (extras/fragmentation don't inflate)
       cur.forEach(function (c) {
         var tp = c.pos.clone().applyMatrix4(Tmat), bd = 0.4, hit = null;
-        ref.forEach(function (r) { if (r.sem === c.sem) { var d = tp.distanceTo(r.pos); if (d < bd) { bd = d; hit = r; } } });
+        ref.forEach(function (r) { if (r.sem === c.sem && sameFacing(c, r)) { var d = tp.distanceTo(r.pos); if (d < bd) { bd = d; hit = r; } } });
         if (hit) { claimed.add(hit); rawInl++; }
       });
       var cov = claimed.size;

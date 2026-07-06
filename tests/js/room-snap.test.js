@@ -317,6 +317,18 @@ test("canonicalFrame declines with too little geometry (< 2 walls)", () => {
   assert.strictEqual(RS.canonicalFrame(THREE, [mkWall([0, 1.2, -2], 0, [4, 2.4])]).Tmat, null);
 });
 
+test("register locks on a room with a thin partition (antiparallel near-duplicate walls) and covers both faces", () => {
+  // Two walls at nearly the same center with OPPOSITE normals (the two faces of a partition, as between
+  // adjacent rooms) + 3 others. The same-facing gate must keep the lock clean and count both faces.
+  const w = (pos, yawDeg, ext) => ({ sem: "wall", pos: new THREE.Vector3(...pos), ext, nyaw: yawDeg * D2R, orient: "vertical" });
+  const ref = [w([0, 1.2, 0], 0, [3, 2.4]), w([0, 1.2, 0.3], 180, [3.2, 2.4]),   // partition: +z and -z faces
+               w([-2, 1.2, 1.2], 90, [2.6, 2.4]), w([2, 1.2, 1.2], -90, [2.2, 2.4]), w([0, 1.2, 2.6], 180, [4, 2.4])];
+  const cur = asCapture(ref, 50, new THREE.Vector3(1, 0, -1));
+  const { Tmat, cov } = RS.register(THREE, cur, ref);
+  assert.ok(Tmat, "locks on a room containing a partition");
+  assert.strictEqual(cov, 5, "each face covers its OWN reference (no cross-count), cov=" + cov);
+});
+
 test("register declines a genuinely different (differently-sized) room", () => {
   const ref = rectRoom();
   const w = (pos, yaw, ext) => ({ sem: "wall", pos: new THREE.Vector3(...pos), ext, nyaw: yaw, orient: "vertical" });

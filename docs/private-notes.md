@@ -5,6 +5,8 @@
 - Test for new domain name trigger (retstart tunnel and see if it happens)
 - Related to permissions?  Ask permissions at the beginning?
 - Can we catch errors in JS, post them to server for logging, then exit (for visiblity)?
+- Image mapped to wall upside down
+
 
 # Prompt refactor (towards multi-agent)
 - roster line -> optional per-agent injection
