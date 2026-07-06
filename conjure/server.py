@@ -359,6 +359,22 @@ async def _lifespan(app):
 
 app = FastAPI(title="Conjure", version="0.0.1", lifespan=_lifespan)
 
+
+def _slog(tag: str, msg: str) -> None:
+    """Append a SERVER-side diagnostic line to temp/conjure.log, same format as the client's lines, so
+    server routing events (world switches, space selection, /room accept vs 403) interleave with the
+    client's registration/patch trace by timestamp. Gated like /client_log (debug_log OR debug_registration)."""
+    if not (settings.debug_log or settings.debug_registration):
+        return
+    line = f"{datetime.now():%Y-%m-%d %H:%M:%S} [{tag}] {msg}"
+    print(line, flush=True)
+    try:
+        LOG_FILE.parent.mkdir(exist_ok=True)
+        with LOG_FILE.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
 # Edit-rights follow ownership (co-location-plan.md §4): only the ACTIVE world's owner may change the
 # scene content of the shared world. Enforced server-side, never via the prompt — the MCP client and the
 # headset attach an `X-Conjure-User` header; a non-owner hitting these routes gets 403. A *missing*
@@ -381,6 +397,8 @@ async def _owner_only_writes(request, call_next):
         who = request.headers.get("X-Conjure-User")
         owner = active_scope.split("/", 1)[0]
         if who and who != owner:
+            _slog("guard", f"403 {request.url.path} by {who!r} — active world {owner}/{active_world} "
+                           f"(space {active_space_owner}/{active_space})")
             return JSONResponse(status_code=403, content={
                 "ok": False, "error": f"This world belongs to {owner}; only the owner can change it."})
     return await call_next(request)
@@ -759,6 +777,7 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     active_space_owner, active_space, store = _activate(scope, name, raw)   # resolve space (owner+name) + compose
     worlds.set_active(scope, name)
     _surface_absence.clear()                  # the room re-syncs into the newly active world
+    _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} (space {active_space_owner}/{active_space})")
     await _broadcast(_snapshot_msg())
     return {"ok": True, "world": name, "rev": store.doc["rev"]}
 
@@ -884,7 +903,10 @@ async def report_geolocation(req: GeoReport) -> dict:
     if _geo_selected:
         return {"ok": True, "selected": True, "candidates": []}
     _apply_forced_geo(req)                                     # test-only geolocation override (--force-geo)
-    return {"ok": True, "candidates": _geo_candidates(req.lat, req.lon)}
+    cands = _geo_candidates(req.lat, req.lon)
+    _slog("geo", f"report user={req.user!r} ({req.lat:.5f},{req.lon:.5f}) → {len(cands)} candidate(s): "
+                 + ", ".join(f"{c['owner']}/{c['name']}@{c['distance_m']}m" for c in cands))
+    return {"ok": True, "candidates": cands}
 
 
 @app.post("/space/select")
@@ -910,6 +932,9 @@ async def select_space(req: SpaceSelect) -> dict:
         _geo_selected = True
         sp = spaces.load(req.owner, req.name)
         scope, w = sp.get("last_scope"), sp.get("last_world")
+        _slog("select", f"user={who!r} MATCHED {req.owner}/{req.name} → "
+                        + (f"join {scope.split('/', 1)[0]}/{w}" if (w and scope and worlds.exists(scope, w))
+                           else "no world yet, mint one in it"))
         if w and scope and worlds.exists(scope, w):
             out = await _switch_to(scope, w)
         else:                                              # space exists but has no world → build one in it (D3)
@@ -920,6 +945,7 @@ async def select_space(req: SpaceSelect) -> dict:
     # not matched → somewhere new: mint a geo-stamped space + world owned by the connecting user
     _geo_selected = True
     new_space = _unique_space_name(who)
+    _slog("select", f"user={who!r} NO-MATCH → mint {who}/{new_space}")
     spaces.save(who, new_space, {"owner": who, "name": new_space, "public": True,
                                  "geolocation": geo, "surfaces": [], "boundary": None})
     spaces.set_active(who, new_space)
@@ -1532,6 +1558,8 @@ async def ingest_room(req: RoomUpdate) -> dict:
     ops += _reanchor_ops(store.doc, moved)
 
     patch = store.apply_patch(ops, origin="room")
+    _slog("room", f"accept client={req.client_id} → {active_scope.split('/', 1)[0]}/{active_world} "
+                  f"surfaces={len(req.surfaces)} ops={len(ops)} rev={patch['rev']}")
     await _broadcast({"type": "patch", "patch": patch})
     return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
 
@@ -2478,16 +2506,7 @@ async def client_log(req: ClientLog) -> dict:
     """Append a diagnostic line from the WebXR client to temp/conjure.log (and echo to the console), so
     headset-side logs are captured without remote browser debugging. Gated by settings.debug_log OR
     settings.debug_registration (so registration diagnostics still write when only that flag is on)."""
-    if not (settings.debug_log or settings.debug_registration):
-        return {"ok": True}
-    line = f"{datetime.now():%Y-%m-%d %H:%M:%S} [{req.tag or 'log'}] {req.msg}"
-    print(line, flush=True)
-    try:
-        LOG_FILE.parent.mkdir(exist_ok=True)
-        with LOG_FILE.open("a") as f:
-            f.write(line + "\n")
-    except OSError:
-        pass
+    _slog(req.tag or "log", req.msg)
     return {"ok": True}
 
 
