@@ -1,9 +1,17 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
+# Front end bugs
+- Pops you out of VR when starting cold (headset restart, new domain name?)
+- Test for new domain name trigger (retstart tunnel and see if it happens)
+- Related to permissions?  Ask permissions at the beginning?
+- Can we catch errors in JS, post them to server for logging, then exit (for visiblity)?
+
 # Prompt refactor (towards multi-agent)
 - roster line -> optional per-agent injection
 - identity line -> put into builder prompt (seems builder specific)
 - context -> optional per-agent injection
+
+# Outdoor agent
 
 # Graphics
 - Lighting
