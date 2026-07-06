@@ -915,6 +915,23 @@
             best.pos.lerp(lp, 0.3);                                       // track slow real drift
             best.ext = c.ext.slice(); best.nyaw = cyaw;
           } else {                                                        // genuinely new → mint + remember
+            // Mint probe (--debug-registration): WHY did matchRef reject the existing ref? Log the nearest
+            // same-semantic ref's distance / normal-yaw delta / orientations / claimed-state, so a re-mint
+            // reveals its actual cause (too far? >60° facing gate? already claimed? no ref at all?).
+            if (window.CONJURE_DEBUG_REGISTRATION) {
+              var nr = null, nd = 1e9;
+              self._ref.forEach(function (r) {
+                if (r.sem !== c.sem) return;
+                var d = lp.distanceTo(r.pos); if (d < nd) { nd = d; nr = r; }
+              });
+              if (nr) {
+                var dy = Math.abs(((cyaw - nr.nyaw) * 180 / Math.PI + 540) % 360 - 180);
+                debugLog("mint", c.sem + " → nearest " + nr.id + " d=" + nd.toFixed(2) + "m Δyaw=" + dy.toFixed(0)
+                  + "° orient c/" + c.orient + " r/" + nr.orient + (claimed.has(nr) ? " CLAIMED" : ""), true);
+              } else {
+                debugLog("mint", c.sem + " → no same-semantic ref (ref=" + self._ref.length + ")", true);
+              }
+            }
             sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
             best = { id: sid, sem: c.sem, ext: c.ext.slice(), pos: lp.clone(),
                      nyaw: cyaw, orient: c.orient };
