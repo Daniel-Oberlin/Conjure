@@ -362,6 +362,33 @@ test("selectSpace returns null when the capture matches no candidate (somewhere 
   assert.strictEqual(RS.selectSpace(THREE, cur, []), null);   // and for an empty candidate set
 });
 
+// --- matchRef: id re-inheritance must keep the two FACES of a shared partition wall distinct. Two
+// parallel walls between adjacent rooms have centers ~0.5 m apart and OPPOSITE normals; a center-only
+// match can swap their ids (the bug seen live: wall 3 ↔ wall 59). The normal gate prevents it. ---
+test("matchRef picks the SAME-FACING reference, not merely the nearest center", () => {
+  const refOld = { id: "old", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0.05) };
+  const refNew = { id: "new", sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, -0.05) };
+  const refs = [refOld, refNew];
+  // a NEW-room wall (normal -z ⇒ nyaw π) whose detected center drifted TOWARD the old wall (z=0.02, so
+  // "old" is nearer by center). Center-only matching would grab "old"; the normal gate must pick "new".
+  assert.strictEqual(
+    RS.matchRef({ sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, 0.02) }, refs, new Set()).id,
+    "new");
+  // the old-room wall (normal +z) picks "old"
+  assert.strictEqual(
+    RS.matchRef({ sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0.05) }, refs, new Set()).id,
+    "old");
+});
+
+test("matchRef honors the claimed set and the 0.5 m distance cap", () => {
+  const r = { id: "a", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 0) };
+  const near = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 0.1) };
+  assert.strictEqual(RS.matchRef(near, [r], new Set([r])), null);                 // already claimed
+  assert.strictEqual(RS.matchRef({ sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 1.0) },
+                                 [r], new Set()), null);                          // beyond 0.5 m
+  assert.strictEqual(RS.matchRef(near, [r], new Set()).id, "a");                  // otherwise matches
+});
+
 // --- Golden room: a REAL Quest capture (45 surfaces, two rooms via connecting doors). The synthetic
 // tests above encode our assumptions about the device's conventions; this one pins those assumptions to
 // the actual hardware — it feeds the captured planes (with their true normals/roll) through the same

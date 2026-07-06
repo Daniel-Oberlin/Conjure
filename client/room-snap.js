@@ -175,6 +175,26 @@
     return best;
   }
 
+  // Assign a detected plane to the reference surface it re-inherits its id from (conjure-client Pass B).
+  // Same semantic, nearest CENTER within 0.5 m — but ALSO SAME-FACING. Two parallel walls that share a
+  // partition are the two faces of one wall (one per room): their centers sit ~0.5 m apart and their
+  // normals point OPPOSITE. A center-only match can therefore swap them — a new-room wall grabbing the
+  // old-room wall's id (and colour/style), the old wall then grabbing the new one — especially when
+  // capture noise nudges a center toward the wrong face. Requiring the normals to agree (within ~60°,
+  // cos > 0.5) keeps the two faces distinct. `claimed` is the Set of refs already taken this pass; returns
+  // the chosen ref, or null ⇒ a genuinely new surface. (Only vertical faces are normal-gated; a floor and
+  // ceiling are already separated by semantic + height.)
+  function matchRef(cand, refs, claimed) {
+    var best = null, bd = 0.5;
+    refs.forEach(function (r) {
+      if (r.sem !== cand.sem || (claimed && claimed.has(r))) return;
+      if (cand.orient === "vertical" && r.orient === "vertical" && Math.cos(cand.nyaw - r.nyaw) < 0.5) return;
+      var d = cand.pos.distanceTo(r.pos);
+      if (d < bd) { bd = d; best = r; }
+    });
+    return best;
+  }
+
   // On-the-fly CANONICAL frame from live geometry — for VOID/outdoor worlds not tied to a stored space
   // (nothing to register against). Derives a deterministic frame from the room's OWN planes, INVARIANT to
   // the session's arbitrary tracking-origin yaw, so revisiting the same physical room recovers the same
@@ -336,5 +356,6 @@
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, uprightInset: uprightInset, register: register,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
+           matchRef: matchRef,
            squareWalls: squareWalls, joinCorners: joinCorners, snapInsets: snapInsets };
 });

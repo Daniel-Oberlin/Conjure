@@ -892,20 +892,20 @@
           var planeMat = new THREE.Matrix4().compose(c.pos, c.quat, new THREE.Vector3(1, 1, 1));
           var lp = new THREE.Vector3(), lq = new THREE.Quaternion(), ls = new THREE.Vector3();
           Tmat.clone().multiply(planeMat).decompose(lp, lq, ls);
-          var best = null, bd = 0.5;
-          self._ref.forEach(function (r) {
-            if (r.sem !== c.sem || claimed.has(r)) return;
-            var d = lp.distanceTo(r.pos); if (d < bd) { bd = d; best = r; }
-          });
+          // match to the nearest SAME-SEMANTIC, SAME-FACING reference (matchRef's normal gate stops the two
+          // faces of a shared partition wall from swapping ids — see room-snap.js).
+          var cyaw = self._yawOf(UP.clone().applyQuaternion(lq));
+          var best = window.RoomSnap.matchRef({ pos: lp, nyaw: cyaw, sem: c.sem, orient: c.orient },
+                                              self._ref, claimed);
           var sid;
           if (best) {                                                     // re-inherit the existing id
             sid = best.id; claimed.add(best);
             best.pos.lerp(lp, 0.3);                                       // track slow real drift
-            best.ext = c.ext.slice(); best.nyaw = self._yawOf(UP.clone().applyQuaternion(lq));
+            best.ext = c.ext.slice(); best.nyaw = cyaw;
           } else {                                                        // genuinely new → mint + remember
             sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
             best = { id: sid, sem: c.sem, ext: c.ext.slice(), pos: lp.clone(),
-                     nyaw: self._yawOf(UP.clone().applyQuaternion(lq)), orient: c.orient };
+                     nyaw: cyaw, orient: c.orient };
             self._ref.push(best); claimed.add(best);
           }
           surfaces.push({ id: sid, semantic: c.sem, position: [lp.x, lp.y, lp.z],
