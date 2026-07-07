@@ -2257,9 +2257,9 @@ def _face_room(srot: list[float]) -> dict:
     d = f[1]                                                      # gravity (0,1,0) · forward
     up = [-d * f[0], 1.0 - d * f[1], -d * f[2]]                   # gravity ⟂ forward (upright on a wall)
     if sum(c * c for c in up) < 1e-6:                             # forward ≈ vertical (floor/ceiling/table):
-        su = _local_axis(srot, (0.0, 1.0, 0.0))                  # no gravity-up → align to the SURFACE's own
-        d2 = sum(su[i] * f[i] for i in range(3))                 # rectangle (its in-plane +Y), so the image's
-        up = [su[i] - d2 * f[i] for i in range(3)]               # edges stay parallel — not an arbitrary axis
+        su = _local_axis(srot, (0.0, -1.0, 0.0))                 # no gravity-up → align to the SURFACE's own
+        d2 = sum(su[i] * f[i] for i in range(3))                 # rectangle so edges stay parallel. Use -Y
+        up = [su[i] - d2 * f[i] for i in range(3)]               # (a 180° flip about vertical) — +Y read upside-down
         if sum(c * c for c in up) < 1e-6:                        # (su ∥ f, shouldn't happen) → any ⟂ axis
             up = [1.0 - f[0] * f[0], -f[0] * f[1], -f[0] * f[2]]
     up = _norm3(up)
