@@ -204,6 +204,12 @@
   }
 
   function applyImmersion() {
+    if (refused) {                       // blanked to passthrough (steps 4/7): hide everything renderable
+      document.querySelectorAll("[data-scaffold]").forEach(function (el) { el.setAttribute("visible", false); });
+      var sky0 = document.getElementById("sky"); if (sky0) sky0.setAttribute("visible", false);
+      var g0 = document.getElementById("grounded-sky"); if (g0) g0.setAttribute("visible", false);
+      return;
+    }
     // The synthetic holodeck shell (grid floor/walls) + the void sky belong ONLY to an EMPTY "unbounded
     // VR" (room inactive AND no chosen skybox). Hide them whenever the room is active — AR passthrough or
     // a virtual room — OR a skybox IS the environment (an outdoor/void world), so the grid never competes
@@ -358,8 +364,14 @@
   // while that vote is in flight (null when there's nothing to decide); `lastGeo` remembers the reported
   // location so a "no match" commit can stamp/mint a space there.
   var pendingSelect = null, lastGeo = null;
+  // Admission gate + occupancy (new-space-flow steps 4/7). `clientId` identifies this page-load to the
+  // server so its select commits once (GPS jitter can't re-vote). `amHolding` = we passed the co-location
+  // gate and are HOLDING the active space; we tell the server (`hold` over /ws) so it counts us as
+  // occupying it — and re-tell it after a ws reconnect. On refusal we hide content and stay in passthrough.
+  var clientId = "c_" + Math.random().toString(36).slice(2, 8), amHolding = false, refused = false;
 
   function applySnapshot(world) {
+    if (refused) return;                 // we're not in this space — stay blanked to passthrough (steps 4/7)
     root().innerHTML = "";
     (world.entities || []).forEach(applyEntity);
     applyEnv(world.environment);   // after entities, so immersion can toggle them
@@ -420,6 +432,7 @@
   }
 
   function applyPatch(patch) {
+    if (refused) return;                 // ignore world updates while blanked to passthrough (steps 4/7)
     (patch.ops || []).forEach(function (op) {
       if (op.op === "add") {
         applyEntity(op.entity);
@@ -444,7 +457,9 @@
   // The logged-in user, from the /tunnel/<user> route (which redirects with ?user=). Default otherwise.
   function currentUser() { return new URLSearchParams(location.search).get("user") || ""; }
 
-  // A simple info banner (info color), e.g. when a guest is refused a private world (Phase 4 §3).
+  // A simple info banner (info color), e.g. when a guest is refused a private world (Phase 4 §3). This is
+  // an HTML overlay — visible on the 2D page only; NOT inside an immersive AR/VR session (WebXR renders the
+  // scene, not the DOM). For headset-visible notices use showHeadsetMessage (below) as well.
   function showInfo(text) {
     var el = document.getElementById("conjure-info");
     if (!el) {
@@ -455,6 +470,54 @@
       document.body.appendChild(el);
     }
     el.textContent = text;
+    el.style.display = "";
+  }
+
+  function hideInfo() {
+    var el = document.getElementById("conjure-info");
+    if (el) el.style.display = "none";
+  }
+
+  // An IN-SCENE notice, parented to the camera so it floats ~1.2 m ahead of the gaze — visible INSIDE the
+  // headset (unlike the HTML banner). Used for the admission-gate refusal so the message shows in AR.
+  function showHeadsetMessage(text) {
+    var cam = document.querySelector("a-camera") || document.querySelector("[camera]");
+    if (!cam) return;
+    var el = document.getElementById("conjure-notice");
+    if (!el) {
+      el = document.createElement("a-entity");
+      el.setAttribute("id", "conjure-notice");
+      el.setAttribute("position", "0 0 -1.2");
+      el.setAttribute("geometry", "primitive: plane; width: 1.1; height: 0.3");
+      el.setAttribute("material", "color: #000; opacity: 0.72; shader: flat; side: double");
+      var t = document.createElement("a-entity");
+      t.setAttribute("id", "conjure-notice-text");
+      t.setAttribute("position", "0 0 0.01");
+      el.appendChild(t);
+      cam.appendChild(el);
+    }
+    document.getElementById("conjure-notice-text").setAttribute("text",
+      { value: text, align: "center", width: 1.0, wrapCount: 26, color: INFO_COLOR });
+    el.setAttribute("visible", true);
+  }
+
+  function hideHeadsetMessage() {
+    var el = document.getElementById("conjure-notice");
+    if (el) el.setAttribute("visible", false);
+  }
+
+  // Admission-gate refusal (steps 4/7): tear the world down to BARE PASSTHROUGH — clear placed/real
+  // entities, hide the skybox (plain + grounded, which live OUTSIDE #world-root) and the holodeck scaffold,
+  // and ignore further world updates (applySnapshot/applyPatch short-circuit on `refused`) until we leave
+  // AR or get admitted. In AR that leaves only the real room visible.
+  function passthroughBlank() {
+    refused = true;
+    amHolding = false;
+    root().innerHTML = "";
+    roomState.skybox = false; roomState.grounded = false; roomState.active = false;
+    var gs = document.getElementById("grounded-sky");
+    if (gs) gs.setAttribute("grounded-sky", { src: "" });   // tear down any grounded dome
+    applyImmersion();                                       // hides scaffold + sky + grounded (refused guard)
   }
 
   // --- presence (Phase 4 §7): show the other users as a sphere-on-box avatar, co-located in the shared
@@ -541,7 +604,10 @@
     var u = currentUser();
     var ws = new WebSocket(proto + "://" + location.host + "/ws" + (u ? "?user=" + encodeURIComponent(u) : ""));
     socket = ws;
-    ws.onopen = function () { console.log("[conjure] connected" + (u ? " as " + u : "")); };
+    ws.onopen = function () {
+      console.log("[conjure] connected" + (u ? " as " + u : ""));
+      if (amHolding) ws.send(JSON.stringify({ type: "hold" }));   // re-assert our hold after a reconnect
+    };
     ws.onclose = function () { console.log("[conjure] disconnected — retrying in 2s"); setTimeout(connect, 2000); };
     ws.onmessage = function (ev) {
       var msg = JSON.parse(ev.data);
@@ -761,6 +827,8 @@
           } catch (e) { debugLog("render", "diag failed: " + e); }
         }
         if (!frame.detectedPlanes) return;                  // capture needs plane detection
+        if (refused) return;                                // refused by the admission gate → don't capture,
+                                                            // register, or post geometry into a space we're not in
         if (time - this.lastPost < 2000) return;            // throttle to ~0.5 Hz
         var THREE = AFRAME.THREE, self = this, UP = new THREE.Vector3(0, 1, 0);
 
@@ -1034,7 +1102,7 @@
       fetch("/geolocation", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lat: lastGeo.lat, lon: lastGeo.lon, accuracy: pos.coords.accuracy,
-                               user: lastGeo.user }),
+                               user: lastGeo.user, cid: clientId }),
       }).then(function (r) { return r.json(); }).then(function (resp) {
         if (!resp || resp.selected) return;                  // already the established space this session
         var cands = resp.candidates || [];
@@ -1049,12 +1117,27 @@
 
   // Commit stage-2 of space selection: tell the server the verdict (matched a candidate, or none), with the
   // reported location so a no-match can stamp/mint a space there. Clears the pending vote either way.
+  // The server's reply is the ADMISSION verdict (steps 4/7): `refused` ⇒ we're not in the active space —
+  // show the message and blank the world so only passthrough shows (we never became a holder); otherwise
+  // we're admitted / established the space ⇒ declare our HOLD so the server counts us as occupying it.
   function commitSelect(result) {
     pendingSelect = null;
     var g = lastGeo || {};
     fetch("/space/select", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(Object.assign({ lat: g.lat, lon: g.lon, user: g.user }, result)),
+      body: JSON.stringify(Object.assign({ lat: g.lat, lon: g.lon, user: g.user, cid: clientId }, result)),
+    }).then(function (r) { return r.json(); }).then(function (resp) {
+      if (!resp || resp.selected === false) return;        // already committed this epoch — nothing to do
+      if (resp.refused) {                                  // not in the active space → bare passthrough + notice
+        var m = resp.msg || "You're not in this space — content stays hidden here.";
+        showInfo(m);                                       // 2D page banner
+        showHeadsetMessage(m);                             // + in-headset notice (visible in AR)
+        passthroughBlank();                                // tear down world → passthrough, ignore updates
+        return;
+      }
+      refused = false; hideHeadsetMessage(); hideInfo();   // admitted / established → we hold the space
+      amHolding = true;
+      if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: "hold" }));
     }).catch(function () {});
   }
 
@@ -1062,6 +1145,16 @@
     connect(); setupARButton(); markVersion();
     setInterval(presenceTick, 100);                 // ~10 Hz head-pose broadcast (presence)
     var sc = document.querySelector("a-scene");      // report location only from a real AR session
-    if (sc) sc.addEventListener("enter-vr", reportGeolocation);
+    if (sc) {
+      sc.addEventListener("enter-vr", reportGeolocation);
+      sc.addEventListener("exit-vr", function () {  // left AR → release our hold so the space can unlock
+        amHolding = false;
+        if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: "release" }));
+        if (refused) {                              // we were blanked → resync a clean world now we're out of AR
+          refused = false; hideHeadsetMessage(); hideInfo();
+          if (socket) socket.close();               // onclose auto-reconnects → a fresh snapshot re-renders it
+        }
+      });
+    }
   });
 })();

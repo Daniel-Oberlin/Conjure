@@ -63,6 +63,10 @@ class Settings:
     # convenient "somewhere else"; "/<user>/spaces/<name>" pins you at that space's stored location.
     # Empty (default) ⇒ use the real browser/headset location. See server._forced_geo.
     force_geo: str | None = None
+    # TEST override for space occupancy (--force-occupied): treat the active space as already CLAIMED by a
+    # phantom AR holder, so the admission gate engages for a SINGLE headset (match the active space ⇒
+    # admitted; anything else ⇒ refused). See server._occupied.
+    force_occupied: bool = False
     # Asset-library embeddings (docs/asset-library-plan.md §4). "auto" uses local SigLIP when the
     # optional torch/transformers are installed, else stays off; "fake"/"none" for tests/disable.
     embed_backend: str = "auto"
@@ -98,6 +102,7 @@ def get_settings() -> Settings:
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
         force_geo=(os.environ.get("CONJURE_FORCE_GEO", "").strip() or None),
+        force_occupied=os.environ.get("CONJURE_FORCE_OCCUPIED", "").strip().lower() in ("1", "true", "yes", "on"),
         embed_backend=os.environ.get("CONJURE_EMBED_BACKEND", "auto"),
         embed_model=os.environ.get("CONJURE_EMBED_MODEL", "google/siglip2-so400m-patch14-384"),
         caption_provider=os.environ.get("CONJURE_CAPTION_PROVIDER", "gemini"),

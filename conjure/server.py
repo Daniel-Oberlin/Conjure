@@ -197,8 +197,9 @@ def _init_state() -> None:
     All filesystem-mutating — so it runs on server startup, not at import. Idempotent enough to re-run.
     Back up library.db to protect curation: a lost catalog is NOT rebuilt from the cache files."""
     global library, worlds, spaces, store, active_scope, active_world, active_space, active_space_owner
-    global _geo_selected
-    _geo_selected = False                            # a fresh session re-selects on first geolocation report
+    global _selected_cids, _space_holders
+    _selected_cids = set()                           # a fresh session: every AR client re-selects (step 4/7)
+    _space_holders = set()                           # nobody holds the space yet → provisional boot (D1)
     library = AssetLibrary(LIBRARY_DB)
     worlds = WorldRepository(WORLDS_DIR)
     spaces = SpaceStore(SPACES_DIR)
@@ -207,6 +208,8 @@ def _init_state() -> None:
     active_space_owner, active_space, store = _activate(active_scope, active_world, raw)   # resolve + compose
     if settings.force_geo:
         print(f"[conjure] --force-geo active: {settings.force_geo!r} — reported geolocation is overridden (test)")
+    if settings.force_occupied:
+        print("[conjure] --force-occupied active: the active space is treated as CLAIMED (admission gate on) (test)")
 
 # Embedding is an *enrichment*, not part of procurement, so in production it runs OFF the request path:
 # the asset is already procured/returned, and its vector lands a beat later (exact/FTS still match it
@@ -438,7 +441,37 @@ app.add_middleware(_ScopeFromHeader)
 # touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
 _AUTOSAVE_INTERVAL = 1.0
 _autosave_task: asyncio.Task | None = None
-_geo_selected = False               # nearest-space selection runs ONCE per session (first geolocation report)
+# Space claim & occupancy (new-space-flow steps 4/7 — admission gate + lifecycle). The active space is a
+# shared PHYSICAL resource: it's CLAIMED while an AR headset holds it (occupied), and UNCLAIMED (free for
+# the next AR user to re-establish from anywhere) when the last one leaves. Boot starts unclaimed (D1 —
+# provisional boot), so the first AR user always establishes. Two pieces of live-session state:
+#   _space_holders  — the /ws sockets of AR clients that PASSED the co-location gate (declared "hold" after
+#                     a successful select). occupied ⇔ non-empty. Cleared per-socket on release/disconnect.
+#   _selected_cids  — client ids that have committed a /space/select this claim epoch (idempotency, so GPS
+#                     jitter can't re-vote); reset by _unclaim() when the space frees up so re-selection can
+#                     run. Per-CLIENT (not one global flag) so a SECOND, co-located AR user can still vote.
+_space_holders: "set[WebSocket]" = set()
+_selected_cids: set[str] = set()
+
+
+def _occupied() -> bool:
+    """Is the active space CLAIMED — is any AR headset currently holding it? While occupied, an AR joiner
+    must match the active space (the admission gate); while unoccupied the space is free to (re)establish.
+    `--force-occupied` (test) pins this True via a phantom holder so a single headset can exercise the gate."""
+    return settings.force_occupied or bool(_space_holders)
+
+
+def _unclaim() -> None:
+    """The last AR holder left → the space is no longer occupied. Free it: the next AR user may establish a
+    (possibly different) space from wherever they are (D6 — unlock when empty). The active world keeps
+    rendering as a provisional placeholder; only re-selection is re-opened (clear the per-client commit
+    guard). No-op while anyone still holds the space."""
+    global _selected_cids
+    if _occupied():
+        return
+    if _selected_cids:
+        _slog("select", "space unclaimed (last AR holder left) — re-selection re-opened")
+    _selected_cids = set()
 
 
 def _save_active() -> None:
@@ -800,6 +833,7 @@ class GeoReport(BaseModel):
     lon: float
     accuracy: Optional[float] = None
     user: Optional[str] = None       # who's reporting (the connecting AR user)
+    cid: Optional[str] = None        # the reporting client's per-page-load id (select-commit idempotency)
 
 
 class SpaceSelect(BaseModel):
@@ -810,6 +844,7 @@ class SpaceSelect(BaseModel):
     lat: Optional[float] = None      # the reporter's location — stamps/mints the space when NOT matched
     lon: Optional[float] = None
     user: Optional[str] = None       # the connecting user (mints spaces/worlds in THEIR scope)
+    cid: Optional[str] = None        # the committing client's per-page-load id (commit-once idempotency)
 
 
 _GEO_RANGE_M = 300.0                # coarse prefilter radius: spaces within this are surface-match candidates
@@ -892,16 +927,23 @@ def _apply_forced_geo(req) -> None:
         req.lat, req.lon = forced
 
 
+def _cid(req) -> str:
+    """The committing client's identity for select idempotency: its per-page-load id, else the reporting
+    user, else "" (a shared anonymous id — enough for a single un-identified caller in tests)."""
+    return req.cid or req.user or ""
+
+
 @app.post("/geolocation")
 async def report_geolocation(req: GeoReport) -> dict:
     """Stage 1 (discovery) of space selection. The AR client reports its coarse location; we return every
     geo-near candidate space across all users (each with its surface constellation) for the client to
     disambiguate by registration (`RoomSnap.selectSpace`) and then commit via `/space/select`. **Read-only**
-    — it never changes the active space. Selection commits ONCE per session (see `/space/select`); once
-    committed, later reports return no candidates so GPS jitter can't re-open the choice."""
+    — it never changes the active space. Each client commits ONCE per claim epoch (see `/space/select`);
+    once it has, later reports from that client return no candidates so GPS jitter can't re-open its choice
+    (a DIFFERENT, co-located AR client still gets candidates — it must vote to pass the admission gate)."""
     if spaces is None:
         return {"ok": False, "error": "no space store"}
-    if _geo_selected:
+    if _cid(req) in _selected_cids:
         return {"ok": True, "selected": True, "candidates": []}
     _apply_forced_geo(req)                                     # test-only geolocation override (--force-geo)
     cands = _geo_candidates(req.lat, req.lon)
@@ -912,26 +954,50 @@ async def report_geolocation(req: GeoReport) -> dict:
 
 @app.post("/space/select")
 async def select_space(req: SpaceSelect) -> dict:
-    """Stage 2 (commit) of space selection — the client has voted among the /geolocation candidates:
-      • **matched** → JOIN that space by switching to its last-active world (co-location / return visit).
-        If the space has no world yet, mint the connecting user a default world tied to it (D3).
-      • **not matched** → "somewhere new": mint a fresh geo-stamped space (`space-N`) + default world owned
-        by the connecting user (D2/D7). A minted space is born with its location, so there's no separate
-        "stamp the pre-existing active space" path — spaces only ever get their geolocation at mint time.
-    Commits ONCE per session so GPS jitter / repeated votes can't thrash the active space."""
-    global _geo_selected
+    """Stage 2 (commit) of space selection + the AR **admission gate** (new-space-flow steps 3/4/7). The
+    client has voted its live capture against the /geolocation candidates; what happens depends on whether
+    the active space is already CLAIMED (an AR headset is holding it — see `_occupied`):
+
+      • **Unclaimed (provisional)** — this AR user ESTABLISHES the space (first-in claims it, D1/D7):
+          - **matched** → JOIN that space's last-active world (return visit); if it has no world yet, mint
+            the connecting user a default world tied to it (D3).
+          - **not matched** → "somewhere new": mint a fresh geo-stamped space (`space-N`) + default world
+            owned by the connecting user (D2/D7). Born WITH its location — no separate "stamp" path.
+      • **Claimed (occupied)** — the ADMISSION GATE (D4/D6): the AR joiner must be in the SAME space:
+          - **matched the active space** → ADMITTED (co-location join — no world change; they're already
+            looking at it).
+          - **anything else** (matched a different space, or no match) → REFUSED: not switched in, nothing
+            minted; the client shows an info message and stays in passthrough. Voice/CLI/desktop never reach
+            here (no AR session → no /space/select), so the gate governs AR headsets only.
+
+    A client commits ONCE per claim epoch (idempotent by `cid`) so GPS jitter / repeated votes can't thrash
+    the choice. On admit/establish the client declares `hold` over /ws → it becomes a `_space_holder`."""
+    global _selected_cids
     if spaces is None or worlds is None:
         return {"ok": False, "error": "no space store"}
-    if _geo_selected:
-        return {"ok": True, "selected": False}             # already committed this session
+    cid = _cid(req)
+    if cid in _selected_cids:
+        return {"ok": True, "selected": False}             # this client already committed this claim epoch
     _apply_forced_geo(req)                                  # test-only geolocation override (--force-geo)
     who = req.user or active_scope.split("/", 1)[0]        # the connecting user (owns anything minted)
     geo = {"lat": req.lat, "lon": req.lon} if req.lat is not None and req.lon is not None else None
+    matched_ref = (req.owner, req.name) if (req.matched and req.owner and req.name) else None
 
-    # matched → join the space's last-active world (or mint one in it for the connecting user)
-    if req.matched and req.owner and req.name and spaces.exists(req.owner, req.name):
-        _geo_selected = True
-        sp = spaces.load(req.owner, req.name)
+    # --- Claimed + occupied: admission gate. The joiner must match the ACTIVE space, else they're refused.
+    if _occupied():
+        _selected_cids.add(cid)
+        if matched_ref == (active_space_owner, active_space):
+            _slog("select", f"user={who!r} ADMITTED to {active_space_owner}/{active_space} (co-located)")
+            return {"ok": True, "admitted": True, "joined": _space_ref(active_space_owner, active_space)}
+        _slog("select", f"user={who!r} REFUSED — not in the active space {active_space_owner}/{active_space} "
+                        f"(voted {matched_ref or 'no-match'})")
+        return {"ok": True, "refused": True,
+                "msg": f"You're not in {active_space_owner}'s space — content stays hidden here."}
+
+    # --- Unclaimed (provisional boot / everyone left): this AR user ESTABLISHES the space.
+    _selected_cids.add(cid)
+    if matched_ref and spaces.exists(*matched_ref):        # matched → join its last-active world (return visit)
+        sp = spaces.load(*matched_ref)
         scope, w = sp.get("last_scope"), sp.get("last_world")
         _slog("select", f"user={who!r} MATCHED {req.owner}/{req.name} → "
                         + (f"join {scope.split('/', 1)[0]}/{w}" if (w and scope and worlds.exists(scope, w))
@@ -939,12 +1005,11 @@ async def select_space(req: SpaceSelect) -> dict:
         if w and scope and worlds.exists(scope, w):
             out = await _switch_to(scope, w)
         else:                                              # space exists but has no world → build one in it (D3)
-            out = await _establish_world_in(who, _space_ref(req.owner, req.name))
-        out["joined"] = _space_ref(req.owner, req.name)
+            out = await _establish_world_in(who, _space_ref(*matched_ref))
+        out["joined"] = _space_ref(*matched_ref)
         return out
 
     # not matched → somewhere new: mint a geo-stamped space + world owned by the connecting user
-    _geo_selected = True
     new_space = _unique_space_name(who)
     _slog("select", f"user={who!r} NO-MATCH → mint {who}/{new_space}")
     spaces.save(who, new_space, {"owner": who, "name": new_space, "public": True,
@@ -988,8 +1053,10 @@ async def worlds_new(req: WorldRef) -> dict:
         fresh = _new_world_store(req.scope)
         env = fresh.doc.setdefault("environment", {})
         env["public"] = req.public                                      # public by default; private if asked
-        if req.outdoor:
-            env["space"] = VOID                                         # outdoor/void world — no room, canonical frame
+        # D5/step 5: a new world ADOPTS the active, geo+surface-selected space — "build your own world in
+        # it", even someone else's (D3). No active space yet (unclaimed server) or an explicit outdoor world
+        # → VOID, the honest "no room yet" (replaces the old anonymous-'home' Path B fallback).
+        env["space"] = VOID if (req.outdoor or active_space == VOID) else _space_ref(active_space_owner, active_space)
         return await _switch_to(req.scope, req.name, store_override=fresh)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
@@ -1447,7 +1514,8 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
         VOID ("<void>")     → an outdoor/void world: no room to merge — objects + skybox only.
         "<owner>/<name>"    → a shared space, possibly ANOTHER user's (D3, the target form).
         "<name>"            → a bare/legacy ref → the world-owner's own space (back-compat).
-        absent              → no space chosen yet → the 'home' fallback (**Path B**; see below).
+        absent              → no space chosen yet → treated as VOID (D5, step 5): the honest "no room
+                              yet", NOT the old anonymous-'home' fallback.
 
     `_compose` merges the world's objects/prefs with the space's surfaces to build the doc the client
     renders. On the way back out, `_save_active` SPLITS the live doc again (geometry → the space's owner's
@@ -1458,22 +1526,24 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
 
     new-space-flow **step 0** — the old LEGACY-MIGRATION path is gone (activate is read-only; it never
     rewrites a world doc). **step 2** — space references are now fully-qualified `<owner>/<name>`, so a
-    world can be tied to a space owned by someone else. **step 5** (pending) replaces Path B (the
-    `absent → home` fallback) with "adopt the active, geo+surface-selected space, else create VOID".
+    world can be tied to a space owned by someone else. **step 5** — Path B (the `absent → home` fallback)
+    is gone: a world with no space ref now composes as VOID, and `/worlds/new` stamps the active space up
+    front (see `worlds_new`), so nothing anonymous is ever minted.
     """
     global _room_capture_start
     _room_capture_start = None                                     # a newly-live room re-establishes its static set
     world_owner = scope.split("/", 1)[0]
     doc = world.doc
     space_ref = (doc.get("environment", {}) or {}).get("space")
-    if space_ref == VOID:                                          # outdoor/void world: no room geometry
-        composed = WorldStore(copy.deepcopy(doc))                  # nothing to merge — objects + skybox only
+    if space_ref == VOID or not space_ref:                         # explicit outdoor/void OR no space chosen
+        composed_doc = copy.deepcopy(doc)                          # yet (D5): no room to merge — objects +
+        composed_doc["entities"] = [e for e in composed_doc.get("entities", [])   # skybox only. A void world
+                                    if not (e.get("meta") or {}).get("real")]     # owns NO real geometry —
+        composed_doc.setdefault("environment", {})["space"] = VOID   # drop any stray inline reals and mark
+        composed = WorldStore(composed_doc)                          # void so the client uses canonicalFrame
         _reset_room_authority(composed)
         return world_owner, VOID, composed
-    if space_ref:
-        owner, space_name = _resolve_space_ref(space_ref, world_owner)
-    else:                                                          # Path B fallback (removed in step 5):
-        owner, space_name = world_owner, (spaces.get_active(world_owner) or "home")
+    owner, space_name = _resolve_space_ref(space_ref, world_owner)
     if spaces.exists(owner, space_name):
         space = spaces.load(owner, space_name)                     # the shared physical room
     else:                                                          # first time here → an empty shared space
@@ -2612,7 +2682,15 @@ async def ws(websocket: WebSocket) -> None:
                 msg = json.loads(raw)
             except (ValueError, TypeError):
                 continue
-            if msg.get("type") == "presence":                    # relay this client's pose to the others
+            mtype = msg.get("type")
+            if mtype == "hold":                                  # AR client passed the admission gate → it
+                _space_holders.add(websocket)                    # now HOLDS the active space (occupied). Sent
+                                                                 # after a successful select + re-sent on ws
+                                                                 # reconnect while it's still in AR.
+            elif mtype == "release":                             # left AR (exit-vr) → no longer holding
+                _space_holders.discard(websocket)
+                _unclaim()                                       # frees the space if it was the last holder
+            elif mtype == "presence":                            # relay this client's pose to the others
                 pose = msg.get("pose")
                 g = _gaze_from_pose(pose)
                 if g:
@@ -2622,6 +2700,8 @@ async def ws(websocket: WebSocket) -> None:
         pass
     finally:
         clients.pop(websocket, None)
+        _space_holders.discard(websocket)                        # a holder's socket closing = they left
+        _unclaim()                                               # → unclaim the space if that was the last one
         if user not in clients.values():                         # last socket for this user gone
             gaze.pop(user, None)
         if joined:

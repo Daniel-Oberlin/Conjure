@@ -165,14 +165,36 @@ on `enter-vr`, so a desktop browser doesn't try to establish a space on load.)
    > `--force-geo zero` pins you at (0,0) — a "somewhere else" that drives the new-place mint path;
    > `--force-geo /daniel/spaces/space-0` pins you at that space's stored location to drive the return-visit
    > / candidate path. (Surface matching still runs — geo only narrows.)
-4. **Admission gate** (server `/ws` + `/geolocation`) — AR joiners must match the active space (geo +
-   surface); voice/CLI/desktop admitted without it (D4). Refused AR joiners get an info message.
-5. **World-creation adopts the active space, else void; Path B fallback removed** (D5) — no more anonymous
-   `home`.
+4. **✅ DONE — Admission gate** (D4) — done together with step 7 (they share the claim/occupancy notion).
+   The gate lives in `/space/select` (the only endpoint an AR headset reaches — voice/CLI/desktop never
+   run selection, so they're admitted without co-location). While the active space is **claimed**
+   (occupied), an AR user who **matches** it is `admitted` (co-location join, no world change); anyone who
+   **doesn't** (a different space, or no match) is `refused` — not switched in, nothing minted. The client
+   surfaces the refusal as an info message and **blanks the world so only passthrough shows** (they never
+   become a holder). While **unclaimed**, the user establishes (step 7).
+
+   > 🧪 **Testing the gate with one headset:** `--force-occupied` pins the active space CLAIMED via a
+   > phantom holder, so a single headset hits the gate. Match the active space (real location, or
+   > `--force-geo /<user>/spaces/<name>`) ⇒ **admitted**; miss it (`--force-geo zero`) ⇒ **refused**
+   > (info + blanked passthrough). Establish/return/lifecycle (steps 4/7 minus refusal) test solo with
+   > `--force-geo` alone; true co-location (two live AR users) still needs a second headset.
+5. **✅ DONE — World-creation adopts the active space, else void; Path B fallback removed** (D5). `/worlds/new`
+   now stamps the new world with the currently-active space ref up front (`<owner>/<name>`, D3 — build your
+   own world in it, even someone else's), or VOID when the server is unclaimed (no active space yet) /
+   outdoor. `_activate`'s `absent → home` Path B fallback is gone: a world with no space ref composes as
+   VOID (real geometry belongs to a space, so any stray inline reals are dropped and it's marked void so the
+   client uses `canonicalFrame`). No anonymous `home` is ever minted again.
 6. **Space visibility** (D8) — a `public` flag enforced at world-creation-in-a-space; `set_space_visibility`
    tool, mirroring the world/asset toggles.
-7. **Boot & lifecycle** — provisional boot; establish/unlock the active space on first-connect / last-leave
-   (D1/D6). Supersede the `sparse-room-relock` global-active pointer.
+7. **✅ DONE — Boot & lifecycle** (D1/D6) — the active space is a claimable resource, tracked by
+   **occupancy**: an AR client declares `hold` over `/ws` after a successful select and holds the space
+   until it `release`s (leaves AR / exit-vr) or its socket closes; `_occupied()` ⇔ any holder present.
+   **Boot is provisional** — `_space_holders` starts empty, so the booted-active world is just a
+   placeholder and the first AR user establishes from wherever they are (a new place → mint, not refuse).
+   When the **last holder leaves**, `_unclaim()` frees the space (re-opening per-client re-selection) so the
+   next user can establish a different one. Selection is now **per-client** (`_selected_cids`, keyed by a
+   page-load `cid`), replacing the old single global `_geo_selected` — so a second, co-located AR user can
+   still vote to pass the gate. (The `sparse-room-relock` global-active pointer is superseded by this.)
 8. **Migration/cleanup** — geo-stamp or retire existing anonymous spaces (`harold/home`, `daniel/space-2`).
 
 ## 8. Rolled back / held in reserve
@@ -191,8 +213,11 @@ if a sparse first capture still freezes *after* the flow is correct). `4fdd860` 
   index later (same note as the world-index backlog).
 - **Fully-qualified space refs** touch persisted world docs — need a migration/back-compat path for the
   bare-name refs that exist today.
-- **"Locked while occupied"** needs a definition of *occupied* (any AR client on `/ws`? presence within N
-  seconds?) and what a mismatched AR joiner sees (info message + passthrough, like a private-world refusal).
+- **"Locked while occupied"** ✅ RESOLVED (steps 4/7): *occupied* = at least one AR client is **holding**
+  the space — it declared `hold` over `/ws` after passing the co-location gate and hasn't `release`d /
+  disconnected. (Only AR holds; desktop/voice/CLI don't, matching "an AR user holds the space".) A
+  mismatched AR joiner gets an **info message and a blanked world (passthrough only)**, like the
+  private-world refusal — the server returns `refused` from `/space/select` and the client hides content.
 - **Who owns a space captured by a guest** in another user's active world — the guest, or the world's space
   owner? (Ties to D3 — likely the capturer, but confirm.)
 - **Server-at-one-brain, users-anywhere:** voice/desktop users can be remote while an AR user holds the

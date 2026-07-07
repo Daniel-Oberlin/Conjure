@@ -116,7 +116,8 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "active_world", "default")
     monkeypatch.setattr(server, "active_space", "home")
     monkeypatch.setattr(server, "active_space_owner", "daniel")   # owner of the active space (D3-aware)
-    monkeypatch.setattr(server, "_geo_selected", False)   # fresh session: geolocation selection re-runs
+    monkeypatch.setattr(server, "_selected_cids", set())  # fresh session: every AR client re-selects (step 4/7)
+    monkeypatch.setattr(server, "_space_holders", set())  # nobody holds the space yet (unclaimed / provisional)
     monkeypatch.setattr(
         server, "store",
         WorldStore({"id": "test", "name": "Test", "rev": 0, "environment": {"sky": {"color": "#000"}}, "entities": []}),

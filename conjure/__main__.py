@@ -17,11 +17,16 @@ def main() -> None:
     ap.add_argument("--force-geo", metavar="ZERO|/user/spaces/name", default=None,
                     help="TEST: override the reported geolocation — 'zero' pins you at (0,0), or address an "
                          "existing space by path (e.g. /daniel/spaces/space-0) to pin you at its location")
+    ap.add_argument("--force-occupied", action="store_true",
+                    help="TEST: treat the active space as already CLAIMED (a phantom AR holder), so the "
+                         "admission gate engages for one headset — match the active space ⇒ admitted, else refused")
     args = ap.parse_args()
     if args.debug_registration:                      # picked up by get_settings() when the app imports below
         os.environ["CONJURE_DEBUG_REGISTRATION"] = "1"
     if args.force_geo:
         os.environ["CONJURE_FORCE_GEO"] = args.force_geo
+    if args.force_occupied:
+        os.environ["CONJURE_FORCE_OCCUPIED"] = "1"
     uvicorn.run("conjure.server:app", host=args.host, port=args.port, reload=False)
 
 

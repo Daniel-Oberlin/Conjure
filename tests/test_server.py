@@ -140,12 +140,13 @@ def test_face_room_faces_opposite_the_surface_normal_upright(srv):
 
 def test_face_room_aligns_flat_content_to_the_surface_rectangle(srv):
     # On an up-facing surface (a table yawed 30°) there's no gravity-up, so the image must align to the
-    # SURFACE's own rectangle (its in-plane axis), not an arbitrary world axis that tilts it ~30°.
+    # SURFACE's own rectangle (its in-plane axis), not an arbitrary world axis that tilts it ~30°. The
+    # image's up matches the surface's -Y (a 180° flip about vertical — +Y read consistently upside-down).
     from conjure.server import _face_room, _local_axis
     tsrot = [90.0, 30.0, 0.0]
     fr = _face_room(tsrot)
     content_up = _local_axis(fr["rotation"], (0.0, 1.0, 0.0))   # the image's up (its +Y) in world
-    surf_axis = _local_axis(tsrot, (0.0, 1.0, 0.0))             # the table's in-plane +Y (rectangle edge)
+    surf_axis = _local_axis(tsrot, (0.0, -1.0, 0.0))            # the table's -Y in-plane axis (rectangle edge)
     assert all(abs(content_up[i] - surf_axis[i]) < 0.02 for i in range(3))   # edges parallel, no tilt
 
 
@@ -951,10 +952,10 @@ def test_room_geometry_is_shared_across_worlds_styling_is_per_world(srv, client)
 
 
 def test_activate_no_longer_migrates_embedded_geometry(srv, client):
-    """new-space-flow step 0: the legacy geometry-embedded migration is gone. A pre-space world doc is
-    no longer rewritten on load, and its INLINE real surfaces are NOT resurrected — real geometry lives
-    only in the space now (fed by capture via _save_active). Objects still compose, and a world with no
-    space ref lands in 'home' (the Path B bridge, removed in step 5)."""
+    """new-space-flow step 0 + step 5: the legacy geometry-embedded migration is gone. A pre-space world
+    doc is no longer rewritten on load, and its INLINE real surfaces are NOT resurrected — real geometry
+    lives only in the space now (fed by capture via _save_active). Objects still compose; a world with no
+    space ref now composes as VOID (step 5 removed the anonymous-'home' Path B fallback)."""
     from conjure.world import WorldStore
     embedded = {
         "id": "l", "name": "legacy", "rev": 3, "environment": {"room": {"boundary": {"height": 2.6}}},
@@ -967,8 +968,8 @@ def test_activate_no_longer_migrates_embedded_geometry(srv, client):
     client.post("/worlds/switch", json={"name": "legacy"})
     ids = {e["id"] for e in _entities(client)}
     assert "ent_box" in ids                                     # placed objects compose as before
-    assert "real_table_2" not in ids                            # inline geometry is NOT migrated back in
-    assert srv.active_space == "home"                           # Path B bridge until step 5
+    assert "real_table_2" not in ids                            # inline geometry is NOT resurrected (VOID drops reals)
+    assert srv.active_space == srv.VOID                         # no space ref → VOID (Path B removed, step 5)
     wd = srv.worlds.load(srv.DEFAULT_SCOPE, "legacy").doc
     assert any(e["id"] == "real_table_2" for e in wd["entities"])   # inline geometry NOT stripped from disk
     assert "space" not in wd.get("environment", {})                # activate no longer stamps a space ref
@@ -1091,13 +1092,104 @@ def test_forced_geo_overrides_the_reported_location(srv, client, monkeypatch):
     assert ("daniel", "space-0") in {(c["owner"], c["name"]) for c in r["candidates"]}
 
 
-def test_space_select_commits_once_per_session(srv, client):
+def test_space_select_commits_once_per_client(srv, client):
+    # a client (identified by cid) commits its selection ONCE per claim epoch — repeat votes are ignored
+    # so GPS jitter can't re-thrash the choice (steps 4/7).
     _geo_space(srv, "daniel", "home", 37.77, -122.42)
-    assert client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12}).json()["created_space"]
-    r2 = client.post("/space/select", json={"matched": False, "lat": 1.0, "lon": 2.0}).json()
-    assert r2 == {"ok": True, "selected": False}               # a second vote is ignored this session
-    # and /geolocation stops offering candidates once selection is committed
-    assert client.post("/geolocation", json={"lat": 1.0, "lon": 2.0}).json()["selected"] is True
+    j = {"cid": "cA"}
+    assert client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12, **j}).json()["created_space"]
+    r2 = client.post("/space/select", json={"matched": False, "lat": 1.0, "lon": 2.0, **j}).json()
+    assert r2 == {"ok": True, "selected": False}               # the SAME client's second vote is ignored
+    # and /geolocation stops offering candidates to that client once it has committed
+    assert client.post("/geolocation", json={"lat": 1.0, "lon": 2.0, **j}).json()["selected"] is True
+
+
+# ---- steps 4/7: AR admission gate + claim/occupancy lifecycle -------------------------------------
+def _wait_until(pred, tries=100):
+    import time as _t
+    for _ in range(tries):
+        if pred():
+            return True
+        _t.sleep(0.01)
+    return pred()
+
+
+def test_provisional_boot_first_ar_user_establishes_from_anywhere(srv, client):
+    """D1/D7: boot is provisional — while UNOCCUPIED (no AR holder), the first AR user establishes a space
+    from wherever they are, even though the booted-active space is elsewhere. A new place → mint, not
+    refuse."""
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)              # booted-active space, in SF
+    assert not srv._occupied()                                     # nobody holds it yet
+    r = client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12,   # London — new place
+                                           "user": "bob", "cid": "bob1"}).json()
+    assert r.get("created_space") == "bob/space-1" and "refused" not in r   # established, not gated
+    assert srv.active_space == "space-1" and srv.active_space_owner == "bob"
+
+
+def test_force_occupied_engages_the_gate_for_a_single_headset(srv, client, monkeypatch):
+    """--force-occupied (test flag) pins the space CLAIMED with no real holder, so one headset can exercise
+    the gate: matching the active space ⇒ admitted, anything else ⇒ refused."""
+    import dataclasses
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, force_occupied=True))
+    assert srv._occupied() and not srv._space_holders            # occupied via the flag, no real socket
+    admit = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
+                                               "user": "daniel", "cid": "d1"}).json()
+    assert admit.get("admitted") is True                         # matching the active space ⇒ admitted
+    refuse = client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12,
+                                                "user": "bob", "cid": "b1"}).json()
+    assert refuse.get("refused") is True                         # not in it ⇒ refused
+
+
+def test_occupied_space_admits_a_colocated_ar_user(srv, client):
+    """D4/D6: while the active space is CLAIMED, an AR user who matches it is ADMITTED (co-location join) —
+    no world change, nothing minted."""
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    srv._space_holders.add(object())                              # simulate an AR headset holding the space
+    r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
+                                           "user": "bob", "cid": "bob1"}).json()
+    assert r.get("admitted") is True and r["joined"] == "daniel/home"
+    assert srv.active_space == "home" and srv.active_space_owner == "daniel"   # unchanged
+    assert srv.spaces.list("bob") == []                          # nothing minted for the joiner
+
+
+def test_occupied_space_refuses_an_ar_user_not_in_it(srv, client):
+    """D4/D6: while claimed, an AR user who does NOT match the active space (a different space, or no match
+    at all) is REFUSED — not switched in, nothing minted. They get an info message and stay in passthrough."""
+    from conjure.world import WorldStore
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    _geo_space(srv, "carol", "studio", 37.7701, -122.4201)        # a DIFFERENT nearby space
+    srv._space_holders.add(object())                              # the space is claimed + occupied
+    # (a) no match → refused
+    r = client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12,
+                                           "user": "bob", "cid": "bob1"}).json()
+    assert r.get("refused") is True and "daniel" in r["msg"]
+    assert srv.active_space == "home" and srv.active_space_owner == "daniel"   # unchanged
+    assert srv.spaces.list("bob") == []                          # nothing minted
+    # (b) matched a DIFFERENT space (not the active one) → also refused
+    r2 = client.post("/space/select", json={"matched": True, "owner": "carol", "name": "studio",
+                                            "user": "eve", "cid": "eve1"}).json()
+    assert r2.get("refused") is True
+    assert srv.active_space == "home"                            # still the claimed space
+
+
+def test_ar_hold_over_ws_occupies_then_release_unlocks_reselection(srv, client):
+    """step 7 lifecycle over the wire: an AR client's `hold` makes the space occupied (a mismatched joiner
+    is then refused); `release` (leaving AR) frees it — re-selection re-opens and a new user can establish."""
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    with client.websocket_connect("/ws?user=daniel") as holder:
+        holder.receive_json()                                    # snapshot
+        holder.send_json({"type": "hold"})
+        assert _wait_until(lambda: srv._occupied())              # the hold registered → claimed
+        refused = client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12,
+                                                     "user": "bob", "cid": "bob1"}).json()
+        assert refused.get("refused") is True                    # a non-co-located AR user is gated out
+        holder.send_json({"type": "release"})                    # daniel leaves AR
+        assert _wait_until(lambda: not srv._occupied())          # → unclaimed
+    # now unoccupied: a fresh AR user can establish from a new place (re-selection re-opened by _unclaim)
+    established = client.post("/space/select", json={"matched": False, "lat": 51.5, "lon": -0.12,
+                                                     "user": "bob", "cid": "bob2"}).json()
+    assert established.get("created_space") == "bob/space-1"
 
 
 # ---- Phase 4 step 1: per-connection user + public-join gate --------------------------------------
@@ -1285,6 +1377,33 @@ def test_new_world_defaults_public(srv, client):
                        headers={"X-Conjure-User": "bob"}).json()["ok"]
     seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
     assert ("bob", "shared") in seen
+
+
+# ---- step 5: world-creation adopts the active space (D5), else VOID; Path B fallback removed -----------
+def test_new_world_adopts_the_active_space(srv, client):
+    """D5/step 5: a fresh world is tied to the currently-active shared space up front (build your own world
+    in it — D3), so it composes that space's geometry and no anonymous 'home' is ever minted."""
+    from conjure import server as S
+    # the live (daniel/home) world holds a captured wall; creating a new world saves it into the space,
+    # then the new world adopts daniel/home and composes that wall back in.
+    srv.store.doc["entities"].append({"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
+        "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]}}})
+    assert client.post("/worlds/new", json={"name": "loft"}).json()["ok"]
+    assert S.active_space == "home" and S.active_space_owner == "daniel"   # resolved the stamped active space
+    assert any(e["id"] == "real_wall_9" for e in _entities(client))     # composes the active space's geometry
+    # the composed live doc drops the ref (compose pops it), but it's persisted on the world doc
+    assert srv.worlds.load("daniel/agents/builder", "loft").doc["environment"]["space"] == "daniel/home"
+
+
+def test_new_world_is_void_when_no_active_space(srv, client):
+    """D5/step 5: with no active space (unclaimed server → active_space == VOID), a new NON-outdoor world is
+    born VOID — the honest 'no room yet', not the old anonymous-'home' Path B fallback."""
+    from conjure import server as S
+    S.active_space = S.VOID                                             # unclaimed: no AR user established a space
+    assert client.post("/worlds/new", json={"name": "sketch"}).json()["ok"]
+    assert srv.store.doc["environment"]["space"] == "<void>"
+    assert S.active_space == "<void>"
+    assert "<void>" not in srv.spaces.list("daniel")                   # nothing anonymous minted
 
 
 def test_outdoor_void_world_has_no_space(srv, client):
