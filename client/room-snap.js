@@ -179,18 +179,21 @@
   // the chosen ref, or null ⇒ a genuinely new surface. (Only vertical faces are normal-gated; a floor and
   // ceiling are already separated by semantic + height.)
   function matchRef(cand, refs, claimed) {
-    var best = null, bd = 0.5;
+    // Prefer the nearest SAME-FACING reference within 0.5 m. If none faces the same way, fall back to a
+    // near-COINCIDENT (<0.15 m) antiparallel one — the SAME physical surface seen with an opposite normal.
+    // This is REQUIRED for wall art: a mounted picture is an object whose live normal faces the viewer
+    // (INWARD), 180° from the wall's outward orientation it's stored with — so its own detection looks
+    // antiparallel to its ref and would re-mint a new id every session without this. The two faces of a
+    // partition wall sit ~0.4 m apart (not coincident), so they stay DISTINCT — the id-swap fix is intact.
+    var same = null, dSame = 0.5, flip = null, dFlip = 0.15;
     refs.forEach(function (r) {
       if (r.sem !== cand.sem || (claimed && claimed.has(r))) return;
-      // same-facing gate: two parallel walls sharing a partition are opposite FACES (~0.4 m apart, normals
-      // 180° apart) — reject the wrong one so ids don't swap. Now that all surfaces store their true
-      // (outward) normal — wall art no longer negated — a surface's own detection re-matches cleanly, so
-      // the old coincident-flip fallback isn't needed.
-      if (cand.orient === "vertical" && r.orient === "vertical" && Math.cos(cand.nyaw - r.nyaw) < 0.5) return;
       var d = cand.pos.distanceTo(r.pos);
-      if (d < bd) { bd = d; best = r; }
+      var antiparallel = cand.orient === "vertical" && r.orient === "vertical" && Math.cos(cand.nyaw - r.nyaw) < 0.5;
+      if (!antiparallel && d < dSame) { dSame = d; same = r; }
+      else if (antiparallel && d < dFlip) { dFlip = d; flip = r; }
     });
-    return best;
+    return same || flip;
   }
 
   // On-the-fly CANONICAL frame from live geometry — for VOID/outdoor worlds not tied to a stored space

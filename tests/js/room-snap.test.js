@@ -379,6 +379,18 @@ test("matchRef picks the SAME-FACING reference, not merely the nearest center", 
     "old");
 });
 
+test("matchRef re-matches a COINCIDENT antiparallel surface (wall art faces inward, 180° from its wall)", () => {
+  // A mounted picture's live normal faces the viewer (inward), but it's stored with the wall's outward
+  // normal — 180° apart at the SAME spot. It must re-match (same surface), not mint a duplicate each session.
+  const ref = { id: "art", sem: "wall art", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.5, -2) };
+  const cand = { sem: "wall art", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.5, -2.03) };
+  assert.strictEqual(RS.matchRef(cand, [ref], new Set()).id, "art");     // matched despite the 180° flip
+  // a genuinely different opposite face 0.4 m away stays DISTINCT (partition id-swap fix intact)
+  const faceA = { id: "A", sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, -2) };
+  const candB = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, -1.6) };
+  assert.strictEqual(RS.matchRef(candB, [faceA], new Set()), null);      // → mint its own id, no swap
+});
+
 test("matchRef honors the claimed set and the 0.5 m distance cap", () => {
   const r = { id: "a", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 0) };
   const near = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 0.1) };
