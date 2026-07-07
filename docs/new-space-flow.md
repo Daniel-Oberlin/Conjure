@@ -1,8 +1,9 @@
 # New-space initialization — the "new person, new place" flow
 
-**Status:** DESIGN. Reworks how a physical **space** is claimed, selected, shared, and joined — fixing a
-confirmed gap in `spaces-and-users-plan.md §5/§7`: a new user at a new location gets an anonymous,
-un-located space via a fallback path, after rendering/capturing against someone else's room.
+**Status:** ✅ IMPLEMENTED (steps 0–7; former step 8 cleanup done). Reworks how a physical **space** is
+claimed, selected, shared, and joined — fixing a confirmed gap in `spaces-and-users-plan.md §5/§7`: a new
+user at a new location got an anonymous, un-located space via a fallback path, after rendering/capturing
+against someone else's room. The two-headset co-location join is the only path not yet device-verified.
 
 ## 1. The model (target)
 
@@ -184,8 +185,12 @@ on `enter-vr`, so a desktop browser doesn't try to establish a space on load.)
    outdoor. `_activate`'s `absent → home` Path B fallback is gone: a world with no space ref composes as
    VOID (real geometry belongs to a space, so any stray inline reals are dropped and it's marked void so the
    client uses `canonicalFrame`). No anonymous `home` is ever minted again.
-6. **Space visibility** (D8) — a `public` flag enforced at world-creation-in-a-space; `set_space_visibility`
-   tool, mirroring the world/asset toggles.
+6. **✅ DONE — Space visibility** (D8) — a space's `public` flag now gates **world-creation-in-a-space**:
+   `_may_create_world_in(user, owner, name)` allows it iff the user owns the space or it's public, enforced
+   in `/worlds/new` and the `/space/select` mint-in-matched-space branch (a private space with no joinable
+   world refuses a non-owner). `POST /space/visibility` + the `set_space_visibility` MCP tool toggle it
+   (scope-bound, `name` defaults to the active space), mirroring `/worlds/visibility`. **Not retroactive** —
+   existing worlds are untouched; joining/viewing still follows each world's own visibility + co-location.
 7. **✅ DONE — Boot & lifecycle** (D1/D6) — the active space is a claimable resource, tracked by
    **occupancy**: an AR client declares `hold` over `/ws` after a successful select and holds the space
    until it `release`s (leaves AR / exit-vr) or its socket closes; `_occupied()` ⇔ any holder present.
@@ -195,7 +200,9 @@ on `enter-vr`, so a desktop browser doesn't try to establish a space on load.)
    next user can establish a different one. Selection is now **per-client** (`_selected_cids`, keyed by a
    page-load `cid`), replacing the old single global `_geo_selected` — so a second, co-located AR user can
    still vote to pass the gate. (The `sparse-room-relock` global-active pointer is superseded by this.)
-8. **Migration/cleanup** — geo-stamp or retire existing anonymous spaces (`harold/home`, `daniel/space-2`).
+
+*(Former step 8 — migration/cleanup of leftover anonymous spaces — is done: the stray spaces were purged
+with the shell `delete` tool. All plan steps are now complete.)*
 
 ## 8. Rolled back / held in reserve
 

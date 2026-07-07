@@ -1004,8 +1004,12 @@ async def select_space(req: SpaceSelect) -> dict:
                            else "no world yet, mint one in it"))
         if w and scope and worlds.exists(scope, w):
             out = await _switch_to(scope, w)
-        else:                                              # space exists but has no world → build one in it (D3)
+        elif _may_create_world_in(who, *matched_ref):      # space has no world → build one in it (D3)
             out = await _establish_world_in(who, _space_ref(*matched_ref))
+        else:                                              # private space, nothing to join, not the owner (D8)
+            _slog("select", f"user={who!r} matched {req.owner}/{req.name} but it's PRIVATE with no world → refused")
+            return {"ok": True, "refused": True,
+                    "msg": f"{matched_ref[0]}'s space is private — there's no world here you can join."}
         out["joined"] = _space_ref(*matched_ref)
         return out
 
@@ -1050,6 +1054,13 @@ async def worlds_new(req: WorldRef) -> dict:
     try:
         if worlds.exists(req.scope, req.name):
             return {"ok": False, "error": f"world {req.name!r} already exists — switch to it instead"}
+        creator = req.scope.split("/", 1)[0]
+        # D8/step 6: the active space must let the creator build here — their own space, or a PUBLIC one.
+        # A PRIVATE space owned by someone else restricts world-creation to its owner (VOID isn't a space).
+        if not req.outdoor and active_space != VOID and not _may_create_world_in(
+                creator, active_space_owner, active_space):
+            return {"ok": False, "error": f"{active_space_owner}'s space is private — "
+                                          f"only {active_space_owner} can build worlds here."}
         fresh = _new_world_store(req.scope)
         env = fresh.doc.setdefault("environment", {})
         env["public"] = req.public                                      # public by default; private if asked
@@ -1127,6 +1138,37 @@ async def worlds_visibility(req: WorldVisibilityRequest) -> dict:
         return {"ok": True, "world": name, "public": req.public, "published_assets": published}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+class SpaceVisibilityRequest(BaseModel):
+    public: bool
+    scope: str = DEFAULT_SCOPE
+    name: Optional[str] = None        # default: your CURRENT space (only if you own the active one)
+
+
+@app.post("/space/visibility")
+async def space_visibility(req: SpaceVisibilityRequest) -> dict:
+    """Make one of YOUR spaces public or private (D8/step 6). A PUBLIC space lets any admitted (co-located)
+    user build their OWN worlds in it; a PRIVATE space restricts world-creation to you. **Not retroactive**
+    — existing worlds tied to the space are untouched; it only blocks NEW ones by others (and joining/
+    viewing still follows each world's own visibility + co-location). Scope-bound like `/worlds/visibility`:
+    you can only change a space you own, so it isn't middleware-gated on the active world's owner. `name`
+    omitted ⇒ your CURRENT space (only when you own the active one)."""
+    if spaces is None:
+        return {"ok": False, "error": "no space store"}
+    owner = req.scope.split("/", 1)[0]
+    name = req.name
+    if not name:                                       # "make THIS space private"
+        if active_space == VOID or active_space_owner != owner:
+            return {"ok": False, "error": "you're not in one of your own spaces — name the space to change"}
+        name = active_space
+    if not spaces.exists(owner, name):
+        return {"ok": False, "error": f"no space {name!r} of yours"}
+    sp = spaces.load(owner, name)
+    sp["public"] = req.public
+    spaces.save(owner, name, sp)
+    _slog("space", f"{owner}/{name} visibility → {'public' if req.public else 'private'}")
+    return {"ok": True, "space": _space_ref(owner, name), "public": req.public}
 
 
 # ---- admin: dir / delete over the user→{worlds,spaces,assets} namespace (shell only) -------------
@@ -1502,6 +1544,19 @@ def _space_ref(owner: str, name: str) -> str:
     """The fully-qualified `environment.space` value for a space — `<owner>/<name>` (D3). Persisted so a
     world remembers WHOSE space it's tied to, even when the space's owner isn't the world's owner."""
     return f"{owner}/{name}"
+
+
+def _space_is_public(owner: str, name: str) -> bool:
+    """A space's world-creation visibility (D8): a PUBLIC space lets any admitted (co-located) user build
+    their OWN worlds in it; a PRIVATE space restricts creation to the owner. Spaces are public by default,
+    and an unknown / not-yet-created space is treated as public (it's about to become the caller's own)."""
+    return bool(spaces.load(owner, name).get("public", True)) if spaces.exists(owner, name) else True
+
+
+def _may_create_world_in(user: str, owner: str, name: str) -> bool:
+    """D8: `user` may create a world tied to space `owner/name` iff they OWN the space or it is PUBLIC.
+    (Joining/viewing an existing world is governed separately by co-location + the WORLD's visibility.)"""
+    return user == owner or _space_is_public(owner, name)
 
 
 def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, WorldStore]:

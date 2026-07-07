@@ -599,6 +599,19 @@ async def set_world_visibility(public: bool, name: Optional[str] = None) -> str:
 
 
 @mcp.tool()
+async def set_space_visibility(public: bool, name: Optional[str] = None) -> str:
+    """Make a physical SPACE public or private. A space is the real room your worlds are anchored in; it's
+    shared, so anyone co-located can join. Spaces are PUBLIC by default: any co-located user may build their
+    OWN worlds in it. Set public=False to make it PRIVATE — then only you can create NEW worlds in it
+    (existing worlds are unaffected; joining/viewing still follows each WORLD's visibility). Defaults to your
+    CURRENT space; pass `name` to target another space you own. You can only change spaces you own."""
+    out = await _post("/space/visibility", _body(public=public, scope=SCOPE, name=name))
+    if not out.get("ok"):
+        return f"Couldn't change space visibility: {out.get('error', 'unknown error')}."
+    return f"Space '{out.get('space', name or 'current')}' is now {'public' if public else 'private'}."
+
+
+@mcp.tool()
 async def switch_world(name: str, owner: Optional[str] = None) -> str:
     """Switch to a world (saving the current one first), bringing everyone present along. Match `name`
     to a real world from list_worlds; formatting/case doesn't need to be exact. For one of YOUR worlds,

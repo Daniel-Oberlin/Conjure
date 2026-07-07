@@ -1422,6 +1422,49 @@ def test_outdoor_void_world_has_no_space(srv, client):
     assert S.active_space == "<void>"
 
 
+# ---- step 6: space visibility (D8) — public space = anyone builds; private = owner-only creation --------
+def test_set_space_visibility_defaults_to_active_and_is_scope_bound(srv, client):
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)            # active space daniel/home (public)
+    _geo_space(srv, "carol", "loft", 1.0, 2.0)                   # someone else's space
+    # owner toggles their CURRENT space private (name omitted ⇒ the active space they own)
+    r = client.post("/space/visibility", json={"public": False}).json()
+    assert r["ok"] and r["space"] == "daniel/home" and r["public"] is False
+    assert srv.spaces.load("daniel", "home")["public"] is False
+    # scope-bound: bob can't change carol's space (it's not in bob's scope)
+    r2 = client.post("/space/visibility", json={"public": False, "scope": "bob/agents/builder",
+                                                "name": "loft"}).json()
+    assert r2["ok"] is False and "no space" in r2["error"]
+
+
+def test_private_space_blocks_others_world_creation(srv, client):
+    """D8: only the owner may create worlds in a PRIVATE space; making it public re-opens creation. Not
+    retroactive — the owner's existing worlds are untouched."""
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    client.post("/space/visibility", json={"public": False})    # daniel makes his active space private
+    # a guest can't build their own world in daniel's private space
+    r = client.post("/worlds/new", json={"name": "bobworld", "scope": "bob/agents/builder"},
+                    headers={"X-Conjure-User": "bob"}).json()
+    assert r["ok"] is False and "private" in r["error"]
+    assert not srv.worlds.exists("bob/agents/builder", "bobworld")
+    # the owner can still build in their own space
+    assert client.post("/worlds/new", json={"name": "danworld"}).json()["ok"]
+    # re-open it → the guest can now build their own world in it (D3, "your world in someone else's space")
+    client.post("/space/visibility", json={"public": True})
+    assert client.post("/worlds/new", json={"name": "bobworld", "scope": "bob/agents/builder"},
+                       headers={"X-Conjure-User": "bob"}).json()["ok"]
+    assert srv.worlds.load("bob/agents/builder", "bobworld").doc["environment"]["space"] == "daniel/home"
+
+
+def test_space_select_refuses_building_in_a_private_space_with_no_world(srv, client):
+    # a co-located non-owner who matches a PRIVATE space with no joinable world can't mint one there (D8)
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": False,
+        "geolocation": {"lat": 37.77, "lon": -122.42}, "surfaces": [], "boundary": None})
+    r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
+                                           "user": "bob", "cid": "b1"}).json()
+    assert r.get("refused") is True and "private" in r["msg"]
+    assert srv.worlds.list("bob/agents/builder") == []          # nothing built for bob
+
+
 def worlds_seen(client, scope):
     return client.post("/worlds/list", json={"scope": scope}).json()["available"]
 
