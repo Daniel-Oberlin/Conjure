@@ -295,3 +295,33 @@ room-inward-facing** mounting rotation (normal toward the room interior, zero ro
 position + room center, used for *all* on-surface placements. Alt: normalize window/door surface
 rotations at ingest so "up" is consistent. Either way, **verify on a Quest** (window orientation is
 device/capture-dependent; can't confirm blind).
+
+---
+
+## "Private space" gates world-creation, not joining — revisit the semantics
+
+**Status:** shelved (design question) · raised 2026-07-07 · from new-space-flow step 6 (D8)
+
+**The concern:** `space.public` currently gates only **world-creation-in-the-space** (a private space =
+only the owner may anchor new worlds there). "Private" colloquially means "keep others out," so the label
+mismatches the behavior. Three orthogonal concerns share too few words: (1) **co-location** — are you
+physically in the room (a fact, not a permission; the admission gate); (2) **content visibility** — can you
+enter a given world (`world.public` + the `/ws` refusal); (3) **authoring control** — can you anchor a NEW
+world here (`space.public`, D8). We labeled #3 "private/public," but users reach for "private" expecting #2
+at the room level.
+
+**Concrete smell:** a "private" space still mints **public, joinable** worlds by default — flip your space
+private, create a world, and it comes up public and any co-located person can join it. The privacy doesn't
+flow through to what you'd expect.
+
+**Options when revisited:**
+- **Collapse toward intuition (preferred):** private space = fully yours — only the owner authors worlds
+  there *and* only the owner joins worlds anchored there; public = shared. One rule ("my room, my worlds,
+  nobody else"); composes cleanly with the admission gate (a non-owner in a private space is just refused);
+  kills the "private space spawns public worlds" surprise.
+- **Rename, keep the feature:** stop calling #3 "privacy" — e.g. space "authoring: open vs. owner-only" —
+  and leave joining to per-world visibility.
+
+**Also missing (either way):** an owner-controlled restriction on *who may be present in worlds here*,
+distinct from co-location (today co-location admits anyone physically in the room). Not a bug — a framing
+misstep worth fixing before it ossifies. See the full discussion in the session where step 6 landed.
