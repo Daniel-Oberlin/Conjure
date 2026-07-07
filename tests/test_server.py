@@ -76,8 +76,10 @@ def test_place_image_on_surface_aligns_and_fits_the_frame(srv, client):
     r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 18"}).json()
     assert r["ok"] is True
     img = next(e for e in _entities(client) if e["id"] == r["id"])
-    # adopts the surface's orientation — no longer world-axis-aligned (that was the tilt-on-the-wall bug)
-    assert img["transform"]["rotation"] == [0.0, -41.0, 0.0]
+    # faces the room interior, upright (no roll) — here the wall-art's own normal already pointed inward,
+    # so the yaw stays ~-41° but is now derived from the room-center rule, not blindly adopted
+    rot = img["transform"]["rotation"]
+    assert rot[0] == pytest.approx(0, abs=0.5) and rot[1] == pytest.approx(-41, abs=0.5) and rot[2] == pytest.approx(0, abs=0.5)
     # fitted inside the 0.5 x 0.4 frame (square image ⇒ 0.4 x 0.4), not the default 1 m floating plane
     g = img["components"]["geometry"]
     assert g["width"] <= 0.5 + 1e-9 and g["height"] <= 0.4 + 1e-9 and max(g["width"], g["height"]) > 0.1
@@ -117,8 +119,22 @@ def test_reanchor_surface_images_repins_stranded_on_compose():
          "components": {"geometry": {"primitive": "plane", "width": 0.5, "height": 0.5}}}]}
     _reanchor_surface_images(doc)
     img = doc["entities"][1]
-    assert img["transform"]["rotation"] == [0.0, 90.0, 0.0]           # adopts the surface's orientation
-    assert 0.01 < math.dist(img["transform"]["position"], [2.0, 1.5, 0.0]) < 0.05   # ~2 cm in front of the wall
+    # the wall at x=2 has its stored normal pointing OUTWARD (+X, away from the room centroid at ~origin),
+    # so the photo is oriented to face the interior (−X ⇒ yaw ≈ −90°), upright (no roll) — the fix.
+    rot = img["transform"]["rotation"]
+    assert rot[0] == pytest.approx(0, abs=0.5) and rot[1] == pytest.approx(-90, abs=0.5) and rot[2] == pytest.approx(0, abs=0.5)
+    assert 0.01 < math.dist(img["transform"]["position"], [2.0, 1.5, 0.0]) < 0.05   # ~2 cm toward the room
+
+
+def test_face_room_orients_content_toward_interior_upright(srv):
+    from conjure.server import _face_room
+    center = [0.0, 1.2, 0.0]
+    # a wall on the +X side whose stored normal points OUTWARD (+X, away from center) → flip to face −X
+    fr = _face_room([2.0, 1.5, 0.0], [0.0, 90.0, 0.0], center)
+    assert fr["forward"][0] < -0.9 and abs(fr["forward"][1]) < 0.01     # faces the interior, horizontal
+    assert fr["rotation"][2] == pytest.approx(0, abs=0.5)               # upright (no roll → not upside-down)
+    # a floor (stored normal down) → content faces UP into the room regardless of the surface's facing
+    assert _face_room([0.0, 0.0, 0.0], [90.0, 0.0, 0.0], center)["forward"][1] > 0.9
 
 
 def test_place_image_on_unknown_surface_errors(srv, client):

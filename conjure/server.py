@@ -2205,21 +2205,74 @@ def _fit_dims(rec: ImageRecord, extent: list[float]) -> tuple[float, float]:
 
 def _forward(rotation: list[float]) -> list[float]:
     """World-space front (+Z) of an <a-plane> at A-Frame euler `rotation` (degrees, YXZ order) — the
-    direction the texture faces. Used to offset a hung picture a hair off its surface (no z-fight)."""
+    surface's own facing/normal (roll about +Z doesn't change it, so `rz` is ignored)."""
     x, y = math.radians(rotation[0]), math.radians(rotation[1])
     return [math.cos(x) * math.sin(y), -math.sin(x), math.cos(x) * math.cos(y)]
 
 
+# --- Content orientation: a hung photo must face the VIEWER, upright, on ANY surface. We can't trust the
+# surface's own stored rotation — the Quest normals aren't consistent (a wall faces outward from the room,
+# a mounted picture faces into it, furniture tops come out facing down), and only wall art was ever fixed
+# (via uprightInset), so photos on walls/tables/etc. hung backwards + upside-down. So orient the CONTENT
+# ourselves from the surface normal + the room center: face whichever side is the room interior, gravity-up.
+def _room_center(doc: dict) -> list[float]:
+    """Centroid of the captured room boundary (floor polygon), at mid-height — the interior point that
+    on-surface content should face toward. Origin-ish fallback until a boundary is captured."""
+    b = (((doc.get("environment") or {}).get("room")) or {}).get("boundary") or {}
+    poly = b.get("floorPolygon") or []
+    cx = sum(p[0] for p in poly) / len(poly) if poly else 0.0
+    cz = sum(p[1] for p in poly) / len(poly) if poly else 0.0
+    return [cx, (b.get("height") or 2.4) / 2.0, cz]
+
+
+def _norm3(v: list[float]) -> list[float]:
+    n = math.sqrt(sum(c * c for c in v)) or 1.0
+    return [c / n for c in v]
+
+
+def _basis_yxz(right: list[float], up: list[float], fwd: list[float]) -> list[float]:
+    """YXZ euler (degrees) of the rotation whose local +X,+Y,+Z map to right,up,fwd (world). Matches
+    three.js Euler.setFromRotationMatrix(order='YXZ') so it round-trips with the client's eulerYXZ."""
+    m13, m23, m33 = fwd[0], fwd[1], fwd[2]                # forward = 3rd basis column
+    x = math.asin(max(-1.0, min(1.0, -m23)))
+    if abs(m23) < 0.9999999:
+        y = math.atan2(m13, m33)
+        z = math.atan2(right[1], up[1])                  # m21, m22
+    else:                                                # gimbal: forward ≈ ±up
+        y = math.atan2(-right[2], right[0])              # -m31, m11
+        z = 0.0
+    return [math.degrees(x), math.degrees(y), math.degrees(z)]
+
+
+def _face_room(spos: list[float], srot: list[float], center: list[float]) -> dict:
+    """Orientation for content hung on a surface: face the ROOM INTERIOR, upright. `forward` = the
+    surface normal flipped to point toward `center`; `up` = gravity projected onto the surface (an
+    arbitrary in-plane axis for a floor/ceiling, whose normal is vertical). Returns {rotation:[deg×3]
+    (YXZ), forward:[x,y,z] unit}. Convention-independent — works for walls, tables, ceilings, pictures."""
+    n = _forward(srot)                                            # surface normal (sign ambiguous)
+    if sum(n[i] * (center[i] - spos[i]) for i in range(3)) < 0:   # flip to face the interior
+        n = [-n[0], -n[1], -n[2]]
+    f = _norm3(n)
+    d = f[1]                                                      # gravity (0,1,0) · forward
+    up = [-d * f[0], 1.0 - d * f[1], -d * f[2]]                   # gravity ⟂ forward
+    if sum(c * c for c in up) < 1e-6:                             # forward ≈ vertical → pick any ⟂ axis
+        up = [1.0 - f[0] * f[0], -f[0] * f[1], -f[0] * f[2]]
+    up = _norm3(up)
+    right = [up[1] * f[2] - up[2] * f[1], up[2] * f[0] - up[0] * f[2], up[0] * f[1] - up[1] * f[0]]  # up × fwd
+    return {"rotation": _basis_yxz(right, up, f), "forward": f}
+
+
 # --- on-surface re-anchoring: keep place_image(on_surface=…) planes glued to their surface across a room
-#     re-registration/re-capture. The image entity records meta.on_surface = the surface id; we re-derive
-#     its pose (2 cm in front, adopt the surface's rotation, re-fit to the current frame) from the surface's
-#     CURRENT geometry — so when the surface moves, the image follows instead of being stranded in absolute
-#     coords (backlog: "on-surface placed content is stranded by a room re-registration").
-def _on_surface_set(spos: list[float], rot: list[float], extent, geo: dict) -> dict:
-    """The `update`-op `set` for an on-surface image pinned to a surface at `spos`/`rot` with `extent`.
-    Re-fits the image to the frame using the aspect from its current geometry `geo`."""
-    f = _forward(rot)
-    out: dict = {"transform.position": [spos[i] + 0.02 * f[i] for i in range(3)], "transform.rotation": rot}
+#     re-registration/re-capture. The image records meta.on_surface = the surface id; we re-derive its pose
+#     (2 cm in front, re-oriented toward the room via _face_room, re-fit to the current frame) from the
+#     surface's CURRENT geometry — so when the surface moves, the image follows instead of being stranded.
+def _on_surface_set(spos: list[float], srot: list[float], extent, geo: dict, center: list[float]) -> dict:
+    """The `update`-op `set` for an on-surface image: face the room (upright), sit 2 cm in front, re-fit to
+    the surface frame using the aspect from its current geometry `geo`."""
+    fr = _face_room(spos, srot, center)
+    f = fr["forward"]
+    out: dict = {"transform.position": [spos[i] + 0.02 * f[i] for i in range(3)],
+                 "transform.rotation": fr["rotation"]}
     if extent and geo.get("width") and geo.get("height"):
         w, h = _fit_extent(geo["width"] / geo["height"], extent)
         out["components.geometry.width"], out["components.geometry.height"] = w, h
@@ -2230,6 +2283,7 @@ def _reanchor_surface_images(doc: dict) -> None:
     """Re-pin every on-surface image (meta.on_surface) to its surface's CURRENT pose, mutating `doc` in
     place. Run at compose time (world load) so a re-registration that moved the space's surfaces never
     leaves an image stranded off its frame."""
+    center = _room_center(doc)
     surfaces = {e["id"]: e for e in doc.get("entities", []) if e.get("meta", {}).get("real")}
     for e in doc.get("entities", []):
         surf = surfaces.get((e.get("meta") or {}).get("on_surface"))
@@ -2238,7 +2292,7 @@ def _reanchor_surface_images(doc: dict) -> None:
             continue
         sets = _on_surface_set(spos, surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0],
                                surf.get("components", {}).get("surface", {}).get("extent"),
-                               e.get("components", {}).get("geometry", {}))
+                               e.get("components", {}).get("geometry", {}), center)
         for path, val in sets.items():
             _set_path(e, path, val)
 
@@ -2246,13 +2300,14 @@ def _reanchor_surface_images(doc: dict) -> None:
 def _reanchor_ops(doc: dict, moved: dict) -> list[dict]:
     """`update` ops re-pinning on-surface images whose surface id is in `moved` (id → {position, rotation,
     extent}, e.g. just re-captured). Used live in ingest_room so the image rides the re-captured surface."""
+    center = _room_center(doc)
     ops = []
     for e in doc.get("entities", []):
         s = moved.get((e.get("meta") or {}).get("on_surface"))
         if not s or not s.get("position"):
             continue
         sets = _on_surface_set(s["position"], s.get("rotation") or [0.0, 0.0, 0.0], s.get("extent"),
-                               e.get("components", {}).get("geometry", {}))
+                               e.get("components", {}).get("geometry", {}), center)
         ops.append({"op": "update", "id": e["id"], "set": sets})
     return ops
 
@@ -2365,18 +2420,19 @@ async def place_image(req: PlaceImageRequest) -> dict:
     pos = req.position or [0.0, 1.5, -3.0]  # eye height, on the wall in front
     width, height = _plane_dims(rec, req.size_m or 1.0)
     rotation = None
-    if req.on_surface:  # hang on a real surface: adopt its orientation, fit its frame, sit just in front
+    if req.on_surface:  # hang on a real surface: face the room (upright), fit its frame, sit just in front
         surfaces = _room_targets(req.on_surface)
         if not surfaces:
             return {"ok": False, "error": f"no room surface matches {req.on_surface!r}"}
         surf = surfaces[0]
-        rotation = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
+        srot = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
         spos = surf.get("transform", {}).get("position") or pos
         extent = surf.get("components", {}).get("surface", {}).get("extent")
         if extent:
             width, height = _fit_dims(rec, extent)
-        f = _forward(rotation)
-        pos = [spos[i] + 0.02 * f[i] for i in range(3)]   # 2 cm toward the viewer ⇒ no z-fight
+        fr = _face_room(spos, srot, _room_center(store.doc))   # orient toward the room, not the surface's own facing
+        rotation = fr["rotation"]
+        pos = [spos[i] + 0.02 * fr["forward"][i] for i in range(3)]   # 2 cm toward the viewer ⇒ no z-fight
     eid = req.name or f"ent_image_{uuid4().hex[:6]}"
     meta = {"generated": True, "provider": rec.provider, "model": rec.model,
             "prompt": rec.prompt, "image_id": rec.id}
