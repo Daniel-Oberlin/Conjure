@@ -26,23 +26,6 @@
 
   function yawOf(n) { return Math.atan2(n.x, n.z); }   // compass yaw of a horizontal normal
 
-  // Euler (deg, YXZ) that orients an <a-plane> upright and facing the room, given the direction the
-  // FRONT should face (`nInto` = into the room). The plane's local +Z (front, where the texture reads
-  // correctly) points along nInto toward the viewer, +Y is world-up projected onto the plane, +X follows
-  // right-handed. Used for wall art: a captured plane carries an arbitrary in-plane roll, so adopting the
-  // wall's exact orientation can render an image sideways/upside-down — this pins it to gravity instead.
-  function uprightInset(THREE, nInto) {
-    var UP = new THREE.Vector3(0, 1, 0);
-    var F = nInto.clone().normalize();
-    var U = UP.clone().sub(F.clone().multiplyScalar(UP.dot(F)));
-    if (U.lengthSq() < 1e-6) U.set(0, 1, 0);            // degenerate (a floor/ceiling-facing art) fallback
-    U.normalize();
-    var R = U.clone().cross(F);                          // +X = +Y × +Z (right-handed)
-    var q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(R, U, F));
-    var e = new THREE.Euler().setFromQuaternion(q, "YXZ"), d = THREE.MathUtils.radToDeg;
-    return [d(e.x), d(e.y), d(e.z)];
-  }
-
   // Solve the single rigid yaw+translation transform mapping the newly detected planes (cur, in the
   // current refSpace) onto the persistent reference constellation (ref). Recovers how the Quest's frame
   // jumped using the room's own geometry — robust to the ~180° boundary flip because the yaw is read from
@@ -196,21 +179,18 @@
   // the chosen ref, or null ⇒ a genuinely new surface. (Only vertical faces are normal-gated; a floor and
   // ceiling are already separated by semantic + height.)
   function matchRef(cand, refs, claimed) {
-    // Prefer the nearest SAME-FACING reference within 0.5 m. If none faces the same way, fall back to a
-    // near-COINCIDENT (<0.15 m) antiparallel one: that's the SAME physical surface with a flipped-normal
-    // STORAGE convention, not a different face. (Wall art is stored facing INTO the room via uprightInset,
-    // i.e. 180° from the live outward normal — so a picture's ref always looks antiparallel to its own
-    // detection; without this fallback it re-mints a new id every session.) The two faces of a partition
-    // wall sit far apart (~0.4 m), so they stay DISTINCT and the shared-wall id-swap fix is preserved.
-    var same = null, dSame = 0.5, flip = null, dFlip = 0.15;
+    var best = null, bd = 0.5;
     refs.forEach(function (r) {
       if (r.sem !== cand.sem || (claimed && claimed.has(r))) return;
+      // same-facing gate: two parallel walls sharing a partition are opposite FACES (~0.4 m apart, normals
+      // 180° apart) — reject the wrong one so ids don't swap. Now that all surfaces store their true
+      // (outward) normal — wall art no longer negated — a surface's own detection re-matches cleanly, so
+      // the old coincident-flip fallback isn't needed.
+      if (cand.orient === "vertical" && r.orient === "vertical" && Math.cos(cand.nyaw - r.nyaw) < 0.5) return;
       var d = cand.pos.distanceTo(r.pos);
-      var antiparallel = cand.orient === "vertical" && r.orient === "vertical" && Math.cos(cand.nyaw - r.nyaw) < 0.5;
-      if (!antiparallel && d < dSame) { dSame = d; same = r; }
-      else if (antiparallel && d < dFlip) { dFlip = d; flip = r; }
+      if (d < bd) { bd = d; best = r; }
     });
-    return same || flip;
+    return best;
   }
 
   // On-the-fly CANONICAL frame from live geometry — for VOID/outdoor worlds not tied to a stored space
@@ -353,10 +333,12 @@
       var clr = s._lp.clone().sub(best._lp).dot(nint);
       var fp = clr < off ? s._lp.clone().add(nint.clone().multiplyScalar(off - clr)) : s._lp.clone();
       s.position = [fp.x, fp.y, fp.z];
-      // A door/window leaf adopts the wall's exact orientation so it fills the wall's opening. Wall art
-      // doesn't cut a hole, so pin it upright and facing the room instead (a textured image must not
-      // inherit the captured plane's arbitrary roll — otherwise it renders sideways/upside-down).
-      s.rotation = s.semantic === "wall art" ? uprightInset(THREE, nint) : best.rotation.slice();
+      // Every inset adopts its wall's exact orientation — so its stored normal is the wall's TRUE (outward)
+      // normal, consistent with all other surfaces. Wall art no longer gets a special upright/negated
+      // orientation (that flipped its normal 180°, causing per-session re-minting): the surface is an
+      // invisible reference, and the CONTENT hung on it is oriented upright toward the room at placement
+      // time (server _face_room), independent of the surface's own roll.
+      s.rotation = best.rotation.slice();
       s.debug.snap = "wall=" + best.id.slice(-7) + " clr=" + Math.round(clr * 100) + "cm";
 
       // Cut the opening. The rendered wall is an <a-plane> oriented by best._lq·Rx(-90°); its local width
@@ -372,7 +354,7 @@
     });
   }
 
-  return { eulerYXZ: eulerYXZ, yawOf: yawOf, uprightInset: uprightInset, register: register,
+  return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef,
            squareWalls: squareWalls, joinCorners: joinCorners, snapInsets: snapInsets };

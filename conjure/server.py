@@ -2210,39 +2210,13 @@ def _forward(rotation: list[float]) -> list[float]:
     return [math.cos(x) * math.sin(y), -math.sin(x), math.cos(x) * math.cos(y)]
 
 
-# --- Content orientation: a hung photo must face the VIEWER, upright, on ANY surface. We can't trust the
-# surface's own stored rotation — the Quest normals aren't consistent (a wall faces outward from the room,
-# a mounted picture faces into it, furniture tops come out facing down), and only wall art was ever fixed
-# (via uprightInset), so photos on walls/tables/etc. hung backwards + upside-down. So orient the CONTENT
-# ourselves from the surface normal + the room center: face whichever side is the room interior, gravity-up.
-def _room_center(doc: dict) -> list[float]:
-    """Centroid of the captured room boundary (floor polygon), at mid-height. A LAST-RESORT interior
-    reference: the boundary is a single room's floor (the largest captured), so in a multi-room space its
-    centroid can sit in a DIFFERENT room than a given surface — hence `_viewpoint` prefers the live head."""
-    b = (((doc.get("environment") or {}).get("room")) or {}).get("boundary") or {}
-    poly = b.get("floorPolygon") or []
-    cx = sum(p[0] for p in poly) / len(poly) if poly else 0.0
-    cz = sum(p[1] for p in poly) / len(poly) if poly else 0.0
-    return [cx, (b.get("height") or 2.4) / 2.0, cz]
-
-
-def _viewpoint(spos: list[float], doc: dict) -> list[float]:
-    """The 'room interior' reference for orienting content on a surface at `spos` — the position of the
-    CLOSEST connected headset (the viewer standing in *that* surface's room). This is what makes the facing
-    correct in a MULTI-ROOM space: the room centroid can be in the wrong room (the boundary is only one
-    room's floor), but the nearest head is, by definition, in the same room as the surface. Falls back to
-    the boundary centroid when no head pose is known (compose before anyone's in AR, or a voice placement)."""
-    best, bd = None, float("inf")
-    for g in gaze.values():
-        o = g.get("origin")
-        if not o:
-            continue
-        d = sum((o[i] - spos[i]) ** 2 for i in range(3))
-        if d < bd:
-            bd, best = d, o
-    return best or _room_center(doc)
-
-
+# --- Content orientation: a hung photo must face the VIEWER, upright, on ANY surface. We orient the
+# CONTENT ourselves (never adopt the surface's own rotation — walls carry an arbitrary 180° roll → upside
+# down, and a surface's +Z is its OUTWARD normal → facing away). Every surface now stores its true outward
+# normal (client snapInsets no longer negates wall art), so the room interior is simply -normal; up is
+# gravity. One rule for walls, tables, ceilings, pictures — no per-type or viewer special-casing.
+# Measured on-device (`[normals]` probe): surface normals are reliably outward-from-room, so -normal is the
+# interior in every room including a multi-room space (each wall's own normal marks its own room).
 def _norm3(v: list[float]) -> list[float]:
     n = math.sqrt(sum(c * c for c in v)) or 1.0
     return [c / n for c in v]
@@ -2262,15 +2236,13 @@ def _basis_yxz(right: list[float], up: list[float], fwd: list[float]) -> list[fl
     return [math.degrees(x), math.degrees(y), math.degrees(z)]
 
 
-def _face_room(spos: list[float], srot: list[float], center: list[float]) -> dict:
-    """Orientation for content hung on a surface: face the ROOM INTERIOR, upright. `forward` = the
-    surface normal flipped to point toward `center`; `up` = gravity projected onto the surface (an
-    arbitrary in-plane axis for a floor/ceiling, whose normal is vertical). Returns {rotation:[deg×3]
-    (YXZ), forward:[x,y,z] unit}. Convention-independent — works for walls, tables, ceilings, pictures."""
-    n = _forward(srot)                                            # surface normal (sign ambiguous)
-    if sum(n[i] * (center[i] - spos[i]) for i in range(3)) < 0:   # flip to face the interior
-        n = [-n[0], -n[1], -n[2]]
-    f = _norm3(n)
+def _face_room(srot: list[float]) -> dict:
+    """Orientation for content hung on a surface: face the room INTERIOR (upright). Surfaces store their
+    OUTWARD normal, so the interior is `-normal`; `up` = gravity projected onto the plane (an arbitrary
+    in-plane axis for a floor/ceiling, whose normal is vertical). Returns {rotation:[deg×3] (YXZ),
+    forward:[x,y,z] unit}. Uniform for walls, tables, ceilings, pictures."""
+    n = _forward(srot)                                            # surface's OUTWARD normal
+    f = _norm3([-n[0], -n[1], -n[2]])                             # content faces the interior = -normal
     d = f[1]                                                      # gravity (0,1,0) · forward
     up = [-d * f[0], 1.0 - d * f[1], -d * f[2]]                   # gravity ⟂ forward
     if sum(c * c for c in up) < 1e-6:                             # forward ≈ vertical → pick any ⟂ axis
@@ -2284,10 +2256,10 @@ def _face_room(spos: list[float], srot: list[float], center: list[float]) -> dic
 #     re-registration/re-capture. The image records meta.on_surface = the surface id; we re-derive its pose
 #     (2 cm in front, re-oriented toward the room via _face_room, re-fit to the current frame) from the
 #     surface's CURRENT geometry — so when the surface moves, the image follows instead of being stranded.
-def _on_surface_set(spos: list[float], srot: list[float], extent, geo: dict, doc: dict) -> dict:
-    """The `update`-op `set` for an on-surface image: face the room interior (upright — toward the nearest
-    viewer, `_viewpoint`), sit 2 cm in front, re-fit to the surface frame using the aspect from `geo`."""
-    fr = _face_room(spos, srot, _viewpoint(spos, doc))
+def _on_surface_set(spos: list[float], srot: list[float], extent, geo: dict) -> dict:
+    """The `update`-op `set` for an on-surface image: face the room interior (upright, via `_face_room`),
+    sit 2 cm in front, re-fit to the surface frame using the aspect from `geo`."""
+    fr = _face_room(srot)
     f = fr["forward"]
     out: dict = {"transform.position": [spos[i] + 0.02 * f[i] for i in range(3)],
                  "transform.rotation": fr["rotation"]}
@@ -2309,7 +2281,7 @@ def _reanchor_surface_images(doc: dict) -> None:
             continue
         sets = _on_surface_set(spos, surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0],
                                surf.get("components", {}).get("surface", {}).get("extent"),
-                               e.get("components", {}).get("geometry", {}), doc)
+                               e.get("components", {}).get("geometry", {}))
         for path, val in sets.items():
             _set_path(e, path, val)
 
@@ -2323,7 +2295,7 @@ def _reanchor_ops(doc: dict, moved: dict) -> list[dict]:
         if not s or not s.get("position"):
             continue
         sets = _on_surface_set(s["position"], s.get("rotation") or [0.0, 0.0, 0.0], s.get("extent"),
-                               e.get("components", {}).get("geometry", {}), doc)
+                               e.get("components", {}).get("geometry", {}))
         ops.append({"op": "update", "id": e["id"], "set": sets})
     return ops
 
@@ -2446,7 +2418,7 @@ async def place_image(req: PlaceImageRequest) -> dict:
         extent = surf.get("components", {}).get("surface", {}).get("extent")
         if extent:
             width, height = _fit_dims(rec, extent)
-        fr = _face_room(spos, srot, _viewpoint(spos, store.doc))   # face the viewer's side, not the surface's own facing
+        fr = _face_room(srot)                              # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + 0.02 * fr["forward"][i] for i in range(3)]   # 2 cm toward the viewer ⇒ no z-fight
     eid = req.name or f"ent_image_{uuid4().hex[:6]}"

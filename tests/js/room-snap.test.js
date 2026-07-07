@@ -125,30 +125,17 @@ test("wall art is laid on the wall, not cut through it (no hole)", () => {
   assert.match(surfaces[1].debug.snap, /wall=/, "but it is still snapped onto the wall");
 });
 
-test("uprightInset orients a plane gravity-up, facing the room", () => {
-  // +X wall ⇒ interior is -X; art should face -X with its texture-top toward world +Y.
-  const e = RS.uprightInset(THREE, new THREE.Vector3(-1, 0, 0));
-  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(e[0] * D2R, e[1] * D2R, e[2] * D2R, "YXZ"));
-  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);      // a-plane local +Y (texture top)
-  const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(q);     // a-plane local +Z (front face)
-  assert.ok(up.distanceTo(new THREE.Vector3(0, 1, 0)) < 1e-6, "texture-top points to world up");
-  assert.ok(fwd.distanceTo(new THREE.Vector3(-1, 0, 0)) < 1e-6, "front faces into the room");
-});
-
-test("snapInsets renders wall art upright regardless of the captured plane's roll", () => {
-  // Give the art a rolled-over capture (local +Z pointing DOWN) — the case that rendered images
-  // upside-down when art adopted the wall's orientation.
+test("snapInsets orients wall art parallel to its wall (adopts the wall's orientation, not its own roll)", () => {
+  // The art's own capture is rolled 180°, but it should adopt the WALL's clean orientation — so its stored
+  // rotation matches the wall's (and its normal is the wall's true outward normal, consistent for matching).
+  // The picture itself is hung upright toward the room by the placement path, not by the surface's roll.
   const surfaces = [
     vert("real_wall_0", "wall", [2, 1.2, 0], 90, [4, 2.4]),
     vert("real_art_1", "wall art", [2, 1.2, 0.5], 90, [0.6, 0.9]),
   ];
   surfaces[1]._lq.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
   RS.snapInsets(THREE, surfaces);
-  const art = surfaces[1];
-  const q = new THREE.Quaternion().setFromEuler(
-    new THREE.Euler(art.rotation[0] * D2R, art.rotation[1] * D2R, art.rotation[2] * D2R, "YXZ"));
-  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
-  assert.ok(up.y > 0.999, "wall art's up axis points up in the world (image is upright)");
+  assert.deepStrictEqual(surfaces[1].rotation, surfaces[0].rotation, "wall art adopts the wall's orientation");
 });
 
 test("squareWalls snaps near-90° walls onto one orthogonal grid", () => {
@@ -392,18 +379,6 @@ test("matchRef picks the SAME-FACING reference, not merely the nearest center", 
     "old");
 });
 
-test("matchRef re-matches a COINCIDENT surface whose stored normal is flipped 180° (wall-art convention)", () => {
-  // Wall art is stored facing into the room (uprightInset), 180° from the live outward normal — a flip at
-  // the SAME spot. It must re-match (same physical surface), not mint a duplicate every session.
-  const ref = { id: "art", sem: "wall art", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.5, -2) };
-  const cand = { sem: "wall art", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.5, -2.03) };
-  assert.strictEqual(RS.matchRef(cand, [ref], new Set()).id, "art");     // matched despite the 180° flip
-  // but a genuinely different opposite face 0.4 m away stays DISTINCT (partition-wall id-swap fix intact)
-  const faceA = { id: "A", sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, -2) };
-  const candB = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, -1.6) };
-  assert.strictEqual(RS.matchRef(candB, [faceA], new Set()), null);      // → mint its own id, no swap
-});
-
 test("matchRef honors the claimed set and the 0.5 m distance cap", () => {
   const r = { id: "a", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 0) };
   const near = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 0.1) };
@@ -474,11 +449,14 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
   const insets = surfaces.filter((s) => s.semantic === "door" || s.semantic === "window").length;
   assert.ok(holeCount >= 0.7 * insets, holeCount + "/" + insets + " doors+windows cut an opening");
 
-  // (4) Every wall-art image renders upright (the roll-bug fix), on real captured planes.
-  surfaces.filter((s) => s.semantic === "wall art").forEach(function (s) {
+  // (4) Wall art that snapped to a wall adopts that wall's orientation — so its normal (a-plane +Z) comes
+  // out HORIZONTAL (a vertical-wall normal), regardless of the plane's captured roll. Upright-facing of the
+  // CONTENT hung on it is now handled at placement (server _face_room), not baked into the surface.
+  surfaces.filter((s) => s.semantic === "wall art" && s.debug && s.debug.snap).forEach(function (s) {
     const q = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(s.rotation[0] * D2R, s.rotation[1] * D2R, s.rotation[2] * D2R, "YXZ"));
-    assert.ok(new THREE.Vector3(0, 1, 0).applyQuaternion(q).y > 0.9, "wall art upright: " + s.id);
+    assert.ok(Math.abs(new THREE.Vector3(0, 0, 1).applyQuaternion(q).y) < 0.2,
+      "wall art adopted its wall (horizontal normal): " + s.id);
   });
 
   // (5) The frame solve converges on this real 18-wall constellation (cur === ref ⇒ ≈ identity).
