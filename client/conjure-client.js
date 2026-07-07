@@ -807,6 +807,24 @@
             return sem + "=" + pts.length + (pts.length !== reps.length ? "/" + reps.length + "cl" : "");
           });
           debugLog("planes", parts.join("  "), true);
+
+          // Normal-direction probe (--debug-registration): does each surface's normal point OUTWARD from
+          // the room (away from the head, which is inside) or inward? Per semantic: "out"=away from head,
+          // "in"=toward head. If walls are consistently N-out/0-in, the wall normal reliably marks the
+          // interior side (so we could hang pictures via -normal, no viewpoint). "wall art" should read the
+          // OPPOSITE (in) — confirming shell-vs-object normals differ. Any semantic that's MIXED (both
+          // out and in across walls) means the sign isn't trustworthy → keep the viewpoint disambiguation.
+          var vpose = frame.getViewerPose(refSpace);
+          if (vpose) {
+            var hp = vpose.transform.position, dir = {};
+            cur.forEach(function (c) {
+              var d = c.nrm.x * (hp.x - c.pos.x) + c.nrm.y * (hp.y - c.pos.y) + c.nrm.z * (hp.z - c.pos.z);
+              var s = dir[c.sem] || (dir[c.sem] = { out: 0, in: 0 });
+              if (d < 0) s.out++; else s.in++;            // d<0 ⇒ normal points AWAY from the head (outward)
+            });
+            debugLog("normals", Object.keys(dir).sort().map(function (sem) {
+              return sem + "=" + dir[sem].out + "out/" + dir[sem].in + "in"; }).join("  "), true);
+          }
         }
 
         // Am I the room AUTHORITY? The active world's owner authors the geometry; everyone else is a
