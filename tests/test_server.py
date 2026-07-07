@@ -138,6 +138,17 @@ def test_face_room_faces_opposite_the_surface_normal_upright(srv):
     assert _face_room([0.0, 90.0, 0.0])["rotation"][2] == pytest.approx(0, abs=0.5)
 
 
+def test_face_room_aligns_flat_content_to_the_surface_rectangle(srv):
+    # On an up-facing surface (a table yawed 30°) there's no gravity-up, so the image must align to the
+    # SURFACE's own rectangle (its in-plane axis), not an arbitrary world axis that tilts it ~30°.
+    from conjure.server import _face_room, _local_axis
+    tsrot = [90.0, 30.0, 0.0]
+    fr = _face_room(tsrot)
+    content_up = _local_axis(fr["rotation"], (0.0, 1.0, 0.0))   # the image's up (its +Y) in world
+    surf_axis = _local_axis(tsrot, (0.0, 1.0, 0.0))             # the table's in-plane +Y (rectangle edge)
+    assert all(abs(content_up[i] - surf_axis[i]) < 0.02 for i in range(3))   # edges parallel, no tilt
+
+
 def test_place_image_on_unknown_surface_errors(srv, client):
     image_id = _procure(client)
     r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 999"}).json()

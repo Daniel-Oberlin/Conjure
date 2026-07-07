@@ -2222,6 +2222,17 @@ def _norm3(v: list[float]) -> list[float]:
     return [c / n for c in v]
 
 
+def _local_axis(rot_deg: list[float], axis: tuple[float, float, float]) -> list[float]:
+    """World direction of a local `axis` for an a-plane at A-Frame euler `rot_deg` (degrees, YXZ order):
+    v = Ry·Rx·Rz·axis. (`_forward` is this for +Z; +Y also needs the roll rz, so use the full form.)"""
+    rx, ry, rz = (math.radians(a) for a in rot_deg)
+    x, y, z = axis
+    x, y = x * math.cos(rz) - y * math.sin(rz), x * math.sin(rz) + y * math.cos(rz)   # Rz
+    y, z = y * math.cos(rx) - z * math.sin(rx), y * math.sin(rx) + z * math.cos(rx)   # Rx
+    x, z = x * math.cos(ry) + z * math.sin(ry), -x * math.sin(ry) + z * math.cos(ry)  # Ry
+    return [x, y, z]
+
+
 def _basis_yxz(right: list[float], up: list[float], fwd: list[float]) -> list[float]:
     """YXZ euler (degrees) of the rotation whose local +X,+Y,+Z map to right,up,fwd (world). Matches
     three.js Euler.setFromRotationMatrix(order='YXZ') so it round-trips with the client's eulerYXZ."""
@@ -2244,9 +2255,13 @@ def _face_room(srot: list[float]) -> dict:
     n = _forward(srot)                                            # surface's OUTWARD normal
     f = _norm3([-n[0], -n[1], -n[2]])                             # content faces the interior = -normal
     d = f[1]                                                      # gravity (0,1,0) · forward
-    up = [-d * f[0], 1.0 - d * f[1], -d * f[2]]                   # gravity ⟂ forward
-    if sum(c * c for c in up) < 1e-6:                             # forward ≈ vertical → pick any ⟂ axis
-        up = [1.0 - f[0] * f[0], -f[0] * f[1], -f[0] * f[2]]
+    up = [-d * f[0], 1.0 - d * f[1], -d * f[2]]                   # gravity ⟂ forward (upright on a wall)
+    if sum(c * c for c in up) < 1e-6:                             # forward ≈ vertical (floor/ceiling/table):
+        su = _local_axis(srot, (0.0, 1.0, 0.0))                  # no gravity-up → align to the SURFACE's own
+        d2 = sum(su[i] * f[i] for i in range(3))                 # rectangle (its in-plane +Y), so the image's
+        up = [su[i] - d2 * f[i] for i in range(3)]               # edges stay parallel — not an arbitrary axis
+        if sum(c * c for c in up) < 1e-6:                        # (su ∥ f, shouldn't happen) → any ⟂ axis
+            up = [1.0 - f[0] * f[0], -f[0] * f[1], -f[0] * f[2]]
     up = _norm3(up)
     right = [up[1] * f[2] - up[2] * f[1], up[2] * f[0] - up[0] * f[2], up[0] * f[1] - up[1] * f[0]]  # up × fwd
     return {"rotation": _basis_yxz(right, up, f), "forward": f}
