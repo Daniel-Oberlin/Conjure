@@ -196,14 +196,21 @@
   // the chosen ref, or null ⇒ a genuinely new surface. (Only vertical faces are normal-gated; a floor and
   // ceiling are already separated by semantic + height.)
   function matchRef(cand, refs, claimed) {
-    var best = null, bd = 0.5;
+    // Prefer the nearest SAME-FACING reference within 0.5 m. If none faces the same way, fall back to a
+    // near-COINCIDENT (<0.15 m) antiparallel one: that's the SAME physical surface with a flipped-normal
+    // STORAGE convention, not a different face. (Wall art is stored facing INTO the room via uprightInset,
+    // i.e. 180° from the live outward normal — so a picture's ref always looks antiparallel to its own
+    // detection; without this fallback it re-mints a new id every session.) The two faces of a partition
+    // wall sit far apart (~0.4 m), so they stay DISTINCT and the shared-wall id-swap fix is preserved.
+    var same = null, dSame = 0.5, flip = null, dFlip = 0.15;
     refs.forEach(function (r) {
       if (r.sem !== cand.sem || (claimed && claimed.has(r))) return;
-      if (cand.orient === "vertical" && r.orient === "vertical" && Math.cos(cand.nyaw - r.nyaw) < 0.5) return;
       var d = cand.pos.distanceTo(r.pos);
-      if (d < bd) { bd = d; best = r; }
+      var antiparallel = cand.orient === "vertical" && r.orient === "vertical" && Math.cos(cand.nyaw - r.nyaw) < 0.5;
+      if (!antiparallel && d < dSame) { dSame = d; same = r; }
+      else if (antiparallel && d < dFlip) { dFlip = d; flip = r; }
     });
-    return best;
+    return same || flip;
   }
 
   // On-the-fly CANONICAL frame from live geometry — for VOID/outdoor worlds not tied to a stored space
