@@ -1013,11 +1013,14 @@
   // Tick the build badge so you can see the live client actually executed (and which ?v= it loaded
   // from). If the badge shows an old time or never gets the ✓, the page/JS is stale-cached.
   function markVersion() {
-    var el = document.getElementById("conjure-version");
-    if (!el) return;
     var s = document.querySelector('script[src*="conjure-client.js"]');
     var m = s && /[?&]v=(\d+)/.exec(s.src);
-    el.textContent = el.textContent.trim() + (m ? "  ✓ js v" + m[1] : "  ✓ js");
+    var el = document.getElementById("conjure-version");
+    if (el) el.textContent = el.textContent.trim() + (m ? "  ✓ js v" + m[1] : "  ✓ js");
+    // Also record the loaded client version in the server log, so staleness is VISIBLE there (the Quest
+    // Browser keeps a loaded page's JS across an AR re-entry — re-entering VR does NOT re-fetch it). Compare
+    // this v against the file mtime to know instantly whether a headset is running the current build.
+    debugLog("version", "client js v" + (m ? m[1] : "?") + " loaded", true);
   }
 
   // Report the headset's coarse location so the server can stamp / pick the physical space it belongs
