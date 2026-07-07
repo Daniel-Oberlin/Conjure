@@ -137,6 +137,17 @@ def test_face_room_orients_content_toward_interior_upright(srv):
     assert _face_room([0.0, 0.0, 0.0], [90.0, 0.0, 0.0], center)["forward"][1] > 0.9
 
 
+def test_viewpoint_prefers_nearest_head_then_falls_back_to_centroid(srv, monkeypatch):
+    from conjure.server import _viewpoint
+    doc = {"environment": {}}
+    monkeypatch.setattr(srv, "gaze", {})                               # no heads → boundary-centroid fallback
+    assert _viewpoint([2.0, 1.5, -3.0], doc) == srv._room_center(doc)
+    # two viewers in different rooms: the CLOSEST head to the surface wins (its room), not a far centroid
+    monkeypatch.setattr(srv, "gaze", {"alice": {"origin": [10.0, 1.5, 0.0]},
+                                      "bob": {"origin": [2.4, 1.5, -3.2]}})
+    assert _viewpoint([2.3, 1.5, -3.0], doc) == [2.4, 1.5, -3.2]        # bob is in the surface's room
+
+
 def test_place_image_on_unknown_surface_errors(srv, client):
     image_id = _procure(client)
     r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 999"}).json()
