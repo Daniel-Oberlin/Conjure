@@ -1643,7 +1643,8 @@ _authority_ts: float = 0.0            # server time of the last accepted capture
 # surface used to drop out, get pruned, and re-appear with a NEW id, stranding the photo; never pruning a
 # static surface keeps its id stable. DYNAMIC features (furniture) stay live: per-surface gate + pruning.
 _STATIC_SEMANTICS = {"wall", "wall art", "door", "window", "floor", "ceiling"}
-_ESTABLISH_SECS = 20.0                # capture window before the static set freezes (from the FIRST capture)
+_ESTABLISH_SECS = float(getattr(settings, "registration_period", 20.0))
+                                        # capture window before the static set freezes (from the FIRST capture)
 _room_capture_start: float | None = None   # server time of the first /room post since the room went live
 
 
