@@ -1,9 +1,29 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
-# Prompt refactor (towards multi-agent)
-- roster line -> optional per-agent injection
-- identity line -> put into builder prompt (seems builder specific)
-- context -> optional per-agent injection
+# Space stuff
+- Command line specify lock time frame (20s, etc.)
+- Alternative lock method based on quality of registration, specify command line
+- How would robustness work for true 2-headset, can we implement before next test?
+
+# Agent refactor
+- dir paths /user/agent/worlds/..., /user/spaces...
+- do we need a persistent store for hierarchy now, mongodb?
+- agent initializer/constructor, setup state in persistent store?
+  - agent store is segregated by user
+  - agent has global store /agents/builder/
+  - agent has user store /user/agents/builder/
+  - do we need /system, /users, /agents as top level?
+   - /system/globalsettings (default info color)
+   - /users/daniel/agents/builder/worlds
+   - /users/daniel/spaces/home
+   - /agents/builder/prompt, default settings (world constructor)
+- agent semantic versioning, upgrade path (default purge)?
+- maintain context persistence?
+- agent prompt refactor (towards multi-agent)
+  - roster line -> optional per-agent injection
+  - identity line -> put into builder prompt (seems builder specific)
+  - context -> optional per-agent injection
+- space visibility (public access, public create worlds)
 
 # Outdoor agent
 
