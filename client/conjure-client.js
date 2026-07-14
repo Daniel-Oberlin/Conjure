@@ -241,7 +241,9 @@
   // ----------------------------------------------------------------- entity / env rendering
   var root = function () { return document.getElementById("world-root"); };
 
-  function v3(a) { return Array.isArray(a) ? a.join(" ") : a; }
+  // Pure world-model / presence helpers (no DOM/A-Frame) live in world-model.js so they can be strict
+  // type-checked + unit-tested; alias them here. See client/world-model.js.
+  var WM = window.WorldModel, nest = WM.nest, holesAttr = WM.holesAttr, v3 = WM.v3;
 
   function ensureEl(id) {
     var el = document.getElementById(id);
@@ -251,16 +253,6 @@
       root().appendChild(el);
     }
     return el;
-  }
-
-  // A real room surface → a plane sized by its extent, styled by its material. Visibility is the
-  // entity attribute (driven by the room rules), so material.visible is pulled out here.
-  // Encode a wall's openings as the holed-wall geometry's component-string-safe holes list (see the
-  // geometry above): "x y w h, x y w h, …". Empty string ⇒ no openings ⇒ a plain plane.
-  function holesAttr(holes) {
-    return (Array.isArray(holes) ? holes : []).map(function (ho) {
-      return [ho.x, ho.y, ho.w, ho.h].map(function (n) { return (+n).toFixed(4); }).join(" ");
-    }).join(", ");
   }
 
   function applySurface(el, comps) {
@@ -420,16 +412,6 @@
     }
   }
 
-  // {"fog.density": 0.1} -> {fog: {density: 0.1}} so applyEnv can consume it.
-  function nest(flat) {
-    var out = {};
-    Object.keys(flat).forEach(function (k) {
-      var ks = k.split("."), cur = out;
-      for (var i = 0; i < ks.length - 1; i++) cur = cur[ks[i]] = cur[ks[i]] || {};
-      cur[ks[ks.length - 1]] = flat[k];
-    });
-    return out;
-  }
 
   function applyPatch(patch) {
     if (refused) return;                 // ignore world updates while blanked to passthrough (steps 4/7)
@@ -537,11 +519,8 @@
     var sc = document.querySelector("a-scene");
     if (sc && sc.is && sc.is("vr-mode")) return;          // AR session → the headset positions you
     var rig = document.getElementById("rig"); if (!rig) return;
-    var THREE = AFRAME.THREE;
-    var q = new THREE.Quaternion(ownerPose.q[0], ownerPose.q[1], ownerPose.q[2], ownerPose.q[3]);
-    var right = new THREE.Vector3(1, 0, 0).applyQuaternion(q); right.y = 0; right.normalize();
-    var p = ownerPose.p;
-    rig.object3D.position.set(p[0] + right.x * 1.2, 0, p[2] + right.z * 1.2);   // 1.2 m to the owner's right
+    var sp = WM.spawnRight(AFRAME.THREE, ownerPose, 1.2);   // 1.2 m to the owner's right, on the floor
+    rig.object3D.position.set(sp[0], sp[1], sp[2]);
     guestSpawned = true;
   }
 
@@ -571,10 +550,8 @@
     el.setAttribute("position", hx + " " + hy + " " + hz);          // entity origin = the head
     var yawDeg = 0, pitchDeg = 0;
     if (pose.q) {                                                   // heading from the head orientation
-      var f = new THREE.Vector3(0, 0, -1).applyQuaternion(
-        new THREE.Quaternion(pose.q[0], pose.q[1], pose.q[2], pose.q[3]));
-      yawDeg = THREE.MathUtils.radToDeg(Math.atan2(-f.x, -f.z));
-      pitchDeg = THREE.MathUtils.radToDeg(Math.asin(Math.max(-1, Math.min(1, f.y))));
+      var aim = WM.avatarAim(THREE, pose.q);
+      yawDeg = aim.yawDeg; pitchDeg = aim.pitchDeg;
     }
     el.setAttribute("rotation", "0 " + yawDeg + " 0");             // whole avatar yaws with the headset
     el.querySelector(".eyes").setAttribute("rotation", pitchDeg + " 0 0");  // eyes also pitch up/down

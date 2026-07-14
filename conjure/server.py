@@ -723,11 +723,13 @@ async def index() -> HTMLResponse:
     cm = int((CLIENT_DIR / "conjure-client.js").stat().st_mtime)
     sm = int((CLIENT_DIR / "room-snap.js").stat().st_mtime)
     gm = int((CLIENT_DIR / "grounded-skybox.js").stat().st_mtime)
-    v = max(cm, sm, gm)                       # badge reflects the newest of the scripts
+    wm = int((CLIENT_DIR / "world-model.js").stat().st_mtime)
+    v = max(cm, sm, gm, wm)                   # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
     html = html.replace("/static/grounded-skybox.js", f"/static/grounded-skybox.js?v={gm}")
+    html = html.replace("/static/world-model.js", f"/static/world-model.js?v={wm}")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     # Tell the client which diagnostics are on so it doesn't POST/HUD when off. debug_log gates general
     # client logging; debug_registration gates the co-location registration HUD + per-capture log.
@@ -764,6 +766,12 @@ async def client_js() -> FileResponse:
 async def room_snap_js() -> FileResponse:
     # Explicit no-store route for the snapping module (loaded before conjure-client.js).
     return FileResponse(CLIENT_DIR / "room-snap.js", media_type="application/javascript", headers=_NO_STORE)
+
+
+@app.get("/static/world-model.js")
+async def world_model_js() -> FileResponse:
+    # Explicit no-store route for the pure world-model/presence module (loaded before conjure-client.js).
+    return FileResponse(CLIENT_DIR / "world-model.js", media_type="application/javascript", headers=_NO_STORE)
 
 
 @app.get("/static/grounded-skybox.js")
