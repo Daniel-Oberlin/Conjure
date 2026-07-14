@@ -673,9 +673,9 @@ def test_known_room_is_frozen_on_activate_no_reestablish(srv, client):
     assert wall["transform"]["position"][2] == -2            # frozen: the 40 cm move is ignored
 
 
-def test_establishing_only_emits_moved_static_surfaces(srv, client):
-    """step 1: while a NEW room is establishing, only surfaces that actually moved are re-committed — an
-    unchanged wall is NOT re-emitted, so the whole room no longer pops every ~2 s when one surface jitters."""
+def test_establishing_recommits_the_coupled_static_set_together(srv, client):
+    """While a NEW room establishes, moving ONE wall re-commits the whole coupled set (squareWalls re-squares
+    them together as the grid refines) — so early walls aren't left on a rough initial grid (edges askew)."""
     add = {"client_id": "h1", "replace": True, "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]},
         {"id": "real_wall_2", "semantic": "wall", "position": [2, 1, 0], "extent": [3, 2.4]}]}
@@ -688,8 +688,7 @@ def test_establishing_only_emits_moved_static_surfaces(srv, client):
         patch = ws.receive_json()
         assert patch["type"] == "patch"
         updated = {op["id"] for op in patch["patch"]["ops"] if op["op"] == "update"}
-        assert "real_wall_1" in updated                       # the wall that moved is re-committed
-        assert "real_wall_2" not in updated                   # the unchanged wall is NOT (no whole-set pop)
+        assert {"real_wall_1", "real_wall_2"} <= updated      # coupled set re-committed together (stay square)
 
 
 def test_texture_surface_resolves_by_friendly_id(srv, client):

@@ -1655,9 +1655,11 @@ _authority_ts: float = 0.0            # server time of the last accepted capture
 #     against the persisted walls — no physical-adjustment period, no pops. This is the common case.
 #   • NEW room: a space with no static geometry yet captures during a brief ESTABLISHING window, then
 #     freezes (`_ESTABLISH_SECS` from the first /room post). `/room/realign` re-opens it (explicit re-scan).
-# While establishing we DIFF before emitting (step 1): only surfaces that actually moved past the
-# `_surface_changed` threshold are re-committed — so a settled capture adds no ops and the whole room no
-# longer pops every ~2 s. Static surfaces are never pruned (keeps a hung photo's wall-art id stable).
+# While establishing, the whole static set is re-committed atomically on any dirty capture (squareWalls/
+# joinCorners couple the walls, and the grid refines as the room fills in, so they must re-square together);
+# a truly-settled capture is silent (nothing dirty → no ops). Once frozen, existing static geometry is
+# immutable — that's what stops the per-session pops. Static surfaces are never pruned (keeps a hung
+# photo's wall-art id stable).
 _STATIC_SEMANTICS = {"wall", "wall art", "door", "window", "floor", "ceiling"}
 _ESTABLISH_SECS = float(getattr(settings, "registration_period", 20.0))
                                         # capture window before a NEW room's static set freezes (first capture)
@@ -1775,18 +1777,21 @@ async def ingest_room(req: RoomUpdate) -> dict:
                 else:
                     _surface_absence[eid] = n                 # transient drop → keep it this round
 
-    # STATIC: while establishing (a NEW room), DIFF before emitting — update only the surfaces that actually
-    # moved past the _surface_changed threshold (step 1), so a settled capture is silent and the whole room
-    # doesn't pop every ~2 s. A brand-new id is always added. Once frozen (known room, or window elapsed) the
-    # existing static geometry is immutable — squareWalls jitter is ignored — though new ids may still appear.
-    for s in (x for x in req.surfaces if x.semantic in _STATIC_SEMANTICS):
+    # STATIC: while a NEW room is establishing, re-commit the whole posted set atomically on any dirty
+    # capture — squareWalls/joinCorners re-derive the walls as a COUPLED set each capture, and the grid
+    # estimate refines as more walls come into view, so every wall must be re-squared together (committing
+    # only the ones that individually crossed the change threshold leaves early walls stuck on the rough
+    # initial grid → edges askew). Once frozen (known room — step 2, or the window elapsed) the existing
+    # static geometry is immutable — squareWalls jitter is ignored (no pops) — though new ids still add.
+    static_posted = [s for s in req.surfaces if s.semantic in _STATIC_SEMANTICS]
+    static_dirty = any(s.id not in existing or _surface_changed(existing[s.id], s) for s in static_posted)
+    for s in static_posted:
         if s.id not in existing:
             ops.append({"op": "add", "entity": _surface_entity(s)})
             changed_ids.add(s.id)
-        elif not established and _surface_changed(existing[s.id], s):
+        elif not established and static_dirty:                # re-commit the coupled set as one
             ops.append({"op": "update", "id": s.id, "set": _surface_update_set(s)})
             changed_ids.add(s.id)
-        # frozen static → left as-is (ignore re-derived jitter)
 
     # DYNAMIC: per-surface change-gate (furniture can move/appear).
     for s in req.surfaces:
