@@ -1593,8 +1593,10 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     is gone: a world with no space ref now composes as VOID, and `/worlds/new` stamps the active space up
     front (see `worlds_new`), so nothing anonymous is ever minted.
     """
-    global _room_capture_start
-    _room_capture_start = None                                     # a newly-live room re-establishes its static set
+    global _room_capture_start, _static_frozen
+    _room_capture_start = None
+    _static_frozen = False                                         # set below: a KNOWN room (persisted static
+                                                                   # geometry) is born frozen — no re-establish
     world_owner = scope.split("/", 1)[0]
     doc = world.doc
     space_ref = (doc.get("environment", {}) or {}).get("space")
@@ -1616,6 +1618,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
         if owner == world_owner:
             spaces.set_active(owner, space_name)                   # only track YOUR OWN space as current
     composed = WorldStore(_compose(doc, space))
+    _static_frozen = _has_static(composed.doc)                     # already-captured room → freeze it now (step 2)
     _reset_room_authority(composed)
     return owner, space_name, composed
 
@@ -1644,16 +1647,29 @@ _AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle auth
 _authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
 
 # STATIC features are architecture that doesn't move in real life — the room shell + anything mounted on
-# it. They're captured during a brief ESTABLISHING window, committed as a coherent SET, then FROZEN, and
-# never pruned. That fixes both: (1) corner gaps — walls are re-derived by squareWalls/joinCorners as a
-# coupled set, so committing them piecemeal (per-surface change-gate) broke the joins; freezing the whole
-# set once established keeps corners closed; (2) on-surface content orphaning — a picture's wall-art
-# surface used to drop out, get pruned, and re-appear with a NEW id, stranding the photo; never pruning a
-# static surface keeps its id stable. DYNAMIC features (furniture) stay live: per-surface gate + pruning.
+# it. Walls/doors/windows never change shape, so once we have a good reading we FREEZE them and stop
+# rewriting their geometry; only DYNAMIC features (furniture) stay live (per-surface change-gate + pruning).
+# Two ways a room becomes frozen:
+#   • KNOWN room (step 2): activating a world whose space already carries static geometry starts ALREADY
+#     frozen (`_activate` → `_has_static`). A return visit then only RE-REGISTERS the frame client-side
+#     against the persisted walls — no physical-adjustment period, no pops. This is the common case.
+#   • NEW room: a space with no static geometry yet captures during a brief ESTABLISHING window, then
+#     freezes (`_ESTABLISH_SECS` from the first /room post). `/room/realign` re-opens it (explicit re-scan).
+# While establishing we DIFF before emitting (step 1): only surfaces that actually moved past the
+# `_surface_changed` threshold are re-committed — so a settled capture adds no ops and the whole room no
+# longer pops every ~2 s. Static surfaces are never pruned (keeps a hung photo's wall-art id stable).
 _STATIC_SEMANTICS = {"wall", "wall art", "door", "window", "floor", "ceiling"}
 _ESTABLISH_SECS = float(getattr(settings, "registration_period", 20.0))
-                                        # capture window before the static set freezes (from the FIRST capture)
+                                        # capture window before a NEW room's static set freezes (first capture)
 _room_capture_start: float | None = None   # server time of the first /room post since the room went live
+_static_frozen: bool = False               # is the active room's static set frozen? (known room, or window elapsed)
+
+
+def _has_static(doc: dict) -> bool:
+    """Does the (composed) world doc already carry real STATIC geometry? A KNOWN room — freeze it on activate
+    (step 2) so a return visit re-registers the frame against the persisted walls instead of re-deriving them."""
+    return any((e.get("meta") or {}).get("real") and (e.get("meta") or {}).get("semantic") in _STATIC_SEMANTICS
+               for e in doc.get("entities", []))
 
 
 def _surface_update_set(s) -> dict:
@@ -1717,7 +1733,7 @@ async def ingest_room(req: RoomUpdate) -> dict:
     photos from orphaning. DYNAMIC features (furniture) stay live: updated only when they meaningfully move
     (`_surface_changed`) and pruned after several absences. An idle authority is TAKEN OVER after `_AUTH_TTL`
     (a reconnecting owner isn't locked out). Broadcasts only when something actually changed."""
-    global _authority_ts, _room_capture_start
+    global _authority_ts, _room_capture_start, _static_frozen
     room = store.doc["environment"].get("room", {})
     authority = room.get("authorityClientId")
     now = time.time()
@@ -1728,9 +1744,12 @@ async def ingest_room(req: RoomUpdate) -> dict:
             return {"ok": False, "error": f"another headset ({authority}) is the room authority"}
         _slog("room", f"authority takeover: {authority!r} idle {now - _authority_ts:.0f}s → {req.client_id}")
     _authority_ts = now                                       # keep/refresh authority for this client
-    if _room_capture_start is None:                           # first capture of this room session
-        _room_capture_start = now
-    established = (now - _room_capture_start) > _ESTABLISH_SECS
+    if not _static_frozen:                                    # a NEW room is still establishing
+        if _room_capture_start is None:
+            _room_capture_start = now                         # first capture → open the establishing window
+        elif (now - _room_capture_start) > _ESTABLISH_SECS:
+            _static_frozen = True                             # window elapsed → freeze the new static set
+    established = _static_frozen                              # KNOWN rooms are frozen from activate (step 2)
 
     existing = {e["id"]: e for e in store.doc["entities"] if e.get("meta", {}).get("real")}
     new_ids = {s.id for s in req.surfaces}
@@ -1756,18 +1775,18 @@ async def ingest_room(req: RoomUpdate) -> dict:
                 else:
                     _surface_absence[eid] = n                 # transient drop → keep it this round
 
-    # STATIC: commit the whole posted set atomically while establishing (corners stay consistent), then
-    # freeze; genuinely-new static ids may still be added after establishing.
-    static_posted = [s for s in req.surfaces if s.semantic in _STATIC_SEMANTICS]
-    static_dirty = any(s.id not in existing or _surface_changed(existing[s.id], s) for s in static_posted)
-    for s in static_posted:
+    # STATIC: while establishing (a NEW room), DIFF before emitting — update only the surfaces that actually
+    # moved past the _surface_changed threshold (step 1), so a settled capture is silent and the whole room
+    # doesn't pop every ~2 s. A brand-new id is always added. Once frozen (known room, or window elapsed) the
+    # existing static geometry is immutable — squareWalls jitter is ignored — though new ids may still appear.
+    for s in (x for x in req.surfaces if x.semantic in _STATIC_SEMANTICS):
         if s.id not in existing:
             ops.append({"op": "add", "entity": _surface_entity(s)})
             changed_ids.add(s.id)
-        elif not established and static_dirty:                # re-commit the coupled set as one
+        elif not established and _surface_changed(existing[s.id], s):
             ops.append({"op": "update", "id": s.id, "set": _surface_update_set(s)})
             changed_ids.add(s.id)
-        # established + existing static → frozen (ignore re-derived jitter)
+        # frozen static → left as-is (ignore re-derived jitter)
 
     # DYNAMIC: per-surface change-gate (furniture can move/appear).
     for s in req.surfaces:
@@ -1812,9 +1831,11 @@ async def ingest_room(req: RoomUpdate) -> dict:
 async def realign_room() -> dict:
     """Ask connected headsets to re-capture the room at the current tracking origin (restores
     alignment after a recenter/reload). No-op for clients not in an AR session. Re-opens the establishing
-    window so the frozen static set is re-derived from the fresh capture (the explicit 'unfreeze')."""
-    global _room_capture_start
+    window so the frozen static set is re-derived from the fresh capture (the explicit 'unfreeze' — the only
+    way a KNOWN room's frozen walls get re-measured; step 2)."""
+    global _room_capture_start, _static_frozen
     _room_capture_start = None
+    _static_frozen = False                                    # re-open establishing → walls re-derive once
     await _broadcast({"type": "recapture"})
     return {"ok": True}
 

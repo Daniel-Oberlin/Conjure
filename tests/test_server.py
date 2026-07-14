@@ -652,6 +652,46 @@ def test_static_set_freezes_after_establishing_dynamic_stays_live(srv, client, m
     assert couch["transform"]["position"][0] == 1.3                         # DYNAMIC still updates
 
 
+def test_known_room_is_frozen_on_activate_no_reestablish(srv, client):
+    """step 2: activating a world whose space already has captured walls starts ALREADY frozen — a return
+    visit re-registers the frame against the persisted geometry and never re-derives/rewrites the walls
+    (no physical-adjustment period). Only /room/realign re-opens establishing."""
+    from conjure.world import WorldStore
+    srv.spaces.save("daniel", "home", {"owner": "daniel", "name": "home", "public": True, "geolocation": None,
+        "boundary": None, "surfaces": [{"id": "real_wall_1", "meta": {"real": True, "semantic": "wall"},
+            "transform": {"position": [0, 1, -2], "rotation": [0, 0, 0]},
+            "components": {"surface": {"extent": [3, 2.4]}, "material": {}}}]})
+    srv.worlds.save("daniel/agents/builder", "known", WorldStore(
+        {"id": "k", "name": "known", "rev": 1, "environment": {"space": "daniel/home"}, "entities": []}))
+    srv.active_space = srv.VOID                                # neutralize the outgoing save (don't clobber home)
+    assert client.post("/worlds/switch", json={"name": "known"}).json()["ok"]
+    assert srv._static_frozen is True                         # known room → frozen from activate
+    # a capture that moves the wall must NOT rewrite it — no establishing window on a return visit
+    client.post("/room", json={"client_id": "h1", "replace": True, "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2.4], "extent": [3, 2.4]}]})
+    wall = next(e for e in _entities(client) if e["id"] == "real_wall_1")
+    assert wall["transform"]["position"][2] == -2            # frozen: the 40 cm move is ignored
+
+
+def test_establishing_only_emits_moved_static_surfaces(srv, client):
+    """step 1: while a NEW room is establishing, only surfaces that actually moved are re-committed — an
+    unchanged wall is NOT re-emitted, so the whole room no longer pops every ~2 s when one surface jitters."""
+    add = {"client_id": "h1", "replace": True, "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]},
+        {"id": "real_wall_2", "semantic": "wall", "position": [2, 1, 0], "extent": [3, 2.4]}]}
+    client.post("/room", json=add)                            # both added (establishing, not frozen)
+    with client.websocket_connect("/ws?user=daniel") as ws:
+        ws.receive_json()                                     # snapshot
+        client.post("/room", json={"client_id": "h1", "replace": True, "surfaces": [
+            {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2.2], "extent": [3, 2.4]},   # moved
+            {"id": "real_wall_2", "semantic": "wall", "position": [2, 1, 0], "extent": [3, 2.4]}]})    # unchanged
+        patch = ws.receive_json()
+        assert patch["type"] == "patch"
+        updated = {op["id"] for op in patch["patch"]["ops"] if op["op"] == "update"}
+        assert "real_wall_1" in updated                       # the wall that moved is re-committed
+        assert "real_wall_2" not in updated                   # the unchanged wall is NOT (no whole-set pop)
+
+
 def test_texture_surface_resolves_by_friendly_id(srv, client):
     client.post("/room", json={"client_id": "h1", "surfaces": [
         {"id": "real_floor_3", "semantic": "floor", "position": [0, 0, 0], "extent": [3, 3]}]})
@@ -679,11 +719,13 @@ async def test_realign_broadcasts_recapture(srv):
 
     ws = FakeWS()
     srv.clients[ws] = "daniel"
+    srv._static_frozen = True                     # pretend the room was frozen (known/established)
     try:
         await srv.realign_room()
     finally:
         srv.clients.pop(ws, None)
     assert ws.sent and ws.sent[-1]["type"] == "recapture"
+    assert srv._static_frozen is False            # re-scan re-opens establishing (step 2 unfreeze)
 
 
 def test_tunnel_redirects_to_published_url(srv, client, tmp_path, monkeypatch):
