@@ -4,9 +4,12 @@
   "version": "0.0.0",
   "description": "Dev/test tooling for the Conjure WebXR client — exercises the pure room-snap geometry (client/room-snap.js) against captured Quest input.",
   "scripts": {
-    "test": "node --test tests/js/*.test.js"
+    "test": "node --test tests/js/*.test.js",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
-    "three": "0.163.0"
+    "@types/three": "^0.185.1",
+    "three": "0.163.0",
+    "typescript": "^7.0.2"
   }
 }

@@ -1,14 +1,57 @@
+// @ts-check
 // Pure room-snapping geometry — extracted from the room-capture component so it can be unit-tested
 // (tests/js/room-snap.test.js) independently of A-Frame/WebXR/DOM. Every function takes the THREE
 // module as its first argument: the browser passes AFRAME.THREE, node tests pass require('three').
 // No state, no DOM, no globals — just the math that turns captured planes into placed surfaces.
 //
-// Surface objects here carry: _lp (THREE.Vector3, ref-frame position), _lq (THREE.Quaternion,
-// ref-frame orientation), semantic, extent [w,h], rotation [x,y,z]°, id, debug{}. `cur`/`ref` entries
-// for register() carry: pos (Vector3), sem, ext [w,h], nyaw (number), orient ("vertical"|"horizontal").
+// TYPE-CHECKED with `// @ts-check` + JSDoc (a trial — `npm run typecheck`, tsconfig.json). No build step:
+// the annotations are comments, the file still ships verbatim. The typedefs below capture the two shapes
+// the math flows through, so vector/euler/tuple mixups (the class of bug we kept hitting) fail the check.
+
+/**
+ * @typedef {typeof import('three')} THREE_NS   the three.js module (browser: AFRAME.THREE; node: require('three'))
+ * @typedef {import('three').Vector3} Vec3
+ * @typedef {import('three').Quaternion} Quat
+ * @typedef {import('three').Matrix4} Mat4
+ */
+
+/**
+ * Constellation form — what register()/matchRef()/canonicalFrame() consume (a compact plane).
+ * @typedef {Object} RefSurface
+ * @property {string} [id]
+ * @property {string} sem                                semantic ("wall", "window", …)
+ * @property {[number, number]} ext                      extent [w, h] (metres)
+ * @property {Vec3} pos                                  centre in the reference frame
+ * @property {number} nyaw                               compass yaw of the surface normal (radians)
+ * @property {"vertical"|"horizontal"} orient
+ */
+
+/**
+ * Stored/broadcast surface entity — a-plane form (transform in degrees, extent under components.surface).
+ * @typedef {Object} SurfaceEntity
+ * @property {string} [id]
+ * @property {{position?: number[], rotation?: number[]}} [transform]
+ * @property {{surface?: {extent?: number[]}}} [components]
+ * @property {{semantic?: string}} [meta]
+ */
+
+/**
+ * Working surface during snapping — a-plane form plus the scratch ref-frame pose (_lp/_lq).
+ * @typedef {Object} SnapSurface
+ * @property {string} id
+ * @property {string} semantic
+ * @property {number[]} [extent]
+ * @property {number[]} rotation                         euler degrees [x, y, z] (YXZ order)
+ * @property {number[]} [position]
+ * @property {Vec3} _lp                                  ref-frame position
+ * @property {Quat} _lq                                  ref-frame orientation
+ * @property {{x:number, y:number, w:number, h:number}[]} [holes]   openings cut into a wall
+ * @property {any} [debug]
+ */
+
 (function (root, factory) {
   if (typeof module !== "undefined" && module.exports) module.exports = factory();
-  else root.RoomSnap = factory();
+  else (/** @type {any} */ (root)).RoomSnap = factory();
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
@@ -16,6 +59,11 @@
   // a -90° X rotation so the rendered plane aligns with the captured one, then convert to euler degrees.
   // A-Frame applies rotations in YXZ order (NOT THREE's default XYZ) — using XYZ here renders walls/insets
   // up to ~48° off-square. See docs/room-model.md.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {{x:number, y:number, z:number, w:number}} q   quaternion-like (captured plane orientation)
+   * @returns {number[]} euler degrees [x, y, z] in YXZ order
+   */
   function eulerYXZ(THREE, q) {
     var quat = new THREE.Quaternion(q.x, q.y, q.z, q.w);
     quat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
@@ -24,7 +72,8 @@
     return [d(e.x), d(e.y), d(e.z)];
   }
 
-  function yawOf(n) { return Math.atan2(n.x, n.z); }   // compass yaw of a horizontal normal
+  /** @param {{x:number, z:number}} n  @returns {number} compass yaw of a horizontal normal */
+  function yawOf(n) { return Math.atan2(n.x, n.z); }
 
   // Solve the single rigid yaw+translation transform mapping the newly detected planes (cur, in the
   // current refSpace) onto the persistent reference constellation (ref). Recovers how the Quest's frame
@@ -46,9 +95,16 @@
   //   3. score — count planes landing within 0.4 m of a same-semantic reference; accept the best only if
   //      >=4 inliers AND >=40%, else null (caller holds the last good frame). A genuinely different space
   //      yields no consensus, so a null doubles as a "not in this space" signal (room-model.md §8a).
+  /**
+   * @param {THREE_NS} THREE
+   * @param {RefSurface[]} cur   the newly detected planes (current refSpace)
+   * @param {RefSurface[]} ref   the persistent reference constellation
+   * @returns {{Tmat: Mat4|null, stat: string, cov: number, inl?: number}}
+   */
   function register(THREE, cur, ref) {
     var UP = new THREE.Vector3(0, 1, 0);
-    if (ref.length < 3) return { Tmat: null, stat: "ref<3" };
+    if (ref.length < 3) return { Tmat: null, stat: "ref<3", cov: 0 };
+    /** @param {number} a  @returns {number} */
     function wrap(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; }
     // Robustness for a GUEST's partial/extra plane set (room-model §8, multi-user co-location). A guest
     // sees the room from a different vantage: some reference surfaces are MISSING (occluded) and there are
@@ -59,9 +115,11 @@
     //    inflate it, fragmentation can't double-count it, and missing surfaces just lower coverage. We
     //    accept on coverage of the REFERENCE, so clutter never sinks an otherwise-solid lock.
     var SIZE_TOL = 0.5, MIN_COV = 4, MIN_COV_FRAC = 0.3;
+    /** @param {RefSurface} r  @param {RefSurface} c  @returns {boolean} */
     function sizeCompat(r, c) { return c.ext[0] <= r.ext[0] + SIZE_TOL && c.ext[1] <= r.ext[1] + SIZE_TOL; }
     // Step 1 — candidate yaw(s): histogram the normal-yaw delta over same-semantic, similar-size vertical
     // pairs; every true correspondence votes for the same delta, so the real yaw dominates.
+    /** @type {number[]} */
     var deltas = [];
     cur.forEach(function (c) {
       if (c.orient !== "vertical") return;
@@ -70,8 +128,10 @@
         deltas.push(wrap(r.nyaw - c.nyaw));
       });
     });
-    if (deltas.length < 3) return { Tmat: null, stat: "dlt=" + deltas.length };
-    var bin = Math.PI / 30, hist = {};                          // 6° bins
+    if (deltas.length < 3) return { Tmat: null, stat: "dlt=" + deltas.length, cov: 0 };
+    var bin = Math.PI / 30;                                     // 6° bins
+    /** @type {Record<string, number[]>} */
+    var hist = {};
     deltas.forEach(function (d) { var b = Math.round(d / bin); (hist[b] = hist[b] || []).push(d); });
     var keys = Object.keys(hist).sort(function (a, b) { return hist[b].length - hist[a].length; });
     var thetas = keys.slice(0, 5).map(function (k) {            // top 5 peaks (clutter can dilute the true one)
@@ -80,7 +140,7 @@
     });
     // Step 2/3 — for each candidate yaw, solve translation (densest cell of ref.pos − R·cur.pos over
     // same-size pairs) and score by how many planes land on a same-semantic reference surface.
-    var best = null;
+    var best = /** @type {{Tmat: Mat4, cov: number, inl: number}|null} */ (null);
     thetas.forEach(function (theta) {
       var qy = new THREE.Quaternion().setFromAxisAngle(UP, theta);
       // Same-FACING gate: after applying this candidate yaw, a true correspondence's normal aligns with its
@@ -88,10 +148,14 @@
       // apart and OPPOSITE normals, so without this a wall can pair with / cover the wrong face — polluting
       // the translation vote and coverage, which makes the lock jitter frame-to-frame. Only vertical faces
       // are gated (floor/ceiling separate by semantic). ~60° tolerance (cos > 0.5) leaves ample noise room.
+      /** @param {RefSurface} c  @param {RefSurface} r  @returns {boolean} */
       function sameFacing(c, r) {
         return !(c.orient === "vertical" && r.orient === "vertical" && Math.cos((c.nyaw + theta) - r.nyaw) < 0.5);
       }
-      var grid = {}, bestCell = null, bestN = 0;
+      /** @type {Record<string, {sx:number, sz:number, n:number}>} */
+      var grid = {};
+      var bestCell = /** @type {{sx:number, sz:number, n:number}|null} */ (null);
+      var bestN = 0;
       cur.forEach(function (c) {
         var rc = c.pos.clone().applyQuaternion(qy);
         ref.forEach(function (r) {
@@ -106,9 +170,13 @@
       if (!bestCell) return;
       var Tmat = new THREE.Matrix4().compose(
         new THREE.Vector3(bestCell.sx / bestCell.n, 0, bestCell.sz / bestCell.n), qy, new THREE.Vector3(1, 1, 1));
-      var claimed = new Set(), rawInl = 0;   // distinct reference surfaces covered (extras/fragmentation don't inflate)
+      /** @type {Set<RefSurface>} */
+      var claimed = new Set();   // distinct reference surfaces covered (extras/fragmentation don't inflate)
+      var rawInl = 0;
       cur.forEach(function (c) {
-        var tp = c.pos.clone().applyMatrix4(Tmat), bd = 0.4, hit = null;
+        var tp = c.pos.clone().applyMatrix4(Tmat), bd = 0.4;
+        /** @type {RefSurface|null} */
+        var hit = null;
         ref.forEach(function (r) { if (r.sem === c.sem && sameFacing(c, r)) { var d = tp.distanceTo(r.pos); if (d < bd) { bd = d; hit = r; } } });
         if (hit) { claimed.add(hit); rawInl++; }
       });
@@ -135,6 +203,11 @@
   // components.surface.extent, meta.semantic) into the compact constellation form register() consumes
   // ({id, sem, ext, pos:Vector3, nyaw, orient}). The a-plane normal is its local +Z. Shared by the client's
   // reference-seeding and by selectSpace below, so the two never diverge.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SurfaceEntity} e
+   * @returns {RefSurface}
+   */
   function surfaceToRef(THREE, e) {
     var Z = new THREE.Vector3(0, 0, 1), d2r = THREE.MathUtils.degToRad;
     var t = e.transform || {}, p = t.position || [0, 0, 0], r = t.rotation || [0, 0, 0];
@@ -157,8 +230,14 @@
   // Robust to the sparse-capture bug by construction: it's the geometric vote, not a surface-count guess,
   // that decides, and a too-thin `cur` simply fails to cover any candidate (caller retries as capture grows).
   //   candidates: [{owner, name, surfaces:[a-plane entity]}]  →  {index, owner, name, cov, stat} | null
+  /**
+   * @param {THREE_NS} THREE
+   * @param {RefSurface[]} cur
+   * @param {{owner: string, name: string, surfaces?: SurfaceEntity[]}[]} candidates
+   * @returns {{index: number, owner: string, name: string, cov: number, stat: string}|null}
+   */
   function selectSpace(THREE, cur, candidates) {
-    var best = null;
+    var best = /** @type {{index: number, owner: string, name: string, cov: number, stat: string}|null} */ (null);
     (candidates || []).forEach(function (cand, i) {
       var ref = (cand.surfaces || []).map(function (e) { return surfaceToRef(THREE, e); });
       var reg = register(THREE, cur, ref);
@@ -178,6 +257,12 @@
   // cos > 0.5) keeps the two faces distinct. `claimed` is the Set of refs already taken this pass; returns
   // the chosen ref, or null ⇒ a genuinely new surface. (Only vertical faces are normal-gated; a floor and
   // ceiling are already separated by semantic + height.)
+  /**
+   * @param {{pos: Vec3, nyaw: number, sem: string, orient: string}} cand
+   * @param {RefSurface[]} refs
+   * @param {Set<RefSurface>} [claimed]   refs already taken this pass
+   * @returns {RefSurface|null}
+   */
   function matchRef(cand, refs, claimed) {
     // Prefer the nearest SAME-FACING reference within 0.5 m. If none faces the same way, fall back to a
     // near-COINCIDENT (<0.15 m) antiparallel one — the SAME physical surface seen with an opposite normal.
@@ -185,7 +270,11 @@
     // (INWARD), 180° from the wall's outward orientation it's stored with — so its own detection looks
     // antiparallel to its ref and would re-mint a new id every session without this. The two faces of a
     // partition wall sit ~0.4 m apart (not coincident), so they stay DISTINCT — the id-swap fix is intact.
-    var same = null, dSame = 0.5, flip = null, dFlip = 0.15;
+    /** @type {RefSurface|null} */
+    var same = null;
+    /** @type {RefSurface|null} */
+    var flip = null;
+    var dSame = 0.5, dFlip = 0.15;
     refs.forEach(function (r) {
       if (r.sem !== cand.sem || (claimed && claimed.has(r))) return;
       var d = cand.pos.distanceTo(r.pos);
@@ -205,6 +294,11 @@
   // or null. KNOWN LIMIT: a symmetric room (no unique largest wall) has no unique canonical orientation —
   // same ambiguity as register()'s 180° flip, but low-stakes for a void world (only the skybox yaw moves,
   // no content pinned to real walls). Partial-capture stability (a fuller view winning) is a follow-up.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {RefSurface[]} cur
+   * @returns {{Tmat: Mat4|null, stat: string}}
+   */
   function canonicalFrame(THREE, cur) {
     var UP = new THREE.Vector3(0, 1, 0);
     var walls = cur.filter(function (c) { return c.orient === "vertical"; });
@@ -237,8 +331,14 @@
   // other), so estimate it width-weighted from all walls — the big, accurate walls dominate — and snap
   // each vertical surface's facing onto the nearest 90° of it. Small nudges only (≤12°), so a genuinely
   // angled wall is left alone. Mutates s._lq and s.rotation in place.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces
+   * @returns {void}
+   */
   function squareWalls(THREE, surfaces) {
     var UP2 = new THREE.Vector3(0, 1, 0), gx = 0, gy = 0;
+    /** @param {SnapSurface} s  @returns {number} */
     var facing = function (s) { var n = UP2.clone().applyQuaternion(s._lq); return Math.atan2(n.x, n.z); };
     surfaces.forEach(function (s) {
       if (s.semantic !== "wall") return;
@@ -264,6 +364,16 @@
   // snap those ends exactly onto it — closing the corner with a small extend/trim. Works in plan view
   // (X-Z). Leaves parallel walls (a doorway gap, opposite walls) and T-junctions (only one wall ends
   // near the crossing) alone. Mutates wall _lp / extent / position in place; run after squareWalls.
+  /**
+   * @typedef {{x: number, z: number, _d: number}} CornerTgt
+   * @typedef {{s: SnapSurface, cx: number, cz: number, nx: number, nz: number, hw: number, cy: number,
+   *            ends: {x: number, z: number}[], tgt: (CornerTgt|null)[]}} WallSeg
+   */
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces
+   * @returns {void}
+   */
   function joinCorners(THREE, surfaces) {
     var GAP = 0.25;                                              // only close gaps up to 25 cm
     var W = surfaces.filter(function (s) { return s.semantic === "wall"; }).map(function (s) {
@@ -271,10 +381,11 @@
       var L = Math.hypot(n.x, n.z) || 1, nx = n.x / L, nz = n.z / L;   // unit horizontal normal
       var hw = ((s.extent && s.extent[0]) || 0) / 2, cx = s._lp.x, cz = s._lp.z;
       var tx = nz, tz = -nx;                                     // width axis ⟂ normal (in plan view)
-      return { s: s, cx: cx, cz: cz, nx: nx, nz: nz, hw: hw, cy: s._lp.y,
+      return /** @type {WallSeg} */ ({ s: s, cx: cx, cz: cz, nx: nx, nz: nz, hw: hw, cy: s._lp.y,
                ends: [{ x: cx + tx * hw, z: cz + tz * hw }, { x: cx - tx * hw, z: cz - tz * hw }],
-               tgt: [null, null] };
+               tgt: [null, null] });
     });
+    /** @param {WallSeg} w  @param {number} px  @param {number} pz  @returns {{i: number, d: number}} */
     function nearest(w, px, pz) {
       var d0 = Math.hypot(w.ends[0].x - px, w.ends[0].z - pz);
       var d1 = Math.hypot(w.ends[1].x - px, w.ends[1].z - pz);
@@ -291,8 +402,9 @@
         var px = (da * b.nz - db * a.nz) / det, pz = (a.nx * db - b.nx * da) / det;
         var ka = nearest(a, px, pz), kb = nearest(b, px, pz);
         if (ka.d > GAP || kb.d > GAP) continue;                  // both ends must reach this corner
-        if (!a.tgt[ka.i] || ka.d < a.tgt[ka.i]._d) a.tgt[ka.i] = { x: px, z: pz, _d: ka.d };
-        if (!b.tgt[kb.i] || kb.d < b.tgt[kb.i]._d) b.tgt[kb.i] = { x: px, z: pz, _d: kb.d };
+        var ta = a.tgt[ka.i], tb = b.tgt[kb.i];                  // keep the CLOSEST corner per end
+        if (!ta || ka.d < ta._d) a.tgt[ka.i] = { x: px, z: pz, _d: ka.d };
+        if (!tb || kb.d < tb._d) b.tgt[kb.i] = { x: px, z: pz, _d: kb.d };
       }
     }
     W.forEach(function (w) {
@@ -315,16 +427,23 @@
   // wall). The renderer turns those into actual openings so you can see through. Wall art does NOT cut —
   // it's a picture laid on the wall, not an opening. Mutates s.position / s.rotation / s.debug.snap and
   // wl.holes in place.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces
+   * @returns {void}
+   */
   function snapInsets(THREE, surfaces) {
     var V3 = THREE.Vector3;
     var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
     walls.forEach(function (wl) { wl.holes = []; });            // recomputed fresh every capture
+    /** @type {Record<string, number>} */
     var INSET = { "door": 0.012, "window": 0.012, "wall art": 0.022 };
     surfaces.forEach(function (s) {
       var off = INSET[s.semantic];
       if (off == null || !walls.length) return;
       // A WebXR plane lies in its local X-Z plane, so its NORMAL is the +Y axis (not +Z).
-      var sn = new V3(0, 1, 0).applyQuaternion(s._lq), best = null, bestD = 0.3;
+      var sn = new V3(0, 1, 0).applyQuaternion(s._lq), bestD = 0.3;
+      var best = /** @type {SnapSurface|null} */ (null);
       walls.forEach(function (wl) {
         var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
         if (Math.abs(wn.dot(sn)) < 0.9) return;                 // nearest ~parallel wall (clamp reference)
@@ -352,7 +471,7 @@
         var wx = new V3(1, 0, 0).applyQuaternion(best._lq);     // wall local width axis (world)
         var wy = new V3(0, 0, -1).applyQuaternion(best._lq);    // wall local height axis (world)
         var rel = fp.clone().sub(best._lp);
-        best.holes.push({ x: rel.dot(wx), y: rel.dot(wy), w: s.extent[0], h: s.extent[1] });
+        (best.holes || (best.holes = [])).push({ x: rel.dot(wx), y: rel.dot(wy), w: s.extent[0], h: s.extent[1] });
       }
     });
   }
