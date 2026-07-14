@@ -345,7 +345,7 @@
   // component re-inits with an EMPTY reference and would otherwise establish a brand-new world frame
   // (jumping you out of the room); instead it seeds its reference from these so its first capture
   // registers INTO the persisted frame. Stays null until a snapshot carrying real surfaces arrives.
-  var docSurfaces = null;
+  var docSurfaces = null, lastWorldKey = null;
   // A VOID/outdoor world (environment.space === "<void>") isn't tied to a captured room — it shows a
   // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
   // instead of registering against stored geometry. Set from each snapshot.
@@ -364,6 +364,13 @@
 
   function applySnapshot(world) {
     if (refused) return;                 // we're not in this space — stay blanked to passthrough (steps 4/7)
+    var key = worldOwner + "/" + (world && world.name);
+    if (key !== lastWorldKey) {          // WORLD SWITCH → drop the previous room's capture frame so the next
+      lastWorldKey = key;                // capture seeds/establishes for THIS world, not the last one
+      var sc = document.querySelector("a-scene");
+      var rc = sc && sc.components && sc.components["room-capture"];
+      if (rc && rc.resetFrame) rc.resetFrame();
+    }
     root().innerHTML = "";
     (world.entities || []).forEach(applyEntity);
     applyEnv(world.environment);   // after entities, so immersion can toggle them
@@ -639,6 +646,15 @@
       },
       // Force an immediate re-capture (manual realign — see the /room/realign signal below).
       recapture: function () { this.lastPost = 0; },
+      // Drop the current room REFERENCE FRAME. Called on a WORLD SWITCH (applySnapshot) so the next capture
+      // re-seeds from the NEW world's geometry — or establishes fresh in an empty/void world — instead of
+      // registering the new room against the PREVIOUS world's constellation. Without this, a guest who was
+      // briefly in the owner's world keeps the owner's `_ref` after minting their own world, so their real
+      // room renders registered to the owner's room → a stable positional offset (new-space-flow).
+      resetFrame: function () {
+        this._ref = []; this._Tmat = null; this._haveT = false;
+        this._anchorInv = null; this._refSeq = 0; this._lostSince = 0; this.lastPost = 0;
+      },
       // Park #world-root so content stored in the REFERENCE frame renders at the right real-world spot.
       // Once registration has a frame (_haveT) that frame is authoritative — world-root = _Tmat⁻¹ and
       // the capture expresses planes via _Tmat. Before the first capture we bootstrap from a WebXR
