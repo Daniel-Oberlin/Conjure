@@ -204,7 +204,7 @@
   }
 
   function applyImmersion() {
-    if (refused) {                       // blanked to passthrough (steps 4/7): hide everything renderable
+    if (refused || awaitingSpace) {      // blanked to passthrough: hide everything renderable
       document.querySelectorAll("[data-scaffold]").forEach(function (el) { el.setAttribute("visible", false); });
       var sky0 = document.getElementById("sky"); if (sky0) sky0.setAttribute("visible", false);
       var g0 = document.getElementById("grounded-sky"); if (g0) g0.setAttribute("visible", false);
@@ -361,9 +361,17 @@
   // gate and are HOLDING the active space; we tell the server (`hold` over /ws) so it counts us as
   // occupying it — and re-tell it after a ws reconnect. On refusal we hide content and stay in passthrough.
   var clientId = "c_" + Math.random().toString(36).slice(2, 8), amHolding = false, refused = false;
+  // While an AR headset is deciding WHICH space it's in (from enter-vr until /space/select resolves), we
+  // blank to passthrough and show a "finding your space" notice — so a headset never renders the provisional
+  // booted world (or anyone else's) misaligned to the real room before it has established/joined its space.
+  var awaitingSpace = false, lastWorld = null;
 
   function applySnapshot(world) {
     if (refused) return;                 // we're not in this space — stay blanked to passthrough (steps 4/7)
+    if (awaitingSpace) {                 // a snapshot = selection resolved → un-blank BEFORE rendering, so
+      awaitingSpace = false;             // applyImmersion (below) sets the world up instead of hiding it
+      hideHeadsetMessage(); hideInfo();
+    }
     var key = worldOwner + "/" + (world && world.name);
     if (key !== lastWorldKey) {          // WORLD SWITCH → drop the previous room's capture frame so the next
       lastWorldKey = key;                // capture seeds/establishes for THIS world, not the last one
@@ -381,6 +389,7 @@
     // would leave the PREVIOUS room's surfaces here, and the next capture could register into the wrong
     // frame (new-space-flow §3 gap #5: the Harold's-house cross-room seeding). Empty ⇒ nothing to seed.
     docSurfaces = reals.length ? reals : null;
+    lastWorld = world;                   // remember for endAwaitingSpace (restore after a no-switch resolve)
     console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)"
       + (isVoidWorld ? " [outdoor/void]" : ""));
   }
@@ -421,7 +430,7 @@
 
 
   function applyPatch(patch) {
-    if (refused) return;                 // ignore world updates while blanked to passthrough (steps 4/7)
+    if (refused || awaitingSpace) return;   // ignore world updates while blanked to passthrough
     (patch.ops || []).forEach(function (op) {
       if (op.op === "add") {
         applyEntity(op.entity);
@@ -495,18 +504,42 @@
     if (el) el.setAttribute("visible", false);
   }
 
-  // Admission-gate refusal (steps 4/7): tear the world down to BARE PASSTHROUGH — clear placed/real
-  // entities, hide the skybox (plain + grounded, which live OUTSIDE #world-root) and the holodeck scaffold,
-  // and ignore further world updates (applySnapshot/applyPatch short-circuit on `refused`) until we leave
-  // AR or get admitted. In AR that leaves only the real room visible.
-  function passthroughBlank() {
-    refused = true;
-    amHolding = false;
+  // Tear the world down to BARE PASSTHROUGH — clear placed/real entities and hide the skybox (plain +
+  // grounded, which live OUTSIDE #world-root) and the holodeck scaffold. Used both while awaiting space
+  // selection and on an admission-gate refusal; `applyImmersion` hides everything given refused||awaitingSpace.
+  function blankToPassthrough() {
     root().innerHTML = "";
     roomState.skybox = false; roomState.grounded = false; roomState.active = false;
     var gs = document.getElementById("grounded-sky");
     if (gs) gs.setAttribute("grounded-sky", { src: "" });   // tear down any grounded dome
-    applyImmersion();                                       // hides scaffold + sky + grounded (refused guard)
+    applyImmersion();
+  }
+
+  // Admission-gate refusal (steps 4/7): blank to passthrough and STAY there (ignore world updates) until we
+  // leave AR or get admitted.
+  function passthroughBlank() {
+    refused = true;
+    amHolding = false;
+    blankToPassthrough();
+  }
+
+  // Entering AR: we don't yet know which space we're in. Blank to passthrough + show a notice until
+  // /space/select resolves (establish/join → the new world's snapshot renders and clears this; refuse →
+  // passthroughBlank takes over; geo unavailable/already-selected → endAwaitingSpace restores the view).
+  function beginAwaitingSpace() {
+    awaitingSpace = true;
+    showInfo("Finding your space…");
+    showHeadsetMessage("Finding your space…\nAligning to your room — one moment.");
+    blankToPassthrough();
+  }
+
+  // Selection resolved WITHOUT a world switch (already-selected, or geolocation unavailable/denied), so no
+  // fresh snapshot is coming — un-blank and re-render the world we blanked.
+  function endAwaitingSpace() {
+    if (!awaitingSpace) return;
+    awaitingSpace = false;
+    hideHeadsetMessage(); hideInfo();
+    if (lastWorld) applySnapshot(lastWorld);
   }
 
   // --- presence (Phase 4 §7): show the other users as a sphere-on-box avatar, co-located in the shared
@@ -1089,7 +1122,8 @@
   // physically in a space, so it must NOT drive space selection (it just joins the active world).
   // Best-effort: needs HTTPS + permission; silently skipped if denied or unavailable.
   function reportGeolocation() {
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) return;                      // can't locate → don't blank; just join as-is
+    beginAwaitingSpace();                                    // blank + "finding your space" until this resolves
     navigator.geolocation.getCurrentPosition(function (pos) {
       lastGeo = { lat: pos.coords.latitude, lon: pos.coords.longitude, user: currentUser() || undefined };
       fetch("/geolocation", {
@@ -1097,15 +1131,15 @@
         body: JSON.stringify({ lat: lastGeo.lat, lon: lastGeo.lon, accuracy: pos.coords.accuracy,
                                user: lastGeo.user, cid: clientId }),
       }).then(function (r) { return r.json(); }).then(function (resp) {
-        if (!resp || resp.selected) return;                  // already the established space this session
+        if (!resp || resp.selected) { endAwaitingSpace(); return; }   // already established this session
         var cands = resp.candidates || [];
         // No geo-near space at all ⇒ definitely somewhere new — commit "no match" now so the server stamps
         // the current un-located space or mints a fresh one here (the new-person/new-place path). Otherwise
-        // arm the vote: room-capture picks the matching candidate as its capture fills in.
+        // arm the vote: room-capture picks the matching candidate as its capture fills in (still blanked).
         if (!cands.length) commitSelect({ matched: false });
         else pendingSelect = { candidates: cands, tries: 0 };
-      }).catch(function () {});
-    }, function () {}, { maximumAge: 600000, timeout: 10000 });
+      }).catch(function () { endAwaitingSpace(); });          // discovery failed → un-blank, join as-is
+    }, function () { endAwaitingSpace(); }, { maximumAge: 600000, timeout: 10000 });   // geo denied/timed out
   }
 
   // Commit stage-2 of space selection: tell the server the verdict (matched a candidate, or none), with the
@@ -1128,10 +1162,14 @@
         passthroughBlank();                                // tear down world → passthrough, ignore updates
         return;
       }
-      refused = false; hideHeadsetMessage(); hideInfo();   // admitted / established → we hold the space
+      // admitted / established → we hold the space. A matched-existing-space JOIN or a mint SWITCHES worlds
+      // → its fresh snapshot renders and clears awaitingSpace. An ADMIT to the ALREADY-active space sends no
+      // snapshot, so restore the (blanked) view here.
+      refused = false;
       amHolding = true;
       if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: "hold" }));
-    }).catch(function () {});
+      if (awaitingSpace) endAwaitingSpace();
+    }).catch(function () { endAwaitingSpace(); });
   }
 
   window.addEventListener("load", function () {
@@ -1142,9 +1180,10 @@
       sc.addEventListener("enter-vr", reportGeolocation);
       sc.addEventListener("exit-vr", function () {  // left AR → release our hold so the space can unlock
         amHolding = false;
+        awaitingSpace = false; hideHeadsetMessage();   // bailed out of AR mid-selection → drop the notice
         if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: "release" }));
         if (refused) {                              // we were blanked → resync a clean world now we're out of AR
-          refused = false; hideHeadsetMessage(); hideInfo();
+          refused = false; hideInfo();
           if (socket) socket.close();               // onclose auto-reconnects → a fresh snapshot re-renders it
         }
       });
