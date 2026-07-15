@@ -98,6 +98,22 @@ def _entity_line(e: dict) -> str:
     return f"{e['id']}: {desc} at {pos}"
 
 
+def _env_line(env: dict) -> str:
+    """One-line summary of the scene's ENVIRONMENT state that isn't an entity — the skybox, sky color, and
+    fog. Included in world://current so the director actually SEES a skybox is set (it lives in
+    environment.sky, not as a placed entity, so it never showed in the object list before)."""
+    sky = env.get("sky") or {}
+    bits = []
+    if sky.get("src"):
+        kind = "grounded skybox" if sky.get("grounded") else "skybox"
+        bits.append(f"{kind} image {sky['src']} (remove/replace it with set_environment(sky_color=...))")
+    elif sky.get("color"):
+        bits.append(f"plain sky color {sky['color']}")
+    if env.get("fog"):
+        bits.append(f"fog {env['fog']}")
+    return ("Environment: " + "; ".join(bits)) if bits else ""
+
+
 @mcp.tool()
 async def query_world() -> str:
     """Full world dump (every entity + environment). RARELY needed — your placed objects are already in
@@ -163,16 +179,20 @@ async def room_resource() -> str:
 
 @mcp.resource("world://current")
 async def world_resource() -> str:
-    """Live summary of PLACED virtual objects (the models/images/skyboxes you've added) — injected each
-    turn so the builder references them by id without a query_world round-trip. Excludes scaffold and
-    real surfaces (real surfaces are already in room://current)."""
+    """Live summary of the virtual scene you've built — PLACED objects (models/images) plus the
+    ENVIRONMENT (skybox / sky color / fog). Injected each turn so the builder references them without a
+    query_world round-trip. Excludes scaffold and real surfaces (those are in room://current). The skybox
+    lives in the environment, not as an object, so it's reported on its own line — check here before
+    telling the user there's no skybox to change/remove."""
     doc = await _get("/world")
     placed = [e for e in doc["entities"]
               if not (e.get("meta", {}).get("real") or e.get("meta", {}).get("scaffold"))]
-    if not placed:
-        return "No objects placed in the world yet."
-    return ("Placed objects (reference these directly by id — no need to query the world):\n"
-            + "\n".join(f"  - {_entity_line(e)}" for e in placed))
+    lines = (["Placed objects (reference these directly by id — no need to query the world):"]
+             + [f"  - {_entity_line(e)}" for e in placed]) if placed else ["No objects placed in the world yet."]
+    envline = _env_line(doc.get("environment", {}))
+    if envline:
+        lines.append(envline)
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -916,10 +936,12 @@ async def set_environment(
     fog_color: Optional[str] = None,
     fog_density: Optional[float] = None,
 ) -> str:
-    """Set environment properties: sky_color, fog_color (CSS/#hex), fog_density (0..1)."""
+    """Set environment properties: sky_color, fog_color (CSS/#hex), fog_density (0..1). Setting sky_color
+    makes the sky a PLAIN COLOR and REMOVES any skybox image (they're mutually exclusive) — this is how you
+    remove/clear a skybox. See the current skybox/sky in world://current."""
     changes: dict[str, Any] = {}
     if sky_color is not None:
-        changes["sky.color"] = sky_color
+        changes["sky"] = {"color": sky_color}   # replace the sky wholesale → drops any skybox src/grounded
     if fog_color is not None or fog_density is not None:
         fog: dict[str, Any] = {"type": "exponential"}
         if fog_color is not None:
