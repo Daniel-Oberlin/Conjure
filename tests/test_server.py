@@ -661,6 +661,17 @@ def test_texture_surface_resolves_by_friendly_id(srv, client):
     assert r.json()["ok"] is True and r.json()["count"] == 1
 
 
+def test_plain_sky_color_replaces_a_skybox_image(srv, client):
+    # Setting a plain sky color must REMOVE a skybox image (they're mutually exclusive) — a dotted
+    # `sky.color` merge would leave `sky.src` behind, so the skybox lingers in the doc and reappears on
+    # reload ("remove the skybox" wouldn't stick). set_environment writes the whole `sky` wholesale.
+    client.post("/patch", json={"ops": [{"op": "env", "set": {"sky": {"src": "/assets/x.jpg", "grounded": True}}}]})
+    assert srv.store.doc["environment"]["sky"].get("src")
+    client.post("/patch", json={"ops": [{"op": "env", "set": {"sky": {"color": "#101018"}}}]})
+    sky = srv.store.doc["environment"]["sky"]
+    assert sky == {"color": "#101018"} and "src" not in sky        # skybox image dropped, not merged under
+
+
 def test_reset_clears_world_to_starter(srv, client):
     client.post("/patch", json={"ops": [{"op": "add", "entity": {"id": "box", "components": {}}}]})
     assert any(e["id"] == "box" for e in _entities(client))
