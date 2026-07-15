@@ -356,6 +356,10 @@
   // while that vote is in flight (null when there's nothing to decide); `lastGeo` remembers the reported
   // location so a "no match" commit can stamp/mint a space there.
   var pendingSelect = null, lastGeo = null;
+  // The location fix is acquired EAGERLY on page load (warmGeo), before the user enters AR, so it's usually
+  // ready by the time they do — the acquisition (often several seconds on a headset) overlaps with reading
+  // the page / clicking Enter AR instead of stalling after it. geoStatus: idle → pending → ready | failed.
+  var geoStatus = "idle";
   // Admission gate + occupancy (new-space-flow steps 4/7). `clientId` identifies this page-load to the
   // server so its select commits once (GPS jitter can't re-vote). `amHolding` = we passed the co-location
   // gate and are HOLDING the active space; we tell the server (`hold` over /ws) so it counts us as
@@ -523,14 +527,14 @@
     blankToPassthrough();
   }
 
-  // Entering AR: we don't yet know which space we're in. Blank to passthrough + show a notice until
-  // /space/select resolves (establish/join → the new world's snapshot renders and clears this; refuse →
-  // passthroughBlank takes over; geo unavailable/already-selected → endAwaitingSpace restores the view).
-  function beginAwaitingSpace() {
-    awaitingSpace = true;
-    showInfo("Finding your space…");
-    showHeadsetMessage("Finding your space…\nAligning to your room — one moment.");
-    blankToPassthrough();
+  // The notice shown while blanked, by phase: waiting on the location fix vs. matching/establishing the
+  // space once we have it. Sets both the 2D banner and the in-headset panel.
+  function setAwaitMessage(kind) {
+    var m = kind === "locating"
+      ? "Getting your location…\nWorking out which space you're in."
+      : "Finding your space…\nAligning to your room — one moment.";
+    showInfo(m);
+    showHeadsetMessage(m);
   }
 
   // Selection resolved WITHOUT a world switch (already-selected, or geolocation unavailable/denied), so no
@@ -1087,6 +1091,8 @@
     if (!navigator.xr || !navigator.xr.isSessionSupported) return;
     navigator.xr.isSessionSupported("immersive-ar").then(function (supported) {
       if (!supported) return;
+      warmGeo();   // AR-capable device → start acquiring the location fix now (before Enter AR is clicked),
+                   // so it's ready by the time they enter. Desktop (no immersive-ar) never geolocates.
       var scene = document.querySelector("a-scene");
       var btn = document.createElement("button");
       btn.textContent = "ENTER AR";
@@ -1117,29 +1123,51 @@
     debugLog("version", "client js v" + (m ? m[1] : "?") + " loaded", true);
   }
 
-  // Report the headset's coarse location so the server can stamp / pick the physical space it belongs
-  // to (docs/spaces-and-users-plan.md §7). Fired only on ENTERING AR — a desktop viewer/guest isn't
-  // physically in a space, so it must NOT drive space selection (it just joins the active world).
-  // Best-effort: needs HTTPS + permission; silently skipped if denied or unavailable.
-  function reportGeolocation() {
-    if (!navigator.geolocation) return;                      // can't locate → don't blank; just join as-is
-    beginAwaitingSpace();                                    // blank + "finding your space" until this resolves
+  // Acquire the headset's coarse location EAGERLY — called on page load for AR-capable devices (see
+  // setupARButton), so the fix is usually cached before the user enters AR. This only ACQUIRES the fix;
+  // space selection still happens on enter-vr (AR-only — a desktop viewer isn't physically in a space).
+  // Best-effort: needs HTTPS + permission. If AR is already waiting on the fix when it lands, proceed.
+  function warmGeo() {
+    if (!navigator.geolocation || geoStatus === "pending" || geoStatus === "ready") return;
+    geoStatus = "pending";
     navigator.geolocation.getCurrentPosition(function (pos) {
       lastGeo = { lat: pos.coords.latitude, lon: pos.coords.longitude, user: currentUser() || undefined };
-      fetch("/geolocation", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat: lastGeo.lat, lon: lastGeo.lon, accuracy: pos.coords.accuracy,
-                               user: lastGeo.user, cid: clientId }),
-      }).then(function (r) { return r.json(); }).then(function (resp) {
-        if (!resp || resp.selected) { endAwaitingSpace(); return; }   // already established this session
-        var cands = resp.candidates || [];
-        // No geo-near space at all ⇒ definitely somewhere new — commit "no match" now so the server stamps
-        // the current un-located space or mints a fresh one here (the new-person/new-place path). Otherwise
-        // arm the vote: room-capture picks the matching candidate as its capture fills in (still blanked).
-        if (!cands.length) commitSelect({ matched: false });
-        else pendingSelect = { candidates: cands, tries: 0 };
-      }).catch(function () { endAwaitingSpace(); });          // discovery failed → un-blank, join as-is
-    }, function () { endAwaitingSpace(); }, { maximumAge: 600000, timeout: 10000 });   // geo denied/timed out
+      geoStatus = "ready";
+      if (awaitingSpace) beginSpaceSelection();              // AR entered while we were locating → select now
+    }, function () {
+      geoStatus = "failed";
+      if (awaitingSpace) endAwaitingSpace();                 // AR waiting but no fix → join the active world
+    }, { maximumAge: 600000, timeout: 10000 });
+  }
+
+  // Entering AR: we don't yet know which space we're in, so blank to passthrough and either select
+  // immediately (fix already warm), wait for the fix (showing a "getting your location" notice), or — if
+  // geolocation is unavailable/denied — just join the active world as-is.
+  function onEnterAR() {
+    awaitingSpace = true;
+    blankToPassthrough();
+    if (geoStatus === "ready") beginSpaceSelection();
+    else if (geoStatus === "failed" || !navigator.geolocation) endAwaitingSpace();
+    else { setAwaitMessage("locating"); warmGeo(); }         // still acquiring → warmGeo's callback selects
+  }
+
+  // Stage-1 discovery using the (warm) fix: ask the server for geo-near candidate spaces, then arm the
+  // vote (candidates) or commit "no match" (nowhere near). Runs only in AR, once the fix is ready.
+  function beginSpaceSelection() {
+    if (!lastGeo) { endAwaitingSpace(); return; }
+    setAwaitMessage("finding");                              // fix in hand → now matching/establishing
+    var g = lastGeo;
+    fetch("/geolocation", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat: g.lat, lon: g.lon, user: g.user, cid: clientId }),
+    }).then(function (r) { return r.json(); }).then(function (resp) {
+      if (!resp || resp.selected) { endAwaitingSpace(); return; }   // already established this session
+      var cands = resp.candidates || [];
+      // No geo-near space at all ⇒ somewhere new — commit "no match" now so the server mints a fresh space
+      // here. Otherwise arm the vote: room-capture picks the matching candidate as its capture fills in.
+      if (!cands.length) commitSelect({ matched: false });
+      else pendingSelect = { candidates: cands, tries: 0 };
+    }).catch(function () { endAwaitingSpace(); });            // discovery failed → un-blank, join as-is
   }
 
   // Commit stage-2 of space selection: tell the server the verdict (matched a candidate, or none), with the
@@ -1175,9 +1203,9 @@
   window.addEventListener("load", function () {
     connect(); setupARButton(); markVersion();
     setInterval(presenceTick, 100);                 // ~10 Hz head-pose broadcast (presence)
-    var sc = document.querySelector("a-scene");      // report location only from a real AR session
+    var sc = document.querySelector("a-scene");      // space selection runs only from a real AR session
     if (sc) {
-      sc.addEventListener("enter-vr", reportGeolocation);
+      sc.addEventListener("enter-vr", onEnterAR);
       sc.addEventListener("exit-vr", function () {  // left AR → release our hold so the space can unlock
         amHolding = false;
         awaitingSpace = false; hideHeadsetMessage();   // bailed out of AR mid-selection → drop the notice
