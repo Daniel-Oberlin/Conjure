@@ -14,8 +14,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=int(os.environ.get("CONJURE_PORT", "8080")))
     ap.add_argument("--debug-registration", action="store_true",
                     help="show the co-location registration HUD + per-capture log in the headset (off by default)")
-    ap.add_argument("--registration-period", type=float, default=20.0,
-                    help="seconds for the static establishing window before freeze (default: 20.0)")
+    ap.add_argument("--establishment-period", type=float, default=20.0,
+                    help="seconds a NEW room captures before its static set freezes (default: 20.0)")
     ap.add_argument("--force-geo", metavar="ZERO|/user/spaces/name", default=None,
                     help="TEST: override the reported geolocation — 'zero' pins you at (0,0), or address an "
                          "existing space by path (e.g. /daniel/spaces/space-0) to pin you at its location")
@@ -29,7 +29,7 @@ def main() -> None:
         os.environ["CONJURE_FORCE_GEO"] = args.force_geo
     if args.force_occupied:
         os.environ["CONJURE_FORCE_OCCUPIED"] = "1"
-    os.environ["CONJURE_REGISTRATION_PERIOD"] = str(args.registration_period)
+    os.environ["CONJURE_ESTABLISHMENT_PERIOD"] = str(args.establishment_period)
     uvicorn.run("conjure.server:app", host=args.host, port=args.port, reload=False)
 
 

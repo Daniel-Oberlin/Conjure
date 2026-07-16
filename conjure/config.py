@@ -59,7 +59,7 @@ class Settings:
     openai_image_model: str = "gpt-image-1"          # OpenAI image generator model
     debug_log: bool = True                           # append client diagnostics to temp/conjure.log
     debug_registration: bool = False                 # co-location registration HUD + per-capture log (opt-in)
-    registration_period: float = 20.0                # seconds for static establishing window before freeze
+    establishment_period: float = 20.0               # seconds a NEW room captures before its static set freezes
     # TEST override for the client's reported geolocation (--force-geo). "zero" pins you at (0,0) — a
     # convenient "somewhere else"; "/<user>/spaces/<name>" pins you at that space's stored location.
     # Empty (default) ⇒ use the real browser/headset location. See server._forced_geo.
@@ -102,7 +102,7 @@ def get_settings() -> Settings:
         openai_image_model=os.environ.get("CONJURE_OPENAI_IMAGE_MODEL", "gpt-image-1"),
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
-        registration_period=float(os.environ.get("CONJURE_REGISTRATION_PERIOD", "20.0")),
+        establishment_period=float(os.environ.get("CONJURE_ESTABLISHMENT_PERIOD", "20.0")),
         force_geo=(os.environ.get("CONJURE_FORCE_GEO", "").strip() or None),
         force_occupied=os.environ.get("CONJURE_FORCE_OCCUPIED", "").strip().lower() in ("1", "true", "yes", "on"),
         embed_backend=os.environ.get("CONJURE_EMBED_BACKEND", "auto"),
