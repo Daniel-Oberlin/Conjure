@@ -999,3 +999,28 @@ This index maps each major section in this document to implementation lines.
 - /room ownership gate is active-world-owner middleware, not space-owner check: [conjure/server.py](conjure/server.py#L391), [conjure/server.py](conjure/server.py#L392), [conjure/server.py](conjure/server.py#L399), [conjure/server.py](conjure/server.py#L401)
 - /room ingest route itself: [conjure/server.py](conjure/server.py#L1699)
 - Client transport for geometry is POST /room: [client/conjure-client.js](client/conjure-client.js#L1047)
+
+
+
+how register solves the guest's rotation. Here's the full picture, grounded in the actual algorithm.
+
+What's being solved
+
+When a guest joins, its live capture is the same room as the authority's reference, but rotated and shifted by an unknown amount. Because the trust gate guarantees a level floor, gravity pins pitch and roll — so the only rotational unknown is yaw (heading: rotation about the vertical axis). register finds that yaw first, then the horizontal shift.
+
+How yaw is found — a voting histogram
+
+It can't pair walls up front (it doesn't yet know which guest wall is which reference wall), so it votes:
+
+1. Take every pairing of (a guest wall, a reference wall) that's plausibly the same surface — same semantic, similar size, both vertical.
+2. For each such pair, compute the angle that would rotate the guest wall's facing onto the reference wall's facing: delta = wrap(ref.nyaw − cur.nyaw).
+3. Here's the trick: if the guest really is the same room rotated by some true angle θ, then every correct pair produces delta ≈ θ. Incorrect pairs (guest wall i matched against an unrelated reference wall j) produce scattered, random deltas.
+4. Drop all those deltas into a histogram with 6° bins (Math.PI/30). The correct θ piles up into one tall bin; the wrong pairings smear thinly across all the others.
+
+So what is a "peak"?
+
+A peak is one of the tallest histogram bins — a candidate yaw angle that many wall-pairs independently agreed on. The bins are sorted by how many deltas landed in them, and the top N (--reg-yaw-peaks) are taken as candidate rotations. Each peak's actual angle is the circular mean of the deltas in its bin (atan2(Σsin, Σcos)), so it's a refined value, not just the bin's center. (It's essentially a 1-D Hough transform over rotation angle.)
+
+Why try more than the single tallest peak?
+
+Because the true θ isn't always the most-populated bin. Clutter/furniture, a guest viewing the room from a very different spot, a nearly-symmetric room (a rectangle has a plausible 180° "mirror" rotation), or capture noise can make a wrong angle tie with or slightly outrank the correct one. So register doesn't commit to bin #1 — it tries the top N peaks, and for each candidate yaw it runs the rest of the solve (grid-vote the translation, then count how many reference surfaces that full transform actually covers) and keeps whichever candidate explains the room best. Even if the true rotation was the 3rd-tallest bin, trying 5 peaks still finds it.

@@ -350,6 +350,20 @@ test("register: coverage threshold is tunable (guest robustness knob)", () => {
   assert.ok(reg.Tmat && reg.cov === 3, "lowering minCov to 3 admits the same partial view (cov=" + reg.cov + ")");
 });
 
+test("register reports per-wall residuals; a clean capture fits tightly (non-rigidity probe)", () => {
+  const ref = rectRoom();
+  const cur = asCapture(ref, 25, new THREE.Vector3(0.3, 0, -0.2));   // the SAME room, rigidly moved
+  const reg = RS.register(THREE, cur, ref);
+  assert.ok(reg.Tmat, "locks");
+  assert.strictEqual(reg.residuals.length, reg.cov, "one residual per COVERED surface");
+  reg.residuals.forEach((w) => {
+    assert.ok(typeof w.res === "number" && w.res >= 0, "res = distance from the reference (m), ≥ 0");
+    assert.ok(typeof w.dist === "number" && w.dist >= 0, "dist = reference's distance from origin (m), ≥ 0");
+  });
+  assert.ok(Math.max(...reg.residuals.map((w) => w.res)) < 0.02,
+    "a truly-rigid capture fits within ~cm everywhere — the baseline that on-device non-rigidity breaks");
+});
+
 // --- selectSpace: the FINE stage of two-stage space selection (new-space-flow §3, D2/D7). Geolocation
 // hands the client a few geo-near candidate spaces in stored a-plane form; selectSpace picks which one the
 // headset is physically in via the register() coverage vote, or null ("somewhere new"). It's the geometric

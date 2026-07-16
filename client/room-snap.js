@@ -111,7 +111,11 @@
    * @param {RefSurface[]} cur   the newly detected planes (current refSpace)
    * @param {RefSurface[]} ref   the persistent reference constellation
    * @param {RegOpts} [opts]     robustness overrides (default: the built-in constants)
-   * @returns {{Tmat: Mat4|null, stat: string, cov: number, inl?: number}}
+   * @returns {{Tmat: Mat4|null, stat: string, cov: number, inl?: number,
+   *            residuals?: {id: string|undefined, res: number, dist: number}[]}}
+   *   `residuals` (winning transform only): per covered plane, its distance from the matched reference
+   *   after the fit (`res`, m) + that reference's horizontal distance from the frame origin (`dist`, m).
+   *   Diagnostic only — tells whether misalignment is uniform or grows with distance (a non-rigid map).
    */
   function register(THREE, cur, ref, opts) {
     var UP = new THREE.Vector3(0, 1, 0);
@@ -158,7 +162,7 @@
     });
     // Step 2/3 — for each candidate yaw, solve translation (densest cell of ref.pos − R·cur.pos over
     // same-size pairs) and score by how many planes land on a same-semantic reference surface.
-    var best = /** @type {{Tmat: Mat4, cov: number, inl: number}|null} */ (null);
+    var best = /** @type {{Tmat: Mat4, cov: number, inl: number, res: {id: string|undefined, res: number, dist: number}[]}|null} */ (null);
     thetas.forEach(function (theta) {
       var qy = new THREE.Quaternion().setFromAxisAngle(UP, theta);
       // Same-FACING gate: after applying this candidate yaw, a true correspondence's normal aligns with its
@@ -191,15 +195,16 @@
       /** @type {Set<RefSurface>} */
       var claimed = new Set();   // distinct reference surfaces covered (extras/fragmentation don't inflate)
       var rawInl = 0;
+      /** @type {{id: string|undefined, res: number, dist: number}[]} */
+      var res = [];              // per-covered-plane residual + the reference's distance from origin (diag)
       cur.forEach(function (c) {
         var tp = c.pos.clone().applyMatrix4(Tmat), bd = INLIER_M;
-        /** @type {RefSurface|null} */
-        var hit = null;
+        var hit = /** @type {RefSurface|null} */ (null);
         ref.forEach(function (r) { if (r.sem === c.sem && sameFacing(c, r)) { var d = tp.distanceTo(r.pos); if (d < bd) { bd = d; hit = r; } } });
-        if (hit) { claimed.add(hit); rawInl++; }
+        if (hit) { claimed.add(hit); rawInl++; res.push({ id: hit.id, res: bd, dist: Math.hypot(hit.pos.x, hit.pos.z) }); }
       });
       var cov = claimed.size;
-      if (!best || cov > best.cov) best = { Tmat: Tmat, cov: cov, inl: rawInl };
+      if (!best || cov > best.cov) best = { Tmat: Tmat, cov: cov, inl: rawInl, res: res };
     });
     var cov = best ? best.cov : 0;
     var stat = "cov=" + cov + "/" + ref.length + " inl=" + (best ? best.inl : 0) + "/" + cur.length + " dlt=" + deltas.length;
@@ -207,14 +212,14 @@
     // by ONE transform. Robust to EXTRA detected planes (absent from the formula) and MISSING ones (need
     // only a fraction of the reference). A genuinely different space can't cover ≥MIN_COV surfaces of the
     // reference under one consistent transform ⇒ null ("not in this space", room-model §8a).
-    if (!best || cov < MIN_COV || cov < MIN_COV_FRAC * ref.length) return { Tmat: null, stat: stat, cov: cov };
+    if (!best || cov < MIN_COV || cov < MIN_COV_FRAC * ref.length) return { Tmat: null, stat: stat, cov: cov, residuals: best ? best.res : [] };
     // Append the SOLVED transform (yaw about gravity + translation) so diagnostics can tell whether a
     // relocalization actually changed the frame (yaw jumps) or registration stayed put while the world
     // shifted. Matrix4 is column-major: e[0]=cosθ, e[8]=sinθ for the Y rotation; e[12],e[14]=tx,tz.
     var e = best.Tmat.elements;
     stat += " yaw=" + Math.round(Math.atan2(e[8], e[0]) * 180 / Math.PI) + "° t=("
       + e[12].toFixed(2) + "," + e[14].toFixed(2) + ")";
-    return { Tmat: best.Tmat, stat: stat, cov: cov };
+    return { Tmat: best.Tmat, stat: stat, cov: cov, inl: best.inl, residuals: best.res };
   }
 
   // Convert ONE stored/broadcast surface entity (a-plane form: transform.position/rotation in degrees,

@@ -675,6 +675,7 @@
         this._lostSince = 0;        // when registration last lost its lock (0 = locked)
         this._reloc = false;        // showing the passthrough "re-localizing" fallback?
         this._lastDiag = null;      // last capture's frame (yaw/px/pz) — for the per-capture drift delta
+        this._regRes = null;        // last register()'s per-wall residuals (--debug-registration probe)
         this._refSeq = 0;           // counter for minting brand-new surface ids
         var self = this;
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
@@ -737,6 +738,7 @@
       _register: function (cur) {
         var r = window.RoomSnap.register(AFRAME.THREE, cur, this._ref, window.CONJURE_REG);
         this._regStat = r.stat;
+        this._regRes = r.residuals || null;   // per-wall fit residuals for the --debug-registration probe
         return r.Tmat;
       },
       // While registration can't lock (the Quest's planes are inconsistent after a sleep/relocalization),
@@ -798,8 +800,22 @@
           }
           this._lastDiag = { yaw: yaw, px: px, pz: pz };
         }
+        // Residual probe (non-rigidity test): after the best rigid fit, how far is each covered plane from
+        // its reference, and how does that vary with the wall's distance from the frame origin? A flat
+        // offset everywhere ⇒ a bad-but-rigid lock; residuals GROWING with distance ⇒ the map is non-rigid
+        // (a single rigid transform can't fit — the "frozen room goes askew" thread). HUD gets μ/max + the
+        // worst wall's distance; the full per-wall list goes to the log for offline residual-vs-distance.
+        var res = this._regRes || [], rTxt = "";
+        if (res.length) {
+          var sum = 0, mx = 0, mxD = 0;
+          res.forEach(function (w) { sum += w.res; if (w.res > mx) { mx = w.res; mxD = w.dist; } });
+          rTxt = "  res μ=" + Math.round(sum / res.length * 100) + "cm max=" + Math.round(mx * 100) + "cm @" + mxD.toFixed(1) + "m";
+          debugLog("residual", res.map(function (w) {
+            return (w.id ? String(w.id).slice(-7) : "?") + " " + Math.round(w.res * 100) + "cm@" + w.dist.toFixed(1) + "m";
+          }).join(" | "), window.CONJURE_DEBUG_REGISTRATION);
+        }
         var line = (amOwner ? "OWNER" : "GUEST") + " ref=" + this._ref.length + " cur=" + nCur
-          + "  " + (this._regStat || "?") + (reg ? "  LOCK" : "  hold") + dTxt;
+          + "  " + (this._regStat || "?") + (reg ? "  LOCK" : "  hold") + dTxt + rTxt;
         debugLog("coloc", line, window.CONJURE_DEBUG_REGISTRATION);   // gated by --debug-registration, not debug_log
         this._diagHud(line);
       },
@@ -991,6 +1007,7 @@
         if (isVoidWorld) {
           var cf = window.RoomSnap.canonicalFrame(THREE, cur);
           this._regStat = cf.stat;
+          this._regRes = null;   // canonicalFrame doesn't register against a reference → no residuals
           if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, cf.Tmat);
           if (!cf.Tmat) { this._markLost(time); this.lastPost = time - RETRY_MS; return; }   // too few walls → hold
           if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }
