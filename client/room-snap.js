@@ -96,12 +96,24 @@
   //      >=4 inliers AND >=40%, else null (caller holds the last good frame). A genuinely different space
   //      yields no consensus, so a null doubles as a "not in this space" signal (room-model.md §8a).
   /**
+   * The tunable robustness knobs for register()/selectSpace(). Any field may be overridden (from the
+   * server-injected window.CONJURE_REG — see conjure-client.js); an absent/undefined field keeps the
+   * default. These govern how tolerantly a GUEST locks onto the authority's shared room.
+   * @typedef {Object} RegOpts
+   * @property {number} [minCov]      min DISTINCT reference surfaces covered to accept a lock (default 4)
+   * @property {number} [minCovFrac]  min fraction of the reference covered, 0..1 (default 0.3)
+   * @property {number} [sizeTol]     how much LARGER (m) a detected plane may be than a reference (default 0.5)
+   * @property {number} [inlierM]     max distance (m) a plane may sit from a same-kind reference to count (0.4)
+   * @property {number} [yawPeaks]    candidate room rotations tried when solving orientation (default 5)
+   */
+  /**
    * @param {THREE_NS} THREE
    * @param {RefSurface[]} cur   the newly detected planes (current refSpace)
    * @param {RefSurface[]} ref   the persistent reference constellation
+   * @param {RegOpts} [opts]     robustness overrides (default: the built-in constants)
    * @returns {{Tmat: Mat4|null, stat: string, cov: number, inl?: number}}
    */
-  function register(THREE, cur, ref) {
+  function register(THREE, cur, ref, opts) {
     var UP = new THREE.Vector3(0, 1, 0);
     if (ref.length < 3) return { Tmat: null, stat: "ref<3", cov: 0 };
     /** @param {number} a  @returns {number} */
@@ -114,7 +126,13 @@
     //  • acceptance scores DISTINCT reference surfaces COVERED (not detected-plane count): extras can't
     //    inflate it, fragmentation can't double-count it, and missing surfaces just lower coverage. We
     //    accept on coverage of the REFERENCE, so clutter never sinks an otherwise-solid lock.
-    var SIZE_TOL = 0.5, MIN_COV = 4, MIN_COV_FRAC = 0.3;
+    // The four thresholds + candidate-yaw count are tunable (opts) for two-headset guest testing.
+    opts = opts || {};
+    var SIZE_TOL = opts.sizeTol != null ? opts.sizeTol : 0.5;
+    var MIN_COV = opts.minCov != null ? opts.minCov : 4;
+    var MIN_COV_FRAC = opts.minCovFrac != null ? opts.minCovFrac : 0.3;
+    var INLIER_M = opts.inlierM != null ? opts.inlierM : 0.4;
+    var YAW_PEAKS = opts.yawPeaks != null ? opts.yawPeaks : 5;
     /** @param {RefSurface} r  @param {RefSurface} c  @returns {boolean} */
     function sizeCompat(r, c) { return c.ext[0] <= r.ext[0] + SIZE_TOL && c.ext[1] <= r.ext[1] + SIZE_TOL; }
     // Step 1 — candidate yaw(s): histogram the normal-yaw delta over same-semantic, similar-size vertical
@@ -134,7 +152,7 @@
     var hist = {};
     deltas.forEach(function (d) { var b = Math.round(d / bin); (hist[b] = hist[b] || []).push(d); });
     var keys = Object.keys(hist).sort(function (a, b) { return hist[b].length - hist[a].length; });
-    var thetas = keys.slice(0, 5).map(function (k) {            // top 5 peaks (clutter can dilute the true one)
+    var thetas = keys.slice(0, YAW_PEAKS).map(function (k) {    // top-N peaks (clutter can dilute the true one)
       var s = 0, c2 = 0; hist[k].forEach(function (d) { s += Math.sin(d); c2 += Math.cos(d); });
       return Math.atan2(s, c2);
     });
@@ -174,7 +192,7 @@
       var claimed = new Set();   // distinct reference surfaces covered (extras/fragmentation don't inflate)
       var rawInl = 0;
       cur.forEach(function (c) {
-        var tp = c.pos.clone().applyMatrix4(Tmat), bd = 0.4;
+        var tp = c.pos.clone().applyMatrix4(Tmat), bd = INLIER_M;
         /** @type {RefSurface|null} */
         var hit = null;
         ref.forEach(function (r) { if (r.sem === c.sem && sameFacing(c, r)) { var d = tp.distanceTo(r.pos); if (d < bd) { bd = d; hit = r; } } });
@@ -234,13 +252,14 @@
    * @param {THREE_NS} THREE
    * @param {RefSurface[]} cur
    * @param {{owner: string, name: string, surfaces?: SurfaceEntity[]}[]} candidates
+   * @param {RegOpts} [opts]     same robustness overrides as register() (admission uses the same vote)
    * @returns {{index: number, owner: string, name: string, cov: number, stat: string}|null}
    */
-  function selectSpace(THREE, cur, candidates) {
+  function selectSpace(THREE, cur, candidates, opts) {
     var best = /** @type {{index: number, owner: string, name: string, cov: number, stat: string}|null} */ (null);
     (candidates || []).forEach(function (cand, i) {
       var ref = (cand.surfaces || []).map(function (e) { return surfaceToRef(THREE, e); });
-      var reg = register(THREE, cur, ref);
+      var reg = register(THREE, cur, ref, opts);
       if (reg.Tmat && (!best || reg.cov > best.cov)) {
         best = { index: i, owner: cand.owner, name: cand.name, cov: reg.cov, stat: reg.stat };
       }

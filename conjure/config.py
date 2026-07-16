@@ -62,6 +62,15 @@ class Settings:
     establishment_period: float | None = 20.0        # seconds a NEW room captures before its static set
                                                      # freezes; None ("none") = skip — freeze from the first
                                                      # capture (A/B test knob; see server._ESTABLISH_SECS)
+    # Co-location robustness (two-headset GUEST tuning). Injected into the client as window.CONJURE_REG /
+    # CONJURE_CAPTURE_MS; they govern how tolerantly a guest registers its own capture against the
+    # authority's shared room. See conjure/__main__.py for the terminology + per-knob meaning.
+    reg_min_cov: int = 4                             # min DISTINCT reference surfaces covered to accept a lock
+    reg_min_cov_frac: float = 0.3                    # min fraction of the reference covered (0..1)
+    reg_size_tol: float = 0.5                        # how much LARGER (m) a detected plane may be than a reference
+    reg_inlier_m: float = 0.4                        # max distance (m) a plane may sit from a same-kind reference
+    reg_yaw_peaks: int = 5                           # candidate room rotations tried when solving orientation
+    capture_interval: float = 2.0                    # seconds between recaptures/re-registrations
     # TEST override for the client's reported geolocation (--force-geo). "zero" pins you at (0,0) — a
     # convenient "somewhere else"; "/<user>/spaces/<name>" pins you at that space's stored location.
     # Empty (default) ⇒ use the real browser/headset location. See server._forced_geo.
@@ -110,6 +119,12 @@ def get_settings() -> Settings:
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
         establishment_period=_float_or_none(os.environ.get("CONJURE_ESTABLISHMENT_PERIOD", "20.0")),
+        reg_min_cov=int(os.environ.get("CONJURE_REG_MIN_COV", "4")),
+        reg_min_cov_frac=float(os.environ.get("CONJURE_REG_MIN_COV_FRAC", "0.3")),
+        reg_size_tol=float(os.environ.get("CONJURE_REG_SIZE_TOL", "0.5")),
+        reg_inlier_m=float(os.environ.get("CONJURE_REG_INLIER_M", "0.4")),
+        reg_yaw_peaks=int(os.environ.get("CONJURE_REG_YAW_PEAKS", "5")),
+        capture_interval=float(os.environ.get("CONJURE_CAPTURE_INTERVAL", "2.0")),
         force_geo=(os.environ.get("CONJURE_FORCE_GEO", "").strip() or None),
         force_occupied=os.environ.get("CONJURE_FORCE_OCCUPIED", "").strip().lower() in ("1", "true", "yes", "on"),
         embed_backend=os.environ.get("CONJURE_EMBED_BACKEND", "auto"),

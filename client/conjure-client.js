@@ -735,7 +735,7 @@
       _euler: function (q) { return window.RoomSnap.eulerYXZ(AFRAME.THREE, q); },
       _yawOf: function (n) { return window.RoomSnap.yawOf(n); },
       _register: function (cur) {
-        var r = window.RoomSnap.register(AFRAME.THREE, cur, this._ref);
+        var r = window.RoomSnap.register(AFRAME.THREE, cur, this._ref, window.CONJURE_REG);
         this._regStat = r.stat;
         return r.Tmat;
       },
@@ -859,7 +859,9 @@
         if (!frame.detectedPlanes) return;                  // capture needs plane detection
         if (refused) return;                                // refused by the admission gate → don't capture,
                                                             // register, or post geometry into a space we're not in
-        if (time - this.lastPost < 2000) return;            // throttle to ~0.5 Hz
+        var CAPTURE_MS = window.CONJURE_CAPTURE_MS || 2000; // recapture cadence (--capture-interval), ~0.5 Hz
+        var RETRY_MS = Math.max(0, CAPTURE_MS - 300);       // after a rejected capture, retry ~300 ms sooner
+        if (time - this.lastPost < CAPTURE_MS) return;      // throttle
         var THREE = AFRAME.THREE, self = this, UP = new THREE.Vector3(0, 1, 0);
 
         // Pass A — read every detected plane in the CURRENT refSpace (no world frame applied yet).
@@ -962,7 +964,7 @@
         if (levelA > 0 && levelY < 0.98) {
           this._regStat = "settling ny=" + levelY.toFixed(2);
           this._markLost(time);
-          this.lastPost = time - 1700; return;
+          this.lastPost = time - RETRY_MS; return;
         }
 
         // Space selection, stage 2 (new-space-flow §3): while candidates are pending, vote THIS capture
@@ -973,7 +975,7 @@
         // undecided and we fall through to normal behavior (register correctly DECLINES a non-matching
         // booted room, so nothing drifts) until the capture fills in. Never runs for a void world.
         if (pendingSelect && !isVoidWorld) {
-          var pick = window.RoomSnap.selectSpace(THREE, cur, pendingSelect.candidates);
+          var pick = window.RoomSnap.selectSpace(THREE, cur, pendingSelect.candidates, window.CONJURE_REG);
           if (pick) { commitSelect({ matched: true, owner: pick.owner, name: pick.name }); return; }
           pendingSelect.tries++;
           var nWalls = cur.filter(function (c) { return c.orient === "vertical"; }).length;
@@ -990,7 +992,7 @@
           var cf = window.RoomSnap.canonicalFrame(THREE, cur);
           this._regStat = cf.stat;
           if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, cf.Tmat);
-          if (!cf.Tmat) { this._markLost(time); this.lastPost = time - 1700; return; }   // too few walls → hold
+          if (!cf.Tmat) { this._markLost(time); this.lastPost = time - RETRY_MS; return; }   // too few walls → hold
           if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }
           this._Tmat = cf.Tmat; this._haveT = true; this._anchorInv = cf.Tmat;
           this.lastPost = time;
@@ -1002,7 +1004,7 @@
         // means we're not locked, so hold + retry fast. A guest can never establish a fresh frame.
         var reg = this._register(cur), canEstablish = amOwner && this._ref.length === 0;
         if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, reg);   // opt-in: one line + HUD/capture
-        if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - 1700; return; }   // not locked → hold
+        if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - RETRY_MS; return; }   // not locked → hold
         if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }   // re-locked → restore
         var registered = !!reg, Tmat;
         if (reg) { Tmat = this._Tmat = reg; this._haveT = true; }

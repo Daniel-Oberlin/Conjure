@@ -340,6 +340,16 @@ test("register declines a genuinely different (differently-sized) room", () => {
   assert.strictEqual(RS.register(THREE, cur, ref).Tmat, null, "different-scale room doesn't false-lock");
 });
 
+test("register: coverage threshold is tunable (guest robustness knob)", () => {
+  // A guest that only overlaps 3 of the authority's surfaces is DECLINED at the default minCov=4, but
+  // admitted when the knob is lowered to 3 — the mechanism behind --reg-min-cov for two-headset testing.
+  const ref = rectRoom();                                                  // 4 walls + floor + ceiling
+  const cur = asCapture(ref.slice(0, 3), 30, new THREE.Vector3(0.4, 0, -0.3));   // guest sees only 3 walls
+  assert.strictEqual(RS.register(THREE, cur, ref).Tmat, null, "default minCov=4 declines a 3-surface view");
+  const reg = RS.register(THREE, cur, ref, { minCov: 3 });
+  assert.ok(reg.Tmat && reg.cov === 3, "lowering minCov to 3 admits the same partial view (cov=" + reg.cov + ")");
+});
+
 // --- selectSpace: the FINE stage of two-stage space selection (new-space-flow §3, D2/D7). Geolocation
 // hands the client a few geo-near candidate spaces in stored a-plane form; selectSpace picks which one the
 // headset is physically in via the register() coverage vote, or null ("somewhere new"). It's the geometric

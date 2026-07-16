@@ -735,8 +735,14 @@ async def index() -> HTMLResponse:
     # client logging; debug_registration gates the co-location registration HUD + per-capture log.
     flag = "true" if settings.debug_log else "false"
     rflag = "true" if settings.debug_registration else "false"
+    # Co-location robustness knobs (two-headset guest tuning) — read by RoomSnap.register/selectSpace and the
+    # capture throttle in conjure-client.js. Omitting a field falls back to the client's built-in default.
+    reg = (f"{{minCov:{settings.reg_min_cov},minCovFrac:{settings.reg_min_cov_frac},"
+           f"sizeTol:{settings.reg_size_tol},inlierM:{settings.reg_inlier_m},yawPeaks:{settings.reg_yaw_peaks}}}")
+    cap_ms = int(settings.capture_interval * 1000)
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
-                        f"window.CONJURE_DEBUG_REGISTRATION={rflag};</script>\n  </head>")
+                        f"window.CONJURE_DEBUG_REGISTRATION={rflag};"
+                        f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};</script>\n  </head>")
     return HTMLResponse(html, headers=_NO_STORE)
 
 
