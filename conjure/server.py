@@ -1651,8 +1651,11 @@ _authority_ts: float = 0.0            # server time of the last accepted capture
 # surface used to drop out, get pruned, and re-appear with a NEW id, stranding the photo; never pruning a
 # static surface keeps its id stable. DYNAMIC features (furniture) stay live: per-surface gate + pruning.
 _STATIC_SEMANTICS = {"wall", "wall art", "door", "window", "floor", "ceiling"}
-_ESTABLISH_SECS = float(getattr(settings, "establishment_period", 20.0))
-                                        # capture window before the static set freezes (from the FIRST capture)
+_ESTABLISH_SECS = getattr(settings, "establishment_period", 20.0)
+                                        # capture window (secs) before the static set freezes, from the FIRST
+                                        # capture. None (--establishment-period none) ⇒ skip establishing:
+                                        # frozen from capture 1, so a KNOWN room keeps its stored geometry
+                                        # untouched (an A/B knob approximating fix #2 for return visits).
 _room_capture_start: float | None = None   # server time of the first /room post since the room went live
 
 
@@ -1730,7 +1733,7 @@ async def ingest_room(req: RoomUpdate) -> dict:
     _authority_ts = now                                       # keep/refresh authority for this client
     if _room_capture_start is None:                           # first capture of this room session
         _room_capture_start = now
-    established = (now - _room_capture_start) > _ESTABLISH_SECS
+    established = _ESTABLISH_SECS is None or (now - _room_capture_start) > _ESTABLISH_SECS  # None ⇒ skip establishing
 
     existing = {e["id"]: e for e in store.doc["entities"] if e.get("meta", {}).get("real")}
     new_ids = {s.id for s in req.surfaces}

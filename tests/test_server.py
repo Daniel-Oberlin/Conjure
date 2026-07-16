@@ -652,6 +652,25 @@ def test_static_set_freezes_after_establishing_dynamic_stays_live(srv, client, m
     assert couch["transform"]["position"][0] == 1.3                         # DYNAMIC still updates
 
 
+def test_establishment_period_none_freezes_static_from_first_capture(srv, client, monkeypatch):
+    # --establishment-period none ⇒ _ESTABLISH_SECS is None ⇒ established from capture 1: a re-capture that
+    # moves a wall is IGNORED (frozen immediately), so a known room keeps its stored walls (the A/B knob).
+    import conjure.server as S
+    monkeypatch.setattr(S, "_ESTABLISH_SECS", None)
+    wall = lambda z: {"client_id": "h1", "replace": True, "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, z], "extent": [3, 2.4]}]}
+    client.post("/room", json=wall(-2.0))                                   # first capture adds the wall
+    client.post("/room", json=wall(-2.4))                                   # move 40 cm → must be ignored
+    e = next(e for e in _entities(client) if e["id"] == "real_wall_1")
+    assert e["transform"]["position"][2] == -2.0                            # frozen from the first capture
+
+
+def test_establishment_period_config_parses_none(srv):
+    from conjure.config import _float_or_none
+    assert _float_or_none("none") is None and _float_or_none("None") is None
+    assert _float_or_none("0") == 0.0 and _float_or_none("12.5") == 12.5
+
+
 def test_texture_surface_resolves_by_friendly_id(srv, client):
     client.post("/room", json={"client_id": "h1", "surfaces": [
         {"id": "real_floor_3", "semantic": "floor", "position": [0, 0, 0], "extent": [3, 3]}]})
