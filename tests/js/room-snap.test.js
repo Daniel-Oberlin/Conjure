@@ -64,6 +64,22 @@ test("snapInsets places a door in front of its wall, toward the interior", () =>
   assert.match(door.debug.snap, /wall=.*clr=/);
 });
 
+test("snapInsets carves the wall the door is WITHIN, not a coplanar neighbour", () => {
+  // Two collinear wall segments on the SAME plane (both face +Z at z=0), a door in front of the RIGHT one.
+  // Perpendicular distance to the plane is a tie, so matching by distance alone could pick the far segment
+  // and project the opening off its end — the real wall never gets carved (the door-50/wall-59 bug). The
+  // door must attach to (and cut) the wall whose extent it actually sits within.
+  const surfaces = [
+    vert("real_wall_left",  "wall", [-2, 1.2, 0], 0, [3, 2.4]),    // spans x ∈ [-3.5, -0.5]
+    vert("real_wall_right", "wall", [2, 1.2, 0], 0, [3, 2.4]),     // spans x ∈ [ 0.5,  3.5]
+    vert("real_door_1",     "door", [2, 1.0, 0.29], 0, [0.8, 2]),  // in front of the RIGHT wall
+  ];
+  RS.snapInsets(THREE, surfaces);
+  assert.strictEqual((surfaces[0].holes || []).length, 0, "the far coplanar wall is NOT carved");
+  assert.strictEqual((surfaces[1].holes || []).length, 1, "the wall the door sits within IS carved");
+  assert.ok(Math.abs(surfaces[1].holes[0].x) < 0.5, "opening sits near the wall centre, where the door is");
+});
+
 test("snapInsets sends each junction door into its OWN room (two separate parallel walls)", () => {
   // Two near-parallel junction walls 0.3 m apart, each facing out of its own room; a door in each.
   const surfaces = [

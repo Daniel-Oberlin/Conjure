@@ -446,9 +446,17 @@
       var best = /** @type {SnapSurface|null} */ (null);
       walls.forEach(function (wl) {
         var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
-        if (Math.abs(wn.dot(sn)) < 0.9) return;                 // nearest ~parallel wall (clamp reference)
-        var d = Math.abs(s._lp.clone().sub(wl._lp).dot(wn));
-        if (d < bestD) { bestD = d; best = wl; }
+        if (Math.abs(wn.dot(sn)) < 0.9) return;                 // must be ~parallel (co-facing or antiparallel)
+        var rel = s._lp.clone().sub(wl._lp);
+        var d = Math.abs(rel.dot(wn));                          // perpendicular distance to the wall's plane
+        if (d >= bestD) return;
+        // …AND the inset must fall within this wall's WIDTH. Two rooms often have parallel/COLLINEAR walls;
+        // perpendicular distance alone can pick a coplanar neighbour the door isn't actually in front of,
+        // projecting its opening off that wall's end (so the real wall never gets carved). Requiring the
+        // inset to sit inside the wall's extent (+ margin) attaches it to the wall it truly belongs to.
+        var wx = new V3(1, 0, 0).applyQuaternion(wl._lq);       // wall's local width axis (world)
+        if (Math.abs(rel.dot(wx)) > ((wl.extent && wl.extent[0]) || 0) / 2 + 0.3) return;
+        bestD = d; best = wl;
       });
       if (!best) return;
       var nint = sn.clone().negate();                           // into the room = opposite outward normal
