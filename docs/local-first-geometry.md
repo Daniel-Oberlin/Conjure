@@ -92,42 +92,57 @@ clean weighted **linear least-squares** — a 3×3 system, exact and fast.
   and fall back by **reaching for a farther perpendicular wall** (extend the reference set beyond the nearest
   ~3 until the axis is constrained; keep the seed estimate only if none exists) and **log** it.
 
-### 4.2 Orientation — a reference frame `R`, then a stored rotation relative to it
+### 4.2 Orientation — per-wall quaternion votes, averaged
 
-Orientation is **3 rotational DOF**. The unifying idea: build a **reference frame `R`** from the two things
-each client can measure *precisely and locally* — gravity and the walls — then store the entity's rotation
-**relative to `R`**. Every client reconstructs `R` from its own gravity + walls, so the stored rotation
-transfers exactly across non-rigid maps.
+Orientation is **3 rotational DOF**. The unifying idea: express the entity's rotation **relative to the two
+things each client measures precisely and locally — gravity and the walls** — so any client can rebuild it
+from its own geometry and it transfers across the non-rigid map. Concretely we do this the same way the
+position solve does: **each reference wall casts one independent vote for the full orientation, and we
+average the votes** (over-specified, redundant, robust to a missing or noisy wall).
 
 First, be exact about **gravity**: it is **just a known world direction — down/up** — read from the headset
 IMU and confirmed by the level floor (the floor normal). It is *not* a rotation; it's a precise,
 already-shared reference **axis**.
 
-**The reference frame `R`** = **up** from gravity + **forward** from the walls (the weighted **circular
-mean** of the reference walls' horizontal normals — over-specified/robust, same reference set as the
-position solve). `R` is **entity-independent** (built from gravity + walls only), so authoring and solving
-reconstruct the *same* `R` up to local precision.
+**A wall's frame `W_k`** (`wallFrame` in client/plane-anchor.js) is the rotation whose local **+Z points
+along that wall's outward normal** and local **+Y is up** (gravity). It is **entity-independent** — any
+client rebuilds the *same* `W_k` from that wall's normal + gravity — which is the whole trick: it carries the
+wall's heading, so anything stored relative to it rides the wall.
 
-How much of the entity's rotation we store relative to `R` depends on its **placement mode** (§5) — this is
-where orientation and position tie together:
+- **Authoring** — for each reference wall `k`, store one quaternion **vote**
+  `rel_k = W_k⁻¹ · q_entity` — "the entity's orientation *as seen from that wall*." It strips out the wall's
+  own heading, leaving only how the entity is turned relative to the wall. Being a quaternion it carries all
+  three axes at once — **no yaw is ever extracted**, so there is no gimbal/degeneracy even when an object
+  points straight up or down (the trap behind A-Frame's YXZ euler-order gotcha).
+- **Solving** — for each wall the client actually has, rebuild `W_k′` from **its own** detected normal and
+  reconstruct a candidate `q_k = W_k′ · rel_k`. Because the wall's (possibly shifted) heading flows through
+  `W_k′`, the recovered orientation **tracks that local wall** — which is exactly why it survives the
+  non-rigid map (it's tied to a wall, not to any absolute frame).
+- **Average the votes** (`averageQuat`) — every present wall independently reconstructs the entity's full
+  orientation; average them and normalise. Same over-specification as the position least-squares: one noisy
+  wall gets diluted, and a **missing** wall just drops a vote instead of breaking the solve. Detail: `q` and
+  `−q` are the *same* rotation, so each vote is first flipped into the first vote's hemisphere (else the sum
+  could cancel); the normalised linear mean is then accurate because the votes cluster tightly (they all
+  describe one entity).
 
-- **Grounded (default) → yaw-only.** A thing resting on the floor **cannot lean**, so `up ≡ gravity` and
-  **pitch ≡ roll ≡ 0 by definition** — we don't store them (pinning to zero is *more robust* than trusting a
-  measured near-zero tilt that could drift). Only **heading (yaw)** is free, and it's the one DOF gravity
-  says nothing about (spin an upright object in place — still upright), so it comes from the **walls**:
-  store the entity heading's offset from each reference wall's normal-yaw, `Δψ_k = ψ_entity − ψ_wall_k`; at
-  solve, each wall proposes `ψ_entity = ψ_wall_k′ + Δψ_k`, combined by weighted **circular mean**. *(Note:
-  rotation-about-up is a **wall** DOF, not a gravity DOF — the easy thing to mis-group.)*
-- **Free / world-placed → full quaternion.** An object that rotates freely (pitch and roll are real, not
-  zero) stores its **complete orientation as one quaternion `q_rel = R⁻¹ · q_entity`**. We deliberately do
-  **not** split out a separate yaw here: a free object whose forward points near-vertical has a **degenerate
-  heading** (gimbal — the same trap as A-Frame's YXZ euler-order gotcha), so a single quaternion relative to
-  the entity-independent `R` is both fully general and gimbal-safe. Solve: `q_entity′ = R′ · q_rel`.
-  Heading + pitch + roll are all first-class, carried together in `q_rel`.
+**Placement mode (§5) decides what we keep of the averaged result** — this is where orientation and position
+tie together:
 
-Why a quaternion rather than stored pitch/yaw/roll angles: no gimbal lock, no euler-order ambiguity (recall
-A-Frame renders **YXZ**), and it's exactly what three/A-Frame hand us (`object3D.quaternion`). Grounded's
-yaw-only form is just the special case where `q_rel` is a pure yaw and we enforce that structurally.
+- **Grounded (default) → yaw-only.** A thing resting on the floor **cannot lean**, so we keep only the
+  rotation *about gravity* and force `pitch ≡ roll ≡ 0`. `twistAbout(q, up)` (the twist half of a
+  swing-twist decomposition) extracts precisely that component and discards any residual tilt wall noise
+  introduced — pinning upright *structurally* is more robust than trusting a measured near-zero tilt that
+  could drift. *(Note: rotation-about-up is a **wall** DOF, not a gravity DOF — the easy thing to mis-group;
+  gravity fixes the two tilts, the walls fix this heading.)*
+- **Free / world-placed → full quaternion.** An object that genuinely rotates (real pitch and roll) keeps
+  the averaged quaternion **as-is** — heading + pitch + roll, all first-class, carried together with no yaw
+  extraction and so no gimbal.
+
+Why quaternions rather than stored pitch/yaw/roll angles: no gimbal lock, no euler-order ambiguity (recall
+A-Frame renders **YXZ**), and it's exactly what three/A-Frame hand us (`object3D.quaternion`). *(Conceptual
+note: a single wall's `W_k` is itself a valid gravity-up reference frame; using **all** the reference walls
+and averaging is just the robust, over-specified generalisation — it avoids having to define one shared
+"forward," which is degenerate in a rectangular room where the walls face four different ways.)*
 
 ## 5. Placement modes
 
@@ -138,7 +153,7 @@ orientation aligned:
 | `mode` | Position | Orientation | Typical |
 |---|---|---|---|
 | **grounded** *(default)* | XZ multilaterated (§4.1); **Y snapped to local floor** at that XZ | gravity-up + robust wall-yaw; **pitch≡roll≡0** | a model set on the floor/table |
-| **free** | full 3-D multilateration incl. floor-height (§4.1) | **full quaternion `q_rel`** rel. to `R` (§4.2) — heading+pitch+roll | a prop hanging/tilted in mid-air, a rotating object |
+| **free** | full 3-D multilateration incl. floor-height (§4.1) | **averaged per-wall quaternion** (§4.2), kept whole — heading+pitch+roll | a prop hanging/tilted in mid-air, a rotating object |
 | **on-surface** | rides its host **surface** if that surface is detected locally; else in-plane (§5a) | host surface's normal + wall-yaw | photo/art hung on a wall or shelf |
 | **skybox** | none | wall-yaw only | environment dome |
 
@@ -182,9 +197,9 @@ re-solved at each **receiver**:
 1. **Source (the user being shown), every presence tick (~10 Hz):** compute the head's plane-relative anchor
    in the source's own F_track — floor height + signed distances to the source's **nearest ~3 walls (by
    shared id)** for position. Orientation is effectively **free** (gaze pitches up/down and can roll
-   slightly), so stream the head's **full quaternion `q_rel` relative to `R`** (§4.2) rather than a
-   decomposition — gimbal-safe when someone looks straight up/down. **Stream that anchor** (ids + distances +
-   `q_rel`) over presence instead of a raw pose.
+   slightly), so stream the head's **per-wall quaternion votes** (`rel_k`, §4.2) — full-orientation, no yaw
+   extraction, gimbal-safe when someone looks straight up/down. **Stream that anchor** (ids + signed
+   distances + per-wall `rel_k`) over presence instead of a raw pose; each receiver averages the votes.
 2. **Wall-set hysteresis (important):** a moving head's "nearest 3 walls" set would flip every tick, jerking
    the solve as reference walls swap. Keep a wall in the set until another beats it by a **margin** (e.g.
    0.3 m closer) so the reference set is stable frame-to-frame.
@@ -362,8 +377,8 @@ The solver runs on **both** the client (JS, against live geometry) and the serve
 a whole JS runtime / subprocess dependency bolted onto a Python server; **(b)** **port to Python** and pin
 *both* implementations with **shared golden test vectors** (identical `{planes, anchor} → pose` cases
 checked in the JS *and* Python suites) so they can't silently drift. **Decided: (b).** The solver is tiny
-pure math (a 3×3 weighted least-squares + circular mean); the parity-test contract is far cheaper than
-embedding Node, and keeps server pure-Python / client pure-JS.
+pure math (a 3×3 weighted least-squares for position + per-wall quaternion vote averaging for orientation);
+the parity-test contract is far cheaper than embedding Node, and keeps server pure-Python / client pure-JS.
 
 1. **Plane-relative anchor module** (pure, testable like `room-snap`): author (pose + local planes → anchor)
    and solve (anchor + local planes → pose), with the weighted-LS position solve, gravity-up + wall-yaw
