@@ -243,18 +243,16 @@ The **owner** pushes to the server *only* when the shared model genuinely change
    event we want visible, not silent.
 5. **Styling / content edit** — director actions (authored, always shared).
 6. **Boundary change** — floor polygon / height.
-7. **Seed lifecycle** — first establishment mints the seed; `/room/realign` refreshes it; optionally an
-   occasional autosave refreshes the seed to a recent snapshot (kept infrequent so it doesn't thrash).
+7. **Seed lifecycle** — first establishment mints the seed; `/room/realign` refreshes it. A **periodic seed
+   refresh** (occasional autosave to a recent snapshot) is **deferred** — we'll likely fold it into the
+   multi-client consensus-seed effort (§7.8) rather than build a single-client autosave now.
 8. **(Future) Multi-client consensus seed** — instead of the seed being one headset's snapshot, the server
    could periodically fold **all connected clients'** geometry into a better shared reference. **Caveat:**
    the map is **non-rigid** (§1), so this is *not* a rigid average — a rigid mean would reintroduce the very
    one-sided shift we're avoiding. It must be a **regional / soft** alignment (per-surface or per-region
    consensus of *planes*, weighted by how many clients agree), used only to improve the **seed** the
-   server solves against — never pushed back as coordinates clients must render. Deferred; noted so the
-   design leaves room for it.
-
-> Open for your call: the **large-move threshold** (§7.4), whether to include the **periodic seed refresh**
-> (§7.7), and whether to pursue the **consensus seed** (§7.8).
+   server solves against — never pushed back as coordinates clients must render. **Deferred**, and it's the
+   natural home for the periodic seed refresh (§7.7) — noted so the design leaves room for it.
 
 ## 8. Authority (decision #2 — settled)
 
@@ -320,18 +318,21 @@ is also an id-correspondence stress test).
 - **Missing-surface recovery — log it** (`[recover] …`, §5.2).
 - **Avatars — stream anchors with hysteresis, solve per receiver** (§5.1).
 - **`--square-walls` default OFF** for now; revisit after A/B (§9).
-- **Nothing in absolute coordinates** — confirmed; every item is on-surface, plane-relative, grounded, or
-  free (audit during build, §12 below).
+- **Nothing in absolute coordinates** — the design principle; every item is on-surface, grounded, free, or
+  skybox (verified during build — see Build-time verifications below).
 - **Solver code — port to Python, pin JS + Python with shared golden vectors** (not Node-in-server, §13.1).
-- **Consensus seed — deferred**, but documented with a plan to investigate later (§7.8).
+- **In-plane reference — use corners** (plane∩plane), **over-specify with both adjoining corners and
+  average** when available; center-relative only when no corner is captured (§5a).
+- **Consensus seed — deferred**, documented with a plan to investigate later; **periodic seed refresh
+  folds into it** (§7.7–7.8).
 
-**Still open:**
+**Build-time verifications** (things to confirm while implementing/testing, not design questions):
 
-1. **Periodic seed refresh** (§7.7) — include it or not.
-2. **Grounded-model Y re-seat** (§5c) — confirm the local floor reads cleanly, no jitter, during build.
-3. **Absolute-coordinate audit** — during build, verify *nothing* is placed in raw F_track/F_ref.
-4. **In-plane reference choice** (§5a) — corner (plane∩plane) vs. most-confident wall edge when a corner
-   isn't captured; over-spec + average, or pick one.
+- **Grounded-model Y re-seat** (§5c) reads the local floor cleanly, no jitter.
+- **Absolute-coordinate audit** — verify *nothing* is placed in raw F_track/F_ref; every item is on-surface,
+  grounded, free, or skybox.
+
+**Still open:** *(none — all design questions resolved; the items above are build-time checks.)*
 
 ## 13. Implementation sketch (incremental)
 
