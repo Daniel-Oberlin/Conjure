@@ -62,3 +62,46 @@ test("spawnRight: a 90°-yawed owner puts 'right' along -Z", () => {
   assert.ok(Math.abs(sp[0]) < 1e-4);
   assert.ok(Math.abs(sp[2] - (-1)) < 1e-4);  // right rotated to -Z
 });
+
+// ---- render apply-gate (surfaceSig / surfaceMoved) ----
+const sig = (p, r, ext, holes) => WM.surfaceSig({ position: p, rotation: r }, { extent: ext, holes });
+
+test("surfaceMoved: an identical surface is NOT re-applied (kills the pop)", () => {
+  const a = sig([1, 1.2, 0], [0, 90, 0], [4, 2.4], []);
+  const b = sig([1, 1.2, 0], [0, 90, 0], [4, 2.4], []);
+  assert.equal(WM.surfaceMoved(THREE, a, b), false);
+});
+
+test("surfaceMoved: sub-tolerance jitter is skipped, past-tolerance moves re-apply", () => {
+  const base = sig([1, 1.2, 0], [0, 90, 0], [4, 2.4], []);
+  assert.equal(WM.surfaceMoved(THREE, base, sig([1.01, 1.2, 0], [0, 90, 0], [4, 2.4], [])), false, "1 cm < 2 cm");
+  assert.equal(WM.surfaceMoved(THREE, base, sig([1.05, 1.2, 0], [0, 90, 0], [4, 2.4], [])), true, "5 cm > 2 cm");
+});
+
+test("surfaceMoved: a real rotation past tolerance re-applies; a tiny wobble does not", () => {
+  const base = sig([0, 0, 0], [0, 90, 0], [4, 2.4], []);
+  assert.equal(WM.surfaceMoved(THREE, base, sig([0, 0, 0], [0, 90.5, 0], [4, 2.4], [])), false, "0.5° < 1°");
+  assert.equal(WM.surfaceMoved(THREE, base, sig([0, 0, 0], [0, 93, 0], [4, 2.4], [])), true, "3° > 1°");
+});
+
+test("surfaceMoved: resizing or re-shaping the extent re-applies", () => {
+  const base = sig([0, 0, 0], [0, 0, 0], [4, 2.4], []);
+  assert.equal(WM.surfaceMoved(THREE, base, sig([0, 0, 0], [0, 0, 0], [4.3, 2.4], [])), true);
+});
+
+test("surfaceMoved: opening changes (count or position) re-apply, jitter does not", () => {
+  const noHole = sig([0, 0, 0], [0, 0, 0], [4, 2.4], []);
+  const oneHole = sig([0, 0, 0], [0, 0, 0], [4, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]);
+  assert.equal(WM.surfaceMoved(THREE, noHole, oneHole), true, "an opening appeared");
+  const moved = sig([0, 0, 0], [0, 0, 0], [4, 2.4], [{ x: 0.9, y: 0, w: 0.9, h: 2 }]);
+  assert.equal(WM.surfaceMoved(THREE, oneHole, moved), true, "the opening slid 40 cm");
+  const wobble = sig([0, 0, 0], [0, 0, 0], [4, 2.4], [{ x: 0.505, y: 0, w: 0.9, h: 2 }]);
+  assert.equal(WM.surfaceMoved(THREE, oneHole, wobble), false, "5 mm opening wobble < 2 cm");
+});
+
+test("surfaceMoved: tolerances are tunable", () => {
+  const base = sig([0, 0, 0], [0, 0, 0], [4, 2.4], []);
+  const nudged = sig([0.03, 0, 0], [0, 0, 0], [4, 2.4], []);
+  assert.equal(WM.surfaceMoved(THREE, base, nudged), true, "3 cm > default 2 cm");
+  assert.equal(WM.surfaceMoved(THREE, base, nudged, { pos: 0.10 }), false, "3 cm < loosened 10 cm");
+});

@@ -255,7 +255,9 @@
     return el;
   }
 
-  function applySurface(el, comps) {
+  // A real surface's MESH + dimensions — the part that rebuilds (and visibly "pops") when re-applied. Split
+  // from styling so the render apply-gate (applyEntity) can skip it when the surface hasn't actually moved.
+  function applySurfaceGeometry(el, comps) {
     var s = comps.surface || {};
     var ext = s.extent || [1, 1];
     var w = (+ext[0] || 1), h = (+ext[1] || 1);
@@ -264,19 +266,21 @@
     el.dataset.holes = hs;
     if (hs) el.setAttribute("geometry", { primitive: "holed-wall", width: w, height: h, holes: hs });
     else el.setAttribute("geometry", { primitive: "plane", width: w, height: h });
+    el.setAttribute("surface-edges", { width: w, height: h });   // outline the surface border
+  }
+
+  // A real surface's MATERIAL — cheap, director-driven, never rebuilds the mesh, so it is applied every
+  // time (NOT gated). Kept separate from geometry above.
+  function applySurfaceMaterial(el, comps) {
     var mat = Object.assign({ shader: "flat", side: "double" }, comps.material || {});
     if ("visible" in mat) { el.dataset.matVisible = String(mat.visible); delete mat.visible; }
     el.setAttribute("material", mat);
-    el.setAttribute("surface-edges", { width: w, height: h });   // outline the surface border
   }
 
   // Inflate (or update) one entity: transform + components map onto A-Frame.
   function applyEntity(ent) {
     var el = ensureEl(ent.id);
     var t = ent.transform || {};
-    if (t.position) el.setAttribute("position", v3(t.position));
-    if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
-    if (t.scale) el.setAttribute("scale", v3(t.scale));
     var comps = ent.components || {};
     var meta = ent.meta || {};
     if (meta.scaffold) el.dataset.scaffold = "1";
@@ -284,12 +288,27 @@
       el.dataset.real = "1";
       if (meta.semantic) el.dataset.semantic = meta.semantic;
       if (meta.friendly_id != null) el.dataset.fid = meta.friendly_id;
-      applySurface(el, comps);
+      // Render apply-gate (docs/local-first-geometry.md §4-6): only (re)lay the mesh + transform when the
+      // surface actually moved/resized/re-holed past tolerance, so sub-tolerance re-derivation doesn't
+      // rebuild the geometry (the "pop"). el._geoSig remembers the last-applied shape across patches (the
+      // id is stable, so ensureEl returns the same element). Styling below is always applied — it never pops.
+      var sig = WM.surfaceSig(t, comps.surface);
+      if (!el._geoSig || WM.surfaceMoved(AFRAME.THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL)) {
+        if (t.position) el.setAttribute("position", v3(t.position));
+        if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
+        if (t.scale) el.setAttribute("scale", v3(t.scale));
+        applySurfaceGeometry(el, comps);
+        el._geoSig = sig;
+      }
+      applySurfaceMaterial(el, comps);
       applyRealVisibility(el);
       applyEdgeStyle(el);
       setSurfaceLabel(el, roomState.annotations);
       return;
     }
+    if (t.position) el.setAttribute("position", v3(t.position));
+    if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
+    if (t.scale) el.setAttribute("scale", v3(t.scale));
     Object.keys(comps).forEach(function (name) { el.setAttribute(name, comps[name]); });
   }
 
