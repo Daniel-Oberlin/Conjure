@@ -89,40 +89,65 @@ clean weighted **linear least-squares** — a 3×3 system, exact and fast.
   the median of the two-wall subset solutions — the outlier-robust version of the same idea).
 - **Degeneracy:** if the 3×3 matrix is near-singular — the reference walls are all near-**parallel** (a
   hallway), so the along-corridor axis is unconstrained — detect it (small determinant / condition number)
-  and fall back for that axis (reach for a farther perpendicular wall, or keep the seed estimate) and
-  **log** it.
+  and fall back by **reaching for a farther perpendicular wall** (extend the reference set beyond the nearest
+  ~3 until the axis is constrained; keep the seed estimate only if none exists) and **log** it.
 
-### 4.2 Orientation — gravity-up + wall-yaw + residual
+### 4.2 Orientation — a reference frame `R`, then a stored rotation relative to it
 
-Orientation is **3 rotational DOF**. We split them by *what measures each one precisely*. First, be exact
-about what "gravity" means here: **gravity is just a known world direction — down/up** — read from the
-headset IMU and confirmed by the level floor (the floor normal). It is *not* a rotation; it's a reference
-axis, and a very precise, already-shared one.
+Orientation is **3 rotational DOF**. The unifying idea: build a **reference frame `R`** from the two things
+each client can measure *precisely and locally* — gravity and the walls — then store the entity's rotation
+**relative to `R`**. Every client reconstructs `R` from its own gravity + walls, so the stored rotation
+transfers exactly across non-rigid maps.
 
-- **The 2 gravity-fixed DOF are both *tilts*.** Declaring an entity's **up** axis to point along gravity
-  removes exactly two DOF, and both are lean/tilt:
-  1. lean **forward/back** (pitch), and
-  2. lean **side-to-side** (roll).
+First, be exact about **gravity**: it is **just a known world direction — down/up** — read from the headset
+IMU and confirmed by the level floor (the floor normal). It is *not* a rotation; it's a precise,
+already-shared reference **axis**.
 
-  i.e. "the object stands upright, not leaning." Gravity fixes these for free, with no wall reference and no
-  error.
-- **The 1 wall-fixed DOF is yaw — rotation *about* the up axis.** Gravity says **nothing** about this:
-  spin an upright object in place and it is still upright. So heading is the DOF that needs an *external*
-  reference, and that reference is **the walls** (their normal directions). *(Note: rotation-about-up is
-  therefore a **wall** DOF, not a gravity DOF — this is the point that's easy to mis-group.)* At authoring,
-  store the entity heading's offset from each reference wall's normal-yaw, `Δψ_k = ψ_entity − ψ_wall_k`. At
-  solve, each client wall proposes `ψ_entity = ψ_wall_k′ + Δψ_k`; combine by weighted **circular mean** over
-  the reference walls.
-- **residual tilt** — only when the entity is *deliberately not upright* (its up ≠ gravity, e.g. a leaning
-  prop). It's the leftover rotation from the (gravity-up, authored-yaw) frame to the true orientation,
-  stored as a quaternion and applied verbatim (**identity** for upright content, which is the common case).
-  *This single residual is what a separate "elevation" + "roll about axis" parameterisation would encode —
-  folded into one term.*
+**The reference frame `R`** = **up** from gravity + **forward** from the walls (the weighted **circular
+mean** of the reference walls' horizontal normals — over-specified/robust, same reference set as the
+position solve). `R` is **entity-independent** (built from gravity + walls only), so authoring and solving
+reconstruct the *same* `R` up to local precision.
 
-## 5. Placement cases
+How much of the entity's rotation we store relative to `R` depends on its **placement mode** (§5) — this is
+where orientation and position tie together:
 
-- **(a) On-surface → in-plane plane-relative.** Full-surface **textures** need no positioning (they span
-  the surface). **Positioned** on-surface content (hung photos, wall art) and **insets** (doors/windows) are
+- **Grounded (default) → yaw-only.** A thing resting on the floor **cannot lean**, so `up ≡ gravity` and
+  **pitch ≡ roll ≡ 0 by definition** — we don't store them (pinning to zero is *more robust* than trusting a
+  measured near-zero tilt that could drift). Only **heading (yaw)** is free, and it's the one DOF gravity
+  says nothing about (spin an upright object in place — still upright), so it comes from the **walls**:
+  store the entity heading's offset from each reference wall's normal-yaw, `Δψ_k = ψ_entity − ψ_wall_k`; at
+  solve, each wall proposes `ψ_entity = ψ_wall_k′ + Δψ_k`, combined by weighted **circular mean**. *(Note:
+  rotation-about-up is a **wall** DOF, not a gravity DOF — the easy thing to mis-group.)*
+- **Free / world-placed → full quaternion.** An object that rotates freely (pitch and roll are real, not
+  zero) stores its **complete orientation as one quaternion `q_rel = R⁻¹ · q_entity`**. We deliberately do
+  **not** split out a separate yaw here: a free object whose forward points near-vertical has a **degenerate
+  heading** (gimbal — the same trap as A-Frame's YXZ euler-order gotcha), so a single quaternion relative to
+  the entity-independent `R` is both fully general and gimbal-safe. Solve: `q_entity′ = R′ · q_rel`.
+  Heading + pitch + roll are all first-class, carried together in `q_rel`.
+
+Why a quaternion rather than stored pitch/yaw/roll angles: no gimbal lock, no euler-order ambiguity (recall
+A-Frame renders **YXZ**), and it's exactly what three/A-Frame hand us (`object3D.quaternion`). Grounded's
+yaw-only form is just the special case where `q_rel` is a pure yaw and we enforce that structurally.
+
+## 5. Placement modes
+
+**Every placed entity declares a `mode` in the world model, and the mode fixes *both* its position solve and
+its orientation form** (§4.2) as one consistent choice. This is the single knob that keeps geometry and
+orientation aligned:
+
+| `mode` | Position | Orientation | Typical |
+|---|---|---|---|
+| **grounded** *(default)* | XZ multilaterated (§4.1); **Y snapped to local floor** at that XZ | gravity-up + robust wall-yaw; **pitch≡roll≡0** | a model set on the floor/table |
+| **free** | full 3-D multilateration incl. floor-height (§4.1) | **full quaternion `q_rel`** rel. to `R` (§4.2) — heading+pitch+roll | a prop hanging/tilted in mid-air, a rotating object |
+| **on-surface** | **in-plane** (§5a), anchored to a surface id | in-plane (surface normal + wall-yaw) | photo, wall art, door/window inset |
+| **skybox** | none | wall-yaw only | environment dome |
+
+`grounded` is today's default and covers most placements; `free` is the explicitly-authored case for content
+that leaves the floor or rotates arbitrarily. The world model stores `mode` per entity so authoring and every
+client agree on how to solve it.
+
+- **(a) On-surface (in-plane plane-relative).** Full-surface **textures** need no positioning (they span the
+  surface). **Positioned** on-surface content (hung photos, wall art) and **insets** (doors/windows) are
   anchored **in the surface's plane** — *not* offset from the surface **center**, because the plane and its
   alignment are stable across clients but the center/width are **not** (they depend on how much each client
   captured). Same thesis as §4, one level down. In-plane coordinates:
@@ -135,11 +160,11 @@ axis, and a very precise, already-shared one.
   Result: a photo or door lands at the same **physical** spot on the wall for every client even when their
   detected wall centers/widths differ. Rendered in the client's **local** surface plane → exact passthrough
   match. (This subsumes today's `snapInsets` center-offset placement.)
-- **(b) Free / world-placed → plane-relative anchor (§4).** A model floating in the room resolves its
-  position + orientation against the client's local planes. *This is the independent-3D-model case.*
-- **(c) Grounded models → floor-anchored.** A model resting on the floor/table: solve its **XZ** as a free
-  point (§4.1) but re-seat its **Y to the local floor** at that XZ, so it never floats/sinks against a
-  client's own floor. (Grounded = surface-anchored in Y, plane-relative in XZ.)
+- **(b) Free / world-placed.** Full 3-D position (§4.1, floor-height as one constraint) + full-quaternion
+  orientation (§4.2). *The independent-3D-model case — a model that floats, hangs, or tilts.*
+- **(c) Grounded (default).** XZ from the position solve (§4.1) but **Y re-seated to the local floor** at that
+  XZ, so it never floats/sinks against a client's own floor; orientation is yaw-only (§4.2). *Grounded =
+  floor-anchored in Y + upright, plane-relative in XZ + heading.*
 - **(d) Skybox → yaw-only (§4.2).** No position; store just the wall-relative **yaw** so every client faces
   the scene the same way.
 - **(e) Avatars → per-tick streamed plane-relative anchor (§5.1).**
@@ -152,9 +177,10 @@ re-solved at each **receiver**:
 
 1. **Source (the user being shown), every presence tick (~10 Hz):** compute the head's plane-relative anchor
    in the source's own F_track — floor height + signed distances to the source's **nearest ~3 walls (by
-   shared id)**; head **yaw** as offsets from those walls' normals; head **pitch** relative to **gravity**
-   (gaze up/down); roll ≈ 0. **Stream that anchor** (ids + distances + yaw offsets + pitch) over presence
-   instead of a raw pose.
+   shared id)** for position. Orientation is effectively **free** (gaze pitches up/down and can roll
+   slightly), so stream the head's **full quaternion `q_rel` relative to `R`** (§4.2) rather than a
+   decomposition — gimbal-safe when someone looks straight up/down. **Stream that anchor** (ids + distances +
+   `q_rel`) over presence instead of a raw pose.
 2. **Wall-set hysteresis (important):** a moving head's "nearest 3 walls" set would flip every tick, jerking
    the solve as reference walls swap. Keep a wall in the set until another beats it by a **margin** (e.g.
    0.3 m closer) so the reference set is stable frame-to-frame.
@@ -212,7 +238,9 @@ The **owner** pushes to the server *only* when the shared model genuinely change
 3. **Semantic change** — a surface reclassified (rare).
 4. **Large move** — a surface re-derived beyond a **LARGE** threshold (e.g. > ~0.5 m or a big rotation —
    real furniture-moved / re-scan, **not** cm drift) → recompute its anchor + seed pose. *Threshold tunable;
-   distinct from the cm-level local apply-gate tolerance.*
+   distinct from the cm-level local apply-gate tolerance.* **Kept**, and it must **print to console + log**
+   when it fires (`[large-move] surface X moved 0.8 m → seed pose updated`) — this is a rare, attention-worthy
+   event we want visible, not silent.
 5. **Styling / content edit** — director actions (authored, always shared).
 6. **Boundary change** — floor polygon / height.
 7. **Seed lifecycle** — first establishment mints the seed; `/room/realign` refreshes it; optionally an
@@ -250,9 +278,9 @@ plane-relative anchors this is a genuine trade-off:
 - It does **not** break `joinCorners` (real walls stay near-perpendicular); OFF just renders walls at their
   raw, slightly-non-orthogonal angles.
 
-**Decision:** wire `--square-walls on|off` and A/B it. Default **ON** initially (avoid an untested jitter
-regression); OFF is well-motivated under local-first and is the A/B priority — flipping the default is a
-one-liner once the data decides.
+**Decision:** wire `--square-walls on|off` and A/B it. Default **OFF** (do *not* square) — consistent with
+trusting the raw local planes we now build placement on. We may flip it to ON after A/B if leaving walls raw
+causes problems (e.g. angular jitter visibly hurting placement); flipping the default is a one-liner.
 
 ## 10. The linchpin risk — id correspondence
 
@@ -278,20 +306,31 @@ is also an id-correspondence stress test).
 - **The server is a solver too:** its pose-relative queries run the *same* plane-relative solve (§4) against
   the **seed** as clients run against live geometry (§3, "Client/server symmetry").
 
-## 12. Open questions
+## 12. Decisions & remaining open questions
 
-1. **Large-move threshold** and **periodic seed refresh** (§7).
-2. **Parallel-wall degeneracy** (§4.1) — hallways: confirm the detect-and-fallback behaves and logs.
-3. **Grounded-model Y re-seat** (§5c) — reads the local floor cleanly, no jitter.
-4. **Director geometry queries** (`view_relative`, "the wall I'm looking at") run against the **seed**
-   (approximate) — fine for placement *decisions*; confirm nothing needs local precision server-side.
-5. **`--square-walls` default** — decide after A/B (§9).
-6. **Content authored in absolute coordinates** — audit that *nothing* is placed in raw F_track/F_ref; every
-   item is on-surface, plane-relative, or grounded.
-7. **Where the solver code lives** (client JS + server Python) — see §13.1. **Lean:** port to Python, pin
-   both with shared golden vectors; *not* Node-in-server. Confirm.
-8. **Consensus seed** (§7.8) — pursue, and if so, rigid-vs-regional alignment.
-9. **In-plane reference choice** (§5a) — corner (plane∩plane) vs. most-confident wall edge when a corner
+**Decided:**
+
+- **Large-move threshold — keep**, and **print to console + log** when it fires (§7.4).
+- **Parallel-wall degeneracy — fall back to a farther perpendicular wall** (extend the reference set), log it
+  (§4.1).
+- **Placement modes — `grounded` (default) and `free` both supported**, mode declared per entity in the world
+  model, mode drives position + orientation together (§5, §4.2).
+- **Director geometry queries run against the seed** — accept the seed's approximation for placement
+  *decisions*; rely on **future seed improvements** (§7.8, not yet planned) to sharpen it if ever needed.
+- **Missing-surface recovery — log it** (`[recover] …`, §5.2).
+- **Avatars — stream anchors with hysteresis, solve per receiver** (§5.1).
+- **`--square-walls` default OFF** for now; revisit after A/B (§9).
+- **Nothing in absolute coordinates** — confirmed; every item is on-surface, plane-relative, grounded, or
+  free (audit during build, §12 below).
+- **Solver code — port to Python, pin JS + Python with shared golden vectors** (not Node-in-server, §13.1).
+- **Consensus seed — deferred**, but documented with a plan to investigate later (§7.8).
+
+**Still open:**
+
+1. **Periodic seed refresh** (§7.7) — include it or not.
+2. **Grounded-model Y re-seat** (§5c) — confirm the local floor reads cleanly, no jitter, during build.
+3. **Absolute-coordinate audit** — during build, verify *nothing* is placed in raw F_track/F_ref.
+4. **In-plane reference choice** (§5a) — corner (plane∩plane) vs. most-confident wall edge when a corner
    isn't captured; over-spec + average, or pick one.
 
 ## 13. Implementation sketch (incremental)
@@ -302,9 +341,9 @@ The solver runs on **both** the client (JS, against live geometry) and the serve
 — §3 symmetry). Options: **(a)** run the shared **JS via Node** on the server — single source of truth, but
 a whole JS runtime / subprocess dependency bolted onto a Python server; **(b)** **port to Python** and pin
 *both* implementations with **shared golden test vectors** (identical `{planes, anchor} → pose` cases
-checked in the JS *and* Python suites) so they can't silently drift. **Lean: (b).** The solver is tiny pure
-math (a 3×3 weighted least-squares + circular mean); the parity-test contract is far cheaper than embedding
-Node, and keeps server pure-Python / client pure-JS. Confirm before building.
+checked in the JS *and* Python suites) so they can't silently drift. **Decided: (b).** The solver is tiny
+pure math (a 3×3 weighted least-squares + circular mean); the parity-test contract is far cheaper than
+embedding Node, and keeps server pure-Python / client pure-JS.
 
 1. **Plane-relative anchor module** (pure, testable like `room-snap`): author (pose + local planes → anchor)
    and solve (anchor + local planes → pose), with the weighted-LS position solve, gravity-up + wall-yaw
