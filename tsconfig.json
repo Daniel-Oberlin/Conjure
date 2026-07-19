@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["client/room-snap.js", "client/world-model.js"]
+  "include": ["client/room-snap.js", "client/world-model.js", "client/plane-anchor.js"]
 }

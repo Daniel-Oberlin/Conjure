@@ -303,6 +303,10 @@ is also an id-correspondence stress test).
   directly.
 - **The server is a solver too:** its pose-relative queries run the *same* plane-relative solve (§4) against
   the **seed** as clients run against live geometry (§3, "Client/server symmetry").
+- **No migration — start fresh.** Existing persisted worlds/spaces (`.cache/worlds/<scope>/<name>.json`,
+  `.cache/spaces/<user>/<name>.json`) predate anchors and the mode field; they are **test worlds, cheap to
+  recreate.** We will **delete them and rebuild** rather than write porting code. The new model needs no
+  back-compat path; the first authority to capture a space re-mints its seed + anchors under the new schema.
 
 ## 12. Decisions & remaining open questions
 

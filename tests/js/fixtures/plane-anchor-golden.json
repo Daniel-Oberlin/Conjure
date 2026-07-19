@@ -1,0 +1,389 @@
+{
+  "note": "Golden vectors for plane-anchor solveAnchor: inputs (planes+anchor) + reference outputs. The Python server port (docs/local-first-geometry.md §13.1) must reproduce these within tolerance. Full precision on purpose (quaternion angle error scales as sqrt of component error). Regenerate only on an intentional algorithm change.",
+  "cases": [
+    {
+      "name": "grounded_same",
+      "planes": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "normal": [
+            0,
+            1,
+            0
+          ],
+          "point": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "wall_xp",
+          "kind": "wall",
+          "normal": [
+            1,
+            0,
+            0
+          ],
+          "point": [
+            2,
+            1.2,
+            0
+          ]
+        },
+        {
+          "id": "wall_xn",
+          "kind": "wall",
+          "normal": [
+            -1,
+            0,
+            0
+          ],
+          "point": [
+            -2,
+            1.2,
+            0
+          ]
+        },
+        {
+          "id": "wall_zp",
+          "kind": "wall",
+          "normal": [
+            0,
+            0,
+            1
+          ],
+          "point": [
+            0,
+            1.2,
+            3
+          ]
+        },
+        {
+          "id": "wall_zn",
+          "kind": "wall",
+          "normal": [
+            0,
+            0,
+            -1
+          ],
+          "point": [
+            0,
+            1.2,
+            -3
+          ]
+        }
+      ],
+      "anchor": {
+        "mode": "grounded",
+        "floor": {
+          "id": "floor",
+          "offset": 0
+        },
+        "walls": [
+          {
+            "id": "wall_xp",
+            "offset": -1.5,
+            "rel": [
+              0,
+              -0.5,
+              0,
+              0.8660254037844387
+            ]
+          },
+          {
+            "id": "wall_zp",
+            "offset": -2,
+            "rel": [
+              0,
+              0.25881904510252074,
+              0,
+              0.9659258262890683
+            ]
+          },
+          {
+            "id": "wall_xn",
+            "offset": -2.5,
+            "rel": [
+              0,
+              0.8660254037844386,
+              0,
+              0.5000000000000001
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "position": [
+          0.5,
+          0,
+          1
+        ],
+        "quaternion": [
+          0,
+          0.25881904510252074,
+          0,
+          0.9659258262890683
+        ]
+      }
+    },
+    {
+      "name": "grounded_moved",
+      "planes": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "normal": [
+            0,
+            1,
+            0
+          ],
+          "point": [
+            0.7,
+            0,
+            -1.1
+          ]
+        },
+        {
+          "id": "wall_xp",
+          "kind": "wall",
+          "normal": [
+            0.8191520442889918,
+            0,
+            -0.573576436351046
+          ],
+          "point": [
+            2.3383040885779836,
+            1.2,
+            -2.247152872702092
+          ]
+        },
+        {
+          "id": "wall_xn",
+          "kind": "wall",
+          "normal": [
+            -0.8191520442889918,
+            0,
+            0.573576436351046
+          ],
+          "point": [
+            -0.9383040885779836,
+            1.2,
+            0.04715287270209201
+          ]
+        },
+        {
+          "id": "wall_zp",
+          "kind": "wall",
+          "normal": [
+            0.573576436351046,
+            0,
+            0.8191520442889918
+          ],
+          "point": [
+            2.4207293090531383,
+            1.2,
+            1.3574561328669752
+          ]
+        },
+        {
+          "id": "wall_zn",
+          "kind": "wall",
+          "normal": [
+            -0.573576436351046,
+            0,
+            -0.8191520442889918
+          ],
+          "point": [
+            -1.0207293090531384,
+            1.2,
+            -3.5574561328669754
+          ]
+        }
+      ],
+      "anchor": {
+        "mode": "grounded",
+        "floor": {
+          "id": "floor",
+          "offset": 0
+        },
+        "walls": [
+          {
+            "id": "wall_zp",
+            "offset": -0.8999999999999999,
+            "rel": [
+              0,
+              -0.42261826174069944,
+              0,
+              0.9063077870366499
+            ]
+          },
+          {
+            "id": "wall_xn",
+            "offset": -1.7,
+            "rel": [
+              0,
+              0.3420201433256686,
+              0,
+              0.9396926207859084
+            ]
+          },
+          {
+            "id": "wall_xp",
+            "offset": -2.3,
+            "rel": [
+              0,
+              -0.9396926207859082,
+              0,
+              0.3420201433256687
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "position": [
+          1.6587649030504996,
+          0,
+          0.7922922239121964
+        ],
+        "quaternion": [
+          0,
+          -0.1305261922200517,
+          0,
+          0.9914448613738105
+        ]
+      }
+    },
+    {
+      "name": "free_same",
+      "planes": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "normal": [
+            0,
+            1,
+            0
+          ],
+          "point": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "wall_xp",
+          "kind": "wall",
+          "normal": [
+            1,
+            0,
+            0
+          ],
+          "point": [
+            2,
+            1.2,
+            0
+          ]
+        },
+        {
+          "id": "wall_xn",
+          "kind": "wall",
+          "normal": [
+            -1,
+            0,
+            0
+          ],
+          "point": [
+            -2,
+            1.2,
+            0
+          ]
+        },
+        {
+          "id": "wall_zp",
+          "kind": "wall",
+          "normal": [
+            0,
+            0,
+            1
+          ],
+          "point": [
+            0,
+            1.2,
+            3
+          ]
+        },
+        {
+          "id": "wall_zn",
+          "kind": "wall",
+          "normal": [
+            0,
+            0,
+            -1
+          ],
+          "point": [
+            0,
+            1.2,
+            -3
+          ]
+        }
+      ],
+      "anchor": {
+        "mode": "free",
+        "floor": {
+          "id": "floor",
+          "offset": 1.5
+        },
+        "walls": [
+          {
+            "id": "wall_xp",
+            "offset": -1.7,
+            "rel": [
+              -0.05050020781372078,
+              -0.9263885038233796,
+              0.2263537273594064,
+              0.29667837653788404
+            ]
+          },
+          {
+            "id": "wall_zn",
+            "offset": -2.2,
+            "rel": [
+              -0.19576529495909906,
+              -0.8648388849481253,
+              0.12434721616627537,
+              -0.44527230118541794
+            ]
+          },
+          {
+            "id": "wall_xn",
+            "offset": -2.3,
+            "rel": [
+              0.2263537273594064,
+              0.29667837653788387,
+              0.05050020781372079,
+              0.9263885038233797
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "position": [
+          0.3,
+          1.4999999999999998,
+          -0.7999999999999998
+        ],
+        "quaternion": [
+          0.12434721616627539,
+          -0.44527230118541805,
+          0.19576529495909906,
+          0.8648388849481253
+        ]
+      }
+    }
+  ]
+}
