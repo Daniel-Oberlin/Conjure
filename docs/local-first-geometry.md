@@ -48,12 +48,12 @@ stays glued to the walls (and thus to passthrough) with no frame-transform bookk
 
 | | Shared (server, owner-authored) | Local (each client) |
 |---|---|---|
-| Surface **set** (ids, semantics) | ✅ | consumes it |
+| Surface **set** (ids, semantics) — incl. doors/windows/wall-art | ✅ | **detects & renders each locally** (headset-first) |
 | Per-surface **styling** (material/colour/texture/visibility) | ✅ by id | applies by id to local geometry |
-| On-surface **content / insets** (photo, wall art, door/window on wall_3) | ✅ by id, **in-plane** anchor (§5a) | renders in the **local** surface's plane |
+| On-surface **content** (photo, object on a wall/shelf) | ✅ by id, surface-relative (§5a) | rides its **local** host surface |
 | **Free** content, skybox, and (streamed) **avatar** poses | ✅ as **plane-relative anchors** | **re-solved** against local planes |
-| **Seed** (reference constellation + each surface's plane-relative anchor) | ✅ — **also the server's own solver geometry** | registers against it; recovers missing surfaces from it |
-| Exact surface **pose/extent** | ❌ never shared | ✅ each client's own live estimate |
+| **Seed** (reference constellation + each surface's plane-relative anchor) | ✅ — **also the server's own solver geometry** | registers against it; **recovers missing surfaces** from it (§5.2) |
+| Exact surface **pose/extent** (any detected surface) | ❌ never shared | ✅ each client's own live estimate |
 
 **Client/server symmetry.** The **seed *is* the server's local geometry.** The server does some geometry
 itself — locating things relative to a user's pose (`view_relative`, "the wall I'm looking at"). It runs the
@@ -139,27 +139,31 @@ orientation aligned:
 |---|---|---|---|
 | **grounded** *(default)* | XZ multilaterated (§4.1); **Y snapped to local floor** at that XZ | gravity-up + robust wall-yaw; **pitch≡roll≡0** | a model set on the floor/table |
 | **free** | full 3-D multilateration incl. floor-height (§4.1) | **full quaternion `q_rel`** rel. to `R` (§4.2) — heading+pitch+roll | a prop hanging/tilted in mid-air, a rotating object |
-| **on-surface** | **in-plane** (§5a), anchored to a surface id | in-plane (surface normal + wall-yaw) | photo, wall art, door/window inset |
+| **on-surface** | rides its host **surface** if that surface is detected locally; else in-plane (§5a) | host surface's normal + wall-yaw | photo/art hung on a wall or shelf |
 | **skybox** | none | wall-yaw only | environment dome |
 
 `grounded` is today's default and covers most placements; `free` is the explicitly-authored case for content
 that leaves the floor or rotates arbitrarily. The world model stores `mode` per entity so authoring and every
 client agree on how to solve it.
 
-- **(a) On-surface (in-plane plane-relative).** Full-surface **textures** need no positioning (they span the
-  surface). **Positioned** on-surface content (hung photos, wall art) and **insets** (doors/windows) are
-  anchored **in the surface's plane** — *not* offset from the surface **center**, because the plane and its
-  alignment are stable across clients but the center/width are **not** (they depend on how much each client
-  captured). Same thesis as §4, one level down. In-plane coordinates:
-  - **vertical:** height above the **floor** (floor plane → gravity-precise);
-  - **lateral (along the wall):** distance from a **stable in-plane reference** — the **corner** where this
-    surface meets an adjoining wall (a corner is a plane∩plane intersection → stable, unlike the wall's own
-    ends). Over-specify with **both** adjoining corners when present and average; fall back to
-    center-relative only when no corner is captured.
+> **Detected surfaces are headset-first.** Walls, floors, **and doors / windows / wall-art** are all
+> *detected WebXR surfaces*: each client renders them from **its own live capture** (matching its own
+> passthrough exactly), applying only the shared **id + semantics + styling**. They are *not* placed by the
+> server. An inset's hole-cut and `snapInsets` nudge are computed **locally** from the local detection. A
+> client only falls back to a reconstructed pose when it **didn't detect** that surface — see §5.2, which is
+> the *sole* consumer of in-plane placement for these.
 
-  Result: a photo or door lands at the same **physical** spot on the wall for every client even when their
-  detected wall centers/widths differ. Rendered in the client's **local** surface plane → exact passthrough
-  match. (This subsumes today's `snapInsets` center-offset placement.)
+- **(a) On-surface content.** Full-surface **textures** need no positioning (they span the surface).
+  **Positioned** content (a hung photo, a placed object):
+  - **On a *detected* host surface** (wall-art frame, a shelf): it **rides that surface's local pose** — the
+    host is headset-first, so the content inherits exact passthrough alignment. No separate placement math.
+  - **At an arbitrary bare-wall spot** (a photo on blank wall, with no detected surface of its own): placed
+    **in-plane**, since there's nothing to detect. In-plane coordinates: **vertical** = height above the
+    **floor** (gravity-precise); **lateral** = distance from the **corner** where the wall meets an adjoining
+    wall (a plane∩plane intersection → stable, unlike the wall's own ends), over-specified with **both**
+    adjoining corners and averaged. *This is the same math as §4/§5.2 with the host wall as a reference (the
+    host wall pins it into the plane, adjacent walls fix the lateral, floor fixes height) — no separate code
+    path; the corner is implicit in the wall references.*
 - **(b) Free / world-placed.** Full 3-D position (§4.1, floor-height as one constraint) + full-quaternion
   orientation (§4.2). *The independent-3D-model case — a model that floats, hangs, or tilts.*
 - **(c) Grounded (default).** XZ from the position solve (§4.1) but **Y re-seated to the local floor** at that
@@ -197,17 +201,24 @@ re-solved at each **receiver**:
 
 ### 5.2 Recovering a surface the client didn't capture
 
-A **non-wall** surface (furniture, wall art, floor/ceiling, a window…) can exist in the seed but be **absent**
-from a client's live capture (it missed it). Then:
+Every detected surface is rendered **headset-first** (§5, "Detected surfaces are headset-first"). This
+section is the **only** exception: a **non-wall** surface (furniture, wall-art, a door, a window, a
+floor/ceiling…) that exists in the seed but is **absent** from a client's live capture — the client missed
+it. It's also the **sole consumer** of the in-plane / anchor placement for insets. Then:
 
 - Once the client's map has **stabilised**, for each seed surface with **no local match**, the client
   **requests that surface's plane-relative anchor from the server** and **re-solves it against its own local
   walls** (§4) → the surface is recreated at a spot consistent with the client's *own* geometry (not a rigid
   guess). Content on it then rides that recovered surface.
+- **In-wall surfaces (door/window/wall-art) use the ordinary anchor, no special corner math** — the surface
+  is authored with its **host wall included as a reference**: the host wall (offset ≈ 0) pins it *into* the
+  wall plane, adjacent walls fix the lateral position (the corner is host ∩ adjacent, implicit), the floor
+  fixes height, and orientation adopts the host wall. Same `solveAnchor` (client/plane-anchor.js) as any
+  other recovery.
 - **Log + console** each recovery for awareness/debugging, e.g.
   `[recover] surface window_9 reconstructed from plane-anchor (refs: wall_3, wall_8, wall_11)`.
-- If the client later **detects** that surface for real, it switches from the recovered anchor to its own
-  live pose (id re-inherited via `matchRef`).
+- If the client later **detects** that surface for real, it **switches back to its own live pose**
+  (headset-first wins the moment detection is available; id re-inherited via `matchRef`).
 - **Walls are excluded** — they're the *basis* of the anchor system (a wall is a plane, not a point, and its
   absence perturbs everyone's nearest-wall sets). Missing-wall recovery is a separate, harder problem —
   deferred.
@@ -319,6 +330,9 @@ is also an id-correspondence stress test).
   model, mode drives position + orientation together (§5, §4.2).
 - **Director geometry queries run against the seed** — accept the seed's approximation for placement
   *decisions*; rely on **future seed improvements** (§7.8, not yet planned) to sharpen it if ever needed.
+- **Detected surfaces are headset-first** — walls, doors, windows, wall-art all render from each client's
+  own live capture; the server never places them (§5). In-plane/anchor placement for insets is used *only*
+  to **recover** a surface a client didn't detect (§5.2).
 - **Missing-surface recovery — log it** (`[recover] …`, §5.2).
 - **Avatars — stream anchors with hysteresis, solve per receiver** (§5.1).
 - **`--square-walls` default OFF** for now; revisit after A/B (§9).
@@ -326,7 +340,8 @@ is also an id-correspondence stress test).
   skybox (verified during build — see Build-time verifications below).
 - **Solver code — port to Python, pin JS + Python with shared golden vectors** (not Node-in-server, §13.1).
 - **In-plane reference — use corners** (plane∩plane), **over-specify with both adjoining corners and
-  average** when available; center-relative only when no corner is captured (§5a).
+  average**; realized by the general anchor with the host wall as a reference (no separate code path).
+  **Recovery-only** for detected insets (§5.2); also the primary for arbitrary bare-wall content (§5a).
 - **Consensus seed — deferred**, documented with a plan to investigate later; **periodic seed refresh
   folds into it** (§7.7–7.8).
 
