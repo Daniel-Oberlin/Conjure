@@ -365,6 +365,11 @@
   // (jumping you out of the room); instead it seeds its reference from these so its first capture
   // registers INTO the persisted frame. Stays null until a snapshot carrying real surfaces arrives.
   var docSurfaces = null, lastWorldKey = null;
+  // True once THIS client is rendering its own captured surfaces (an AR headset, after its first capture —
+  // see _renderLocal). While active, server real-surface ops are ignored for rendering (local render is the
+  // sole author of real-surface geometry, so the two never fight the apply-gate). A desktop/spectator viewer
+  // never captures, so this stays false and it renders the server's shared surfaces as before.
+  var localRenderActive = false;
   // A VOID/outdoor world (environment.space === "<void>") isn't tied to a captured room — it shows a
   // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
   // instead of registering against stored geometry. Set from each snapshot.
@@ -403,7 +408,14 @@
       if (rc && rc.resetFrame) rc.resetFrame();
     }
     root().innerHTML = "";
-    (world.entities || []).forEach(applyEntity);
+    // LOCAL-FIRST: once a client renders its own capture (localRenderActive), real surfaces are NOT drawn
+    // from the server — each headset draws its OWN live capture (_renderLocal), matching its passthrough. We
+    // still consume the server's real surfaces below (docSurfaces) as the registration REFERENCE. A desktop
+    // viewer (never captures) keeps rendering the server's surfaces. Non-real entities always render here.
+    (world.entities || []).forEach(function (e) {
+      if (localRenderActive && e.meta && e.meta.real) return;
+      applyEntity(e);
+    });
     applyEnv(world.environment);   // after entities, so immersion can toggle them
     isVoidWorld = ((world.environment || {}).space === VOID_SPACE);
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
@@ -417,8 +429,16 @@
       + (isVoidWorld ? " [outdoor/void]" : ""));
   }
 
+  // Geometry/transform paths that describe a real surface's SHAPE — owned locally now (each client renders
+  // its own capture), so a server `update` carrying these is ignored for real surfaces (styling paths still
+  // apply). Non-real entities are unaffected.
+  var GEO_PATHS = { "transform.position": 1, "transform.rotation": 1, "transform.scale": 1,
+                    "components.surface.extent": 1, "components.surface.holes": 1 };
+
   // Apply a single dotted-path set from an `update` op.
   function setPath(el, path, value) {
+    if (localRenderActive && el.dataset.real && GEO_PATHS[path]) return;   // real-surface geometry is local —
+                                                        // don't let the server move/reshape it (docs §2)
     if (path === "components.material.visible") {       // real-surface visibility → entity attribute
       el.dataset.matVisible = String(value);
       applyRealVisibility(el);
@@ -456,11 +476,13 @@
     if (refused || awaitingSpace) return;   // ignore world updates while blanked to passthrough
     (patch.ops || []).forEach(function (op) {
       if (op.op === "add") {
+        if (localRenderActive && op.entity.meta && op.entity.meta.real) return;   // real surfaces render locally
         applyEntity(op.entity);
         debugLog("patch", "add " + op.entity.id + " [" +
           Object.keys((op.entity.components) || {}).join(",") + "]");
       } else if (op.op === "remove") {
         var el = document.getElementById(op.id);
+        if (localRenderActive && el && el.dataset.real) return;   // local render owns real-surface presence
         if (el && el.parentNode) el.parentNode.removeChild(el);
         debugLog("patch", "remove " + op.id + " found=" + !!el);   // found=false ⇒ silent no-op
       } else if (op.op === "update") {
@@ -678,9 +700,7 @@
         this.clientId = "hs_" + Math.random().toString(36).slice(2, 8);
         this.lastPost = 0;
         this._resetSpace = null;
-        this._anchor = null;        // a WebXR anchor — only the BOOTSTRAP frame now (see below)
-        this._anchorReq = false;
-        this._anchorInv = null;     // refSpace → world frame, used by the capture (= _Tmat once registered)
+        this._anchorInv = null;     // last-good registration frame, reused when establishing (= _Tmat once registered)
         // Geometry-registered world frame. The Quest's tracking origin (and any WebXR anchor) can flip
         // ~180° + several metres when you leave the room boundary and return (docs/room-model.md §8a), so
         // we don't trust it for identity. Instead we keep a REFERENCE constellation of the room's own
@@ -712,43 +732,50 @@
         this._ref = []; this._Tmat = null; this._haveT = false;
         this._anchorInv = null; this._refSeq = 0; this._lostSince = 0; this.lastPost = 0;
       },
-      // Park #world-root so content stored in the REFERENCE frame renders at the right real-world spot.
-      // Once registration has a frame (_haveT) that frame is authoritative — world-root = _Tmat⁻¹ and
-      // the capture expresses planes via _Tmat. Before the first capture we bootstrap from a WebXR
-      // anchor if available, else identity (desktop / no support); the reference is then snapped from
-      // that first capture, so the hand-off is seamless.
+      // Position #world-root. LOCAL-FIRST (docs/local-first-geometry.md §2): a captured room renders its
+      // real surfaces at their OWN detected (refSpace/F_track) poses via _renderLocal, so content is
+      // F_track-native and #world-root stays at IDENTITY. Registration still runs — but only to assign
+      // STABLE IDS; it no longer drives a render transform, because one rigid frame can't reconcile the
+      // Quest's locally-non-rigid map (the whole reason for this architecture). A VOID/outdoor world has no
+      // real surfaces to anchor to, so it keeps the old behaviour: park world-root on the canonical frame
+      // (_Tmat⁻¹) so its skybox + content orient consistently across visits.
       _updateWorldFrame: function (frame, refSpace) {
         var THREE = AFRAME.THREE;
-        if (this._haveT) {
-          var inv = this._Tmat.clone().invert();   // reference frame → refSpace = world-root's pose
-          var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
-          inv.decompose(ip, iq, is);
-          var wr = document.getElementById("world-root");
-          if (wr) { wr.object3D.position.copy(ip); wr.object3D.quaternion.copy(iq); }
-          this._anchorInv = this._Tmat;
+        var wr = document.getElementById("world-root");
+        if (!wr) return;
+        if (!isVoidWorld) {                        // captured room → world-root identity (content is F_track-native)
+          wr.object3D.position.set(0, 0, 0);
+          wr.object3D.quaternion.set(0, 0, 0, 1);
           return;
         }
-        if (!this._anchor && !this._anchorReq && frame.createAnchor && window.XRRigidTransform) {
-          var self = this; this._anchorReq = true;
-          try {
-            frame.createAnchor(new XRRigidTransform(), refSpace).then(
-              function (a) { self._anchor = a; self._anchorReq = false; console.log("[conjure] world anchor created"); },
-              function () { self._anchorReq = false; });
-          } catch (e) { this._anchorReq = false; }
+        if (this._haveT) {                         // void world → keep the canonical-frame parking
+          var inv = this._Tmat.clone().invert();
+          var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
+          inv.decompose(ip, iq, is);
+          wr.object3D.position.copy(ip); wr.object3D.quaternion.copy(iq);
         }
-        if (!this._anchor) { this._anchorInv = null; return; }
-        var pose;
-        try { pose = frame.getPose(this._anchor.anchorSpace, refSpace); } catch (e) { return; }
-        if (!pose) return;
-        var p = pose.transform.position, o = pose.transform.orientation;
-        var root = document.getElementById("world-root");
-        if (root) {
-          root.object3D.position.set(p.x, p.y, p.z);
-          root.object3D.quaternion.set(o.x, o.y, o.z, o.w);
-        }
-        this._anchorInv = new THREE.Matrix4().compose(
-          new THREE.Vector3(p.x, p.y, p.z), new THREE.Quaternion(o.x, o.y, o.z, o.w),
-          new THREE.Vector3(1, 1, 1)).invert();
+      },
+      // Render THIS client's own captured surfaces (local-first). Each is drawn at its raw F_track pose via
+      // the shared applyEntity — which runs the render apply-gate, so an unchanged surface isn't re-laid and
+      // nothing "pops" (docs/local-first-geometry.md §5-6). Then debounce-prune any real surface that's been
+      // absent a few captures, so a single missed capture doesn't flicker a wall away. world-root is
+      // identity, so a surface at its captured pose renders at the real-world spot.
+      _renderLocal: function (surfaces) {
+        localRenderActive = true;                  // from now on, server real-surface ops are ignored (local owns them)
+        var seen = {};
+        surfaces.forEach(function (s) {
+          seen[s.id] = 1;
+          applyEntity({ id: s.id, transform: { position: s.position, rotation: s.rotation },
+            components: { surface: { extent: s.extent, holes: s.holes || [] } },
+            meta: { real: true, semantic: s.semantic } });
+        });
+        var abs = this._localAbsent || (this._localAbsent = {});
+        var wr = document.getElementById("world-root"); if (!wr) return;
+        Array.prototype.forEach.call(wr.querySelectorAll('[data-real="1"]'), function (el) {
+          if (seen[el.id]) { delete abs[el.id]; return; }
+          abs[el.id] = (abs[el.id] || 0) + 1;
+          if (abs[el.id] >= 3 && el.parentNode) { el.parentNode.removeChild(el); delete abs[el.id]; }
+        });
       },
       // The room-snapping geometry lives in the pure, unit-tested client/room-snap.js (RoomSnap). These
       // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
@@ -1046,14 +1073,12 @@
         if (reg) { Tmat = this._Tmat = reg; this._haveT = true; }
         else { Tmat = this._anchorInv || new THREE.Matrix4(); this._Tmat = Tmat; this._haveT = true; }  // establish fresh
         this._anchorInv = Tmat;
-        if (!amOwner) {                                  // GUEST: localized into the shared frame — done. The
-          this.lastPost = time;                          // per-frame _updateWorldFrame keeps world-root pinned;
-          return;                                        // never author/mint/post — that's what caused the drift
-        }
-
-        // Pass B — express each plane in the reference frame and assign a STABLE id by the nearest
-        // reference surface of the same semantic; genuinely-new surfaces mint an id and join the reference.
-        var surfaces = [], floor = null, claimed = new Set();
+        // Pass B — assign each plane a STABLE id via matchRef, and build TWO views of it: `localSurfaces`
+        // (its raw F_track pose — what we RENDER, matching THIS headset's passthrough) and `surfaces` (the
+        // reference-frame pose the OWNER posts to persist the shared model/seed). Both carry the same id.
+        // Runs for owner AND guest now (unified): everyone renders their own capture; only the owner authors.
+        // See docs/local-first-geometry.md §5-6.
+        var surfaces = [], localSurfaces = [], floor = null, claimed = new Set();
         cur.forEach(function (c) {
           var planeMat = new THREE.Matrix4().compose(c.pos, c.quat, new THREE.Vector3(1, 1, 1));
           var lp = new THREE.Vector3(), lq = new THREE.Quaternion(), ls = new THREE.Vector3();
@@ -1095,11 +1120,26 @@
             rotation: self._euler(lq), extent: [c.ext[0], c.ext[1]], _lp: lp.clone(), _lq: lq.clone(),
             debug: { pos: c.raw.pos, quat: c.raw.quat, orient: c.orient, label: c.sem,
                      polyY: c.polyY, n: c.poly.length, registered: registered, regStat: self._regStat } });
+          // Same surface, same id, but at its RAW captured (F_track) pose — this is what renders locally.
+          localSurfaces.push({ id: sid, semantic: c.sem, position: [c.pos.x, c.pos.y, c.pos.z],
+            rotation: self._euler(c.quat), extent: [c.ext[0], c.ext[1]],
+            _lp: c.pos.clone(), _lq: c.quat.clone(), debug: {} });
           if (c.sem === "floor" && (!floor || c.ext[0] * c.ext[1] > floor._area)) {
             floor = { floorPolygon: c.poly.map(function (pt) { return [pt.x, pt.z]; }), height: 2.6, _area: c.ext[0] * c.ext[1] };
           }
         });
         if (!surfaces.length) return;
+
+        // LOCAL RENDER (every client): snap corners + insets in F_track, then draw each surface at its OWN
+        // captured pose — matching THIS headset's passthrough, with no shared rigid frame and no server
+        // round-trip. Squaring is intentionally skipped (default off — trust the raw local planes; docs §9).
+        // world-root stays identity (_updateWorldFrame). The apply-gate inside applyEntity means an unchanged
+        // surface isn't re-laid, so nothing "pops".
+        window.RoomSnap.joinCorners(THREE, localSurfaces);
+        window.RoomSnap.snapInsets(THREE, localSurfaces);
+        this._renderLocal(localSurfaces);
+
+        if (!amOwner) { this.lastPost = time; return; }   // guest: rendered its own capture; never authors/posts
 
         // Square the walls onto one orthogonal grid, join wall corners that fall a few cm short, then
         // snap the insets (door/window/art) in front of their wall toward the room interior. All mutate

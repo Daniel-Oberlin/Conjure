@@ -380,12 +380,18 @@ checked in the JS *and* Python suites) so they can't silently drift. **Decided: 
 pure math (a 3×3 weighted least-squares for position + per-wall quaternion vote averaging for orientation);
 the parity-test contract is far cheaper than embedding Node, and keeps server pure-Python / client pure-JS.
 
-1. **Plane-relative anchor module** (pure, testable like `room-snap`): author (pose + local planes → anchor)
-   and solve (anchor + local planes → pose), with the weighted-LS position solve, gravity-up + wall-yaw
-   orientation, weighting, degeneracy handling, and robust fallback — **fully documented in code**. Ship
-   **golden test vectors** alongside it (§13.1) so the Python port stays in lockstep.
-2. **Local render of real surfaces + apply-gate** (client): render surfaces from the live capture (ids/
-   styling by id); skip un-moved surfaces (no pop). `#world-root` → identity.
+1. **✅ Plane-relative anchor module** (pure, testable like `room-snap`): author (pose + local planes →
+   anchor) and solve (anchor + local planes → pose), with the weighted-LS position solve, gravity-up +
+   wall-yaw orientation, weighting, degeneracy handling, and robust fallback — **fully documented in code**.
+   Ships **golden test vectors** (§13.1) so the Python port stays in lockstep. (`client/plane-anchor.js`)
+2. **⏳ Local render of real surfaces + apply-gate** (client) — *Milestone A, needs headset validation.*
+   Landed: apply-gate (`world-model.js surfaceMoved`, tested); every client renders its **own** live capture
+   in F_track via `_renderLocal`, `#world-root` → **identity** for captured rooms (void worlds keep the
+   canonical parking); owner/guest render paths **unified** (both render locally; only the owner posts);
+   server real-surface ops are ignored once `localRenderActive` (a desktop viewer, which never captures,
+   still renders the server's surfaces). **Deferred to later steps:** content/skybox anchoring (step 3, so
+   test in a **bare** room), styling-by-id on locally-rendered surfaces (step 4), retiring establish/freeze
+   server-side (step 4).
 3. **Free content / skybox / grounded via anchors** (§5 b–d), authored by the owner, solved per client.
 4. **Server = model + seed + anchors:** stop broadcasting per-capture geometry; ingest only structural
    changes (§7); serve model + seed + anchors on join. Retire `_static_frozen` / #2.
