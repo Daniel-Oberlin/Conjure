@@ -65,6 +65,21 @@ def main() -> None:
                      help="how often a headset recaptures + re-registers the room, in seconds (default: 2.0). "
                           "Lower ⇒ the guest re-locks faster but churns more; higher ⇒ calmer, slower to recover.")
 
+    # --- Render apply-gate: how much a locally-rendered surface must change before it's redrawn -----------
+    gate = ap.add_argument_group(
+        "render apply-gate (local-first surface rendering)",
+        "Each headset renders its OWN captured surfaces and re-lays a surface only when it moves past one of\n"
+        "these tolerances, so sub-tolerance re-derivation doesn't rebuild the mesh (the 'pop'). Bigger =\n"
+        "calmer (fewer redraws, more lag before a real change shows); smaller = snappier (tracks tighter,\n"
+        "redraws more). Applies to every client's local render (docs/local-first-geometry.md §4-6).")
+    gate.add_argument("--apply-tol-pos", type=float, default=0.02, metavar="METERS",
+                      help="how far (m) a surface must move before it's redrawn (default: 0.02 = 2 cm).")
+    gate.add_argument("--apply-tol-rot", type=float, default=1.0, metavar="DEGREES",
+                      help="how far (°) a surface must rotate before it's redrawn (default: 1.0).")
+    gate.add_argument("--apply-tol-ext", type=float, default=0.02, metavar="METERS",
+                      help="how much (m) a surface's size or an opening must change before it's redrawn "
+                           "(default: 0.02 = 2 cm).")
+
     args = ap.parse_args()
     if args.debug_registration:                      # picked up by get_settings() when the app imports below
         os.environ["CONJURE_DEBUG_REGISTRATION"] = "1"
@@ -79,6 +94,9 @@ def main() -> None:
     os.environ["CONJURE_REG_INLIER_M"] = str(args.reg_inlier_m)
     os.environ["CONJURE_REG_YAW_PEAKS"] = str(args.reg_yaw_peaks)
     os.environ["CONJURE_CAPTURE_INTERVAL"] = str(args.capture_interval)
+    os.environ["CONJURE_APPLY_TOL_POS"] = str(args.apply_tol_pos)
+    os.environ["CONJURE_APPLY_TOL_ROT_DEG"] = str(args.apply_tol_rot)
+    os.environ["CONJURE_APPLY_TOL_EXT"] = str(args.apply_tol_ext)
     uvicorn.run("conjure.server:app", host=args.host, port=args.port, reload=False)
 
 

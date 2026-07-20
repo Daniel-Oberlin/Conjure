@@ -71,6 +71,12 @@ class Settings:
     reg_inlier_m: float = 0.4                        # max distance (m) a plane may sit from a same-kind reference
     reg_yaw_peaks: int = 5                           # candidate room rotations tried when solving orientation
     capture_interval: float = 2.0                    # seconds between recaptures/re-registrations
+    # Render apply-gate (docs/local-first-geometry.md §4-6): a locally-rendered surface is only re-laid when
+    # it moves past ONE of these tolerances — otherwise sub-tolerance re-derivation is skipped so the mesh
+    # doesn't rebuild (the "pop"). Bigger = calmer (fewer updates, more lag to real change); smaller = snappier.
+    apply_tol_pos: float = 0.02                      # metres a surface must move to re-lay it
+    apply_tol_rot_deg: float = 1.0                   # degrees it must rotate to re-lay it
+    apply_tol_ext: float = 0.02                      # metres its size/opening must change to re-lay it
     # TEST override for the client's reported geolocation (--force-geo). "zero" pins you at (0,0) — a
     # convenient "somewhere else"; "/<user>/spaces/<name>" pins you at that space's stored location.
     # Empty (default) ⇒ use the real browser/headset location. See server._forced_geo.
@@ -125,6 +131,9 @@ def get_settings() -> Settings:
         reg_inlier_m=float(os.environ.get("CONJURE_REG_INLIER_M", "0.4")),
         reg_yaw_peaks=int(os.environ.get("CONJURE_REG_YAW_PEAKS", "5")),
         capture_interval=float(os.environ.get("CONJURE_CAPTURE_INTERVAL", "2.0")),
+        apply_tol_pos=float(os.environ.get("CONJURE_APPLY_TOL_POS", "0.02")),
+        apply_tol_rot_deg=float(os.environ.get("CONJURE_APPLY_TOL_ROT_DEG", "1.0")),
+        apply_tol_ext=float(os.environ.get("CONJURE_APPLY_TOL_EXT", "0.02")),
         force_geo=(os.environ.get("CONJURE_FORCE_GEO", "").strip() or None),
         force_occupied=os.environ.get("CONJURE_FORCE_OCCUPIED", "").strip().lower() in ("1", "true", "yes", "on"),
         embed_backend=os.environ.get("CONJURE_EMBED_BACKEND", "auto"),

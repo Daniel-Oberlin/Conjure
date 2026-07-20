@@ -744,9 +744,12 @@ async def index() -> HTMLResponse:
     # (which is unreliable on the Quest). The server still overrides the actual coords (_apply_forced_geo),
     # so any value works; this just lets space selection PROCEED without a real GPS fix during testing.
     fg = json.dumps(settings.force_geo) if settings.force_geo else "null"
+    # Render apply-gate tolerances (--apply-tol-*) → the client's surfaceMoved (world-model.js).
+    tol = (f"{{pos:{settings.apply_tol_pos},rotDeg:{settings.apply_tol_rot_deg},ext:{settings.apply_tol_ext}}}")
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
                         f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_FORCE_GEO={fg};"
-                        f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};</script>\n  </head>")
+                        f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};"
+                        f"window.CONJURE_APPLY_TOL={tol};</script>\n  </head>")
     return HTMLResponse(html, headers=_NO_STORE)
 
 

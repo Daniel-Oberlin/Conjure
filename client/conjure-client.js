@@ -1213,14 +1213,19 @@
       if (awaitingSpace) beginSpaceSelection();
       return;
     }
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) { debugLog("sel", "warmGeo: navigator.geolocation ABSENT", true); return; }
     geoStatus = "pending";
+    debugLog("sel", "warmGeo: requesting a fix…", true);
     navigator.geolocation.getCurrentPosition(function (pos) {
       lastGeo = { lat: pos.coords.latitude, lon: pos.coords.longitude, user: currentUser() || undefined };
       geoStatus = "ready";
+      debugLog("sel", "warmGeo: fix OK (" + pos.coords.latitude.toFixed(4) + "," + pos.coords.longitude.toFixed(4)
+        + ") awaiting=" + awaitingSpace, true);
       if (awaitingSpace) beginSpaceSelection();              // AR entered while we were locating → select now
-    }, function () {
+    }, function (err) {
       geoStatus = "failed";
+      debugLog("sel", "warmGeo: fix FAILED code=" + (err && err.code) + " " + (err && err.message)
+        + " awaiting=" + awaitingSpace, true);
       if (awaitingSpace) endAwaitingSpace();                 // AR waiting but no fix → join the active world
     }, { maximumAge: 600000, timeout: 10000 });
   }
@@ -1231,29 +1236,35 @@
   function onEnterAR() {
     awaitingSpace = true;
     blankToPassthrough();
+    debugLog("sel", "onEnterAR geoStatus=" + geoStatus + " geoAPI=" + !!navigator.geolocation
+      + " forceGeo=" + !!window.CONJURE_FORCE_GEO + " lastGeo=" + !!lastGeo, true);
     if (geoStatus === "ready") beginSpaceSelection();
     else if (window.CONJURE_FORCE_GEO) warmGeo();            // TEST: synthesize a fix now, then select
-    else if (geoStatus === "failed" || !navigator.geolocation) endAwaitingSpace();
-    else { setAwaitMessage("locating"); warmGeo(); }         // still acquiring → warmGeo's callback selects
+    else if (geoStatus === "failed" || !navigator.geolocation) {
+      debugLog("sel", "onEnterAR → endAwaitingSpace (no fix; join active world)", true);
+      endAwaitingSpace();
+    } else { setAwaitMessage("locating"); warmGeo(); }       // still acquiring → warmGeo's callback selects
   }
 
   // Stage-1 discovery using the (warm) fix: ask the server for geo-near candidate spaces, then arm the
   // vote (candidates) or commit "no match" (nowhere near). Runs only in AR, once the fix is ready.
   function beginSpaceSelection() {
-    if (!lastGeo) { endAwaitingSpace(); return; }
+    if (!lastGeo) { debugLog("sel", "beginSpaceSelection: no lastGeo → endAwaitingSpace", true); endAwaitingSpace(); return; }
     setAwaitMessage("finding");                              // fix in hand → now matching/establishing
     var g = lastGeo;
+    debugLog("sel", "beginSpaceSelection: POST /geolocation (" + g.lat.toFixed(4) + "," + g.lon.toFixed(4) + ")", true);
     fetch("/geolocation", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lat: g.lat, lon: g.lon, user: g.user, cid: clientId }),
     }).then(function (r) { return r.json(); }).then(function (resp) {
+      var cands = (resp && resp.candidates) || [];
+      debugLog("sel", "/geolocation resp: selected=" + (resp && resp.selected) + " cands=" + cands.length, true);
       if (!resp || resp.selected) { endAwaitingSpace(); return; }   // already established this session
-      var cands = resp.candidates || [];
       // No geo-near space at all ⇒ somewhere new — commit "no match" now so the server mints a fresh space
       // here. Otherwise arm the vote: room-capture picks the matching candidate as its capture fills in.
       if (!cands.length) commitSelect({ matched: false });
       else pendingSelect = { candidates: cands, tries: 0 };
-    }).catch(function () { endAwaitingSpace(); });            // discovery failed → un-blank, join as-is
+    }).catch(function (e) { debugLog("sel", "/geolocation FETCH ERROR: " + e, true); endAwaitingSpace(); });
   }
 
   // Commit stage-2 of space selection: tell the server the verdict (matched a candidate, or none), with the
