@@ -415,7 +415,10 @@
   // The location fix is acquired EAGERLY on page load (warmGeo), before the user enters AR, so it's usually
   // ready by the time they do — the acquisition (often several seconds on a headset) overlaps with reading
   // the page / clicking Enter AR instead of stalling after it. geoStatus: idle → pending → ready | failed.
-  var geoStatus = "idle";
+  // A headset's GPS fix can take many seconds (or fail transiently), so on failure we RETRY up to
+  // GEO_MAX_TRIES while staying blanked to passthrough — rather than dumping the user into the (possibly
+  // void) active world mid-acquisition. geoTries resets on each AR entry and on a successful fix.
+  var geoStatus = "idle", geoTries = 0, GEO_MAX_TRIES = 3;
   // Admission gate + occupancy (new-space-flow steps 4/7). `clientId` identifies this page-load to the
   // server so its select commits once (GPS jitter can't re-vote). `amHolding` = we passed the co-location
   // gate and are HOLDING the active space; we tell the server (`hold` over /ws) so it counts us as
@@ -1275,20 +1278,24 @@
       return;
     }
     if (!navigator.geolocation) { debugLog("sel", "warmGeo: navigator.geolocation ABSENT", true); return; }
-    geoStatus = "pending";
-    debugLog("sel", "warmGeo: requesting a fix…", true);
+    geoStatus = "pending"; geoTries++;
+    debugLog("sel", "warmGeo: requesting a fix… (try " + geoTries + "/" + GEO_MAX_TRIES + ")", true);
     navigator.geolocation.getCurrentPosition(function (pos) {
       lastGeo = { lat: pos.coords.latitude, lon: pos.coords.longitude, user: currentUser() || undefined };
-      geoStatus = "ready";
+      geoStatus = "ready"; geoTries = 0;
       debugLog("sel", "warmGeo: fix OK (" + pos.coords.latitude.toFixed(4) + "," + pos.coords.longitude.toFixed(4)
         + ") awaiting=" + awaitingSpace, true);
       if (awaitingSpace) beginSpaceSelection();              // AR entered while we were locating → select now
     }, function (err) {
       geoStatus = "failed";
       debugLog("sel", "warmGeo: fix FAILED code=" + (err && err.code) + " " + (err && err.message)
-        + " awaiting=" + awaitingSpace, true);
-      if (awaitingSpace) endAwaitingSpace();                 // AR waiting but no fix → join the active world
-    }, { maximumAge: 600000, timeout: 10000 });
+        + " (try " + geoTries + "/" + GEO_MAX_TRIES + ")", true);
+      // Don't dump the user into the (possibly void) active world while a slow fix might still land — stay
+      // blanked to passthrough and RETRY; only give up (join the active world) after GEO_MAX_TRIES.
+      if (!awaitingSpace) return;
+      if (geoTries < GEO_MAX_TRIES) { setAwaitMessage("locating"); setTimeout(function () { if (awaitingSpace) warmGeo(); }, 1500); }
+      else { debugLog("sel", "warmGeo: giving up after " + geoTries + " tries → join active world", true); endAwaitingSpace(); }
+    }, { maximumAge: 600000, timeout: 20000 });
   }
 
   // Entering AR: we don't yet know which space we're in, so blank to passthrough and either select
@@ -1301,10 +1308,12 @@
       + " forceGeo=" + !!window.CONJURE_FORCE_GEO + " lastGeo=" + !!lastGeo, true);
     if (geoStatus === "ready") beginSpaceSelection();
     else if (window.CONJURE_FORCE_GEO) warmGeo();            // TEST: synthesize a fix now, then select
-    else if (geoStatus === "failed" || !navigator.geolocation) {
-      debugLog("sel", "onEnterAR → endAwaitingSpace (no fix; join active world)", true);
+    else if (!navigator.geolocation) {                      // truly no geolocation API → can't identify a space
+      debugLog("sel", "onEnterAR → endAwaitingSpace (no geolocation API; join active world)", true);
       endAwaitingSpace();
-    } else { setAwaitMessage("locating"); warmGeo(); }       // still acquiring → warmGeo's callback selects
+    } else {                                                // idle / pending / previously-failed → (re)try,
+      setAwaitMessage("locating"); geoTries = 0; warmGeo();  // staying blanked to passthrough (not the void world)
+    }
   }
 
   // Stage-1 discovery using the (warm) fix: ask the server for geo-near candidate spaces, then arm the
