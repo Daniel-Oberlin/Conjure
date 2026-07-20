@@ -384,14 +384,17 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    anchor) and solve (anchor + local planes → pose), with the weighted-LS position solve, gravity-up +
    wall-yaw orientation, weighting, degeneracy handling, and robust fallback — **fully documented in code**.
    Ships **golden test vectors** (§13.1) so the Python port stays in lockstep. (`client/plane-anchor.js`)
-2. **⏳ Local render of real surfaces + apply-gate** (client) — *Milestone A, needs headset validation.*
-   Landed: apply-gate (`world-model.js surfaceMoved`, tested); every client renders its **own** live capture
-   in F_track via `_renderLocal`, `#world-root` → **identity** for captured rooms (void worlds keep the
-   canonical parking); owner/guest render paths **unified** (both render locally; only the owner posts);
-   server real-surface ops are ignored once `localRenderActive` (a desktop viewer, which never captures,
-   still renders the server's surfaces). **Deferred to later steps:** content/skybox anchoring (step 3, so
-   test in a **bare** room), styling-by-id on locally-rendered surfaces (step 4), retiring establish/freeze
-   server-side (step 4).
+2. **✅ Local render of real surfaces + apply-gate** (client) — *Milestone A, validated on-device
+   (2026-07-20): surfaces sit accurately on the real walls in passthrough, stable, no pop; only real
+   refinements settle through over time.* Apply-gate (`world-model.js surfaceMoved`, tested), tunable via
+   `--apply-tol-*`; every client renders its **own** live capture in F_track via `_renderLocal`,
+   `#world-root` → **identity** for captured rooms (void worlds keep the canonical parking); owner/guest
+   render paths **unified** (both render locally; only the owner posts); server real-surface ops are ignored
+   once `localRenderActive` (a desktop viewer, which never captures, still renders the server's surfaces).
+   **Deferred to later steps:** content/skybox anchoring (step 3), styling-by-id on locally-rendered
+   surfaces (step 4), retiring establish/freeze server-side (step 4). *Note: getting into a captured room
+   depends on the space-selection flow, which is gated by Quest GPS — the fix can lag ~10 s or miss, dropping
+   you into the void world; keeping the view blanked while the fix is pending is a small separate fix.*
 3. **Free content / skybox / grounded via anchors** (§5 b–d), authored by the owner, solved per client.
 4. **Server = model + seed + anchors:** stop broadcasting per-capture geometry; ingest only structural
    changes (§7); serve model + seed + anchors on join. Retire `_static_frozen` / #2.
