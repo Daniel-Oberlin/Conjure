@@ -724,10 +724,12 @@ async def index() -> HTMLResponse:
     sm = int((CLIENT_DIR / "room-snap.js").stat().st_mtime)
     gm = int((CLIENT_DIR / "grounded-skybox.js").stat().st_mtime)
     wm = int((CLIENT_DIR / "world-model.js").stat().st_mtime)
-    v = max(cm, sm, gm, wm)                   # badge reflects the newest of the scripts
+    pm = int((CLIENT_DIR / "plane-anchor.js").stat().st_mtime)
+    v = max(cm, sm, gm, wm, pm)               # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
+    html = html.replace("/static/plane-anchor.js", f"/static/plane-anchor.js?v={pm}")
     html = html.replace("/static/grounded-skybox.js", f"/static/grounded-skybox.js?v={gm}")
     html = html.replace("/static/world-model.js", f"/static/world-model.js?v={wm}")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")

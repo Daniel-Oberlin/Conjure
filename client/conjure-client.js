@@ -277,6 +277,34 @@
     el.setAttribute("material", mat);
   }
 
+  // The room's stable planes (floor + walls) as PlaneAnchor.Plane[], for placing content via plane-relative
+  // anchors (docs/local-first-geometry.md §5). Two sources, keyed by the SAME shared surface ids:
+  //   refToPlanes   — the seed/reference constellation in F_ref (this._ref) — where content is authored.
+  //   localToPlanes — this client's live capture in F_track (localSurfaces) — where content is rendered.
+  // Solving an F_ref-authored anchor against the local planes maps content room→room without a rigid frame.
+  function refToPlanes(THREE, ref) {
+    var out = [];
+    (ref || []).forEach(function (r) {
+      if (r.sem === "floor") out.push({ id: r.id, kind: "floor", normal: new THREE.Vector3(0, 1, 0), point: r.pos.clone() });
+      else if (r.sem === "wall") out.push({ id: r.id, kind: "wall",
+        normal: new THREE.Vector3(Math.sin(r.nyaw), 0, Math.cos(r.nyaw)), point: r.pos.clone() });
+    });
+    return out;
+  }
+  function localToPlanes(THREE, surfs) {
+    var UP = new THREE.Vector3(0, 1, 0), out = [];
+    (surfs || []).forEach(function (s) {
+      if (!s._lp || !s._lq) return;
+      if (s.semantic === "floor") out.push({ id: s.id, kind: "floor", normal: new THREE.Vector3(0, 1, 0), point: s._lp.clone() });
+      else if (s.semantic === "wall") out.push({ id: s.id, kind: "wall", normal: UP.clone().applyQuaternion(s._lq), point: s._lp.clone() });
+    });
+    return out;
+  }
+  function eulerYXZToQuat(THREE, deg) {
+    var d = THREE.MathUtils.degToRad; deg = deg || [0, 0, 0];
+    return new THREE.Quaternion().setFromEuler(new THREE.Euler(d(deg[0] || 0), d(deg[1] || 0), d(deg[2] || 0), "YXZ"));
+  }
+
   // Inflate (or update) one entity: transform + components map onto A-Frame.
   function applyEntity(ent) {
     var el = ensureEl(ent.id);
@@ -310,6 +338,10 @@
     if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
     if (t.scale) el.setAttribute("scale", v3(t.scale));
     Object.keys(comps).forEach(function (name) { el.setAttribute(name, comps[name]); });
+    // Director-placed content: remember its AUTHORED (F_ref) pose so the capture tick can re-place it via a
+    // plane-relative anchor solved against the LOCAL walls (docs §5). In a captured room #world-root is
+    // identity, so the raw F_ref pose would be wrong; _placeContent corrects it. Scaffold is excluded.
+    if (!meta.scaffold && t.position) el._frefPose = { position: t.position, rotation: t.rotation || [0, 0, 0] };
   }
 
   function applyEnv(env) {
@@ -777,6 +809,34 @@
           if (abs[el.id] >= 3 && el.parentNode) { el.parentNode.removeChild(el); delete abs[el.id]; }
         });
       },
+      // Place director-authored content (models, props — anything with a remembered F_ref pose) via
+      // plane-relative anchors (docs/local-first-geometry.md §5). Since #world-root is identity in a captured
+      // room, we can't render content at its raw F_ref pose; instead, for each content entity, author an
+      // anchor from its F_ref pose against the SEED walls (F_ref) and re-solve it against THIS client's LOCAL
+      // walls (F_track) — so it lands at the right spot in the room, riding the same non-rigid geometry the
+      // surfaces do. Re-solved every capture as the local walls refine. Free mode (full 3-D + orientation).
+      _placeContent: function (localSurfaces) {
+        var PA = window.PlaneAnchor; if (!PA) return;
+        var THREE = AFRAME.THREE;
+        var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
+        if (localPl.length < 2 || refPl.length < 2) return;         // not enough wall/floor basis yet
+        var wr = document.getElementById("world-root"); if (!wr) return;
+        var placed = 0;
+        Array.prototype.forEach.call(wr.children, function (el) {
+          if (!el._frefPose || !el.object3D) return;
+          var fp = el._frefPose;
+          var entity = { mode: "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
+            position: new THREE.Vector3(fp.position[0] || 0, fp.position[1] || 0, fp.position[2] || 0) };
+          var anchor = PA.authorAnchor(THREE, entity, refPl);
+          var sol = PA.solveAnchor(THREE, anchor, localPl);
+          if (!sol.ok) return;                                      // degenerate / missing walls → hold last pose
+          el.object3D.position.copy(sol.position);
+          el.object3D.quaternion.copy(sol.quaternion);
+          placed++;
+        });
+        if (window.CONJURE_DEBUG_REGISTRATION && placed)
+          debugLog("content", "placed " + placed + " via anchors (ref=" + refPl.length + " local=" + localPl.length + ")", true);
+      },
       // The room-snapping geometry lives in the pure, unit-tested client/room-snap.js (RoomSnap). These
       // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
       _euler: function (q) { return window.RoomSnap.eulerYXZ(AFRAME.THREE, q); },
@@ -1138,6 +1198,7 @@
         window.RoomSnap.joinCorners(THREE, localSurfaces);
         window.RoomSnap.snapInsets(THREE, localSurfaces);
         this._renderLocal(localSurfaces);
+        this._placeContent(localSurfaces);                // director content → plane-relative anchors (docs §5)
 
         if (!amOwner) { this.lastPost = time; return; }   // guest: rendered its own capture; never authors/posts
 
