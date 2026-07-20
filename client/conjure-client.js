@@ -1206,7 +1206,14 @@
   // space selection still happens on enter-vr (AR-only — a desktop viewer isn't physically in a space).
   // Best-effort: needs HTTPS + permission. If AR is already waiting on the fix when it lands, proceed.
   function warmGeo() {
-    if (!navigator.geolocation || geoStatus === "pending" || geoStatus === "ready") return;
+    if (geoStatus === "pending" || geoStatus === "ready") return;
+    if (window.CONJURE_FORCE_GEO) {          // TEST (--force-geo): synthesize a fix so space selection can
+      lastGeo = { lat: 0, lon: 0, user: currentUser() || undefined };   // proceed without Quest GPS — the
+      geoStatus = "ready";                   // server overrides these coords anyway (_apply_forced_geo)
+      if (awaitingSpace) beginSpaceSelection();
+      return;
+    }
+    if (!navigator.geolocation) return;
     geoStatus = "pending";
     navigator.geolocation.getCurrentPosition(function (pos) {
       lastGeo = { lat: pos.coords.latitude, lon: pos.coords.longitude, user: currentUser() || undefined };
@@ -1225,6 +1232,7 @@
     awaitingSpace = true;
     blankToPassthrough();
     if (geoStatus === "ready") beginSpaceSelection();
+    else if (window.CONJURE_FORCE_GEO) warmGeo();            // TEST: synthesize a fix now, then select
     else if (geoStatus === "failed" || !navigator.geolocation) endAwaitingSpace();
     else { setAwaitMessage("locating"); warmGeo(); }         // still acquiring → warmGeo's callback selects
   }

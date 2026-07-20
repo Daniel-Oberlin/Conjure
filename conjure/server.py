@@ -740,8 +740,12 @@ async def index() -> HTMLResponse:
     reg = (f"{{minCov:{settings.reg_min_cov},minCovFrac:{settings.reg_min_cov_frac},"
            f"sizeTol:{settings.reg_size_tol},inlierM:{settings.reg_inlier_m},yawPeaks:{settings.reg_yaw_peaks}}}")
     cap_ms = int(settings.capture_interval * 1000)
+    # --force-geo also tells the CLIENT to synthesize a location fix instead of calling navigator.geolocation
+    # (which is unreliable on the Quest). The server still overrides the actual coords (_apply_forced_geo),
+    # so any value works; this just lets space selection PROCEED without a real GPS fix during testing.
+    fg = json.dumps(settings.force_geo) if settings.force_geo else "null"
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
-                        f"window.CONJURE_DEBUG_REGISTRATION={rflag};"
+                        f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_FORCE_GEO={fg};"
                         f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};</script>\n  </head>")
     return HTMLResponse(html, headers=_NO_STORE)
 
