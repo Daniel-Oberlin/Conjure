@@ -399,14 +399,16 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    once `localRenderActive` (a desktop viewer, which never captures, still renders the server's surfaces).
    *(Getting into a captured room depends on the GPS-gated space-selection flow; a slow/missed fix now keeps
    the view blanked-to-passthrough and retries instead of dropping into the void world — fixed.)*
-3. **◑ Free content / skybox / grounded via anchors** (§5 b–d) — *validated on-device (2026-07-21):
-   director-placed models land where you're looking and hold; on-surface photos stay pinned to their
-   surface.* `_placeContent`, each capture: **free** content multilaterates its F_ref pose against the local
-   walls (§5b); **on-surface** content (`meta.on_surface`) instead **rides its local host surface** — its
-   offset-from-host (F_ref) re-applied to the host's local pose (§5a) so it never drifts off. The head pose
-   is broadcast in F_ref (via `T`) so `view_relative`/"in front of me" resolves correctly. **Deferred:**
-   skybox yaw-relative orientation, grounded-vs-free mode declared in the world model, persisted anchors
-   (currently re-authored client-side each capture from the F_ref pose).
+3. **✅ Free content / skybox / grounded via anchors** (§5 b–d). `_placeContent`, each capture, handles all
+   four modes: **free** content multilaterates its F_ref pose against the local walls (§5b); **grounded**
+   content (`meta.placement:"grounded"` — set on dropped models, which auto-sit on the floor) snaps Y to the
+   **local** floor + stays upright (§5c); **on-surface** content (`meta.on_surface`) **rides its local host
+   surface** — offset-from-host (F_ref) re-applied to the host's local pose (§5a), no drift; **skybox** is
+   oriented by the registration yaw (`_pinSky` applies `T⁻¹`'s rotation) so it holds a consistent
+   room-relative heading with `#world-root` at identity (§5d). Head pose broadcast in F_ref (via `T`) so
+   `view_relative`/"in front of me" resolves. *Validated on-device: models land where you look and hold;
+   on-surface photos stay pinned.* **Deferred → step 7:** persisted anchors (content is re-authored
+   client-side each capture from the F_ref pose today, not stored as an anchor server-side).
 4. **◑ Server = model + seed:** styling-by-id on local surfaces ✅ (a surface keeps its shared material);
    `ingest_room` no longer broadcasts geometry — it updates the stored SEED only (add / meaningfully-changed
    / prune-absent) and broadcasts just env + on-surface re-anchors; the time-based **establish/freeze is

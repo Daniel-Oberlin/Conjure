@@ -549,8 +549,10 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
         "id": eid,
         "transform": {"position": model_pos, "scale": model_scale},
         "components": {"gltf-model": f"/assets/{model_id}"},
+        # A dropped model sits on the floor → GROUNDED placement (docs §5c): each client snaps its Y to its
+        # OWN local floor and keeps it upright, so it never floats/sinks against a differing local floor.
         "meta": {"title": title, "license": licence, "attribution": attribution, "creator": creator,
-                 "source": source, "tris": tris, "generated": False},
+                 "source": source, "tris": tris, "generated": False, "placement": "grounded"},
     }}
 
 

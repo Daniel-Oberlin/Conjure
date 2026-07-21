@@ -344,6 +344,7 @@
     // identity, so the raw F_ref pose would be wrong; _placeContent corrects it. Scaffold is excluded.
     if (!meta.scaffold && t.position) el._frefPose = { position: t.position, rotation: t.rotation || [0, 0, 0] };
     el._onSurface = meta.on_surface || null;   // content pinned to a surface rides that surface locally (§5a)
+    el._placement = meta.placement || "free";  // "grounded" (Y snapped to floor, upright) | "free" (full 3-D) — §5b/c
   }
 
   function applyEnv(env) {
@@ -896,9 +897,11 @@
             ridden++;
             return;
           }
-          // FREE content: multilaterate against the local walls (§5b).
+          // FREE / GROUNDED content: multilaterate against the local walls (§5b/c). Grounded snaps Y to the
+          // local floor + keeps it upright (yaw-only); free keeps the full authored 3-D pose. Mode is
+          // declared per entity (meta.placement), default free.
           if (localPl.length < 2 || refPl.length < 2) return;       // not enough wall/floor basis yet
-          var entity = { mode: "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
+          var entity = { mode: el._placement || "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
             position: new THREE.Vector3(fp.position[0] || 0, fp.position[1] || 0, fp.position[2] || 0) };
           var sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
           if (!sol.ok) return;                                      // degenerate / missing walls → hold last pose
@@ -996,17 +999,20 @@
         debugLog("coloc", line, window.CONJURE_DEBUG_REGISTRATION);   // gated by --debug-registration, not debug_log
         this._diagHud(line);
       },
-      // Pin the skybox to the WORLD frame, not the headset's tracking origin. The <a-sky>/#grounded-sky
-      // live as scene children (they can't go inside #world-root — applySnapshot clears its innerHTML),
-      // so they'd otherwise render at identity in the arbitrary per-session tracking frame, making a
-      // skybox's orientation change between visits while the (registered) room stays put. Copy #world-root's
-      // orientation onto both so the sky rides the SAME persistent frame as the room. Rotation only:
-      // #world-root's rotation is a pure gravity-aligned yaw (the register vote solves yaw + x/z only), so
-      // a plain sky sphere stays viewer-centered and a grounded dome spins about vertical — its ground
-      // stays flat on the floor, just re-oriented. In a void world (world-root ≈ identity) this is a no-op.
+      // Orient the skybox consistently relative to the ROOM (§5d — wall-relative yaw). The <a-sky>/
+      // #grounded-sky live as scene children (not inside #world-root, which applySnapshot clears), so left
+      // alone they'd hold the arbitrary per-session tracking yaw and spin between visits. #world-root is
+      // identity in a captured room now, so instead of reading it we apply the registration transform's
+      // INVERSE rotation (F_ref → F_track) directly — the same yaw #world-root used to carry — so the sky
+      // rides the persistent room frame and keeps its orientation across sessions. Rotation only (a pure
+      // gravity yaw from the register vote): a plain sky sphere stays viewer-centered; a grounded dome spins
+      // about vertical, ground flat. Identity before the first lock.
       _pinSky: function () {
-        var wr = document.getElementById("world-root"); if (!wr) return;
-        var q = wr.object3D.quaternion;
+        var THREE = AFRAME.THREE, q = new THREE.Quaternion();
+        if (this._haveT && this._Tmat) {
+          var p = new THREE.Vector3(), s = new THREE.Vector3();
+          this._Tmat.clone().invert().decompose(p, q, s);
+        }
         var sky = document.getElementById("sky"); if (sky) sky.object3D.quaternion.copy(q);
         var g = document.getElementById("grounded-sky"); if (g) g.object3D.quaternion.copy(q);
       },
