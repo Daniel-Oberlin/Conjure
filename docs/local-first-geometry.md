@@ -407,8 +407,12 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    head pose is broadcast in F_ref (via `T`) so `view_relative`/"in front of me" resolves correctly.
    **Deferred:** skybox yaw-relative orientation, grounded-vs-free mode declared in the world model,
    persisted anchors (currently re-authored client-side each capture from the F_ref pose).
-4. **Server = model + seed + anchors:** stop broadcasting per-capture geometry; ingest only structural
-   changes (§7); serve model + seed + anchors on join. Retire `_static_frozen` / #2.
+4. **◑ Server = model + seed:** styling-by-id on local surfaces ✅ (a surface keeps its shared material);
+   `ingest_room` no longer broadcasts geometry — it updates the stored SEED only (add / meaningfully-changed
+   / prune-absent) and broadcasts just env + on-surface re-anchors; the time-based **establish/freeze is
+   retired** (`_ESTABLISH_SECS`/`_room_capture_start`/`_STATIC_SEMANTICS`, `--establishment-period` all
+   removed — clients render locally, so there's nothing shared to stabilize). **Deferred:** structural-only
+   ingest per §7 (currently `_surface_changed`-gated), persisted anchors + the Python server solver (step 7).
 5. **Missing-surface recovery** (§5.2) + its `[recover]` logging.
 6. **Plane-relative avatars** (§5.1): stream anchors (with hysteresis), re-solve per receiver.
 7. **Server-side solver** (Python port, §13.1): route pose-relative queries (`view_relative`, etc.) through

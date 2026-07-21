@@ -486,6 +486,10 @@
       if (path === "components.material") Object.assign(st, value || {});  // preserves it (not the default)
       else st[path.split(".").slice(2).join(".")] = value;                 // e.g. components.material.color
     }
+    // Content whose F_ref pose the server moves (a director "move object", or an on-surface photo re-pinned
+    // when its wall moved) must update the anchor SOURCE too, else _placeContent re-solves the stale pose.
+    if (el._frefPose && path === "transform.position") el._frefPose.position = value;
+    if (el._frefPose && path === "transform.rotation") el._frefPose.rotation = value;
     if (path === "components.material.visible") {       // real-surface visibility → entity attribute
       el.dataset.matVisible = String(value);
       applyRealVisibility(el);

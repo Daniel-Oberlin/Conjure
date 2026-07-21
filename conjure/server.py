@@ -1608,8 +1608,6 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     is gone: a world with no space ref now composes as VOID, and `/worlds/new` stamps the active space up
     front (see `worlds_new`), so nothing anonymous is ever minted.
     """
-    global _room_capture_start
-    _room_capture_start = None                                     # a newly-live room re-establishes its static set
     world_owner = scope.split("/", 1)[0]
     doc = world.doc
     space_ref = (doc.get("environment", {}) or {}).get("space")
@@ -1657,21 +1655,11 @@ _surface_absence: dict[str, int] = {}
 # active world's owner ever reaches here — the guard is just against two of their live headsets at once.
 _AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle authority holds before takeover
 _authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
-
-# STATIC features are architecture that doesn't move in real life — the room shell + anything mounted on
-# it. They're captured during a brief ESTABLISHING window, committed as a coherent SET, then FROZEN, and
-# never pruned. That fixes both: (1) corner gaps — walls are re-derived by squareWalls/joinCorners as a
-# coupled set, so committing them piecemeal (per-surface change-gate) broke the joins; freezing the whole
-# set once established keeps corners closed; (2) on-surface content orphaning — a picture's wall-art
-# surface used to drop out, get pruned, and re-appear with a NEW id, stranding the photo; never pruning a
-# static surface keeps its id stable. DYNAMIC features (furniture) stay live: per-surface gate + pruning.
-_STATIC_SEMANTICS = {"wall", "wall art", "door", "window", "floor", "ceiling"}
-_ESTABLISH_SECS = getattr(settings, "establishment_period", 20.0)
-                                        # capture window (secs) before the static set freezes, from the FIRST
-                                        # capture. None (--establishment-period none) ⇒ skip establishing:
-                                        # frozen from capture 1, so a KNOWN room keeps its stored geometry
-                                        # untouched (an A/B knob approximating fix #2 for return visits).
-_room_capture_start: float | None = None   # server time of the first /room post since the room went live
+# NOTE (local-first, docs/local-first-geometry.md §2): the old ESTABLISH-then-FREEZE machinery (a timed
+# window that committed the static shell as a coherent set then froze it) is gone. It existed to stabilize
+# the SHARED, server-rendered geometry — but clients now render their OWN capture locally, so the server
+# just keeps the stored SEED current (add new / update meaningfully-changed / prune absent) and never
+# broadcasts geometry for rendering. What remains: absence-pruning + `anchored` (photo-pinned) protection.
 
 
 def _surface_update_set(s) -> dict:
@@ -1725,17 +1713,17 @@ def _surface_changed(e: dict, s) -> bool:
 
 @app.post("/room")
 async def ingest_room(req: RoomUpdate) -> dict:
-    """Ingest captured room geometry from the room **authority** headset.
+    """Ingest captured room geometry from the room **authority** headset into the shared MODEL / SEED.
 
-    STATIC features (walls, mounted art, doors, windows, floor, ceiling — `_STATIC_SEMANTICS`) are captured
-    during a brief ESTABLISHING window then FROZEN as a coherent set, and NEVER pruned: while establishing,
-    if any of them changed we re-commit the whole posted static set atomically (so squareWalls/joinCorners
-    corners stay closed — committing them piecemeal caused the gaps); once established, their geometry is
-    frozen (squareWalls jitter is ignored — no more pops), and keeping their ids alive stops on-surface
-    photos from orphaning. DYNAMIC features (furniture) stay live: updated only when they meaningfully move
-    (`_surface_changed`) and pruned after several absences. An idle authority is TAKEN OVER after `_AUTH_TTL`
-    (a reconnecting owner isn't locked out). Broadcasts only when something actually changed."""
-    global _authority_ts, _room_capture_start
+    LOCAL-FIRST (docs/local-first-geometry.md §2): every client renders its OWN live capture, so this no
+    longer broadcasts geometry for rendering. It just keeps the stored SEED current — the reference
+    constellation guests register against, the director's geometry queries, and what's persisted. A surface
+    is added when new, updated only when it MEANINGFULLY changes (`_surface_changed` — no time-based
+    establish/freeze anymore), and pruned after sustained absence; surfaces with a photo pinned to them
+    (`anchored`) are never pruned. Those geometry ops are applied to the store but NOT broadcast. Only what
+    clients actually consume is broadcast: room-activation env + on-surface image re-anchors. An idle
+    authority is taken over after `_AUTH_TTL` (a reconnecting owner isn't locked out)."""
+    global _authority_ts
     room = store.doc["environment"].get("room", {})
     authority = room.get("authorityClientId")
     now = time.time()
@@ -1746,60 +1734,42 @@ async def ingest_room(req: RoomUpdate) -> dict:
             return {"ok": False, "error": f"another headset ({authority}) is the room authority"}
         _slog("room", f"authority takeover: {authority!r} idle {now - _authority_ts:.0f}s → {req.client_id}")
     _authority_ts = now                                       # keep/refresh authority for this client
-    if _room_capture_start is None:                           # first capture of this room session
-        _room_capture_start = now
-    established = _ESTABLISH_SECS is None or (now - _room_capture_start) > _ESTABLISH_SECS  # None ⇒ skip establishing
 
     existing = {e["id"]: e for e in store.doc["entities"] if e.get("meta", {}).get("real")}
     new_ids = {s.id for s in req.surfaces}
-    ops: list[dict] = []
-    changed_ids: set[str] = set()
 
-    # Only surfaces with on-surface content pinned to them are protected from pruning — that keeps a
-    # picture's id alive so its photo never orphans (bug B), WITHOUT keeping stray duplicate surfaces
-    # around (an over-broad "never prune static" let the euler-bug re-mints accumulate). Everything else,
-    # static or not, prunes normally on sustained absence.
+    # Geometry ops update the stored SEED only — never broadcast (clients render locally). A surface with a
+    # photo pinned to it (`anchored`) is protected from pruning so the photo's id never orphans.
     anchored = {(e.get("meta") or {}).get("on_surface") for e in store.doc["entities"]} - {None}
+    geo_ops: list[dict] = []
+    changed_ids: set[str] = set()
     if req.replace:
-        for eid, e in existing.items():
+        for eid in existing:
             if eid in new_ids:
                 _surface_absence.pop(eid, None)               # seen → reset its absence streak
             elif eid in anchored:
-                continue                                      # a photo is pinned here → keep the id (bug B)
+                continue                                      # a photo is pinned here → keep the id
             else:
                 n = _surface_absence.get(eid, 0) + 1
-                if n >= _REMOVE_AFTER_ABSENT:                 # gone for real → prune
-                    ops.append({"op": "remove", "id": eid})
+                if n >= _REMOVE_AFTER_ABSENT:                 # gone for real → prune from the seed
+                    geo_ops.append({"op": "remove", "id": eid})
                     _surface_absence.pop(eid, None)
                 else:
                     _surface_absence[eid] = n                 # transient drop → keep it this round
-
-    # STATIC: commit the whole posted set atomically while establishing (corners stay consistent), then
-    # freeze; genuinely-new static ids may still be added after establishing.
-    static_posted = [s for s in req.surfaces if s.semantic in _STATIC_SEMANTICS]
-    static_dirty = any(s.id not in existing or _surface_changed(existing[s.id], s) for s in static_posted)
-    for s in static_posted:
-        if s.id not in existing:
-            ops.append({"op": "add", "entity": _surface_entity(s)})
-            changed_ids.add(s.id)
-        elif not established and static_dirty:                # re-commit the coupled set as one
-            ops.append({"op": "update", "id": s.id, "set": _surface_update_set(s)})
-            changed_ids.add(s.id)
-        # established + existing static → frozen (ignore re-derived jitter)
-
-    # DYNAMIC: per-surface change-gate (furniture can move/appear).
-    for s in req.surfaces:
-        if s.semantic in _STATIC_SEMANTICS:
-            continue
+    for s in req.surfaces:                                    # add new / update meaningfully-changed (no freeze)
         if s.id in existing:
             if _surface_changed(existing[s.id], s):
-                ops.append({"op": "update", "id": s.id, "set": _surface_update_set(s)})
+                geo_ops.append({"op": "update", "id": s.id, "set": _surface_update_set(s)})
                 changed_ids.add(s.id)
         else:
-            ops.append({"op": "add", "entity": _surface_entity(s)})
+            geo_ops.append({"op": "add", "entity": _surface_entity(s)})
             changed_ids.add(s.id)
+    if geo_ops:
+        store.apply_patch(geo_ops, origin="room")             # seed updated in place; NOT broadcast
 
-    env_set: dict = {}                                        # only emit env changes that actually change
+    # Only these reach clients: room-activation/boundary env + on-surface image re-anchors (content, which
+    # clients DO render). Geometry is theirs to render locally.
+    env_set: dict = {}
     if not room.get("active"):
         env_set["room.active"] = True
     if room.get("authorityClientId") != req.client_id:
@@ -1808,31 +1778,27 @@ async def ingest_room(req: RoomUpdate) -> dict:
         env_set["room.boundary"] = req.boundary
     if "defaultSurfaceVisible" not in room:
         env_set["room.defaultSurfaceVisible"] = False         # default: invisible references (AR-style)
+    wire_ops: list[dict] = []
     if env_set:
-        ops.append({"op": "env", "set": env_set})
-
-    # Re-pin on-surface images only for surfaces that actually MOVED this capture (unchanged ones already
-    # carry their images), so a settled room adds no reanchor ops either.
+        wire_ops.append({"op": "env", "set": env_set})
     moved = {s.id: {"position": s.position, "rotation": s.rotation, "extent": s.extent}
              for s in req.surfaces if s.id in changed_ids}
-    ops += _reanchor_ops(store.doc, moved)
+    wire_ops += _reanchor_ops(store.doc, moved)               # re-pin photos on surfaces that moved
+    if wire_ops:
+        patch = store.apply_patch(wire_ops, origin="room")
+        await _broadcast({"type": "patch", "patch": patch})
 
-    if not ops:                                               # nothing changed → stay quiet (fix A: no pops)
-        return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
-    patch = store.apply_patch(ops, origin="room")
-    _slog("room", f"accept client={req.client_id} → {active_scope.split('/', 1)[0]}/{active_world} "
-                  f"surfaces={len(req.surfaces)} changed={len(changed_ids)} ops={len(ops)} rev={patch['rev']}")
-    await _broadcast({"type": "patch", "patch": patch})
+    if geo_ops or wire_ops:
+        _slog("room", f"accept client={req.client_id} → {active_scope.split('/', 1)[0]}/{active_world} "
+                      f"surfaces={len(req.surfaces)} changed={len(changed_ids)} seed_ops={len(geo_ops)} wire={len(wire_ops)}")
     return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
 
 
 @app.post("/room/realign")
 async def realign_room() -> dict:
-    """Ask connected headsets to re-capture the room at the current tracking origin (restores
-    alignment after a recenter/reload). No-op for clients not in an AR session. Re-opens the establishing
-    window so the frozen static set is re-derived from the fresh capture (the explicit 'unfreeze')."""
-    global _room_capture_start
-    _room_capture_start = None
+    """Ask connected headsets to re-capture the room at the current tracking origin (restores alignment
+    after a recenter/reload). No-op for clients not in an AR session. (Clients render their own capture
+    locally now, so this is just a nudge to recapture — there's no server-side freeze to reopen.)"""
     await _broadcast({"type": "recapture"})
     return {"ok": True}
 

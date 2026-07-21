@@ -59,9 +59,6 @@ class Settings:
     openai_image_model: str = "gpt-image-1"          # OpenAI image generator model
     debug_log: bool = True                           # append client diagnostics to temp/conjure.log
     debug_registration: bool = False                 # co-location registration HUD + per-capture log (opt-in)
-    establishment_period: float | None = 20.0        # seconds a NEW room captures before its static set
-                                                     # freezes; None ("none") = skip — freeze from the first
-                                                     # capture (A/B test knob; see server._ESTABLISH_SECS)
     # Co-location robustness (two-headset GUEST tuning). Injected into the client as window.CONJURE_REG /
     # CONJURE_CAPTURE_MS; they govern how tolerantly a guest registers its own capture against the
     # authority's shared room. See conjure/__main__.py for the terminology + per-knob meaning.
@@ -95,11 +92,6 @@ class Settings:
     caption_model: str = "gemini-2.5-flash"
 
 
-def _float_or_none(v: str) -> float | None:
-    """Parse a numeric setting that also accepts the literal 'none' (→ None)."""
-    return None if v.strip().lower() == "none" else float(v)
-
-
 def get_settings() -> Settings:
     load_env()
     return Settings(
@@ -124,7 +116,6 @@ def get_settings() -> Settings:
         openai_image_model=os.environ.get("CONJURE_OPENAI_IMAGE_MODEL", "gpt-image-1"),
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
-        establishment_period=_float_or_none(os.environ.get("CONJURE_ESTABLISHMENT_PERIOD", "20.0")),
         reg_min_cov=int(os.environ.get("CONJURE_REG_MIN_COV", "4")),
         reg_min_cov_frac=float(os.environ.get("CONJURE_REG_MIN_COV_FRAC", "0.3")),
         reg_size_tol=float(os.environ.get("CONJURE_REG_SIZE_TOL", "0.5")),
