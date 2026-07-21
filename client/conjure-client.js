@@ -1200,6 +1200,10 @@
         // orientation. Never capture/mint/post (a void world owns no geometry). Everyone (owner or guest)
         // canonicalizes identically. Hold if there aren't enough walls yet.
         if (isVoidWorld) {
+          // Defensive: a void world never resolves space selection (stage 2 is gated !isVoidWorld above), so
+          // if we somehow entered AR still awaiting a space (e.g. the snapshot marking it void arrived after
+          // onEnterAR fired), clear it now and render the outdoor world — don't get stuck on "finding".
+          if (awaitingSpace || pendingSelect) { pendingSelect = null; endAwaitingSpace(); }
           var cf = window.RoomSnap.canonicalFrame(THREE, cur);
           this._regStat = cf.stat;
           this._regRes = null;   // canonicalFrame doesn't register against a reference → no residuals
@@ -1417,6 +1421,10 @@
   // immediately (fix already warm), wait for the fix (showing a "getting your location" notice), or — if
   // geolocation is unavailable/denied — just join the active world as-is.
   function onEnterAR() {
+    if (isVoidWorld) {                    // an outdoor/void world isn't tied to a physical space — no space
+      debugLog("sel", "onEnterAR: outdoor/void world → skip space selection", true);   // selection; stay in it
+      return;
+    }
     awaitingSpace = true;
     blankToPassthrough();
     debugLog("sel", "onEnterAR geoStatus=" + geoStatus + " geoAPI=" + !!navigator.geolocation
