@@ -402,6 +402,11 @@
   // sole author of real-surface geometry, so the two never fight the apply-gate). A desktop/spectator viewer
   // never captures, so this stays false and it renders the server's shared surfaces as before.
   var localRenderActive = false;
+  // Shared per-surface STYLING (material/colour/texture/visibility), keyed by surface id — the styling half
+  // of the model that IS server-authored (geometry is local; styling is shared, docs §3). Populated from
+  // snapshots + patches; _renderLocal applies it by id so a locally-rendered surface keeps its director/
+  // persisted look instead of a default material. Reset per world switch.
+  var surfaceStyles = {};
   // A VOID/outdoor world (environment.space === "<void>") isn't tied to a captured room — it shows a
   // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
   // instead of registering against stored geometry. Set from each snapshot.
@@ -454,6 +459,8 @@
     applyEnv(world.environment);   // after entities, so immersion can toggle them
     isVoidWorld = ((world.environment || {}).space === VOID_SPACE);
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
+    surfaceStyles = {};                  // rebuild the shared styling map for THIS world (id → material)
+    reals.forEach(function (e) { var m = (e.components || {}).material; if (m) surfaceStyles[e.id] = m; });
     // Seed material for the room frame on reload (see the capture at ~L794). CLEAR it when a snapshot
     // carries no real surfaces — otherwise switching into an empty/void world (or a DIFFERENT room)
     // would leave the PREVIOUS room's surfaces here, and the next capture could register into the wrong
@@ -474,6 +481,11 @@
   function setPath(el, path, value) {
     if (localRenderActive && el.dataset.real && GEO_PATHS[path]) return;   // real-surface geometry is local —
                                                         // don't let the server move/reshape it (docs §2)
+    if (el.dataset.real && path.indexOf("components.material") === 0) {    // director restyle → keep the shared
+      var st = surfaceStyles[el.id] || (surfaceStyles[el.id] = {});        // styling in sync so a local re-render
+      if (path === "components.material") Object.assign(st, value || {});  // preserves it (not the default)
+      else st[path.split(".").slice(2).join(".")] = value;                 // e.g. components.material.color
+    }
     if (path === "components.material.visible") {       // real-surface visibility → entity attribute
       el.dataset.matVisible = String(value);
       applyRealVisibility(el);
@@ -511,7 +523,11 @@
     if (refused || awaitingSpace) return;   // ignore world updates while blanked to passthrough
     (patch.ops || []).forEach(function (op) {
       if (op.op === "add") {
-        if (localRenderActive && op.entity.meta && op.entity.meta.real) return;   // real surfaces render locally
+        if (op.entity.meta && op.entity.meta.real) {
+          var m = (op.entity.components || {}).material;      // keep the shared styling even when we
+          if (m) surfaceStyles[op.entity.id] = m;             // don't render it (local render applies it)
+          if (localRenderActive) return;                      // real surfaces render locally
+        }
         applyEntity(op.entity);
         debugLog("patch", "add " + op.entity.id + " [" +
           Object.keys((op.entity.components) || {}).join(",") + "]");
@@ -808,8 +824,8 @@
         surfaces.forEach(function (s) {
           seen[s.id] = 1;
           applyEntity({ id: s.id, transform: { position: s.position, rotation: s.rotation },
-            components: { surface: { extent: s.extent, holes: s.holes || [] } },
-            meta: { real: true, semantic: s.semantic } });
+            components: { surface: { extent: s.extent, holes: s.holes || [] }, material: surfaceStyles[s.id] },
+            meta: { real: true, semantic: s.semantic } });   // apply the SHARED styling by id (docs §3)
         });
         var abs = this._localAbsent || (this._localAbsent = {});
         var wr = document.getElementById("world-root"); if (!wr) return;
