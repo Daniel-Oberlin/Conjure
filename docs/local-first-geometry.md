@@ -428,7 +428,12 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    the client detects it for real, the live capture wins. **Test knob `--drop-surface SEMANTIC|ID`**: the
    client pretends it didn't capture matching surfaces (kept in the seed, omitted from the local render), so
    recovery is exercisable with one headset.
-6. **Plane-relative avatars** (§5.1): stream anchors (with hysteresis), re-solve per receiver.
+6. **✅ Plane-relative avatars** (§5.1) — each source streams its head as a plane-relative anchor
+   (`presenceTick` authors the head against its OWN local walls, free-mode orientation) alongside the F_ref
+   pose; each receiver re-solves that anchor against ITS OWN local walls (`setAvatar`) → the avatar lands on
+   the same real walls the receiver sees, no shared-frame offset. Falls back to the F_ref pose for a desktop
+   receiver / void world (no local walls). **Deferred:** wall-set hysteresis (the nearest-3 set can flip as
+   the source walks — add if avatars jitter; the over-specified solve smooths it for now).
 7. **Server-side anchors & solver** (§13.1) — the deferred server-side pieces:
    - **a. Python solver port** — port `plane-anchor.js` (weighted-LS position + per-wall quaternion vote) to
      Python, pinned to the shared golden vectors, so the server can solve poses against the seed.

@@ -673,10 +673,23 @@
   // read both the yaw (whole avatar turns) and the up/down gaze (eyes ride up/down the sphere).
   //var EYE_R = 0.045, EYE_S = Math.sin(Math.PI / 8), EYE_C = Math.cos(Math.PI / 8);   // 22.5°
   var EYE_R = 0.03, EYE_S = Math.sin(Math.PI / 12), EYE_C = Math.cos(Math.PI / 12); 
-  function setAvatar(user, pose) {
+  function setAvatar(user, pose, anchor) {
+    var THREE = AFRAME.THREE;
+    // Prefer the plane-relative anchor solved against MY OWN local walls (§5.1) — the avatar then lands on
+    // the same real walls I see, not a shared rigid frame. Fall back to the streamed F_ref pose (desktop, or
+    // no local walls / void world). world-root is identity in a captured room, so the solved F_track pose
+    // renders at the real spot.
+    if (anchor && window.PlaneAnchor) {
+      var scA = document.querySelector("a-scene");
+      var rcA = scA && scA.components && scA.components["room-capture"];
+      if (rcA && rcA._localPlanes && rcA._localPlanes.length >= 2) {
+        var sol = window.PlaneAnchor.solveAnchor(THREE, anchor, rcA._localPlanes);
+        if (sol.ok) pose = { p: [sol.position.x, sol.position.y, sol.position.z],
+                             q: [sol.quaternion.x, sol.quaternion.y, sol.quaternion.z, sol.quaternion.w] };
+      }
+    }
     if (!pose || !pose.p) return;
     var wr = document.getElementById("world-root"); if (!wr) return;
-    var THREE = AFRAME.THREE;
     var el = document.getElementById("avatar-" + user);
     if (!el) {
       el = document.createElement("a-entity"); el.id = "avatar-" + user;
@@ -723,7 +736,18 @@
       ? new THREE.Matrix4().multiplyMatrices(rc._Tmat, cam.matrixWorld)   // F_track camera pose → F_ref
       : cam.matrixWorld;
     m.decompose(p, q, s);
-    socket.send(JSON.stringify({ type: "presence", pose: { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] } }));
+    var msg = { type: "presence", pose: { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] } };
+    // Plane-relative head anchor (§5.1) for co-located AR avatars: author the head against MY OWN local
+    // walls so each receiver re-solves it against ITS walls — the avatar lands on the SAME real walls I see,
+    // with no shared rigid-frame error. Orientation is free (gaze pitches/rolls). The F_ref pose above stays
+    // for the server's gaze/view_relative and for desktop receivers (no walls to solve against).
+    if (rc && rc._localPlanes && rc._localPlanes.length >= 2 && window.PlaneAnchor) {
+      var hp = new THREE.Vector3(), hq = new THREE.Quaternion(), hsc = new THREE.Vector3();
+      cam.matrixWorld.decompose(hp, hq, hsc);            // head in F_track
+      var anchor = window.PlaneAnchor.authorAnchor(THREE, { position: hp, quaternion: hq, mode: "free" }, rc._localPlanes);
+      if (anchor.walls.length >= 2) msg.anchor = anchor;
+    }
+    socket.send(JSON.stringify(msg));
   }
 
   function connect() {
@@ -742,7 +766,7 @@
       else if (msg.type === "patch") applyPatch(msg.patch);
       else if (msg.type === "info") showInfo(msg.msg);    // e.g. "'<world>' is private — ask <owner>…"
       else if (msg.type === "presence") {
-        setAvatar(msg.user, msg.pose);
+        setAvatar(msg.user, msg.pose, msg.anchor);
         if (msg.user === worldOwner) maybeSpawnGuest(msg.pose);   // a guest drops in to the owner's right
       }
       else if (msg.type === "presence_leave") removeAvatar(msg.user);
@@ -787,6 +811,7 @@
         // the set/boundary as of the last POST, for structural diffing.
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;
         this._recovered = {};       // seed-surface ids reconstructed via anchor (missing from capture) — for §5.2 logging
+        this._localPlanes = null;   // last capture's local wall+floor planes (F_track) — for avatar anchors (§5.1)
         var self = this;
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
         // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
@@ -1246,6 +1271,7 @@
           // if we somehow entered AR still awaiting a space (e.g. the snapshot marking it void arrived after
           // onEnterAR fired), clear it now and render the outdoor world — don't get stuck on "finding".
           if (awaitingSpace || pendingSelect) { pendingSelect = null; endAwaitingSpace(); }
+          this._localPlanes = null;   // void world: no shared seed walls → avatars fall back to the F_ref pose
           var cf = window.RoomSnap.canonicalFrame(THREE, cur);
           this._regStat = cf.stat;
           this._regRes = null;   // canonicalFrame doesn't register against a reference → no residuals
@@ -1337,6 +1363,7 @@
         // surface isn't re-laid, so nothing "pops".
         window.RoomSnap.joinCorners(THREE, localSurfaces);
         window.RoomSnap.snapInsets(THREE, localSurfaces);
+        this._localPlanes = localToPlanes(THREE, localSurfaces);   // stash for avatar anchors (§5.1) / presence
         // Reconstruct any seed surface this client didn't capture (§5.2) and fold it into the render set, so
         // recovered surfaces both draw and can host on-surface content just like captured ones.
         var recovered = this._recoverMissing(localSurfaces);
