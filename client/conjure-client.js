@@ -343,6 +343,7 @@
     // plane-relative anchor solved against the LOCAL walls (docs §5). In a captured room #world-root is
     // identity, so the raw F_ref pose would be wrong; _placeContent corrects it. Scaffold is excluded.
     if (!meta.scaffold && t.position) el._frefPose = { position: t.position, rotation: t.rotation || [0, 0, 0] };
+    el._onSurface = meta.on_surface || null;   // content pinned to a surface rides that surface locally (§5a)
   }
 
   function applyEnv(env) {
@@ -870,23 +871,42 @@
         var PA = window.PlaneAnchor; if (!PA) return;
         var THREE = AFRAME.THREE;
         var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
-        if (localPl.length < 2 || refPl.length < 2) return;         // not enough wall/floor basis yet
         var wr = document.getElementById("world-root"); if (!wr) return;
-        var placed = 0;
+        // Host-surface pose lookups for ON-SURFACE content: F_ref (the seed the image was pinned against)
+        // and F_track (how the host renders locally). Both are a-plane poses (position + YXZ-euler rotation).
+        var hostFref = {}, hostLocal = {};
+        (docSurfaces || []).forEach(function (e) {
+          var t = e.transform || {}; hostFref[e.id] = { p: t.position || [0, 0, 0], r: t.rotation || [0, 0, 0] }; });
+        localSurfaces.forEach(function (s) { hostLocal[s.id] = { p: s.position, r: s.rotation }; });
+        var mat = function (p, r) { return new THREE.Matrix4().compose(
+          new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0), eulerYXZToQuat(THREE, r), new THREE.Vector3(1, 1, 1)); };
+        var ridden = 0, freed = 0;
         Array.prototype.forEach.call(wr.children, function (el) {
           if (!el._frefPose || !el.object3D) return;
           var fp = el._frefPose;
+          // ON-SURFACE content RIDES its local host surface (§5a): re-express its offset-from-host (measured
+          // in F_ref) onto the host's LOCAL pose, so it stays exactly on the surface — no independent
+          // multilateration that could drift off it.
+          if (el._onSurface && hostFref[el._onSurface] && hostLocal[el._onSurface]) {
+            var hRef = hostFref[el._onSurface], hLoc = hostLocal[el._onSurface];
+            var world = mat(hLoc.p, hLoc.r).multiply(mat(hRef.p, hRef.r).invert().multiply(mat(fp.position, fp.rotation)));
+            var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
+            world.decompose(ip, iq, is);
+            el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
+            ridden++;
+            return;
+          }
+          // FREE content: multilaterate against the local walls (§5b).
+          if (localPl.length < 2 || refPl.length < 2) return;       // not enough wall/floor basis yet
           var entity = { mode: "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
             position: new THREE.Vector3(fp.position[0] || 0, fp.position[1] || 0, fp.position[2] || 0) };
-          var anchor = PA.authorAnchor(THREE, entity, refPl);
-          var sol = PA.solveAnchor(THREE, anchor, localPl);
+          var sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
           if (!sol.ok) return;                                      // degenerate / missing walls → hold last pose
-          el.object3D.position.copy(sol.position);
-          el.object3D.quaternion.copy(sol.quaternion);
-          placed++;
+          el.object3D.position.copy(sol.position); el.object3D.quaternion.copy(sol.quaternion);
+          freed++;
         });
-        if (window.CONJURE_DEBUG_REGISTRATION && placed)
-          debugLog("content", "placed " + placed + " via anchors (ref=" + refPl.length + " local=" + localPl.length + ")", true);
+        if (window.CONJURE_DEBUG_REGISTRATION && (ridden || freed))
+          debugLog("content", "on-surface " + ridden + " + free " + freed + " (local=" + localPl.length + ")", true);
       },
       // The room-snapping geometry lives in the pure, unit-tested client/room-snap.js (RoomSnap). These
       // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
