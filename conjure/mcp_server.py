@@ -15,7 +15,7 @@ renderer. `place_asset` / generation arrive with the asset pipeline (Phase 3).
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
 import httpx
@@ -370,7 +370,7 @@ async def place_asset(
     size_m: float,
     position: Optional[list[float]] = None,
     name: Optional[str] = None,
-    placement: str = "grounded",
+    placement: Literal["grounded", "free"] = "grounded",
 ) -> str:
     """Place a real 3D model found by search — use this for real-world objects.
 
@@ -444,7 +444,7 @@ async def place_cached_asset(
     size_m: Optional[float] = None,
     position: Optional[list[float]] = None,
     name: Optional[str] = None,
-    placement: str = "grounded",
+    placement: Literal["grounded", "free"] = "grounded",
 ) -> str:
     """Place a MODEL already in the library by id (from search_library) — reuse, no web fetch.
 
