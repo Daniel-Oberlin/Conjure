@@ -401,7 +401,12 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    surfaces (step 4), retiring establish/freeze server-side (step 4). *Note: getting into a captured room
    depends on the space-selection flow, which is gated by Quest GPS — the fix can lag ~10 s or miss, dropping
    you into the void world; keeping the view blanked while the fix is pending is a small separate fix.*
-3. **Free content / skybox / grounded via anchors** (§5 b–d), authored by the owner, solved per client.
+3. **◑ Free content / skybox / grounded via anchors** (§5 b–d) — *positioned content validated on-device
+   (2026-07-21): director-placed models land where you're looking and hold.* `_placeContent` authors each
+   entity's F_ref pose against the seed walls and re-solves against local walls each capture (free mode). The
+   head pose is broadcast in F_ref (via `T`) so `view_relative`/"in front of me" resolves correctly.
+   **Deferred:** skybox yaw-relative orientation, grounded-vs-free mode declared in the world model,
+   persisted anchors (currently re-authored client-side each capture from the F_ref pose).
 4. **Server = model + seed + anchors:** stop broadcasting per-capture geometry; ingest only structural
    changes (§7); serve model + seed + anchors on join. Retire `_static_frozen` / #2.
 5. **Missing-surface recovery** (§5.2) + its `[recover]` logging.
