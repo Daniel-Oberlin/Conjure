@@ -409,7 +409,7 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    `view_relative`/"in front of me" resolves. *Validated on-device: models land where you look and hold;
    on-surface photos stay pinned.* **Deferred → step 7:** persisted anchors (content is re-authored
    client-side each capture from the F_ref pose today, not stored as an anchor server-side).
-4. **◑ Server = model + seed:** styling-by-id on local surfaces ✅ (a surface keeps its shared material);
+4. **✅ Server = model + seed:** styling-by-id on local surfaces ✅ (a surface keeps its shared material);
    `ingest_room` no longer broadcasts geometry — it updates the stored SEED only (add / meaningfully-changed
    / prune-absent) and broadcasts just env + on-surface re-anchors; the time-based **establish/freeze is
    retired** (`_ESTABLISH_SECS`/`_room_capture_start`/`_STATIC_SEMANTICS`, `--establishment-period` all
@@ -420,11 +420,18 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    authoritative `_known` set (seeded from the persisted seed on entry) and POSTs **only** on a structural
    change (new / confirmed-removed / large-move / boundary), so a settled room sends **no `/room` traffic
    at all**; removal-confidence lives on the client (3-capture debounce) and the server prunes on first
-   absence. **Deferred:** persisted anchors + the Python server solver (step 7).
+   absence. *(Remaining server-side work is consolidated in step 7.)*
 5. **Missing-surface recovery** (§5.2) + its `[recover]` logging.
 6. **Plane-relative avatars** (§5.1): stream anchors (with hysteresis), re-solve per receiver.
-7. **Server-side solver** (Python port, §13.1): route pose-relative queries (`view_relative`, etc.) through
-   the plane-relative solve against the seed.
+7. **Server-side anchors & solver** (§13.1) — the deferred server-side pieces:
+   - **a. Python solver port** — port `plane-anchor.js` (weighted-LS position + per-wall quaternion vote) to
+     Python, pinned to the shared golden vectors, so the server can solve poses against the seed.
+   - **b. Server-side pose-relative queries** — route `view_relative` / "the wall I'm looking at" through
+     that solver against the seed (today they use the raw seed pose, which is approximate).
+   - **c. Persisted anchors** — store each content entity's **plane-relative anchor** in the shared model
+     (authored once, server-side) instead of the client re-authoring it from the F_ref pose every capture
+     (§3, §5). Removes the client's dependence on its `docSurfaces` copy of the host/seed pose for
+     placement and makes anchors first-class in persistence. *(Deferred here from steps 3 & 4.)*
 8. **`--square-walls on|off`** (§9) for A/B.
 9. *(later)* render interpolation for genuine local moves; guest-proposes-surface; consensus seed (§7.8).
 
