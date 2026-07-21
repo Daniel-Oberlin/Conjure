@@ -1687,28 +1687,36 @@ def _ang_delta_deg(a: list, b: list) -> float:
     return max(abs(((a[i] - b[i] + 180) % 360) - 180) for i in range(3))
 
 
-def _surface_changed(e: dict, s) -> bool:
-    """Did surface `s` move/reshape meaningfully vs the stored entity `e`? Sub-threshold capture noise
-    returns False so we DON'T re-broadcast it (fix A). Without this, the authority re-posts ~every surface
-    every capture and the server rewrites all their transforms → the client rebuilds every wall mesh every
-    ~2 s: the 'pops'. Structural changes (semantic/holes/polygon) always count."""
+# The seed updates ONLY on a STRUCTURAL change (docs/local-first-geometry.md §7), never on per-capture
+# cm-drift — so the stored reference constellation stays stable (clients render their own live geometry
+# regardless). Per-cm jitter of the owner's re-registered posts (Tmat re-solves each capture, amplified by
+# distance) used to sail through the old cm-level gate and rewrite ~a quarter of the seed every 2 s.
+_LARGE_MOVE_M = 0.5        # a surface must move/resize this far (m) to count as a real relocation, not drift
+_LARGE_ROT_DEG = 20.0      # ...or rotate this far (deg) — a wall genuinely re-oriented, not registration wobble
+
+
+def _surface_structural_change(e: dict, s) -> tuple[bool, str]:
+    """Did surface `s` change STRUCTURALLY vs the stored seed entity `e`? Only these update the seed (§7.4):
+    a semantic reclass, an opening added/removed, or a LARGE move/rotate/resize (furniture actually moved /
+    a re-scan). Sub-threshold per-capture drift returns (False, "") so the seed doesn't churn. The reason
+    string is for the [seed] log."""
     t = e.get("transform") or {}
     comps = (e.get("components") or {}).get("surface") or {}
     if s.semantic != (e.get("meta") or {}).get("semantic"):
-        return True
-    if s.position is not None and _dist3(s.position, t.get("position") or [0, 0, 0]) > 0.03:      # > 3 cm
-        return True
-    if s.rotation is not None and _ang_delta_deg(s.rotation, t.get("rotation") or [0, 0, 0]) > 3.0:  # > 3°
-        return True
+        return True, "reclassified"
+    if s.holes is not None and len(s.holes) != len(comps.get("holes") or []):
+        return True, "opening changed"
+    if s.position is not None:
+        d = _dist3(s.position, t.get("position") or [0, 0, 0])
+        if d > _LARGE_MOVE_M:
+            return True, f"moved {d:.2f} m"
+    if s.rotation is not None and _ang_delta_deg(s.rotation, t.get("rotation") or [0, 0, 0]) > _LARGE_ROT_DEG:
+        return True, "rotated"
     if s.extent is not None:
         ee = comps.get("extent")
-        if ee is None or abs(s.extent[0] - ee[0]) > 0.05 or abs(s.extent[1] - ee[1]) > 0.05:      # > 5 cm
-            return True
-    if s.holes is not None and s.holes != comps.get("holes"):
-        return True
-    if s.polygon is not None and s.polygon != comps.get("polygon"):
-        return True
-    return False
+        if ee is None or abs(s.extent[0] - ee[0]) > _LARGE_MOVE_M or abs(s.extent[1] - ee[1]) > _LARGE_MOVE_M:
+            return True, "resized"
+    return False, ""
 
 
 @app.post("/room")
@@ -1718,7 +1726,7 @@ async def ingest_room(req: RoomUpdate) -> dict:
     LOCAL-FIRST (docs/local-first-geometry.md §2): every client renders its OWN live capture, so this no
     longer broadcasts geometry for rendering. It just keeps the stored SEED current — the reference
     constellation guests register against, the director's geometry queries, and what's persisted. A surface
-    is added when new, updated only when it MEANINGFULLY changes (`_surface_changed` — no time-based
+    is added when new, updated only on a STRUCTURAL change (`_surface_structural_change` §7.4 — no time-based
     establish/freeze anymore), and pruned after sustained absence; surfaces with a photo pinned to them
     (`anchored`) are never pruned. Those geometry ops are applied to the store but NOT broadcast. Only what
     clients actually consume is broadcast: room-activation env + on-surface image re-anchors. An idle
@@ -1756,11 +1764,13 @@ async def ingest_room(req: RoomUpdate) -> dict:
                     _surface_absence.pop(eid, None)
                 else:
                     _surface_absence[eid] = n                 # transient drop → keep it this round
-    for s in req.surfaces:                                    # add new / update meaningfully-changed (no freeze)
+    for s in req.surfaces:                                    # add new / update STRUCTURALLY-changed (§7.4)
         if s.id in existing:
-            if _surface_changed(existing[s.id], s):
+            changed, why = _surface_structural_change(existing[s.id], s)
+            if changed:
                 geo_ops.append({"op": "update", "id": s.id, "set": _surface_update_set(s)})
                 changed_ids.add(s.id)
+                _slog("seed", f"surface {s.id} {why} → seed updated")
         else:
             geo_ops.append({"op": "add", "entity": _surface_entity(s)})
             changed_ids.add(s.id)
