@@ -685,13 +685,20 @@
   }
   function presenceTick() {
     if (!socket || socket.readyState !== 1) return;
-    var sc = document.querySelector("a-scene"), wr = document.getElementById("world-root");
+    var sc = document.querySelector("a-scene");
     var cam = sc && sc.camera;
-    if (!cam || !wr) return;
+    if (!cam) return;
     var THREE = AFRAME.THREE, p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
     cam.updateMatrixWorld();
-    var m = new THREE.Matrix4().multiplyMatrices(   // camera world pose → world-root local frame
-      new THREE.Matrix4().copy(wr.object3D.matrixWorld).invert(), cam.matrixWorld);
+    // Broadcast the head pose in the SHARED reference frame (F_ref) the server + world model use, so
+    // pose-relative director actions ("in front of me", view_relative) land correctly. #world-root is now
+    // identity (local-first render, docs §2), so we apply the registration transform T (F_track → F_ref)
+    // directly rather than reading world-root's (now identity) matrix. Falls back to the raw camera pose
+    // before registration / on desktop (no capture) — where scene space is already the shared frame.
+    var rc = sc.components && sc.components["room-capture"];
+    var m = (rc && rc._haveT && rc._Tmat)
+      ? new THREE.Matrix4().multiplyMatrices(rc._Tmat, cam.matrixWorld)   // F_track camera pose → F_ref
+      : cam.matrixWorld;
     m.decompose(p, q, s);
     socket.send(JSON.stringify({ type: "presence", pose: { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] } }));
   }

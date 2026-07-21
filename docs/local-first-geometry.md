@@ -329,6 +329,12 @@ is also an id-correspondence stress test).
   directly.
 - **The server is a solver too:** its pose-relative queries run the *same* plane-relative solve (§4) against
   the **seed** as clients run against live geometry (§3, "Client/server symmetry").
+- **Head pose is still broadcast in F_ref.** With `#world-root` at identity, the client can't read the shared
+  frame off world-root anymore, so `presenceTick` applies the registration transform `T` directly
+  (`T · camera_F_track`) to send the head pose in **F_ref** — the frame the server's `gaze`/`view_relative`
+  ("in front of me") and the world model use. (A single rigid `T` is fine for a *placement decision*; the
+  placed content is then re-solved plane-relative for rendering, §5. Avatars move to fully plane-relative
+  poses in step E.)
 - **No migration — start fresh.** Existing persisted worlds/spaces (`.cache/worlds/<scope>/<name>.json`,
   `.cache/spaces/<user>/<name>.json`) predate anchors and the mode field; they are **test worlds, cheap to
   recreate.** We will **delete them and rebuild** rather than write porting code. The new model needs no
