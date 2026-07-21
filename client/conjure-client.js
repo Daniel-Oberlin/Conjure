@@ -894,11 +894,12 @@
             var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
             world.decompose(ip, iq, is);
             el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
-            // Diagnostic: how far the image sits from its host's centre (expect ~0.02 m — just the 2 cm
-            // stand-off). A large value ⇒ off-centre (detected-surface centre ≠ the artwork, or a stale seed).
+            // Guard: on-surface content should land ~0.02 m from its host centre (just the stand-off). Warn
+            // only if it lands FAR off — that would mean the ride is wrong or the seed host-pose is stale
+            // (a centred-but-visually-off image instead means the Quest's detected surface ≠ the artwork).
             if (window.CONJURE_DEBUG_REGISTRATION) {
               var off = ip.distanceTo(new THREE.Vector3(hLoc.p[0] || 0, hLoc.p[1] || 0, hLoc.p[2] || 0));
-              debugLog("content", "on " + el._onSurface + ": " + Math.round(off * 100) + "cm from host centre", true);
+              if (off > 0.15) debugLog("content", "WARN " + el._onSurface + " " + Math.round(off * 100) + "cm off host centre", true);
             }
             ridden++;
             return;
