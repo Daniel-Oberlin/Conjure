@@ -370,6 +370,7 @@ async def place_asset(
     size_m: float,
     position: Optional[list[float]] = None,
     name: Optional[str] = None,
+    placement: str = "grounded",
 ) -> str:
     """Place a real 3D model found by search — use this for real-world objects.
 
@@ -378,12 +379,15 @@ async def place_asset(
     size_m: the object's REAL-WORLD largest dimension in METERS — use your world knowledge so
         scenes are to-scale. Examples: mug 0.1, house cat 0.5, dining chair 0.9, person 1.8,
         sofa 2.0, car 4.5, oak tree 7, giraffe 5, house 8. Be realistic.
-    position: [x, y, z] meters; the object auto-sits on the floor (default [0, 0, -3]).
+    position: [x, y, z] meters (default [0, 0, -3]).
     name: explicit entity id; auto-generated if omitted.
+    placement: 'grounded' (default) sits it on the floor and keeps it upright — use for furniture,
+        trees, anything resting on the ground. 'free' keeps it exactly at `position`, so use it for
+        anything floating or up high (a hanging lamp, a bird, a cloud, an object on a shelf/table).
 
     A placeholder appears immediately; the real model (scaled to size_m) swaps in once downloaded.
     """
-    body: dict[str, Any] = {"query": query, "size_m": size_m}
+    body: dict[str, Any] = {"query": query, "size_m": size_m, "placement": placement}
     if position is not None:
         body["position"] = position
     if name is not None:
@@ -440,13 +444,16 @@ async def place_cached_asset(
     size_m: Optional[float] = None,
     position: Optional[list[float]] = None,
     name: Optional[str] = None,
+    placement: str = "grounded",
 ) -> str:
     """Place a MODEL already in the library by id (from search_library) — reuse, no web fetch.
 
     For reusing images use place_image(image_id); for skyboxes set_skybox/set_grounded_skybox. size_m:
-    real-world largest dimension in metres (as in place_asset); position: [x,y,z] (auto-sits on floor).
+    real-world largest dimension in metres (as in place_asset); position: [x,y,z]. placement: 'grounded'
+    (default) sits on the floor, upright; 'free' keeps it exactly at `position` (floating / up high).
     """
-    out = await _post("/place_cached_asset", _body(id=id, size_m=size_m, position=position, name=name))
+    out = await _post("/place_cached_asset", _body(id=id, size_m=size_m, position=position, name=name,
+                                                   placement=placement))
     if not out.get("ok"):
         return f"Couldn't reuse {id!r}: {out.get('error', 'unknown error')}."
     return f"Reused {out.get('title')!r} as {out['id']}." + _notice(out)

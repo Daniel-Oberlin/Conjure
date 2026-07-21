@@ -540,19 +540,20 @@ def _kind_for_op(op: str) -> str:
 
 
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
-                     bbox_min, bbox_max, pos, size_m) -> dict:
-    """Build the `add` op for a glTF model entity, auto-scaled to sit on the floor and carrying its
-    license/attribution. Shared by /place_asset (web) and /place_cached_asset (library reuse)."""
+                     bbox_min, bbox_max, pos, size_m, placement="grounded") -> dict:
+    """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
+    by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
+    client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
+    authored 3-D pose, so it can float / rest at any height)."""
     rec = SimpleNamespace(bbox_min=bbox_min, bbox_max=bbox_max)
     model_pos, model_scale = _normalize(rec, pos, size_m or TARGET_SIZE_M)
     return {"op": "add", "entity": {
         "id": eid,
         "transform": {"position": model_pos, "scale": model_scale},
         "components": {"gltf-model": f"/assets/{model_id}"},
-        # A dropped model sits on the floor → GROUNDED placement (docs §5c): each client snaps its Y to its
-        # OWN local floor and keeps it upright, so it never floats/sinks against a differing local floor.
         "meta": {"title": title, "license": licence, "attribution": attribution, "creator": creator,
-                 "source": source, "tris": tris, "generated": False, "placement": "grounded"},
+                 "source": source, "tris": tris, "generated": False,
+                 "placement": placement if placement in ("grounded", "free") else "grounded"},
     }}
 
 
@@ -1892,6 +1893,7 @@ class PlaceAssetRequest(BaseModel):
     position: Optional[list[float]] = None
     size_m: Optional[float] = None  # intended real-world largest dimension, meters
     name: Optional[str] = None
+    placement: str = "grounded"     # "grounded" (sits on the floor) | "free" (floats at the given position)
 
 
 @app.api_route("/assets/{filename}", methods=["GET", "HEAD"])
@@ -1957,7 +1959,7 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
         _model_entity_op(eid, model_id, title=record.title, licence=record.licence,
                          attribution=record.attribution, creator=record.creator, tris=record.tris,
                          source="poly.pizza", bbox_min=record.bbox_min, bbox_max=record.bbox_max,
-                         pos=pos, size_m=req.size_m),
+                         pos=pos, size_m=req.size_m, placement=req.placement),
     ]
     await _broadcast({"type": "patch", "patch": store.apply_patch(swap, origin="asset")})
     return {
@@ -2003,6 +2005,7 @@ class PlaceCachedAssetRequest(BaseModel):
     position: Optional[list[float]] = None
     size_m: Optional[float] = None
     name: Optional[str] = None
+    placement: str = "grounded"              # "grounded" (sits on the floor) | "free" (floats at position)
 
 
 @app.post("/place_cached_asset")
@@ -2023,7 +2026,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
     op = _model_entity_op(eid, req.id, title=rec["label"], licence=rec["licence"],
                           attribution=rec["attribution"], creator=rec["creator"],
                           tris=attrs.get("tris"), source="library", bbox_min=attrs.get("bbox_min"),
-                          bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m)
+                          bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m, placement=req.placement)
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
