@@ -78,6 +78,10 @@ class Settings:
     # convenient "somewhere else"; "/<user>/spaces/<name>" pins you at that space's stored location.
     # Empty (default) ⇒ use the real browser/headset location. See server._forced_geo.
     force_geo: str | None = None
+    # TEST override (--drop-surface): the client pretends it DIDN'T capture surfaces matching this
+    # semantic ("wall art") or id substring — kept in the posted seed, omitted from the local render — so
+    # the missing-surface recovery (docs/local-first-geometry.md §5.2) can be exercised with one headset.
+    drop_surface: str | None = None
     # TEST override for space occupancy (--force-occupied): treat the active space as already CLAIMED by a
     # phantom AR holder, so the admission gate engages for a SINGLE headset (match the active space ⇒
     # admitted; anything else ⇒ refused). See server._occupied.
@@ -126,6 +130,7 @@ def get_settings() -> Settings:
         apply_tol_rot_deg=float(os.environ.get("CONJURE_APPLY_TOL_ROT_DEG", "1.0")),
         apply_tol_ext=float(os.environ.get("CONJURE_APPLY_TOL_EXT", "0.02")),
         force_geo=(os.environ.get("CONJURE_FORCE_GEO", "").strip() or None),
+        drop_surface=(os.environ.get("CONJURE_DROP_SURFACE", "").strip() or None),
         force_occupied=os.environ.get("CONJURE_FORCE_OCCUPIED", "").strip().lower() in ("1", "true", "yes", "on"),
         embed_backend=os.environ.get("CONJURE_EMBED_BACKEND", "auto"),
         embed_model=os.environ.get("CONJURE_EMBED_MODEL", "google/siglip2-so400m-patch14-384"),

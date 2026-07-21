@@ -21,6 +21,10 @@ def main() -> None:
     ap.add_argument("--force-occupied", action="store_true",
                     help="TEST: treat the active space as already CLAIMED (a phantom AR holder), so the "
                          "admission gate engages for one headset — match the active space ⇒ admitted, else refused")
+    ap.add_argument("--drop-surface", metavar="SEMANTIC|ID", default=None,
+                    help="TEST: the client pretends it didn't capture surfaces matching this semantic "
+                         "(e.g. 'wall art') or id substring — kept in the seed but omitted from the local "
+                         "render — so missing-surface RECOVERY (§5.2) can be exercised with one headset")
 
     # --- Co-location robustness: how tolerantly a GUEST headset locks onto the shared space ------------
     reg = ap.add_argument_group(
@@ -82,6 +86,8 @@ def main() -> None:
         os.environ["CONJURE_DEBUG_REGISTRATION"] = "1"
     if args.force_geo:
         os.environ["CONJURE_FORCE_GEO"] = args.force_geo
+    if args.drop_surface:
+        os.environ["CONJURE_DROP_SURFACE"] = args.drop_surface
     if args.force_occupied:
         os.environ["CONJURE_FORCE_OCCUPIED"] = "1"
     os.environ["CONJURE_REG_MIN_COV"] = str(args.reg_min_cov)

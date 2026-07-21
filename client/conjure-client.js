@@ -786,6 +786,7 @@
         // _absent: id → consecutive miss count (client owns removal-confidence); _posted / _postedBoundary:
         // the set/boundary as of the last POST, for structural diffing.
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;
+        this._recovered = {};       // seed-surface ids reconstructed via anchor (missing from capture) — for §5.2 logging
         var self = this;
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
         // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
@@ -802,6 +803,7 @@
         this._ref = []; this._Tmat = null; this._haveT = false;
         this._anchorInv = null; this._refSeq = 0; this._lostSince = 0; this.lastPost = 0;
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;   // fresh post model
+        this._recovered = {};
       },
       // Has surface `k` (a fresh record) changed STRUCTURALLY vs `p` (its last-posted snapshot)? Mirrors the
       // server's _surface_structural_change (0.5 m / 20° / opening-count / semantic) so the client only POSTs
@@ -917,6 +919,39 @@
         });
         if (window.CONJURE_DEBUG_REGISTRATION && (ridden || freed))
           debugLog("content", "on-surface " + ridden + " + free " + freed + " (local=" + localPl.length + ")", true);
+      },
+      // Recover seed surfaces this client DIDN'T capture (§5.2): for each surface in the shared seed
+      // (docSurfaces) that's absent from the live capture, author its anchor from its F_ref pose against the
+      // seed walls and re-solve against the LOCAL walls — so a client missing a surface still sees it,
+      // reconstructed consistently with its own geometry. Walls/floor are the anchor BASIS and are never
+      // recovered. Returns the recovered surface records so they join the local render (and can host
+      // on-surface content). Once the client actually detects the surface, it's in `localSurfaces` → skipped
+      // here → the live capture wins.
+      _recoverMissing: function (localSurfaces) {
+        var PA = window.PlaneAnchor; if (!PA || !docSurfaces) return [];
+        var THREE = AFRAME.THREE;
+        var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
+        if (localPl.length < 2 || refPl.length < 2) return [];        // need a wall basis to solve against
+        var have = {}; localSurfaces.forEach(function (s) { have[s.id] = 1; });
+        var r2d = THREE.MathUtils.radToDeg, out = [], self = this;
+        docSurfaces.forEach(function (e) {
+          var sem = (e.meta || {}).semantic || "surface";
+          if (have[e.id] || sem === "wall" || sem === "floor") return;   // captured, or a basis plane → skip
+          var t = e.transform || {}, sf = (e.components || {}).surface || {}, p = t.position || [0, 0, 0];
+          var entity = { mode: "free", quaternion: eulerYXZToQuat(THREE, t.rotation || [0, 0, 0]),
+            position: new THREE.Vector3(p[0], p[1], p[2]) };
+          var sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
+          if (!sol.ok) return;                                          // degenerate / too few walls → skip
+          var eu = new THREE.Euler().setFromQuaternion(sol.quaternion, "YXZ");
+          out.push({ id: e.id, semantic: sem, extent: sf.extent, holes: sf.holes,
+            position: [sol.position.x, sol.position.y, sol.position.z],
+            rotation: [r2d(eu.x), r2d(eu.y), r2d(eu.z)] });
+          if (!self._recovered[e.id]) {
+            self._recovered[e.id] = 1;
+            debugLog("recover", "surface " + e.id + " (" + sem + ") reconstructed from plane-anchor", true);
+          }
+        });
+        return out;
       },
       // The room-snapping geometry lives in the pure, unit-tested client/room-snap.js (RoomSnap). These
       // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
@@ -1281,9 +1316,14 @@
             debug: { pos: c.raw.pos, quat: c.raw.quat, orient: c.orient, label: c.sem,
                      polyY: c.polyY, n: c.poly.length, registered: registered, regStat: self._regStat } });
           // Same surface, same id, but at its RAW captured (F_track) pose — this is what renders locally.
-          localSurfaces.push({ id: sid, semantic: c.sem, position: [c.pos.x, c.pos.y, c.pos.z],
-            rotation: self._euler(c.quat), extent: [c.ext[0], c.ext[1]],
-            _lp: c.pos.clone(), _lq: c.quat.clone(), debug: {} });
+          // TEST (--drop-surface): pretend we DIDN'T capture surfaces matching a semantic/id — keep them in
+          // the posted seed but omit them from the local render, so §5.2 recovery reconstructs them.
+          var drop = window.CONJURE_DROP_SURFACE;
+          if (!(drop && (c.sem === drop || sid.indexOf(drop) >= 0))) {
+            localSurfaces.push({ id: sid, semantic: c.sem, position: [c.pos.x, c.pos.y, c.pos.z],
+              rotation: self._euler(c.quat), extent: [c.ext[0], c.ext[1]],
+              _lp: c.pos.clone(), _lq: c.quat.clone(), debug: {} });
+          }
           if (c.sem === "floor" && (!floor || c.ext[0] * c.ext[1] > floor._area)) {
             floor = { floorPolygon: c.poly.map(function (pt) { return [pt.x, pt.z]; }), height: 2.6, _area: c.ext[0] * c.ext[1] };
           }
@@ -1297,8 +1337,12 @@
         // surface isn't re-laid, so nothing "pops".
         window.RoomSnap.joinCorners(THREE, localSurfaces);
         window.RoomSnap.snapInsets(THREE, localSurfaces);
-        this._renderLocal(localSurfaces);
-        this._placeContent(localSurfaces);                // director content → plane-relative anchors (docs §5)
+        // Reconstruct any seed surface this client didn't capture (§5.2) and fold it into the render set, so
+        // recovered surfaces both draw and can host on-surface content just like captured ones.
+        var recovered = this._recoverMissing(localSurfaces);
+        var allSurfaces = recovered.length ? localSurfaces.concat(recovered) : localSurfaces;
+        this._renderLocal(allSurfaces);
+        this._placeContent(allSurfaces);                  // director content → plane-relative anchors (docs §5)
 
         if (!amOwner) { this.lastPost = time; return; }   // guest: rendered its own capture; never authors/posts
 

@@ -421,7 +421,13 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    change (new / confirmed-removed / large-move / boundary), so a settled room sends **no `/room` traffic
    at all**; removal-confidence lives on the client (3-capture debounce) and the server prunes on first
    absence. *(Remaining server-side work is consolidated in step 7.)*
-5. **Missing-surface recovery** (§5.2) + its `[recover]` logging.
+5. **✅ Missing-surface recovery** (§5.2) — `_recoverMissing`, each capture: for every seed surface
+   (`docSurfaces`) absent from the live capture and not a wall/floor (the anchor basis), author its anchor
+   from its F_ref pose against the seed walls and re-solve against the LOCAL walls, then fold it into the
+   render set (so it draws and can host on-surface content); logs `[recover] surface … reconstructed`. Once
+   the client detects it for real, the live capture wins. **Test knob `--drop-surface SEMANTIC|ID`**: the
+   client pretends it didn't capture matching surfaces (kept in the seed, omitted from the local render), so
+   recovery is exercisable with one headset.
 6. **Plane-relative avatars** (§5.1): stream anchors (with hysteresis), re-solve per receiver.
 7. **Server-side anchors & solver** (§13.1) — the deferred server-side pieces:
    - **a. Python solver port** — port `plane-anchor.js` (weighted-LS position + per-wall quaternion vote) to
