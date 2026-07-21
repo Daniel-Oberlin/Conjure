@@ -812,7 +812,6 @@ async def reset_world() -> dict:
         else {"surfaces": [], "boundary": None}   # keep the active space's geometry (from its owner's scope)
     store = WorldStore(_compose(raw.doc, space))   # keep the physical room; clear only the world's content
     _reset_room_authority(store)
-    _surface_absence.clear()                 # fresh room session
     _save_active()                            # persist the reset so it survives a restart
     await _broadcast(_snapshot_msg())
     return {"ok": True, "rev": store.doc["rev"]}
@@ -833,7 +832,6 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     active_scope, active_world = scope, name
     active_space_owner, active_space, store = _activate(scope, name, raw)   # resolve space (owner+name) + compose
     worlds.set_active(scope, name)
-    _surface_absence.clear()                  # the room re-syncs into the newly active world
     _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} (space {active_space_owner}/{active_space})")
     await _broadcast(_snapshot_msg())
     return {"ok": True, "world": name, "rev": store.doc["rev"]}
@@ -1642,12 +1640,9 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     return 2 * r * math.asin(min(1.0, math.sqrt(h)))
 
 
-# A capture on resume-from-idle (or a momentary tracking blip) is often SPARSE — plane/mesh detection
-# re-populates gradually. With replace=True, removing a surface a single such capture missed deletes a
-# valid wall AND resets its director styling (the re-add path uses default material → invisible). So
-# debounce removals: only prune a surface after it's been absent from this many CONSECUTIVE captures.
-_REMOVE_AFTER_ABSENT = 3
-_surface_absence: dict[str, int] = {}
+# Removal debounce now lives on the CLIENT (docs §7): it posts its confirmed set only when it structurally
+# changes, so a surface missing from a post is genuinely gone and the server prunes it at once — no
+# server-side absence counter is needed.
 # Room authority (the one headset allowed to report geometry) is claimed by the first capturer's
 # per-page-load client id and cleared only on world-activate/boot — so a RECONNECTING owner (fresh id)
 # used to be locked out until a restart. Fix B: an authority goes STALE after _AUTH_TTL with no post; a
@@ -1752,18 +1747,11 @@ async def ingest_room(req: RoomUpdate) -> dict:
     geo_ops: list[dict] = []
     changed_ids: set[str] = set()
     if req.replace:
+        # The client posts its CONFIRMED set (it owns the absence debounce, docs §7), so a surface missing
+        # from the post is genuinely gone → prune immediately. `anchored` (photo-pinned) ids are kept.
         for eid in existing:
-            if eid in new_ids:
-                _surface_absence.pop(eid, None)               # seen → reset its absence streak
-            elif eid in anchored:
-                continue                                      # a photo is pinned here → keep the id
-            else:
-                n = _surface_absence.get(eid, 0) + 1
-                if n >= _REMOVE_AFTER_ABSENT:                 # gone for real → prune from the seed
-                    geo_ops.append({"op": "remove", "id": eid})
-                    _surface_absence.pop(eid, None)
-                else:
-                    _surface_absence[eid] = n                 # transient drop → keep it this round
+            if eid not in new_ids and eid not in anchored:
+                geo_ops.append({"op": "remove", "id": eid})
     for s in req.surfaces:                                    # add new / update STRUCTURALLY-changed (§7.4)
         if s.id in existing:
             changed, why = _surface_structural_change(existing[s.id], s)

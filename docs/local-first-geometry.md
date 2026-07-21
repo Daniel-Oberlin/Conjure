@@ -414,9 +414,11 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    removed — clients render locally, so there's nothing shared to stabilize). **Structural-only ingest
    (§7.4)** ✅ — the seed updates only on a semantic reclass, an opening add/remove, or a LARGE move/rotate/
    resize (`_surface_structural_change`, 0.5 m / 20°); per-capture cm-drift no longer churns the seed
-   (previously ~¼ of surfaces were rewritten every 2 s). **Deferred:** persisted anchors + the Python server
-   solver (step 7); optional client-side post-gating (the owner still POSTs each capture, but the server now
-   no-ops a non-structural one).
+   (previously ~¼ of surfaces were rewritten every 2 s). **Client post-gating** ✅ — the owner keeps an
+   authoritative `_known` set (seeded from the persisted seed on entry) and POSTs **only** on a structural
+   change (new / confirmed-removed / large-move / boundary), so a settled room sends **no `/room` traffic
+   at all**; removal-confidence lives on the client (3-capture debounce) and the server prunes on first
+   absence. **Deferred:** persisted anchors + the Python server solver (step 7).
 5. **Missing-surface recovery** (§5.2) + its `[recover]` logging.
 6. **Plane-relative avatars** (§5.1): stream anchors (with hysteresis), re-solve per receiver.
 7. **Server-side solver** (Python port, §13.1): route pose-relative queries (`view_relative`, etc.) through

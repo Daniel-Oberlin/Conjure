@@ -779,6 +779,11 @@
         this._lastDiag = null;      // last capture's frame (yaw/px/pz) — for the per-capture drift delta
         this._regRes = null;        // last register()'s per-wall residuals (--debug-registration probe)
         this._refSeq = 0;           // counter for minting brand-new surface ids
+        // Client-owned model of what's in the room, for the POST gate (§7): only POST when this changes
+        // structurally, so a settled room sends nothing. _known: id → last posted-frame surface record;
+        // _absent: id → consecutive miss count (client owns removal-confidence); _posted / _postedBoundary:
+        // the set/boundary as of the last POST, for structural diffing.
+        this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;
         var self = this;
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
         // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
@@ -794,6 +799,21 @@
       resetFrame: function () {
         this._ref = []; this._Tmat = null; this._haveT = false;
         this._anchorInv = null; this._refSeq = 0; this._lostSince = 0; this.lastPost = 0;
+        this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;   // fresh post model
+      },
+      // Has surface `k` (a fresh record) changed STRUCTURALLY vs `p` (its last-posted snapshot)? Mirrors the
+      // server's _surface_structural_change (0.5 m / 20° / opening-count / semantic) so the client only POSTs
+      // real structural changes, not per-capture drift.
+      _structMoved: function (p, k) {
+        if (p.semantic !== k.semantic) return true;
+        if ((k.holes || []).length !== (p.holes || 0)) return true;
+        var pp = p.position || [0, 0, 0], kp = k.position || [0, 0, 0];
+        if (Math.hypot(pp[0] - kp[0], pp[1] - kp[1], pp[2] - kp[2]) > 0.5) return true;
+        var pe = p.extent || [0, 0], ke = k.extent || [0, 0];
+        if (Math.abs(pe[0] - ke[0]) > 0.5 || Math.abs(pe[1] - ke[1]) > 0.5) return true;
+        var THREE = AFRAME.THREE;
+        return eulerYXZToQuat(THREE, p.rotation || [0, 0, 0]).angleTo(eulerYXZToQuat(THREE, k.rotation || [0, 0, 0]))
+          > 20 * Math.PI / 180;
       },
       // Position #world-root. LOCAL-FIRST (docs/local-first-geometry.md §2): a captured room renders its
       // real surfaces at their OWN detected (refSpace/F_track) poses via _renderLocal, so content is
@@ -1099,6 +1119,18 @@
             var mm = /_(\d+)$/.exec(e.id); if (mm) mx = Math.max(mx, +mm[1] + 1);   // keep new ids unique
           });
           self._refSeq = Math.max(self._refSeq, mx);
+          // Seed the POST model from the persisted seed too (owner, once), so on re-entry the client's first
+          // posts don't look like "everything was removed" and prune the whole stored seed. Starts _known =
+          // the seed; matching re-captures then cause no structural change → no post → seed preserved.
+          if (amOwner && !hadRef) {
+            docSurfaces.forEach(function (e) {
+              var t = e.transform || {}, sf = (e.components || {}).surface || {}, sem = (e.meta || {}).semantic;
+              self._known[e.id] = { id: e.id, semantic: sem, position: t.position, rotation: t.rotation,
+                                    extent: sf.extent, holes: sf.holes };
+              self._posted[e.id] = { position: t.position, rotation: t.rotation, extent: sf.extent,
+                                     holes: (sf.holes || []).length, semantic: sem };
+            });
+          }
           if (!hadRef) console.log("[conjure] seeded room frame from " + self._ref.length + " surfaces"
             + (amOwner ? "" : " (guest, register-only)"));
         }
@@ -1244,10 +1276,39 @@
         this.lastPost = time;
         var boundary = null;
         if (floor) { delete floor._area; boundary = floor; }
+
+        // Client-side POST gate (§7): keep our authoritative model of the room (_known) and POST it ONLY when
+        // it changes structurally — a new surface, a confirmed removal (debounced here, so a one-capture miss
+        // never prunes), a large move, or a boundary change. A settled room posts nothing. The server mirrors
+        // the posted set and prunes anything absent from it (we own removal-confidence → no server debounce).
+        var self2 = this, curById = {};
+        surfaces.forEach(function (s) { curById[s.id] = s; self2._absent[s.id] = 0; self2._known[s.id] = s; });
+        var changed = false, reason = "";
+        Object.keys(self2._known).forEach(function (id) {                 // debounced removals (3 misses)
+          if (curById[id]) return;
+          self2._absent[id] = (self2._absent[id] || 0) + 1;
+          if (self2._absent[id] >= 3) { delete self2._known[id]; delete self2._absent[id]; changed = true; reason = reason || ("removed " + id); }
+        });
+        Object.keys(self2._known).forEach(function (id) {                 // new / large-move vs last POST
+          if (changed) return;
+          var p = self2._posted[id];
+          if (!p) { changed = true; reason = "new " + id; }
+          else if (self2._structMoved(p, self2._known[id])) { changed = true; reason = "moved " + id; }
+        });
+        var bstr = boundary ? JSON.stringify(boundary) : null;
+        if (bstr && bstr !== self2._postedBoundary) { changed = true; reason = reason || "boundary"; }
+        if (!changed) return;                                             // settled → nothing to POST
+
+        var payload = Object.keys(self2._known).map(function (id) { return self2._known[id]; });
+        self2._posted = {};
+        payload.forEach(function (s) { self2._posted[s.id] = { position: s.position, rotation: s.rotation,
+          extent: s.extent, holes: (s.holes || []).length, semantic: s.semantic }; });
+        if (bstr) self2._postedBoundary = bstr;
+        if (window.CONJURE_DEBUG_REGISTRATION) debugLog("post", payload.length + " surfaces (" + reason + ")", true);
         fetch("/room", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Conjure-User": currentUser() || "" },
-          body: JSON.stringify({ client_id: this.clientId, surfaces: surfaces, boundary: boundary, replace: true }),
+          body: JSON.stringify({ client_id: this.clientId, surfaces: payload, boundary: boundary, replace: true }),
         }).catch(function (e) { console.warn("[conjure] room post failed", e); });
       },
     });
