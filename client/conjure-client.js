@@ -171,7 +171,8 @@
   function setSurfaceLabel(el, on) {
     var lbl = el.querySelector(".surface-label");
     if (!on) { if (lbl) el.removeChild(lbl); return; }
-    var text = (el.dataset.semantic || "surface") + " (" + (el.dataset.fid || el.id) + ")"
+    var num = (el.dataset.fid || el.id || "").match(/(\d+)$/);   // trailing number of the friendly/real id
+    var text = "[" + (el.dataset.semantic || "surface") + (num ? " " + num[1] : "") + "]"
       + (roomState.annotationDims && el.dataset.ext ? "\n" + el.dataset.ext : "");
     var style = { value: text, color: roomState.annotationColor, opacity: roomState.annotationOpacity };
     if (lbl) { lbl.setAttribute("text", style); return; }
