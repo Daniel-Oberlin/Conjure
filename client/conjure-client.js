@@ -972,6 +972,10 @@
         if (localPl.length < 2 || refPl.length < 2) return [];        // need a wall basis to solve against
         var have = {}; localSurfaces.forEach(function (s) { have[s.id] = 1; });
         var r2d = THREE.MathUtils.radToDeg, out = [], self = this;
+        // solveAnchor returns the A-PLANE orientation (local +Z = normal, from the stored eulerYXZ pose), but
+        // snapInsets reads a surface's normal as its RAW-plane local +Y (like a captured _lq). Convert with
+        // Rx(+90°) so a recovered inset's normal is read correctly and it snaps to its wall.
+        var RX90 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
         docSurfaces.forEach(function (e) {
           var sem = (e.meta || {}).semantic || "surface";
           if (have[e.id] || sem === "wall" || sem === "floor") return;   // captured, or a basis plane → skip
@@ -986,7 +990,7 @@
           out.push({ id: e.id, semantic: sem, extent: sf.extent, holes: sf.holes, debug: {},
             position: [sol.position.x, sol.position.y, sol.position.z],
             rotation: [r2d(eu.x), r2d(eu.y), r2d(eu.z)],
-            _lp: sol.position.clone(), _lq: sol.quaternion.clone() });
+            _lp: sol.position.clone(), _lq: sol.quaternion.clone().multiply(RX90) });   // → raw-plane (+Y=normal)
           if (!self._recovered[e.id]) {
             self._recovered[e.id] = 1;
             debugLog("recover", "surface " + e.id + " (" + sem + ") reconstructed from plane-anchor", true);
