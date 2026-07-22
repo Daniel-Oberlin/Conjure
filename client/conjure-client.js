@@ -987,31 +987,54 @@
         var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
         if (localPl.length < 2 || refPl.length < 2) return [];        // need a wall basis to solve against
         var have = {}; localSurfaces.forEach(function (s) { have[s.id] = 1; });
+        var seedById = {}; docSurfaces.forEach(function (e) { seedById[e.id] = e; });   // seed poses (host-wall ride)
+        var mat = function (t) { t = t || {}; var p = t.position || [0, 0, 0];
+          return new THREE.Matrix4().compose(new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0),
+            eulerYXZToQuat(THREE, t.rotation || [0, 0, 0]), new THREE.Vector3(1, 1, 1)); };
         var r2d = THREE.MathUtils.radToDeg, out = [], self = this;
-        // solveAnchor returns the A-PLANE orientation (local +Z = normal, from the stored eulerYXZ pose), but
-        // snapInsets reads a surface's normal as its RAW-plane local +Y (like a captured _lq). Convert with
-        // Rx(+90°) so a recovered inset's normal is read correctly and it snaps to its wall.
+        // solveAnchor / the host-wall ride return the A-PLANE orientation (local +Z = normal), but snapInsets
+        // reads a surface's normal as its RAW-plane local +Y (like a captured _lq). Convert with Rx(+90°) so a
+        // recovered inset's normal is read correctly and it snaps to its wall.
         var RX90 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
         docSurfaces.forEach(function (e) {
           var sem = (e.meta || {}).semantic || "surface";
           if (have[e.id] || sem === "wall" || sem === "floor") return;   // captured, or a basis plane → skip
-          var t = e.transform || {}, sf = (e.components || {}).surface || {}, p = t.position || [0, 0, 0];
-          var entity = { mode: "free", quaternion: eulerYXZToQuat(THREE, t.rotation || [0, 0, 0]),
-            position: new THREE.Vector3(p[0], p[1], p[2]) };
-          var sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
-          if (!sol.ok) return;                                          // degenerate / too few walls → skip
-          var eu = new THREE.Euler().setFromQuaternion(sol.quaternion, "YXZ");
+          var sf = (e.components || {}).surface || {};
+          var hostId = (e.meta && e.meta.host_wall) || undefined;
+          var hostEl = hostId ? document.getElementById(hostId) : null;
+          var hostSeed = hostId ? seedById[hostId] : null;
+          var pos = new THREE.Vector3(), quat = new THREE.Quaternion(), how;
+          if (hostEl && hostEl.object3D && hostSeed && hostSeed.transform) {
+            // RIDE the host wall: apply the inset's seed offset-FROM-its-wall onto the wall's LOCAL rendered
+            // pose. The inset's position ALONG the wall (and its height) is thus preserved exactly — unlike a
+            // free multilateration, which under-constrains the along-wall axis for a mid-wall inset with no
+            // perpendicular wall nearby (the >10 cm shifts). snapInsets then only nudges the perpendicular.
+            var hostLocal = new THREE.Matrix4().compose(hostEl.object3D.position.clone(),
+              hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1));
+            var is = new THREE.Vector3();
+            hostLocal.multiply(mat(hostSeed.transform).invert().multiply(mat(e.transform))).decompose(pos, quat, is);
+            how = "ride wall=" + hostId.slice(-7);
+          } else {
+            // No recorded/rendered host wall → fall back to a free multilateration against the local walls.
+            var p = (e.transform || {}).position || [0, 0, 0];
+            var entity = { mode: "free", quaternion: eulerYXZToQuat(THREE, (e.transform || {}).rotation || [0, 0, 0]),
+              position: new THREE.Vector3(p[0], p[1], p[2]) };
+            var sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
+            if (!sol.ok) return;                                        // degenerate / too few walls → skip
+            pos.copy(sol.position); quat.copy(sol.quaternion); how = "multilat";
+          }
+          var eu = new THREE.Euler().setFromQuaternion(quat, "YXZ");
           // Carry _lp/_lq so snapInsets can snap a recovered door/window/wall-art co-planar to its wall, and
           // hostWall (the association the authority recorded, §5.2) so it snaps to THAT wall — not re-guessed
           // by distance against this client's partial capture.
           out.push({ id: e.id, semantic: sem, extent: sf.extent, holes: sf.holes, debug: {}, _recovered: true,
-            hostWall: (e.meta && e.meta.host_wall) || undefined,
-            position: [sol.position.x, sol.position.y, sol.position.z],
+            hostWall: hostId,
+            position: [pos.x, pos.y, pos.z],
             rotation: [r2d(eu.x), r2d(eu.y), r2d(eu.z)],
-            _lp: sol.position.clone(), _lq: sol.quaternion.clone().multiply(RX90) });   // → raw-plane (+Y=normal)
+            _lp: pos.clone(), _lq: quat.clone().multiply(RX90) });      // → raw-plane (+Y=normal)
           if (!self._recovered[e.id]) {
             self._recovered[e.id] = 1;
-            debugLog("recover", "surface " + e.id + " (" + sem + ") reconstructed from plane-anchor", true);
+            debugLog("recover", "surface " + e.id + " (" + sem + ") reconstructed (" + how + ")", true);
           }
         });
         return out;

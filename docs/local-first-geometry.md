@@ -225,13 +225,16 @@ it. It's also the **sole consumer** of the in-plane / anchor placement for inset
   **requests that surface's plane-relative anchor from the server** and **re-solves it against its own local
   walls** (§4) → the surface is recreated at a spot consistent with the client's *own* geometry (not a rigid
   guess). Content on it then rides that recovered surface.
-- **In-wall surfaces (door/window/wall-art) use the ordinary anchor, no special corner math** — the surface
-  is authored with its **host wall included as a reference**: the host wall (offset ≈ 0) pins it *into* the
-  wall plane, adjacent walls fix the lateral position (the corner is host ∩ adjacent, implicit), the floor
-  fixes height, and orientation adopts the host wall. Same `solveAnchor` (client/plane-anchor.js) as any
-  other recovery.
+- **In-wall surfaces (door/window/wall-art) RIDE their recorded host wall.** Because the authority records
+  each inset's `host_wall` (§5.2, persisted → `meta.host_wall`), recovery applies the inset's *seed
+  offset-from-its-wall* onto the wall's **local rendered** pose: `inset_local = wall_local · (wall_seed⁻¹ ·
+  inset_seed)`. This preserves the along-wall position **and** height exactly — a free multilateration
+  under-constrains the along-wall axis for a mid-wall inset with no perpendicular wall nearby, which showed
+  up as >10 cm lateral shifts. `snapInsets` then only nudges the perpendicular onto the wall plane. If the
+  host wall isn't recorded or isn't locally rendered, recovery falls back to the ordinary `solveAnchor`
+  multilateration (client/plane-anchor.js).
 - **Log + console** each recovery for awareness/debugging, e.g.
-  `[recover] surface window_9 reconstructed from plane-anchor (refs: wall_3, wall_8, wall_11)`.
+  `[recover] surface window_9 reconstructed (ride wall=_a1b2c3)`.
 - If the client later **detects** that surface for real, it **switches back to its own live pose**
   (headset-first wins the moment detection is available; id re-inherited via `matchRef`).
 - **Walls are excluded** — they're the *basis* of the anchor system (a wall is a plane, not a point, and its
