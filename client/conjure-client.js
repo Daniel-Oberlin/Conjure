@@ -675,20 +675,30 @@
   var EYE_R = 0.03, EYE_S = Math.sin(Math.PI / 12), EYE_C = Math.cos(Math.PI / 12); 
   function setAvatar(user, pose, anchor) {
     var THREE = AFRAME.THREE;
+    var scA = document.querySelector("a-scene");
+    var rcA = scA && scA.components && scA.components["room-capture"];
+    var solved = false;
     // Prefer the plane-relative anchor solved against MY OWN local walls (§5.1) — the avatar then lands on
-    // the same real walls I see, not a shared rigid frame. Fall back to the streamed F_ref pose (desktop, or
-    // no local walls / void world). world-root is identity in a captured room, so the solved F_track pose
-    // renders at the real spot.
-    if (anchor && window.PlaneAnchor) {
-      var scA = document.querySelector("a-scene");
-      var rcA = scA && scA.components && scA.components["room-capture"];
-      if (rcA && rcA._localPlanes && rcA._localPlanes.length >= 2) {
-        var sol = window.PlaneAnchor.solveAnchor(THREE, anchor, rcA._localPlanes);
-        if (sol.ok) pose = { p: [sol.position.x, sol.position.y, sol.position.z],
+    // the same real walls I see, not a shared rigid frame. (headset ↔ headset)
+    if (anchor && window.PlaneAnchor && rcA && rcA._localPlanes && rcA._localPlanes.length >= 2) {
+      var sol = window.PlaneAnchor.solveAnchor(THREE, anchor, rcA._localPlanes);
+      if (sol.ok) { pose = { p: [sol.position.x, sol.position.y, sol.position.z],
                              q: [sol.quaternion.x, sol.quaternion.y, sol.quaternion.z, sol.quaternion.w] };
-      }
+                    solved = true; }
     }
     if (!pose || !pose.p) return;
+    // Fallback pose is in the shared F_ref frame. On a HEADSET #world-root is identity and the scene is
+    // F_track, so an anchor-less avatar (a desktop user has no walls to author one) must be brought
+    // F_ref → F_track via T⁻¹ or it lands offset by the registration yaw. A desktop receiver has no T and
+    // its scene already IS F_ref, so it uses the pose as-is.
+    if (!solved && !isVoidWorld && rcA && rcA._haveT && rcA._Tmat) {   // captured room: world-root is identity
+      var inv = rcA._Tmat.clone().invert();
+      var fp = new THREE.Vector3(pose.p[0], pose.p[1], pose.p[2]).applyMatrix4(inv);
+      var rot = new THREE.Quaternion(); inv.decompose(new THREE.Vector3(), rot, new THREE.Vector3());
+      var q = pose.q || [0, 0, 0, 1];
+      var fq = new THREE.Quaternion(q[0], q[1], q[2], q[3]).premultiply(rot);
+      pose = { p: [fp.x, fp.y, fp.z], q: [fq.x, fq.y, fq.z, fq.w] };
+    }
     var wr = document.getElementById("world-root"); if (!wr) return;
     var el = document.getElementById("avatar-" + user);
     if (!el) {
