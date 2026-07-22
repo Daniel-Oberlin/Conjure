@@ -986,7 +986,8 @@
         var THREE = AFRAME.THREE;
         var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
         if (localPl.length < 2 || refPl.length < 2) return [];        // need a wall basis to solve against
-        var have = {}; localSurfaces.forEach(function (s) { have[s.id] = 1; });
+        var have = {}, localById = {};
+        localSurfaces.forEach(function (s) { have[s.id] = 1; localById[s.id] = s; });   // current-capture lookup
         var seedById = {}; docSurfaces.forEach(function (e) { seedById[e.id] = e; });   // seed poses (host-wall ride)
         var mat = function (t) { t = t || {}; var p = t.position || [0, 0, 0];
           return new THREE.Matrix4().compose(new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0),
@@ -1001,16 +1002,20 @@
           if (have[e.id] || sem === "wall" || sem === "floor") return;   // captured, or a basis plane → skip
           var sf = (e.components || {}).surface || {};
           var hostId = (e.meta && e.meta.host_wall) || undefined;
-          var hostEl = hostId ? document.getElementById(hostId) : null;
+          var hostRec = hostId ? localById[hostId] : null;              // host wall's CURRENT capture record
           var hostSeed = hostId ? seedById[hostId] : null;
           var pos = new THREE.Vector3(), quat = new THREE.Quaternion(), how;
-          if (hostEl && hostEl.object3D && hostSeed && hostSeed.transform) {
-            // RIDE the host wall: apply the inset's seed offset-FROM-its-wall onto the wall's LOCAL rendered
-            // pose. The inset's position ALONG the wall (and its height) is thus preserved exactly — unlike a
-            // free multilateration, which under-constrains the along-wall axis for a mid-wall inset with no
+          if (hostRec && hostRec._lp && hostRec._lq && hostSeed && hostSeed.transform) {
+            // RIDE the host wall: apply the inset's seed offset-FROM-its-wall onto the wall's LOCAL pose. The
+            // inset's position ALONG the wall (and its height) is thus preserved exactly — unlike a free
+            // multilateration, which under-constrains the along-wall axis for a mid-wall inset with no
             // perpendicular wall nearby (the >10 cm shifts). snapInsets then only nudges the perpendicular.
-            var hostLocal = new THREE.Matrix4().compose(hostEl.object3D.position.clone(),
-              hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1));
+            // Use the wall's CAPTURED pose (_lp/_lq) — the SAME pose snapInsets cuts the cutout from — not
+            // its rendered object3D, whose apply-gate lag would sit the inset off-centre from its hole until
+            // the wall next re-laid. The record's _lq is RAW-plane (+Y = normal); convert to the a-plane
+            // frame (+Z = normal) the seed poses use (undo the Rx(+90°) that raw-plane carries).
+            var hostQ = hostRec._lq.clone().multiply(RX90.clone().invert());
+            var hostLocal = new THREE.Matrix4().compose(hostRec._lp.clone(), hostQ, new THREE.Vector3(1, 1, 1));
             var is = new THREE.Vector3();
             hostLocal.multiply(mat(hostSeed.transform).invert().multiply(mat(e.transform))).decompose(pos, quat, is);
             how = "ride wall=" + hostId.slice(-7);
