@@ -987,7 +987,7 @@
           var eu = new THREE.Euler().setFromQuaternion(sol.quaternion, "YXZ");
           // Carry _lp/_lq so snapInsets can snap a recovered door/window/wall-art co-planar to its wall
           // (§5.2 — plane-relative position from the anchor, then snapped to the associated wall).
-          out.push({ id: e.id, semantic: sem, extent: sf.extent, holes: sf.holes, debug: {},
+          out.push({ id: e.id, semantic: sem, extent: sf.extent, holes: sf.holes, debug: {}, _recovered: true,
             position: [sol.position.x, sol.position.y, sol.position.z],
             rotation: [r2d(eu.x), r2d(eu.y), r2d(eu.z)],
             _lp: sol.position.clone(), _lq: sol.quaternion.clone().multiply(RX90) });   // → raw-plane (+Y=normal)

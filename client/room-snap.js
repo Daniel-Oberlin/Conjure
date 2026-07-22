@@ -46,6 +46,7 @@
  * @property {Vec3} _lp                                  ref-frame position
  * @property {Quat} _lq                                  ref-frame orientation
  * @property {{x:number, y:number, w:number, h:number}[]} [holes]   openings cut into a wall
+ * @property {boolean} [_recovered]                      reconstructed via anchor (§5.2) — project onto its wall plane
  * @property {any} [debug]
  */
 
@@ -485,7 +486,11 @@
       if (!best) return;
       var nint = sn.clone().negate();                           // into the room = opposite outward normal
       var clr = s._lp.clone().sub(best._lp).dot(nint);
-      var fp = clr < off ? s._lp.clone().add(nint.clone().multiplyScalar(off - clr)) : s._lp.clone();
+      // A captured inset keeps its own (locally accurate) depth, only nudged to at least `off` in front. A
+      // RECOVERED inset (§5.2) has no measured depth — its perpendicular position is an anchor estimate that
+      // varies — so PROJECT it exactly onto the wall plane + off (the anchor gave the lateral spot; the wall
+      // gives the perpendicular).
+      var fp = (s._recovered || clr < off) ? s._lp.clone().add(nint.clone().multiplyScalar(off - clr)) : s._lp.clone();
       s.position = [fp.x, fp.y, fp.z];
       // Every inset adopts its wall's exact orientation — so its stored normal is the wall's TRUE (outward)
       // normal, consistent with all other surfaces. Wall art no longer gets a special upright/negated

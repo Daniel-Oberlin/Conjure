@@ -64,6 +64,22 @@ test("snapInsets places a door in front of its wall, toward the interior", () =>
   assert.match(door.debug.snap, /wall=.*clr=/);
 });
 
+test("snapInsets PROJECTS a recovered inset onto its wall plane (ignores its estimated depth)", () => {
+  // A recovered door whose anchor estimate left it 0.3 m off the wall. A captured door there would KEEP its
+  // depth; a recovered one (_recovered) must be pulled onto the wall + the 2 cm stand-off.
+  const wall = vert("real_wall_0", "wall", [2, 1.2, 0], 90, [4, 2.4]);
+  const door = vert("real_door_1", "door", [1.8, 1.0, 0], 90, [0.8, 2]);   // 0.2 m interior of the wall
+  door._recovered = true;
+  RS.snapInsets(THREE, [wall, door]);
+  assert.ok(Math.abs(door.position[0] - 2) < 0.05,
+    "recovered door pulled onto wall+2cm, not left at its 1.8 estimate: " + door.position[0]);
+  // A captured door at the same estimate KEEPS its depth (not projected).
+  const wall2 = vert("real_wall_0", "wall", [2, 1.2, 0], 90, [4, 2.4]);
+  const cap = vert("real_door_2", "door", [1.8, 1.0, 0], 90, [0.8, 2]);
+  RS.snapInsets(THREE, [wall2, cap]);
+  assert.ok(Math.abs(cap.position[0] - 1.8) < 0.02, "captured door keeps its depth: " + cap.position[0]);
+});
+
 test("snapInsets carves the wall the door is WITHIN, not a coplanar neighbour", () => {
   // Two collinear wall segments on the SAME plane (both face +Z at z=0), a door in front of the RIGHT one.
   // Perpendicular distance to the plane is a tie, so matching by distance alone could pick the far segment
