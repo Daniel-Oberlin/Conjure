@@ -413,7 +413,10 @@
   // A VOID/outdoor world (environment.space === "<void>") isn't tied to a captured room — it shows a
   // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
   // instead of registering against stored geometry. Set from each snapshot.
-  var VOID_SPACE = "<void>", isVoidWorld = false;
+  // isVoidWorld: the active world composes as VOID (no real surfaces) — either a DELIBERATE outdoor world
+  // (isOutdoor) or the "no room chosen yet" default/Holodeck. Only the latter should run space selection to
+  // find/mint the physical room; a deliberate outdoor world is a chosen destination and stays put.
+  var VOID_SPACE = "<void>", isVoidWorld = false, isOutdoor = false;
   // Two-stage space selection (new-space-flow §3). On entering AR we report our coarse location and get
   // back the geo-near candidate spaces; room-capture then votes its live geometry against them
   // (RoomSnap.selectSpace) and commits the verdict via /space/select. `pendingSelect` holds the candidates
@@ -461,6 +464,7 @@
     });
     applyEnv(world.environment);   // after entities, so immersion can toggle them
     isVoidWorld = ((world.environment || {}).space === VOID_SPACE);
+    isOutdoor = ((world.environment || {}).outdoor === true);   // deliberate outdoor vs the default "no room yet"
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
     surfaceStyles = {};                  // rebuild the shared styling map for THIS world (id → material)
     reals.forEach(function (e) { var m = (e.components || {}).material; if (m) surfaceStyles[e.id] = m; });
@@ -1289,10 +1293,11 @@
         // orientation. Never capture/mint/post (a void world owns no geometry). Everyone (owner or guest)
         // canonicalizes identically. Hold if there aren't enough walls yet.
         if (isVoidWorld) {
-          // Defensive: a void world never resolves space selection (stage 2 is gated !isVoidWorld above), so
-          // if we somehow entered AR still awaiting a space (e.g. the snapshot marking it void arrived after
-          // onEnterAR fired), clear it now and render the outdoor world — don't get stuck on "finding".
-          if (awaitingSpace || pendingSelect) { pendingSelect = null; endAwaitingSpace(); }
+          // Defensive: a DELIBERATE outdoor world never resolves space selection (stage 2 is gated
+          // !isVoidWorld), so if we entered AR still awaiting/pending there, clear it and stay in the outdoor
+          // world — don't get stuck on "finding". NOT for the default/Holodeck: there awaitingSpace is a
+          // legitimate in-flight selection (mint/join a room) that must be left to resolve.
+          if (isOutdoor && (awaitingSpace || pendingSelect)) { pendingSelect = null; endAwaitingSpace(); }
           this._localPlanes = null;   // void world: no shared seed walls → avatars fall back to the F_ref pose
           var cf = window.RoomSnap.canonicalFrame(THREE, cur);
           this._regStat = cf.stat;
@@ -1525,9 +1530,9 @@
   // immediately (fix already warm), wait for the fix (showing a "getting your location" notice), or — if
   // geolocation is unavailable/denied — just join the active world as-is.
   function onEnterAR() {
-    if (isVoidWorld) {                    // an outdoor/void world isn't tied to a physical space — no space
-      debugLog("sel", "onEnterAR: outdoor/void world → skip space selection", true);   // selection; stay in it
-      return;
+    if (isOutdoor) {                      // a DELIBERATE outdoor world isn't tied to a physical space — no
+      debugLog("sel", "onEnterAR: deliberate outdoor world → skip space selection", true);   // selection; stay in it
+      return;                             // (the default/Holodeck void world DOES select — to find/mint a room)
     }
     awaitingSpace = true;
     blankToPassthrough();

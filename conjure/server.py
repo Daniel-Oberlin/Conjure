@@ -1623,6 +1623,10 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
         composed_doc["entities"] = [e for e in composed_doc.get("entities", [])   # skybox only. A void world
                                     if not (e.get("meta") or {}).get("real")]     # owns NO real geometry —
         composed_doc.setdefault("environment", {})["space"] = VOID   # drop any stray inline reals and mark
+        # Distinguish a DELIBERATE outdoor world (space explicitly VOID — a chosen skybox scene; stay in it)
+        # from the "no room chosen yet" default/Holodeck (space absent — the client must still run space
+        # selection to find/mint its physical room). Both compose to VOID, so flag the difference.
+        composed_doc["environment"]["outdoor"] = (space_ref == VOID)
         composed = WorldStore(composed_doc)                          # void so the client uses canonicalFrame
         _reset_room_authority(composed)
         return world_owner, VOID, composed
