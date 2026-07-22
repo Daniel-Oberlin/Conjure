@@ -918,6 +918,9 @@
           var t = e.transform || {}; hostFref[e.id] = { p: t.position || [0, 0, 0], r: t.rotation || [0, 0, 0] }; });
         var mat = function (p, r) { return new THREE.Matrix4().compose(
           new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0), eulerYXZToQuat(THREE, r), new THREE.Vector3(1, 1, 1)); };
+        // T⁻¹ (F_ref → F_track): the rigid fallback for on-surface content whose host's SEED pose isn't in
+        // docSurfaces yet (see the on-surface branch). null on desktop / before registration.
+        var Tinv = (this._haveT && this._Tmat) ? this._Tmat.clone().invert() : null;
         var ridden = 0, freed = 0;
         Array.prototype.forEach.call(wr.children, function (el) {
           if (!el._frefPose || !el.object3D) return;
@@ -926,23 +929,36 @@
           // F_ref) onto the host's ACTUAL RENDERED pose — read from the host element's object3D, NOT the
           // fresh capture — so the image tracks exactly what's drawn (incl. the apply-gate) and never drifts
           // within the surface. world-root is identity, so the host's local object3D pose IS its world pose.
-          var hostEl = el._onSurface ? document.getElementById(el._onSurface) : null;
-          if (hostEl && hostEl.object3D && hostFref[el._onSurface]) {
+          if (el._onSurface) {
+            var hostEl = document.getElementById(el._onSurface);
             var hRef = hostFref[el._onSurface];
-            var hostMat = new THREE.Matrix4().compose(
-              hostEl.object3D.position.clone(), hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1));
-            var world = hostMat.multiply(mat(hRef.p, hRef.r).invert().multiply(mat(fp.position, fp.rotation)));
             var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
-            world.decompose(ip, iq, is);
-            el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
-            // Guard: expect ~0.02 m from host centre (the stand-off). Warn only if it lands FAR off (ride
-            // wrong / stale seed pose); a centred-but-visually-off image = the detected surface ≠ the artwork.
-            if (window.CONJURE_DEBUG_REGISTRATION) {
-              var off = ip.distanceTo(hostEl.object3D.position);
-              if (off > 0.15) debugLog("content", "WARN " + el._onSurface + " " + Math.round(off * 100) + "cm off host centre", true);
+            if (hostEl && hostEl.object3D && hRef) {
+              // RIDE the local host: re-express the image's offset-from-host (measured in F_ref) onto the
+              // host's ACTUAL rendered pose, so it tracks what's drawn (incl. the apply-gate) and never
+              // drifts within the surface. world-root is identity ⇒ the host's local pose IS its world pose.
+              var hostMat = new THREE.Matrix4().compose(
+                hostEl.object3D.position.clone(), hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1));
+              hostMat.multiply(mat(hRef.p, hRef.r).invert().multiply(mat(fp.position, fp.rotation))).decompose(ip, iq, is);
+              el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
+              // Guard: expect ~0.02 m from host centre (the stand-off). Warn only if it lands FAR off (ride
+              // wrong / stale seed pose); a centred-but-visually-off image = the detected surface ≠ the artwork.
+              if (window.CONJURE_DEBUG_REGISTRATION) {
+                var off = ip.distanceTo(hostEl.object3D.position);
+                if (off > 0.15) debugLog("content", "WARN " + el._onSurface + " " + Math.round(off * 100) + "cm off host centre", true);
+              }
+            } else if (Tinv) {
+              // The host's SEED pose isn't known locally yet — e.g. the OWNER's freshly-captured wall hasn't
+              // round-tripped into docSurfaces (we stopped broadcasting geometry). Map the image's F_ref pose
+              // to F_track rigidly via T⁻¹: exact for the owner (its own frame IS rigid), and it keeps the
+              // image ON its wall instead of free-floating. Upgrades to the ride once the seed pose arrives.
+              Tinv.clone().multiply(mat(fp.position, fp.rotation)).decompose(ip, iq, is);
+              el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
+            } else {
+              return;                                                 // desktop / no frame yet — leave at F_ref
             }
             ridden++;
-            return;
+            return;                                                   // on-surface content NEVER free-multilaterates
           }
           // FREE / GROUNDED content: multilaterate against the local walls (§5b/c). Grounded snaps Y to the
           // local floor + keeps it upright (yaw-only); free keeps the full authored 3-D pose. Mode is
