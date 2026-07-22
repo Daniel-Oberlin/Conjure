@@ -455,6 +455,12 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
      (authored once, server-side) instead of the client re-authoring it from the F_ref pose every capture
      (§3, §5). Removes the client's dependence on its `docSurfaces` copy of the host/seed pose for
      placement and makes anchors first-class in persistence. *(Deferred here from steps 3 & 4.)*
+     - **✅ (A) server authors + persists `meta.anchor`** — `_seed_planes` builds the seed's floor+walls in
+       the client's plane convention; `_content_anchor` authors the anchor via `author_anchor` and
+       `_model_entity_op` stamps it onto each placed model (logged `[anchor] authored …`). **No behavior
+       change yet** — the client still uses the F_ref pose; this de-risks the solver on real seed geometry.
+     - **(B) client consumes the persisted anchor** — `_placeContent` solves `meta.anchor` against the local
+       walls instead of re-authoring from `_frefPose` + `docSurfaces` (the `T⁻¹`/free fallbacks then retire).
 8. **`--square-walls on|off`** (§9) for A/B.
 9. *(later)* render interpolation for genuine local moves; guest-proposes-surface; consensus seed (§7.8).
 

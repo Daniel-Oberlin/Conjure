@@ -39,6 +39,7 @@ from .config import DEFAULT_USER, get_settings, scope_for
 from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
+from .plane_anchor import author_anchor
 from .schema import Patch
 from .world import SpaceStore, WorldRepository, WorldStore, _set_path, slug, world_path
 
@@ -539,6 +540,56 @@ def _kind_for_op(op: str) -> str:
     return "image"
 
 
+def _euler_yxz_quat(rot_deg: list[float]) -> list[float]:
+    """A-Frame euler (degrees, YXZ order) → quaternion [x,y,z,w]. Mirrors THREE.Quaternion.setFromEuler so a
+    server-authored anchor's orientation vote matches what the client would compute from the same rotation."""
+    x, y, z = math.radians(rot_deg[0]), math.radians(rot_deg[1]), math.radians(rot_deg[2])
+    c1, c2, c3 = math.cos(x / 2), math.cos(y / 2), math.cos(z / 2)
+    s1, s2, s3 = math.sin(x / 2), math.sin(y / 2), math.sin(z / 2)
+    return [s1 * c2 * c3 + c1 * s2 * s3, c1 * s2 * c3 - s1 * c2 * s3,
+            c1 * c2 * s3 - s1 * s2 * c3, c1 * c2 * c3 + s1 * s2 * s3]
+
+
+def _seed_planes() -> list[dict]:
+    """The current seed's floor + walls as plane-anchor Planes (F_ref), in the SAME convention as the
+    client's localToPlanes: floor normal = +Y; wall normal = the surface's outward normal (a-plane +Z,
+    via _plane_basis). Feeds author_anchor/solve_anchor (docs §7a/§13.1)."""
+    planes: list[dict] = []
+    if store is None:
+        return planes
+    for e in store.doc.get("entities", []):
+        m = e.get("meta") or {}
+        if not m.get("real"):
+            continue
+        pos = (e.get("transform") or {}).get("position")
+        if not pos:
+            continue
+        sem = m.get("semantic")
+        if sem == "floor":
+            planes.append({"id": e["id"], "kind": "floor", "normal": [0.0, 1.0, 0.0], "point": pos})
+        elif sem == "wall":
+            nrm = _plane_basis((e.get("transform") or {}).get("rotation") or [0.0, 0.0, 0.0])[0]
+            planes.append({"id": e["id"], "kind": "wall", "normal": nrm, "point": pos})
+    return planes
+
+
+def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
+    """Author a persisted plane-relative anchor (docs §7c) for a content entity at `transform` (F_ref)
+    against the current seed. Returns the anchor dict, or None if the seed has too few walls to anchor
+    (caller then leaves the entity on its raw F_ref pose, as before). Server-side twin of the client's
+    per-capture authoring — authored ONCE here so the client can just SOLVE it."""
+    planes = _seed_planes()
+    if sum(1 for p in planes if p["kind"] == "wall") < 2:
+        return None
+    pos = transform.get("position")
+    if not pos:
+        return None
+    mode = placement if placement in ("grounded", "free") else "grounded"
+    entity = {"position": pos, "quaternion": _euler_yxz_quat(transform.get("rotation") or [0.0, 0.0, 0.0]),
+              "mode": mode}
+    return author_anchor(entity, planes)
+
+
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
                      bbox_min, bbox_max, pos, size_m, placement="grounded") -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
@@ -547,13 +598,22 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
     authored 3-D pose, so it can float / rest at any height)."""
     rec = SimpleNamespace(bbox_min=bbox_min, bbox_max=bbox_max)
     model_pos, model_scale = _normalize(rec, pos, size_m or TARGET_SIZE_M)
+    mode = placement if placement in ("grounded", "free") else "grounded"
+    transform = {"position": model_pos, "scale": model_scale}
+    meta = {"title": title, "license": licence, "attribution": attribution, "creator": creator,
+            "source": source, "tris": tris, "generated": False, "placement": mode}
+    # Step 7c: author + persist the plane-relative anchor now (server-side, once) so the client can SOLVE it
+    # rather than re-author from the F_ref pose against its docSurfaces copy every capture. Client ignores it
+    # until step 7b/c flips it to consume it; None (too few seed walls) leaves the entity on its F_ref pose.
+    anchor = _content_anchor(transform, mode)
+    if anchor:
+        meta["anchor"] = anchor
+        _slog("anchor", f"authored {eid}: mode={anchor['mode']} "
+                        f"floor={'y' if anchor['floor'] else 'n'} walls={len(anchor['walls'])} "
+                        f"[{', '.join(w['id'].split('_')[-1] for w in anchor['walls'])}]")
     return {"op": "add", "entity": {
-        "id": eid,
-        "transform": {"position": model_pos, "scale": model_scale},
-        "components": {"gltf-model": f"/assets/{model_id}"},
-        "meta": {"title": title, "license": licence, "attribution": attribution, "creator": creator,
-                 "source": source, "tris": tris, "generated": False,
-                 "placement": placement if placement in ("grounded", "free") else "grounded"},
+        "id": eid, "transform": transform,
+        "components": {"gltf-model": f"/assets/{model_id}"}, "meta": meta,
     }}
 
 

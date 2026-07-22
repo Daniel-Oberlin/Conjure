@@ -73,6 +73,51 @@ def test_author_then_solve_round_trips():
     assert _quat_angle(_normalize(got["quaternion"]), entity["quaternion"]) < 1e-9
 
 
+def test_server_authors_anchor_that_round_trips(monkeypatch):
+    """Step 7c(A): the server builds seed planes from its real surfaces and authors a content anchor that,
+    solved back against those same seed planes, recovers the placed pose. Exercises server._seed_planes +
+    server._content_anchor end to end (the wiring that persists meta.anchor on placed models)."""
+    from conjure import server
+    from conjure.world import WorldStore
+
+    def wall(wid, pos, ry):   # a-plane euler [rx, ry, rz]; _plane_basis reads ry → outward normal
+        return {"id": wid, "meta": {"real": True, "semantic": "wall"},
+                "transform": {"position": pos, "rotation": [0.0, ry, 0.0]}}
+
+    doc = {"id": "t", "name": "T", "rev": 0, "environment": {}, "entities": [
+        {"id": "real_floor_0", "meta": {"real": True, "semantic": "floor"},
+         "transform": {"position": [0, 0, 0], "rotation": [-90, 0, 0]}},
+        wall("real_wall_1", [2, 1.2, 0], 90),      # normal +X
+        wall("real_wall_2", [-2, 1.2, 0], -90),    # normal -X
+        wall("real_wall_3", [0, 1.2, 3], 0),       # normal +Z
+        wall("real_wall_4", [0, 1.2, -3], 180),    # normal -Z
+    ]}
+    monkeypatch.setattr(server, "store", WorldStore(doc))
+
+    planes = server._seed_planes()
+    assert sum(1 for p in planes if p["kind"] == "wall") == 4
+    assert sum(1 for p in planes if p["kind"] == "floor") == 1
+
+    transform = {"position": [0.3, 0.0, -0.8], "scale": [1, 1, 1]}
+    anchor = server._content_anchor(transform, "grounded")
+    assert anchor is not None and anchor["floor"] and anchor["walls"]
+
+    sol = solve_anchor(anchor, planes)
+    assert sol["ok"], sol["stat"]
+    assert math.dist(sol["position"], transform["position"]) < 1e-6, sol["position"]
+
+
+def test_server_content_anchor_none_without_walls(monkeypatch):
+    """Too few seed walls ⇒ no anchor authored (caller leaves the entity on its raw F_ref pose)."""
+    from conjure import server
+    from conjure.world import WorldStore
+    doc = {"id": "t", "name": "T", "rev": 0, "environment": {}, "entities": [
+        {"id": "real_floor_0", "meta": {"real": True, "semantic": "floor"},
+         "transform": {"position": [0, 0, 0], "rotation": [-90, 0, 0]}}]}
+    monkeypatch.setattr(server, "store", WorldStore(doc))
+    assert server._content_anchor({"position": [0, 0, 0]}, "grounded") is None
+
+
 def test_degenerate_parallel_walls_declines():
     """Two parallel walls (no XZ span) can't fix the lateral position → ok:False, not a bogus pose."""
     planes = [
