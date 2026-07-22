@@ -444,8 +444,11 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    receiver / void world (no local walls). **Deferred:** wall-set hysteresis (the nearest-3 set can flip as
    the source walks — add if avatars jitter; the over-specified solve smooths it for now).
 7. **Server-side anchors & solver** (§13.1) — the deferred server-side pieces:
-   - **a. Python solver port** — port `plane-anchor.js` (weighted-LS position + per-wall quaternion vote) to
-     Python, pinned to the shared golden vectors, so the server can solve poses against the seed.
+   - **✅ a. Python solver port** — `conjure/plane_anchor.py` is a 1:1 port of `plane-anchor.js` (weighted-LS
+     position + per-wall quaternion vote), pure-stdlib, dict I/O matching the seed JSON. Pinned to the
+     **shared** golden vectors: `tests/test_plane_anchor.py` checks the Python side against
+     `tests/js/fixtures/plane-anchor-golden.json` (the same file the JS suite uses) to 1e-6 m / 1e-5 rad, so
+     the two implementations can't silently drift. The server can now solve poses against the seed.
    - **b. Server-side pose-relative queries** — route `view_relative` / "the wall I'm looking at" through
      that solver against the seed (today they use the raw seed pose, which is approximate).
    - **c. Persisted anchors** — store each content entity's **plane-relative anchor** in the shared model
