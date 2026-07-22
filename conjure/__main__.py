@@ -21,10 +21,11 @@ def main() -> None:
     ap.add_argument("--force-occupied", action="store_true",
                     help="TEST: treat the active space as already CLAIMED (a phantom AR holder), so the "
                          "admission gate engages for one headset — match the active space ⇒ admitted, else refused")
-    ap.add_argument("--drop-surface", metavar="SEMANTIC|ID", default=None,
-                    help="TEST: the client pretends it didn't capture surfaces matching this semantic "
-                         "(e.g. 'wall art') or id substring — kept in the seed but omitted from the local "
-                         "render — so missing-surface RECOVERY (§5.2) can be exercised with one headset")
+    ap.add_argument("--drop-surface", metavar="SEMANTIC|ID[,…]", default=None,
+                    help="TEST: the client pretends it didn't capture surfaces matching any of these "
+                         "semantics/id-substrings (comma-separated, e.g. 'door,window,wall art') — kept in "
+                         "the seed but omitted from the local render — so missing-surface RECOVERY (§5.2) "
+                         "can be exercised with one headset")
 
     # --- Co-location robustness: how tolerantly a GUEST headset locks onto the shared space ------------
     reg = ap.add_argument_group(

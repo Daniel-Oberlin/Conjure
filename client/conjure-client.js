@@ -1310,6 +1310,8 @@
         // Runs for owner AND guest now (unified): everyone renders their own capture; only the owner authors.
         // See docs/local-first-geometry.md §5-6.
         var surfaces = [], localSurfaces = [], floor = null, claimed = new Set();
+        // TEST (--drop-surface): a comma-separated list of semantics/ids to pretend we didn't capture.
+        var dropList = (window.CONJURE_DROP_SURFACE || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
         cur.forEach(function (c) {
           var planeMat = new THREE.Matrix4().compose(c.pos, c.quat, new THREE.Vector3(1, 1, 1));
           var lp = new THREE.Vector3(), lq = new THREE.Quaternion(), ls = new THREE.Vector3();
@@ -1352,10 +1354,10 @@
             debug: { pos: c.raw.pos, quat: c.raw.quat, orient: c.orient, label: c.sem,
                      polyY: c.polyY, n: c.poly.length, registered: registered, regStat: self._regStat } });
           // Same surface, same id, but at its RAW captured (F_track) pose — this is what renders locally.
-          // TEST (--drop-surface): pretend we DIDN'T capture surfaces matching a semantic/id — keep them in
-          // the posted seed but omit them from the local render, so §5.2 recovery reconstructs them.
-          var drop = window.CONJURE_DROP_SURFACE;
-          if (!(drop && (c.sem === drop || sid.indexOf(drop) >= 0))) {
+          // TEST (--drop-surface): pretend we DIDN'T capture surfaces matching ANY listed semantic/id — keep
+          // them in the posted seed but omit them from the local render, so §5.2 recovery reconstructs them.
+          var dropped = dropList.some(function (d) { return c.sem === d || sid.indexOf(d) >= 0; });
+          if (!dropped) {
             localSurfaces.push({ id: sid, semantic: c.sem, position: [c.pos.x, c.pos.y, c.pos.z],
               rotation: self._euler(c.quat), extent: [c.ext[0], c.ext[1]],
               _lp: c.pos.clone(), _lq: c.quat.clone(), debug: {} });
