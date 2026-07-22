@@ -985,9 +985,11 @@
           var sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
           if (!sol.ok) return;                                          // degenerate / too few walls → skip
           var eu = new THREE.Euler().setFromQuaternion(sol.quaternion, "YXZ");
-          // Carry _lp/_lq so snapInsets can snap a recovered door/window/wall-art co-planar to its wall
-          // (§5.2 — plane-relative position from the anchor, then snapped to the associated wall).
+          // Carry _lp/_lq so snapInsets can snap a recovered door/window/wall-art co-planar to its wall, and
+          // hostWall (the association the authority recorded, §5.2) so it snaps to THAT wall — not re-guessed
+          // by distance against this client's partial capture.
           out.push({ id: e.id, semantic: sem, extent: sf.extent, holes: sf.holes, debug: {}, _recovered: true,
+            hostWall: (e.meta && e.meta.host_wall) || undefined,
             position: [sol.position.x, sol.position.y, sol.position.z],
             rotation: [r2d(eu.x), r2d(eu.y), r2d(eu.z)],
             _lp: sol.position.clone(), _lq: sol.quaternion.clone().multiply(RX90) });   // → raw-plane (+Y=normal)

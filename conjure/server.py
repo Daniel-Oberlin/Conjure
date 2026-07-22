@@ -1424,6 +1424,8 @@ class RoomSurface(BaseModel):
     extent: Optional[list[float]] = None          # [w, h]
     holes: Optional[list[dict]] = None            # wall openings (door/window) {x,y,w,h} in wall-local 2D
     mesh_segment: Optional[str] = None            # segment id when backed by the refined mesh
+    hostWall: Optional[str] = None                # for an inset (door/window/wall-art): the wall id it belongs to,
+                                                  # derived once by the authority's snapInsets → stored + reused on recovery (§5.2)
     debug: Optional[dict] = None                  # raw pose/label for diagnosis (stored in meta)
 
 
@@ -1452,6 +1454,8 @@ def _surface_entity(s: RoomSurface) -> dict:
             "friendly_id": _friendly_id_for(s.id)}
     if s.mesh_segment is not None:
         meta["meshSegment"] = s.mesh_segment
+    if s.hostWall is not None:
+        meta["host_wall"] = s.hostWall            # inset → its wall, so recovery snaps to it (not by distance)
     if s.debug is not None:
         meta["debug"] = s.debug
     return {
@@ -1675,6 +1679,8 @@ def _surface_update_set(s) -> dict:
         up["components.surface.holes"] = s.holes
     if s.mesh_segment is not None:
         up["meta.meshSegment"] = s.mesh_segment
+    if s.hostWall is not None:
+        up["meta.host_wall"] = s.hostWall
     return up
 
 

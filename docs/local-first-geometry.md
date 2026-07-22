@@ -426,8 +426,11 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    from its F_ref pose against the seed walls and re-solve against the LOCAL walls, then fold it into the
    render set (so it draws and can host on-surface content); logs `[recover] surface … reconstructed`. A
    recovered **inset** (door/window/wall-art) then runs through `snapInsets` like a captured one — so the
-   anchor gives the plane-relative position and the surface is **snapped co-planar to its wall** (not left at
-   the raw anchor pose). Once the client detects it for real, the live capture wins. **Test knob
+   anchor gives the plane-relative position and the surface is **snapped co-planar to its wall** (projected
+   onto the wall plane, not left at the raw anchor depth). The **inset→wall association is a recorded fact**,
+   not re-guessed by proximity: the authority's `snapInsets` derives each inset's `hostWall` once and it's
+   persisted (`meta.host_wall`), so recovery snaps the inset to THAT wall by id. Once the client detects it
+   for real, the live capture wins. **Test knob
    `--drop-surface SEMANTIC|ID[,…]`** (comma-separated): the
    client pretends it didn't capture matching surfaces (kept in the seed, omitted from the local render), so
    recovery is exercisable with one headset.

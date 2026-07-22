@@ -47,6 +47,7 @@
  * @property {Quat} _lq                                  ref-frame orientation
  * @property {{x:number, y:number, w:number, h:number}[]} [holes]   openings cut into a wall
  * @property {boolean} [_recovered]                      reconstructed via anchor (§5.2) — project onto its wall plane
+ * @property {string} [hostWall]                         for an inset: the wall id it belongs to (recorded by snapInsets)
  * @property {any} [debug]
  */
 
@@ -469,21 +470,25 @@
       // A WebXR plane lies in its local X-Z plane, so its NORMAL is the +Y axis (not +Z).
       var sn = new V3(0, 1, 0).applyQuaternion(s._lq), bestD = 0.3;
       var best = /** @type {SnapSurface|null} */ (null);
-      walls.forEach(function (wl) {
-        var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
-        if (Math.abs(wn.dot(sn)) < 0.9) return;                 // must be ~parallel (co-facing or antiparallel)
-        var rel = s._lp.clone().sub(wl._lp);
-        var d = Math.abs(rel.dot(wn));                          // perpendicular distance to the wall's plane
-        if (d >= bestD) return;
-        // …AND the inset must fall within this wall's WIDTH. Two rooms often have parallel/COLLINEAR walls;
-        // perpendicular distance alone can pick a coplanar neighbour the door isn't actually in front of,
-        // projecting its opening off that wall's end (so the real wall never gets carved). Requiring the
-        // inset to sit inside the wall's extent (+ margin) attaches it to the wall it truly belongs to.
-        var wx = new V3(1, 0, 0).applyQuaternion(wl._lq);       // wall's local width axis (world)
-        if (Math.abs(rel.dot(wx)) > ((wl.extent && wl.extent[0]) || 0) / 2 + 0.3) return;
-        bestD = d; best = wl;
-      });
+      // If the inset already KNOWS its wall (hostWall — recorded by the authority's snapInsets, reused on
+      // recovery §5.2), snap to THAT wall by id — don't re-guess by proximity. Otherwise derive it: the
+      // nearest ~parallel wall the inset sits WITHIN (the within-width test stops a coplanar/collinear
+      // neighbour from stealing it — the door-50/wall-59 bug), and RECORD the choice on the inset.
+      if (s.hostWall) walls.forEach(function (wl) { if (wl.id === s.hostWall) best = wl; });
+      if (!best) {
+        walls.forEach(function (wl) {
+          var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
+          if (Math.abs(wn.dot(sn)) < 0.9) return;               // must be ~parallel (co-facing or antiparallel)
+          var rel = s._lp.clone().sub(wl._lp);
+          var d = Math.abs(rel.dot(wn));                        // perpendicular distance to the wall's plane
+          if (d >= bestD) return;
+          var wx = new V3(1, 0, 0).applyQuaternion(wl._lq);     // wall's local width axis (world)
+          if (Math.abs(rel.dot(wx)) > ((wl.extent && wl.extent[0]) || 0) / 2 + 0.3) return;
+          bestD = d; best = wl;
+        });
+      }
       if (!best) return;
+      s.hostWall = best.id;                                     // record the association (persisted by the authority)
       var nint = sn.clone().negate();                           // into the room = opposite outward normal
       var clr = s._lp.clone().sub(best._lp).dot(nint);
       // A captured inset keeps its own (locally accurate) depth, only nudged to at least `off` in front. A
