@@ -910,32 +910,35 @@
         var THREE = AFRAME.THREE;
         var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
         var wr = document.getElementById("world-root"); if (!wr) return;
-        // Host-surface pose lookups for ON-SURFACE content: F_ref (the seed the image was pinned against)
-        // and F_track (how the host renders locally). Both are a-plane poses (position + YXZ-euler rotation).
-        var hostFref = {}, hostLocal = {};
+        // Host-surface F_ref pose lookup for ON-SURFACE content (the seed the image was pinned against). The
+        // host's LOCAL pose is read from its rendered element (below), not the fresh capture, so the image
+        // rides exactly what's drawn — including the apply-gate — and doesn't drift within the surface.
+        var hostFref = {};
         (docSurfaces || []).forEach(function (e) {
           var t = e.transform || {}; hostFref[e.id] = { p: t.position || [0, 0, 0], r: t.rotation || [0, 0, 0] }; });
-        localSurfaces.forEach(function (s) { hostLocal[s.id] = { p: s.position, r: s.rotation }; });
         var mat = function (p, r) { return new THREE.Matrix4().compose(
           new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0), eulerYXZToQuat(THREE, r), new THREE.Vector3(1, 1, 1)); };
         var ridden = 0, freed = 0;
         Array.prototype.forEach.call(wr.children, function (el) {
           if (!el._frefPose || !el.object3D) return;
           var fp = el._frefPose;
-          // ON-SURFACE content RIDES its local host surface (§5a): re-express its offset-from-host (measured
-          // in F_ref) onto the host's LOCAL pose, so it stays exactly on the surface — no independent
-          // multilateration that could drift off it.
-          if (el._onSurface && hostFref[el._onSurface] && hostLocal[el._onSurface]) {
-            var hRef = hostFref[el._onSurface], hLoc = hostLocal[el._onSurface];
-            var world = mat(hLoc.p, hLoc.r).multiply(mat(hRef.p, hRef.r).invert().multiply(mat(fp.position, fp.rotation)));
+          // ON-SURFACE content RIDES its host surface (§5a): re-express its offset-from-host (measured in
+          // F_ref) onto the host's ACTUAL RENDERED pose — read from the host element's object3D, NOT the
+          // fresh capture — so the image tracks exactly what's drawn (incl. the apply-gate) and never drifts
+          // within the surface. world-root is identity, so the host's local object3D pose IS its world pose.
+          var hostEl = el._onSurface ? document.getElementById(el._onSurface) : null;
+          if (hostEl && hostEl.object3D && hostFref[el._onSurface]) {
+            var hRef = hostFref[el._onSurface];
+            var hostMat = new THREE.Matrix4().compose(
+              hostEl.object3D.position.clone(), hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1));
+            var world = hostMat.multiply(mat(hRef.p, hRef.r).invert().multiply(mat(fp.position, fp.rotation)));
             var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
             world.decompose(ip, iq, is);
             el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
-            // Guard: on-surface content should land ~0.02 m from its host centre (just the stand-off). Warn
-            // only if it lands FAR off — that would mean the ride is wrong or the seed host-pose is stale
-            // (a centred-but-visually-off image instead means the Quest's detected surface ≠ the artwork).
+            // Guard: expect ~0.02 m from host centre (the stand-off). Warn only if it lands FAR off (ride
+            // wrong / stale seed pose); a centred-but-visually-off image = the detected surface ≠ the artwork.
             if (window.CONJURE_DEBUG_REGISTRATION) {
-              var off = ip.distanceTo(new THREE.Vector3(hLoc.p[0] || 0, hLoc.p[1] || 0, hLoc.p[2] || 0));
+              var off = ip.distanceTo(hostEl.object3D.position);
               if (off > 0.15) debugLog("content", "WARN " + el._onSurface + " " + Math.round(off * 100) + "cm off host centre", true);
             }
             ridden++;
@@ -978,9 +981,12 @@
           var sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
           if (!sol.ok) return;                                          // degenerate / too few walls → skip
           var eu = new THREE.Euler().setFromQuaternion(sol.quaternion, "YXZ");
-          out.push({ id: e.id, semantic: sem, extent: sf.extent, holes: sf.holes,
+          // Carry _lp/_lq so snapInsets can snap a recovered door/window/wall-art co-planar to its wall
+          // (§5.2 — plane-relative position from the anchor, then snapped to the associated wall).
+          out.push({ id: e.id, semantic: sem, extent: sf.extent, holes: sf.holes, debug: {},
             position: [sol.position.x, sol.position.y, sol.position.z],
-            rotation: [r2d(eu.x), r2d(eu.y), r2d(eu.z)] });
+            rotation: [r2d(eu.x), r2d(eu.y), r2d(eu.z)],
+            _lp: sol.position.clone(), _lq: sol.quaternion.clone() });
           if (!self._recovered[e.id]) {
             self._recovered[e.id] = 1;
             debugLog("recover", "surface " + e.id + " (" + sem + ") reconstructed from plane-anchor", true);
@@ -1373,13 +1379,15 @@
         // round-trip. Squaring is intentionally skipped (default off — trust the raw local planes; docs §9).
         // world-root stays identity (_updateWorldFrame). The apply-gate inside applyEntity means an unchanged
         // surface isn't re-laid, so nothing "pops".
-        window.RoomSnap.joinCorners(THREE, localSurfaces);
-        window.RoomSnap.snapInsets(THREE, localSurfaces);
+        window.RoomSnap.joinCorners(THREE, localSurfaces);        // close wall corners (the recovery + snap basis)
         this._localPlanes = localToPlanes(THREE, localSurfaces);   // stash for avatar anchors (§5.1) / presence
         // Reconstruct any seed surface this client didn't capture (§5.2) and fold it into the render set, so
         // recovered surfaces both draw and can host on-surface content just like captured ones.
         var recovered = this._recoverMissing(localSurfaces);
         var allSurfaces = recovered.length ? localSurfaces.concat(recovered) : localSurfaces;
+        // Snap ALL insets (captured AND recovered) co-planar to their walls + carve openings — so a
+        // recovered door/window/wall-art snaps to its wall instead of floating at the raw anchor pose (§5.2).
+        window.RoomSnap.snapInsets(THREE, allSurfaces);
         this._renderLocal(allSurfaces);
         this._placeContent(allSurfaces);                  // director content → plane-relative anchors (docs §5)
 
