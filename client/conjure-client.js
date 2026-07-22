@@ -345,6 +345,7 @@
     if (!meta.scaffold && t.position) el._frefPose = { position: t.position, rotation: t.rotation || [0, 0, 0] };
     el._onSurface = meta.on_surface || null;   // content pinned to a surface rides that surface locally (§5a)
     el._placement = meta.placement || "free";  // "grounded" (Y snapped to floor, upright) | "free" (full 3-D) — §5b/c
+    el._anchor = meta.anchor || null;          // server-authored plane-relative anchor (§7c) — solved as-is locally
   }
 
   function applyEnv(env) {
@@ -493,6 +494,7 @@
     // when its wall moved) must update the anchor SOURCE too, else _placeContent re-solves the stale pose.
     if (el._frefPose && path === "transform.position") el._frefPose.position = value;
     if (el._frefPose && path === "transform.rotation") el._frefPose.rotation = value;
+    if (path === "meta.anchor") el._anchor = value || null;    // server re-anchored (moved) content (§7c)
     if (path === "components.material.visible") {       // real-surface visibility → entity attribute
       el.dataset.matVisible = String(value);
       applyRealVisibility(el);
@@ -921,7 +923,7 @@
         // T⁻¹ (F_ref → F_track): the rigid fallback for on-surface content whose host's SEED pose isn't in
         // docSurfaces yet (see the on-surface branch). null on desktop / before registration.
         var Tinv = (this._haveT && this._Tmat) ? this._Tmat.clone().invert() : null;
-        var ridden = 0, freed = 0;
+        var ridden = 0, freed = 0, anchored = 0;
         Array.prototype.forEach.call(wr.children, function (el) {
           if (!el._frefPose || !el.object3D) return;
           var fp = el._frefPose;
@@ -960,19 +962,30 @@
             ridden++;
             return;                                                   // on-surface content NEVER free-multilaterates
           }
-          // FREE / GROUNDED content: multilaterate against the local walls (§5b/c). Grounded snaps Y to the
-          // local floor + keeps it upright (yaw-only); free keeps the full authored 3-D pose. Mode is
-          // declared per entity (meta.placement), default free.
-          if (localPl.length < 2 || refPl.length < 2) return;       // not enough wall/floor basis yet
-          var entity = { mode: el._placement || "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
-            position: new THREE.Vector3(fp.position[0] || 0, fp.position[1] || 0, fp.position[2] || 0) };
-          var sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
+          // FREE / GROUNDED content: solve a plane-relative anchor against the local walls (§5b/c). Grounded
+          // snaps Y to the local floor + keeps it upright (yaw-only); free keeps the full authored 3-D pose.
+          if (localPl.length < 2) return;                           // not enough local wall basis yet
+          // §7c: prefer the SERVER-authored anchor (meta.anchor) — authored once against the seed, so we
+          // just SOLVE it here (no per-capture re-authoring, no dependence on our docSurfaces/_ref copy of
+          // the seed). Fall back to authoring from the F_ref pose against _ref for content placed before 7c
+          // (or when the server couldn't anchor it — too few seed walls).
+          var sol;
+          if (el._anchor) {
+            sol = PA.solveAnchor(THREE, el._anchor, localPl);
+            if (sol.ok) anchored++;
+          } else {
+            if (refPl.length < 2) return;                           // legacy path needs the seed-wall basis too
+            var entity = { mode: el._placement || "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
+              position: new THREE.Vector3(fp.position[0] || 0, fp.position[1] || 0, fp.position[2] || 0) };
+            sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
+          }
           if (!sol.ok) return;                                      // degenerate / missing walls → hold last pose
           el.object3D.position.copy(sol.position); el.object3D.quaternion.copy(sol.quaternion);
           freed++;
         });
         if (window.CONJURE_DEBUG_REGISTRATION && (ridden || freed))
-          debugLog("content", "on-surface " + ridden + " + free " + freed + " (local=" + localPl.length + ")", true);
+          debugLog("content", "on-surface " + ridden + " + free " + freed + " (anchored " + anchored
+            + "/" + freed + ", local=" + localPl.length + ")", true);
       },
       // Recover seed surfaces this client DIDN'T capture (§5.2): for each surface in the shared seed
       // (docSurfaces) that's absent from the live capture, author its anchor from its F_ref pose against the

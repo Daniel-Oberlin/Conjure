@@ -459,8 +459,14 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
        the client's plane convention; `_content_anchor` authors the anchor via `author_anchor` and
        `_model_entity_op` stamps it onto each placed model (logged `[anchor] authored …`). **No behavior
        change yet** — the client still uses the F_ref pose; this de-risks the solver on real seed geometry.
-     - **(B) client consumes the persisted anchor** — `_placeContent` solves `meta.anchor` against the local
-       walls instead of re-authoring from `_frefPose` + `docSurfaces` (the `T⁻¹`/free fallbacks then retire).
+     - **✅ (B1) client consumes the persisted anchor (free/grounded)** — `_placeContent` solves a placed
+       model's `meta.anchor` against the LOCAL walls directly, instead of re-authoring from its `_frefPose`
+       against `this._ref` every capture. Legacy content (no `meta.anchor`) still falls back to the old
+       author-from-F_ref path. Debug HUD shows `anchored N/M`.
+     - **(B2) persist the on-surface offset** — store an on-surface photo's offset-from-host (host-local)
+       server-side at `place_image` time so the client rides a STORED offset rather than recomputing it from
+       its `docSurfaces` copy of the host seed pose — this is what removes the `docSurfaces` dependence and
+       retires the `T⁻¹` fallback (§5a).
 8. **`--square-walls on|off`** (§9) for A/B.
 9. *(later)* render interpolation for genuine local moves; guest-proposes-surface; consensus seed (§7.8).
 
