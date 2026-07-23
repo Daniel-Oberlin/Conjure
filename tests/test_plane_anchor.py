@@ -131,3 +131,41 @@ def test_degenerate_parallel_walls_declines():
     got = solve_anchor(anchor, planes)
     assert got["ok"] is False
     assert got["position"] is None
+
+
+def test_server_head_from_anchor_recovers_gaze(monkeypatch):
+    """§7b: the server solves a streamed plane-relative head anchor against the seed to recover the head's
+    origin + look direction (non-rigid-consistent), the shape view_relative consumes. Author an anchor for a
+    known head pose against the seed walls, then _head_from_anchor must recover that origin + forward."""
+    from conjure import server
+    from conjure.world import WorldStore
+    from conjure.plane_anchor import author_anchor as author
+
+    def wall(wid, pos, ry):
+        return {"id": wid, "meta": {"real": True, "semantic": "wall"},
+                "transform": {"position": pos, "rotation": [0.0, ry, 0.0]}}
+    doc = {"id": "t", "name": "T", "rev": 0, "environment": {}, "entities": [
+        {"id": "real_floor_0", "meta": {"real": True, "semantic": "floor"},
+         "transform": {"position": [0, 0, 0], "rotation": [-90, 0, 0]}},
+        wall("real_wall_1", [2, 1.2, 0], 90), wall("real_wall_2", [-2, 1.2, 0], -90),
+        wall("real_wall_3", [0, 1.2, 3], 0), wall("real_wall_4", [0, 1.2, -3], 180)]}
+    monkeypatch.setattr(server, "store", WorldStore(doc))
+    planes = server._seed_planes()
+
+    # a head at (0.5, 1.6, -0.4) looking toward -Z (identity orientation → forward = -Z)
+    head = {"position": [0.5, 1.6, -0.4], "quaternion": [0.0, 0.0, 0.0, 1.0], "mode": "free"}
+    anchor = author(head, planes)
+    got = server._head_from_anchor(anchor)
+    assert got is not None
+    assert math.dist(got["origin"], head["position"]) < 1e-6, got["origin"]
+    assert math.dist(got["forward"], [0.0, 0.0, -1.0]) < 1e-6, got["forward"]
+
+
+def test_server_head_from_anchor_none_paths(monkeypatch):
+    """No anchor, or a seed without walls, → None (view_relative falls back to the presence pose)."""
+    from conjure import server
+    from conjure.world import WorldStore
+    monkeypatch.setattr(server, "store", WorldStore(
+        {"id": "t", "name": "T", "rev": 0, "environment": {}, "entities": []}))
+    assert server._head_from_anchor(None) is None
+    assert server._head_from_anchor({"mode": "free", "floor": None, "walls": []}) is None

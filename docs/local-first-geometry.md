@@ -463,8 +463,12 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
      **shared** golden vectors: `tests/test_plane_anchor.py` checks the Python side against
      `tests/js/fixtures/plane-anchor-golden.json` (the same file the JS suite uses) to 1e-6 m / 1e-5 rad, so
      the two implementations can't silently drift. The server can now solve poses against the seed.
-   - **b. Server-side pose-relative queries** — route `view_relative` / "the wall I'm looking at" through
-     that solver against the seed (today they use the raw seed pose, which is approximate).
+   - **✅ b. Server-side pose-relative queries** — `presenceTick` already streams a plane-relative head
+     anchor (authored against the client's LOCAL walls, §5.1); the server now KEEPS it (`gaze[user].anchor`)
+     and `view_relative` SOLVES it against the seed (`_head_from_anchor` → `solve_anchor` over `_seed_planes`)
+     to get a **non-rigid-consistent** head pose, instead of the presence pose that reaches F_ref through the
+     client's rigid `T` (approximate off-authority). Falls back to the presence pose for a desktop viewer /
+     void world / degenerate solve; the response reports `resolved_via: anchor|pose`.
    - **c. Persisted anchors** — store each content entity's **plane-relative anchor** in the shared model
      (authored once, server-side) instead of the client re-authoring it from the F_ref pose every capture
      (§3, §5). Removes the client's dependence on its `docSurfaces` copy of the host/seed pose for

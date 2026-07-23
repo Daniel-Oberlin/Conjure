@@ -39,7 +39,7 @@ from .config import DEFAULT_USER, get_settings, scope_for
 from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
-from .plane_anchor import author_anchor
+from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from .world import SpaceStore, WorldRepository, WorldStore, _set_path, slug, world_path
 
@@ -166,8 +166,9 @@ def _boot_world() -> tuple[str, str, WorldStore]:
 
 settings = get_settings()  # loads .env
 clients: "dict[WebSocket, str]" = {}     # connected render clients → their user (owner or guest)
-gaze: "dict[str, dict]" = {}             # user → {"origin": [x,y,z], "forward": [x,y,z]} in the reference
-                                         # frame, from presence — where each headset is looking (Phase 4)
+gaze: "dict[str, dict]" = {}             # user → {"origin","forward","right","up"} in the reference frame,
+                                         # from presence — where each headset is looking. May also carry
+                                         # "anchor" (plane-relative head anchor) for the §7b seed-solve.
 resolver: AssetResolver | None = (
     AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
 )
@@ -2584,13 +2585,18 @@ async def view_relative(req: ViewRelativeRequest, request: Request) -> dict:
     d = (req.direction or "forward").strip().lower()
     if d not in _VIEW_DIRS:
         return {"ok": False, "error": f"direction must be one of {sorted(_VIEW_DIRS)}"}
-    vec = {"forward": g["forward"], "back": [-c for c in g["forward"]],
-           "right": g["right"], "left": [-c for c in g["right"]],
-           "up": g["up"], "down": [-c for c in g["up"]]}[d]
-    origin = g["origin"]
+    # §7b: prefer the head pose SOLVED from the plane-relative head anchor against the seed (non-rigid-
+    # consistent) over the presence pose (rigid T, approximate off-authority). Falls back to the presence
+    # pose for a desktop viewer / void world / degenerate solve.
+    gv = _head_from_anchor(g.get("anchor")) or g
+    resolved = "anchor" if gv is not g else "pose"
+    vec = {"forward": gv["forward"], "back": [-c for c in gv["forward"]],
+           "right": gv["right"], "left": [-c for c in gv["right"]],
+           "up": gv["up"], "down": [-c for c in gv["up"]]}[d]
+    origin = gv["origin"]
     point = [round(origin[i] + vec[i] * req.distance, 3) for i in range(3)]
-    return {"ok": True, "direction": d, "distance": req.distance, "origin": origin,
-            "direction_vec": [round(c, 4) for c in vec], "point": point,
+    return {"ok": True, "direction": d, "distance": req.distance, "origin": [round(c, 3) for c in origin],
+            "resolved_via": resolved, "direction_vec": [round(c, 4) for c in vec], "point": point,
             "surface": _ray_surface(origin, vec), "nearby": _nearby_entities(point, 1.5)}
 
 
@@ -2813,6 +2819,8 @@ async def ws(websocket: WebSocket) -> None:
                 pose = msg.get("pose")
                 g = _gaze_from_pose(pose)
                 if g:
+                    if msg.get("anchor"):                        # §7b: keep the plane-relative head anchor so
+                        g["anchor"] = msg["anchor"]              # view_relative can solve it against the seed
                     gaze[user] = g                               # remember where this user is looking
                 await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": pose})
     except WebSocketDisconnect:
@@ -2842,6 +2850,36 @@ def _gaze_from_pose(pose: dict | None) -> dict | None:
     up = [2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)]          # head +Y
     return {"origin": [float(p[0]), float(p[1]), float(p[2])],
             "forward": forward, "right": right, "up": up}
+
+
+def _axes_from_quat(q: list[float]) -> dict:
+    """Head axes (reference frame) from a quaternion [x,y,z,w]: forward = -Z, right = +X, up = +Y."""
+    x, y, z, w = q
+    return {"forward": [-2 * (w * y + x * z), 2 * (w * x - y * z), -1 + 2 * (x * x + y * y)],
+            "right": [1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)],
+            "up": [2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)]}
+
+
+def _head_from_anchor(anchor: dict | None) -> dict | None:
+    """Resolve a head pose in the SEED frame by solving the streamed plane-relative head anchor (§5.1,
+    presenceTick, free mode) against the current seed walls with the shared solver (§7a/b). This is
+    non-rigid-consistent — unlike the presence pose, which reaches F_ref through the client's RIGID
+    registration T and so drifts from the seed where a client's local map differs (a guest, or far from
+    where registration was tightest). Returns the same {origin, forward, right, up} shape as
+    `_gaze_from_pose`, or None (no anchor / too few seed walls / degenerate) → caller falls back to the
+    presence pose."""
+    if not anchor:
+        return None
+    planes = _seed_planes()
+    if sum(1 for p in planes if p["kind"] == "wall") < 2:
+        return None
+    sol = solve_anchor(anchor, planes)
+    if not sol.get("ok"):
+        return None
+    p = sol["position"]
+    out = {"origin": [float(p[0]), float(p[1]), float(p[2])]}
+    out.update(_axes_from_quat(sol["quaternion"]))
+    return out
 
 
 def _snapshot_msg() -> dict:
