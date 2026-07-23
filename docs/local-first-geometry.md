@@ -484,7 +484,11 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
 8. **~~`--square-walls on|off`~~ — dropped** (§9): squaring was a pre-local-first vestige (it only touched
    the seed, making the shared model inconsistent with each headset's raw render), so it was **removed
    outright** rather than made toggleable. No A/B needed — the decision it would have informed is made.
-9. *(later)* render interpolation for genuine local moves; guest-proposes-surface; consensus seed (§7.8).
+9. *(later)* render interpolation for **content** moves (a director repositioning an entity mid-session
+   currently snaps; tween it instead). NOT for captured surfaces — Quest `detectedPlanes` is the persisted
+   Room Setup, so a surface's geometry is fixed for the session (a moved object needs a rescan); within a
+   session the only surface pose changes are tracking corrections, which should snap, not smooth. Also:
+   guest-proposes-surface; consensus seed (§7.8).
 
 Steps build independently: (1) is a pure module with tests; (2) makes one headset render its own geometry
 pop-free; (3)–(7) deliver the shared-model / local-geometry architecture; (8) is resolved by removal.
