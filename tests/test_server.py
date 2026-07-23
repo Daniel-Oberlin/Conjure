@@ -1616,3 +1616,36 @@ def test_admin_delete_refuses_active_user(srv, client):
 def test_admin_delete_empty_path_refused(srv, client):
     r = client.post("/admin/delete", json={"path": "/"}).json()
     assert r["ok"] is False and "everything" in r["error"]
+
+
+# --- a world inheriting a non-empty space's geometry is room.active (director can see it) --------------
+# Regression: creating/switching to a world that inherits an existing space's surfaces left room.active
+# unset (only ingest_room set it), so the CLI/voice director's query_room reported "no room" though the
+# geometry was merged. _compose now defaults room.active True when reals are merged (respecting an
+# explicit False from an immersion mode like vr_unbounded).
+def _space_with_walls():
+    return {"surfaces": [
+        {"id": "real_wall_art_1", "meta": {"real": True, "semantic": "wall art"},
+         "transform": {"position": [0, 1.6, -1.3], "rotation": [0, 90, 0]},
+         "components": {"surface": {"extent": [0.6, 0.9]}}},
+        {"id": "real_wall_2", "meta": {"real": True, "semantic": "wall"},
+         "transform": {"position": [0, 1.2, -1.3], "rotation": [0, 90, 0]}}], "boundary": None}
+
+
+def test_compose_marks_room_active_when_inheriting_space_geometry():
+    from conjure import server
+    doc = server._compose({"environment": {"room": {"edgesVisible": True}}, "entities": []}, _space_with_walls())
+    assert doc["environment"]["room"].get("active") is True
+    assert sum(1 for e in doc["entities"] if (e.get("meta") or {}).get("real")) == 2
+
+
+def test_compose_respects_explicit_room_active_false():
+    from conjure import server  # a director immersion mode (vr_unbounded) hides the room — must not be flipped
+    doc = server._compose({"environment": {"room": {"active": False}}, "entities": []}, _space_with_walls())
+    assert doc["environment"]["room"].get("active") is False
+
+
+def test_compose_leaves_room_inactive_without_reals():
+    from conjure import server
+    doc = server._compose({"environment": {"room": {}}, "entities": []}, {"surfaces": [], "boundary": None})
+    assert not doc["environment"]["room"].get("active")

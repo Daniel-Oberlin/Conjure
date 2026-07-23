@@ -1592,6 +1592,12 @@ def _compose(world_doc: dict, space: dict) -> dict:
     doc["entities"] = placed + reals
     if space.get("boundary") is not None:
         room["boundary"] = space["boundary"]
+    # A world INHERITING a non-empty space's geometry (created new / switched-to / reset) genuinely has a
+    # room, even with no live headset ingest this session — so mark it active for the director's query_room
+    # (which gates on room.active). Only default it: an explicit False (a director immersion mode like
+    # vr_unbounded, mcp_server.py) is respected. room.active only ever meant "a room exists to work with".
+    if reals and "active" not in room:
+        room["active"] = True
     _reanchor_surface_images(doc)              # re-pin on-surface images to the (possibly moved) surfaces
     return doc
 
