@@ -70,8 +70,15 @@ Conclusion: the two anti-parallel partition faces **cannot** be disambiguated fr
 
 ## Open questions / next steps if it recurs
 
-1. **Confirm the pick.** `snapInsets` writes the winner to `s.debug.snap` (`wall=<id> clr=..`). Log it per
-   inset on the headset and compare to the recorded `host_wall`. If 45 shows `wall=real_wall_27`, confirmed.
+1. **Confirm the pick (instrumentation is IN PLACE).** A temporary `[host45]` log block sits right after the
+   local `snapInsets` call in `client/conjure-client.js` (search "wall-art 45 flip"). With
+   `--debug-registration`, each inset logs `recorded=<seed host_wall> picked=<host snapInsets chose>
+   recordedInCapture=<yes|NO>`. Read it on the headset while watching wall-art 45:
+   - `recordedInCapture=NO` → the recorded wall id didn't resolve this capture → proximity fallback (the
+     leading theory for the recovered symptom).
+   - `picked≠recorded` with `recordedInCapture=yes` → a by-id bug in `snapInsets`.
+   - all `=yes`, `picked=recorded`, and 45 still visually behind → look elsewhere (the on-surface ride, §5a).
+   **Remove this block when the issue is closed.**
 2. **Resolve the by-id failure (most likely real cause).** Why would `real_wall_36` be absent from a
    capture's local walls so the recorded id doesn't resolve? Candidates: matchRef didn't map a captured wall
    to `real_wall_36` that frame (id churn on the partition), or wall_36 genuinely wasn't in `detectedPlanes`

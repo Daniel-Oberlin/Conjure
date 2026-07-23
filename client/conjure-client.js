@@ -1457,6 +1457,26 @@
         // Snap ALL insets (captured AND recovered) co-planar to their walls + carve openings — so a
         // recovered door/window/wall-art snaps to its wall instead of floating at the raw anchor pose (§5.2).
         window.RoomSnap.snapInsets(THREE, allSurfaces);
+        // ┌─ TEMP INSTRUMENTATION — "wall-art 45 flip" investigation (docs/wall-art-45-flip.md) ────────────┐
+        // │ Per inset, log the RECORDED host (seed meta.host_wall) vs the host snapInsets actually PICKED,  │
+        // │ plus whether the recorded wall id is even present in THIS capture. Distinguishes the theories:  │
+        // │  • recordedInCapture=NO  → the recorded id didn't resolve locally → fell back to proximity      │
+        // │    (the likely cause of the intermittent flip on a partition wall).                             │
+        // │  • picked≠recorded while recordedInCapture=yes → a snapInsets by-id bug (shouldn't happen).      │
+        // │ REMOVE this block once the issue is resolved / no longer a concern.                              │
+        if (window.CONJURE_DEBUG_REGISTRATION) {
+          var wallIds = {};
+          allSurfaces.forEach(function (s) { if (s.semantic === "wall") wallIds[s.id] = 1; });
+          allSurfaces.forEach(function (s) {
+            if (["door", "window", "wall art"].indexOf(s.semantic) < 0) return;
+            var rec = seedHostWall[s.id] || "(none)", picked = s.hostWall || "(none)";
+            var inCap = rec === "(none)" ? "-" : (wallIds[rec] ? "yes" : "NO");
+            var flag = (rec !== "(none)" && picked !== rec) ? "  <-- MISPICK" : "";
+            debugLog("host45", s.id + " recorded=" + rec + " picked=" + picked
+              + " recordedInCapture=" + inCap + (s._recovered ? " (recovered)" : "") + flag, true);
+          });
+        }
+        // └─────────────────────────────────────────────────────────────────────────────────────────────────┘
         this._renderLocal(allSurfaces);
         this._placeContent(allSurfaces);                  // director content → plane-relative anchors (docs §5)
 
