@@ -74,6 +74,9 @@ class Settings:
     apply_tol_pos: float = 0.02                      # metres a surface must move to re-lay it
     apply_tol_rot_deg: float = 1.0                   # degrees it must rotate to re-lay it
     apply_tol_ext: float = 0.02                      # metres its size/opening must change to re-lay it
+    group_wall_relay: bool = True                    # re-lay ALL walls together when any crosses tolerance,
+    #                                                  so corner-joined walls share one epoch and don't drift
+    #                                                  apart (the corner-seam bug); off = per-wall (independent)
     # TEST override for the client's reported geolocation (--force-geo). "zero" pins you at (0,0) — a
     # convenient "somewhere else"; "/<user>/spaces/<name>" pins you at that space's stored location.
     # Empty (default) ⇒ use the real browser/headset location. See server._forced_geo.
@@ -129,6 +132,7 @@ def get_settings() -> Settings:
         apply_tol_pos=float(os.environ.get("CONJURE_APPLY_TOL_POS", "0.02")),
         apply_tol_rot_deg=float(os.environ.get("CONJURE_APPLY_TOL_ROT_DEG", "1.0")),
         apply_tol_ext=float(os.environ.get("CONJURE_APPLY_TOL_EXT", "0.02")),
+        group_wall_relay=(os.environ.get("CONJURE_GROUP_WALL_RELAY", "1") != "0"),
         force_geo=(os.environ.get("CONJURE_FORCE_GEO", "").strip() or None),
         drop_surface=(os.environ.get("CONJURE_DROP_SURFACE", "").strip() or None),
         force_occupied=os.environ.get("CONJURE_FORCE_OCCUPIED", "").strip().lower() in ("1", "true", "yes", "on"),

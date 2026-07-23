@@ -81,6 +81,11 @@ def main() -> None:
     gate.add_argument("--apply-tol-ext", type=float, default=0.02, metavar="METERS",
                       help="how much (m) a surface's size or an opening must change before it's redrawn "
                            "(default: 0.02 = 2 cm).")
+    gate.add_argument("--group-wall-relay", choices=["on", "off"], default="on",
+                      help="when ANY wall crosses the apply-tolerance, re-lay ALL walls together so "
+                           "corner-joined walls share one render epoch and their shared corners don't drift "
+                           "apart over a session (default: on). 'off' = each wall re-lays independently "
+                           "(the A/B baseline — reproduces the slowly-opening corner seams).")
 
     args = ap.parse_args()
     if args.debug_registration:                      # picked up by get_settings() when the app imports below
@@ -100,6 +105,7 @@ def main() -> None:
     os.environ["CONJURE_APPLY_TOL_POS"] = str(args.apply_tol_pos)
     os.environ["CONJURE_APPLY_TOL_ROT_DEG"] = str(args.apply_tol_rot)
     os.environ["CONJURE_APPLY_TOL_EXT"] = str(args.apply_tol_ext)
+    os.environ["CONJURE_GROUP_WALL_RELAY"] = "1" if args.group_wall_relay == "on" else "0"
     uvicorn.run("conjure.server:app", host=args.host, port=args.port, reload=False)
 
 

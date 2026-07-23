@@ -888,6 +888,29 @@
       // identity, so a surface at its captured pose renders at the real-world spot.
       _renderLocal: function (surfaces) {
         localRenderActive = true;                  // from now on, server real-surface ops are ignored (local owns them)
+        var THREE = AFRAME.THREE;
+        // Grouped wall re-lay (--group-wall-relay, default on): the per-surface apply-gate holds a wall until
+        // IT crosses tolerance, so corner-joined walls re-lay at different captures and their shared corner
+        // slowly opens a seam over a session (tracking drift; a reload re-syncs). Fix: if ANY wall would
+        // re-lay this capture, force ALL walls to re-lay together so they share one epoch and corners stay
+        // closed. Off ⇒ each wall re-lays independently (the A/B baseline that reproduces the seams).
+        if (window.CONJURE_GROUP_WALL_RELAY !== false) {
+          var anyWallRelays = surfaces.some(function (s) {
+            if (s.semantic !== "wall") return false;
+            var el = document.getElementById(s.id);
+            if (!el || !el._geoSig) return true;   // new / never-laid wall counts as a change
+            var sig = WM.surfaceSig({ position: s.position, rotation: s.rotation },
+              { extent: s.extent, holes: s.holes || [] });
+            return WM.surfaceMoved(THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL);
+          });
+          if (anyWallRelays) {                     // invalidate every wall's gate → applyEntity re-lays it
+            surfaces.forEach(function (s) {
+              if (s.semantic !== "wall") return;
+              var el = document.getElementById(s.id);
+              if (el) el._geoSig = null;
+            });
+          }
+        }
         var seen = {};
         surfaces.forEach(function (s) {
           seen[s.id] = 1;

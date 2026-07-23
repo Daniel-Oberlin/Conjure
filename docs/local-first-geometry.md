@@ -416,6 +416,11 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    once `localRenderActive` (a desktop viewer, which never captures, still renders the server's surfaces).
    *(Getting into a captured room depends on the GPS-gated space-selection flow; a slow/missed fix now keeps
    the view blanked-to-passthrough and retries instead of dropping into the void world — fixed.)*
+   **Grouped wall re-lay (`--group-wall-relay`, default on):** because the per-surface gate holds each wall
+   independently, corner-joined walls re-lay at different captures under tracking drift and their shared
+   corner slowly opens a seam over a session (a reload re-syncs). So when ANY wall crosses tolerance this
+   capture, `_renderLocal` re-lays ALL walls together — one epoch, corners stay closed. Off = the per-wall
+   baseline (reproduces the seams) for A/B.
 3. **✅ Free content / skybox / grounded via anchors** (§5 b–d). `_placeContent`, each capture, handles all
    four modes: **free** content multilaterates its F_ref pose against the local walls (§5b); **grounded**
    content (`meta.placement:"grounded"` — set on dropped models, which auto-sit on the floor) snaps Y to the
