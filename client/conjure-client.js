@@ -914,61 +914,26 @@
         var THREE = AFRAME.THREE;
         var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
         var wr = document.getElementById("world-root"); if (!wr) return;
-        // Host-surface F_ref pose lookup for ON-SURFACE content (the seed the image was pinned against). The
-        // host's LOCAL pose is read from its rendered element (below), not the fresh capture, so the image
-        // rides exactly what's drawn — including the apply-gate — and doesn't drift within the surface.
-        var hostFref = {};
-        (docSurfaces || []).forEach(function (e) {
-          var t = e.transform || {}; hostFref[e.id] = { p: t.position || [0, 0, 0], r: t.rotation || [0, 0, 0] }; });
-        var mat = function (p, r) { return new THREE.Matrix4().compose(
-          new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0), eulerYXZToQuat(THREE, r), new THREE.Vector3(1, 1, 1)); };
-        // T⁻¹ (F_ref → F_track): the rigid fallback for on-surface content whose host's SEED pose isn't in
-        // docSurfaces yet (see the on-surface branch). null on desktop / before registration.
-        var Tinv = (this._haveT && this._Tmat) ? this._Tmat.clone().invert() : null;
         var ridden = 0, freed = 0, anchored = 0;
         Array.prototype.forEach.call(wr.children, function (el) {
           if (!el._frefPose || !el.object3D) return;
           var fp = el._frefPose;
-          // ON-SURFACE content RIDES its host surface (§5a): re-express its offset-from-host (measured in
-          // F_ref) onto the host's ACTUAL RENDERED pose — read from the host element's object3D, NOT the
-          // fresh capture — so the image tracks exactly what's drawn (incl. the apply-gate) and never drifts
-          // within the surface. world-root is identity, so the host's local object3D pose IS its world pose.
+          // ON-SURFACE content RIDES its host surface (§5a, §7c-B2): the server stored the content's pose in
+          // the host's LOCAL frame (meta.surface_offset = host⁻¹·image); we re-apply it to the host's ACTUAL
+          // rendered pose — image = host_local · offset — so it tracks exactly what's drawn (incl. the
+          // apply-gate) and never drifts within the surface. world-root is identity ⇒ the host's local
+          // object3D pose IS its world pose. No dependence on any docSurfaces copy of the host pose. If the
+          // host isn't rendered this frame (never captured/recovered) or has no offset yet, hold (skip).
           if (el._onSurface) {
-            var hostEl = document.getElementById(el._onSurface);
-            var hRef = hostFref[el._onSurface];
+            var hostEl = document.getElementById(el._onSurface), off = el._surfaceOffset;
+            if (!hostEl || !hostEl.object3D || !off || !off.p || !off.q) return;
             var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
-            var hostMat = (hostEl && hostEl.object3D) ? new THREE.Matrix4().compose(
-              hostEl.object3D.position.clone(), hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1)) : null;
-            if (hostMat && el._surfaceOffset && el._surfaceOffset.p && el._surfaceOffset.q) {
-              // §7c-B2: RIDE the local host via the SERVER-STORED host-local offset. No dependence on our
-              // docSurfaces copy of the host's seed pose — the server measured host⁻¹·image once, we just
-              // re-apply it to the host's ACTUAL rendered pose (image = host_local · offset). world-root is
-              // identity ⇒ the host's local pose IS its world pose.
-              var q = el._surfaceOffset.q, pp = el._surfaceOffset.p;
-              var offMat = new THREE.Matrix4().compose(new THREE.Vector3(pp[0], pp[1], pp[2]),
-                new THREE.Quaternion(q[0], q[1], q[2], q[3]), new THREE.Vector3(1, 1, 1));
-              hostMat.multiply(offMat).decompose(ip, iq, is);
-              el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
-            } else if (hostMat && hRef) {
-              // Legacy fallback (content placed before §7c-B2, no stored offset): re-express the image's
-              // offset-from-host measured from OUR docSurfaces copy of the host seed pose onto the host's
-              // rendered pose. Same result when the seed pose is available.
-              hostMat.multiply(mat(hRef.p, hRef.r).invert().multiply(mat(fp.position, fp.rotation))).decompose(ip, iq, is);
-              el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
-              if (window.CONJURE_DEBUG_REGISTRATION) {
-                var off = ip.distanceTo(hostEl.object3D.position);
-                if (off > 0.15) debugLog("content", "WARN " + el._onSurface + " " + Math.round(off * 100) + "cm off host centre", true);
-              }
-            } else if (Tinv) {
-              // The host's SEED pose isn't known locally yet — e.g. the OWNER's freshly-captured wall hasn't
-              // round-tripped into docSurfaces (we stopped broadcasting geometry). Map the image's F_ref pose
-              // to F_track rigidly via T⁻¹: exact for the owner (its own frame IS rigid), and it keeps the
-              // image ON its wall instead of free-floating. Upgrades to the ride once the seed pose arrives.
-              Tinv.clone().multiply(mat(fp.position, fp.rotation)).decompose(ip, iq, is);
-              el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
-            } else {
-              return;                                                 // desktop / no frame yet — leave at F_ref
-            }
+            var hostMat = new THREE.Matrix4().compose(
+              hostEl.object3D.position.clone(), hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1));
+            var offMat = new THREE.Matrix4().compose(new THREE.Vector3(off.p[0], off.p[1], off.p[2]),
+              new THREE.Quaternion(off.q[0], off.q[1], off.q[2], off.q[3]), new THREE.Vector3(1, 1, 1));
+            hostMat.multiply(offMat).decompose(ip, iq, is);
+            el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
             ridden++;
             return;                                                   // on-surface content NEVER free-multilaterates
           }

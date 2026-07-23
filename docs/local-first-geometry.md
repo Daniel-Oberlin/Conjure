@@ -488,17 +488,13 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
        ride and the `T⁻¹` fallback remain only for legacy content placed before B2 (no stored offset); new
        content never needs them. Desktop is unaffected (it renders the server's F_ref pose, which
        `host · offset` reconstructs exactly).
-       - **TODO — remove the legacy ride path** (tracked cleanup; not yet done). Because `_on_surface_set`
-         now emits `meta.surface_offset` and `_reanchor_surface_images` runs at **compose (every world
-         load)**, a legacy photo's offset is backfilled into the composed snapshot on next load — so the
-         client's legacy branches are *expected* to be unreachable after one reload. To remove safely: (1)
-         **verify** every on-surface entity carries `surface_offset` post-compose (a one-shot log/assert in
-         `_reanchor_surface_images`, or inspect a reloaded world doc); (2) delete the two legacy branches in
-         `_placeContent`'s on-surface handler (the `hRef` ride + the `Tinv` fallback) and, since nothing else
-         uses them, drop the `hostFref` lookup and `Tinv` computation — collapsing the ride to just
-         `host_local · offset`. Server side stays (it always writes the offset). Only blocker: a world whose
-         host surface is absent at compose — but then the image can't anchor at all, so there's nothing to
-         preserve. Do NOT delete blind — the compose-backfill claim is unverified.
+       - **✅ Legacy ride path removed.** `_placeContent`'s on-surface handler is now just the offset ride
+         (`host_local · offset`); the `hRef`/`docSurfaces` recompute and the `T⁻¹` fallback are gone, along
+         with the `hostFref` lookup and `Tinv`. Safe because every on-surface entity carries
+         `surface_offset` — set at `place_image` for new content, and backfilled at compose
+         (`_reanchor_surface_images` → `_on_surface_set`) for any older content on next world load. If the
+         host surface isn't rendered a given capture (never captured/recovered), the ride simply holds —
+         there's nothing to anchor to anyway.
 8. **~~`--square-walls on|off`~~ — dropped** (§9): squaring was a pre-local-first vestige (it only touched
    the seed, making the shared model inconsistent with each headset's raw render), so it was **removed
    outright** rather than made toggleable. No A/B needed — the decision it would have informed is made.
