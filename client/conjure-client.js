@@ -1455,11 +1455,11 @@
 
         if (!amOwner) { this.lastPost = time; return; }   // guest: rendered its own capture; never authors/posts
 
-        // Square the walls onto one orthogonal grid, join wall corners that fall a few cm short, then
-        // snap the insets (door/window/art) in front of their wall toward the room interior. All mutate
-        // `surfaces` in place (orientation, position, extent, holes). Pure geometry, unit-tested in
-        // client/room-snap.js.
-        window.RoomSnap.squareWalls(THREE, surfaces);
+        // Join wall corners that fall a few cm short, then snap the insets (door/window/art) in front of
+        // their wall toward the room interior. Both mutate `surfaces` in place (position, extent, holes).
+        // The seed is built with the SAME treatment as the local render (joinCorners only, NO squaring) so
+        // the shared model stays consistent with the raw geometry every headset draws (docs §9). Pure
+        // geometry, unit-tested in client/room-snap.js.
         window.RoomSnap.joinCorners(THREE, surfaces);
         window.RoomSnap.snapInsets(THREE, surfaces);
         surfaces.forEach(function (s) { delete s._lp; delete s._lq; });

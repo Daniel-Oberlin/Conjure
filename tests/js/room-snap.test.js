@@ -30,7 +30,6 @@ function vert(id, sem, pos, yawDeg, ext) {
   return s;
 }
 const normalOf = (s) => UP.clone().applyQuaternion(s._lq);
-const yawDegOf = (s) => { const n = normalOf(s); return Math.atan2(n.x, n.z) / D2R; };
 // A wall's two endpoints in plan view (X-Z), from its current _lp / _lq / extent.
 function planEnds(s) {
   const n = normalOf(s), L = Math.hypot(n.x, n.z) || 1, tx = n.z / L, tz = -n.x / L, hw = s.extent[0] / 2;
@@ -170,29 +169,24 @@ test("snapInsets orients wall art parallel to its wall (adopts the wall's orient
   assert.deepStrictEqual(surfaces[1].rotation, surfaces[0].rotation, "wall art adopts the wall's orientation");
 });
 
-test("squareWalls snaps near-90° walls onto one orthogonal grid", () => {
+test("wall squaring is removed: the seed pipeline keeps a near-square wall's RAW facing", () => {
+  // Two ~perpendicular walls each 6° off the axis grid — well within the OLD ±12° squaring nudge that used
+  // to snap them to 0°/90°. The seed pipeline the owner now runs is joinCorners + snapInsets ONLY (no
+  // squareWalls), so their raw facings must survive — matching the raw geometry every headset renders. If
+  // squaring is ever reintroduced into this pipeline, this fails.
+  const facingDeg = (s) => { const n = normalOf(s); return Math.atan2(n.x, n.z) / D2R; };
   const surfaces = [
-    vert("w0", "wall", [0, 1.2, -2], 1, [4, 2.4]),     // ~0°
-    vert("w1", "wall", [2, 1.2, 0], 88, [4, 2.4]),     // ~90°
-    vert("w2", "wall", [0, 1.2, 2], 179, [4, 2.4]),    // ~180°
-    vert("w3", "wall", [-2, 1.2, 0], 272, [4, 2.4]),   // ~270°
+    vert("real_wall_0", "wall", [0, 1.2, -2], 6, [4, 2.4]),
+    vert("real_wall_1", "wall", [2, 1.2, 0], 96, [4, 2.4]),
   ];
-  RS.squareWalls(THREE, surfaces);
-  const mod90 = surfaces.map((s) => ((yawDegOf(s) % 90) + 90) % 90);
-  for (const m of mod90) {
-    assert.ok(Math.abs(((m - mod90[0] + 45) % 90) - 45) < 0.2, "every wall ends up mutually square");
-  }
-});
-
-test("squareWalls leaves a genuinely angled (>12°) wall alone", () => {
-  const surfaces = [
-    vert("w0", "wall", [0, 1.2, -2], 0, [4, 2.4]),
-    vert("w1", "wall", [2, 1.2, 0], 90, [4, 2.4]),
-    vert("w2", "wall", [0, 1.2, 2], 180, [4, 2.4]),
-    vert("a", "wall", [1, 1.2, 1], 35, [0.6, 2.4]),   // a 35°-off small wall — beyond the 12° nudge limit
-  ];
-  RS.squareWalls(THREE, surfaces);
-  assert.ok(Math.abs(yawDegOf(surfaces[3]) - 35) < 0.001, "the 35° wall is untouched");
+  const before = surfaces.map(facingDeg);
+  RS.joinCorners(THREE, surfaces);
+  RS.snapInsets(THREE, surfaces);
+  surfaces.forEach((s, i) => {
+    assert.ok(Math.abs(facingDeg(s) - before[i]) < 1e-6,
+      s.id + " kept its raw facing " + before[i].toFixed(2) + "° (got " + facingDeg(s).toFixed(2) + "°)");
+  });
+  assert.equal(typeof RS.squareWalls, "undefined", "squareWalls is gone from the RoomSnap API");
 });
 
 test("joinCorners extends two perpendicular walls that fall short to meet at the corner", () => {
@@ -459,7 +453,7 @@ test("matchRef honors the claimed set and the 0.5 m distance cap", () => {
 // --- Golden room: a REAL Quest capture (45 surfaces, two rooms via connecting doors). The synthetic
 // tests above encode our assumptions about the device's conventions; this one pins those assumptions to
 // the actual hardware — it feeds the captured planes (with their true normals/roll) through the same
-// squareWalls → snapInsets the headset runs and asserts the geometry stays sane. It's the check that
+// joinCorners → snapInsets the headset runs and asserts the geometry stays sane. It's the check that
 // would have caught the wall-art roll bug, and it'd catch a Quest OS update changing plane conventions.
 test("golden room (real capture): pipeline holds on real geometry", () => {
   const fixture = require("./fixtures/golden-room.json");
@@ -473,7 +467,6 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
   });
   const origW = {};
   surfaces.filter((s) => s.semantic === "wall").forEach((s) => { origW[s.id] = s.extent[0]; });
-  RS.squareWalls(THREE, surfaces);
   RS.joinCorners(THREE, surfaces);
   RS.snapInsets(THREE, surfaces);
   const finite = (a) => a.every(Number.isFinite);
@@ -487,20 +480,8 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
     });
   });
 
-  // (2) Walls come out mutually square: fold each wall's facing into the 90° grid (×4 trick) and confirm
-  // the overwhelming majority cluster on one orientation — i.e. squareWalls aligned the real room.
+  // (2) Corner-joining only nudges: each wall's width changed by at most 2×GAP (an end can move ≤ GAP).
   const walls = surfaces.filter((s) => s.semantic === "wall");
-  const facings = walls.map(yawDegOf).map((d) => d * D2R);
-  let cx = 0, cy = 0;
-  facings.forEach((f) => { cx += Math.cos(f * 4); cy += Math.sin(f * 4); });
-  const grid = Math.atan2(cy, cx);
-  const squared = facings.filter(function (f) {
-    let d = f * 4 - grid; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
-    return Math.abs(d) / 4 < 2 * D2R;     // within 2° of the grid
-  }).length;
-  assert.ok(squared >= 0.8 * walls.length, squared + "/" + walls.length + " walls squared onto one grid");
-
-  // (2b) Corner-joining only nudges: each wall's width changed by at most 2×GAP (an end can move ≤ GAP).
   walls.forEach(function (w) {
     assert.ok(Math.abs(w.extent[0] - origW[w.id]) <= 0.5 + 1e-6, "joinCorners only nudged " + w.id);
   });

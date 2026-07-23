@@ -416,9 +416,10 @@ Step 5: the wall either reuses an existing stable id or gets a new one
 This is the point where the system changes from "sensor observation" to "persistent room surface".
 
 Step 6: room-shape cleanup runs before upload
-- The client may square wall facings onto the dominant orthogonal grid.
 - It may join short wall-corner gaps.
 - It may snap doors, windows, and wall art onto parent walls and add hole metadata.
+- (Wall *squaring* was removed — see `docs/local-first-geometry.md` §9: it only touched the seed, making the
+  shared model inconsistent with the raw geometry every headset renders.)
 
 Step 7: the client POSTs the resulting surface set to /room
 - The upload now contains Conjure surface ids, stable-space positions, rotations, extents, semantics, and optional holes.
@@ -799,12 +800,12 @@ Known weak point documented in code comments and tests:
 
 ## 10. Surfaces, doors/windows/wall-art, corners, and holes
 
-## 8.1 Wall squaring
+## 8.1 Wall squaring — removed
 
-squareWalls:
-- estimates dominant orthogonal grid from wall normals (weighted)
-- snaps wall, door, window, wall art facings to nearest 90-degree grid direction
-- only small nudges are applied; larger deviations are preserved as potentially intentional geometry
+Wall squaring (`squareWalls`) was removed. It was a pre-local-first vestige, and because it was applied only
+to the posted seed (never to the local render), it made the shared model inconsistent with the raw geometry
+each headset draws — injecting a systematic error into anchors, registration, and recovery. See
+`docs/local-first-geometry.md` §9.
 
 ## 8.2 Corner joining
 

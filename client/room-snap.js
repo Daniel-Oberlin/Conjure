@@ -352,44 +352,12 @@
       + "° theta=" + Math.round(theta * 180 / Math.PI) + "°" };
   }
 
-  // Square the walls. WebXR fits every plane independently, so small wall slivers around openings come
-  // back a couple degrees off. The whole space shares one orthogonal grid (the rooms are square with each
-  // other), so estimate it width-weighted from all walls — the big, accurate walls dominate — and snap
-  // each vertical surface's facing onto the nearest 90° of it. Small nudges only (≤12°), so a genuinely
-  // angled wall is left alone. Mutates s._lq and s.rotation in place.
-  /**
-   * @param {THREE_NS} THREE
-   * @param {SnapSurface[]} surfaces
-   * @returns {void}
-   */
-  function squareWalls(THREE, surfaces) {
-    var UP2 = new THREE.Vector3(0, 1, 0), gx = 0, gy = 0;
-    /** @param {SnapSurface} s  @returns {number} */
-    var facing = function (s) { var n = UP2.clone().applyQuaternion(s._lq); return Math.atan2(n.x, n.z); };
-    surfaces.forEach(function (s) {
-      if (s.semantic !== "wall") return;
-      var a = facing(s) * 4, w = (s.extent && s.extent[0]) || 1;  // ×4 folds the 90° grid into a full turn
-      gx += w * Math.cos(a); gy += w * Math.sin(a);
-    });
-    if (!(gx || gy)) return;
-    var grid = Math.atan2(gy, gx) / 4;                          // dominant facing, mod 90° (radians)
-    surfaces.forEach(function (s) {
-      if (["wall", "door", "window", "wall art"].indexOf(s.semantic) < 0) return;
-      var yw = facing(s), d = (grid + Math.round((yw - grid) / (Math.PI / 2)) * (Math.PI / 2)) - yw;
-      while (d > Math.PI) d -= 2 * Math.PI;
-      while (d < -Math.PI) d += 2 * Math.PI;
-      if (Math.abs(d) > 0.21) return;                           // >~12° ⇒ likely a real angle, leave it
-      s._lq.premultiply(new THREE.Quaternion().setFromAxisAngle(UP2, d));  // rotate facing onto the grid
-      s.rotation = eulerYXZ(THREE, s._lq);
-    });
-  }
-
   // Join wall corners. WebXR fits each wall independently, so two walls that should meet at a corner
-  // often stop a few cm short (or overshoot). After squaring, perpendicular walls' planes intersect on a
-  // clean vertical line; for each such pair whose nearest ENDS both fall within GAP of that intersection,
-  // snap those ends exactly onto it — closing the corner with a small extend/trim. Works in plan view
-  // (X-Z). Leaves parallel walls (a doorway gap, opposite walls) and T-junctions (only one wall ends
-  // near the crossing) alone. Mutates wall _lp / extent / position in place; run after squareWalls.
+  // often stop a few cm short (or overshoot). For each ~perpendicular pair whose planes intersect on a
+  // clean vertical line and whose nearest ENDS both fall within GAP of that intersection, snap those ends
+  // exactly onto it — closing the corner with a small extend/trim. Works in plan view (X-Z). Leaves
+  // parallel walls (a doorway gap, opposite walls) and T-junctions (only one wall ends near the crossing)
+  // alone. Mutates wall _lp / extent / position in place.
   /**
    * @typedef {{x: number, z: number, _d: number}} CornerTgt
    * @typedef {{s: SnapSurface, cx: number, cz: number, nx: number, nz: number, hw: number, cy: number,
@@ -521,5 +489,5 @@
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef,
-           squareWalls: squareWalls, joinCorners: joinCorners, snapInsets: snapInsets };
+           joinCorners: joinCorners, snapInsets: snapInsets };
 });

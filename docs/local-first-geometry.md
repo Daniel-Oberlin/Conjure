@@ -288,26 +288,31 @@ The **owner** pushes to the server *only* when the shared model genuinely change
 Only the **owner/authority** authors the shared model (set, seed, styling, content, anchors). Guests are
 **local-only**: register, correspond ids, render. (Guest-proposes-a-missed-surface is deferred.)
 
-## 9. Wall squaring — now optional (A/B), `--square-walls on|off`
+## 9. Wall squaring — removed
 
-`squareWalls` snaps a wall's facing to a width-weighted orthogonal **grid**, but **only when it's already
-within ~12° of square** (clearly-angled walls are left alone — see the note at the end). Under local-first +
-plane-relative anchors this is a genuine trade-off:
+`squareWalls` snapped a wall's facing to a width-weighted orthogonal **grid** (only within ~12° of square).
+It was a **vestige** of the pre-local-first design, when the **seed was the rendered geometry** and squaring
+cleaned it up so walls met at right angles. Under local-first that job is gone — every headset renders its
+**own raw capture**, so the seed is never drawn.
 
-- **Against (why OFF may be right):** it rotates the wall **normal** up to ~12°, and since anchors use the
-  perpendicular distance to that normal, a point a couple metres along the wall shifts by up to ~0.4 m if
-  authoring and re-solving disagree on the normal. Each client computes its **own** grid, so squaring can
-  make reference planes **diverge between clients**. And it overrides the local measurement we've chosen to
-  trust.
-- **For (why OFF may hurt):** squaring **denoises** per-capture angular jitter of wall normals; raw normals
-  wobble a few degrees each capture, feeding placement jitter that the anchor redundancy only partly
-  absorbs.
-- It does **not** break `joinCorners` (real walls stay near-perpendicular); OFF just renders walls at their
-  raw, slightly-non-orthogonal angles.
+What remained was a hazard: squaring was applied ONLY to the posted **seed**, never to the local render, so
+the shared model was **inconsistent with the raw geometry every client uses**. Everything that relates
+raw-local to the seed inherited a systematic error equal to the squaring delta:
 
-**Decision:** wire `--square-walls on|off` and A/B it. Default **OFF** (do *not* square) — consistent with
-trusting the raw local planes we now build placement on. We may flip it to ON after A/B if leaving walls raw
-causes problems (e.g. angular jitter visibly hurting placement); flipping the default is a one-liner.
+- **Anchors (§7c):** the server authors against the (squared) seed walls; clients solve against raw local
+  walls. "Same surfaces" is the anchor's premise — squaring one side breaks it (it rotates a wall normal up
+  to ~12°, and anchors use perpendicular distance to that normal, so a point a couple metres along the wall
+  shifts up to ~0.4 m).
+- **Registration:** guests match a raw capture against a squared reference — a systematic offset.
+- **Recovery (§5.2):** a recovered inset rides its local wall using the seed pose as its offset reference;
+  squared-seed vs raw-local injects the delta into the recovered position.
+
+**Decision: removed entirely.** `squareWalls` and its `--square-walls` knob idea are gone; the seed is built
+with the **same** treatment as the local render (`joinCorners` only — corner-gap closing, applied to both
+paths — then `snapInsets`; **no** squaring). The shared model now matches the raw geometry every headset
+draws — like-to-like across rendering, registration, anchors, and recovery. The function lived in
+`room-snap.js`; it's in git history if the per-capture angular jitter it denoised ever proves worth
+revisiting (it would need to run on the local render too, to stay consistent).
 
 ## 10. The linchpin risk — id correspondence
 
@@ -359,7 +364,9 @@ is also an id-correspondence stress test).
   to **recover** a surface a client didn't detect (§5.2).
 - **Missing-surface recovery — log it** (`[recover] …`, §5.2).
 - **Avatars — stream anchors with hysteresis, solve per receiver** (§5.1).
-- **`--square-walls` default OFF** for now; revisit after A/B (§9).
+- **Wall squaring — removed** (§9): a pre-local-first vestige; it only touched the seed, making the shared
+  model inconsistent with the raw geometry every headset renders. `squareWalls` + the `--square-walls` knob
+  are gone.
 - **Nothing in absolute coordinates** — the design principle; every item is on-surface, grounded, free, or
   skybox (verified during build — see Build-time verifications below).
 - **Solver code — port to Python, pin JS + Python with shared golden vectors** (not Node-in-server, §13.1).
@@ -467,8 +474,10 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
        server-side at `place_image` time so the client rides a STORED offset rather than recomputing it from
        its `docSurfaces` copy of the host seed pose — this is what removes the `docSurfaces` dependence and
        retires the `T⁻¹` fallback (§5a).
-8. **`--square-walls on|off`** (§9) for A/B.
+8. **~~`--square-walls on|off`~~ — dropped** (§9): squaring was a pre-local-first vestige (it only touched
+   the seed, making the shared model inconsistent with each headset's raw render), so it was **removed
+   outright** rather than made toggleable. No A/B needed — the decision it would have informed is made.
 9. *(later)* render interpolation for genuine local moves; guest-proposes-surface; consensus seed (§7.8).
 
 Steps build independently: (1) is a pure module with tests; (2) makes one headset render its own geometry
-pop-free; (3)–(7) deliver the shared-model / local-geometry architecture; (8) enables the squaring A/B.
+pop-free; (3)–(7) deliver the shared-model / local-geometry architecture; (8) is resolved by removal.
