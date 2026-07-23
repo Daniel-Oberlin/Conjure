@@ -23,7 +23,8 @@ async def test_place_asset_tool_payload(monkeypatch):
         return_value=httpx.Response(200, json={"ok": True, "id": "e", "title": "Tree", "tris": 100, "attribution": "a"}))
     out = await _tool("place_asset")(query="oak tree", size_m=7, position=[1, 0, -3])
     assert route.called
-    assert json.loads(route.calls.last.request.content) == {"query": "oak tree", "size_m": 7, "position": [1, 0, -3]}
+    assert json.loads(route.calls.last.request.content) == {
+        "query": "oak tree", "size_m": 7, "position": [1, 0, -3], "placement": "grounded"}
     assert "Placed" in out
 
 
@@ -122,7 +123,7 @@ async def test_place_cached_asset_tool_forwards_id(monkeypatch):
     route = respx.post("http://world/place_cached_asset").mock(
         return_value=httpx.Response(200, json={"ok": True, "id": "ent_1", "title": "Oak Tree"}))
     await _tool("place_cached_asset")(id="oak.glb", size_m=2.0)
-    assert json.loads(route.calls.last.request.content) == {"id": "oak.glb", "size_m": 2.0}
+    assert json.loads(route.calls.last.request.content) == {"id": "oak.glb", "size_m": 2.0, "placement": "grounded"}
 
 
 @respx.mock
