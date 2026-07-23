@@ -481,10 +481,13 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
        model's `meta.anchor` against the LOCAL walls directly, instead of re-authoring from its `_frefPose`
        against `this._ref` every capture. Legacy content (no `meta.anchor`) still falls back to the old
        author-from-F_ref path. Debug HUD shows `anchored N/M`.
-     - **(B2) persist the on-surface offset** — store an on-surface photo's offset-from-host (host-local)
-       server-side at `place_image` time so the client rides a STORED offset rather than recomputing it from
-       its `docSurfaces` copy of the host seed pose — this is what removes the `docSurfaces` dependence and
-       retires the `T⁻¹` fallback (§5a).
+     - **✅ (B2) persist the on-surface offset** — the server stores an on-surface photo's pose in its host's
+       LOCAL frame (`host⁻¹·image` → `meta.surface_offset {p,q}`, via `_surface_offset`) at `place_image` and
+       on every re-anchor. The client rides it directly (`image = host_local · offset`, `el._surfaceOffset`),
+       with **no dependence on its `docSurfaces` copy of the host seed pose**. The old `hRef`/`docSurfaces`
+       ride and the `T⁻¹` fallback remain only for legacy content placed before B2 (no stored offset); new
+       content never needs them. Desktop is unaffected (it renders the server's F_ref pose, which
+       `host · offset` reconstructs exactly).
 8. **~~`--square-walls on|off`~~ — dropped** (§9): squaring was a pre-local-first vestige (it only touched
    the seed, making the shared model inconsistent with each headset's raw render), so it was **removed
    outright** rather than made toggleable. No A/B needed — the decision it would have informed is made.

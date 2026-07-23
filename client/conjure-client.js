@@ -346,6 +346,7 @@
     el._onSurface = meta.on_surface || null;   // content pinned to a surface rides that surface locally (§5a)
     el._placement = meta.placement || "free";  // "grounded" (Y snapped to floor, upright) | "free" (full 3-D) — §5b/c
     el._anchor = meta.anchor || null;          // server-authored plane-relative anchor (§7c) — solved as-is locally
+    el._surfaceOffset = meta.surface_offset || null;  // §7c-B2: on-surface content's host-local offset {p,q} to ride
   }
 
   function applyEnv(env) {
@@ -495,6 +496,7 @@
     if (el._frefPose && path === "transform.position") el._frefPose.position = value;
     if (el._frefPose && path === "transform.rotation") el._frefPose.rotation = value;
     if (path === "meta.anchor") el._anchor = value || null;    // server re-anchored (moved) content (§7c)
+    if (path === "meta.surface_offset") el._surfaceOffset = value || null;   // §7c-B2 re-anchor
     if (path === "components.material.visible") {       // real-surface visibility → entity attribute
       el.dataset.matVisible = String(value);
       applyRealVisibility(el);
@@ -935,16 +937,24 @@
             var hostEl = document.getElementById(el._onSurface);
             var hRef = hostFref[el._onSurface];
             var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
-            if (hostEl && hostEl.object3D && hRef) {
-              // RIDE the local host: re-express the image's offset-from-host (measured in F_ref) onto the
-              // host's ACTUAL rendered pose, so it tracks what's drawn (incl. the apply-gate) and never
-              // drifts within the surface. world-root is identity ⇒ the host's local pose IS its world pose.
-              var hostMat = new THREE.Matrix4().compose(
-                hostEl.object3D.position.clone(), hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1));
+            var hostMat = (hostEl && hostEl.object3D) ? new THREE.Matrix4().compose(
+              hostEl.object3D.position.clone(), hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1)) : null;
+            if (hostMat && el._surfaceOffset && el._surfaceOffset.p && el._surfaceOffset.q) {
+              // §7c-B2: RIDE the local host via the SERVER-STORED host-local offset. No dependence on our
+              // docSurfaces copy of the host's seed pose — the server measured host⁻¹·image once, we just
+              // re-apply it to the host's ACTUAL rendered pose (image = host_local · offset). world-root is
+              // identity ⇒ the host's local pose IS its world pose.
+              var q = el._surfaceOffset.q, pp = el._surfaceOffset.p;
+              var offMat = new THREE.Matrix4().compose(new THREE.Vector3(pp[0], pp[1], pp[2]),
+                new THREE.Quaternion(q[0], q[1], q[2], q[3]), new THREE.Vector3(1, 1, 1));
+              hostMat.multiply(offMat).decompose(ip, iq, is);
+              el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
+            } else if (hostMat && hRef) {
+              // Legacy fallback (content placed before §7c-B2, no stored offset): re-express the image's
+              // offset-from-host measured from OUR docSurfaces copy of the host seed pose onto the host's
+              // rendered pose. Same result when the seed pose is available.
               hostMat.multiply(mat(hRef.p, hRef.r).invert().multiply(mat(fp.position, fp.rotation))).decompose(ip, iq, is);
               el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
-              // Guard: expect ~0.02 m from host centre (the stand-off). Warn only if it lands FAR off (ride
-              // wrong / stale seed pose); a centred-but-visually-off image = the detected surface ≠ the artwork.
               if (window.CONJURE_DEBUG_REGISTRATION) {
                 var off = ip.distanceTo(hostEl.object3D.position);
                 if (off > 0.15) debugLog("content", "WARN " + el._onSurface + " " + Math.round(off * 100) + "cm off host centre", true);

@@ -551,6 +551,27 @@ def _euler_yxz_quat(rot_deg: list[float]) -> list[float]:
             c1 * c2 * s3 - s1 * s2 * c3, c1 * c2 * c3 + s1 * s2 * s3]
 
 
+def _quat_mul(a: list[float], b: list[float]) -> list[float]:
+    """Hamilton product a·b of quaternions [x,y,z,w] (THREE.Quaternion.multiply convention)."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return [ax * bw + aw * bx + ay * bz - az * by, ay * bw + aw * by + az * bx - ax * bz,
+            az * bw + aw * bz + ax * by - ay * bx, aw * bw - ax * bx - ay * by - az * bz]
+
+
+def _quat_conj(q: list[float]) -> list[float]:
+    """Conjugate = inverse for a unit quaternion."""
+    return [-q[0], -q[1], -q[2], q[3]]
+
+
+def _quat_rot(q: list[float], v: list[float]) -> list[float]:
+    """Rotate vector v by unit quaternion q [x,y,z,w]."""
+    x, y, z, w = q
+    tx, ty, tz = 2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])
+    return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz),
+            v[2] + w * tz + (x * ty - y * tx)]
+
+
 def _seed_planes() -> list[dict]:
     """The current seed's floor + walls as plane-anchor Planes (F_ref), in the SAME convention as the
     client's localToPlanes: floor normal = +Y; wall normal = the surface's outward normal (a-plane +Z,
@@ -2461,13 +2482,29 @@ def _face_room(srot: list[float]) -> dict:
 #     re-registration/re-capture. The image records meta.on_surface = the surface id; we re-derive its pose
 #     (2 cm in front, re-oriented toward the room via _face_room, re-fit to the current frame) from the
 #     surface's CURRENT geometry — so when the surface moves, the image follows instead of being stranded.
+def _surface_offset(spos: list[float], srot: list[float],
+                    ipos: list[float], irot: list[float]) -> dict:
+    """The rigid pose of on-surface content EXPRESSED IN ITS HOST'S LOCAL FRAME (host⁻¹·image): {p, q}
+    (§7c-B2). A client rides the content by re-applying this to its OWN local host pose
+    (`image = host_local · offset`) — so it never needs its `docSurfaces` copy of the host's seed pose, and
+    the T⁻¹ fallback retires. Invariant as the surface moves (image tracks host), so it's the same every
+    recompute; carried on meta.surface_offset."""
+    qh, qi = _euler_yxz_quat(srot), _euler_yxz_quat(irot)
+    qhc = _quat_conj(qh)
+    q_off = _quat_mul(qhc, qi)
+    p_off = _quat_rot(qhc, [ipos[i] - spos[i] for i in range(3)])
+    return {"p": [round(c, 5) for c in p_off], "q": [round(c, 6) for c in q_off]}
+
+
 def _on_surface_set(spos: list[float], srot: list[float], extent, geo: dict) -> dict:
     """The `update`-op `set` for an on-surface image: face the room interior (upright, via `_face_room`),
-    sit 2 cm in front, re-fit to the surface frame using the aspect from `geo`."""
+    sit 2 cm in front, re-fit to the surface frame using the aspect from `geo`, and carry the host-local
+    offset (§7c-B2) so the client can ride it without its own copy of the host seed pose."""
     fr = _face_room(srot)
     f = fr["forward"]
-    out: dict = {"transform.position": [spos[i] + 0.02 * f[i] for i in range(3)],
-                 "transform.rotation": fr["rotation"]}
+    pos = [spos[i] + 0.02 * f[i] for i in range(3)]
+    out: dict = {"transform.position": pos, "transform.rotation": fr["rotation"],
+                 "meta.surface_offset": _surface_offset(spos, srot, pos, fr["rotation"])}
     if extent and geo.get("width") and geo.get("height"):
         w, h = _fit_extent(geo["width"] / geo["height"], extent)
         out["components.geometry.width"], out["components.geometry.height"] = w, h
@@ -2636,6 +2673,7 @@ async def place_image(req: PlaceImageRequest) -> dict:
             "prompt": rec.prompt, "image_id": rec.id}
     if req.on_surface:                                 # remember the home surface so it re-anchors on re-capture
         meta["on_surface"] = surf["id"]
+        meta["surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # §7c-B2: client rides this offset
     # A transparent (alpha) image must render with transparency on, or three.js shows it opaque.
     material = {"src": rec.url, "shader": "flat", "side": "double", "transparent": rec.transparent}
 
@@ -2650,6 +2688,7 @@ async def place_image(req: PlaceImageRequest) -> dict:
             sets["transform.position"] = pos
             sets["transform.rotation"] = rotation
             sets["meta.on_surface"] = surf["id"]
+            sets["meta.surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # §7c-B2
         ops = [{"op": "update", "id": eid, "set": sets}]
     else:
         ops = [_image_plane(eid, pos, width, height, material, meta, rotation)]

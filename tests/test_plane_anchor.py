@@ -169,3 +169,19 @@ def test_server_head_from_anchor_none_paths(monkeypatch):
         {"id": "t", "name": "T", "rev": 0, "environment": {}, "entities": []}))
     assert server._head_from_anchor(None) is None
     assert server._head_from_anchor({"mode": "free", "floor": None, "walls": []}) is None
+
+
+def test_surface_offset_round_trips():
+    """§7c-B2: _surface_offset returns the on-surface content's pose in its HOST's local frame (host⁻¹·image).
+    Re-applying it to the host (image = host · offset) — exactly what the client does with the stored offset —
+    must reconstruct the original image pose. This is what lets the client ride without the host seed pose."""
+    from conjure import server
+    spos, srot = [1.0, 1.2, 0.5], [0.0, 90.0, 0.0]        # host (F_ref)
+    ipos, irot = [1.02, 1.5, 0.6], [3.0, 92.0, -1.0]      # image (2 cm off, slightly rotated)
+    off = server._surface_offset(spos, srot, ipos, irot)
+    qh = server._euler_yxz_quat(srot)
+    p_img2 = [spos[i] + server._quat_rot(qh, off["p"])[i] for i in range(3)]   # host_pos + rot(qh, p_off)
+    q_img2 = server._quat_mul(qh, off["q"])                                    # qh · q_off
+    qi = server._euler_yxz_quat(irot)
+    assert math.dist(p_img2, ipos) < 1e-4, p_img2
+    assert abs(sum(q_img2[i] * qi[i] for i in range(4))) > 1 - 1e-6, "orientation reconstructs (up to sign)"
