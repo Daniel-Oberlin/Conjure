@@ -108,6 +108,20 @@ test("snapInsets sends each junction door into its OWN room (two separate parall
   assert.ok(surfaces[3].position[0] > 2.3, "door B → into room B (+X), in front of its own wall");
 });
 
+test("snapInsets honors a RECORDED hostWall over proximity (decision #1)", () => {
+  // Two CO-facing walls; the door sits nearer wall_b, but its recorded association is wall_a → must win.
+  const surfaces = [
+    vert("real_wall_a", "wall", [0, 1.2, 0.00], 0, [3, 2.4]),
+    vert("real_wall_b", "wall", [0, 1.2, 0.10], 0, [3, 2.4]),           // co-facing, 10 cm nearer the door
+    vert("real_door_x", "door", [0, 1.0, 0.12], 0, [0.9, 2.0]),
+  ];
+  surfaces[2].hostWall = "real_wall_a";                                 // the recorded fact
+  RS.snapInsets(THREE, surfaces);
+  assert.equal(surfaces[2].hostWall, "real_wall_a", "the recorded host wins over the nearer wall");
+  assert.equal(surfaces[0].holes.length, 1, "and the recorded wall is the one carved");
+  assert.equal(surfaces[1].holes.length, 0, "not the nearer one");
+});
+
 test("snapInsets cuts a door-shaped hole that round-trips to the door's spot on the wall", () => {
   const surfaces = [
     vert("real_wall_0", "wall", [2, 1.5, 0], 90, [4, 3]),

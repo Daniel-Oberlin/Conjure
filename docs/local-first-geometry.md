@@ -240,6 +240,13 @@ it. It's also the **sole consumer** of the in-plane / anchor placement for inset
 - **Walls are excluded** — they're the *basis* of the anchor system (a wall is a plane, not a point, and its
   absence perturbs everyone's nearest-wall sets). Missing-wall recovery is a separate, harder problem —
   deferred.
+- **Inset→wall association is a recorded fact, for CAPTURED insets too.** `snapInsets` snaps an inset to its
+  recorded `host_wall` by id; captured insets now carry that record from the seed (not just recovered ones).
+  This is the reliable way to tell the two **near-coincident, anti-parallel faces of a room-partition** apart:
+  when `snapInsets` must *derive* the host (fresh room, unrecorded) it falls back to nearest-parallel-within-
+  width, which can't disambiguate a partition — and it **can't** use a co-facing rule to break the tie,
+  because an inset's live normal may be **inward** (~180° from its host; see `matchRef`). See the intermittent
+  "image behind its wall" bug in `docs/wall-art-45-flip.md`.
 
 ## 6. Client lifecycle
 

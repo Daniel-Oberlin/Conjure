@@ -1378,6 +1378,13 @@
         // Runs for owner AND guest now (unified): everyone renders their own capture; only the owner authors.
         // See docs/local-first-geometry.md §5-6.
         var surfaces = [], localSurfaces = [], floor = null, claimed = new Set();
+        // §5.2 / decision #1: the inset→wall association is a RECORDED fact. Carry the seed's host_wall onto
+        // each captured inset (by shared id) so snapInsets snaps it to THAT wall — not re-derived by
+        // proximity, which is ambiguous for an inset between two anti-parallel partition walls. Empty in a
+        // fresh room (seed not round-tripped yet) → snapInsets falls back to its co-facing derivation.
+        var seedHostWall = {};
+        (docSurfaces || []).forEach(function (e) {
+          if (e.meta && e.meta.host_wall) seedHostWall[e.id] = e.meta.host_wall; });
         // TEST (--drop-surface): a comma-separated list of semantics/ids to pretend we didn't capture.
         var dropList = (window.CONJURE_DROP_SURFACE || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
         cur.forEach(function (c) {
@@ -1428,7 +1435,7 @@
           if (!dropped) {
             localSurfaces.push({ id: sid, semantic: c.sem, position: [c.pos.x, c.pos.y, c.pos.z],
               rotation: self._euler(c.quat), extent: [c.ext[0], c.ext[1]],
-              _lp: c.pos.clone(), _lq: c.quat.clone(), debug: {} });
+              _lp: c.pos.clone(), _lq: c.quat.clone(), hostWall: seedHostWall[sid], debug: {} });
           }
           if (c.sem === "floor" && (!floor || c.ext[0] * c.ext[1] > floor._area)) {
             floor = { floorPolygon: c.poly.map(function (pt) { return [pt.x, pt.z]; }), height: 2.6, _area: c.ext[0] * c.ext[1] };

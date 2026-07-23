@@ -439,14 +439,19 @@
       var sn = new V3(0, 1, 0).applyQuaternion(s._lq), bestD = 0.3;
       var best = /** @type {SnapSurface|null} */ (null);
       // If the inset already KNOWS its wall (hostWall — recorded by the authority's snapInsets, reused on
-      // recovery §5.2), snap to THAT wall by id — don't re-guess by proximity. Otherwise derive it: the
-      // nearest ~parallel wall the inset sits WITHIN (the within-width test stops a coplanar/collinear
-      // neighbour from stealing it — the door-50/wall-59 bug), and RECORD the choice on the inset.
+      // recovery §5.2 AND carried onto captured insets from the seed), snap to THAT wall by id — don't
+      // re-guess by proximity. Otherwise derive it: the nearest ~parallel wall the inset sits WITHIN (the
+      // within-width test stops a coplanar/collinear neighbour from stealing it — the door-50/wall-59 bug),
+      // and RECORD the choice. NB: the parallel test is `|dot|` (parallel OR ANTI-parallel), deliberately —
+      // an inset's LIVE normal can be INWARD, ~180° from its host wall's outward normal (see matchRef, and
+      // docs/wall-art-45-flip.md). A co-facing test (dot > 0) would REJECT the true host for such insets.
+      // The flip side: proximity+|dot| can't tell the two faces of a room-partition apart when they're
+      // near-coincident — the recorded host_wall above is the only reliable disambiguator there.
       if (s.hostWall) walls.forEach(function (wl) { if (wl.id === s.hostWall) best = wl; });
       if (!best) {
         walls.forEach(function (wl) {
           var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
-          if (Math.abs(wn.dot(sn)) < 0.9) return;               // must be ~parallel (co-facing or antiparallel)
+          if (Math.abs(wn.dot(sn)) < 0.9) return;               // ~parallel (co-facing OR anti — insets can be either)
           var rel = s._lp.clone().sub(wl._lp);
           var d = Math.abs(rel.dot(wn));                        // perpendicular distance to the wall's plane
           if (d >= bestD) return;
