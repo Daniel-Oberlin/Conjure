@@ -1474,6 +1474,29 @@ def _admin_delete_assets(user: str, name: str) -> dict:
     return {"ok": ok, "deleted": f"asset {name!r}"} if ok else {"ok": False, "error": err}
 
 
+def _reanchor_moved_content_ops(applied_ops: list[dict]) -> list[dict]:
+    """After a /patch moved or rotated ANCHORED content, re-author its persisted plane-relative anchor (§7c)
+    from the NEW pose. Otherwise the client's per-capture anchor solve keeps re-deriving the OLD pose and
+    reverts the edit — the "flash then snap back" on move/rotate. Only touches content that already carries
+    meta.anchor; real surfaces and un-anchored content (placed from a raw F_ref pose) are left alone."""
+    moved, seen = [], set()
+    for op in applied_ops:
+        if op.get("op") != "update" or op.get("id") is None or op["id"] in seen:
+            continue
+        if any(str(k).startswith(("transform.position", "transform.rotation")) for k in (op.get("set") or {})):
+            moved.append(op["id"]); seen.add(op["id"])
+    ents = {e["id"]: e for e in store.doc["entities"]}
+    out = []
+    for eid in moved:
+        e = ents.get(eid)
+        if not e or not (e.get("meta") or {}).get("anchor"):
+            continue
+        anchor = _content_anchor(e.get("transform") or {}, (e.get("meta") or {}).get("placement") or "grounded")
+        if anchor:
+            out.append({"op": "update", "id": eid, "set": {"meta.anchor": anchor}})
+    return out
+
+
 @app.post("/patch")
 async def post_patch(patch: Patch) -> dict:
     ops: list[dict] = []
@@ -1488,6 +1511,12 @@ async def post_patch(patch: Patch) -> dict:
                 continue
         ops.append(op)
     applied = store.apply_patch(ops, origin=patch.origin)
+    # A move/rotate of anchored content must re-author its anchor (§7c) or the client reverts it next capture.
+    reanchor = _reanchor_moved_content_ops(applied["ops"])
+    if reanchor:
+        extra = store.apply_patch(reanchor, origin=patch.origin)
+        applied = {"rev": extra["rev"], "origin": patch.origin,
+                   "ops": applied["ops"] + extra["ops"], "inverse": extra["inverse"] + applied["inverse"]}
     await _broadcast({"type": "patch", "patch": applied})
     return applied
 

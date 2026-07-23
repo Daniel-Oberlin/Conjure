@@ -1622,3 +1622,33 @@ def test_compose_leaves_room_inactive_without_reals():
     from conjure import server
     doc = server._compose({"environment": {"room": {}}, "entities": []}, {"surfaces": [], "boundary": None})
     assert not doc["environment"]["room"].get("active")
+
+
+def test_move_reauthors_anchor_so_edit_persists(srv, client):
+    # Regression: after §7c a model's pose is driven by meta.anchor (re-solved each capture). A move/rotate
+    # that updates only transform gets reverted ("flash then snap back") — /patch must re-author the anchor.
+    from conjure.plane_anchor import solve_anchor
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_floor_0", "semantic": "floor", "position": [0, 0, 0], "rotation": [-90, 0, 0], "extent": [4, 6]},
+        {"id": "real_wall_1", "semantic": "wall", "position": [2, 1.2, 0], "rotation": [0, 90, 0], "extent": [3, 2.4]},
+        {"id": "real_wall_2", "semantic": "wall", "position": [-2, 1.2, 0], "rotation": [0, -90, 0], "extent": [3, 2.4]},
+        {"id": "real_wall_3", "semantic": "wall", "position": [0, 1.2, 3], "rotation": [0, 0, 0], "extent": [3, 2.4]},
+        {"id": "real_wall_4", "semantic": "wall", "position": [0, 1.2, -3], "rotation": [0, 180, 0], "extent": [3, 2.4]}]})
+    anchor = srv._content_anchor({"position": [0.3, 0, -0.8]}, "grounded")
+    assert anchor
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {
+        "id": "ent_m", "transform": {"position": [0.3, 0, -0.8]}, "components": {"gltf-model": "/a"},
+        "meta": {"placement": "grounded", "anchor": anchor}}}]})
+    client.post("/patch", json={"ops": [{"op": "update", "id": "ent_m", "set": {"transform.position": [1.2, 0, 0.5]}}]})
+    e = next(x for x in _entities(client) if x["id"] == "ent_m")
+    sol = solve_anchor(e["meta"]["anchor"], srv._seed_planes())      # anchor re-authored to the NEW pose
+    assert sol["ok"] and abs(sol["position"][0] - 1.2) < 1e-6 and abs(sol["position"][2] - 0.5) < 1e-6
+
+
+def test_move_leaves_unanchored_content_alone(srv, client):
+    # Content WITHOUT an anchor (client places it from its F_ref pose) must NOT get a spurious anchor on move.
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {
+        "id": "ent_free", "transform": {"position": [0, 1, -2]}, "components": {"gltf-model": "/a"}, "meta": {}}}]})
+    client.post("/patch", json={"ops": [{"op": "update", "id": "ent_free", "set": {"transform.position": [1, 1, -2]}}]})
+    e = next(x for x in _entities(client) if x["id"] == "ent_free")
+    assert "anchor" not in (e.get("meta") or {})
