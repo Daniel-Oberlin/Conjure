@@ -888,7 +888,7 @@
       // identity, so a surface at its captured pose renders at the real-world spot.
       _renderLocal: function (surfaces) {
         localRenderActive = true;                  // from now on, server real-surface ops are ignored (local owns them)
-        var THREE = AFRAME.THREE, groupFired = false;
+        var THREE = AFRAME.THREE;
         // Grouped surface re-lay (--group-surface-relay, default on): the per-surface apply-gate holds EACH
         // surface on its own epoch, so under tracking drift a wall re-lays at one capture while its adjoining
         // floor/ceiling — and a door/window vs its wall's cutout — re-lay at another. Anything that must stay
@@ -907,7 +907,6 @@
             return WM.surfaceMoved(THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL);
           });
           if (anyRelays) {                         // invalidate every surface's gate → applyEntity re-lays it
-            groupFired = true;
             surfaces.forEach(function (s) {
               var el = document.getElementById(s.id);
               if (el) el._geoSig = null;
@@ -928,77 +927,6 @@
           abs[el.id] = (abs[el.id] || 0) + 1;
           if (abs[el.id] >= 3 && el.parentNode) { el.parentNode.removeChild(el); delete abs[el.id]; }
         });
-        // ┌─ TEMP junction-seam probe (rendered surface edges not meeting) — remove when resolved ──────────┐
-        // │ Measures the worst "junction gap" = nearest corner-to-corner distance between any two real       │
-        // │ surfaces whose rectangles come within 0.5 m (a shared edge: wall-wall, WALL-CEILING, wall-floor).│
-        // │ recGap = from the capture records (what we asked to draw); renderGap = from object3D (drawn).    │
-        // │  • recGap grows → the raw/snapped geometry itself has the gap (nothing joins this junction) — the│
-        // │    wall-ceiling/floor case, since joinCorners is wall-WALL only.                                 │
-        // │  • recGap≈0 but renderGap grows → render lags the geometry (async re-lay).                       │
-        // │  • dom > cap (grows) → duplicate/stale surface entities (id churn).                              │
-        if (window.CONJURE_DEBUG_REGISTRATION) {
-          var reals = surfaces.filter(function (s) { return s.extent && s.position; });
-          var domR = wr.querySelectorAll('[data-real="1"]').length;
-          var corners = function (c, q, w, h) {         // the surface rectangle's 4 corners (a-plane: +X width, +Y height)
-            var X = new THREE.Vector3(1, 0, 0).applyQuaternion(q), Y = new THREE.Vector3(0, 1, 0).applyQuaternion(q), o = [];
-            [[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(function (k) {
-              o.push(c.clone().addScaledVector(X, k[0] * w / 2).addScaledVector(Y, k[1] * (h || 0) / 2)); });
-            return o;
-          };
-          var mk = function (render) {
-            return reals.map(function (s) {
-              var c, q;
-              if (render) { var el = document.getElementById(s.id); if (!el || !el.object3D) return null;
-                c = el.object3D.position.clone(); q = el.object3D.quaternion.clone(); }
-              else { c = new THREE.Vector3(s.position[0], s.position[1], s.position[2]);
-                q = eulerYXZToQuat(THREE, s.rotation || [0, 0, 0]); }
-              return { tag: s.semantic + s.id.split("_").pop(), e: corners(c, q, s.extent[0], s.extent[1]) };
-            }).filter(Boolean);
-          };
-          var worst = function (list) {                 // worst junction: max (over near pairs) of nearest corner distance
-            var g = 0, who = "";
-            for (var i = 0; i < list.length; i++) for (var j = i + 1; j < list.length; j++) {
-              var m = Infinity;
-              list[i].e.forEach(function (a) { list[j].e.forEach(function (b) { m = Math.min(m, a.distanceTo(b)); }); });
-              if (m < 0.5 && m > g) { g = m; who = list[i].tag + "|" + list[j].tag; }
-            }
-            return Math.round(g * 100) + "cm" + (who ? "(" + who + ")" : "");
-          };
-          debugLog("corner", "grp=" + (window.CONJURE_GROUP_SURFACE_RELAY !== false) + " fired=" + groupFired
-            + " reals dom=" + domR + " cap=" + reals.length
-            + " recGap=" + worst(mk(false)) + " renderGap=" + worst(mk(true)), true);
-        }
-        // └────────────────────────────────────────────────────────────────────────────────────────────────┘
-        // ┌─ TEMP wall-art standoff probe — surface & photo, DATA vs RENDER, signed perp from the wall ──────┐
-        // │ surfData  = the record we handed the renderer (s.position vs the wall record).                    │
-        // │ surfRender= the surface's ACTUAL drawn pose (object3D). If surfData≈−10mm but surfRender≈0 → the  │
-        // │   apply-gate is holding a stale coplanar pose (the standoff never redrew). If both ≈−10mm → 1 cm  │
-        // │   just reads as coplanar and the photo chain is what's off. photoRender = where the photo is.     │
-        if (window.CONJURE_DEBUG_REGISTRATION) {
-          var photoByHost = {};
-          Array.prototype.forEach.call(wr.children, function (el) { if (el._onSurface) photoByHost[el._onSurface] = el; });
-          var wallRec = {};
-          surfaces.forEach(function (s) { if (s.semantic === "wall") wallRec[s.id] = s; });
-          surfaces.forEach(function (s) {
-            if (s.semantic !== "wall art") return;
-            var w = wallRec[s.hostWall], wEl = document.getElementById(s.hostWall), sEl = document.getElementById(s.id);
-            var dataPerp = "?", surfR = "?", photoR = "?";
-            if (w && w._lq && w._lp && s.position) {                     // DATA perp: record vs wall record
-              var wnD = new THREE.Vector3(0, 1, 0).applyQuaternion(w._lq);
-              dataPerp = Math.round(new THREE.Vector3(s.position[0] - w._lp.x, s.position[1] - w._lp.y,
-                s.position[2] - w._lp.z).dot(wnD) * 1000) + "mm";
-            }
-            if (wEl && wEl.object3D && sEl && sEl.object3D) {            // RENDER perp: object3D vs wall object3D
-              var wp = wEl.object3D.position, wnR = new THREE.Vector3(0, 0, 1).applyQuaternion(wEl.object3D.quaternion);
-              surfR = Math.round(sEl.object3D.position.clone().sub(wp).dot(wnR) * 1000) + "mm";
-              var pEl = photoByHost[s.id];
-              if (pEl && pEl.object3D) photoR = Math.round(pEl.object3D.position.clone().sub(wp).dot(wnR) * 1000) + "mm";
-            }
-            debugLog("artrender", s.id + " host=" + s.hostWall + " surfData=" + dataPerp
-              + " surfRender=" + surfR + " photoRender=" + photoR, true);
-          });
-        }
-        // └────────────────────────────────────────────────────────────────────────────────────────────────┘
       },
       // Place director-authored content (models, props — anything with a remembered F_ref pose) via
       // plane-relative anchors (docs/local-first-geometry.md §5). Since #world-root is identity in a captured
@@ -1529,38 +1457,6 @@
         // Snap ALL insets (captured AND recovered) co-planar to their walls + carve openings — so a
         // recovered door/window/wall-art snaps to its wall instead of floating at the raw anchor pose (§5.2).
         window.RoomSnap.snapInsets(THREE, allSurfaces, window.CONJURE_INSET_STANDOFF);
-        // ┌─ TEMP INSTRUMENTATION — "wall-art 45 flip" investigation (docs/wall-art-45-flip.md) ────────────┐
-        // │ Per inset, log the RECORDED host (seed meta.host_wall) vs the host snapInsets actually PICKED,  │
-        // │ plus whether the recorded wall id is even present in THIS capture. Distinguishes the theories:  │
-        // │  • recordedInCapture=NO  → the recorded id didn't resolve locally → fell back to proximity      │
-        // │    (the likely cause of the intermittent flip on a partition wall).                             │
-        // │  • picked≠recorded while recordedInCapture=yes → a snapInsets by-id bug (shouldn't happen).      │
-        // │ REMOVE this block once the issue is resolved / no longer a concern.                              │
-        if (window.CONJURE_DEBUG_REGISTRATION) {
-          var TH45 = AFRAME.THREE, wallById = {};
-          allSurfaces.forEach(function (s) { if (s.semantic === "wall") wallById[s.id] = s; });
-          allSurfaces.forEach(function (s) {
-            if (["door", "window", "wall art"].indexOf(s.semantic) < 0) return;
-            var rec = seedHostWall[s.id] || "(none)", picked = s.hostWall || "(none)";
-            var inCap = rec === "(none)" ? "-" : (wallById[rec] ? "yes" : "NO");
-            var flag = (rec !== "(none)" && picked !== rec) ? "  <-- MISPICK" : "";
-            // Measure why a surface isn't standing off: its ACTUAL perpendicular distance from its host
-            // wall's plane after snapping (should be ~10 mm), and its normal·wall-normal (co/anti/⟂ — settles
-            // the facing question with a number, not the memory). perp≈0 → not offset perpendicular; dot≈0 →
-            // the standoff slid along the wall instead of proud of it; picked=(none) → never matched a wall.
-            var w = wallById[picked], perp = "?", dot = "?";
-            if (w && w._lq && w._lp && s._lq && s.position) {
-              var wn = new TH45.Vector3(0, 1, 0).applyQuaternion(w._lq);
-              var sn = new TH45.Vector3(0, 1, 0).applyQuaternion(s._lq);
-              var rel = new TH45.Vector3(s.position[0] - w._lp.x, s.position[1] - w._lp.y, s.position[2] - w._lp.z);
-              perp = Math.round(rel.dot(wn) * 1000) + "mm";
-              dot = wn.dot(sn).toFixed(2);
-            }
-            debugLog("host45", s.id + " picked=" + picked + " recorded=" + rec + " inCap=" + inCap
-              + " perp=" + perp + " dot(sn,wn)=" + dot + (s._recovered ? " (rec)" : "") + flag, true);
-          });
-        }
-        // └─────────────────────────────────────────────────────────────────────────────────────────────────┘
         this._renderLocal(allSurfaces);
         this._placeContent(allSurfaces);                  // director content → plane-relative anchors (docs §5)
 

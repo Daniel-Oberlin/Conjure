@@ -70,15 +70,15 @@ Conclusion: the two anti-parallel partition faces **cannot** be disambiguated fr
 
 ## Open questions / next steps if it recurs
 
-1. **Confirm the pick (instrumentation is IN PLACE).** A temporary `[host45]` log block sits right after the
-   local `snapInsets` call in `client/conjure-client.js` (search "wall-art 45 flip"). With
-   `--debug-registration`, each inset logs `recorded=<seed host_wall> picked=<host snapInsets chose>
-   recordedInCapture=<yes|NO>`. Read it on the headset while watching wall-art 45:
+1. **Confirm the pick (instrumentation REMOVED — re-add if it recurs).** A temporary `[host45]` log block
+   previously sat right after the local `snapInsets` call in `client/conjure-client.js`; it was removed once
+   the standoff/coplanar scare turned out to be a misread (a nearby door seen edge-on, not the wall-art). To
+   re-instrument if the flip actually recurs: under `--debug-registration`, log each inset's `recorded=<seed
+   host_wall> picked=<host snapInsets chose> recordedInCapture=<yes|NO>` right after that `snapInsets` call.
    - `recordedInCapture=NO` → the recorded wall id didn't resolve this capture → proximity fallback (the
      leading theory for the recovered symptom).
    - `picked≠recorded` with `recordedInCapture=yes` → a by-id bug in `snapInsets`.
    - all `=yes`, `picked=recorded`, and 45 still visually behind → look elsewhere (the on-surface ride, §5a).
-   **Remove this block when the issue is closed.**
 2. **Resolve the by-id failure (most likely real cause).** Why would `real_wall_36` be absent from a
    capture's local walls so the recorded id doesn't resolve? Candidates: matchRef didn't map a captured wall
    to `real_wall_36` that frame (id churn on the partition), or wall_36 genuinely wasn't in `detectedPlanes`
