@@ -248,6 +248,62 @@ it. It's also the **sole consumer** of the in-plane / anchor placement for inset
   because an inset's live normal may be **inward** (~180° from its host; see `matchRef`). See the intermittent
   "image behind its wall" bug in `docs/wall-art-45-flip.md`.
 
+### 5.3 Corner-relative inset placement & identity (DESIGN — not yet built)
+
+**Problem this fixes.** Insets currently (a) get their identity from `matchRef` by **centroid** proximity
+(0.5 m), and (b) when *recovered*, get their position by **riding the host wall's centroid pose**. Both lean
+on the wall's *centroid*, which is a **scan artifact** — it's the center of whatever rectangle the Quest
+happened to capture, so it varies with scan coverage between captures and, especially, **between devices**
+(a guest's scan of the same wall centres differently). That drives the observed bugs: styled surfaces
+**re-mint** (identity) and lose their color, and a guest's insets land wrong (position). The principle we
+already apply to content — *anchor to shared structural features, never to a device-specific centroid* —
+should apply to insets too.
+
+**The reference: structural intersections, not the centroid.** A wall's **corners** (wall ∩ wall) and its
+**floor/ceiling edges** (wall ∩ floor, wall ∩ ceiling) are *shared* features — both devices derive the same
+physical points from where surfaces actually meet, independent of scan coverage. So an inset's place on its
+wall is defined by its **distances to those intersections**, over-determined:
+
+- **Along-wall (horizontal):** distance from each of the wall's **corner points**. Store both when the wall
+  has two (over-constrained → least-squares/average, robust to per-corner noise and to a differently-captured
+  wall length); use one if only one is available; fall back to the centroid **only** if the wall has no
+  captured corner at all (a freestanding wall — a known-degraded case, and the one most likely to misplace a
+  guest's inset, so flag it).
+- **Vertical (height):** distance from the **wall∩floor** and **wall∩ceiling** lines, same 2→1→fallback.
+- **Perpendicular (depth):** the fixed uniform standoff (§5, already landed — every inset pinned ~1 cm in
+  front of its wall plane).
+- **Orientation:** the host wall's.
+
+This is the *same* over-specify-and-average philosophy as the plane-relative anchors for content — just
+anchored to corner **points** instead of wall **planes**. That distinction is why it fixes the along-wall
+under-constraint that the original plane-multilateration recovery had (a plane can't fix the along-wall
+coordinate; a corner point can).
+
+**Seed representation.** An inset stops storing a *pose* and instead stores its structural distances, e.g.
+`{ semantic, extent:[w,h], host_wall, along:[{corner:<adjacent-wall-id>, dist}...], vertical:[{edge:"floor"|"ceiling", dist}...] }`.
+Because these are distances to *shared* features, **any client reconstructs the inset against its own
+captured intersections** — the guest-robustness falls out of the representation, not a runtime hack.
+
+**Reconstruction (recovery path).** For an inset the client didn't capture this frame: find its `host_wall`
+locally; find that wall's corners (from `joinCorners`) and its floor/ceiling edges; solve the along-wall and
+height coordinates from the stored distances (2 refs → least-squares, 1 → direct, 0 → centroid fallback);
+apply the fixed standoff + wall orientation. A **captured** inset skips this — it uses its own live Quest
+position, projected to the wall at the standoff (§5.2 / §5) — but the seed's structural distances are
+refreshed from a good capture (on establish / structural change) so recovery always has them.
+
+**Identity (the re-mint fix).** Decouple inset identity from absolute position: an inset is
+**`semantic + host_wall + slot`** (its ordinal / structural place on that wall), not "the door near
+coordinate X". `matchRef`'s centroid+threshold test stops owning insets; a wall-relative resolver does. Then
+an inset's live position can move freely along its wall (or shift with a map relocalization) **without ever
+re-minting** — so it keeps its id and its director styling. This depends on **wall** identity being stable
+first (identify a wall by its plane — normal + perpendicular offset — not its centroid; see §10), so do the
+wall layer before/with the inset layer.
+
+**Status.** The uniform perpendicular standoff (§5) is landed and testable. The corner-relative
+representation + reconstruction + wall-relative identity are the remaining, larger refactor (touches the seed
+schema, `matchRef`, `snapInsets`, and recovery). Edge cases to handle: a wall with no captured corner
+(freestanding → centroid fallback), and a junction door bridging two rooms (pick one host wall consistently).
+
 ## 6. Client lifecycle
 
 1. **Join / activate:** receive the shared model (surface set + ids/semantics, styling, on-surface content,
