@@ -430,11 +430,13 @@
     var V3 = THREE.Vector3;
     var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
     walls.forEach(function (wl) { wl.holes = []; });            // recomputed fresh every capture
-    // Which surfaces are insets, and the UNIFORM perpendicular standoff (m) every one is pinned to in front
-    // of its wall — same distance for doors, windows, and wall art. (The value is small; enough to clear
-    // z-fighting with the wall.)
+    // Which surfaces are insets, and the perpendicular standoff (m) each is pinned to in front of its wall.
+    // TEMP EXPERIMENT: wall art bumped to 0.10 m (doors/windows kept at 0.01 m as the control) to test
+    // whether the standoff actually drives the wall-art surface's rendered depth — if it lifts visibly off
+    // the wall at 10 cm, the standoff works and 1 cm was just too subtle for a bare outline; if it's STILL
+    // coplanar at 10 cm, the render isn't honoring it. Revert to 0.01 after the test.
     /** @type {Record<string, number>} */
-    var INSET = { "door": 0.01, "window": 0.01, "wall art": 0.01 };
+    var INSET = { "door": 0.01, "window": 0.01, "wall art": 0.10 };
     surfaces.forEach(function (s) {
       var off = INSET[s.semantic];
       if (off == null || !walls.length) return;
