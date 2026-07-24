@@ -969,6 +969,36 @@
             + " recGap=" + worst(mk(false)) + " renderGap=" + worst(mk(true)), true);
         }
         // └────────────────────────────────────────────────────────────────────────────────────────────────┘
+        // ┌─ TEMP wall-art standoff probe — surface & photo, DATA vs RENDER, signed perp from the wall ──────┐
+        // │ surfData  = the record we handed the renderer (s.position vs the wall record).                    │
+        // │ surfRender= the surface's ACTUAL drawn pose (object3D). If surfData≈−10mm but surfRender≈0 → the  │
+        // │   apply-gate is holding a stale coplanar pose (the standoff never redrew). If both ≈−10mm → 1 cm  │
+        // │   just reads as coplanar and the photo chain is what's off. photoRender = where the photo is.     │
+        if (window.CONJURE_DEBUG_REGISTRATION) {
+          var photoByHost = {};
+          Array.prototype.forEach.call(wr.children, function (el) { if (el._onSurface) photoByHost[el._onSurface] = el; });
+          var wallRec = {};
+          surfaces.forEach(function (s) { if (s.semantic === "wall") wallRec[s.id] = s; });
+          surfaces.forEach(function (s) {
+            if (s.semantic !== "wall art") return;
+            var w = wallRec[s.hostWall], wEl = document.getElementById(s.hostWall), sEl = document.getElementById(s.id);
+            var dataPerp = "?", surfR = "?", photoR = "?";
+            if (w && w._lq && w._lp && s.position) {                     // DATA perp: record vs wall record
+              var wnD = new THREE.Vector3(0, 1, 0).applyQuaternion(w._lq);
+              dataPerp = Math.round(new THREE.Vector3(s.position[0] - w._lp.x, s.position[1] - w._lp.y,
+                s.position[2] - w._lp.z).dot(wnD) * 1000) + "mm";
+            }
+            if (wEl && wEl.object3D && sEl && sEl.object3D) {            // RENDER perp: object3D vs wall object3D
+              var wp = wEl.object3D.position, wnR = new THREE.Vector3(0, 0, 1).applyQuaternion(wEl.object3D.quaternion);
+              surfR = Math.round(sEl.object3D.position.clone().sub(wp).dot(wnR) * 1000) + "mm";
+              var pEl = photoByHost[s.id];
+              if (pEl && pEl.object3D) photoR = Math.round(pEl.object3D.position.clone().sub(wp).dot(wnR) * 1000) + "mm";
+            }
+            debugLog("artrender", s.id + " host=" + s.hostWall + " surfData=" + dataPerp
+              + " surfRender=" + surfR + " photoRender=" + photoR, true);
+          });
+        }
+        // └────────────────────────────────────────────────────────────────────────────────────────────────┘
       },
       // Place director-authored content (models, props — anything with a remembered F_ref pose) via
       // plane-relative anchors (docs/local-first-geometry.md §5). Since #world-root is identity in a captured
