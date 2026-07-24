@@ -63,20 +63,27 @@ test("snapInsets places a door in front of its wall, toward the interior", () =>
   assert.match(door.debug.snap, /wall=.*clr=/);
 });
 
-test("snapInsets pins EVERY inset to a uniform standoff in front of its wall (captured or recovered)", () => {
-  // A door estimated 0.2 m off its wall (x=2, normal +X, interior −X) gets pinned to the fixed ~1 cm
-  // standoff, whether captured or recovered. Its along-wall/height stay put — only the perpendicular moves.
-  const off = 0.01;
+test("snapInsets pins EVERY inset to the given standoff in front of its wall (captured or recovered)", () => {
+  // A door estimated 0.2 m off its wall (x=2, normal +X, interior −X) gets pinned to the passed standoff,
+  // whether captured or recovered. Its along-wall/height stay put — only the perpendicular moves.
+  const off = 0.05;
   for (const recovered of [false, true]) {
     const wall = vert("real_wall_0", "wall", [2, 1.2, 0], 90, [4, 2.4]);
     const door = vert("real_door_1", "door", [1.8, 1.0, 0.3], 90, [0.8, 2]);   // 0.2 m off, 0.3 m along
     if (recovered) door._recovered = true;
-    RS.snapInsets(THREE, [wall, door]);
+    RS.snapInsets(THREE, [wall, door], off);
     const who = recovered ? "recovered" : "captured";
     assert.ok(Math.abs(door.position[0] - (2 - off)) < 0.005, who + " door pinned to wall−standoff: " + door.position[0]);
     assert.ok(Math.abs(door.position[2] - 0.3) < 1e-9, who + " door keeps its live along-wall spot");
     assert.ok(Math.abs(door.position[1] - 1.0) < 1e-9, who + " door keeps its live height");
   }
+});
+
+test("snapInsets standoff defaults to 2 cm when unspecified", () => {
+  const wall = vert("real_wall_0", "wall", [2, 1.2, 0], 90, [4, 2.4]);
+  const door = vert("real_door_1", "door", [1.8, 1.0, 0], 90, [0.8, 2]);
+  RS.snapInsets(THREE, [wall, door]);
+  assert.ok(Math.abs(door.position[0] - (2 - 0.02)) < 0.005, "default standoff 2 cm: " + door.position[0]);
 });
 
 test("snapInsets carves the wall the door is WITHIN, not a coplanar neighbour", () => {

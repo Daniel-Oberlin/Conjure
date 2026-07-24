@@ -74,6 +74,8 @@ class Settings:
     apply_tol_pos: float = 0.02                      # metres a surface must move to re-lay it
     apply_tol_rot_deg: float = 1.0                   # degrees it must rotate to re-lay it
     apply_tol_ext: float = 0.02                      # metres its size/opening must change to re-lay it
+    inset_standoff: float = 0.02                     # m a door/window/wall-art surface sits in front of its wall
+    on_surface_standoff: float = 0.02                # m an on-surface image sits in front of its host surface
     group_surface_relay: bool = True                 # re-lay ALL real surfaces together when any crosses
     #                                                  tolerance, so wall↔floor/ceiling junctions and
     #                                                  inset↔cutout share one render epoch and don't drift
@@ -133,6 +135,8 @@ def get_settings() -> Settings:
         apply_tol_pos=float(os.environ.get("CONJURE_APPLY_TOL_POS", "0.02")),
         apply_tol_rot_deg=float(os.environ.get("CONJURE_APPLY_TOL_ROT_DEG", "1.0")),
         apply_tol_ext=float(os.environ.get("CONJURE_APPLY_TOL_EXT", "0.02")),
+        inset_standoff=float(os.environ.get("CONJURE_INSET_STANDOFF", "0.02")),
+        on_surface_standoff=float(os.environ.get("CONJURE_ON_SURFACE_STANDOFF", "0.02")),
         group_surface_relay=(os.environ.get("CONJURE_GROUP_SURFACE_RELAY", "1") != "0"),
         force_geo=(os.environ.get("CONJURE_FORCE_GEO", "").strip() or None),
         drop_surface=(os.environ.get("CONJURE_DROP_SURFACE", "").strip() or None),

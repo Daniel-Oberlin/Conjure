@@ -81,6 +81,12 @@ def main() -> None:
     gate.add_argument("--apply-tol-ext", type=float, default=0.02, metavar="METERS",
                       help="how much (m) a surface's size or an opening must change before it's redrawn "
                            "(default: 0.02 = 2 cm).")
+    gate.add_argument("--inset-standoff", type=float, default=0.02, metavar="METERS",
+                      help="how far (m) a door/window/wall-art SURFACE sits in front of its wall (default: "
+                           "0.02 = 2 cm). Bigger = the surface reads as visibly separated from the wall.")
+    gate.add_argument("--on-surface-standoff", type=float, default=0.02, metavar="METERS",
+                      help="how far (m) an on-surface IMAGE sits in front of its host surface (default: 0.02 "
+                           "= 2 cm). Applies to newly placed / re-anchored images.")
     gate.add_argument("--group-surface-relay", choices=["on", "off"], default="on",
                       help="when ANY real surface crosses the apply-tolerance, re-lay ALL of them together so "
                            "wall-floor/ceiling junctions and door/window cutouts share one render epoch and "
@@ -105,6 +111,8 @@ def main() -> None:
     os.environ["CONJURE_APPLY_TOL_POS"] = str(args.apply_tol_pos)
     os.environ["CONJURE_APPLY_TOL_ROT_DEG"] = str(args.apply_tol_rot)
     os.environ["CONJURE_APPLY_TOL_EXT"] = str(args.apply_tol_ext)
+    os.environ["CONJURE_INSET_STANDOFF"] = str(args.inset_standoff)
+    os.environ["CONJURE_ON_SURFACE_STANDOFF"] = str(args.on_surface_standoff)
     os.environ["CONJURE_GROUP_SURFACE_RELAY"] = "1" if args.group_surface_relay == "on" else "0"
     uvicorn.run("conjure.server:app", host=args.host, port=args.port, reload=False)
 

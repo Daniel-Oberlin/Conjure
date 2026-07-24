@@ -424,22 +424,19 @@
   /**
    * @param {THREE_NS} THREE
    * @param {SnapSurface[]} surfaces
+   * @param {number} [standoff]   perpendicular distance (m) every inset sits in front of its wall (default 0.02)
    * @returns {void}
    */
-  function snapInsets(THREE, surfaces) {
+  function snapInsets(THREE, surfaces, standoff) {
     var V3 = THREE.Vector3;
     var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
     walls.forEach(function (wl) { wl.holes = []; });            // recomputed fresh every capture
-    // Which surfaces are insets, and the perpendicular standoff (m) each is pinned to in front of its wall.
-    // TEMP EXPERIMENT: wall art bumped to 0.10 m (doors/windows kept at 0.01 m as the control) to test
-    // whether the standoff actually drives the wall-art surface's rendered depth — if it lifts visibly off
-    // the wall at 10 cm, the standoff works and 1 cm was just too subtle for a bare outline; if it's STILL
-    // coplanar at 10 cm, the render isn't honoring it. Revert to 0.01 after the test.
-    /** @type {Record<string, number>} */
-    var INSET = { "door": 0.01, "window": 0.01, "wall art": 0.10 };
+    // Doors/windows/wall-art are pinned to a UNIFORM perpendicular standoff `off` (m) in front of their
+    // wall — tunable via --inset-standoff (window.CONJURE_INSET_STANDOFF, passed in here).
+    var INSETS = { "door": true, "window": true, "wall art": true };
+    var off = (typeof standoff === "number" && standoff >= 0) ? standoff : 0.02;
     surfaces.forEach(function (s) {
-      var off = INSET[s.semantic];
-      if (off == null || !walls.length) return;
+      if (!INSETS[s.semantic] || !walls.length) return;
       // A WebXR plane lies in its local X-Z plane, so its NORMAL is the +Y axis (not +Z).
       var sn = new V3(0, 1, 0).applyQuaternion(s._lq), bestD = 0.3;
       var best = /** @type {SnapSurface|null} */ (null);

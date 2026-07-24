@@ -1528,7 +1528,7 @@
         var allSurfaces = recovered.length ? localSurfaces.concat(recovered) : localSurfaces;
         // Snap ALL insets (captured AND recovered) co-planar to their walls + carve openings — so a
         // recovered door/window/wall-art snaps to its wall instead of floating at the raw anchor pose (§5.2).
-        window.RoomSnap.snapInsets(THREE, allSurfaces);
+        window.RoomSnap.snapInsets(THREE, allSurfaces, window.CONJURE_INSET_STANDOFF);
         // ┌─ TEMP INSTRUMENTATION — "wall-art 45 flip" investigation (docs/wall-art-45-flip.md) ────────────┐
         // │ Per inset, log the RECORDED host (seed meta.host_wall) vs the host snapInsets actually PICKED,  │
         // │ plus whether the recorded wall id is even present in THIS capture. Distinguishes the theories:  │
@@ -1572,7 +1572,7 @@
         // the shared model stays consistent with the raw geometry every headset draws (docs §9). Pure
         // geometry, unit-tested in client/room-snap.js.
         window.RoomSnap.joinCorners(THREE, surfaces);
-        window.RoomSnap.snapInsets(THREE, surfaces);
+        window.RoomSnap.snapInsets(THREE, surfaces, window.CONJURE_INSET_STANDOFF);
         surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
         this.lastPost = time;
         var boundary = null;

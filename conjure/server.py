@@ -839,7 +839,8 @@ async def index() -> HTMLResponse:
                         f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_FORCE_GEO={fg};"
                         f"window.CONJURE_DROP_SURFACE={ds};"
                         f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};"
-                        f"window.CONJURE_APPLY_TOL={tol};window.CONJURE_GROUP_SURFACE_RELAY={gwr};</script>\n  </head>")
+                        f"window.CONJURE_APPLY_TOL={tol};window.CONJURE_GROUP_SURFACE_RELAY={gwr};"
+                        f"window.CONJURE_INSET_STANDOFF={settings.inset_standoff};</script>\n  </head>")
     return HTMLResponse(html, headers=_NO_STORE)
 
 
@@ -2538,7 +2539,7 @@ def _on_surface_set(spos: list[float], srot: list[float], extent, geo: dict) -> 
     offset (§7c-B2) so the client can ride it without its own copy of the host seed pose."""
     fr = _face_room(srot)
     f = fr["forward"]
-    pos = [spos[i] + 0.02 * f[i] for i in range(3)]
+    pos = [spos[i] + get_settings().on_surface_standoff * f[i] for i in range(3)]
     out: dict = {"transform.position": pos, "transform.rotation": fr["rotation"],
                  "meta.surface_offset": _surface_offset(spos, srot, pos, fr["rotation"])}
     if extent and geo.get("width") and geo.get("height"):
@@ -2703,7 +2704,7 @@ async def place_image(req: PlaceImageRequest) -> dict:
             width, height = _fit_dims(rec, extent)
         fr = _face_room(srot)                              # face the room interior (-normal), upright
         rotation = fr["rotation"]
-        pos = [spos[i] + 0.02 * fr["forward"][i] for i in range(3)]   # 2 cm toward the viewer ⇒ no z-fight
+        pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]   # toward the viewer
     eid = req.name or f"ent_image_{uuid4().hex[:6]}"
     meta = {"generated": True, "provider": rec.provider, "model": rec.model,
             "prompt": rec.prompt, "image_id": rec.id}
