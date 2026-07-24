@@ -888,7 +888,7 @@
       // identity, so a surface at its captured pose renders at the real-world spot.
       _renderLocal: function (surfaces) {
         localRenderActive = true;                  // from now on, server real-surface ops are ignored (local owns them)
-        var THREE = AFRAME.THREE;
+        var THREE = AFRAME.THREE, gwrFired = false;
         // Grouped wall re-lay (--group-wall-relay, default on): the per-surface apply-gate holds a wall until
         // IT crosses tolerance, so corner-joined walls re-lay at different captures and their shared corner
         // slowly opens a seam over a session (tracking drift; a reload re-syncs). Fix: if ANY wall would
@@ -904,6 +904,7 @@
             return WM.surfaceMoved(THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL);
           });
           if (anyWallRelays) {                     // invalidate every wall's gate → applyEntity re-lays it
+            gwrFired = true;
             surfaces.forEach(function (s) {
               if (s.semantic !== "wall") return;
               var el = document.getElementById(s.id);
@@ -925,6 +926,40 @@
           abs[el.id] = (abs[el.id] || 0) + 1;
           if (abs[el.id] >= 3 && el.parentNode) { el.parentNode.removeChild(el); delete abs[el.id]; }
         });
+        // ┌─ TEMP corner-seam probe (rendered wall wireframes not meeting) — remove when resolved ──────────┐
+        // │ recGap  = worst gap between adjacent walls' ends in the joinCorners OUTPUT (the records we drew) │
+        // │ renderGap = same, but from the walls' ACTUAL object3D poses (what's on screen).                 │
+        // │  • recGap grows  → joinCorners isn't closing the corner (drift breaks its pairing) — #2          │
+        // │  • recGap≈0 but renderGap grows → render lags the joined pose (async re-lay) — #1                │
+        // │  • dom > cap (grows) → duplicate/stale wall entities (id churn) — #3                             │
+        if (window.CONJURE_DEBUG_REGISTRATION) {
+          var capW = surfaces.filter(function (s) { return s.semantic === "wall" && s.extent; });
+          var domW = wr.querySelectorAll('[data-real="1"][data-semantic="wall"]').length;
+          var endsOf = function (c, q, w) {
+            var wx = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+            return [c.clone().addScaledVector(wx, w / 2), c.clone().addScaledVector(wx, -w / 2)];
+          };
+          var worst = function (list) {                 // max end-to-end gap among pairs whose ends are < 0.4 m (a corner)
+            var g = 0, who = "";
+            for (var i = 0; i < list.length; i++) for (var j = i + 1; j < list.length; j++) {
+              var m = Infinity;
+              list[i].e.forEach(function (a) { list[j].e.forEach(function (b) { m = Math.min(m, a.distanceTo(b)); }); });
+              if (m < 0.4 && m > g) { g = m; who = list[i].id.slice(-6) + "|" + list[j].id.slice(-6); }
+            }
+            return Math.round(g * 100) + "cm" + (who ? "(" + who + ")" : "");
+          };
+          var rec = capW.map(function (s) { return { id: s.id, e: endsOf(
+            new THREE.Vector3(s.position[0], s.position[1], s.position[2]),
+            eulerYXZToQuat(THREE, s.rotation || [0, 0, 0]), s.extent[0]) }; });
+          var ren = [];
+          capW.forEach(function (s) { var el = document.getElementById(s.id);
+            if (el && el.object3D) ren.push({ id: s.id, e: endsOf(
+              el.object3D.position.clone(), el.object3D.quaternion.clone(), s.extent[0]) }); });
+          debugLog("corner", "gwr=" + (window.CONJURE_GROUP_WALL_RELAY !== false) + " fired=" + gwrFired
+            + " walls dom=" + domW + " cap=" + capW.length
+            + " recGap=" + worst(rec) + " renderGap=" + worst(ren), true);
+        }
+        // └────────────────────────────────────────────────────────────────────────────────────────────────┘
       },
       // Place director-authored content (models, props — anything with a remembered F_ref pose) via
       // plane-relative anchors (docs/local-first-geometry.md §5). Since #world-root is identity in a captured
