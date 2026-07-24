@@ -926,38 +926,45 @@
           abs[el.id] = (abs[el.id] || 0) + 1;
           if (abs[el.id] >= 3 && el.parentNode) { el.parentNode.removeChild(el); delete abs[el.id]; }
         });
-        // ┌─ TEMP corner-seam probe (rendered wall wireframes not meeting) — remove when resolved ──────────┐
-        // │ recGap  = worst gap between adjacent walls' ends in the joinCorners OUTPUT (the records we drew) │
-        // │ renderGap = same, but from the walls' ACTUAL object3D poses (what's on screen).                 │
-        // │  • recGap grows  → joinCorners isn't closing the corner (drift breaks its pairing) — #2          │
-        // │  • recGap≈0 but renderGap grows → render lags the joined pose (async re-lay) — #1                │
-        // │  • dom > cap (grows) → duplicate/stale wall entities (id churn) — #3                             │
+        // ┌─ TEMP junction-seam probe (rendered surface edges not meeting) — remove when resolved ──────────┐
+        // │ Measures the worst "junction gap" = nearest corner-to-corner distance between any two real       │
+        // │ surfaces whose rectangles come within 0.5 m (a shared edge: wall-wall, WALL-CEILING, wall-floor).│
+        // │ recGap = from the capture records (what we asked to draw); renderGap = from object3D (drawn).    │
+        // │  • recGap grows → the raw/snapped geometry itself has the gap (nothing joins this junction) — the│
+        // │    wall-ceiling/floor case, since joinCorners is wall-WALL only.                                 │
+        // │  • recGap≈0 but renderGap grows → render lags the geometry (async re-lay).                       │
+        // │  • dom > cap (grows) → duplicate/stale surface entities (id churn).                              │
         if (window.CONJURE_DEBUG_REGISTRATION) {
-          var capW = surfaces.filter(function (s) { return s.semantic === "wall" && s.extent; });
-          var domW = wr.querySelectorAll('[data-real="1"][data-semantic="wall"]').length;
-          var endsOf = function (c, q, w) {
-            var wx = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
-            return [c.clone().addScaledVector(wx, w / 2), c.clone().addScaledVector(wx, -w / 2)];
+          var reals = surfaces.filter(function (s) { return s.extent && s.position; });
+          var domR = wr.querySelectorAll('[data-real="1"]').length;
+          var corners = function (c, q, w, h) {         // the surface rectangle's 4 corners (a-plane: +X width, +Y height)
+            var X = new THREE.Vector3(1, 0, 0).applyQuaternion(q), Y = new THREE.Vector3(0, 1, 0).applyQuaternion(q), o = [];
+            [[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(function (k) {
+              o.push(c.clone().addScaledVector(X, k[0] * w / 2).addScaledVector(Y, k[1] * (h || 0) / 2)); });
+            return o;
           };
-          var worst = function (list) {                 // max end-to-end gap among pairs whose ends are < 0.4 m (a corner)
+          var mk = function (render) {
+            return reals.map(function (s) {
+              var c, q;
+              if (render) { var el = document.getElementById(s.id); if (!el || !el.object3D) return null;
+                c = el.object3D.position.clone(); q = el.object3D.quaternion.clone(); }
+              else { c = new THREE.Vector3(s.position[0], s.position[1], s.position[2]);
+                q = eulerYXZToQuat(THREE, s.rotation || [0, 0, 0]); }
+              return { tag: s.semantic + s.id.split("_").pop(), e: corners(c, q, s.extent[0], s.extent[1]) };
+            }).filter(Boolean);
+          };
+          var worst = function (list) {                 // worst junction: max (over near pairs) of nearest corner distance
             var g = 0, who = "";
             for (var i = 0; i < list.length; i++) for (var j = i + 1; j < list.length; j++) {
               var m = Infinity;
               list[i].e.forEach(function (a) { list[j].e.forEach(function (b) { m = Math.min(m, a.distanceTo(b)); }); });
-              if (m < 0.4 && m > g) { g = m; who = list[i].id.slice(-6) + "|" + list[j].id.slice(-6); }
+              if (m < 0.5 && m > g) { g = m; who = list[i].tag + "|" + list[j].tag; }
             }
             return Math.round(g * 100) + "cm" + (who ? "(" + who + ")" : "");
           };
-          var rec = capW.map(function (s) { return { id: s.id, e: endsOf(
-            new THREE.Vector3(s.position[0], s.position[1], s.position[2]),
-            eulerYXZToQuat(THREE, s.rotation || [0, 0, 0]), s.extent[0]) }; });
-          var ren = [];
-          capW.forEach(function (s) { var el = document.getElementById(s.id);
-            if (el && el.object3D) ren.push({ id: s.id, e: endsOf(
-              el.object3D.position.clone(), el.object3D.quaternion.clone(), s.extent[0]) }); });
           debugLog("corner", "gwr=" + (window.CONJURE_GROUP_WALL_RELAY !== false) + " fired=" + gwrFired
-            + " walls dom=" + domW + " cap=" + capW.length
-            + " recGap=" + worst(rec) + " renderGap=" + worst(ren), true);
+            + " reals dom=" + domR + " cap=" + reals.length
+            + " recGap=" + worst(mk(false)) + " renderGap=" + worst(mk(true)), true);
         }
         // └────────────────────────────────────────────────────────────────────────────────────────────────┘
       },
