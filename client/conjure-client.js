@@ -1507,15 +1507,27 @@
         // │  • picked≠recorded while recordedInCapture=yes → a snapInsets by-id bug (shouldn't happen).      │
         // │ REMOVE this block once the issue is resolved / no longer a concern.                              │
         if (window.CONJURE_DEBUG_REGISTRATION) {
-          var wallIds = {};
-          allSurfaces.forEach(function (s) { if (s.semantic === "wall") wallIds[s.id] = 1; });
+          var TH45 = AFRAME.THREE, wallById = {};
+          allSurfaces.forEach(function (s) { if (s.semantic === "wall") wallById[s.id] = s; });
           allSurfaces.forEach(function (s) {
             if (["door", "window", "wall art"].indexOf(s.semantic) < 0) return;
             var rec = seedHostWall[s.id] || "(none)", picked = s.hostWall || "(none)";
-            var inCap = rec === "(none)" ? "-" : (wallIds[rec] ? "yes" : "NO");
+            var inCap = rec === "(none)" ? "-" : (wallById[rec] ? "yes" : "NO");
             var flag = (rec !== "(none)" && picked !== rec) ? "  <-- MISPICK" : "";
-            debugLog("host45", s.id + " recorded=" + rec + " picked=" + picked
-              + " recordedInCapture=" + inCap + (s._recovered ? " (recovered)" : "") + flag, true);
+            // Measure why a surface isn't standing off: its ACTUAL perpendicular distance from its host
+            // wall's plane after snapping (should be ~10 mm), and its normal·wall-normal (co/anti/⟂ — settles
+            // the facing question with a number, not the memory). perp≈0 → not offset perpendicular; dot≈0 →
+            // the standoff slid along the wall instead of proud of it; picked=(none) → never matched a wall.
+            var w = wallById[picked], perp = "?", dot = "?";
+            if (w && w._lq && w._lp && s._lq && s.position) {
+              var wn = new TH45.Vector3(0, 1, 0).applyQuaternion(w._lq);
+              var sn = new TH45.Vector3(0, 1, 0).applyQuaternion(s._lq);
+              var rel = new TH45.Vector3(s.position[0] - w._lp.x, s.position[1] - w._lp.y, s.position[2] - w._lp.z);
+              perp = Math.round(rel.dot(wn) * 1000) + "mm";
+              dot = wn.dot(sn).toFixed(2);
+            }
+            debugLog("host45", s.id + " picked=" + picked + " recorded=" + rec + " inCap=" + inCap
+              + " perp=" + perp + " dot(sn,wn)=" + dot + (s._recovered ? " (rec)" : "") + flag, true);
           });
         }
         // └─────────────────────────────────────────────────────────────────────────────────────────────────┘
