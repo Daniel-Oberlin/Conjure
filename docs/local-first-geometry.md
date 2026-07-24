@@ -416,11 +416,16 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    once `localRenderActive` (a desktop viewer, which never captures, still renders the server's surfaces).
    *(Getting into a captured room depends on the GPS-gated space-selection flow; a slow/missed fix now keeps
    the view blanked-to-passthrough and retries instead of dropping into the void world — fixed.)*
-   **Grouped wall re-lay (`--group-wall-relay`, default on):** because the per-surface gate holds each wall
-   independently, corner-joined walls re-lay at different captures under tracking drift and their shared
-   corner slowly opens a seam over a session (a reload re-syncs). So when ANY wall crosses tolerance this
-   capture, `_renderLocal` re-lays ALL walls together — one epoch, corners stay closed. Off = the per-wall
-   baseline (reproduces the seams) for A/B.
+   **Grouped surface re-lay (`--group-surface-relay`, default on):** the per-surface gate holds EACH surface
+   on its own epoch, so under tracking drift a wall re-lays at one capture while its adjoining floor/ceiling
+   — and a door/window vs its wall's *cutout* — re-lay at another. Anything that must stay aligned ACROSS
+   surfaces then opens a seam over a session (wall↔floor/ceiling junctions; inset↔cutout, since the cutout
+   lives in the wall mesh while the inset is its own surface). Each capture is internally consistent
+   (`joinCorners`/`snapInsets`), so the divergence is purely render epoch — a reset re-lays everything at
+   once, which is why it heals then. So when ANY real surface crosses tolerance this capture, `_renderLocal`
+   re-lays them ALL together (one epoch — the room shares one tracking frame). Off = per-surface baseline
+   (reproduces the seams) for A/B. *(Wall-WALL corners were the first to stay closed once walls were
+   grouped — that pointed the way; extending to all surfaces closes the wall-floor/ceiling and cutout seams.)*
 3. **✅ Free content / skybox / grounded via anchors** (§5 b–d). `_placeContent`, each capture, handles all
    four modes: **free** content multilaterates its F_ref pose against the local walls (§5b); **grounded**
    content (`meta.placement:"grounded"` — set on dropped models, which auto-sit on the floor) snaps Y to the

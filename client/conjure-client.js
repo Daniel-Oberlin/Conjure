@@ -888,25 +888,27 @@
       // identity, so a surface at its captured pose renders at the real-world spot.
       _renderLocal: function (surfaces) {
         localRenderActive = true;                  // from now on, server real-surface ops are ignored (local owns them)
-        var THREE = AFRAME.THREE, gwrFired = false;
-        // Grouped wall re-lay (--group-wall-relay, default on): the per-surface apply-gate holds a wall until
-        // IT crosses tolerance, so corner-joined walls re-lay at different captures and their shared corner
-        // slowly opens a seam over a session (tracking drift; a reload re-syncs). Fix: if ANY wall would
-        // re-lay this capture, force ALL walls to re-lay together so they share one epoch and corners stay
-        // closed. Off ⇒ each wall re-lays independently (the A/B baseline that reproduces the seams).
-        if (window.CONJURE_GROUP_WALL_RELAY !== false) {
-          var anyWallRelays = surfaces.some(function (s) {
-            if (s.semantic !== "wall") return false;
+        var THREE = AFRAME.THREE, groupFired = false;
+        // Grouped surface re-lay (--group-surface-relay, default on): the per-surface apply-gate holds EACH
+        // surface on its own epoch, so under tracking drift a wall re-lays at one capture while its adjoining
+        // floor/ceiling — and a door/window vs its wall's cutout — re-lay at another. Anything that must stay
+        // aligned ACROSS surfaces then opens a seam over a session: wall↔floor/ceiling junctions, and
+        // inset↔cutout (the cutout lives in the wall mesh, the inset is its own surface). `snapInsets`/
+        // `joinCorners` make each capture internally consistent, so the only divergence is the render epoch;
+        // a reset re-lays everything at once, which is why it heals then. Fix: when ANY real surface crosses
+        // tolerance this capture, re-lay them ALL together (one epoch — the room shares one tracking frame).
+        // Off ⇒ each surface re-lays independently (the A/B baseline that reproduces the seams).
+        if (window.CONJURE_GROUP_SURFACE_RELAY !== false) {
+          var anyRelays = surfaces.some(function (s) {
             var el = document.getElementById(s.id);
-            if (!el || !el._geoSig) return true;   // new / never-laid wall counts as a change
+            if (!el || !el._geoSig) return true;   // new / never-laid surface counts as a change
             var sig = WM.surfaceSig({ position: s.position, rotation: s.rotation },
               { extent: s.extent, holes: s.holes || [] });
             return WM.surfaceMoved(THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL);
           });
-          if (anyWallRelays) {                     // invalidate every wall's gate → applyEntity re-lays it
-            gwrFired = true;
+          if (anyRelays) {                         // invalidate every surface's gate → applyEntity re-lays it
+            groupFired = true;
             surfaces.forEach(function (s) {
-              if (s.semantic !== "wall") return;
               var el = document.getElementById(s.id);
               if (el) el._geoSig = null;
             });
@@ -962,7 +964,7 @@
             }
             return Math.round(g * 100) + "cm" + (who ? "(" + who + ")" : "");
           };
-          debugLog("corner", "gwr=" + (window.CONJURE_GROUP_WALL_RELAY !== false) + " fired=" + gwrFired
+          debugLog("corner", "grp=" + (window.CONJURE_GROUP_SURFACE_RELAY !== false) + " fired=" + groupFired
             + " reals dom=" + domR + " cap=" + reals.length
             + " recGap=" + worst(mk(false)) + " renderGap=" + worst(mk(true)), true);
         }

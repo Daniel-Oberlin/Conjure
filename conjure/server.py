@@ -834,12 +834,12 @@ async def index() -> HTMLResponse:
     ds = json.dumps(settings.drop_surface) if settings.drop_surface else "null"   # --drop-surface (test §5.2)
     # Render apply-gate tolerances (--apply-tol-*) → the client's surfaceMoved (world-model.js).
     tol = (f"{{pos:{settings.apply_tol_pos},rotDeg:{settings.apply_tol_rot_deg},ext:{settings.apply_tol_ext}}}")
-    gwr = "true" if settings.group_wall_relay else "false"   # --group-wall-relay (corner-seam fix)
+    gwr = "true" if settings.group_surface_relay else "false"   # --group-surface-relay (junction-seam fix)
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
                         f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_FORCE_GEO={fg};"
                         f"window.CONJURE_DROP_SURFACE={ds};"
                         f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};"
-                        f"window.CONJURE_APPLY_TOL={tol};window.CONJURE_GROUP_WALL_RELAY={gwr};</script>\n  </head>")
+                        f"window.CONJURE_APPLY_TOL={tol};window.CONJURE_GROUP_SURFACE_RELAY={gwr};</script>\n  </head>")
     return HTMLResponse(html, headers=_NO_STORE)
 
 
