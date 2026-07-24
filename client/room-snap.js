@@ -430,8 +430,11 @@
     var V3 = THREE.Vector3;
     var walls = surfaces.filter(function (s) { return s.semantic === "wall"; });
     walls.forEach(function (wl) { wl.holes = []; });            // recomputed fresh every capture
+    // Which surfaces are insets, and the UNIFORM perpendicular standoff (m) every one is pinned to in front
+    // of its wall — same distance for doors, windows, and wall art. (The value is small; enough to clear
+    // z-fighting with the wall.)
     /** @type {Record<string, number>} */
-    var INSET = { "door": 0.012, "window": 0.012, "wall art": 0.022 };
+    var INSET = { "door": 0.01, "window": 0.01, "wall art": 0.01 };
     surfaces.forEach(function (s) {
       var off = INSET[s.semantic];
       if (off == null || !walls.length) return;
@@ -463,12 +466,13 @@
       if (!best) return;
       s.hostWall = best.id;                                     // record the association (persisted by the authority)
       var nint = sn.clone().negate();                           // into the room = opposite outward normal
-      var clr = s._lp.clone().sub(best._lp).dot(nint);
-      // A captured inset keeps its own (locally accurate) depth, only nudged to at least `off` in front. A
-      // RECOVERED inset (§5.2) has no measured depth — its perpendicular position is an anchor estimate that
-      // varies — so PROJECT it exactly onto the wall plane + off (the anchor gave the lateral spot; the wall
-      // gives the perpendicular).
-      var fp = (s._recovered || clr < off) ? s._lp.clone().add(nint.clone().multiplyScalar(off - clr)) : s._lp.clone();
+      var clr = s._lp.clone().sub(best._lp).dot(nint);          // current perpendicular clearance in front of the wall
+      // EVERY inset is pinned to the fixed, uniform standoff `off` in front of its wall plane — NOT its own
+      // captured depth (a door detected a few cm proud of its wall would otherwise float). The along-wall
+      // position and height stay live from `s._lp` (nint is perpendicular, so this only moves depth); we just
+      // set the perpendicular clearance to exactly `off`. (Was: captured insets kept their own depth,
+      // recovered ones projected — now uniform.)
+      var fp = s._lp.clone().add(nint.clone().multiplyScalar(off - clr));
       s.position = [fp.x, fp.y, fp.z];
       // Every inset adopts its wall's exact orientation — so its stored normal is the wall's TRUE (outward)
       // normal, consistent with all other surfaces. Wall art no longer gets a special upright/negated
