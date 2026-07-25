@@ -76,6 +76,12 @@ class Settings:
     apply_tol_ext: float = 0.02                      # metres its size/opening must change to re-lay it
     inset_standoff: float = 0.02                     # m a door/window/wall-art surface sits in front of its wall
     on_surface_standoff: float = 0.02                # m an on-surface image sits in front of its host surface
+    # Wall identity by plane (docs/local-first-geometry.md §5.3/§10) — how tolerantly matchWall calls two
+    # captures the SAME wall. Injected as window.CONJURE_WALL. Loosen for two headsets that scan a wall
+    # differently; tighten to demand a stronger match (a wrong wall merge puts content on the wrong wall).
+    wall_perp_tol: float = 0.15                      # max plane-offset gap (m) to call two walls one plane
+    wall_yaw_tol_deg: float = 30.0                   # max normal-yaw difference (°) for a wall match
+    wall_overlap_slop: float = 0.3                   # max along-line gap (m) between spans and still one wall
     group_surface_relay: bool = True                 # re-lay ALL real surfaces together when any crosses
     #                                                  tolerance, so wall↔floor/ceiling junctions and
     #                                                  inset↔cutout share one render epoch and don't drift
@@ -137,6 +143,9 @@ def get_settings() -> Settings:
         apply_tol_ext=float(os.environ.get("CONJURE_APPLY_TOL_EXT", "0.02")),
         inset_standoff=float(os.environ.get("CONJURE_INSET_STANDOFF", "0.02")),
         on_surface_standoff=float(os.environ.get("CONJURE_ON_SURFACE_STANDOFF", "0.02")),
+        wall_perp_tol=float(os.environ.get("CONJURE_WALL_PERP_TOL", "0.15")),
+        wall_yaw_tol_deg=float(os.environ.get("CONJURE_WALL_YAW_TOL_DEG", "30.0")),
+        wall_overlap_slop=float(os.environ.get("CONJURE_WALL_OVERLAP_SLOP", "0.3")),
         group_surface_relay=(os.environ.get("CONJURE_GROUP_SURFACE_RELAY", "1") != "0"),
         force_geo=(os.environ.get("CONJURE_FORCE_GEO", "").strip() or None),
         drop_surface=(os.environ.get("CONJURE_DROP_SURFACE", "").strip() or None),

@@ -995,61 +995,72 @@
       // on-surface content). Once the client actually detects the surface, it's in `localSurfaces` → skipped
       // here → the live capture wins.
       _recoverMissing: function (localSurfaces) {
-        var PA = window.PlaneAnchor; if (!PA || !docSurfaces) return [];
+        var PA = window.PlaneAnchor, RS = window.RoomSnap; if (!PA || !docSurfaces) return [];
         var THREE = AFRAME.THREE;
         var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
         if (localPl.length < 2 || refPl.length < 2) return [];        // need a wall basis to solve against
         var have = {}, localById = {};
         localSurfaces.forEach(function (s) { have[s.id] = 1; localById[s.id] = s; });   // current-capture lookup
         var seedById = {}; docSurfaces.forEach(function (e) { seedById[e.id] = e; });   // seed poses (host-wall ride)
+        // Local structural features for corner-relative reconstruction (§5.3): this client's own wall corners
+        // and floor/ceiling edge heights, against which a missing inset's stored distances are solved.
+        var localCorners = RS.wallCorners(THREE, localSurfaces), floorYL = null, ceilYL = null;
+        localSurfaces.forEach(function (s) { if (s.semantic === "floor") floorYL = s._lp.y; else if (s.semantic === "ceiling") ceilYL = s._lp.y; });
         var mat = function (t) { t = t || {}; var p = t.position || [0, 0, 0];
           return new THREE.Matrix4().compose(new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0),
             eulerYXZToQuat(THREE, t.rotation || [0, 0, 0]), new THREE.Vector3(1, 1, 1)); };
-        var r2d = THREE.MathUtils.radToDeg, out = [], self = this;
+        var out = [], self = this;
         // solveAnchor / the host-wall ride return the A-PLANE orientation (local +Z = normal), but snapInsets
         // reads a surface's normal as its RAW-plane local +Y (like a captured _lq). Convert with Rx(+90°) so a
         // recovered inset's normal is read correctly and it snaps to its wall.
         var RX90 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
         docSurfaces.forEach(function (e) {
-          var sem = (e.meta || {}).semantic || "surface";
+          var meta = e.meta || {}, sem = meta.semantic || "surface";
           if (have[e.id] || sem === "wall" || sem === "floor") return;   // captured, or a basis plane → skip
           var sf = (e.components || {}).surface || {};
-          var hostId = (e.meta && e.meta.host_wall) || undefined;
+          var hostId = meta.host_wall || undefined;
           var hostRec = hostId ? localById[hostId] : null;              // host wall's CURRENT capture record
           var hostSeed = hostId ? seedById[hostId] : null;
-          var pos = new THREE.Vector3(), quat = new THREE.Quaternion(), how;
-          if (hostRec && hostRec._lp && hostRec._lq && hostSeed && hostSeed.transform) {
-            // RIDE the host wall: apply the inset's seed offset-FROM-its-wall onto the wall's LOCAL pose. The
-            // inset's position ALONG the wall (and its height) is thus preserved exactly — unlike a free
-            // multilateration, which under-constrains the along-wall axis for a mid-wall inset with no
-            // perpendicular wall nearby (the >10 cm shifts). snapInsets then only nudges the perpendicular.
-            // Use the wall's CAPTURED pose (_lp/_lq) — the SAME pose snapInsets cuts the cutout from — not
-            // its rendered object3D, whose apply-gate lag would sit the inset off-centre from its hole until
-            // the wall next re-laid. The record's _lq is RAW-plane (+Y = normal); convert to the a-plane
-            // frame (+Z = normal) the seed poses use (undo the Rx(+90°) that raw-plane carries).
+          var pos = new THREE.Vector3(), rawQ = new THREE.Quaternion(), how;   // rawQ: raw-plane (+Y=normal)
+          if (hostRec && hostRec._lp && hostRec._lq && meta.along) {
+            // CORNER-RELATIVE (§5.3): solve the inset's along-wall + height from its stored distances to the
+            // host wall's CORNERS and the floor/ceiling edges — SHARED structural features derived from THIS
+            // client's own capture — so it lands at the right physical spot regardless of how this device
+            // (or a guest) happened to centre its scan of the wall. Orientation is the wall's (snapInsets
+            // re-adopts it and pins the standoff). hostRec._lq is raw-plane (+Y=normal), what reconstructInset
+            // expects. Beats the old centroid ride, which shifted the guest's mid-wall insets along the wall.
+            var sol = RS.reconstructInset(THREE, hostRec, localCorners.get(hostId), floorYL, ceilYL,
+                                          { along: meta.along, vertical: meta.vertical });
+            if (!sol) return;
+            pos.copy(sol.position); rawQ.copy(hostRec._lq);
+            how = "corner-relative wall=" + hostId.slice(-7) + (sol.fallback ? " [" + sol.fallback + "]" : "");
+          } else if (hostRec && hostRec._lp && hostRec._lq && hostSeed && hostSeed.transform) {
+            // LEGACY RIDE (pre-§5.3 seeds without structural distances): apply the inset's seed offset-FROM-
+            // its-wall onto the wall's LOCAL captured pose. Preserves along/height but rides the wall centroid,
+            // so a guest's mid-wall inset can shift — kept only as a graceful fallback. _lq is raw-plane; undo
+            // the Rx(+90°) to the a-plane frame the seed poses use.
             var hostQ = hostRec._lq.clone().multiply(RX90.clone().invert());
             var hostLocal = new THREE.Matrix4().compose(hostRec._lp.clone(), hostQ, new THREE.Vector3(1, 1, 1));
-            var is = new THREE.Vector3();
-            hostLocal.multiply(mat(hostSeed.transform).invert().multiply(mat(e.transform))).decompose(pos, quat, is);
-            how = "ride wall=" + hostId.slice(-7);
+            var aq = new THREE.Quaternion(), is = new THREE.Vector3();
+            hostLocal.multiply(mat(hostSeed.transform).invert().multiply(mat(e.transform))).decompose(pos, aq, is);
+            rawQ.copy(aq.multiply(RX90)); how = "ride wall=" + hostId.slice(-7);
           } else {
             // No recorded/rendered host wall → fall back to a free multilateration against the local walls.
             var p = (e.transform || {}).position || [0, 0, 0];
             var entity = { mode: "free", quaternion: eulerYXZToQuat(THREE, (e.transform || {}).rotation || [0, 0, 0]),
               position: new THREE.Vector3(p[0], p[1], p[2]) };
-            var sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
-            if (!sol.ok) return;                                        // degenerate / too few walls → skip
-            pos.copy(sol.position); quat.copy(sol.quaternion); how = "multilat";
+            var solm = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
+            if (!solm.ok) return;                                       // degenerate / too few walls → skip
+            pos.copy(solm.position); rawQ.copy(solm.quaternion.clone().multiply(RX90)); how = "multilat";
           }
-          var eu = new THREE.Euler().setFromQuaternion(quat, "YXZ");
-          // Carry _lp/_lq so snapInsets can snap a recovered door/window/wall-art co-planar to its wall, and
-          // hostWall (the association the authority recorded, §5.2) so it snaps to THAT wall — not re-guessed
-          // by distance against this client's partial capture.
+          // Carry _lp/_lq (raw-plane) so snapInsets snaps the recovered inset co-planar to its wall, and
+          // hostWall (the recorded association, §5.2) so it snaps to THAT wall. rotation is the a-plane euler
+          // eulerYXZ derives from the raw-plane quat.
           out.push({ id: e.id, semantic: sem, extent: sf.extent, holes: sf.holes, debug: {}, _recovered: true,
             hostWall: hostId,
             position: [pos.x, pos.y, pos.z],
-            rotation: [r2d(eu.x), r2d(eu.y), r2d(eu.z)],
-            _lp: pos.clone(), _lq: quat.clone().multiply(RX90) });      // → raw-plane (+Y=normal)
+            rotation: RS.eulerYXZ(THREE, { x: rawQ.x, y: rawQ.y, z: rawQ.z, w: rawQ.w }),
+            _lp: pos.clone(), _lq: rawQ.clone() });
           if (!self._recovered[e.id]) {
             self._recovered[e.id] = 1;
             debugLog("recover", "surface " + e.id + " (" + sem + ") reconstructed (" + how + ")", true);
@@ -1378,68 +1389,92 @@
         // Runs for owner AND guest now (unified): everyone renders their own capture; only the owner authors.
         // See docs/local-first-geometry.md §5-6.
         var surfaces = [], localSurfaces = [], floor = null, claimed = new Set();
-        // §5.2 / decision #1: the inset→wall association is a RECORDED fact. Carry the seed's host_wall onto
-        // each captured inset (by shared id) so snapInsets snaps it to THAT wall — not re-derived by
-        // proximity, which is ambiguous for an inset between two anti-parallel partition walls. Empty in a
-        // fresh room (seed not round-tripped yet) → snapInsets falls back to its co-facing derivation.
-        var seedHostWall = {};
-        (docSurfaces || []).forEach(function (e) {
-          if (e.meta && e.meta.host_wall) seedHostWall[e.id] = e.meta.host_wall; });
+        var RS = window.RoomSnap, INSET_SEMS = { "door": 1, "window": 1, "wall art": 1 };
         // TEST (--drop-surface): a comma-separated list of semantics/ids to pretend we didn't capture.
         var dropList = (window.CONJURE_DROP_SURFACE || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-        cur.forEach(function (c) {
+        // A cur plane's pose in the shared reference frame (F_ref): T · plane.
+        function refPose(c) {
           var planeMat = new THREE.Matrix4().compose(c.pos, c.quat, new THREE.Vector3(1, 1, 1));
           var lp = new THREE.Vector3(), lq = new THREE.Quaternion(), ls = new THREE.Vector3();
           Tmat.clone().multiply(planeMat).decompose(lp, lq, ls);
-          // match to the nearest SAME-SEMANTIC, SAME-FACING reference (matchRef's normal gate stops the two
-          // faces of a shared partition wall from swapping ids — see room-snap.js).
-          var cyaw = self._yawOf(UP.clone().applyQuaternion(lq));
-          var best = window.RoomSnap.matchRef({ pos: lp, nyaw: cyaw, sem: c.sem, orient: c.orient },
-                                              self._ref, claimed);
-          var sid;
-          if (best) {                                                     // re-inherit the existing id
-            sid = best.id; claimed.add(best);
-            best.pos.lerp(lp, 0.3);                                       // track slow real drift
-            best.ext = c.ext.slice(); best.nyaw = cyaw;
-          } else {                                                        // genuinely new → mint + remember
-            // Mint probe (--debug-registration): WHY did matchRef reject the existing ref? Log the nearest
-            // same-semantic ref's distance / normal-yaw delta / orientations / claimed-state, so a re-mint
-            // reveals its actual cause (too far? >60° facing gate? already claimed? no ref at all?).
-            if (window.CONJURE_DEBUG_REGISTRATION) {
-              var nr = null, nd = 1e9;
-              self._ref.forEach(function (r) {
-                if (r.sem !== c.sem) return;
-                var d = lp.distanceTo(r.pos); if (d < nd) { nd = d; nr = r; }
-              });
-              if (nr) {
-                var dy = Math.abs(((cyaw - nr.nyaw) * 180 / Math.PI + 540) % 360 - 180);
-                debugLog("mint", c.sem + " → nearest " + nr.id + " d=" + nd.toFixed(2) + "m Δyaw=" + dy.toFixed(0)
-                  + "° orient c/" + c.orient + " r/" + nr.orient + (claimed.has(nr) ? " CLAIMED" : ""), true);
-              } else {
-                debugLog("mint", c.sem + " → no same-semantic ref (ref=" + self._ref.length + ")", true);
-              }
-            }
-            sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
-            best = { id: sid, sem: c.sem, ext: c.ext.slice(), pos: lp.clone(),
-                     nyaw: cyaw, orient: c.orient };
-            self._ref.push(best); claimed.add(best);
-          }
+          return { lp: lp, lq: lq };
+        }
+        // Push both views of a resolved surface: `surfaces` (F_ref pose the OWNER posts to persist the seed)
+        // and `localSurfaces` (its RAW F_track pose — what THIS headset renders), same id. hostWall (insets)
+        // rides onto both so snapInsets snaps to the SAME wall identity resolved below.
+        function pushSurface(c, sid, lp, lq, hostId) {
           surfaces.push({ id: sid, semantic: c.sem, position: [lp.x, lp.y, lp.z],
             rotation: self._euler(lq), extent: [c.ext[0], c.ext[1]], _lp: lp.clone(), _lq: lq.clone(),
+            hostWall: hostId || undefined,
             debug: { pos: c.raw.pos, quat: c.raw.quat, orient: c.orient, label: c.sem,
                      polyY: c.polyY, n: c.poly.length, registered: registered, regStat: self._regStat } });
-          // Same surface, same id, but at its RAW captured (F_track) pose — this is what renders locally.
-          // TEST (--drop-surface): pretend we DIDN'T capture surfaces matching ANY listed semantic/id — keep
-          // them in the posted seed but omit them from the local render, so §5.2 recovery reconstructs them.
           var dropped = dropList.some(function (d) { return c.sem === d || sid.indexOf(d) >= 0; });
           if (!dropped) {
             localSurfaces.push({ id: sid, semantic: c.sem, position: [c.pos.x, c.pos.y, c.pos.z],
               rotation: self._euler(c.quat), extent: [c.ext[0], c.ext[1]],
-              _lp: c.pos.clone(), _lq: c.quat.clone(), hostWall: seedHostWall[sid], debug: {} });
+              _lp: c.pos.clone(), _lq: c.quat.clone(), hostWall: hostId || undefined, debug: {} });
           }
           if (c.sem === "floor" && (!floor || c.ext[0] * c.ext[1] > floor._area)) {
             floor = { floorPolygon: c.poly.map(function (pt) { return [pt.x, pt.z]; }), height: 2.6, _area: c.ext[0] * c.ext[1] };
           }
+        }
+        // Inherit an existing _ref entry's id (and track its slow drift), or mint + remember a new one.
+        function resolveRef(c, lp, cyaw, best) {
+          if (best) { claimed.add(best); best.pos.lerp(lp, 0.3); best.ext = c.ext.slice(); best.nyaw = cyaw; return best.id; }
+          var sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
+          var r = { id: sid, sem: c.sem, ext: c.ext.slice(), pos: lp.clone(), nyaw: cyaw, orient: c.orient };
+          self._ref.push(r); claimed.add(r);
+          return sid;
+        }
+        // Pass B1 — WALLS + floor/ceiling first (insets need resolved wall ids). Walls get identity by
+        // PLANE (matchWall, §5.3/§10) — invariant to the centroid sliding along a differently-captured wall;
+        // horizontals keep matchRef (centroid+semantic is right for a floor/ceiling).
+        cur.forEach(function (c) {
+          if (INSET_SEMS[c.sem]) return;
+          var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
+          var best = c.orient === "vertical"
+            ? RS.matchWall({ pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient, ext: c.ext }, self._ref, claimed, window.CONJURE_WALL)
+            : RS.matchRef({ pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient }, self._ref, claimed);
+          pushSurface(c, resolveRef(c, rp.lp, cyaw, best), rp.lp, rp.lq, null);
+        });
+        // Pass B2 — INSETS. Identity is (semantic, host_wall, along-wall slot), resolved by the nearest
+        // RECONSTRUCTED along-coord — never the wall centroid (§5.3 L3) — so an inset keeps its id (and its
+        // director styling) as it slides along its wall, and a missing/extra one doesn't cascade wrong ids.
+        var refWalls = surfaces.filter(function (s) { return s.semantic === "wall"; });
+        var refCorners = RS.wallCorners(THREE, surfaces);
+        var refFloorY = null, refCeilY = null;
+        surfaces.forEach(function (s) { if (s.semantic === "floor") refFloorY = s._lp.y; else if (s.semantic === "ceiling") refCeilY = s._lp.y; });
+        // Seed insets grouped by "semantic|host_wall", each with its along-coord RECONSTRUCTED against our
+        // ref-frame walls from its stored structural distances — the expected local spot to match against.
+        var seedReconByKey = {};
+        (docSurfaces || []).forEach(function (e) {
+          var m = e.meta || {}; if (!INSET_SEMS[m.semantic] || !m.host_wall || !m.along) return;
+          var hwRec = null; refWalls.forEach(function (w) { if (w.id === m.host_wall) hwRec = w; });
+          if (!hwRec) return;
+          var sol = RS.reconstructInset(THREE, hwRec, refCorners.get(m.host_wall), refFloorY, refCeilY,
+                                        { along: m.along, vertical: m.vertical });
+          if (!sol) return;
+          var key = m.semantic + "|" + m.host_wall;
+          (seedReconByKey[key] = seedReconByKey[key] || []).push({ id: e.id, along: sol.along });
+        });
+        var claimedInset = new Set();
+        cur.forEach(function (c) {
+          if (!INSET_SEMS[c.sem]) return;
+          var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
+          var hw = RS.hostWallFor(THREE, { _lp: rp.lp, _lq: rp.lq, extent: c.ext }, refWalls);
+          var hostId = hw ? hw.id : null, sid = null;
+          if (hw) {
+            var along = RS.insetAlong(THREE, hw, rp.lp.x, rp.lp.z);
+            sid = RS.matchInset({ along: along }, seedReconByKey[c.sem + "|" + hostId], claimedInset);
+          }
+          if (sid) {                                                     // inherit the seed id + track drift
+            claimedInset.add(sid);
+            var r = null; self._ref.forEach(function (x) { if (x.id === sid) r = x; });
+            if (r) { r.pos.lerp(rp.lp, 0.3); r.ext = c.ext.slice(); r.nyaw = cyaw; }
+          } else {                                                       // no structural match → mint
+            sid = resolveRef(c, rp.lp, cyaw, null);
+          }
+          pushSurface(c, sid, rp.lp, rp.lq, hostId);
         });
         if (!surfaces.length) return;
 
@@ -1469,6 +1504,25 @@
         // geometry, unit-tested in client/room-snap.js.
         window.RoomSnap.joinCorners(THREE, surfaces);
         window.RoomSnap.snapInsets(THREE, surfaces, window.CONJURE_INSET_STANDOFF);
+        // Author each captured inset's CORNER-RELATIVE anchor (§5.3 L2): its along-wall distances to the host
+        // wall's corner points + its floor/ceiling edge distances — SHARED structural features, so any client
+        // (esp. a guest whose wall scan centres differently) reconstructs the same physical spot, never riding
+        // the wall's scan-artifact centroid. Done here — walls settled by joinCorners, hostWall set by
+        // snapInsets — and BEFORE _lp/_lq are dropped. Attached to the posted surface → persisted in the seed.
+        var authorCorners = window.RoomSnap.wallCorners(THREE, surfaces);
+        var authorFloorY = null, authorCeilY = null, authorWallById = {};
+        surfaces.forEach(function (s) {
+          if (s.semantic === "floor") authorFloorY = s._lp.y;
+          else if (s.semantic === "ceiling") authorCeilY = s._lp.y;
+          else if (s.semantic === "wall") authorWallById[s.id] = s;
+        });
+        surfaces.forEach(function (s) {
+          if (!INSET_SEMS[s.semantic] || !s.hostWall) return;
+          var hw = authorWallById[s.hostWall]; if (!hw) return;
+          var anc = window.RoomSnap.authorInsetAnchor(THREE, s, hw, authorCorners.get(s.hostWall), authorFloorY, authorCeilY);
+          s.along = anc.along; s.vertical = anc.vertical;
+          if (anc.fallback) s.structuralFallback = anc.fallback;
+        });
         surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
         this.lastPost = time;
         var boundary = null;

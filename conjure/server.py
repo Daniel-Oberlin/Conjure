@@ -835,11 +835,16 @@ async def index() -> HTMLResponse:
     # Render apply-gate tolerances (--apply-tol-*) → the client's surfaceMoved (world-model.js).
     tol = (f"{{pos:{settings.apply_tol_pos},rotDeg:{settings.apply_tol_rot_deg},ext:{settings.apply_tol_ext}}}")
     gwr = "true" if settings.group_surface_relay else "false"   # --group-surface-relay (junction-seam fix)
+    # Wall-identity-by-plane knobs (--wall-*) → RoomSnap.matchWall. yawTol is passed in RADIANS (matchWall's
+    # unit); the CLI/config take degrees for readability.
+    wall = (f"{{perpTol:{settings.wall_perp_tol},yawTol:{math.radians(settings.wall_yaw_tol_deg)},"
+            f"overlapSlop:{settings.wall_overlap_slop}}}")
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
                         f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_FORCE_GEO={fg};"
                         f"window.CONJURE_DROP_SURFACE={ds};"
                         f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};"
                         f"window.CONJURE_APPLY_TOL={tol};window.CONJURE_GROUP_SURFACE_RELAY={gwr};"
+                        f"window.CONJURE_WALL={wall};"
                         f"window.CONJURE_INSET_STANDOFF={settings.inset_standoff};</script>\n  </head>")
     return HTMLResponse(html, headers=_NO_STORE)
 
@@ -1539,6 +1544,14 @@ class RoomSurface(BaseModel):
     mesh_segment: Optional[str] = None            # segment id when backed by the refined mesh
     hostWall: Optional[str] = None                # for an inset (door/window/wall-art): the wall id it belongs to,
                                                   # derived once by the authority's snapInsets → stored + reused on recovery (§5.2)
+    # Corner-relative structural anchor for an inset (docs/local-first-geometry.md §5.3): its place on the
+    # host wall as distances to SHARED features — signed along-wall distances from the host wall's corner
+    # points, and perpendicular distances from the wall∩floor / wall∩ceiling edges — never the wall's
+    # scan-artifact centroid. Any client reconstructs the same physical spot from its OWN captured
+    # corners/edges (client reconstructInset), which is what lands a guest's insets right.
+    along: Optional[list[dict]] = None            # [{"corner": <partner wall id>, "dist": float}]
+    vertical: Optional[list[dict]] = None         # [{"edge": "floor"|"ceiling", "dist": float}]
+    structuralFallback: Optional[str] = None      # set when a structural ref was missing (e.g. "freestanding")
     debug: Optional[dict] = None                  # raw pose/label for diagnosis (stored in meta)
 
 
@@ -1569,6 +1582,12 @@ def _surface_entity(s: RoomSurface) -> dict:
         meta["meshSegment"] = s.mesh_segment
     if s.hostWall is not None:
         meta["host_wall"] = s.hostWall            # inset → its wall, so recovery snaps to it (not by distance)
+    if s.along is not None:
+        meta["along"] = s.along                   # §5.3 corner-relative anchor — along-wall corner distances
+    if s.vertical is not None:
+        meta["vertical"] = s.vertical             # …and floor/ceiling edge distances
+    if s.structuralFallback is not None:
+        meta["structural_fallback"] = s.structuralFallback
     if s.debug is not None:
         meta["debug"] = s.debug
     return {
@@ -1800,6 +1819,12 @@ def _surface_update_set(s) -> dict:
         up["meta.meshSegment"] = s.mesh_segment
     if s.hostWall is not None:
         up["meta.host_wall"] = s.hostWall
+    if s.along is not None:                        # §5.3 corner-relative anchor — refreshed from a good capture
+        up["meta.along"] = s.along
+    if s.vertical is not None:
+        up["meta.vertical"] = s.vertical
+    if s.structuralFallback is not None:
+        up["meta.structural_fallback"] = s.structuralFallback
     return up
 
 

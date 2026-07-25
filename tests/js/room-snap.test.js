@@ -471,6 +471,161 @@ test("matchRef honors the claimed set and the 0.5 m distance cap", () => {
   assert.strictEqual(RS.matchRef(near, [r], new Set()).id, "a");                  // otherwise matches
 });
 
+// --- matchWall: identify a wall by its PLANE (normal + perpendicular offset + along-line overlap), NOT
+// its centroid (§5.3/§10). A wall's centroid is a scan artifact that slides along the wall between
+// captures/devices; matching by centroid re-mints the id (losing style + shifting every keyed inset). ---
+test("matchWall matches a wall whose centroid slid ALONG its own length (centroid would re-mint)", () => {
+  // Ref +Z wall at z=0 spanning x∈[-2,2]. A later/other capture sees the SAME wall but centred at x=1
+  // (slid 1 m along) with a shorter extent and a little perpendicular noise. Centroid distance ~1 m blows
+  // matchRef's 0.5 m cap → re-mint; matchWall keeps the id because it's the same plane with overlapping span.
+  const ref = { id: "w", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0), ext: [4, 2.4] };
+  const cand = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(1, 1.2, 0.03), ext: [3, 2.4] };
+  assert.strictEqual(RS.matchRef({ ...cand }, [ref], new Set()), null, "matchRef WOULD re-mint (centroid 1 m)");
+  assert.strictEqual(RS.matchWall(cand, [ref], new Set()).id, "w", "matchWall keeps the id (same plane)");
+});
+
+test("matchWall does NOT merge two distinct colinear walls (a segment past a doorway)", () => {
+  // Left wall spans x∈[-3.5,-0.5]; a separate right wall spans x∈[0.5,3.5] — same line & offset (z=0, +Z),
+  // 1 m apart along the wall. The overlap guard must keep them distinct (else content lands on the wrong one).
+  const left = { id: "L", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(-2, 1.2, 0), ext: [3, 2.4] };
+  const right = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(2, 1.2, 0), ext: [3, 2.4] };
+  assert.strictEqual(RS.matchWall(right, [left], new Set()), null, "colinear-but-separate walls stay distinct");
+});
+
+test("matchWall keeps the two anti-parallel faces of a partition distinct", () => {
+  const faceA = { id: "A", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0), ext: [3, 2.4] };
+  const candB = { sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, -0.05), ext: [3, 2.4] };
+  assert.strictEqual(RS.matchWall(candB, [faceA], new Set()), null, "opposite normal ⇒ different wall");
+});
+
+test("matchWall rejects a parallel wall at a different perpendicular offset, and honors claimed", () => {
+  const r = { id: "a", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0), ext: [3, 2.4] };
+  const far = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 1.0), ext: [3, 2.4] };
+  assert.strictEqual(RS.matchWall(far, [r], new Set()), null, "1 m off the plane ⇒ not this wall");
+  const near = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0.5, 1.2, 0.05), ext: [3, 2.4] };
+  assert.strictEqual(RS.matchWall(near, [r], new Set([r])), null, "already claimed ⇒ no match");
+  assert.strictEqual(RS.matchWall(near, [r], new Set()).id, "a", "otherwise matches the same plane");
+});
+
+// --- L2 structural anchor: an inset's place on its wall is stored as distances to SHARED features
+// (corner points, floor/ceiling edges), never the wall's scan-artifact centroid, so any device (esp. a
+// guest with a differently-centred scan) reconstructs the same physical spot (§5.3). ---
+const cornersOf = (map, id) => map.get(id) || [];
+
+test("wallCorners tags each corner with the PARTNER wall id (perpendicular pair)", () => {
+  // Wall A (+Z, z=0, x∈[-2,2]) meets wall B (+X, x=2, z∈[0,3]) at (2,0).
+  const A = vert("wall_A", "wall", [0, 1.2, 0], 0, [4, 2.4]);
+  const B = vert("wall_B", "wall", [2, 1.2, 1.5], 90, [3, 2.4]);
+  const map = RS.wallCorners(THREE, [A, B]);
+  assert.strictEqual(cornersOf(map, "wall_A").length, 1);
+  assert.strictEqual(cornersOf(map, "wall_A")[0].partner, "wall_B");
+  assert.ok(Math.abs(cornersOf(map, "wall_A")[0].x - 2) < 1e-9 && Math.abs(cornersOf(map, "wall_A")[0].z - 0) < 1e-9);
+  assert.strictEqual(cornersOf(map, "wall_B")[0].partner, "wall_A");
+});
+
+test("wallCorners gives collinear/parallel walls no corner", () => {
+  const L = vert("wall_L", "wall", [-2, 1.2, 0], 0, [3, 2.4]);   // both face +Z at z=0, a doorway gap between
+  const R = vert("wall_R", "wall", [2, 1.2, 0], 0, [3, 2.4]);
+  assert.strictEqual(cornersOf(RS.wallCorners(THREE, [L, R]), "wall_L").length, 0);
+});
+
+test("authorInsetAnchor→reconstructInset round-trips a mid-wall door (2 corners → mean)", () => {
+  // Wall A between two corners at x=±2; a door at x=0.5. Reconstruct against the SAME wall → same spot.
+  const A = vert("wall_A", "wall", [0, 1.2, 0], 0, [4, 2.4]);
+  const Bl = vert("wall_Bl", "wall", [-2, 1.2, 1.5], 90, [3, 2.4]);   // corner at (-2,0)
+  const Br = vert("wall_Br", "wall", [2, 1.2, 1.5], 90, [3, 2.4]);    // corner at ( 2,0)
+  const door = vert("real_door_1", "door", [0.5, 1.0, 0], 0, [0.8, 2]);
+  const corners = cornersOf(RS.wallCorners(THREE, [A, Bl, Br]), "wall_A");
+  assert.strictEqual(corners.length, 2, "two corners");
+  const anchor = RS.authorInsetAnchor(THREE, door, A, corners, 0, 2.4);
+  const sol = RS.reconstructInset(THREE, A, corners, 0, 2.4, anchor);
+  assert.ok(sol.position.distanceTo(new THREE.Vector3(0.5, 1.0, 0)) < 1e-6, "round-trips to the door spot");
+  assert.strictEqual(sol.fallback, null, "fully constrained");
+});
+
+test("reconstructInset lands the door right against a GUEST wall captured with a shifted centroid", () => {
+  // Author against wall A centred at x=0 (span [-2,2]); a door at x=0.5. A GUEST captures the SAME wall
+  // centred at x=0.5 (span [-1,2]) with perpendicular noise — but the A∩Br corner at (2,0) is structural.
+  const A = vert("wall_A", "wall", [0, 1.2, 0], 0, [4, 2.4]);
+  const Br = vert("wall_Br", "wall", [2, 1.2, 1.5], 90, [3, 2.4]);
+  const door = vert("real_door_1", "door", [0.5, 1.0, 0], 0, [0.8, 2]);
+  const anchor = RS.authorInsetAnchor(THREE, door, A, cornersOf(RS.wallCorners(THREE, [A, Br]), "wall_A"), 0, 2.4);
+  // guest capture: shifted+shorter wall, same corner with Br (still meets at (2,0))
+  const Ag = vert("wall_A", "wall", [0.5, 1.2, 0.03], 0, [3, 2.4]);
+  const Brg = vert("wall_Br", "wall", [2, 1.2, 1.5], 90, [3, 2.4]);
+  const gc = cornersOf(RS.wallCorners(THREE, [Ag, Brg]), "wall_A");
+  const sol = RS.reconstructInset(THREE, Ag, gc, 0, 2.4, anchor);
+  assert.ok(Math.abs(sol.position.x - 0.5) < 1e-6, "along-wall recovered from the corner, not the centroid: " + sol.position.x);
+  assert.ok(Math.abs(sol.position.y - 1.0) < 1e-6, "height recovered from the floor/ceiling edges");
+  // a naive centroid-ride would put it at guest_centre(0.5) + author_offset(0.5) = 1.0 — off by 0.5 m.
+  assert.ok(Math.abs(sol.position.x - 1.0) > 0.4, "centroid-ride would have drifted ~0.5 m");
+});
+
+test("reconstructInset degenerate ladder: 1 corner → direct, 0 corners → wall-centre fallback (flagged)", () => {
+  const A = vert("wall_A", "wall", [0, 1.2, 0], 0, [4, 2.4]);
+  const Br = vert("wall_Br", "wall", [2, 1.2, 1.5], 90, [3, 2.4]);
+  const door = vert("real_door_1", "door", [0.5, 1.0, 0], 0, [0.8, 2]);
+  // 1 corner (just Br): still exact
+  const one = cornersOf(RS.wallCorners(THREE, [A, Br]), "wall_A");
+  assert.strictEqual(one.length, 1);
+  const a1 = RS.authorInsetAnchor(THREE, door, A, one, 0, 2.4);
+  assert.ok(Math.abs(RS.reconstructInset(THREE, A, one, 0, 2.4, a1).position.x - 0.5) < 1e-6, "1 corner → direct");
+  // 0 corners (freestanding wall): author flags it; reconstruct falls back to the wall centre along-axis
+  const a0 = RS.authorInsetAnchor(THREE, door, A, [], 0, 2.4);
+  assert.strictEqual(a0.fallback, "freestanding");
+  const s0 = RS.reconstructInset(THREE, A, [], 0, 2.4, a0);
+  assert.ok(Math.abs(s0.position.x - 0) < 1e-6, "0 corners → wall-centre (x=0)");
+  assert.match(s0.fallback, /along:wall-centre/);
+});
+
+test("reconstructInset with no ceiling captured falls back to the floor edge alone", () => {
+  const A = vert("wall_A", "wall", [0, 1.2, 0], 0, [4, 2.4]);
+  const Br = vert("wall_Br", "wall", [2, 1.2, 1.5], 90, [3, 2.4]);
+  const door = vert("real_door_1", "door", [0.5, 1.0, 0], 0, [0.8, 2]);
+  const corners = cornersOf(RS.wallCorners(THREE, [A, Br]), "wall_A");
+  const anchor = RS.authorInsetAnchor(THREE, door, A, corners, 0, 2.4);   // authored with both
+  const sol = RS.reconstructInset(THREE, A, corners, 0, null, anchor);    // guest has floor only
+  assert.ok(Math.abs(sol.position.y - 1.0) < 1e-6, "height from the floor edge alone");
+  assert.strictEqual(sol.fallback, null, "floor edge alone is still constrained");
+});
+
+// --- L3 inset identity = semantic + host_wall + slot (along-wall ordinal), resolved by nearest
+// RECONSTRUCTED along-coord — never centroid — so an inset keeps its id (and director styling) as it
+// slides along its wall, and a missing/extra inset doesn't cascade wrong ids onto its neighbours. ---
+test("insetAlong is the signed along-wall coordinate; hostWallFor picks the wall the inset sits within", () => {
+  const A = vert("wall_A", "wall", [0, 1.2, 0], 0, [4, 2.4]);
+  assert.ok(Math.abs(RS.insetAlong(THREE, A, 0.5, 0) - 0.5) < 1e-9, "along = +0.5 for a point 0.5 m along +t");
+  const far = vert("wall_far", "wall", [0, 1.2, 3], 0, [4, 2.4]);
+  const door = vert("real_door_1", "door", [0.5, 1.0, 0.05], 0, [0.8, 2]);
+  assert.strictEqual(RS.hostWallFor(THREE, door, [A, far]).id, "wall_A", "nearest ~parallel within-width wall");
+});
+
+test("matchInset resolves identity by nearest along, and honors claimed", () => {
+  const seedRecon = [{ id: "w0", along: -0.3 }, { id: "w1", along: 0 }, { id: "w2", along: 0.3 }];
+  assert.strictEqual(RS.matchInset({ along: 0.05 }, seedRecon, new Set()), "w1", "nearest along wins");
+  assert.strictEqual(RS.matchInset({ along: 0.05 }, seedRecon, new Set(["w1"])), "w2",
+    "claimed w1 ⇒ next-nearest within tol");
+  assert.strictEqual(RS.matchInset({ along: 5 }, seedRecon, new Set()), null, "beyond tol ⇒ mint");
+});
+
+test("matchInset does NOT cascade wrong ids when a middle inset is missing this capture", () => {
+  // Seed has three windows on one wall at along −1/0/+1; the guest captured only the OUTER two. Slot-index
+  // matching would give the captured pair slots 0,1 and hand window-2 the id of window-1 (cascade). Nearest-
+  // along matching keeps each captured window with its own id; the absent middle one is recovered elsewhere.
+  const seedRecon = [{ id: "w0", along: -1 }, { id: "w1", along: 0 }, { id: "w2", along: 1 }];
+  const claimed = new Set();
+  const id0 = RS.matchInset({ along: -1.02 }, seedRecon, claimed); claimed.add(id0);
+  const id2 = RS.matchInset({ along: 0.98 }, seedRecon, claimed); claimed.add(id2);
+  assert.strictEqual(id0, "w0");
+  assert.strictEqual(id2, "w2", "the captured far window keeps w2, NOT w1 (no cascade)");
+});
+
+test("matchInset keeps a window's id when the whole wall slides (centroid would re-mint)", () => {
+  // One window; its wall (and thus its capture) shifts +0.3 m along, but its reconstructed along is
+  // corner-relative, so cand.along ≈ seed.along and the id is preserved.
+  assert.strictEqual(RS.matchInset({ along: 0.31 }, [{ id: "win", along: 0.30 }], new Set()), "win");
+});
+
 // --- Golden room: a REAL Quest capture (45 surfaces, two rooms via connecting doors). The synthetic
 // tests above encode our assumptions about the device's conventions; this one pins those assumptions to
 // the actual hardware — it feeds the captured planes (with their true normals/roll) through the same

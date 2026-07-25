@@ -248,7 +248,7 @@ it. It's also the **sole consumer** of the in-plane / anchor placement for inset
   because an inset's live normal may be **inward** (~180° from its host; see `matchRef`). See the intermittent
   "image behind its wall" bug in `docs/wall-art-45-flip.md`.
 
-### 5.3 Corner-relative inset placement & identity (DESIGN — not yet built)
+### 5.3 Corner-relative inset placement & identity (✅ built, unit-tested; guest validation pending)
 
 **Problem this fixes.** Insets currently (a) get their identity from `matchRef` by **centroid** proximity
 (0.5 m), and (b) when *recovered*, get their position by **riding the host wall's centroid pose**. Both lean
@@ -299,10 +299,22 @@ re-minting** — so it keeps its id and its director styling. This depends on **
 first (identify a wall by its plane — normal + perpendicular offset — not its centroid; see §10), so do the
 wall layer before/with the inset layer.
 
-**Status.** The uniform perpendicular standoff (§5) is landed and testable. The corner-relative
-representation + reconstruction + wall-relative identity are the remaining, larger refactor (touches the seed
-schema, `matchRef`, `snapInsets`, and recovery). Edge cases to handle: a wall with no captured corner
-(freestanding → centroid fallback), and a junction door bridging two rooms (pick one host wall consistently).
+**Status.** Built and unit-tested (`tests/js/room-snap.test.js`); the two-headset guest case is the
+remaining real-world validation (not a build gate — the rare re-mint isn't reproducible on demand). The
+pure geometry lives in `client/room-snap.js`:
+- **Wall identity by plane** — `matchWall` (normal + perpendicular offset + along-line overlap guard),
+  routed for walls in Pass B; floor/ceiling keep `matchRef`; insets leave `matchRef` for `matchInset`.
+- **Structural anchor** — `wallCorners` (factored out of `joinCorners`, tags each corner with the partner
+  wall id), `authorInsetAnchor` (owner writes `meta.along`/`meta.vertical` distances at capture),
+  `reconstructInset` (2 refs → mean / 1 → direct / 0 → wall-centre fallback, flagged). `_recoverMissing`
+  reconstructs corner-relative, falling back to the legacy centroid ride only for pre-§5.3 seeds.
+- **Identity = semantic + host_wall + slot** — realized as `matchInset`: the seed inset whose
+  *reconstructed* along-coord is nearest (not a stored integer slot, which cascades on a count-mismatch),
+  so an inset keeps its id + styling as it slides along its wall.
+The geometry is **JS-only** — the server never reconstructs an inset (its anchor basis is floor+walls,
+`_seed_planes`); if a server-side inset query ever appears, port to `conjure/room_snap.py` + a golden test
+like `plane_anchor`. Edge cases handled: a wall with no captured corner (freestanding → wall-centre
+fallback, flagged) and a junction door bridging two rooms (`hostWallFor` picks one host consistently).
 
 ## 6. Client lifecycle
 

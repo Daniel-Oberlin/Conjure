@@ -87,6 +87,16 @@ def main() -> None:
     gate.add_argument("--on-surface-standoff", type=float, default=0.02, metavar="METERS",
                       help="how far (m) an on-surface IMAGE sits in front of its host surface (default: 0.02 "
                            "= 2 cm). Applies to newly placed / re-anchored images.")
+    gate.add_argument("--wall-perp-tol", type=float, default=0.15, metavar="METERS",
+                      help="how far apart (m) two captures' wall planes may sit and still be called the SAME "
+                           "wall (default: 0.15). §5.3 wall identity by plane — bigger tolerates a guest's "
+                           "differently-placed scan; smaller demands a tighter plane match.")
+    gate.add_argument("--wall-yaw-tol", type=float, default=30.0, metavar="DEGREES",
+                      help="max normal-yaw difference (°) for a wall match (default: 30). Keeps the two "
+                           "anti-parallel faces of a partition distinct.")
+    gate.add_argument("--wall-overlap-slop", type=float, default=0.3, metavar="METERS",
+                      help="max along-wall gap (m) between two captures' spans and still ONE wall (default: "
+                           "0.3). Guards against merging two distinct collinear walls (a segment past a door).")
     gate.add_argument("--group-surface-relay", choices=["on", "off"], default="on",
                       help="when ANY real surface crosses the apply-tolerance, re-lay ALL of them together so "
                            "wall-floor/ceiling junctions and door/window cutouts share one render epoch and "
@@ -113,6 +123,9 @@ def main() -> None:
     os.environ["CONJURE_APPLY_TOL_EXT"] = str(args.apply_tol_ext)
     os.environ["CONJURE_INSET_STANDOFF"] = str(args.inset_standoff)
     os.environ["CONJURE_ON_SURFACE_STANDOFF"] = str(args.on_surface_standoff)
+    os.environ["CONJURE_WALL_PERP_TOL"] = str(args.wall_perp_tol)
+    os.environ["CONJURE_WALL_YAW_TOL_DEG"] = str(args.wall_yaw_tol)
+    os.environ["CONJURE_WALL_OVERLAP_SLOP"] = str(args.wall_overlap_slop)
     os.environ["CONJURE_GROUP_SURFACE_RELAY"] = "1" if args.group_surface_relay == "on" else "0"
     uvicorn.run("conjure.server:app", host=args.host, port=args.port, reload=False)
 

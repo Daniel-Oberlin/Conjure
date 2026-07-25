@@ -311,6 +311,65 @@
     return same || flip;
   }
 
+  // Identify a WALL by its PLANE, not its centroid (docs/local-first-geometry.md §5.3/§10). A wall's
+  // centroid is a scan artifact — it's the centre of whatever rectangle the Quest captured, so it slides
+  // ALONG the wall between captures and between devices. Matching walls by centroid therefore re-mints an
+  // id (losing style, and shifting every inset keyed to that wall) whenever the captured extent changes.
+  // Instead a wall is its plane: same-facing normal + perpendicular offset from the origin, plus an
+  // along-line OVERLAP guard so two DISTINCT walls on the same line & offset (a segment past a doorway)
+  // don't collapse to one id. Conservative by design — a wrong wall match is the §10 catastrophe (content
+  // on the wrong wall); a missed match only mints a recoverable duplicate. Floor/ceiling keep matchRef
+  // (centroid+semantic is right for horizontals); insets use matchInset (identity by host_wall+slot).
+  /**
+   * Tunable knobs for matchWall (server-injected window.CONJURE_WALL — see conjure-client.js). Absent
+   * fields keep the defaults.
+   * @typedef {Object} WallOpts
+   * @property {number} [perpTol]      max plane-offset gap (m) to call two walls the same plane (default 0.15)
+   * @property {number} [yawTol]       max normal-yaw difference (rad) for a wall match (default 30° — tighter
+   *                                   than matchRef's 60° same-facing gate: a wall's normal is stable across scans)
+   * @property {number} [overlapSlop]  max along-line gap (m) between the two walls' spans and still one wall (0.3)
+   */
+  /**
+   * @param {{pos: Vec3, nyaw: number, sem: string, orient: string, ext: [number, number]}} cand
+   * @param {RefSurface[]} refs
+   * @param {Set<RefSurface>} [claimed]
+   * @param {WallOpts} [opts]
+   * @returns {RefSurface|null}
+   */
+  function matchWall(cand, refs, claimed, opts) {
+    opts = opts || {};
+    var PERP_TOL = opts.perpTol != null ? opts.perpTol : 0.15;
+    var YAW_TOL = opts.yawTol != null ? opts.yawTol : Math.PI / 6;   // 30°
+    var OVERLAP_SLOP = opts.overlapSlop != null ? opts.overlapSlop : 0.3;
+    if (cand.orient !== "vertical") return null;                     // walls are vertical
+    // Candidate's plane basis from its own normal (n = outward, t = along the wall, both in plan view).
+    var cnx = Math.sin(cand.nyaw), cnz = Math.cos(cand.nyaw);        // yawOf(n) = atan2(n.x, n.z)
+    var cHw = ((cand.ext && cand.ext[0]) || 0) / 2;
+    var best = /** @type {RefSurface|null} */ (null), bestScore = Infinity;
+    refs.forEach(function (r) {
+      if (r.sem !== cand.sem || r.orient !== "vertical" || (claimed && claimed.has(r))) return;
+      // 1. same-facing / near-parallel — a wall's outward normal is physically fixed, so demand a tight
+      //    agreement (keeps the two anti-parallel faces of a partition distinct, like matchRef's gate).
+      var dyaw = Math.abs(Math.atan2(Math.sin(cand.nyaw - r.nyaw), Math.cos(cand.nyaw - r.nyaw)));
+      if (dyaw > YAW_TOL) return;
+      // 2. coincident plane — project BOTH centres onto the ref's normal; their offsets must nearly match
+      //    (perpendicular gap). Invariant to sliding either centre ALONG the wall (that's the whole point).
+      var rnx = Math.sin(r.nyaw), rnz = Math.cos(r.nyaw);
+      var perp = Math.abs((cand.pos.x - r.pos.x) * rnx + (cand.pos.z - r.pos.z) * rnz);
+      if (perp > PERP_TOL) return;
+      // 3. along-line overlap guard — spans on the width axis t=(n.z,-n.x) must overlap (gap < slop), else
+      //    these are two colinear-but-separate walls, not one wall captured differently.
+      var tx = rnz, tz = -rnx;
+      var ca = cand.pos.x * tx + cand.pos.z * tz, ra = r.pos.x * tx + r.pos.z * tz;
+      var rHw = ((r.ext && r.ext[0]) || 0) / 2;
+      var gap = Math.abs(ca - ra) - (cHw + rHw);                     // <0 ⇒ spans overlap
+      if (gap > OVERLAP_SLOP) return;
+      var score = perp + Math.max(0, gap);                           // both in metres; prefer the tightest plane
+      if (score < bestScore) { bestScore = score; best = r; }
+    });
+    return best;
+  }
+
   // On-the-fly CANONICAL frame from live geometry — for VOID/outdoor worlds not tied to a stored space
   // (nothing to register against). Derives a deterministic frame from the room's OWN planes, INVARIANT to
   // the session's arbitrary tracking-origin yaw, so revisiting the same physical room recovers the same
@@ -352,39 +411,50 @@
       + "° theta=" + Math.round(theta * 180 / Math.PI) + "°" };
   }
 
-  // Join wall corners. WebXR fits each wall independently, so two walls that should meet at a corner
-  // often stop a few cm short (or overshoot). For each ~perpendicular pair whose planes intersect on a
-  // clean vertical line and whose nearest ENDS both fall within GAP of that intersection, snap those ends
-  // exactly onto it — closing the corner with a small extend/trim. Works in plan view (X-Z). Leaves
-  // parallel walls (a doorway gap, opposite walls) and T-junctions (only one wall ends near the crossing)
-  // alone. Mutates wall _lp / extent / position in place.
+  // Build the plan-view (X-Z) segment for each wall: centre, unit horizontal normal, half-width, the two
+  // endpoints. Shared by wallCorners + joinCorners so the corners the anchor sees are exactly the ones the
+  // snap uses.
   /**
-   * @typedef {{x: number, z: number, _d: number}} CornerTgt
    * @typedef {{s: SnapSurface, cx: number, cz: number, nx: number, nz: number, hw: number, cy: number,
-   *            ends: {x: number, z: number}[], tgt: (CornerTgt|null)[]}} WallSeg
+   *            ends: {x: number, z: number}[]}} WallSeg
    */
-  /**
-   * @param {THREE_NS} THREE
-   * @param {SnapSurface[]} surfaces
-   * @returns {void}
-   */
-  function joinCorners(THREE, surfaces) {
-    var GAP = 0.25;                                              // only close gaps up to 25 cm
-    var W = surfaces.filter(function (s) { return s.semantic === "wall"; }).map(function (s) {
+  /** @param {THREE_NS} THREE  @param {SnapSurface[]} surfaces  @returns {WallSeg[]} */
+  function wallSegs(THREE, surfaces) {
+    return surfaces.filter(function (s) { return s.semantic === "wall"; }).map(function (s) {
       var n = new THREE.Vector3(0, 1, 0).applyQuaternion(s._lq);
       var L = Math.hypot(n.x, n.z) || 1, nx = n.x / L, nz = n.z / L;   // unit horizontal normal
       var hw = ((s.extent && s.extent[0]) || 0) / 2, cx = s._lp.x, cz = s._lp.z;
       var tx = nz, tz = -nx;                                     // width axis ⟂ normal (in plan view)
       return /** @type {WallSeg} */ ({ s: s, cx: cx, cz: cz, nx: nx, nz: nz, hw: hw, cy: s._lp.y,
-               ends: [{ x: cx + tx * hw, z: cz + tz * hw }, { x: cx - tx * hw, z: cz - tz * hw }],
-               tgt: [null, null] });
+               ends: [{ x: cx + tx * hw, z: cz + tz * hw }, { x: cx - tx * hw, z: cz - tz * hw }] });
     });
+  }
+
+  // The structural CORNER points of each wall (wall∩wall intersections), keyed by wall id. A corner is a
+  // SHARED feature — both a device and a guest derive the same physical point from where two walls actually
+  // meet, independent of how much of either wall each captured — so it's the reference an inset's along-wall
+  // place is anchored to (§5.3), unlike the scan-artifact centroid. For each ~perpendicular wall pair whose
+  // planes cross on a vertical line within GAP of BOTH walls' nearest ends, record that intersection on each
+  // wall's near end (keeping the closest per end → ≤2 corners/wall), tagged with the PARTNER wall's id (the
+  // stable name an inset stores to find the same corner on any capture). Collinear/parallel walls (a doorway
+  // gap, opposite walls) and T-junctions (only one wall ends there) contribute none. Read-only.
+  /**
+   * @typedef {{x: number, z: number, partner: string, end: number}} WallCorner
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces
+   * @returns {Map<string, WallCorner[]>}
+   */
+  function wallCorners(THREE, surfaces) {
+    var GAP = 0.25;                                             // only join gaps up to 25 cm (matches joinCorners)
+    var W = wallSegs(THREE, surfaces);
     /** @param {WallSeg} w  @param {number} px  @param {number} pz  @returns {{i: number, d: number}} */
     function nearest(w, px, pz) {
       var d0 = Math.hypot(w.ends[0].x - px, w.ends[0].z - pz);
       var d1 = Math.hypot(w.ends[1].x - px, w.ends[1].z - pz);
       return d1 < d0 ? { i: 1, d: d1 } : { i: 0, d: d0 };
     }
+    /** @type {(({x:number,z:number,partner:string,d:number}|null)[])[]} */
+    var slots = W.map(function () { return [null, null]; });   // closest corner per [end0, end1] per wall
     for (var i = 0; i < W.length; i++) {
       for (var j = i + 1; j < W.length; j++) {
         var a = W[i], b = W[j];
@@ -396,19 +466,191 @@
         var px = (da * b.nz - db * a.nz) / det, pz = (a.nx * db - b.nx * da) / det;
         var ka = nearest(a, px, pz), kb = nearest(b, px, pz);
         if (ka.d > GAP || kb.d > GAP) continue;                  // both ends must reach this corner
-        var ta = a.tgt[ka.i], tb = b.tgt[kb.i];                  // keep the CLOSEST corner per end
-        if (!ta || ka.d < ta._d) a.tgt[ka.i] = { x: px, z: pz, _d: ka.d };
-        if (!tb || kb.d < tb._d) b.tgt[kb.i] = { x: px, z: pz, _d: kb.d };
+        var ta = slots[i][ka.i], tb = slots[j][kb.i];            // keep the CLOSEST corner per end
+        if (!ta || ka.d < ta.d) slots[i][ka.i] = { x: px, z: pz, partner: b.s.id, d: ka.d };
+        if (!tb || kb.d < tb.d) slots[j][kb.i] = { x: px, z: pz, partner: a.s.id, d: kb.d };
       }
     }
+    /** @type {Map<string, WallCorner[]>} */
+    var map = new Map();
+    W.forEach(function (w, wi) {
+      /** @type {WallCorner[]} */
+      var arr = [];
+      [0, 1].forEach(function (e) {
+        var c = slots[wi][e];
+        if (c) arr.push({ x: c.x, z: c.z, partner: c.partner, end: e });
+      });
+      map.set(w.s.id, arr);
+    });
+    return map;
+  }
+
+  // Join wall corners. WebXR fits each wall independently, so two walls that should meet at a corner often
+  // stop a few cm short (or overshoot). Using wallCorners' shared intersection points, snap each wall's end
+  // that reaches a corner exactly onto it — closing the corner with a small extend/trim. Leaves parallel
+  // walls and T-junctions alone. Mutates wall _lp / extent / position in place.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces
+   * @returns {void}
+   */
+  function joinCorners(THREE, surfaces) {
+    var W = wallSegs(THREE, surfaces);
+    var corners = wallCorners(THREE, surfaces);
     W.forEach(function (w) {
-      if (!w.tgt[0] && !w.tgt[1]) return;
-      var E0 = w.tgt[0] || w.ends[0], E1 = w.tgt[1] || w.ends[1];
+      var cs = corners.get(w.s.id) || [];
+      if (!cs.length) return;
+      var E0 = w.ends[0], E1 = w.ends[1];
+      cs.forEach(function (c) { if (c.end === 0) E0 = { x: c.x, z: c.z }; else E1 = { x: c.x, z: c.z }; });
       var cx = (E0.x + E1.x) / 2, cz = (E0.z + E1.z) / 2;
       w.s._lp.x = cx; w.s._lp.z = cz;
       w.s.extent = [Math.hypot(E1.x - E0.x, E1.z - E0.z), (w.s.extent && w.s.extent[1]) || 0];
       w.s.position = [cx, w.s._lp.y, cz];
     });
+  }
+
+  // Author an inset's CORNER-RELATIVE anchor (§5.3): its place on the wall expressed as distances to
+  // SHARED structural features — the host wall's corner points (along-wall) and the floor/ceiling edges
+  // (vertical) — never the wall's scan-artifact centroid. Any client reconstructs the same physical spot
+  // from its OWN captured corners/edges (reconstructInset), so a guest whose wall scan centres differently
+  // still lands the inset right. Perpendicular depth + orientation are NOT stored — snapInsets pins the
+  // uniform standoff and adopts the wall's orientation. Pure; call after joinCorners has settled the wall.
+  /**
+   * @typedef {{corner: string, dist: number}} AlongRef      signed along-wall distance from a partner corner
+   * @typedef {{edge: "floor"|"ceiling", dist: number}} VertRef
+   * @typedef {{along: AlongRef[], vertical: VertRef[], fallback: string|null}} InsetAnchor
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface} inset       the inset (uses its ref-frame centre _lp)
+   * @param {SnapSurface} wall        its host wall (uses _lp/_lq)
+   * @param {WallCorner[]} corners    the host wall's corners (from wallCorners)
+   * @param {number|null} floorY      world Y of the wall∩floor edge, or null if no floor captured
+   * @param {number|null} ceilY       world Y of the wall∩ceiling edge, or null
+   * @returns {InsetAnchor}
+   */
+  function authorInsetAnchor(THREE, inset, wall, corners, floorY, ceilY) {
+    corners = corners || [];
+    var n = new THREE.Vector3(0, 1, 0).applyQuaternion(wall._lq);
+    var L = Math.hypot(n.x, n.z) || 1, nx = n.x / L, nz = n.z / L, tx = nz, tz = -nx;   // width axis
+    var c = wall._lp, ic = inset._lp;
+    var a = (ic.x - c.x) * tx + (ic.z - c.z) * tz;             // inset's along-wall coordinate
+    /** @type {AlongRef[]} */
+    var along = corners.map(function (cor) {
+      var ak = (cor.x - c.x) * tx + (cor.z - c.z) * tz;
+      return { corner: cor.partner, dist: a - ak };             // signed (t is shared once wall normals agree)
+    });
+    /** @type {VertRef[]} */
+    var vertical = [];
+    var fb = [];
+    if (floorY != null) vertical.push({ edge: "floor", dist: ic.y - floorY });
+    if (ceilY != null) vertical.push({ edge: "ceiling", dist: ceilY - ic.y });
+    if (!along.length) fb.push("freestanding");                 // no captured corner → guest-misplacement risk
+    if (!vertical.length) fb.push("no-vertical-ref");
+    return { along: along, vertical: vertical, fallback: fb.length ? fb.join("+") : null };
+  }
+
+  // Reconstruct an inset's centre from its corner-relative anchor against THIS client's live wall (§5.3).
+  // Solves two 1-D coordinates: along-wall from the stored corner distances (2 present → mean = 1-D
+  // least-squares, robust to a differently-captured wall length; 1 → direct; 0 → wall-centre fallback,
+  // flagged) and height from the floor/ceiling edge distances (same 2→1→0). Depth/orientation are the
+  // wall's (snapInsets pins the standoff). Pure. Returns null only if the wall itself is unusable.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface} wall
+   * @param {WallCorner[]} corners
+   * @param {number|null} floorY
+   * @param {number|null} ceilY
+   * @param {InsetAnchor} anchor
+   * @returns {{position: Vec3, along: number, fallback: string|null}|null}
+   */
+  function reconstructInset(THREE, wall, corners, floorY, ceilY, anchor) {
+    if (!wall || !wall._lp || !wall._lq || !anchor) return null;
+    corners = corners || [];
+    var n = new THREE.Vector3(0, 1, 0).applyQuaternion(wall._lq);
+    var L = Math.hypot(n.x, n.z) || 1, nx = n.x / L, nz = n.z / L, tx = nz, tz = -nx;
+    var c = wall._lp, fb = [];
+    /** @type {number[]} */
+    var aEst = [];
+    (anchor.along || []).forEach(function (ar) {
+      for (var k = 0; k < corners.length; k++) {
+        if (corners[k].partner === ar.corner) {
+          var ak = (corners[k].x - c.x) * tx + (corners[k].z - c.z) * tz;
+          aEst.push(ak + ar.dist);
+          break;
+        }
+      }
+    });
+    var along;
+    if (aEst.length) along = aEst.reduce(function (s, v) { return s + v; }, 0) / aEst.length;
+    else { along = 0; fb.push("along:wall-centre"); }
+    /** @type {number[]} */
+    var yEst = [];
+    (anchor.vertical || []).forEach(function (vr) {
+      if (vr.edge === "floor" && floorY != null) yEst.push(floorY + vr.dist);
+      else if (vr.edge === "ceiling" && ceilY != null) yEst.push(ceilY - vr.dist);
+    });
+    var y;
+    if (yEst.length) y = yEst.reduce(function (s, v) { return s + v; }, 0) / yEst.length;
+    else { y = c.y; fb.push("vertical:wall-centre"); }
+    return { position: new THREE.Vector3(c.x + tx * along, y, c.z + tz * along), along: along,
+             fallback: fb.length ? fb.join("+") : null };
+  }
+
+  // The along-wall coordinate of a point (world x,z) in a wall's plan-view frame: its signed distance
+  // along the wall's width axis t=(n.z,-n.x) from the wall centre. The ordinal that defines an inset's
+  // SLOT (§5.3 L3) and the axis matchInset resolves identity in. Shared with author/reconstruct so all
+  // three agree on the coordinate.
+  /** @param {THREE_NS} THREE  @param {SnapSurface} wall  @param {number} x  @param {number} z  @returns {number} */
+  function insetAlong(THREE, wall, x, z) {
+    var n = new THREE.Vector3(0, 1, 0).applyQuaternion(wall._lq);
+    var L = Math.hypot(n.x, n.z) || 1, nx = n.x / L, nz = n.z / L;
+    return (x - wall._lp.x) * nz + (z - wall._lp.z) * (-nx);
+  }
+
+  // Which wall an inset belongs to, derived geometrically: the nearest ~parallel (co- OR anti-facing —
+  // an inset's live normal can be inward, so |dot|) wall the inset sits WITHIN (the within-width test stops
+  // a coplanar/collinear neighbour from stealing it — the door-50/wall-59 bug). Factored out of snapInsets
+  // so identity resolution (host_wall + slot, L3) and snapping agree on the host. Returns the wall or null.
+  /** @param {THREE_NS} THREE  @param {SnapSurface} inset  @param {SnapSurface[]} walls  @returns {SnapSurface|null} */
+  function hostWallFor(THREE, inset, walls) {
+    var V3 = THREE.Vector3;
+    var sn = new V3(0, 1, 0).applyQuaternion(inset._lq), bestD = 0.3;
+    var best = /** @type {SnapSurface|null} */ (null);
+    walls.forEach(function (wl) {
+      var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
+      if (Math.abs(wn.dot(sn)) < 0.9) return;                   // ~parallel (co-facing OR anti — insets can be either)
+      var rel = inset._lp.clone().sub(wl._lp);
+      var d = Math.abs(rel.dot(wn));                            // perpendicular distance to the wall's plane
+      if (d >= bestD) return;
+      var wx = new V3(1, 0, 0).applyQuaternion(wl._lq);         // wall's local width axis (world)
+      if (Math.abs(rel.dot(wx)) > ((wl.extent && wl.extent[0]) || 0) / 2 + 0.3) return;
+      bestD = d; best = wl;
+    });
+    return best;
+  }
+
+  // Resolve a captured inset's IDENTITY by its structural place, not its centroid (§5.3 L3). Its id comes
+  // from the seed inset (same semantic + host wall) whose RECONSTRUCTED along-wall coordinate is nearest —
+  // reconstruction is corner-relative, so the seed inset's expected local spot is centroid-independent.
+  // Nearest-in-along (not raw slot index) is what stops a missing/extra inset from cascading wrong ids:
+  // a captured window at along≈1 matches the seed window reconstructed at ≈1, even if a middle one is
+  // absent this capture. `claimed` holds seed ids already taken this pass; returns the id or null (mint).
+  /**
+   * @param {{along: number}} cand
+   * @param {{id: string, along: number}[]} seedRecon   seed insets' reconstructed along-coords (same sem+wall)
+   * @param {Set<string>} [claimed]
+   * @param {{tol?: number}} [opts]                     max along gap (m) to accept a match (default 0.4)
+   * @returns {string|null}
+   */
+  function matchInset(cand, seedRecon, claimed, opts) {
+    opts = opts || {};
+    var TOL = opts.tol != null ? opts.tol : 0.4;
+    var best = /** @type {string|null} */ (null), bestD = TOL;
+    (seedRecon || []).forEach(function (s) {
+      if (claimed && claimed.has(s.id)) return;
+      var d = Math.abs(cand.along - s.along);
+      if (d < bestD) { bestD = d; best = s.id; }
+    });
+    return best;
   }
 
   // Snap each inset (door/window/wall art) so it reads as part of its wall: keep its own (locally
@@ -433,12 +675,12 @@
     walls.forEach(function (wl) { wl.holes = []; });            // recomputed fresh every capture
     // Doors/windows/wall-art are pinned to a UNIFORM perpendicular standoff `off` (m) in front of their
     // wall — tunable via --inset-standoff (window.CONJURE_INSET_STANDOFF, passed in here).
-    var INSETS = { "door": true, "window": true, "wall art": true };
+    var INSETS = /** @type {Record<string, boolean>} */ ({ "door": true, "window": true, "wall art": true });
     var off = (typeof standoff === "number" && standoff >= 0) ? standoff : 0.02;
     surfaces.forEach(function (s) {
       if (!INSETS[s.semantic] || !walls.length) return;
       // A WebXR plane lies in its local X-Z plane, so its NORMAL is the +Y axis (not +Z).
-      var sn = new V3(0, 1, 0).applyQuaternion(s._lq), bestD = 0.3;
+      var sn = new V3(0, 1, 0).applyQuaternion(s._lq);
       var best = /** @type {SnapSurface|null} */ (null);
       // If the inset already KNOWS its wall (hostWall — recorded by the authority's snapInsets, reused on
       // recovery §5.2 AND carried onto captured insets from the seed), snap to THAT wall by id — don't
@@ -450,18 +692,7 @@
       // The flip side: proximity+|dot| can't tell the two faces of a room-partition apart when they're
       // near-coincident — the recorded host_wall above is the only reliable disambiguator there.
       if (s.hostWall) walls.forEach(function (wl) { if (wl.id === s.hostWall) best = wl; });
-      if (!best) {
-        walls.forEach(function (wl) {
-          var wn = new V3(0, 1, 0).applyQuaternion(wl._lq);
-          if (Math.abs(wn.dot(sn)) < 0.9) return;               // ~parallel (co-facing OR anti — insets can be either)
-          var rel = s._lp.clone().sub(wl._lp);
-          var d = Math.abs(rel.dot(wn));                        // perpendicular distance to the wall's plane
-          if (d >= bestD) return;
-          var wx = new V3(1, 0, 0).applyQuaternion(wl._lq);     // wall's local width axis (world)
-          if (Math.abs(rel.dot(wx)) > ((wl.extent && wl.extent[0]) || 0) / 2 + 0.3) return;
-          bestD = d; best = wl;
-        });
-      }
+      if (!best) best = hostWallFor(THREE, s, walls);           // derive by proximity+within-width, and RECORD it
       if (!best) return;
       s.hostWall = best.id;                                     // record the association (persisted by the authority)
       var nint = sn.clone().negate();                           // into the room = opposite outward normal
@@ -496,6 +727,8 @@
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
-           matchRef: matchRef,
+           matchRef: matchRef, matchWall: matchWall, matchInset: matchInset,
+           wallCorners: wallCorners, authorInsetAnchor: authorInsetAnchor, reconstructInset: reconstructInset,
+           insetAlong: insetAlong, hostWallFor: hostWallFor,
            joinCorners: joinCorners, snapInsets: snapInsets };
 });

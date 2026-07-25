@@ -597,6 +597,21 @@ def test_wall_holes_stored_and_window_defaults_to_glass(srv, client):
     assert glass["transparent"] is True and glass["opacity"] < 0.5    # faint glass — you can see outside
 
 
+def test_inset_structural_anchor_round_trips_into_meta(srv, client):
+    # §5.3: an inset's corner-relative anchor (along-wall corner distances + floor/ceiling edge distances)
+    # is persisted under meta, so any client can reconstruct its spot from shared structure, not the centroid.
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [4, 2.4]},
+        {"id": "real_door_1", "semantic": "door", "position": [0.5, 1.0, -2], "extent": [0.9, 2.0],
+         "hostWall": "real_wall_1",
+         "along": [{"corner": "real_wall_2", "dist": -1.5}],
+         "vertical": [{"edge": "floor", "dist": 1.0}, {"edge": "ceiling", "dist": 1.4}]}]})
+    door = next(e for e in _entities(client) if e["id"] == "real_door_1")
+    assert door["meta"]["host_wall"] == "real_wall_1"
+    assert door["meta"]["along"] == [{"corner": "real_wall_2", "dist": -1.5}]
+    assert door["meta"]["vertical"] == [{"edge": "floor", "dist": 1.0}, {"edge": "ceiling", "dist": 1.4}]
+
+
 def test_wall_holes_update_only_on_opening_count_change(srv, client):
     # Structural-only ingest (§7.4): the seed's openings update when one is ADDED/REMOVED (count changes),
     # not on a same-count reposition (sub-structural drift — the client renders the live holes locally).
