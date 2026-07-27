@@ -1483,6 +1483,7 @@
           (seedReconByKey[key] = seedReconByKey[key] || []).push({ id: e.id, along: sol.along });
         });
         var claimedInset = new Set();
+        var insMatched = 0, insMint = 0;                                 // TEMP diag: inset identity churn
         cur.forEach(function (c) {
           if (!INSET_SEMS[c.sem]) return;
           var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
@@ -1493,14 +1494,35 @@
             sid = RS.matchInset({ along: along }, seedReconByKey[c.sem + "|" + hostId], claimedInset);
           }
           if (sid) {                                                     // inherit the seed id + track drift
-            claimedInset.add(sid);
+            claimedInset.add(sid); insMatched++;
             var r = null; self._ref.forEach(function (x) { if (x.id === sid) r = x; });
             if (r) { r.pos.lerp(rp.lp, 0.3); r.ext = c.ext.slice(); r.nyaw = cyaw; }
           } else {                                                       // no structural match → mint
-            sid = resolveRef(c, rp.lp, cyaw, null);
+            sid = resolveRef(c, rp.lp, cyaw, null); insMint++;
           }
           pushSurface(c, sid, rp.lp, rp.lq, hostId);
         });
+        // ┌─ TEMP diag (--debug-registration) — why does the seed churn/decay (ref grows +N/capture, walls
+        // │ get pruned, seed goes wall-less → register dlt=0 deadlock)? Per capture, the owner's inset
+        // │ identity outcome + the reference composition + whether the seed even carries the §5.3 anchors.
+        // │  • mint high every capture → insets never re-inherit → ref grows, _known accretes, prune churns.
+        // │  • docInset>0 but withAlong=0 → the seed lost the anchors → seedRecon empty → everything mints.
+        // │  • ref wall count falling over a session → walls being pruned (the deadlock precursor).
+        if (window.CONJURE_DEBUG_REGISTRATION) {
+          var rc = { wall: 0, floor: 0, ceiling: 0, inset: 0, other: 0 };
+          self._ref.forEach(function (r) {
+            if (r.sem === "wall") rc.wall++; else if (r.sem === "floor") rc.floor++;
+            else if (r.sem === "ceiling") rc.ceiling++; else if (INSET_SEMS[r.sem]) rc.inset++; else rc.other++;
+          });
+          var docIns = 0, docAlong = 0;
+          (docSurfaces || []).forEach(function (e) { if (INSET_SEMS[(e.meta || {}).semantic]) { docIns++; if ((e.meta || {}).along) docAlong++; } });
+          debugLog("inset", "matched=" + insMatched + " mint=" + insMint
+            + " | ref wall=" + rc.wall + " floor=" + rc.floor + " ceil=" + rc.ceiling + " inset=" + rc.inset
+            + " other=" + rc.other + " total=" + self._ref.length
+            + " | doc inset=" + docIns + " withAlong=" + docAlong + " shadows=" + insetShadows.size
+            + " seedReconKeys=" + Object.keys(seedReconByKey).length, true);
+        }
+        // └────────────────────────────────────────────────────────────────────────────────────────────────┘
         if (!surfaces.length) return;
 
         // LOCAL RENDER (every client): snap corners + insets in F_track, then draw each surface at its OWN
@@ -1563,7 +1585,11 @@
         Object.keys(self2._known).forEach(function (id) {                 // debounced removals (3 misses)
           if (curById[id]) return;
           self2._absent[id] = (self2._absent[id] || 0) + 1;
-          if (self2._absent[id] >= 3) { delete self2._known[id]; delete self2._absent[id]; changed = true; reason = reason || ("removed " + id); }
+          if (self2._absent[id] >= 3) {
+            // TEMP diag (--debug-registration): which surfaces get pruned — a falling wall/floor count here
+            // is the seed decaying toward the wall-less register-deadlock.
+            if (window.CONJURE_DEBUG_REGISTRATION) debugLog("prune", id + " (" + ((self2._known[id] || {}).semantic || "?") + ") absent 3", true);
+            delete self2._known[id]; delete self2._absent[id]; changed = true; reason = reason || ("removed " + id); }
         });
         Object.keys(self2._known).forEach(function (id) {                 // new / large-move vs last POST
           if (changed) return;
