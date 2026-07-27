@@ -1472,10 +1472,10 @@
         var refFloorY = null, refCeilY = null;
         surfaces.forEach(function (s) { if (s.semantic === "floor") refFloorY = s._lp.y; else if (s.semantic === "ceiling") refCeilY = s._lp.y; });
         // Reconstruct each anchored _ref inset's expected along-position on its host wall, THIS capture.
-        var refReconByKey = {}, refInsetById = {}, refAnchored = 0;
+        var refReconByKey = {}, refInsetById = {};
         self._ref.forEach(function (r) {
           if (!INSET_SEMS[r.sem] || !r.hostWall || !r.anchor) return;
-          refInsetById[r.id] = r; refAnchored++;
+          refInsetById[r.id] = r;
           var hwRec = null; refWalls.forEach(function (w) { if (w.id === r.hostWall) hwRec = w; });
           if (!hwRec) return;
           var sol = RS.reconstructInset(THREE, hwRec, refCorners.get(r.hostWall), refFloorY, refCeilY, r.anchor);
@@ -1483,7 +1483,6 @@
           (refReconByKey[r.sem + "|" + r.hostWall] = refReconByKey[r.sem + "|" + r.hostWall] || []).push({ id: r.id, along: sol.along });
         });
         var claimedInset = new Set();
-        var insMatched = 0, insMint = 0;                                 // TEMP diag: inset identity churn
         cur.forEach(function (c) {
           if (!INSET_SEMS[c.sem]) return;
           var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
@@ -1494,31 +1493,13 @@
             sid = RS.matchInset({ along: along }, refReconByKey[c.sem + "|" + hostId], claimedInset);
           }
           if (sid) {                                                     // re-inherit + track drift
-            claimedInset.add(sid); insMatched++;
+            claimedInset.add(sid);
             var rr = refInsetById[sid]; if (rr) { rr.pos.lerp(rp.lp, 0.3); rr.ext = c.ext.slice(); rr.nyaw = cyaw; }
           } else {
-            sid = resolveRef(c, rp.lp, cyaw, null); insMint++;           // no structural match → mint (into _ref too)
+            sid = resolveRef(c, rp.lp, cyaw, null);                      // no structural match → mint (into _ref too)
           }
           pushSurface(c, sid, rp.lp, rp.lq, hostId);
         });
-        // ┌─ TEMP diag (--debug-registration) — why does the seed churn/decay (ref grows +N/capture, walls
-        // │ get pruned, seed goes wall-less → register dlt=0 deadlock)? Per capture, the owner's inset
-        // │ identity outcome + the reference composition + whether the seed even carries the §5.3 anchors.
-        // │  • mint high every capture → insets never re-inherit → ref grows, _known accretes, prune churns.
-        // │  • docInset>0 but withAlong=0 → the seed lost the anchors → seedRecon empty → everything mints.
-        // │  • ref wall count falling over a session → walls being pruned (the deadlock precursor).
-        if (window.CONJURE_DEBUG_REGISTRATION) {
-          var rc = { wall: 0, floor: 0, ceiling: 0, inset: 0, other: 0 };
-          self._ref.forEach(function (r) {
-            if (r.sem === "wall") rc.wall++; else if (r.sem === "floor") rc.floor++;
-            else if (r.sem === "ceiling") rc.ceiling++; else if (INSET_SEMS[r.sem]) rc.inset++; else rc.other++;
-          });
-          debugLog("inset", "matched=" + insMatched + " mint=" + insMint
-            + " | ref wall=" + rc.wall + " floor=" + rc.floor + " ceil=" + rc.ceiling + " inset=" + rc.inset
-            + " other=" + rc.other + " total=" + self._ref.length
-            + " | refAnchored=" + refAnchored + " reconKeys=" + Object.keys(refReconByKey).length, true);
-        }
-        // └────────────────────────────────────────────────────────────────────────────────────────────────┘
         if (!surfaces.length) return;
 
         // LOCAL RENDER (every client): snap corners + insets in F_track, then draw each surface at its OWN
@@ -1586,11 +1567,7 @@
         Object.keys(self2._known).forEach(function (id) {                 // debounced removals (3 misses)
           if (curById[id]) return;
           self2._absent[id] = (self2._absent[id] || 0) + 1;
-          if (self2._absent[id] >= 3) {
-            // TEMP diag (--debug-registration): which surfaces get pruned — a falling wall/floor count here
-            // is the seed decaying toward the wall-less register-deadlock.
-            if (window.CONJURE_DEBUG_REGISTRATION) debugLog("prune", id + " (" + ((self2._known[id] || {}).semantic || "?") + ") absent 3", true);
-            delete self2._known[id]; delete self2._absent[id]; changed = true; reason = reason || ("removed " + id); }
+          if (self2._absent[id] >= 3) { delete self2._known[id]; delete self2._absent[id]; changed = true; reason = reason || ("removed " + id); }
         });
         Object.keys(self2._known).forEach(function (id) {                 // new / large-move vs last POST
           if (changed) return;
