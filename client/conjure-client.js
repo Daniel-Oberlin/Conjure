@@ -1452,55 +1452,23 @@
             : RS.matchRef({ pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient }, self._ref, claimed);
           pushSurface(c, resolveRef(c, rp.lp, cyaw, best), rp.lp, rp.lq, null);
         });
-        // Pass B2 — INSETS. Identity is (semantic, host_wall, along-wall slot), resolved by the nearest
-        // RECONSTRUCTED along-coord — never the wall centroid (§5.3 L3) — so an inset keeps its id (and its
-        // director styling) as it slides along its wall, and a missing/extra one doesn't cascade wrong ids.
+        // Pass B2 — INSETS. IDENTITY re-inherits against the PERSISTENT reference constellation `_ref` — the
+        // SAME immediate source walls use — via matchRef (nearest same-facing centre, plus the wall-art
+        // coincident-flip). NOT the server seed: the owner accretes _ref every capture while the seed
+        // round-trips with a lag (and is empty right after establish), so keying inset identity off the seed
+        // made EVERY inset mint a fresh id each capture until the seed caught up — _ref grew +N/capture, the
+        // room churned, and it relocalized (the deadlock). The §5.3 corner-relative ANCHOR still rides along
+        // for RECOVERY + guest PLACEMENT (authored below, consumed by _recoverMissing) — that was always the
+        // centroid-independent part; identity only needs to be stable frame-to-frame, which _ref delivers.
         var refWalls = surfaces.filter(function (s) { return s.semantic === "wall"; });
-        var refCorners = RS.wallCorners(THREE, surfaces);
-        var refFloorY = null, refCeilY = null;
-        surfaces.forEach(function (s) { if (s.semantic === "floor") refFloorY = s._lp.y; else if (s.semantic === "ceiling") refCeilY = s._lp.y; });
-        // DUPLICATE seed insets — the same physical inset persisted under >1 id (a prior matchInset miss that
-        // never got pruned). Ignore the non-canonical "shadow" ids for BOTH identity and recovery, else they
-        // oscillate and recovery re-materialises a flickering twin (§5.3). Computed from the seed's own stored
-        // positions (frame-independent) so every device drops the same shadows.
-        var insetShadows = RS.dupInsetIds((docSurfaces || []).filter(function (e) {
-          return INSET_SEMS[(e.meta || {}).semantic];
-        }).map(function (e) {
-          var p = (e.transform || {}).position || [0, 0, 0];
-          return { id: e.id, semantic: e.meta.semantic, hostWall: e.meta.host_wall, pos: p };
-        }));
-        // Seed insets grouped by "semantic|host_wall", each with its along-coord RECONSTRUCTED against our
-        // ref-frame walls from its stored structural distances — the expected local spot to match against.
-        var seedReconByKey = {};
-        (docSurfaces || []).forEach(function (e) {
-          var m = e.meta || {}; if (!INSET_SEMS[m.semantic] || !m.host_wall || !m.along || insetShadows.has(e.id)) return;
-          var hwRec = null; refWalls.forEach(function (w) { if (w.id === m.host_wall) hwRec = w; });
-          if (!hwRec) return;
-          var sol = RS.reconstructInset(THREE, hwRec, refCorners.get(m.host_wall), refFloorY, refCeilY,
-                                        { along: m.along, vertical: m.vertical });
-          if (!sol) return;
-          var key = m.semantic + "|" + m.host_wall;
-          (seedReconByKey[key] = seedReconByKey[key] || []).push({ id: e.id, along: sol.along });
-        });
-        var claimedInset = new Set();
         var insMatched = 0, insMint = 0;                                 // TEMP diag: inset identity churn
         cur.forEach(function (c) {
           if (!INSET_SEMS[c.sem]) return;
           var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
           var hw = RS.hostWallFor(THREE, { _lp: rp.lp, _lq: rp.lq, extent: c.ext }, refWalls);
-          var hostId = hw ? hw.id : null, sid = null;
-          if (hw) {
-            var along = RS.insetAlong(THREE, hw, rp.lp.x, rp.lp.z);
-            sid = RS.matchInset({ along: along }, seedReconByKey[c.sem + "|" + hostId], claimedInset);
-          }
-          if (sid) {                                                     // inherit the seed id + track drift
-            claimedInset.add(sid); insMatched++;
-            var r = null; self._ref.forEach(function (x) { if (x.id === sid) r = x; });
-            if (r) { r.pos.lerp(rp.lp, 0.3); r.ext = c.ext.slice(); r.nyaw = cyaw; }
-          } else {                                                       // no structural match → mint
-            sid = resolveRef(c, rp.lp, cyaw, null); insMint++;
-          }
-          pushSurface(c, sid, rp.lp, rp.lq, hostId);
+          var best = RS.matchRef({ pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient }, self._ref, claimed);
+          if (best) insMatched++; else insMint++;
+          pushSurface(c, resolveRef(c, rp.lp, cyaw, best), rp.lp, rp.lq, hw ? hw.id : null);
         });
         // ┌─ TEMP diag (--debug-registration) — why does the seed churn/decay (ref grows +N/capture, walls
         // │ get pruned, seed goes wall-less → register dlt=0 deadlock)? Per capture, the owner's inset
@@ -1519,8 +1487,7 @@
           debugLog("inset", "matched=" + insMatched + " mint=" + insMint
             + " | ref wall=" + rc.wall + " floor=" + rc.floor + " ceil=" + rc.ceiling + " inset=" + rc.inset
             + " other=" + rc.other + " total=" + self._ref.length
-            + " | doc inset=" + docIns + " withAlong=" + docAlong + " shadows=" + insetShadows.size
-            + " seedReconKeys=" + Object.keys(seedReconByKey).length, true);
+            + " | doc inset=" + docIns + " withAlong=" + docAlong, true);
         }
         // └────────────────────────────────────────────────────────────────────────────────────────────────┘
         if (!surfaces.length) return;

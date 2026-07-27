@@ -308,9 +308,13 @@ pure geometry lives in `client/room-snap.js`:
   wall id), `authorInsetAnchor` (owner writes `meta.along`/`meta.vertical` distances at capture),
   `reconstructInset` (2 refs → mean / 1 → direct / 0 → wall-centre fallback, flagged). `_recoverMissing`
   reconstructs corner-relative, falling back to the legacy centroid ride only for pre-§5.3 seeds.
-- **Identity = semantic + host_wall + slot** — realized as `matchInset`: the seed inset whose
-  *reconstructed* along-coord is nearest (not a stored integer slot, which cascades on a count-mismatch),
-  so an inset keeps its id + styling as it slides along its wall.
+- **Identity** — an inset re-inherits its id via `matchRef` against the **persistent `_ref` constellation**,
+  the same immediate source walls use (not the server seed). Keying identity off the *seed* (`matchInset` +
+  reconstructed along) failed on device: the owner accretes `_ref` every capture while the seed round-trips
+  with a lag and is empty right after establish, so every inset minted a fresh id each capture until the seed
+  caught up — `_ref` grew +N/capture and the room churned into a relocalize. `matchInset`/`insetAlong` remain
+  as tested pure helpers for a future `_ref`-based slot identity, but are not on the hot path today. (The rare
+  centroid re-mint `matchRef` can still cause is the accepted trade for frame-to-frame stability.)
 - **Duplicate-inset guard** — `dupInsetIds`: a `matchInset` miss can mint a second id for an inset already
   in the seed; if the two ids then oscillate faster than the 3-capture removal debounce, BOTH persist, and
   thereafter `matchInset` swaps between them while `_recoverMissing` re-materialises whichever the capture
