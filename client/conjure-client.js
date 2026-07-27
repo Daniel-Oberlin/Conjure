@@ -1232,6 +1232,11 @@
                                                             // register, or post geometry into a space we're not in
         var CAPTURE_MS = window.CONJURE_CAPTURE_MS || 2000; // recapture cadence (--capture-interval), ~0.5 Hz
         var RETRY_MS = Math.max(0, CAPTURE_MS - 300);       // after a rejected capture, retry ~300 ms sooner
+        // A room needs a wall basis to be registerable at all (register() needs vertical pairs). The
+        // deadlock-breaker (docs/local-first-geometry.md §10): NEVER establish, adopt, or persist a seed with
+        // fewer than this many walls — a wall-less seed (the furniture-only decay we hit) can never lock, and
+        // once adopted with canEstablish gated on an EMPTY _ref it strands the owner in permanent relocalize.
+        var MIN_SEED_WALLS = 3;
         if (time - this.lastPost < CAPTURE_MS) return;      // throttle
         var THREE = AFRAME.THREE, self = this, UP = new THREE.Vector3(0, 1, 0);
 
@@ -1308,7 +1313,11 @@
         // then owns and slowly evolves it (Pass B). A GUEST re-seeds EVERY capture straight from the
         // authoritative broadcast, so its reference always EQUALS the owner's current geometry and it never
         // contributes its own — this frozen, authority-owned target is what stops the shared frame drifting.
-        if (docSurfaces && docSurfaces.length >= 3 && (!this._ref.length || !amOwner)) {
+        // Deadlock-breaker: only ADOPT a seed with a real wall basis. A wall-less seed (the furniture-only
+        // decay) can never register; refusing it leaves _ref EMPTY so the owner establishes fresh from the
+        // live room instead of being stranded (its replace-POST then overwrites the bad seed). §10.
+        var nSeedWalls = (docSurfaces || []).filter(function (e) { return (e.meta || {}).semantic === "wall"; }).length;
+        if (docSurfaces && docSurfaces.length >= 3 && nSeedWalls >= MIN_SEED_WALLS && (!this._ref.length || !amOwner)) {
           var hadRef = this._ref.length;
           if (!amOwner) self._ref = [];                                  // guest: replace wholesale from authority
           var mx = 0;
@@ -1394,7 +1403,10 @@
         // Recover the frame transform; the AUTHORITY may bootstrap the reference on its first capture, but
         // otherwise (and ALWAYS for a guest) require a confident registration — a low-confidence result
         // means we're not locked, so hold + retry fast. A guest can never establish a fresh frame.
-        var reg = this._register(cur), canEstablish = amOwner && this._ref.length === 0;
+        // Only ESTABLISH a fresh reference from a capture that actually has a wall basis — so a partial/
+        // wall-less first capture can never become a seed that then can't register (the deadlock precursor).
+        var nCurWalls = cur.filter(function (c) { return c.sem === "wall"; }).length;
+        var reg = this._register(cur), canEstablish = amOwner && this._ref.length === 0 && nCurWalls >= MIN_SEED_WALLS;
         if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, reg);   // opt-in: one line + HUD/capture
         if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - RETRY_MS; return; }   // not locked → hold
         if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }   // re-locked → restore
@@ -1580,6 +1592,11 @@
         if (!changed) return;                                             // settled → nothing to POST
 
         var payload = Object.keys(self2._known).map(function (id) { return self2._known[id]; });
+        // Never PERSIST a wall-less seed (deadlock-breaker, §10): a seed the next session couldn't register
+        // against. Hold this post + retry — don't touch _posted, so a later capture with walls posts it.
+        if (payload.filter(function (s) { return s.semantic === "wall"; }).length < MIN_SEED_WALLS) {
+          this.lastPost = time - RETRY_MS; return;
+        }
         self2._posted = {};
         payload.forEach(function (s) { self2._posted[s.id] = { position: s.position, rotation: s.rotation,
           extent: s.extent, holes: (s.holes || []).length, semantic: s.semantic }; });

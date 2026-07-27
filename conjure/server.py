@@ -1797,6 +1797,11 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 # active world's owner ever reaches here — the guard is just against two of their live headsets at once.
 _AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle authority holds before takeover
 _authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
+# A room needs a wall basis to be registerable next session (register() needs vertical pairs). Never let a
+# wall-less replace-post WIPE a seed that has walls — that decays the seed into an unregisterable state and
+# strands the next owner in permanent relocalize (docs/local-first-geometry.md §10). Client guards against
+# posting one; this is the server-side backstop (protects the seed from ANY client).
+_MIN_SEED_WALLS = 3
 # NOTE (local-first, docs/local-first-geometry.md §2): the old ESTABLISH-then-FREEZE machinery (a timed
 # window that committed the static shell as a coherent set then froze it) is gone. It existed to stabilize
 # the SHARED, server-rendered geometry — but clients now render their OWN capture locally, so the server
@@ -1895,6 +1900,16 @@ async def ingest_room(req: RoomUpdate) -> dict:
 
     existing = {e["id"]: e for e in store.doc["entities"] if e.get("meta", {}).get("real")}
     new_ids = {s.id for s in req.surfaces}
+
+    # Deadlock-breaker backstop (§10): refuse a wall-less `replace` post that would wipe a walled seed. A seed
+    # with no walls can't be registered against next session → permanent relocalize. First establish (no
+    # existing walls) is unaffected; the client just re-posts once it re-captures walls.
+    if req.replace:
+        ex_walls = sum(1 for e in existing.values() if (e.get("meta") or {}).get("semantic") == "wall")
+        in_walls = sum(1 for s in req.surfaces if s.semantic == "wall")
+        if ex_walls >= _MIN_SEED_WALLS and in_walls < _MIN_SEED_WALLS:
+            _slog("room", f"reject wall-less replace-post ({in_walls} walls) — keeping seed ({ex_walls} walls)")
+            return {"ok": True, "kept_seed": True}
 
     # Geometry ops update the stored SEED only — never broadcast (clients render locally). A surface with a
     # photo pinned to it (`anchored`) is protected from pruning so the photo's id never orphans.

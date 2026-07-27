@@ -415,6 +415,17 @@ stakes on registration / matchRef robustness** (the `--reg-*` knobs, same-facing
 fallback). It is *the* thing to get right, and to watch when maps genuinely differ (the missing-window case
 is also an id-correspondence stress test).
 
+**Deadlock-breaker (wall basis).** `register()` needs a wall basis (vertical pairs) to lock at all, so a
+seed that ends up **wall-less** can never be registered against — and because a fresh establish is gated on
+an *empty* `_ref`, an owner that adopts such a seed is stranded in permanent relocalize (observed once when
+inset churn decayed the seed to furniture-only). Three guards make that state unreachable, keyed off a
+minimum wall count (`MIN_SEED_WALLS`, 3 — matching `register`'s `ref<3` floor): the owner (1) only
+**establishes** a fresh reference from a capture that has walls, (2) only **adopts** a persisted seed that
+has walls (else it leaves `_ref` empty and establishes fresh, whose `replace`-POST overwrites the bad seed),
+and (3) never **persists** a wall-less post. The server mirrors guard (3) as a backstop: a wall-less
+`replace` post can't wipe a walled seed (`server._MIN_SEED_WALLS`). First establish (no existing walls) is
+unaffected; guests never establish. This is recovery + prevention, not a per-frame heuristic.
+
 ## 11. What this removes / changes vs. today
 
 - **Removed:** the geometry round-trip, establish-then-freeze (`_static_frozen` / #2), whole-set broadcasts

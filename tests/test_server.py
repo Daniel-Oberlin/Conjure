@@ -612,6 +612,29 @@ def test_inset_structural_anchor_round_trips_into_meta(srv, client):
     assert door["meta"]["vertical"] == [{"edge": "floor", "dist": 1.0}, {"edge": "ceiling", "dist": 1.4}]
 
 
+def test_wall_less_replace_post_cannot_wipe_a_walled_seed(srv, client):
+    # §10 deadlock-breaker backstop: a seed that loses its walls can't be registered against next session
+    # (register needs vertical pairs) → the owner is stranded in permanent relocalize. A wall-less replace
+    # post must NOT prune away a walled seed.
+    walled = [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]},
+        {"id": "real_wall_2", "semantic": "wall", "position": [1.5, 1.2, 0], "rotation": [0, 90, 0], "extent": [3, 2.4]},
+        {"id": "real_wall_3", "semantic": "wall", "position": [-1.5, 1.2, 0], "rotation": [0, 90, 0], "extent": [3, 2.4]},
+        {"id": "real_table_1", "semantic": "table", "position": [0, 0.5, -1], "extent": [1, 1]},
+    ]
+    client.post("/room", json={"client_id": "h1", "surfaces": walled})
+    assert len([e for e in _entities(client) if (e.get("meta") or {}).get("semantic") == "wall"]) == 3
+    # a bogus wall-less replace post (furniture only) is refused; the seed's walls survive
+    r = client.post("/room", json={"client_id": "h1", "replace": True, "surfaces": [
+        {"id": "real_table_1", "semantic": "table", "position": [0, 0.5, -1], "extent": [1, 1]}]}).json()
+    assert r.get("kept_seed") is True
+    assert len([e for e in _entities(client) if (e.get("meta") or {}).get("semantic") == "wall"]) == 3, \
+        "walls preserved against a wall-less replace post"
+    # a legitimate re-post that still has its wall basis updates normally (guard doesn't over-fire)
+    client.post("/room", json={"client_id": "h1", "replace": True, "surfaces": walled[:3]})
+    assert len([e for e in _entities(client) if (e.get("meta") or {}).get("semantic") == "wall"]) == 3
+
+
 def test_wall_holes_update_only_on_opening_count_change(srv, client):
     # Structural-only ingest (§7.4): the seed's openings update when one is ADDED/REMOVED (count changes),
     # not on a same-count reposition (sub-structural drift — the client renders the live holes locally).
