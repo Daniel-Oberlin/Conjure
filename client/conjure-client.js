@@ -1313,7 +1313,11 @@
           if (!amOwner) self._ref = [];                                  // guest: replace wholesale from authority
           var mx = 0;
           docSurfaces.forEach(function (e) {
-            self._ref.push(window.RoomSnap.surfaceToRef(THREE, e));       // one source of truth (YXZ-correct normal)
+            var rr = window.RoomSnap.surfaceToRef(THREE, e);              // one source of truth (YXZ-correct normal)
+            var m = e.meta || {};                                        // carry the inset's corner-relative
+            if (m.host_wall) rr.hostWall = m.host_wall;                  // anchor onto its _ref entry, so inset
+            if (m.along) rr.anchor = { along: m.along, vertical: m.vertical };   // IDENTITY resolves against _ref
+            self._ref.push(rr);                                          // (immediate) — never the lagging seed
             var mm = /_(\d+)$/.exec(e.id); if (mm) mx = Math.max(mx, +mm[1] + 1);   // keep new ids unique
           });
           self._refSeq = Math.max(self._refSeq, mx);
@@ -1452,23 +1456,50 @@
             : RS.matchRef({ pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient }, self._ref, claimed);
           pushSurface(c, resolveRef(c, rp.lp, cyaw, best), rp.lp, rp.lq, null);
         });
-        // Pass B2 — INSETS. IDENTITY re-inherits against the PERSISTENT reference constellation `_ref` — the
-        // SAME immediate source walls use — via matchRef (nearest same-facing centre, plus the wall-art
-        // coincident-flip). NOT the server seed: the owner accretes _ref every capture while the seed
-        // round-trips with a lag (and is empty right after establish), so keying inset identity off the seed
-        // made EVERY inset mint a fresh id each capture until the seed caught up — _ref grew +N/capture, the
-        // room churned, and it relocalized (the deadlock). The §5.3 corner-relative ANCHOR still rides along
-        // for RECOVERY + guest PLACEMENT (authored below, consumed by _recoverMissing) — that was always the
-        // centroid-independent part; identity only needs to be stable frame-to-frame, which _ref delivers.
+        // Pass B2 — INSETS. IDENTITY re-inherits against the PERSISTENT reference constellation `_ref` (the
+        // SAME immediate source walls use), matched CORNER-RELATIVELY (§5.3). Each _ref inset carries its
+        // along-wall distances to its host wall's corners (the owner stamps them when it authors; a guest
+        // copies them in when it seeds _ref from the space), so we reconstruct its expected along-position
+        // against THIS capture's walls and match the captured inset by nearest along. Corner-relative because
+        // corners are SHARED structural features — independent of each device's scan centroid (goal 1: a
+        // guest) and of a single wall drifting within a session (goal 2: the inset + its corners move with the
+        // wall). Crucially against `_ref`, NOT the server seed: the owner accretes _ref immediately while the
+        // seed round-trips with a lag (empty right after establish), so keying identity off the seed made
+        // every inset mint each capture → _ref grew +N/capture → churn → relocalize. First capture after
+        // establish mints once (no anchor yet), then stable.
         var refWalls = surfaces.filter(function (s) { return s.semantic === "wall"; });
+        var refCorners = RS.wallCorners(THREE, surfaces);
+        var refFloorY = null, refCeilY = null;
+        surfaces.forEach(function (s) { if (s.semantic === "floor") refFloorY = s._lp.y; else if (s.semantic === "ceiling") refCeilY = s._lp.y; });
+        // Reconstruct each anchored _ref inset's expected along-position on its host wall, THIS capture.
+        var refReconByKey = {}, refInsetById = {}, refAnchored = 0;
+        self._ref.forEach(function (r) {
+          if (!INSET_SEMS[r.sem] || !r.hostWall || !r.anchor) return;
+          refInsetById[r.id] = r; refAnchored++;
+          var hwRec = null; refWalls.forEach(function (w) { if (w.id === r.hostWall) hwRec = w; });
+          if (!hwRec) return;
+          var sol = RS.reconstructInset(THREE, hwRec, refCorners.get(r.hostWall), refFloorY, refCeilY, r.anchor);
+          if (!sol) return;
+          (refReconByKey[r.sem + "|" + r.hostWall] = refReconByKey[r.sem + "|" + r.hostWall] || []).push({ id: r.id, along: sol.along });
+        });
+        var claimedInset = new Set();
         var insMatched = 0, insMint = 0;                                 // TEMP diag: inset identity churn
         cur.forEach(function (c) {
           if (!INSET_SEMS[c.sem]) return;
           var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
           var hw = RS.hostWallFor(THREE, { _lp: rp.lp, _lq: rp.lq, extent: c.ext }, refWalls);
-          var best = RS.matchRef({ pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient }, self._ref, claimed);
-          if (best) insMatched++; else insMint++;
-          pushSurface(c, resolveRef(c, rp.lp, cyaw, best), rp.lp, rp.lq, hw ? hw.id : null);
+          var hostId = hw ? hw.id : null, sid = null;
+          if (hw) {
+            var along = RS.insetAlong(THREE, hw, rp.lp.x, rp.lp.z);
+            sid = RS.matchInset({ along: along }, refReconByKey[c.sem + "|" + hostId], claimedInset);
+          }
+          if (sid) {                                                     // re-inherit + track drift
+            claimedInset.add(sid); insMatched++;
+            var rr = refInsetById[sid]; if (rr) { rr.pos.lerp(rp.lp, 0.3); rr.ext = c.ext.slice(); rr.nyaw = cyaw; }
+          } else {
+            sid = resolveRef(c, rp.lp, cyaw, null); insMint++;           // no structural match → mint (into _ref too)
+          }
+          pushSurface(c, sid, rp.lp, rp.lq, hostId);
         });
         // ┌─ TEMP diag (--debug-registration) — why does the seed churn/decay (ref grows +N/capture, walls
         // │ get pruned, seed goes wall-less → register dlt=0 deadlock)? Per capture, the owner's inset
@@ -1482,12 +1513,10 @@
             if (r.sem === "wall") rc.wall++; else if (r.sem === "floor") rc.floor++;
             else if (r.sem === "ceiling") rc.ceiling++; else if (INSET_SEMS[r.sem]) rc.inset++; else rc.other++;
           });
-          var docIns = 0, docAlong = 0;
-          (docSurfaces || []).forEach(function (e) { if (INSET_SEMS[(e.meta || {}).semantic]) { docIns++; if ((e.meta || {}).along) docAlong++; } });
           debugLog("inset", "matched=" + insMatched + " mint=" + insMint
             + " | ref wall=" + rc.wall + " floor=" + rc.floor + " ceil=" + rc.ceiling + " inset=" + rc.inset
             + " other=" + rc.other + " total=" + self._ref.length
-            + " | doc inset=" + docIns + " withAlong=" + docAlong, true);
+            + " | refAnchored=" + refAnchored + " reconKeys=" + Object.keys(refReconByKey).length, true);
         }
         // └────────────────────────────────────────────────────────────────────────────────────────────────┘
         if (!surfaces.length) return;
@@ -1522,20 +1551,25 @@
         // wall's corner points + its floor/ceiling edge distances — SHARED structural features, so any client
         // (esp. a guest whose wall scan centres differently) reconstructs the same physical spot, never riding
         // the wall's scan-artifact centroid. Done here — walls settled by joinCorners, hostWall set by
-        // snapInsets — and BEFORE _lp/_lq are dropped. Attached to the posted surface → persisted in the seed.
+        // snapInsets — and BEFORE _lp/_lq are dropped. Attached to the posted surface (→ persisted in the seed)
+        // AND stamped onto the inset's `_ref` entry, so NEXT capture's identity match reconstructs against it
+        // from _ref (immediate) rather than the lagging seed (docs/local-first-geometry.md §5.3).
         var authorCorners = window.RoomSnap.wallCorners(THREE, surfaces);
-        var authorFloorY = null, authorCeilY = null, authorWallById = {};
+        var authorFloorY = null, authorCeilY = null, authorWallById = {}, refById = {};
         surfaces.forEach(function (s) {
           if (s.semantic === "floor") authorFloorY = s._lp.y;
           else if (s.semantic === "ceiling") authorCeilY = s._lp.y;
           else if (s.semantic === "wall") authorWallById[s.id] = s;
         });
+        self._ref.forEach(function (r) { refById[r.id] = r; });
         surfaces.forEach(function (s) {
           if (!INSET_SEMS[s.semantic] || !s.hostWall) return;
           var hw = authorWallById[s.hostWall]; if (!hw) return;
           var anc = window.RoomSnap.authorInsetAnchor(THREE, s, hw, authorCorners.get(s.hostWall), authorFloorY, authorCeilY);
           s.along = anc.along; s.vertical = anc.vertical;
           if (anc.fallback) s.structuralFallback = anc.fallback;
+          var rr = refById[s.id];                                        // stamp onto _ref for next capture's match
+          if (rr) { rr.hostWall = s.hostWall; rr.anchor = { along: anc.along, vertical: anc.vertical }; }
         });
         surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
         this.lastPost = time;

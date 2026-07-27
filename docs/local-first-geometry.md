@@ -308,13 +308,17 @@ pure geometry lives in `client/room-snap.js`:
   wall id), `authorInsetAnchor` (owner writes `meta.along`/`meta.vertical` distances at capture),
   `reconstructInset` (2 refs → mean / 1 → direct / 0 → wall-centre fallback, flagged). `_recoverMissing`
   reconstructs corner-relative, falling back to the legacy centroid ride only for pre-§5.3 seeds.
-- **Identity** — an inset re-inherits its id via `matchRef` against the **persistent `_ref` constellation**,
-  the same immediate source walls use (not the server seed). Keying identity off the *seed* (`matchInset` +
-  reconstructed along) failed on device: the owner accretes `_ref` every capture while the seed round-trips
-  with a lag and is empty right after establish, so every inset minted a fresh id each capture until the seed
-  caught up — `_ref` grew +N/capture and the room churned into a relocalize. `matchInset`/`insetAlong` remain
-  as tested pure helpers for a future `_ref`-based slot identity, but are not on the hot path today. (The rare
-  centroid re-mint `matchRef` can still cause is the accepted trade for frame-to-frame stability.)
+- **Identity** — corner-relative (`matchInset` on reconstructed along-coords), but resolved against the
+  **persistent `_ref` constellation**, the same immediate source walls use — **not** the server seed. Each
+  `_ref` inset carries its anchor: the owner stamps it when it authors; a guest copies it in when it seeds
+  `_ref` from the space. Each capture we reconstruct every anchored `_ref` inset's expected along-position
+  against the live walls and match the captured inset by nearest along. This keeps both goals — centroid-
+  independent across devices (guest) and across a single wall drifting mid-session (the inset + its corners
+  move with the wall) — while staying immediate. **Why not the seed:** keying identity off `docSurfaces`
+  failed on device — the owner accretes `_ref` every capture while the seed round-trips with a lag and is
+  empty right after establish, so every inset minted a fresh id each capture (`matched=0 mint=16`), `_ref`
+  grew +N/capture, and the room churned into a relocalize deadlock (the seed even decayed wall-less). First
+  capture after establish still mints once (no anchor yet), then stable.
 - **Duplicate-inset guard** — `dupInsetIds`: a `matchInset` miss can mint a second id for an inset already
   in the seed; if the two ids then oscillate faster than the 3-capture removal debounce, BOTH persist, and
   thereafter `matchInset` swaps between them while `_recoverMissing` re-materialises whichever the capture
