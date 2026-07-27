@@ -311,6 +311,15 @@ pure geometry lives in `client/room-snap.js`:
 - **Identity = semantic + host_wall + slot** — realized as `matchInset`: the seed inset whose
   *reconstructed* along-coord is nearest (not a stored integer slot, which cascades on a count-mismatch),
   so an inset keeps its id + styling as it slides along its wall.
+- **Duplicate-inset guard** — `dupInsetIds`: a `matchInset` miss can mint a second id for an inset already
+  in the seed; if the two ids then oscillate faster than the 3-capture removal debounce, BOTH persist, and
+  thereafter `matchInset` swaps between them while `_recoverMissing` re-materialises whichever the capture
+  didn't claim — a flickering visual duplicate. `dupInsetIds` finds same-semantic, same-host insets whose
+  stored centres sit within 0.25 m (closer than two real insets could) and shadows the non-canonical id
+  (keeping the lowest per cluster, deterministically). Shadows are excluded from BOTH `matchInset` candidates
+  and recovery, and recovery also skips any spot already covered by a captured same-semantic inset. This
+  both prevents new twins from oscillating and makes an existing seed twin invisible; a structural re-POST
+  (replace) then drops the shadow from the persisted seed.
 The geometry is **JS-only** — the server never reconstructs an inset (its anchor basis is floor+walls,
 `_seed_planes`); if a server-side inset query ever appears, port to `conjure/room_snap.py` + a golden test
 like `plane_anchor`. Edge cases handled: a wall with no captured corner (freestanding → wall-centre

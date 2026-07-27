@@ -1006,6 +1006,14 @@
         // and floor/ceiling edge heights, against which a missing inset's stored distances are solved.
         var localCorners = RS.wallCorners(THREE, localSurfaces), floorYL = null, ceilYL = null;
         localSurfaces.forEach(function (s) { if (s.semantic === "floor") floorYL = s._lp.y; else if (s.semantic === "ceiling") ceilYL = s._lp.y; });
+        var INSET_SEMS = { "door": 1, "window": 1, "wall art": 1 };
+        // Don't reconstruct a DUPLICATE seed inset (a shadow id) — its canonical twin is what renders (§5.3).
+        var insetShadows = RS.dupInsetIds(docSurfaces.filter(function (e) { return INSET_SEMS[(e.meta || {}).semantic]; })
+          .map(function (e) { var p = (e.transform || {}).position || [0, 0, 0];
+            return { id: e.id, semantic: e.meta.semantic, hostWall: e.meta.host_wall, pos: p }; }));
+        // …and don't recover an inset whose spot is already covered by a CAPTURED same-semantic inset (so a
+        // just-minted duplicate id can't co-exist with the recovered seed id as a flickering twin).
+        var presentInsets = localSurfaces.filter(function (s) { return INSET_SEMS[s.semantic]; });
         var mat = function (t) { t = t || {}; var p = t.position || [0, 0, 0];
           return new THREE.Matrix4().compose(new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0),
             eulerYXZToQuat(THREE, t.rotation || [0, 0, 0]), new THREE.Vector3(1, 1, 1)); };
@@ -1017,6 +1025,7 @@
         docSurfaces.forEach(function (e) {
           var meta = e.meta || {}, sem = meta.semantic || "surface";
           if (have[e.id] || sem === "wall" || sem === "floor") return;   // captured, or a basis plane → skip
+          if (insetShadows.has(e.id)) return;                            // duplicate seed inset → its twin renders
           var sf = (e.components || {}).surface || {};
           var hostId = meta.host_wall || undefined;
           var hostRec = hostId ? localById[hostId] : null;              // host wall's CURRENT capture record
@@ -1053,6 +1062,12 @@
             if (!solm.ok) return;                                       // degenerate / too few walls → skip
             pos.copy(solm.position); rawQ.copy(solm.quaternion.clone().multiply(RX90)); how = "multilat";
           }
+          // Skip if a CAPTURED same-semantic inset already sits at this spot (within 25 cm) — recovering it
+          // would double the inset (the flickering-twin symptom). The live capture wins.
+          var covered = presentInsets.some(function (s) {
+            return s.semantic === sem && Math.hypot(s.position[0] - pos.x, s.position[1] - pos.y, s.position[2] - pos.z) < 0.25;
+          });
+          if (covered) return;
           // Carry _lp/_lq (raw-plane) so snapInsets snaps the recovered inset co-planar to its wall, and
           // hostWall (the recorded association, §5.2) so it snaps to THAT wall. rotation is the a-plane euler
           // eulerYXZ derives from the raw-plane quat.
@@ -1444,11 +1459,21 @@
         var refCorners = RS.wallCorners(THREE, surfaces);
         var refFloorY = null, refCeilY = null;
         surfaces.forEach(function (s) { if (s.semantic === "floor") refFloorY = s._lp.y; else if (s.semantic === "ceiling") refCeilY = s._lp.y; });
+        // DUPLICATE seed insets — the same physical inset persisted under >1 id (a prior matchInset miss that
+        // never got pruned). Ignore the non-canonical "shadow" ids for BOTH identity and recovery, else they
+        // oscillate and recovery re-materialises a flickering twin (§5.3). Computed from the seed's own stored
+        // positions (frame-independent) so every device drops the same shadows.
+        var insetShadows = RS.dupInsetIds((docSurfaces || []).filter(function (e) {
+          return INSET_SEMS[(e.meta || {}).semantic];
+        }).map(function (e) {
+          var p = (e.transform || {}).position || [0, 0, 0];
+          return { id: e.id, semantic: e.meta.semantic, hostWall: e.meta.host_wall, pos: p };
+        }));
         // Seed insets grouped by "semantic|host_wall", each with its along-coord RECONSTRUCTED against our
         // ref-frame walls from its stored structural distances — the expected local spot to match against.
         var seedReconByKey = {};
         (docSurfaces || []).forEach(function (e) {
-          var m = e.meta || {}; if (!INSET_SEMS[m.semantic] || !m.host_wall || !m.along) return;
+          var m = e.meta || {}; if (!INSET_SEMS[m.semantic] || !m.host_wall || !m.along || insetShadows.has(e.id)) return;
           var hwRec = null; refWalls.forEach(function (w) { if (w.id === m.host_wall) hwRec = w; });
           if (!hwRec) return;
           var sol = RS.reconstructInset(THREE, hwRec, refCorners.get(m.host_wall), refFloorY, refCeilY,

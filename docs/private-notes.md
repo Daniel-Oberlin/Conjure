@@ -1,11 +1,23 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
 # Space stuff
-- Command line specify lock time frame (20s, etc.)
-- Alternative lock method based on quality of registration, specify command line
-- How would robustness work for true 2-headset, can we implement before next test?
+- Figure out how to eliminate pop/jitter
+  - Every 2s (when viewer location is moving) sudden world jitter - moves a short distance then returns to essentially the same position (noticable pop reverting to a much smaller move)
+  - Doesn't happen much when just moving your head around but not walking
+  - Is it because we are setting translating the whole world and adjusting coordinates in two separate steps during the update (resulting in smaller net visible move)?
+  - If ^ is true, should we collapse translation into the coordinates?
+- Should we lerp towards a windowed time-average rather than the current value
+- Can we update much more frequently now since everything is local?
+  - How often is quest model updated?
+  - Could we achieve frame-rate updates in headset JS?
+  - Tradeoff of smoothness vs. compute power
+- Set command line arguments for all these things and optimize?
 
 # Agent refactor
+- agent prompt refactor (towards multi-agent)
+  - roster line -> optional per-agent injection
+  - identity line -> put into builder prompt (seems builder specific)
+  - context -> optional per-agent injection
 - dir paths /user/agent/worlds/..., /user/spaces...
 - do we need a persistent store for hierarchy now, mongodb?
 - agent initializer/constructor, setup state in persistent store?
@@ -19,10 +31,6 @@
    - /agents/builder/prompt, default settings (world constructor)
 - agent semantic versioning, upgrade path (default purge)?
 - maintain context persistence?
-- agent prompt refactor (towards multi-agent)
-  - roster line -> optional per-agent injection
-  - identity line -> put into builder prompt (seems builder specific)
-  - context -> optional per-agent injection
 - space visibility (public access, public create worlds)
 
 # Outdoor agent

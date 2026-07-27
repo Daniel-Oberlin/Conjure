@@ -628,6 +628,47 @@
     return best;
   }
 
+  // Find DUPLICATE seed insets — the same physical inset persisted under more than one id (§5.3). A
+  // matchInset miss can mint a fresh id for an inset that's already in the seed; if the ids then oscillate
+  // faster than the removal debounce, BOTH persist, and thereafter matchInset swaps between them frame-to-
+  // frame while _recoverMissing re-materialises whichever the capture didn't claim — a flickering visual
+  // duplicate. Two insets of the SAME semantic on the SAME host wall whose stored centres sit within `eps`
+  // (default 0.25 m — far closer than two real insets could, since they'd physically overlap) are the same
+  // inset. Returns the Set of NON-canonical ("shadow") ids to ignore for both identity and recovery, keeping
+  // the lowest id per cluster as canonical (deterministic — so every device drops the same shadows). Pure.
+  /**
+   * @param {{id: string, semantic: string, hostWall?: string, pos: number[]}[]} insets
+   * @param {number} [eps]   metres; centres closer than this on one wall ⇒ the same inset (default 0.25)
+   * @returns {Set<string>}  the shadow ids to ignore
+   */
+  function dupInsetIds(insets, eps) {
+    var EPS = (typeof eps === "number" && eps > 0) ? eps : 0.25;
+    /** @type {Record<string, {id: string, pos: number[]}[]>} */
+    var groups = {};
+    (insets || []).forEach(function (s) {
+      if (!s.hostWall) return;                                   // a freestanding inset has no wall to cluster on
+      var k = s.semantic + "|" + s.hostWall;
+      (groups[k] = groups[k] || []).push({ id: s.id, pos: s.pos });
+    });
+    /** @type {Set<string>} */
+    var shadows = new Set();
+    Object.keys(groups).forEach(function (k) {
+      var arr = groups[k].slice().sort(function (a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
+      /** @type {{id: string, pos: number[]}[]} */
+      var canon = [];
+      arr.forEach(function (s) {
+        var dup = null;
+        for (var i = 0; i < canon.length; i++) {
+          var p = canon[i].pos, q = s.pos;
+          if (Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) < EPS) { dup = canon[i]; break; }
+        }
+        if (dup) shadows.add(s.id);                              // a near-coincident twin → shadow the higher id
+        else canon.push(s);
+      });
+    });
+    return shadows;
+  }
+
   // Resolve a captured inset's IDENTITY by its structural place, not its centroid (§5.3 L3). Its id comes
   // from the seed inset (same semantic + host wall) whose RECONSTRUCTED along-wall coordinate is nearest —
   // reconstruction is corner-relative, so the seed inset's expected local spot is centroid-independent.
@@ -727,7 +768,7 @@
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
-           matchRef: matchRef, matchWall: matchWall, matchInset: matchInset,
+           matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,
            wallCorners: wallCorners, authorInsetAnchor: authorInsetAnchor, reconstructInset: reconstructInset,
            insetAlong: insetAlong, hostWallFor: hostWallFor,
            joinCorners: joinCorners, snapInsets: snapInsets };

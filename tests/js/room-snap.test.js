@@ -626,6 +626,29 @@ test("matchInset keeps a window's id when the whole wall slides (centroid would 
   assert.strictEqual(RS.matchInset({ along: 0.31 }, [{ id: "win", along: 0.30 }], new Set()), "win");
 });
 
+test("dupInsetIds shadows a near-coincident twin (same physical inset persisted under two ids)", () => {
+  // real_door_170 / real_door_202: same semantic + host wall, centres ~3 cm apart — one physical door
+  // persisted twice (a prior matchInset miss). The higher id is shadowed; the lower stays canonical.
+  const insets = [
+    { id: "real_door_170", semantic: "door", hostWall: "real_wall_4", pos: [2.973, 0.956, 0.767] },
+    { id: "real_door_202", semantic: "door", hostWall: "real_wall_4", pos: [2.977, 0.961, 0.797] },
+    { id: "real_window_9", semantic: "window", hostWall: "real_wall_4", pos: [0.0, 1.4, 0.0] },   // far ⇒ distinct
+  ];
+  const sh = RS.dupInsetIds(insets);
+  assert.ok(sh.has("real_door_202") && !sh.has("real_door_170"), "canonical = lowest id; twin shadowed");
+  assert.ok(!sh.has("real_window_9"), "a well-separated inset is not a duplicate");
+});
+
+test("dupInsetIds keeps insets on different walls / of different semantics distinct", () => {
+  const insets = [
+    { id: "d1", semantic: "door", hostWall: "wall_a", pos: [0, 1, 0] },
+    { id: "d2", semantic: "door", hostWall: "wall_b", pos: [0.01, 1, 0.01] },   // same spot, DIFFERENT wall
+    { id: "w1", semantic: "window", hostWall: "wall_a", pos: [0, 1, 0] },        // same spot, DIFFERENT semantic
+    { id: "f1", semantic: "wall art", pos: [0, 1, 0] },                          // no host wall ⇒ never clustered
+  ];
+  assert.strictEqual(RS.dupInsetIds(insets).size, 0, "no false-positive merges across wall/semantic/hostless");
+});
+
 // --- Golden room: a REAL Quest capture (45 surfaces, two rooms via connecting doors). The synthetic
 // tests above encode our assumptions about the device's conventions; this one pins those assumptions to
 // the actual hardware — it feeds the captured planes (with their true normals/roll) through the same
