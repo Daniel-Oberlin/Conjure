@@ -283,24 +283,46 @@
   // tick, drains a FEW per frame under a small time budget. Meshes materialize progressively over ~100-170 ms
   // instead of one hitch; nothing else depends on the mesh (content placement + snapping use pose/data), so
   // the deferral is purely cosmetic. Coalesced by id (latest comps win); disconnected surfaces are skipped.
-  var geoQueue = [];        // ids awaiting a mesh rebuild (FIFO)
-  var geoPending = {};      // id -> latest comps to rebuild with
+  var geoQueue = [];        // ids awaiting a mesh rebuild (FIFO order of first enqueue)
+  var geoPending = {};      // id -> latest comps to rebuild with (coalesced; a re-enqueue just refreshes this)
+  var geoBacklogWarnAt = 0; // performance.now() of the last backlog warning (throttle)
+  // Enqueue a surface for a deferred mesh rebuild. Coalesced by id: a surface that re-shapes again before the
+  // pump reaches it keeps its queue slot and just refreshes its target comps — churn can't inflate the queue
+  // or rebuild the same surface twice for one net change.
   function enqueueGeo(el, comps) {
-    if (!geoPending[el.id]) geoQueue.push(el.id);   // new to the queue → append; else just refresh comps
+    if (!geoPending[el.id]) geoQueue.push(el.id);
     geoPending[el.id] = comps;
   }
+  // Drain the mesh-rebuild queue a few per frame under a per-frame time budget, so a whole-room
+  // re-triangulation (first lay of N surfaces, or many shapes crossing tolerance at once) spreads across
+  // frames instead of overrunning one and dropping it (docs/local-first-geometry.md §14). Called every frame
+  // from tick.
+  //   budget  = window.CONJURE_GEO_SLICE_MS (server --geo-slice-ms; default 3 ms). <=0 ⇒ Infinity: drain the
+  //             whole queue each frame — slicing OFF (the pre-slice / A-B-baseline behaviour).
+  //   backlog = if the queue is deeper than CONJURE_GEO_BACKLOG_WARN (default 256) the pump is falling behind
+  //             (rebuilds arriving faster than the budget drains them → materialization lag at scale). We LOG
+  //             it rather than silently lag — the lever is a bigger budget or fewer rebuilds. Throttled to
+  //             once / 2 s; a one-off big first lay can trip it, a *persistent* warning is the real signal.
+  //             §14 "scaling" names the next levels (element creation, matchRef) this pump does NOT cover.
   function pumpGeo() {
     if (!geoQueue.length) return;
-    var budget = window.CONJURE_GEO_SLICE_MS;        // ms/frame; Infinity ⇒ drain all (disables slicing)
+    var budget = window.CONJURE_GEO_SLICE_MS;
     if (budget == null) budget = 3;
+    if (budget <= 0) budget = Infinity;              // slicing disabled → rebuild the whole queue this frame
+    var warn = window.CONJURE_GEO_BACKLOG_WARN; if (warn == null) warn = 256;
     var t0 = performance.now();
+    if (geoQueue.length > warn && t0 - geoBacklogWarnAt > 2000) {
+      geoBacklogWarnAt = t0;
+      debugLog("geo", "mesh-rebuild backlog " + geoQueue.length + " surfaces — pump behind (raise "
+        + "--geo-slice-ms or reduce rebuilds); materializing progressively", true);
+    }
     do {
       var id = geoQueue.shift(), comps = geoPending[id];
       delete geoPending[id];
       var el = document.getElementById(id);
       if (el && el.isConnected && comps) {
-        applySurfaceGeometry(el, comps);
-        setSurfaceLabel(el, roomState.annotations);   // refresh dims: label reads dataset.ext, just set above
+        applySurfaceGeometry(el, comps);                 // the expensive holed-wall re-triangulation
+        setSurfaceLabel(el, roomState.annotations);      // refresh dims: label reads dataset.ext, just set above
       }
     } while (geoQueue.length && (performance.now() - t0) < budget);
   }

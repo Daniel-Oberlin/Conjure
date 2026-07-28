@@ -601,3 +601,86 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
 
 Steps build independently: (1) is a pure module with tests; (2) makes one headset render its own geometry
 pop-free; (3)–(7) deliver the shared-model / local-geometry architecture; (8) is resolved by removal.
+
+---
+
+## 14. Render performance — keeping the ~0.5 Hz capture off the frame budget
+
+The capture pipeline (§6, §13) runs on a throttle (`--capture-interval`, default 2 s). Originally it did all
+its work — read planes, `register`, `matchRef`, snap, and render every surface — **synchronously in one
+A-Frame `tick`**. On a 90 Hz headset the frame budget is ~11.1 ms; the capture frame measured ~22 ms, so it
+**dropped a frame every ~2 s**. When the head is translating (walking), the compositor's positional
+reprojection of that dropped frame reads as a ~1 cm **world flick-and-return** — the "walking jitter"
+(`docs/private-notes.md`). Standing still (rotation only) reprojects cleanly, which is why it only showed
+while moving.
+
+### 14.1 How it was diagnosed (the probes)
+
+Flag-gated diagnostics behind `--debug-jitter` (`window.CONJURE_DEBUG_JITTER`; kept in `conjure-client.js`,
+off by default, decoupled from `--debug-registration` so the heavy registration logging doesn't contaminate
+the numbers). They accumulate in memory and emit **one line only on a spike** — per-frame `fetch` would
+itself cause the hitch:
+
+- **Frame pacing** — a ring of inter-`tick` `dt`s; a `SPIKE` line dumps when `dt` exceeds
+  `CONJURE_JITTER_DT_MS` (default 20 ms = a dropped frame), tagging which frame ran the capture (`*cap:cost`).
+- **World-pose sampling** — a wall's and a content object's world position every frame. These stayed **flat**
+  across every flick → our transforms never moved → the shift was purely the compositor reprojecting a
+  dropped frame, **not** a coordinate bug. This is the decisive discriminator.
+- **Sub-cost breakdown** — a `performance.now()` mark per phase (`passA / register / passB / prepL / renderL /
+  placeC / authO / postO`), logged once per capture. It put the ~22 ms in `register` (~7–11 ms) and the
+  surface render `renderL` (~9–14 ms).
+
+### 14.2 The four fixes (≈22 ms → ≈5 ms on-main)
+
+1. **Solve off the render thread — a third host for the solver (extends §13.1).** `RoomSnap.register` runs in
+   a module Web Worker (`client/room-worker.js`): the throttled `tick` posts the compact planes + reference
+   constellation (plain numbers, a few KB), and the worker's reply drives the render *continuation*. The
+   worker imports a standalone three (ESM; `client/three.module.min.js`) — the math takes `THREE` as an arg
+   (§13.1), so a version-independent copy composes fine with A-Frame's on the main thread; nothing but numbers
+   crosses the wire. A **synchronous fallback** runs `register` inline if the worker can't start
+   (`window.CONJURE_WORKER = false` forces it). Worker + its imports are `?v=`-cache-busted like the page
+   scripts (the Quest caches `/static` aggressively). This is the "cost decouples from frame rate" property:
+   as the solve gets heavier (bigger rooms, richer registration) the render never stutters — it just refreshes
+   less often.
+
+2. **Apply-gate pose/shape split (§4-6).** `surfaceMoved` was split into `surfacePoseMoved` (position/
+   orientation drift — same physical shape) and `surfaceShapeChanged` (extent/openings). A drift now re-lays
+   only the **cheap transform**; the expensive holed-wall **re-triangulation** runs only on an actual shape
+   change. Tracking drift (the common case while walking) no longer rebuilds the whole room's meshes every
+   capture. The group relay (§5, junction seams) flags a cheap pose re-lay (`_forcePoseRelay`) instead of
+   nulling every `_geoSig`.
+
+3. **Styling gate.** `material / visibility / edges / label` are global display state (or per-surface director
+   material) that never change per capture and are already re-applied to every surface on a display toggle via
+   `applyImmersion()`. They now run only on first lay / a dims change / a material change — not for all ~60
+   surfaces every capture (~9 ms → ~1.5 ms).
+
+4. **Time-sliced mesh rebuild.** `applyEntity` **enqueues** the `applySurfaceGeometry` re-triangulation;
+   `pumpGeo()` (called every frame from `tick`) drains a few per frame under `--geo-slice-ms`
+   (`window.CONJURE_GEO_SLICE_MS`, default 3 ms; `<=0` disables). So a whole-room rebuild — first lay, or many
+   shapes crossing tolerance at once — spreads across frames instead of overrunning one. Pose is applied
+   immediately (positions always correct); the queue coalesces by id and is cleared on world switch; a rebuilt
+   surface's label is refreshed so the dims annotation stays right. Deferral is purely cosmetic — content
+   placement and `snapInsets`/`joinCorners` use pose/data, not the mesh (surfaces just materialize
+   progressively). `pumpGeo` logs a `[geo] backlog` line (throttled) if the queue outgrows
+   `CONJURE_GEO_BACKLOG_WARN` (default 256) — no silent lag.
+
+Result: **31/33 captures ≤ 6 ms**, no per-capture frame drop; `register` is off-thread and `renderL` is flat.
+Residual spikes are pre-existing non-capture (GC/browser) hitches, not the capture pipeline.
+
+### 14.3 Scaling — what this covers and what it doesn't
+
+The worker (1) and the slice pump (4) both apply the same principle: **cap per-frame cost, absorb load as
+latency, never as a dropped frame.** But they cover only two of the axes that grow with scene size:
+
+- ✅ **Solve cost** (`register`, and later `matchRef`/snap if migrated behind the same message boundary) —
+  off-thread, decoupled from frame rate.
+- ✅ **Geometry re-triangulation** — sliced, capped per frame regardless of surface count.
+- ❌ **Element creation.** The first lay's cost is dominated by `ensureEl` building N A-Frame entities
+  **inline** — this is *not* sliced and grows linearly with room size. It's the nearer bottleneck for large
+  rooms; slicing the mesh rebuild does not help it.
+- ❌ **`passB` / matchRef** on the main thread (in the reply continuation) grows with N and would need to
+  migrate into the worker to scale.
+
+So keeping (4) is a legitimate scale hedge for the geometry axis, but element creation and `matchRef` are the
+next levers when scenes get large. See `docs/decisions.md` #16.

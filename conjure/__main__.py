@@ -87,6 +87,10 @@ def main() -> None:
     gate.add_argument("--inset-standoff", type=float, default=0.02, metavar="METERS",
                       help="how far (m) a door/window/wall-art SURFACE sits in front of its wall (default: "
                            "0.02 = 2 cm). Bigger = the surface reads as visibly separated from the wall.")
+    gate.add_argument("--geo-slice-ms", type=float, default=3.0, metavar="MS",
+                      help="per-frame budget (ms) for the time-sliced surface mesh-rebuild pump so a "
+                           "whole-room re-triangulation spreads across frames instead of dropping one "
+                           "(default: 3). 0 or less disables slicing (rebuild all inline each frame).")
     gate.add_argument("--on-surface-standoff", type=float, default=0.02, metavar="METERS",
                       help="how far (m) an on-surface IMAGE sits in front of its host surface (default: 0.02 "
                            "= 2 cm). Applies to newly placed / re-anchored images.")
@@ -127,6 +131,7 @@ def main() -> None:
     os.environ["CONJURE_APPLY_TOL_ROT_DEG"] = str(args.apply_tol_rot)
     os.environ["CONJURE_APPLY_TOL_EXT"] = str(args.apply_tol_ext)
     os.environ["CONJURE_INSET_STANDOFF"] = str(args.inset_standoff)
+    os.environ["CONJURE_GEO_SLICE_MS"] = str(args.geo_slice_ms)
     os.environ["CONJURE_ON_SURFACE_STANDOFF"] = str(args.on_surface_standoff)
     os.environ["CONJURE_WALL_PERP_TOL"] = str(args.wall_perp_tol)
     os.environ["CONJURE_WALL_YAW_TOL_DEG"] = str(args.wall_yaw_tol)

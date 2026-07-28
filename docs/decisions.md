@@ -299,3 +299,29 @@ active world. A second user may **join a public world** and co-locate. Full plan
 **Implications:** supersedes #14's agent-first namespace; migration moves existing `private/builder`
 data to user `daniel` and extracts the embedded room surfaces into `daniel`'s first space. Phased
 build (5 phases) in the plan; Phase 1 (users + namespace + migration) is foundational and user-invisible.
+
+### 16. Capture solve off the render thread; gated + sliced render — ✅ RESOLVED
+**Choice:** Keep the ~0.5 Hz room capture from ever landing heavy work in a single render frame. Move
+`RoomSnap.register` into a **Web Worker** (the render applies on its reply); split the apply-gate into
+**pose vs shape** so tracking drift re-lays only cheap transforms; gate the per-surface **styling** to run
+only on change; and **time-slice** the mesh re-triangulation across frames under a per-frame budget
+(`--geo-slice-ms`). Full mechanism in **`docs/local-first-geometry.md` §14**.
+
+**Why:**
+- The capture ran ~22 ms synchronously in one `tick`, blowing the 90 Hz / 11.1 ms budget **every ~2 s**. The
+  compositor reprojected the dropped frame; under head translation that's the ~1 cm **walking jitter**
+  (`docs/private-notes.md`). Probes (`--debug-jitter`) proved our transforms never moved across the flick —
+  it was purely a dropped frame, so the fix is frame-budget, not geometry.
+- Same principle as the worker throughout: **cap per-frame cost, absorb load as latency, never a dropped
+  frame** — which also buys headroom as scenes grow (the solve/rebuild cost decouples from frame rate).
+
+**Implications:**
+- New client files `room-worker.js` + vendored `three.module.min.js`; `?v=`-cache-busted like page scripts.
+  Synchronous fallback if the worker can't start (`window.CONJURE_WORKER=false` forces it) — no hard
+  dependency on worker support.
+- New knobs: `--geo-slice-ms` (slice budget; `<=0` = off) and `--debug-jitter` (probes without the heavy
+  registration diagnostics). Probes are flag-gated and kept in-tree for the next perf pass.
+- **Scaling is partial** (§14.3): the solve axis and the geometry-rebuild axis are decoupled from frame rate,
+  but **element creation** (first lay) and **`matchRef`** still grow with room size on the main thread — the
+  next levers if large rooms hitch. Element creation would need its own slicing; `matchRef` would migrate
+  behind the same worker message boundary.

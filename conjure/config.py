@@ -77,6 +77,11 @@ class Settings:
     apply_tol_ext: float = 0.02                      # metres its size/opening must change to re-lay it
     inset_standoff: float = 0.02                     # m a door/window/wall-art surface sits in front of its wall
     on_surface_standoff: float = 0.02                # m an on-surface image sits in front of its host surface
+    geo_slice_ms: float = 3.0                        # per-frame budget (ms) for the time-sliced mesh-rebuild
+    #                                                  pump (docs/local-first-geometry.md §14): a whole-room
+    #                                                  re-triangulation is spread across frames so it never
+    #                                                  drops one. Injected as window.CONJURE_GEO_SLICE_MS;
+    #                                                  <=0 disables slicing (rebuild all inline each frame).
     # Wall identity by plane (docs/local-first-geometry.md §5.3/§10) — how tolerantly matchWall calls two
     # captures the SAME wall. Injected as window.CONJURE_WALL. Loosen for two headsets that scan a wall
     # differently; tighten to demand a stronger match (a wrong wall merge puts content on the wrong wall).
@@ -144,6 +149,7 @@ def get_settings() -> Settings:
         apply_tol_rot_deg=float(os.environ.get("CONJURE_APPLY_TOL_ROT_DEG", "1.0")),
         apply_tol_ext=float(os.environ.get("CONJURE_APPLY_TOL_EXT", "0.02")),
         inset_standoff=float(os.environ.get("CONJURE_INSET_STANDOFF", "0.02")),
+        geo_slice_ms=float(os.environ.get("CONJURE_GEO_SLICE_MS", "3.0")),
         on_surface_standoff=float(os.environ.get("CONJURE_ON_SURFACE_STANDOFF", "0.02")),
         wall_perp_tol=float(os.environ.get("CONJURE_WALL_PERP_TOL", "0.15")),
         wall_yaw_tol_deg=float(os.environ.get("CONJURE_WALL_YAW_TOL_DEG", "30.0")),
