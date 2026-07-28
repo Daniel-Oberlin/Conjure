@@ -24,6 +24,11 @@
     } catch (e) { /* never let logging break a frame */ }
   }
 
+  // Compact wire form for the geometry worker (fix/pops-and-jitters): send only the fields RoomSnap.register
+  // reads, as plain numbers, so a capture's planes + reference constellation cross to the worker in a few KB.
+  function serCur(c) { var p = c.pos; return { p: [p.x, p.y, p.z], nyaw: c.nyaw, sem: c.sem, orient: c.orient, ext: [c.ext[0], c.ext[1]] }; }
+  function serRef(r) { var p = r.pos; return { id: r.id, p: [p.x, p.y, p.z], nyaw: r.nyaw, sem: r.sem, orient: r.orient, ext: [r.ext[0], r.ext[1]] }; }
+
   // Custom component: a flat grid of lines in the entity's local X-Y plane (rotate -90 on X for a
   // floor). Used for the holodeck grid; also available to generated content.
   if (window.AFRAME && !AFRAME.components.grid) {
@@ -317,22 +322,35 @@
       el.dataset.real = "1";
       if (meta.semantic) el.dataset.semantic = meta.semantic;
       if (meta.friendly_id != null) el.dataset.fid = meta.friendly_id;
-      // Render apply-gate (docs/local-first-geometry.md §4-6): only (re)lay the mesh + transform when the
-      // surface actually moved/resized/re-holed past tolerance, so sub-tolerance re-derivation doesn't
-      // rebuild the geometry (the "pop"). el._geoSig remembers the last-applied shape across patches (the
-      // id is stable, so ensureEl returns the same element). Styling below is always applied — it never pops.
-      var sig = WM.surfaceSig(t, comps.surface);
-      if (!el._geoSig || WM.surfaceMoved(AFRAME.THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL)) {
+      // Render apply-gate (docs/local-first-geometry.md §4-6), POSE/SHAPE-split: sub-tolerance re-derivation
+      // still doesn't touch the entity (the "pop"), but above tolerance we now separate a cheap POSE re-lay
+      // (setAttribute position/rotation — a drifted surface, same shape) from the expensive SHAPE rebuild
+      // (applySurfaceGeometry re-triangulates the holed wall — only when extent/openings change). Pose drift
+      // under tracking refinement is the common case; gating the mesh rebuild out of it is what removes the
+      // per-capture whole-room re-triangulation spike (the walking jitter). `_forcePoseRelay` (set by the
+      // group-relay) re-lays every surface's pose at one epoch for junction seams WITHOUT a mesh rebuild.
+      // el._geoSig remembers the last-applied signature across patches (id is stable → same element).
+      var sig = WM.surfaceSig(t, comps.surface), _tol = window.CONJURE_APPLY_TOL, _fresh = !el._geoSig;
+      var poseMoved = _fresh || el._forcePoseRelay || WM.surfacePoseMoved(AFRAME.THREE, el._geoSig, sig, _tol);
+      var shapeChanged = _fresh || WM.surfaceShapeChanged(el._geoSig, sig, _tol);
+      if (poseMoved) {
         if (t.position) el.setAttribute("position", v3(t.position));
         if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
         if (t.scale) el.setAttribute("scale", v3(t.scale));
-        applySurfaceGeometry(el, comps);
-        el._geoSig = sig;
       }
-      applySurfaceMaterial(el, comps);
-      applyRealVisibility(el);
-      applyEdgeStyle(el);
-      setSurfaceLabel(el, roomState.annotations);
+      if (shapeChanged) applySurfaceGeometry(el, comps);   // the expensive path — mesh re-triangulation
+      if (poseMoved || shapeChanged) el._geoSig = sig;
+      el._forcePoseRelay = false;
+      // Styling gate: visibility/edges/label are GLOBAL display state, and director material is per-surface —
+      // none change per capture. A display-setting toggle re-applies visibility/edges/label to EVERY surface
+      // via applyImmersion(), so here we only (re)style on first lay (`_fresh`), on a dims change (the label
+      // shows extent when annotationDims is on), or when THIS surface's material actually changed. Running all
+      // four every capture for every surface was ~9 ms of setAttribute churn (material diff, edge-geometry +
+      // SDF-text rebuilds) — the second per-capture budget sink after the mesh rebuild.
+      var matSig = JSON.stringify(comps.material || null);
+      if (_fresh || el._matSig !== matSig) { applySurfaceMaterial(el, comps); el._matSig = matSig; }
+      if (_fresh) { applyRealVisibility(el); applyEdgeStyle(el); }
+      if (_fresh || shapeChanged) setSurfaceLabel(el, roomState.annotations);
       return;
     }
     if (t.position) el.setAttribute("position", v3(t.position));
@@ -826,6 +844,45 @@
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;
         this._recovered = {};       // seed-surface ids reconstructed via anchor (missing from capture) — for §5.2 logging
         this._localPlanes = null;   // last capture's local wall+floor planes (F_track) — for avatar anchors (§5.1)
+        // --- JITTER PROBES (branch fix/pops-and-jitters) ------------------------------------------------
+        // Diagnose the ~cm "flick out and back" seen while WALKING (not while standing + looking around).
+        // Leading hypothesis: the ~0.5 Hz capture frame is heavy → a dropped frame → the compositor
+        // reprojects the previous frame to the new head pose; rotation reprojects cleanly, TRANSLATION does
+        // not → a one-frame positional error that snaps back next real frame. These probes accumulate in
+        // memory (NO per-frame fetch — that would itself cause the hitch) and dump ONE line only when a
+        // frame-time spike fires. _jPoses is the decisive discriminator: if the flick is visible but our
+        // logged world poses are flat across it, the shift is compositor reprojection, not our transforms.
+        this._jFrames = [];         // ring: {t, dt, cap, cost} — recent frame intervals (dropped-frame signal)
+        this._jPoses = {};          // key → ring of {t,x,y,z} world positions of the probe entities (wall/obj)
+        this._jPick = null;         // {wall, obj} currently-tracked probe entities
+        this._jLastTick = 0;        // previous tick's `time` (for dt)
+        this._jCapT0 = 0;           // performance.now() at capture-body start (for cost)
+        this._jLastDumpT = 0;       // last dump's `time` (dump cooldown)
+        this._jMarks = [];          // [{l,t}] performance.now() marks at each capture phase boundary (sub-cost)
+        this._jCapSeq = 0;          // capture counter (bumped at capture start)
+        this._jLoggedSeq = 0;       // last capture whose sub-cost breakdown was logged (log once, next frame)
+        // --- GEOMETRY WORKER (fix/pops-and-jitters) ----------------------------------------------------
+        // register() runs off the render thread so its ~7-11 ms solve never drops an XR frame. The capture
+        // splits: the throttled tick reads planes and POSTS them; the worker's reply drives the render
+        // continuation (see tick's `finish`). If the worker can't start (old browser, blocked, load error)
+        // `_worker` stays null and we fall back to the synchronous solve — identical behaviour, old cost.
+        // Force off with `window.CONJURE_WORKER = false`.
+        this._worker = null;
+        this._solveSeq = 0;         // monotonic id per posted solve; reply must match the latest (drop stale)
+        this._pendingSolve = null;  // {seq, finish, cur} awaiting a worker reply
+        var selfInit = this;
+        try {
+          if (window.CONJURE_WORKER !== false && typeof Worker !== "undefined") {
+            var w = new Worker(window.CONJURE_WORKER_URL || "/static/room-worker.js", { type: "module" });
+            w.onmessage = function (e) { selfInit._onSolve(e.data); };
+            w.onerror = function (err) {                 // load/runtime failure → disable + re-capture sync
+              debugLog("worker", "error, falling back to sync register: " + (err && (err.message || err.filename)), true);
+              selfInit._worker = null; selfInit._pendingSolve = null; selfInit.lastPost = 0;
+            };
+            this._worker = w;
+            debugLog("worker", "geometry worker started", window.CONJURE_DEBUG_REGISTRATION);
+          }
+        } catch (e) { this._worker = null; debugLog("worker", "spawn failed: " + e, true); }
         var self = this;
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
         // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
@@ -895,21 +952,23 @@
         // aligned ACROSS surfaces then opens a seam over a session: wall↔floor/ceiling junctions, and
         // inset↔cutout (the cutout lives in the wall mesh, the inset is its own surface). `snapInsets`/
         // `joinCorners` make each capture internally consistent, so the only divergence is the render epoch;
-        // a reset re-lays everything at once, which is why it heals then. Fix: when ANY real surface crosses
-        // tolerance this capture, re-lay them ALL together (one epoch — the room shares one tracking frame).
-        // Off ⇒ each surface re-lays independently (the A/B baseline that reproduces the seams).
+        // a reset re-lays everything at once, which is why it heals then. Fix: when ANY real surface's POSE
+        // crosses tolerance this capture, re-lay them ALL together (one epoch — the room shares one tracking
+        // frame). POSE/SHAPE-split: we flag a cheap POSE re-lay (`_forcePoseRelay`), NOT a geometry rebuild —
+        // junctions realign every capture while the expensive mesh re-triangulation stays gated per-surface
+        // on actual shape change. Off ⇒ each surface re-lays independently (the A/B baseline for the seams).
         if (window.CONJURE_GROUP_SURFACE_RELAY !== false) {
-          var anyRelays = surfaces.some(function (s) {
+          var anyPoseMoved = surfaces.some(function (s) {
             var el = document.getElementById(s.id);
             if (!el || !el._geoSig) return true;   // new / never-laid surface counts as a change
             var sig = WM.surfaceSig({ position: s.position, rotation: s.rotation },
               { extent: s.extent, holes: s.holes || [] });
-            return WM.surfaceMoved(THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL);
+            return WM.surfacePoseMoved(THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL);
           });
-          if (anyRelays) {                         // invalidate every surface's gate → applyEntity re-lays it
+          if (anyPoseMoved) {                      // re-lay every surface's POSE at one epoch (cheap transform)
             surfaces.forEach(function (s) {
               var el = document.getElementById(s.id);
-              if (el) el._geoSig = null;
+              if (el) el._forcePoseRelay = true;
             });
           }
         }
@@ -1093,6 +1152,20 @@
         this._regRes = r.residuals || null;   // per-wall fit residuals for the --debug-registration probe
         return r.Tmat;
       },
+      // Worker reply: the off-thread register() result. Reconstruct the Matrix4 and run the capture's render
+      // continuation (`finish`, stashed at post time). A sequence guard drops a stale reply (belt-and-braces —
+      // the 2 s throttle already means only one solve is ever in flight). Errors in finish are contained so a
+      // single bad capture can't wedge the message pump.
+      _onSolve: function (m) {
+        if (!m || m.type !== "register") return;
+        var p = this._pendingSolve;
+        if (!p || m.seq !== p.seq) return;                 // stale / superseded / none pending → drop
+        this._pendingSolve = null;
+        this._regStat = m.stat; this._regRes = m.residuals || null;   // (sync path: _register sets these)
+        var reg = m.els ? new AFRAME.THREE.Matrix4().fromArray(m.els) : null;
+        try { p.finish(reg); }
+        catch (e) { console.warn("[conjure] capture finish failed", e); debugLog("worker", "finish threw: " + e, true); }
+      },
       // While registration can't lock (the Quest's planes are inconsistent after a sleep/relocalization),
       // the world is parked at a stale, WRONG frame. After a few seconds of that, reveal AR passthrough
       // (hide the virtual world + sky) with a headset-locked hint so you can safely step out of the play
@@ -1202,11 +1275,76 @@
         }
         el.setAttribute("text", "value", text);
       },
+      // JITTER PROBE: on when `--debug-jitter` (server injects window.CONJURE_DEBUG_JITTER) — decoupled from
+      // --debug-registration so the probes measure frame cost WITHOUT the heavy registration diagnostics
+      // (residual/coloc logging + fetches) contaminating the numbers. Can also be forced from the console.
+      _jitOn: function () { return !!window.CONJURE_DEBUG_JITTER; },
+      // JITTER PROBE: sample the WORLD position of a representative real wall + a content object every frame.
+      // world-root is identity in a captured room, so these should be dead-flat between captures regardless
+      // of head motion — if they stay flat across a visible flick, the flick is compositor reprojection.
+      _jSample: function (t) {
+        var wr = document.getElementById("world-root"); if (!wr) return;
+        var THREE = AFRAME.THREE;
+        var pick = this._jPick || (this._jPick = { wall: null, obj: null });
+        if (!pick.wall || !pick.wall.isConnected) pick.wall = wr.querySelector('[data-real="1"]');
+        if (!pick.obj || !pick.obj.isConnected) {
+          pick.obj = null;
+          Array.prototype.some.call(wr.children, function (el) {
+            if (el._frefPose) { pick.obj = el; return true; } return false; });
+        }
+        var self = this;
+        [["wall", pick.wall], ["obj", pick.obj]].forEach(function (pair) {
+          var key = pair[0], el = pair[1]; if (!el || !el.object3D) return;
+          var p = new THREE.Vector3(); el.object3D.getWorldPosition(p);
+          var ring = self._jPoses[key] || (self._jPoses[key] = []);
+          ring.push({ t: t, x: +p.x.toFixed(4), y: +p.y.toFixed(4), z: +p.z.toFixed(4) });
+          if (ring.length > 24) ring.shift();
+        });
+      },
+      // JITTER PROBE: stamp a phase boundary inside the capture body (sub-cost breakdown). Cheap; caller
+      // gates on JIT so there's zero cost when off.
+      _jMark: function (label) { this._jMarks.push({ l: label, t: performance.now() }); },
+      // JITTER PROBE: log the per-phase deltas of the capture that just ran, once, on the following frame.
+      // `dbg` isolates the --debug-registration-only probes (planes/normals) so we can subtract the cost the
+      // measurement itself adds vs. production. A phase missing from the line means its early-return fired.
+      _jBreakdown: function () {
+        var m = this._jMarks; if (!m || m.length < 2) return;
+        var parts = [];
+        for (var i = 1; i < m.length; i++) parts.push(m[i].l + "=" + (m[i].t - m[i - 1].t).toFixed(1));
+        debugLog("jitter", "COST total=" + (m[m.length - 1].t - m[0].t).toFixed(1) + "ms | " + parts.join(" "), true);
+      },
+      // JITTER PROBE: dump the recent frame-interval ring + the probe world-pose rings, once, on a spike.
+      // Frame token: "<dt>" for a normal frame, "<dt>*<cost>" for a frame that ran the capture body (cap).
+      // A cap-tagged frame lining up with the dt spike ⇒ the capture is dropping the frame.
+      _jDump: function (time, dt) {
+        if (time - this._jLastDumpT < 500) return;   // cooldown: ≤2 dumps/sec, so dumping never storms
+        this._jLastDumpT = time;
+        var frames = this._jFrames.map(function (f) {
+          return f.dt.toFixed(1) + (f.cap ? ("*" + f.cost.toFixed(1)) : ""); }).join(" ");
+        var pose = function (key) {
+          return (this._jPoses[key] || []).map(function (p) {
+            return p.x + "," + p.y + "," + p.z; }).join(" ");
+        }.bind(this);
+        debugLog("jitter", "SPIKE dt=" + dt.toFixed(1) + "ms | frames[dt(*cap:cost)]: " + frames
+          + " | wallW: " + pose("wall") + " | objW: " + pose("obj"), true);
+      },
       tick: function (time) {
         var sceneEl = this.el.sceneEl, frame = sceneEl.frame;
         if (!frame) return;
         var refSpace = sceneEl.renderer.xr.getReferenceSpace();
         if (!refSpace) return;
+        var JIT = this._jitOn();
+        if (JIT) {                                          // JITTER PROBE: per-frame pacing + pose sampling
+          var dt = this._jLastTick ? (time - this._jLastTick) : 0;
+          this._jLastTick = time;
+          this._jFrames.push({ t: time, dt: dt, cap: 0, cost: 0 });
+          if (this._jFrames.length > 24) this._jFrames.shift();
+          this._jSample(time);
+          if (dt > (window.CONJURE_JITTER_DT_MS || 20)) this._jDump(time, dt);   // dropped-frame threshold
+          if (this._jCapSeq !== this._jLoggedSeq && this._jMarks.length > 1) {    // sub-cost of the prev capture
+            this._jLoggedSeq = this._jCapSeq; this._jBreakdown();
+          }
+        }
         if (refSpace !== this._resetSpace) {                // (re)subscribe to recenter events
           this._resetSpace = refSpace;
           if (refSpace.addEventListener) refSpace.addEventListener("reset", this._onReset);
@@ -1233,6 +1371,13 @@
         var CAPTURE_MS = window.CONJURE_CAPTURE_MS || 2000; // recapture cadence (--capture-interval), ~0.5 Hz
         var RETRY_MS = Math.max(0, CAPTURE_MS - 300);       // after a rejected capture, retry ~300 ms sooner
         if (time - this.lastPost < CAPTURE_MS) return;      // throttle
+        if (JIT) {                                          // JITTER PROBE: this frame runs the capture body
+          var _jfr = this._jFrames[this._jFrames.length - 1];
+          if (_jfr) _jfr.cap = 1;
+          this._jCapT0 = performance.now();                 // wall-clock cost of the synchronous capture work
+          this._jCapSeq++;                                  // start a fresh sub-cost timeline for this capture
+          this._jMarks = [{ l: "start", t: this._jCapT0 }];
+        }
         var THREE = AFRAME.THREE, self = this, UP = new THREE.Vector3(0, 1, 0);
 
         // Pass A — read every detected plane in the CURRENT refSpace (no world frame applied yet).
@@ -1261,6 +1406,7 @@
           });
         });
         if (!cur.length) return;
+        if (JIT) this._jMark("passA");                      // read all detectedPlanes → cur
 
         // Fragmentation probe (--debug-registration): how many detected planes carry each semantic THIS
         // capture, and how many spatial CLUSTERS they form (planes within 0.25 m are one physical thing).
@@ -1297,6 +1443,8 @@
               return sem + "=" + dir[sem].out + "out/" + dir[sem].in + "in"; }).join("  "), true);
           }
         }
+
+        if (JIT) this._jMark("dbg");                        // --debug-registration-only probes (NOT in prod)
 
         // Am I the room AUTHORITY? The active world's owner authors the geometry; everyone else is a
         // register-only GUEST (room-model §8b). An empty currentUser() is the dev/default user = owner
@@ -1394,7 +1542,13 @@
         // Recover the frame transform; the AUTHORITY may bootstrap the reference on its first capture, but
         // otherwise (and ALWAYS for a guest) require a confident registration — a low-confidence result
         // means we're not locked, so hold + retry fast. A guest can never establish a fresh frame.
-        var reg = this._register(cur), canEstablish = amOwner && this._ref.length === 0;
+        // SOLVE off the render thread (fix/pops-and-jitters): register() was the last per-capture frame sink.
+        // `finish` is the render continuation — run on the worker's reply (_onSolve) or synchronously if there
+        // is no worker. Arrow ⇒ `this` stays the component, so the tail below is unchanged; it captures cur,
+        // time, amOwner, RETRY_MS, THREE, UP, JIT, self from this tick's scope.
+        var canEstablish = amOwner && this._ref.length === 0;
+        var finish = (reg) => {
+        if (JIT) { this._jCapT0 = performance.now(); this._jMarks = [{ l: "applyStart", t: this._jCapT0 }]; }  // on-main render cost (solve is off-thread)
         if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, reg);   // opt-in: one line + HUD/capture
         if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - RETRY_MS; return; }   // not locked → hold
         if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }   // re-locked → restore
@@ -1402,6 +1556,7 @@
         if (reg) { Tmat = this._Tmat = reg; this._haveT = true; }
         else { Tmat = this._anchorInv || new THREE.Matrix4(); this._Tmat = Tmat; this._haveT = true; }  // establish fresh
         this._anchorInv = Tmat;
+        if (JIT) this._jMark("applyReg");                   // on-main apply begins (register itself is off-thread)
         // Pass B — assign each plane a STABLE id via matchRef, and build TWO views of it: `localSurfaces`
         // (its raw F_track pose — what we RENDER, matching THIS headset's passthrough) and `surfaces` (the
         // reference-frame pose the OWNER posts to persist the shared model/seed). Both carry the same id.
@@ -1501,6 +1656,7 @@
           pushSurface(c, sid, rp.lp, rp.lq, hostId);
         });
         if (!surfaces.length) return;
+        if (JIT) this._jMark("passB");                      // matchRef: stable ids + F_ref/F_track views
 
         // LOCAL RENDER (every client): snap corners + insets in F_track, then draw each surface at its OWN
         // captured pose — matching THIS headset's passthrough, with no shared rigid frame and no server
@@ -1516,8 +1672,15 @@
         // Snap ALL insets (captured AND recovered) co-planar to their walls + carve openings — so a
         // recovered door/window/wall-art snaps to its wall instead of floating at the raw anchor pose (§5.2).
         window.RoomSnap.snapInsets(THREE, allSurfaces, window.CONJURE_INSET_STANDOFF);
+        if (JIT) this._jMark("prepL");                    // joinCorners + recoverMissing + snapInsets (local)
         this._renderLocal(allSurfaces);
+        if (JIT) this._jMark("renderL");                  // apply-gate + setAttribute + geometry rebuild
         this._placeContent(allSurfaces);                  // director content → plane-relative anchors (docs §5)
+        if (JIT && this._jCapT0) {                         // JITTER PROBE: cost of PassA→register→snap→render
+          this._jMark("placeC");                           // per-content anchor solve + object3D writes
+          var _jf = this._jFrames[this._jFrames.length - 1];
+          if (_jf) _jf.cost = performance.now() - this._jCapT0;   // guest total (owner authoring adds more below)
+        }
 
         if (!amOwner) { this.lastPost = time; return; }   // guest: rendered its own capture; never authors/posts
 
@@ -1553,6 +1716,7 @@
           if (rr) { rr.hostWall = s.hostWall; rr.anchor = { along: anc.along, vertical: anc.vertical }; }
         });
         surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
+        if (JIT) this._jMark("authO");                    // owner: joinCorners + snapInsets + inset-anchor authoring
         this.lastPost = time;
         var boundary = null;
         if (floor) { delete floor._area; boundary = floor; }
@@ -1590,6 +1754,25 @@
           headers: { "Content-Type": "application/json", "X-Conjure-User": currentUser() || "" },
           body: JSON.stringify({ client_id: this.clientId, surfaces: payload, boundary: boundary, replace: true }),
         }).catch(function (e) { console.warn("[conjure] room post failed", e); });
+        if (JIT) {                                        // owner: POST gate (structural diff + fetch dispatch)
+          this._jMark("postO");
+          var _jf2 = this._jFrames[this._jFrames.length - 1];
+          if (_jf2) _jf2.cost = performance.now() - this._jCapT0;   // upgrade cost to owner total (incl. authoring)
+        }
+        };   // end finish (render continuation)
+
+        // Dispatch the solve. Worker: post the compact planes + reference, hold the throttle, and let
+        // _onSolve → finish apply the capture when the reply lands (a few ms later — imperceptible at 0.5 Hz).
+        // No worker: solve synchronously and finish inline (unchanged behaviour, old per-capture cost).
+        if (this._worker) {
+          var seq = ++this._solveSeq;
+          this._pendingSolve = { seq: seq, finish: finish, cur: cur };
+          this._worker.postMessage({ type: "register", seq: seq,
+            cur: cur.map(serCur), ref: this._ref.map(serRef), opts: window.CONJURE_REG });
+          this.lastPost = time;                           // hold; the reply drives the render continuation
+          return;
+        }
+        finish(this._register(cur));                      // no worker → synchronous fallback
       },
     });
   }

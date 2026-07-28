@@ -105,3 +105,35 @@ test("surfaceMoved: tolerances are tunable", () => {
   assert.equal(WM.surfaceMoved(THREE, base, nudged), true, "3 cm > default 2 cm");
   assert.equal(WM.surfaceMoved(THREE, base, nudged, { pos: 0.10 }), false, "3 cm < loosened 10 cm");
 });
+
+// ---- pose/shape split (jitter fix): a DRIFT re-lays only the transform; only a SHAPE change rebuilds the
+// mesh. This is what keeps tracking drift from re-triangulating the whole room every capture. ----
+test("surfacePoseMoved: a drift moves the pose but NOT the shape", () => {
+  const base = sig([1, 1.2, 0], [0, 90, 0], [4, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]);
+  const drifted = sig([1.05, 1.2, 0], [0, 93, 0], [4, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]);
+  assert.equal(WM.surfacePoseMoved(THREE, base, drifted), true, "5 cm + 3° drift → pose moved");
+  assert.equal(WM.surfaceShapeChanged(base, drifted), false, "same extent + opening → shape unchanged");
+});
+
+test("surfaceShapeChanged: resize/re-hole changes shape but a pure drift does not", () => {
+  const base = sig([0, 0, 0], [0, 0, 0], [4, 2.4], []);
+  assert.equal(WM.surfaceShapeChanged(base, sig([0, 0, 0], [0, 0, 0], [4.3, 2.4], [])), true, "resized");
+  assert.equal(WM.surfaceShapeChanged(base, sig([0, 0, 0], [0, 0, 0], [4, 2.4], [{ x: 0, y: 0, w: 1, h: 2 }])), true, "opening appeared");
+  assert.equal(WM.surfaceShapeChanged(base, sig([0.5, 0.5, 0.5], [0, 45, 0], [4, 2.4], [])), false, "moved/rotated only → shape unchanged");
+});
+
+test("pose/shape split: surfaceMoved === shapeChanged OR poseMoved (equivalence preserved)", () => {
+  const base = sig([1, 1.2, 0], [0, 90, 0], [4, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]);
+  const cases = [
+    sig([1, 1.2, 0], [0, 90, 0], [4, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]),   // identical
+    sig([1.05, 1.2, 0], [0, 90, 0], [4, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]), // drift only
+    sig([1, 1.2, 0], [0, 90, 0], [4.5, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]),  // resize only
+    sig([1.05, 1.2, 0], [0, 93, 0], [4.5, 2.4], [{ x: 0.9, y: 0, w: 0.9, h: 2 }]), // both
+  ];
+  for (const b of cases) {
+    assert.equal(
+      WM.surfaceMoved(THREE, base, b),
+      WM.surfaceShapeChanged(base, b) || WM.surfacePoseMoved(THREE, base, b),
+      "surfaceMoved must equal the OR of its halves");
+  }
+});

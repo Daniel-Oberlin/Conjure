@@ -15,6 +15,9 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=int(os.environ.get("CONJURE_PORT", "8080")))
     ap.add_argument("--debug-registration", action="store_true",
                     help="show the co-location registration HUD + per-capture log in the headset (off by default)")
+    ap.add_argument("--debug-jitter", action="store_true",
+                    help="enable ONLY the frame-pacing/jitter probes (COST + SPIKE lines) without the heavy "
+                         "registration diagnostics — for a clean per-frame cost measurement (off by default)")
     ap.add_argument("--force-geo", metavar="ZERO|/user/spaces/name", default=None,
                     help="TEST: override the reported geolocation — 'zero' pins you at (0,0), or address an "
                          "existing space by path (e.g. /daniel/spaces/space-0) to pin you at its location")
@@ -106,6 +109,8 @@ def main() -> None:
     args = ap.parse_args()
     if args.debug_registration:                      # picked up by get_settings() when the app imports below
         os.environ["CONJURE_DEBUG_REGISTRATION"] = "1"
+    if args.debug_jitter:
+        os.environ["CONJURE_DEBUG_JITTER"] = "1"
     if args.force_geo:
         os.environ["CONJURE_FORCE_GEO"] = args.force_geo
     if args.drop_surface:

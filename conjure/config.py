@@ -59,6 +59,7 @@ class Settings:
     openai_image_model: str = "gpt-image-1"          # OpenAI image generator model
     debug_log: bool = True                           # append client diagnostics to temp/conjure.log
     debug_registration: bool = False                 # co-location registration HUD + per-capture log (opt-in)
+    debug_jitter: bool = False                        # frame-pacing/jitter probes only (clean cost measurement)
     # Co-location robustness (two-headset GUEST tuning). Injected into the client as window.CONJURE_REG /
     # CONJURE_CAPTURE_MS; they govern how tolerantly a guest registers its own capture against the
     # authority's shared room. See conjure/__main__.py for the terminology + per-knob meaning.
@@ -132,6 +133,7 @@ def get_settings() -> Settings:
         openai_image_model=os.environ.get("CONJURE_OPENAI_IMAGE_MODEL", "gpt-image-1"),
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
+        debug_jitter=os.environ.get("CONJURE_DEBUG_JITTER", "").strip().lower() in ("1", "true", "yes", "on"),
         reg_min_cov=int(os.environ.get("CONJURE_REG_MIN_COV", "4")),
         reg_min_cov_frac=float(os.environ.get("CONJURE_REG_MIN_COV_FRAC", "0.3")),
         reg_size_tol=float(os.environ.get("CONJURE_REG_SIZE_TOL", "0.5")),

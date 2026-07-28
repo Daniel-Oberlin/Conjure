@@ -810,7 +810,9 @@ async def index() -> HTMLResponse:
     gm = int((CLIENT_DIR / "grounded-skybox.js").stat().st_mtime)
     wm = int((CLIENT_DIR / "world-model.js").stat().st_mtime)
     pm = int((CLIENT_DIR / "plane-anchor.js").stat().st_mtime)
-    v = max(cm, sm, gm, wm, pm)               # badge reflects the newest of the scripts
+    rwm = int((CLIENT_DIR / "room-worker.js").stat().st_mtime)   # geometry worker (fix/pops-and-jitters)
+    tmm = int((CLIENT_DIR / "three.module.min.js").stat().st_mtime)  # worker's standalone three (ESM)
+    v = max(cm, sm, gm, wm, pm, rwm, tmm)     # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
@@ -822,6 +824,7 @@ async def index() -> HTMLResponse:
     # client logging; debug_registration gates the co-location registration HUD + per-capture log.
     flag = "true" if settings.debug_log else "false"
     rflag = "true" if settings.debug_registration else "false"
+    jflag = "true" if settings.debug_jitter else "false"   # jitter probes only (clean, no registration diag)
     # Co-location robustness knobs (two-headset guest tuning) — read by RoomSnap.register/selectSpace and the
     # capture throttle in conjure-client.js. Omitting a field falls back to the client's built-in default.
     reg = (f"{{minCov:{settings.reg_min_cov},minCovFrac:{settings.reg_min_cov_frac},"
@@ -840,12 +843,14 @@ async def index() -> HTMLResponse:
     wall = (f"{{perpTol:{settings.wall_perp_tol},yawTol:{math.radians(settings.wall_yaw_tol_deg)},"
             f"overlapSlop:{settings.wall_overlap_slop}}}")
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
-                        f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_FORCE_GEO={fg};"
+                        f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_DEBUG_JITTER={jflag};"
+                        f"window.CONJURE_FORCE_GEO={fg};"
                         f"window.CONJURE_DROP_SURFACE={ds};"
                         f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};"
                         f"window.CONJURE_APPLY_TOL={tol};window.CONJURE_GROUP_SURFACE_RELAY={gwr};"
                         f"window.CONJURE_WALL={wall};"
-                        f"window.CONJURE_INSET_STANDOFF={settings.inset_standoff};</script>\n  </head>")
+                        f"window.CONJURE_INSET_STANDOFF={settings.inset_standoff};"
+                        f'window.CONJURE_WORKER_URL="/static/room-worker.js?v={v}";</script>\n  </head>')
     return HTMLResponse(html, headers=_NO_STORE)
 
 

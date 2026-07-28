@@ -136,11 +136,40 @@
    * @returns {boolean}
    */
   function surfaceMoved(THREE, a, b, tol) {
+    return surfaceShapeChanged(a, b, tol) || surfacePoseMoved(THREE, a, b, tol);
+  }
+
+  // POSE half of the apply-gate: did the surface only DRIFT (position or orientation past tolerance) while
+  // keeping the SAME physical shape? A drift needs just a cheap transform re-lay — NOT a mesh rebuild. This
+  // is the common case under tracking refinement (esp. while walking), so gating the expensive geometry
+  // rebuild out of it is what kills the per-capture "whole-room re-triangulation" frame spike.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SurfaceSig} a   previously-applied signature
+   * @param {SurfaceSig} b   candidate new signature
+   * @param {{pos?: number, rotDeg?: number, ext?: number}} [tol]   pos m (0.02), rotDeg ° (1)
+   * @returns {boolean}
+   */
+  function surfacePoseMoved(THREE, a, b, tol) {
     tol = tol || {};
     var pT = tol.pos != null ? tol.pos : 0.02;
     var rT = tol.rotDeg != null ? tol.rotDeg : 1.0;
-    var eT = tol.ext != null ? tol.ext : 0.02;
     for (var i = 0; i < 3; i++) if (Math.abs((a.p[i] || 0) - (b.p[i] || 0)) > pT) return true;
+    return eulerYXZQuat(THREE, a.r).angleTo(eulerYXZQuat(THREE, b.r)) > rT * Math.PI / 180;
+  }
+
+  // SHAPE half of the apply-gate: did the extent or an opening change past tolerance? Only THIS warrants
+  // re-triangulating the (holed-)wall mesh via applySurfaceGeometry. Openings are matched by index
+  // (snapInsets emits them in a stable pass). No THREE needed — pure scalar/box comparison.
+  /**
+   * @param {SurfaceSig} a   previously-applied signature
+   * @param {SurfaceSig} b   candidate new signature
+   * @param {{pos?: number, rotDeg?: number, ext?: number}} [tol]   ext m (0.02)
+   * @returns {boolean}
+   */
+  function surfaceShapeChanged(a, b, tol) {
+    tol = tol || {};
+    var eT = tol.ext != null ? tol.ext : 0.02;
     for (var j = 0; j < 2; j++) if (Math.abs((a.ext[j] || 0) - (b.ext[j] || 0)) > eT) return true;
     if (a.holes.length !== b.holes.length) return true;              // an opening appeared/disappeared
     for (var k = 0; k < a.holes.length; k++) {
@@ -148,9 +177,10 @@
       if (Math.abs(ha.x - hb.x) > eT || Math.abs(ha.y - hb.y) > eT ||
           Math.abs(ha.w - hb.w) > eT || Math.abs(ha.h - hb.h) > eT) return true;
     }
-    return eulerYXZQuat(THREE, a.r).angleTo(eulerYXZQuat(THREE, b.r)) > rT * Math.PI / 180;
+    return false;
   }
 
   return { nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
-           surfaceSig: surfaceSig, surfaceMoved: surfaceMoved };
+           surfaceSig: surfaceSig, surfaceMoved: surfaceMoved,
+           surfacePoseMoved: surfacePoseMoved, surfaceShapeChanged: surfaceShapeChanged };
 });
