@@ -275,6 +275,36 @@
     el.setAttribute("surface-edges", { width: w, height: h });   // outline the surface border
   }
 
+  // Time-sliced geometry rebuild (branch fix/pops-and-jitters). applySurfaceGeometry re-triangulates the
+  // (holed-)wall mesh — the one expensive per-surface op left in the render. When many surfaces need it in
+  // ONE capture (first lay of the whole room, or several shapes crossing tolerance at once) it lands as a
+  // ~7-14 ms frame → a dropped frame → the last capture-caused jitter. So `applyEntity` ENQUEUES a rebuild
+  // (pose is still applied immediately — positions are always correct) and `pumpGeo`, run every frame from
+  // tick, drains a FEW per frame under a small time budget. Meshes materialize progressively over ~100-170 ms
+  // instead of one hitch; nothing else depends on the mesh (content placement + snapping use pose/data), so
+  // the deferral is purely cosmetic. Coalesced by id (latest comps win); disconnected surfaces are skipped.
+  var geoQueue = [];        // ids awaiting a mesh rebuild (FIFO)
+  var geoPending = {};      // id -> latest comps to rebuild with
+  function enqueueGeo(el, comps) {
+    if (!geoPending[el.id]) geoQueue.push(el.id);   // new to the queue → append; else just refresh comps
+    geoPending[el.id] = comps;
+  }
+  function pumpGeo() {
+    if (!geoQueue.length) return;
+    var budget = window.CONJURE_GEO_SLICE_MS;        // ms/frame; Infinity ⇒ drain all (disables slicing)
+    if (budget == null) budget = 3;
+    var t0 = performance.now();
+    do {
+      var id = geoQueue.shift(), comps = geoPending[id];
+      delete geoPending[id];
+      var el = document.getElementById(id);
+      if (el && el.isConnected && comps) {
+        applySurfaceGeometry(el, comps);
+        setSurfaceLabel(el, roomState.annotations);   // refresh dims: label reads dataset.ext, just set above
+      }
+    } while (geoQueue.length && (performance.now() - t0) < budget);
+  }
+
   // A real surface's MATERIAL — cheap, director-driven, never rebuilds the mesh, so it is applied every
   // time (NOT gated). Kept separate from geometry above.
   function applySurfaceMaterial(el, comps) {
@@ -338,8 +368,8 @@
         if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
         if (t.scale) el.setAttribute("scale", v3(t.scale));
       }
-      if (shapeChanged) applySurfaceGeometry(el, comps);   // the expensive path — mesh re-triangulation
-      if (poseMoved || shapeChanged) el._geoSig = sig;
+      if (shapeChanged) enqueueGeo(el, comps);   // expensive mesh re-triangulation → deferred, time-sliced (pumpGeo)
+      if (poseMoved || shapeChanged) el._geoSig = sig;   // advance the target now; the queue tracks "not yet materialized"
       el._forcePoseRelay = false;
       // Styling gate: visibility/edges/label are GLOBAL display state, and director material is per-surface —
       // none change per capture. A display-setting toggle re-applies visibility/edges/label to EVERY surface
@@ -471,6 +501,7 @@
       if (rc && rc.resetFrame) rc.resetFrame();
     }
     root().innerHTML = "";
+    geoQueue = []; geoPending = {};    // world switch destroyed every surface el → drop stale rebuild entries
     // LOCAL-FIRST: once a client renders its own capture (localRenderActive), real surfaces are NOT drawn
     // from the server — each headset draws its OWN live capture (_renderLocal), matching its passthrough. We
     // still consume the server's real surfaces below (docSurfaces) as the registration REFERENCE. A desktop
@@ -1351,6 +1382,7 @@
         }
         this._updateWorldFrame(frame, refSpace);            // EVERY frame: park #world-root on the frame
         this._pinSky();                                     // …and pin the sky to that SAME frame (see below)
+        pumpGeo();                                           // EVERY frame: drain a few deferred mesh rebuilds (time-sliced)
         // One-time render diagnostic: the actual foveation + XR framebuffer size + per-eye viewport. Tells
         // us whether foveation is really off (peripheral-blur suspect) and whether the used viewport is a
         // sub-rect of the framebuffer (the fuzzy right/bottom-band suspect). debug_log-gated, logged once.
