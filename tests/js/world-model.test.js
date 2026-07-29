@@ -122,6 +122,44 @@ test("surfaceShapeChanged: resize/re-hole changes shape but a pure drift does no
   assert.equal(WM.surfaceShapeChanged(base, sig([0.5, 0.5, 0.5], [0, 45, 0], [4, 2.4], [])), false, "moved/rotated only → shape unchanged");
 });
 
+// ---- advanceSig (wall∩ceiling seam regression): a POSE-ONLY re-lay must NOT advance the SHAPE baseline,
+// or sub-tolerance extent drift accumulates into the baseline un-drawn and the rebuild never fires. ----
+test("advanceSig: a shape change advances the WHOLE baseline (geometry was enqueued)", () => {
+  const prev = sig([0, 0, 0], [0, 0, 0], [4, 2.4], []);
+  const next = sig([0.5, 0, 0], [0, 0, 0], [4.5, 2.4], []);       // moved AND resized
+  assert.deepStrictEqual(WM.advanceSig(prev, next, true, true), next);
+});
+
+test("advanceSig: first lay (no prev) takes the whole sig", () => {
+  const next = sig([1, 1, 0], [0, 90, 0], [3, 2], []);
+  assert.deepStrictEqual(WM.advanceSig(null, next, true, true), next);
+});
+
+test("advanceSig: a POSE-ONLY re-lay advances p/r but HOLDS the last-rendered ext/holes", () => {
+  const prev = sig([0, 0, 0], [0, 0, 0], [4.0, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]);
+  const next = sig([0.5, 0, 0], [0, 5, 0], [4.01, 2.4], [{ x: 0.51, y: 0, w: 0.9, h: 2 }]); // sub-tol shape drift
+  const out = WM.advanceSig(prev, next, true, false);
+  assert.deepStrictEqual(out.p, next.p, "pose advances");
+  assert.deepStrictEqual(out.r, next.r, "rotation advances");
+  assert.deepStrictEqual(out.ext, prev.ext, "extent held at last-rendered");
+  assert.deepStrictEqual(out.holes, prev.holes, "holes held at last-rendered");
+});
+
+test("advanceSig: repeated pose-only relays don't let sub-tolerance extent drift run the baseline away", () => {
+  // Each capture drifts the width by 5 mm (< 2 cm tol) with a real pose move. If the baseline chased the
+  // un-drawn extent (the bug), shapeChanged would never fire; holding it, the drift eventually crosses tol.
+  let baseline = sig([0, 0, 0], [0, 0, 0], [4.0, 2.4], []);
+  let everRebuilt = false;
+  for (let i = 1; i <= 8; i++) {
+    const cap = sig([i * 0.05, 0, 0], [0, 0, 0], [4.0 + i * 0.005, 2.4], []); // 5 cm pose step, 5 mm width creep
+    const shapeChanged = WM.surfaceShapeChanged(baseline, cap);
+    const poseMoved = WM.surfacePoseMoved(THREE, baseline, cap);
+    if (shapeChanged) everRebuilt = true;
+    baseline = WM.advanceSig(baseline, cap, poseMoved, shapeChanged);
+  }
+  assert.equal(everRebuilt, true, "accumulated width drift must eventually trip a rebuild (self-heal), not vanish");
+});
+
 test("pose/shape split: surfaceMoved === shapeChanged OR poseMoved (equivalence preserved)", () => {
   const base = sig([1, 1.2, 0], [0, 90, 0], [4, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]);
   const cases = [

@@ -391,7 +391,10 @@
         if (t.scale) el.setAttribute("scale", v3(t.scale));
       }
       if (shapeChanged) enqueueGeo(el, comps);   // expensive mesh re-triangulation → deferred, time-sliced (pumpGeo)
-      if (poseMoved || shapeChanged) el._geoSig = sig;   // advance the target now; the queue tracks "not yet materialized"
+      // Advance the baseline only for the half we re-laid: shape → full advance (the slice queue materializes
+      // it); pose-only → keep the last-RENDERED shape, so sub-tolerance extent drift can't run the baseline
+      // away un-drawn (the wall∩ceiling seam regression — see WM.advanceSig).
+      if (poseMoved || shapeChanged) el._geoSig = WM.advanceSig(el._geoSig, sig, poseMoved, shapeChanged);
       el._forcePoseRelay = false;
       // Styling gate: visibility/edges/label are GLOBAL display state, and director material is per-surface —
       // none change per capture. A display-setting toggle re-applies visibility/edges/label to EVERY surface
