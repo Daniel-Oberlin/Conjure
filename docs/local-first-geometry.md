@@ -684,3 +684,12 @@ latency, never as a dropped frame.** But they cover only two of the axes that gr
 
 So keeping (4) is a legitimate scale hedge for the geometry axis, but element creation and `matchRef` are the
 next levers when scenes get large. See `docs/decisions.md` #16.
+
+### 14.4 The other half of the pop — smoothing the correction step
+
+§14 keeps the capture from **dropping a frame**. It does not change the fact that, when a capture moves a
+surface past tolerance, the surface is *snapped* to its new pose in one frame — a discrete step every ~0.5 Hz.
+Easing that step (a per-surface **slew** toward the newly-captured target, gated by the same apply-tolerance
+deadband, default off) is a separate, complementary design: see **`docs/pose-smoothing-plan.md`**. It is *not*
+a substitute for the pacing fixes here — a slew would mask a returning frame-drop as a smooth glide, so the
+`--debug-jitter` probes (§14.1) stay authoritative for pacing regardless.
