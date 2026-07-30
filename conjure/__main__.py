@@ -94,6 +94,10 @@ def main() -> None:
     gate.add_argument("--on-surface-standoff", type=float, default=0.02, metavar="METERS",
                       help="how far (m) an on-surface IMAGE sits in front of its host surface (default: 0.02 "
                            "= 2 cm). Applies to newly placed / re-anchored images.")
+    gate.add_argument("--surface-weld", type=float, default=0.002, metavar="METERS",
+                      help="inflate each surface's FILL by this much (split per side, default: 0.002 = 2 mm) so "
+                           "abutting fills overlap instead of leaving a float-rounding crack the passthrough "
+                           "flickers through. The wireframe outline stays true size. 0 disables.")
     gate.add_argument("--wall-seal-tol", type=float, default=0.15, metavar="METERS",
                       help="seal a wall's top to the ceiling and bottom to the floor when the edge is already "
                            "within this distance (m) of the plane (default: 0.15). Closes the open slit at the "
@@ -138,6 +142,7 @@ def main() -> None:
     os.environ["CONJURE_INSET_STANDOFF"] = str(args.inset_standoff)
     os.environ["CONJURE_GEO_SLICE_MS"] = str(args.geo_slice_ms)
     os.environ["CONJURE_ON_SURFACE_STANDOFF"] = str(args.on_surface_standoff)
+    os.environ["CONJURE_SURFACE_WELD"] = str(args.surface_weld)
     os.environ["CONJURE_WALL_SEAL_TOL"] = str(args.wall_seal_tol)
     os.environ["CONJURE_WALL_PERP_TOL"] = str(args.wall_perp_tol)
     os.environ["CONJURE_WALL_YAW_TOL_DEG"] = str(args.wall_yaw_tol)

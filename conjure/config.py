@@ -77,6 +77,10 @@ class Settings:
     apply_tol_ext: float = 0.02                      # metres its size/opening must change to re-lay it
     inset_standoff: float = 0.02                     # m a door/window/wall-art surface sits in front of its wall
     on_surface_standoff: float = 0.02                # m an on-surface image sits in front of its host surface
+    surface_weld: float = 0.002                      # m added to a surface's FILL w/h (split per side) so
+    #                                                  abutting fills overlap instead of leaving a float-rounding
+    #                                                  crack ("noisy static" see-through). Edges/outline stay
+    #                                                  true. Injected as window.CONJURE_SURFACE_WELD; 0 disables.
     wall_seal_tol: float = 0.15                      # m: seal a wall's top→ceiling / bottom→floor when the edge
     #                                                  is already within this of the plane (docs §9.1). The Quest
     #                                                  fits walls a few mm-cm short of the ceiling → an open slit
@@ -157,6 +161,7 @@ def get_settings() -> Settings:
         inset_standoff=float(os.environ.get("CONJURE_INSET_STANDOFF", "0.02")),
         geo_slice_ms=float(os.environ.get("CONJURE_GEO_SLICE_MS", "3.0")),
         on_surface_standoff=float(os.environ.get("CONJURE_ON_SURFACE_STANDOFF", "0.02")),
+        surface_weld=float(os.environ.get("CONJURE_SURFACE_WELD", "0.002")),
         wall_seal_tol=float(os.environ.get("CONJURE_WALL_SEAL_TOL", "0.15")),
         wall_perp_tol=float(os.environ.get("CONJURE_WALL_PERP_TOL", "0.15")),
         wall_yaw_tol_deg=float(os.environ.get("CONJURE_WALL_YAW_TOL_DEG", "30.0")),

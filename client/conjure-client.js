@@ -270,9 +270,15 @@
     el.dataset.ext = w.toFixed(1) + " x " + h.toFixed(1) + " m";   // for the annotation label
     var hs = holesAttr(s.holes);
     el.dataset.holes = hs;
-    if (hs) el.setAttribute("geometry", { primitive: "holed-wall", width: w, height: h, holes: hs });
-    else el.setAttribute("geometry", { primitive: "plane", width: w, height: h });
-    el.setAttribute("surface-edges", { width: w, height: h });   // outline the surface border
+    // Fill weld (--surface-weld, default 2 mm): inflate ONLY the fill by `weld` (split evenly per side) so two
+    // independently-triangulated surfaces that ABUT overlap by a hair instead of leaving a float-rounding
+    // crack the passthrough flickers through ("noisy static"). The overlap tucks behind the neighbour (a
+    // wall's extra mm pokes above the ceiling / behind the perpendicular wall), so it's hidden. The wireframe
+    // outline (surface-edges) keeps the TRUE w/h — no overshoot there — so wireframe is unaffected. 0 = off.
+    var weld = +window.CONJURE_SURFACE_WELD || 0, fw = w + weld, fh = h + weld;
+    if (hs) el.setAttribute("geometry", { primitive: "holed-wall", width: fw, height: fh, holes: hs });
+    else el.setAttribute("geometry", { primitive: "plane", width: fw, height: fh });
+    el.setAttribute("surface-edges", { width: w, height: h });   // outline at TRUE size (not welded)
   }
 
   // Time-sliced geometry rebuild (branch fix/pops-and-jitters). applySurfaceGeometry re-triangulates the
