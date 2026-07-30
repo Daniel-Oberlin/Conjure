@@ -344,7 +344,11 @@ fallback, flagged) and a junction door bridging two rooms (`hostWallFor` picks o
    surfaces via **recovered anchors** (§5.2).
 4. **Adapt continuously & locally:** re-derive geometry each capture; a **local apply-gate** (skip
    re-touching a surface/anchor that didn't move past tolerance) kills the mesh-rebuild "pop" — **no server
-   in the loop**.
+   in the loop**. The gate covers **both** halves: real surfaces (in `applyEntity`) *and* placed content (in
+   `_placeContent`, `placeContent`). Content re-solves against the **raw** plane basis every capture, so
+   without its own deadband the solved pose wanders a few mm each capture and content shimmers while the gated
+   walls sit still (measured). Content holds unless its newly-solved pose crosses the **same** `CONJURE_APPLY_TOL`
+   the walls use, so the two agree — both re-place past tolerance, or neither moves.
 5. **(Owner only) push structural changes** (§7) so the shared model + seed stay current. Guests never
    author.
 

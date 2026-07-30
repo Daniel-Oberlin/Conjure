@@ -366,9 +366,23 @@
   // lock-step with the surface it's glued to. Content anchoring still solves against the surfaces' TARGET
   // (capture) poses upstream — this only governs HOW the solved pose is written to object3D, snap vs ease.
   function placeContent(el, pos, quat) {
+    // Content apply-gate — the SAME deadband the walls use (docs/local-first-geometry.md §4-6). _placeContent
+    // re-solves every capture against the RAW, ungated, sensor-noisy plane basis, so with no gate the solved
+    // pose wanders a few mm each capture and content shimmers while the gated walls sit dead-still (measured:
+    // the sampled content's world pos drifted in a ~5-6 mm envelope while the wall's was frozen to 4 dp).
+    // Hold unless the newly-solved pose moved past tolerance from the last COMMITTED pose, so content is as
+    // stable as the walls and only re-places on a real move. Reusing CONJURE_APPLY_TOL means content and
+    // walls share one deadband ⇒ they agree: both move together past tolerance, or neither moves.
+    if (el._contentPlaced) {
+      var tol = window.CONJURE_APPLY_TOL || {};
+      var pT = tol.pos != null ? tol.pos : 0.02, rT = (tol.rotDeg != null ? tol.rotDeg : 1) * Math.PI / 180;
+      if (pos.distanceTo(el._placedPos) <= pT && quat.angleTo(el._placedQuat) <= rT) return;   // sub-tolerance → hold
+    }
     var tau = +window.CONJURE_POSE_TAU || 0;
     if (tau > 0 && el._contentPlaced) adoptTarget(el, pos, quat);
     else { el.object3D.position.copy(pos); el.object3D.quaternion.copy(quat); slewSet.delete(el); el._settled = true; }
+    if (!el._placedPos) { el._placedPos = pos.clone(); el._placedQuat = quat.clone(); }   // baseline the gate compares against
+    else { el._placedPos.copy(pos); el._placedQuat.copy(quat); }
     el._contentPlaced = true;
   }
 
