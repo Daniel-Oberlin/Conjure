@@ -664,9 +664,12 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
              extent: s.extent, _lp: new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]), _lq: lq,
              rotation: RS.eulerYXZ(THREE, lq), debug: {} };
   });
-  const origW = {};
-  surfaces.filter((s) => s.semantic === "wall").forEach((s) => { origW[s.id] = s.extent[0]; });
+  const origW = {}, origTop = {};
+  surfaces.filter((s) => s.semantic === "wall").forEach((s) => {
+    origW[s.id] = s.extent[0]; origTop[s.id] = s._lp.y + s.extent[1] / 2;
+  });
   RS.joinCorners(THREE, surfaces);
+  RS.sealWalls(THREE, surfaces);        // real client pipeline: join → SEAL → snap (§9.1)
   RS.snapInsets(THREE, surfaces);
   const finite = (a) => a.every(Number.isFinite);
 
@@ -684,6 +687,19 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
   walls.forEach(function (w) {
     assert.ok(Math.abs(w.extent[0] - origW[w.id]) <= 0.5 + 1e-6, "joinCorners only nudged " + w.id);
   });
+
+  // (2b) sealWalls only ever snaps a wall's TOP onto an actual ceiling plane (or leaves it untouched) — it
+  // never invents a height. Guards the seal + the multi-room (two-ceiling) pick on the REAL capture.
+  const ceilYs = surfaces.filter((s) => s.semantic === "ceiling").map((s) => s._lp.y);
+  let sealedTops = 0;
+  walls.forEach(function (w) {
+    const top = w._lp.y + w.extent[1] / 2;
+    const onCeiling = ceilYs.some((cy) => Math.abs(cy - top) < 1e-6);
+    const untouched = Math.abs(top - origTop[w.id]) < 1e-6;
+    if (!untouched) sealedTops++;
+    assert.ok(onCeiling || untouched, "wall top sits on a ceiling or was left alone: " + w.id);
+  });
+  assert.ok(sealedTops > 0, "sealWalls sealed at least one wall to a ceiling on the real capture");
 
   // (3) Doors/windows cut openings, each centred on a real wall (within its extent).
   let holeCount = 0;
@@ -773,4 +789,42 @@ test("sealWalls with tol<=0 is a no-op", () => {
   RS.sealWalls(THREE, [wall, horiz("ceiling", 1, 2.60, 0), horiz("floor", 1, 0.0, 0)], 0);
   assert.equal(wall.extent[1], 2.55, "height unchanged");
   assert.equal(wall._lp.y, 1.28, "centre unchanged");
+});
+
+// PIPELINE GUARD: sealing (vertical) must not disturb a corner joinCorners closed (horizontal). We've broken
+// corner joining before by adding features; this pins that join + seal compose.
+test("joinCorners + sealWalls: the joined corner survives sealing, and tops still seal", () => {
+  const A = vert("real_wall_0", "wall", [-1.025, 1.2, 0], 0, [1.95, 2.35]);   // along X, 5 cm short of x=0
+  const B = vert("real_wall_1", "wall", [0, 1.2, -1.025], 90, [1.95, 2.35]);  // along Z, 5 cm short of z=0
+  const room = [A, B, horiz("ceiling", -1, 2.40, -1, [4, 4]), horiz("floor", -1, 0.0, -1, [4, 4])];
+  RS.joinCorners(THREE, room);
+  RS.sealWalls(THREE, room, 0.15);
+  const corner = new THREE.Vector2(0, 0), ea = planEnds(A), eb = planEnds(B);
+  assert.ok(Math.min(ea[0].distanceTo(corner), ea[1].distanceTo(corner)) < 1e-6, "wall A still reaches the corner");
+  assert.ok(Math.min(eb[0].distanceTo(corner), eb[1].distanceTo(corner)) < 1e-6, "wall B still reaches the corner");
+  const pair = Math.min.apply(null, ea.flatMap((p) => eb.map((q) => p.distanceTo(q))));
+  assert.ok(pair < 1e-6, "the joined corner survived sealing (vertical seal left the horizontal join intact)");
+  assert.ok(Math.abs((A._lp.y + A.extent[1] / 2) - 2.40) < 1e-6, "A top sealed to the ceiling");
+  assert.ok(Math.abs((B._lp.y + B.extent[1] / 2) - 2.40) < 1e-6, "B top sealed to the ceiling");
+});
+
+// PIPELINE GUARD: seal runs BEFORE snapInsets so a door's opening is cut against the SEALED wall. If the
+// order flipped (snap then seal), the hole's stored y would be relative to the un-sealed centre and the
+// opening would ride off the door when the wall re-centres. This pins the order.
+test("sealWalls + snapInsets: a door's opening lands on the door even though sealing moved the wall centre", () => {
+  const wall = vert("real_wall_0", "wall", [2, 1.15, 0], 90, [4, 2.3]);   // top 2.3 (short), bottom 0.0
+  const door = vert("real_door_1", "door", [2, 1.0, 1.0], 90, [0.9, 2]);  // door at world y = 1.0
+  const room = [wall, door, horiz("ceiling", 2, 2.40, 0, [6, 6]), horiz("floor", 2, 0.0, 0, [6, 6])];
+  RS.sealWalls(THREE, room, 0.15);
+  assert.ok(Math.abs(wall._lp.y - 1.2) < 1e-6, "sealing raised the wall's centre (1.15 → 1.2)");
+  RS.snapInsets(THREE, room);
+  const h = wall.holes && wall.holes[0];
+  assert.ok(h, "the door cut an opening in the sealed wall");
+  const wx = new THREE.Vector3(1, 0, 0).applyQuaternion(wall._lq);
+  const wy = new THREE.Vector3(0, 0, -1).applyQuaternion(wall._lq);
+  const n = new THREE.Vector3(0, 1, 0).applyQuaternion(wall._lq);
+  const rebuilt = wall._lp.clone().add(wx.clone().multiplyScalar(h.x)).add(wy.clone().multiplyScalar(h.y));
+  const doorPos = new THREE.Vector3(...door.position);
+  const inPlane = doorPos.clone().sub(n.clone().multiplyScalar(doorPos.clone().sub(wall._lp).dot(n)));
+  assert.ok(rebuilt.distanceTo(inPlane) < 1e-6, "opening lands on the door (hole cut against the sealed wall)");
 });
