@@ -1,6 +1,7 @@
 # Pose smoothing — easing the drift-correction step (per-surface slew)
 
-**Status:** DESIGN (proposed, not built). A follow-on to `docs/local-first-geometry.md` §14 (render
+**Status:** Phase 1 IMPLEMENTED (`--pose-tau`, default `0` = off; slew for surfaces + content). Phase 2
+(per-frame target refresh) remains proposed — see §9. A follow-on to `docs/local-first-geometry.md` §14 (render
 performance). §14 stopped the capture from **dropping a frame**; this addresses the *other* half of the
 "pop": the visible **step** when a drift correction is applied. The mechanism is a per-surface **slew** —
 ease each surface's rendered pose toward its newly-captured target over a few frames instead of snapping —

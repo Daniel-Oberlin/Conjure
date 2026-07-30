@@ -292,6 +292,12 @@
   var geoQueue = [];        // ids awaiting a mesh rebuild (FIFO order of first enqueue)
   var geoPending = {};      // id -> latest comps to rebuild with (coalesced; a re-enqueue just refreshes this)
   var surfDumped = false;   // [surf] diagnostic (--debug-registration): dumped once per room entry (see _renderLocal)
+  // Pose-smoothing slew (docs/pose-smoothing-plan.md): entities currently EASING their transform toward a
+  // captured target pose (surfaces AND the content glued to them), so slewPoses walks only what's moving —
+  // an idle room adopts no targets and the set stays empty (zero steady-state cost). Cleared on world switch.
+  var slewSet = new Set();
+  var SLEW_POS_EPS = 0.001;                 // 1 mm  — snap the last sliver exactly + drop from slewSet (§4)
+  var SLEW_ANG_EPS = 0.1 * Math.PI / 180;   // ~0.1° — same, for orientation
   var geoBacklogWarnAt = 0; // performance.now() of the last backlog warning (throttle)
   // Enqueue a surface for a deferred mesh rebuild. Coalesced by id: a surface that re-shapes again before the
   // pump reaches it keeps its queue slot and just refreshes its target comps — churn can't inflate the queue
@@ -342,6 +348,53 @@
         }
       }
     } while (geoQueue.length && (performance.now() - t0) < budget);
+  }
+
+  // Pose-smoothing (docs/pose-smoothing-plan.md §3): ADOPT a captured pose as an entity's target and enqueue
+  // it to ease there over frames (slewPoses), instead of snapping. `pos`/`quat` are THREE Vector3/Quaternion
+  // (cloned in, since callers reuse scratch). Called only when smoothing is on and the entity isn't fresh —
+  // the fresh/disabled paths snap at the call site so nothing eases in from the origin.
+  function adoptTarget(el, pos, quat) {
+    if (!el._tgtPos) { el._tgtPos = pos.clone(); el._tgtQuat = quat.clone(); }
+    else { el._tgtPos.copy(pos); el._tgtQuat.copy(quat); }
+    el._settled = false;
+    slewSet.add(el);
+  }
+
+  // Place director / on-surface content at a solved pose (§5.5): SNAP on the first placement (nothing to
+  // ease from) and whenever smoothing is off; otherwise adopt it as a slew target so content eases in
+  // lock-step with the surface it's glued to. Content anchoring still solves against the surfaces' TARGET
+  // (capture) poses upstream — this only governs HOW the solved pose is written to object3D, snap vs ease.
+  function placeContent(el, pos, quat) {
+    var tau = +window.CONJURE_POSE_TAU || 0;
+    if (tau > 0 && el._contentPlaced) adoptTarget(el, pos, quat);
+    else { el.object3D.position.copy(pos); el.object3D.quaternion.copy(quat); slewSet.delete(el); el._settled = true; }
+    el._contentPlaced = true;
+  }
+
+  // The pose-follow clock (docs/pose-smoothing-plan.md §4/§5.4): every frame, ease each unsettled entity's
+  // object3D toward its adopted target by the frame-rate-independent fraction a = 1 - exp(-dt/tau), and drop
+  // it the instant it arrives (epsilon snap) so steady-state cost returns to zero. `dt` is seconds. Writes
+  // object3D directly (NOT setAttribute) — a 90 Hz setAttribute would re-parse strings + fire change events
+  // per frame; the apply-gate keys off el._geoSig, not the DOM attribute, so direct writes are safe (§5.3).
+  // Content already writes object3D directly, so this is consistent. tau<=0 means nothing was ever adopted
+  // (call sites snap), so the set is empty and this is a no-op.
+  function slewPoses(dt) {
+    if (!slewSet.size) return;
+    var tau = +window.CONJURE_POSE_TAU || 0;
+    var a = WM.slewAlpha(dt, tau);
+    if (!(a > 0)) return;                              // dt==0 (first frame) → no progress; keep targets
+    slewSet.forEach(function (el) {
+      var o = el.object3D;
+      if (!o || !el.isConnected || !el._tgtPos) { slewSet.delete(el); return; }   // pruned/dead → drop (§10)
+      o.position.lerp(el._tgtPos, a);
+      o.quaternion.slerp(el._tgtQuat, a);              // shortest-arc; handles quaternion double-cover
+      if (WM.slewSettled(o.position.distanceTo(el._tgtPos), o.quaternion.angleTo(el._tgtQuat),
+          SLEW_POS_EPS, SLEW_ANG_EPS)) {
+        o.position.copy(el._tgtPos); o.quaternion.copy(el._tgtQuat);   // snap the last sliver exactly
+        el._settled = true; slewSet.delete(el);
+      }
+    });
   }
 
   // A real surface's MATERIAL — cheap, director-driven, never rebuilds the mesh, so it is applied every
@@ -406,9 +459,22 @@
       // center and its joinCorners width materialize at the SAME epoch → junctions close exactly (part B).
       var shapeChanged = _fresh || el._forceGeoRelay || WM.surfaceShapeChanged(el._geoSig, sig, _tol);
       if (poseMoved) {
-        if (t.position) el.setAttribute("position", v3(t.position));
-        if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
-        if (t.scale) el.setAttribute("scale", v3(t.scale));
+        // Pose-smoothing (docs/pose-smoothing-plan.md §3, §5.3): split ADOPT from MOVE. When smoothing is on
+        // (CONJURE_POSE_TAU>0) and this isn't the surface's first lay, store the captured pose as a TARGET and
+        // let slewPoses ease the transform there over frames — the ~2 s drift STEP becomes a short settle.
+        // FRESH surfaces (and the tau=0 default) snap immediately: a brand-new entity has no sensible pose to
+        // ease FROM (it would fly in from the origin), and tau=0 is today's behaviour. Scale is never eased.
+        var _tau = +window.CONJURE_POSE_TAU || 0;
+        if (_tau > 0 && !_fresh && el.object3D && t.position && t.rotation) {
+          adoptTarget(el, new AFRAME.THREE.Vector3(t.position[0] || 0, t.position[1] || 0, t.position[2] || 0),
+            eulerYXZToQuat(AFRAME.THREE, t.rotation));
+          if (t.scale) el.setAttribute("scale", v3(t.scale));
+        } else {
+          if (t.position) el.setAttribute("position", v3(t.position));
+          if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
+          if (t.scale) el.setAttribute("scale", v3(t.scale));
+          slewSet.delete(el);                      // a snap supersedes any in-flight ease (fresh lay / tau off)
+        }
       }
       if (shapeChanged) enqueueGeo(el, comps);   // expensive mesh re-triangulation → deferred, time-sliced (pumpGeo)
       // Advance the baseline only for the half we re-laid: shape → full advance (the slice queue materializes
@@ -547,6 +613,7 @@
     }
     root().innerHTML = "";
     geoQueue = []; geoPending = {}; surfDumped = false;   // world switch destroyed every surface el → drop stale rebuild entries + re-arm the [surf] dump
+    slewSet.clear();                                      // …and every easing target: the entities are gone
     // LOCAL-FIRST: once a client renders its own capture (localRenderActive), real surfaces are NOT drawn
     // from the server — each headset draws its OWN live capture (_renderLocal), matching its passthrough. We
     // still consume the server's real surfaces below (docSurfaces) as the registration REFERENCE. A desktop
@@ -1087,7 +1154,7 @@
         Array.prototype.forEach.call(wr.querySelectorAll('[data-real="1"]'), function (el) {
           if (seen[el.id]) { delete abs[el.id]; return; }
           abs[el.id] = (abs[el.id] || 0) + 1;
-          if (abs[el.id] >= 3 && el.parentNode) { el.parentNode.removeChild(el); delete abs[el.id]; }
+          if (abs[el.id] >= 3 && el.parentNode) { slewSet.delete(el); el.parentNode.removeChild(el); delete abs[el.id]; }   // drop any in-flight ease (§10)
         });
       },
       // Place director-authored content (models, props — anything with a remembered F_ref pose) via
@@ -1115,12 +1182,18 @@
             var hostEl = document.getElementById(el._onSurface), off = el._surfaceOffset;
             if (!hostEl || !hostEl.object3D || !off || !off.p || !off.q) return;
             var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
-            var hostMat = new THREE.Matrix4().compose(
-              hostEl.object3D.position.clone(), hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1));
+            // Ride the host's TARGET pose while it's easing, not its mid-slew object3D (§5.5): captures land
+            // at ~0.5 Hz but the host eases at 90 Hz, so re-snapping to the host's current object3D each
+            // capture would let the art lag the wall through the transition. Composing against the host's
+            // target and giving the content its OWN target (same tau, same epoch) eases them in lock-step.
+            var slewing = slewSet.has(hostEl) && hostEl._tgtPos;
+            var hp = slewing ? hostEl._tgtPos : hostEl.object3D.position;
+            var hq = slewing ? hostEl._tgtQuat : hostEl.object3D.quaternion;
+            var hostMat = new THREE.Matrix4().compose(hp.clone(), hq.clone(), new THREE.Vector3(1, 1, 1));
             var offMat = new THREE.Matrix4().compose(new THREE.Vector3(off.p[0], off.p[1], off.p[2]),
               new THREE.Quaternion(off.q[0], off.q[1], off.q[2], off.q[3]), new THREE.Vector3(1, 1, 1));
             hostMat.multiply(offMat).decompose(ip, iq, is);
-            el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
+            placeContent(el, ip, iq);                                 // snap first / when off, else ease with the host
             ridden++;
             return;                                                   // on-surface content NEVER free-multilaterates
           }
@@ -1142,7 +1215,7 @@
             sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
           }
           if (!sol.ok) return;                                      // degenerate / missing walls → hold last pose
-          el.object3D.position.copy(sol.position); el.object3D.quaternion.copy(sol.quaternion);
+          placeContent(el, sol.position, sol.quaternion);           // snap first / when off, else ease (§5.5)
           freed++;
         });
         if (window.CONJURE_DEBUG_REGISTRATION && (ridden || freed))
@@ -1431,7 +1504,7 @@
         debugLog("jitter", "SPIKE dt=" + dt.toFixed(1) + "ms | frames[dt(*cap:cost)]: " + frames
           + " | wallW: " + pose("wall") + " | objW: " + pose("obj"), true);
       },
-      tick: function (time) {
+      tick: function (time, timeDelta) {
         var sceneEl = this.el.sceneEl, frame = sceneEl.frame;
         if (!frame) return;
         var refSpace = sceneEl.renderer.xr.getReferenceSpace();
@@ -1455,6 +1528,7 @@
         this._updateWorldFrame(frame, refSpace);            // EVERY frame: park #world-root on the frame
         this._pinSky();                                     // …and pin the sky to that SAME frame (see below)
         pumpGeo();                                           // EVERY frame: drain a few deferred mesh rebuilds (time-sliced)
+        slewPoses((timeDelta || 0) / 1000);                  // EVERY frame: ease surfaces/content toward their targets (pose-smoothing; no-op when disabled)
         // One-time render diagnostic: the actual foveation + XR framebuffer size + per-eye viewport. Tells
         // us whether foveation is really off (peripheral-blur suspect) and whether the used viewport is a
         // sub-rect of the framebuffer (the fuzzy right/bottom-band suspect). debug_log-gated, logged once.

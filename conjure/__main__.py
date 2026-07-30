@@ -94,6 +94,12 @@ def main() -> None:
     gate.add_argument("--on-surface-standoff", type=float, default=0.02, metavar="METERS",
                       help="how far (m) an on-surface IMAGE sits in front of its host surface (default: 0.02 "
                            "= 2 cm). Applies to newly placed / re-anchored images.")
+    gate.add_argument("--pose-tau", type=float, default=0.0, metavar="SECONDS",
+                      help="pose-smoothing time constant (s): ease each surface (and its content) toward its "
+                           "newly-captured pose over ~3x this instead of snapping, so a drift correction reads "
+                           "as a short settle not a ~2 s step (docs/pose-smoothing-plan.md). 0 (default) "
+                           "disables = snap as before; A/B like --geo-slice-ms. ~0.1 is a good starting value; "
+                           "too large trails the real wall in passthrough (§10).")
     gate.add_argument("--surface-weld", type=float, default=0.002, metavar="METERS",
                       help="inflate each surface's FILL by this much (split per side, default: 0.002 = 2 mm) so "
                            "abutting fills overlap instead of leaving a float-rounding crack the passthrough "
@@ -141,6 +147,7 @@ def main() -> None:
     os.environ["CONJURE_APPLY_TOL_EXT"] = str(args.apply_tol_ext)
     os.environ["CONJURE_INSET_STANDOFF"] = str(args.inset_standoff)
     os.environ["CONJURE_GEO_SLICE_MS"] = str(args.geo_slice_ms)
+    os.environ["CONJURE_POSE_TAU"] = str(args.pose_tau)
     os.environ["CONJURE_ON_SURFACE_STANDOFF"] = str(args.on_surface_standoff)
     os.environ["CONJURE_SURFACE_WELD"] = str(args.surface_weld)
     os.environ["CONJURE_WALL_SEAL_TOL"] = str(args.wall_seal_tol)

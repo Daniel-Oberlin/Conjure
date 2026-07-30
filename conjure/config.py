@@ -87,6 +87,11 @@ class Settings:
     #                                                  once fills are solid; this snaps the shell closed. Vertical
     #                                                  only (plane/width untouched). 0 disables. Injected as
     #                                                  window.CONJURE_WALL_SEAL_TOL.
+    pose_tau: float = 0.0                            # s: pose-smoothing time constant (docs/pose-smoothing-plan.md).
+    #                                                  Per-surface SLEW eases each surface toward its newly-captured
+    #                                                  pose over ~3·tau instead of snapping, turning the ~2 s drift
+    #                                                  STEP into a short settle. 0 (default) disables → snap as today.
+    #                                                  Injected as window.CONJURE_POSE_TAU; A/B like --geo-slice-ms.
     geo_slice_ms: float = 3.0                        # per-frame budget (ms) for the time-sliced mesh-rebuild
     #                                                  pump (docs/local-first-geometry.md §14): a whole-room
     #                                                  re-triangulation is spread across frames so it never
@@ -159,6 +164,7 @@ def get_settings() -> Settings:
         apply_tol_rot_deg=float(os.environ.get("CONJURE_APPLY_TOL_ROT_DEG", "1.0")),
         apply_tol_ext=float(os.environ.get("CONJURE_APPLY_TOL_EXT", "0.02")),
         inset_standoff=float(os.environ.get("CONJURE_INSET_STANDOFF", "0.02")),
+        pose_tau=float(os.environ.get("CONJURE_POSE_TAU", "0.0")),
         geo_slice_ms=float(os.environ.get("CONJURE_GEO_SLICE_MS", "3.0")),
         on_surface_standoff=float(os.environ.get("CONJURE_ON_SURFACE_STANDOFF", "0.02")),
         surface_weld=float(os.environ.get("CONJURE_SURFACE_WELD", "0.002")),
