@@ -292,6 +292,12 @@
   var geoQueue = [];        // ids awaiting a mesh rebuild (FIFO order of first enqueue)
   var geoPending = {};      // id -> latest comps to rebuild with (coalesced; a re-enqueue just refreshes this)
   var surfDumped = false;   // [surf] diagnostic (--debug-registration): dumped once per room entry (see _renderLocal)
+  // Pose-smoothing slew (docs/pose-smoothing-plan.md): entities currently EASING their transform toward a
+  // captured target pose (surfaces AND the content glued to them), so slewPoses walks only what's moving —
+  // an idle room adopts no targets and the set stays empty (zero steady-state cost). Cleared on world switch.
+  var slewSet = new Set();
+  var SLEW_POS_EPS = 0.001;                 // 1 mm  — snap the last sliver exactly + drop from slewSet (§4)
+  var SLEW_ANG_EPS = 0.1 * Math.PI / 180;   // ~0.1° — same, for orientation
   var geoBacklogWarnAt = 0; // performance.now() of the last backlog warning (throttle)
   // Enqueue a surface for a deferred mesh rebuild. Coalesced by id: a surface that re-shapes again before the
   // pump reaches it keeps its queue slot and just refreshes its target comps — churn can't inflate the queue
@@ -342,6 +348,53 @@
         }
       }
     } while (geoQueue.length && (performance.now() - t0) < budget);
+  }
+
+  // Pose-smoothing (docs/pose-smoothing-plan.md §3): ADOPT a captured pose as an entity's target and enqueue
+  // it to ease there over frames (slewPoses), instead of snapping. `pos`/`quat` are THREE Vector3/Quaternion
+  // (cloned in, since callers reuse scratch). Called only when smoothing is on and the entity isn't fresh —
+  // the fresh/disabled paths snap at the call site so nothing eases in from the origin.
+  function adoptTarget(el, pos, quat) {
+    if (!el._tgtPos) { el._tgtPos = pos.clone(); el._tgtQuat = quat.clone(); }
+    else { el._tgtPos.copy(pos); el._tgtQuat.copy(quat); }
+    el._settled = false;
+    slewSet.add(el);
+  }
+
+  // Place director / on-surface content at a solved pose (§5.5): SNAP on the first placement (nothing to
+  // ease from) and whenever smoothing is off; otherwise adopt it as a slew target so content eases in
+  // lock-step with the surface it's glued to. Content anchoring still solves against the surfaces' TARGET
+  // (capture) poses upstream — this only governs HOW the solved pose is written to object3D, snap vs ease.
+  function placeContent(el, pos, quat) {
+    var tau = +window.CONJURE_POSE_TAU || 0;
+    if (tau > 0 && el._contentPlaced) adoptTarget(el, pos, quat);
+    else { el.object3D.position.copy(pos); el.object3D.quaternion.copy(quat); slewSet.delete(el); el._settled = true; }
+    el._contentPlaced = true;
+  }
+
+  // The pose-follow clock (docs/pose-smoothing-plan.md §4/§5.4): every frame, ease each unsettled entity's
+  // object3D toward its adopted target by the frame-rate-independent fraction a = 1 - exp(-dt/tau), and drop
+  // it the instant it arrives (epsilon snap) so steady-state cost returns to zero. `dt` is seconds. Writes
+  // object3D directly (NOT setAttribute) — a 90 Hz setAttribute would re-parse strings + fire change events
+  // per frame; the apply-gate keys off el._geoSig, not the DOM attribute, so direct writes are safe (§5.3).
+  // Content already writes object3D directly, so this is consistent. tau<=0 means nothing was ever adopted
+  // (call sites snap), so the set is empty and this is a no-op.
+  function slewPoses(dt) {
+    if (!slewSet.size) return;
+    var tau = +window.CONJURE_POSE_TAU || 0;
+    var a = WM.slewAlpha(dt, tau);
+    if (!(a > 0)) return;                              // dt==0 (first frame) → no progress; keep targets
+    slewSet.forEach(function (el) {
+      var o = el.object3D;
+      if (!o || !el.isConnected || !el._tgtPos) { slewSet.delete(el); return; }   // pruned/dead → drop (§10)
+      o.position.lerp(el._tgtPos, a);
+      o.quaternion.slerp(el._tgtQuat, a);              // shortest-arc; handles quaternion double-cover
+      if (WM.slewSettled(o.position.distanceTo(el._tgtPos), o.quaternion.angleTo(el._tgtQuat),
+          SLEW_POS_EPS, SLEW_ANG_EPS)) {
+        o.position.copy(el._tgtPos); o.quaternion.copy(el._tgtQuat);   // snap the last sliver exactly
+        el._settled = true; slewSet.delete(el);
+      }
+    });
   }
 
   // A real surface's MATERIAL — cheap, director-driven, never rebuilds the mesh, so it is applied every
@@ -406,9 +459,22 @@
       // center and its joinCorners width materialize at the SAME epoch → junctions close exactly (part B).
       var shapeChanged = _fresh || el._forceGeoRelay || WM.surfaceShapeChanged(el._geoSig, sig, _tol);
       if (poseMoved) {
-        if (t.position) el.setAttribute("position", v3(t.position));
-        if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
-        if (t.scale) el.setAttribute("scale", v3(t.scale));
+        // Pose-smoothing (docs/pose-smoothing-plan.md §3, §5.3): split ADOPT from MOVE. When smoothing is on
+        // (CONJURE_POSE_TAU>0) and this isn't the surface's first lay, store the captured pose as a TARGET and
+        // let slewPoses ease the transform there over frames — the ~2 s drift STEP becomes a short settle.
+        // FRESH surfaces (and the tau=0 default) snap immediately: a brand-new entity has no sensible pose to
+        // ease FROM (it would fly in from the origin), and tau=0 is today's behaviour. Scale is never eased.
+        var _tau = +window.CONJURE_POSE_TAU || 0;
+        if (_tau > 0 && !_fresh && el.object3D && t.position && t.rotation) {
+          adoptTarget(el, new AFRAME.THREE.Vector3(t.position[0] || 0, t.position[1] || 0, t.position[2] || 0),
+            eulerYXZToQuat(AFRAME.THREE, t.rotation));
+          if (t.scale) el.setAttribute("scale", v3(t.scale));
+        } else {
+          if (t.position) el.setAttribute("position", v3(t.position));
+          if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
+          if (t.scale) el.setAttribute("scale", v3(t.scale));
+          slewSet.delete(el);                      // a snap supersedes any in-flight ease (fresh lay / tau off)
+        }
       }
       if (shapeChanged) enqueueGeo(el, comps);   // expensive mesh re-triangulation → deferred, time-sliced (pumpGeo)
       // Advance the baseline only for the half we re-laid: shape → full advance (the slice queue materializes
@@ -547,6 +613,7 @@
     }
     root().innerHTML = "";
     geoQueue = []; geoPending = {}; surfDumped = false;   // world switch destroyed every surface el → drop stale rebuild entries + re-arm the [surf] dump
+    slewSet.clear();                                      // …and every easing target: the entities are gone
     // LOCAL-FIRST: once a client renders its own capture (localRenderActive), real surfaces are NOT drawn
     // from the server — each headset draws its OWN live capture (_renderLocal), matching its passthrough. We
     // still consume the server's real surfaces below (docSurfaces) as the registration REFERENCE. A desktop
@@ -937,6 +1004,13 @@
         this._jMarks = [];          // [{l,t}] performance.now() marks at each capture phase boundary (sub-cost)
         this._jCapSeq = 0;          // capture counter (bumped at capture start)
         this._jLoggedSeq = 0;       // last capture whose sub-cost breakdown was logged (log once, next frame)
+        // Rolling frame-PACING window: unlike the spike dump (fires only on a hard >threshold frame), this
+        // accumulates EVERY frame's dt over a ~2 s window and reports mean/jitter/percentiles + soft/dropped
+        // counts, so the "smooth but not perfect" case (soft misses that never trip a hard spike) is measured.
+        this._jWin = [];            // dt samples (ms) since the last pacing report
+        this._jWinT0 = 0;           // `time` the current window opened
+        this._jWinSlew = 0;         // max slewSet.size seen this window (attributes per-frame pose motion when tau>0)
+        this._jLoggedRate = false;  // one-time display-rate log (session.frameRate + supportedFrameRates)
         // --- GEOMETRY WORKER (fix/pops-and-jitters) ----------------------------------------------------
         // register() runs off the render thread so its ~7-11 ms solve never drops an XR frame. The capture
         // splits: the throttled tick reads planes and POSTS them; the worker's reply drives the render
@@ -1087,7 +1161,7 @@
         Array.prototype.forEach.call(wr.querySelectorAll('[data-real="1"]'), function (el) {
           if (seen[el.id]) { delete abs[el.id]; return; }
           abs[el.id] = (abs[el.id] || 0) + 1;
-          if (abs[el.id] >= 3 && el.parentNode) { el.parentNode.removeChild(el); delete abs[el.id]; }
+          if (abs[el.id] >= 3 && el.parentNode) { slewSet.delete(el); el.parentNode.removeChild(el); delete abs[el.id]; }   // drop any in-flight ease (§10)
         });
       },
       // Place director-authored content (models, props — anything with a remembered F_ref pose) via
@@ -1115,12 +1189,18 @@
             var hostEl = document.getElementById(el._onSurface), off = el._surfaceOffset;
             if (!hostEl || !hostEl.object3D || !off || !off.p || !off.q) return;
             var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
-            var hostMat = new THREE.Matrix4().compose(
-              hostEl.object3D.position.clone(), hostEl.object3D.quaternion.clone(), new THREE.Vector3(1, 1, 1));
+            // Ride the host's TARGET pose while it's easing, not its mid-slew object3D (§5.5): captures land
+            // at ~0.5 Hz but the host eases at 90 Hz, so re-snapping to the host's current object3D each
+            // capture would let the art lag the wall through the transition. Composing against the host's
+            // target and giving the content its OWN target (same tau, same epoch) eases them in lock-step.
+            var slewing = slewSet.has(hostEl) && hostEl._tgtPos;
+            var hp = slewing ? hostEl._tgtPos : hostEl.object3D.position;
+            var hq = slewing ? hostEl._tgtQuat : hostEl.object3D.quaternion;
+            var hostMat = new THREE.Matrix4().compose(hp.clone(), hq.clone(), new THREE.Vector3(1, 1, 1));
             var offMat = new THREE.Matrix4().compose(new THREE.Vector3(off.p[0], off.p[1], off.p[2]),
               new THREE.Quaternion(off.q[0], off.q[1], off.q[2], off.q[3]), new THREE.Vector3(1, 1, 1));
             hostMat.multiply(offMat).decompose(ip, iq, is);
-            el.object3D.position.copy(ip); el.object3D.quaternion.copy(iq);
+            placeContent(el, ip, iq);                                 // snap first / when off, else ease with the host
             ridden++;
             return;                                                   // on-surface content NEVER free-multilaterates
           }
@@ -1142,7 +1222,7 @@
             sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
           }
           if (!sol.ok) return;                                      // degenerate / missing walls → hold last pose
-          el.object3D.position.copy(sol.position); el.object3D.quaternion.copy(sol.quaternion);
+          placeContent(el, sol.position, sol.quaternion);           // snap first / when off, else ease (§5.5)
           freed++;
         });
         if (window.CONJURE_DEBUG_REGISTRATION && (ridden || freed))
@@ -1416,6 +1496,28 @@
         for (var i = 1; i < m.length; i++) parts.push(m[i].l + "=" + (m[i].t - m[i - 1].t).toFixed(1));
         debugLog("jitter", "COST total=" + (m[m.length - 1].t - m[0].t).toFixed(1) + "ms | " + parts.join(" "), true);
       },
+      // JITTER PROBE: the ROLLING pacing report (every ~2 s, independent of any spike). Characterises the
+      // "smooth but not quite" case the one-shot spike dump misses: over the window, the mean frame interval,
+      // the JITTER (stddev of dt — the actual smoothness metric), p95/max, and how many frames were merely
+      // LATE (>1.2x ideal) vs a genuine DROP (>1.5x ideal = missed at least one vsync). `slew=` is the peak
+      // slewSet size this window: with --pose-tau>0 the pump writes poses every frame, so nonzero slew means
+      // some of any measured motion is EXPECTED easing, not a pipeline miss — the discriminator for tau>0 runs.
+      _jPacing: function (ideal) {
+        var w = this._jWin, n = w.length;
+        this._jWin = []; this._jWinT0 = 0; var peakSlew = this._jWinSlew; this._jWinSlew = 0;
+        if (n < 2) return;
+        var sum = 0, max = 0, late = 0, drop = 0;
+        for (var i = 0; i < n; i++) { var d = w[i]; sum += d; if (d > max) max = d;
+          if (d > 1.5 * ideal) drop++; else if (d > 1.2 * ideal) late++; }
+        var mean = sum / n, varr = 0;
+        for (var j = 0; j < n; j++) { var e = w[j] - mean; varr += e * e; }
+        var sd = Math.sqrt(varr / n);
+        var sorted = w.slice().sort(function (a, b) { return a - b; });
+        var p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))];
+        debugLog("jitter", "PACE n=" + n + " ideal=" + ideal.toFixed(1) + " mean=" + mean.toFixed(1)
+          + " jit(sd)=" + sd.toFixed(1) + " p95=" + p95.toFixed(1) + " max=" + max.toFixed(1)
+          + " late(>1.2x)=" + late + " drop(>1.5x)=" + drop + " slew=" + peakSlew, true);
+      },
       // JITTER PROBE: dump the recent frame-interval ring + the probe world-pose rings, once, on a spike.
       // Frame token: "<dt>" for a normal frame, "<dt>*<cost>" for a frame that ran the capture body (cap).
       // A cap-tagged frame lining up with the dt spike ⇒ the capture is dropping the frame.
@@ -1428,22 +1530,38 @@
           return (this._jPoses[key] || []).map(function (p) {
             return p.x + "," + p.y + "," + p.z; }).join(" ");
         }.bind(this);
-        debugLog("jitter", "SPIKE dt=" + dt.toFixed(1) + "ms | frames[dt(*cap:cost)]: " + frames
+        debugLog("jitter", "SPIKE dt=" + dt.toFixed(1) + "ms slew=" + slewSet.size + " | frames[dt(*cap:cost)]: " + frames
           + " | wallW: " + pose("wall") + " | objW: " + pose("obj"), true);
       },
-      tick: function (time) {
+      tick: function (time, timeDelta) {
         var sceneEl = this.el.sceneEl, frame = sceneEl.frame;
         if (!frame) return;
         var refSpace = sceneEl.renderer.xr.getReferenceSpace();
         if (!refSpace) return;
         var JIT = this._jitOn();
         if (JIT) {                                          // JITTER PROBE: per-frame pacing + pose sampling
+          var session = sceneEl.renderer.xr.getSession();
+          var refresh = (session && session.frameRate) || 72;   // Quest browser is often 72 Hz, not 90 — the true budget
+          var ideal = 1000 / refresh;                           // ideal inter-frame interval (ms)
+          if (!this._jLoggedRate) {                             // one-time: what rate are we ACTUALLY running at?
+            this._jLoggedRate = true;
+            var sr = session && session.supportedFrameRates;
+            debugLog("jitter", "RATE current=" + (session && session.frameRate || "?") + "Hz ideal=" + ideal.toFixed(1)
+              + "ms supported=[" + (sr ? Array.prototype.join.call(sr, ",") : "?") + "]", true);
+          }
           var dt = this._jLastTick ? (time - this._jLastTick) : 0;
           this._jLastTick = time;
           this._jFrames.push({ t: time, dt: dt, cap: 0, cost: 0 });
           if (this._jFrames.length > 24) this._jFrames.shift();
           this._jSample(time);
-          if (dt > (window.CONJURE_JITTER_DT_MS || 20)) this._jDump(time, dt);   // dropped-frame threshold
+          // Rolling pacing window: accumulate every dt, note peak slew activity, report every ~2 s (below).
+          if (dt > 0) this._jWin.push(dt);
+          if (slewSet.size > this._jWinSlew) this._jWinSlew = slewSet.size;
+          if (!this._jWinT0) this._jWinT0 = time;
+          if (time - this._jWinT0 >= 2000) this._jPacing(ideal);
+          // Hard-spike dump: refresh-relative by default (1.5x ideal = missed ≥1 vsync), CONJURE_JITTER_DT_MS overrides.
+          var dtThresh = window.CONJURE_JITTER_DT_MS || (1.5 * ideal);
+          if (dt > dtThresh) this._jDump(time, dt);
           if (this._jCapSeq !== this._jLoggedSeq && this._jMarks.length > 1) {    // sub-cost of the prev capture
             this._jLoggedSeq = this._jCapSeq; this._jBreakdown();
           }
@@ -1455,6 +1573,7 @@
         this._updateWorldFrame(frame, refSpace);            // EVERY frame: park #world-root on the frame
         this._pinSky();                                     // …and pin the sky to that SAME frame (see below)
         pumpGeo();                                           // EVERY frame: drain a few deferred mesh rebuilds (time-sliced)
+        slewPoses((timeDelta || 0) / 1000);                  // EVERY frame: ease surfaces/content toward their targets (pose-smoothing; no-op when disabled)
         // One-time render diagnostic: the actual foveation + XR framebuffer size + per-eye viewport. Tells
         // us whether foveation is really off (peripheral-blur suspect) and whether the used viewport is a
         // sub-rect of the framebuffer (the fuzzy right/bottom-band suspect). debug_log-gated, logged once.

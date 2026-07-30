@@ -175,3 +175,59 @@ test("pose/shape split: surfaceMoved === shapeChanged OR poseMoved (equivalence 
       "surfaceMoved must equal the OR of its halves");
   }
 });
+
+// --- Pose-smoothing slew math (docs/pose-smoothing-plan.md §4, §11) --------------------------------------
+// The two pure, DOM-free pieces of the per-surface slew: the frame-rate-independent easing fraction and the
+// arrival predicate. (The object3D lerp/slerp themselves live in the client and are exercised on-headset.)
+
+test("slewAlpha: tau<=0 disables → a=1 (snap the whole gap)", () => {
+  assert.equal(WM.slewAlpha(0.011, 0), 1, "tau=0 snaps");
+  assert.equal(WM.slewAlpha(0.011, -0.1), 1, "negative tau snaps");
+});
+
+test("slewAlpha: a = 1 - exp(-dt/tau), in [0,1] and monotonic in dt", () => {
+  const tau = 0.1;
+  assert.ok(Math.abs(WM.slewAlpha(0.1, tau) - (1 - Math.exp(-1))) < 1e-12, "one tau closes ~63%");
+  assert.ok(Math.abs(WM.slewAlpha(0.3, tau) - (1 - Math.exp(-3))) < 1e-12, "3·tau closes ~95%");
+  assert.ok(WM.slewAlpha(0.05, tau) < WM.slewAlpha(0.1, tau), "larger dt → larger fraction");
+  assert.equal(WM.slewAlpha(0, tau), 0, "dt=0 → no progress");
+});
+
+test("slewAlpha: a huge dt (a stall) is clamped to 1, never overshoots", () => {
+  assert.ok(WM.slewAlpha(10, 0.1) <= 1, "never exceeds 1");
+  assert.equal(WM.slewAlpha(1e9, 0.1), 1, "astronomically large dt saturates at exactly 1");
+  assert.equal(WM.slewAlpha(-5, 0.1), 0, "a negative dt (clock skew) floors at 0, no backward motion");
+});
+
+test("slewAlpha: frame-rate INDEPENDENT — two half-steps close the same gap as one full step", () => {
+  const tau = 0.1;
+  // Simulate a scalar gap of 1.0 eased with one 16 ms step vs two 8 ms steps; remaining gap must match.
+  const one = 1 - WM.slewAlpha(0.016, tau);
+  const a8 = WM.slewAlpha(0.008, tau);
+  const two = (1 - a8) * (1 - a8);
+  assert.ok(Math.abs(one - two) < 1e-9, `remaining gaps match (${one} vs ${two})`);
+});
+
+test("slewSettled: true only once BOTH gaps fall below their epsilons", () => {
+  const pe = 0.001, ae = 0.1 * Math.PI / 180;
+  assert.equal(WM.slewSettled(0.0005, ae * 0.5, pe, ae), true, "both under → settled");
+  assert.equal(WM.slewSettled(0.002, ae * 0.5, pe, ae), false, "position still open → not settled");
+  assert.equal(WM.slewSettled(0.0005, ae * 2, pe, ae), false, "angle still open → not settled");
+});
+
+test("slewSettled: an EMA of a fixed gap crosses the epsilon within ~tau·ln(gap/eps) of stepping", () => {
+  // Step a 2 cm correction (a realistic per-capture drift) toward 0 at 90 Hz with tau=0.1; it must reach
+  // POS_EPS (1 mm) by tau·ln(gap/eps) ≈ 3·tau (0.3 s) — the analytic settle time of an exponential ease —
+  // and NOT already be there in the first couple of frames (the ease is visible, not an instant snap).
+  const tau = 0.1, dt = 1 / 90, pe = 0.001, ae = 1e-4, gap0 = 0.02;   // ae>0 so the (angGap=0)<ae test passes
+  let gap = gap0, tEarly = null, tSettle = null;
+  for (let f = 1; f <= 90; f++) {          // up to 1 s of frames
+    gap *= (1 - WM.slewAlpha(dt, tau));
+    const t = f * dt;
+    if (tEarly === null && f === 2) tEarly = gap;                         // still mid-ease after 2 frames
+    if (tSettle === null && WM.slewSettled(gap, 0, pe, ae)) tSettle = t;  // first frame under epsilon
+  }
+  const analytic = tau * Math.log(gap0 / pe);                            // ≈ 0.3 s for a 2 cm→1 mm ease
+  assert.ok(tEarly > pe, "not an instant snap — still easing after 2 frames");
+  assert.ok(tSettle !== null && tSettle <= analytic + 3 * dt, `settled by ~tau·ln(gap/eps) (at ${tSettle}s)`);
+});

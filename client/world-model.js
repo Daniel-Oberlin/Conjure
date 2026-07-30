@@ -204,8 +204,39 @@
     return prev;                                                    // nothing re-laid → baseline unchanged
   }
 
+  // Pose-smoothing slew (docs/pose-smoothing-plan.md §4): the per-frame easing FRACTION for one step, from a
+  // smoothing TIME CONSTANT `tau` (seconds) and this frame's `dt` (seconds). `a = 1 - exp(-dt/tau)` is one
+  // exponential-moving-average step whose wall-clock settle time depends only on tau — NOT on frame rate or
+  // frame-time jitter (two 8 ms steps close the same gap fraction as one 16 ms step). tau<=0 ⇒ a=1 (snap):
+  // the disabled default, so an adopt with no tau lands instantly, matching today's behaviour. Clamped to
+  // [0,1] so a huge dt (a stall) can't overshoot the target.
+  /**
+   * @param {number} dt    seconds since last frame
+   * @param {number} tau   smoothing time constant (seconds); <=0 disables (returns 1)
+   * @returns {number}     easing fraction in [0, 1]
+   */
+  function slewAlpha(dt, tau) {
+    if (!(tau > 0)) return 1;                                       // disabled → snap the whole gap
+    var a = 1 - Math.exp(-Math.max(0, dt) / tau);
+    return a < 0 ? 0 : a > 1 ? 1 : a;
+  }
+
+  // Has an easing entity ARRIVED? The exponential never reaches the target exactly, so a small epsilon snap
+  // terminates the slew (the entity leaves the slew set and steady-state cost returns to zero). True once the
+  // position gap AND the angular gap are both below their epsilons.
+  /**
+   * @param {number} posGap   metres between object3D and target position
+   * @param {number} angGap   radians between object3D and target orientation
+   * @param {number} posEps   position epsilon (m), e.g. 0.001 (1 mm)
+   * @param {number} angEps   angular epsilon (rad), e.g. 0.1° in radians
+   * @returns {boolean}
+   */
+  function slewSettled(posGap, angGap, posEps, angEps) {
+    return posGap < posEps && angGap < angEps;
+  }
+
   return { nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            surfaceSig: surfaceSig, surfaceMoved: surfaceMoved,
            surfacePoseMoved: surfacePoseMoved, surfaceShapeChanged: surfaceShapeChanged,
-           advanceSig: advanceSig };
+           advanceSig: advanceSig, slewAlpha: slewAlpha, slewSettled: slewSettled };
 });
