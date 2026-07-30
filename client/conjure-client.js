@@ -323,13 +323,23 @@
       debugLog("geo", "mesh-rebuild backlog " + geoQueue.length + " surfaces — pump behind (raise "
         + "--geo-slice-ms or reduce rebuilds); materializing progressively", true);
     }
+    var JITg = window.CONJURE_DEBUG_JITTER;              // [geoslow] probe: name a single rebuild that overruns
     do {
       var id = geoQueue.shift(), comps = geoPending[id];
       delete geoPending[id];
       var el = document.getElementById(id);
       if (el && el.isConnected && comps) {
+        var st = JITg ? performance.now() : 0;
         applySurfaceGeometry(el, comps);                 // the expensive holed-wall re-triangulation
         setSurfaceLabel(el, roomState.annotations);      // refresh dims: label reads dataset.ext, just set above
+        // The pump caps cost BETWEEN surfaces, but the do..while always finishes the CURRENT one — so a single
+        // heavy rebuild (a holed wall / wall art) can overshoot the whole slice in one frame. Log which surface
+        // and how long when it exceeds the budget, so a "pop on wall art" can be pinned to a specific rebuild.
+        if (JITg) {
+          var ms = performance.now() - st;
+          if (ms > budget) debugLog("geoslow", id + " rebuild=" + ms.toFixed(1) + "ms holes="
+            + ((comps.surface && comps.surface.holes || []).length) + " (budget=" + budget + "ms)", true);
+        }
       }
     } while (geoQueue.length && (performance.now() - t0) < budget);
   }
