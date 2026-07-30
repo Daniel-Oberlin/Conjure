@@ -1004,6 +1004,13 @@
         this._jMarks = [];          // [{l,t}] performance.now() marks at each capture phase boundary (sub-cost)
         this._jCapSeq = 0;          // capture counter (bumped at capture start)
         this._jLoggedSeq = 0;       // last capture whose sub-cost breakdown was logged (log once, next frame)
+        // Rolling frame-PACING window: unlike the spike dump (fires only on a hard >threshold frame), this
+        // accumulates EVERY frame's dt over a ~2 s window and reports mean/jitter/percentiles + soft/dropped
+        // counts, so the "smooth but not perfect" case (soft misses that never trip a hard spike) is measured.
+        this._jWin = [];            // dt samples (ms) since the last pacing report
+        this._jWinT0 = 0;           // `time` the current window opened
+        this._jWinSlew = 0;         // max slewSet.size seen this window (attributes per-frame pose motion when tau>0)
+        this._jLoggedRate = false;  // one-time display-rate log (session.frameRate + supportedFrameRates)
         // --- GEOMETRY WORKER (fix/pops-and-jitters) ----------------------------------------------------
         // register() runs off the render thread so its ~7-11 ms solve never drops an XR frame. The capture
         // splits: the throttled tick reads planes and POSTS them; the worker's reply drives the render
@@ -1489,6 +1496,28 @@
         for (var i = 1; i < m.length; i++) parts.push(m[i].l + "=" + (m[i].t - m[i - 1].t).toFixed(1));
         debugLog("jitter", "COST total=" + (m[m.length - 1].t - m[0].t).toFixed(1) + "ms | " + parts.join(" "), true);
       },
+      // JITTER PROBE: the ROLLING pacing report (every ~2 s, independent of any spike). Characterises the
+      // "smooth but not quite" case the one-shot spike dump misses: over the window, the mean frame interval,
+      // the JITTER (stddev of dt — the actual smoothness metric), p95/max, and how many frames were merely
+      // LATE (>1.2x ideal) vs a genuine DROP (>1.5x ideal = missed at least one vsync). `slew=` is the peak
+      // slewSet size this window: with --pose-tau>0 the pump writes poses every frame, so nonzero slew means
+      // some of any measured motion is EXPECTED easing, not a pipeline miss — the discriminator for tau>0 runs.
+      _jPacing: function (ideal) {
+        var w = this._jWin, n = w.length;
+        this._jWin = []; this._jWinT0 = 0; var peakSlew = this._jWinSlew; this._jWinSlew = 0;
+        if (n < 2) return;
+        var sum = 0, max = 0, late = 0, drop = 0;
+        for (var i = 0; i < n; i++) { var d = w[i]; sum += d; if (d > max) max = d;
+          if (d > 1.5 * ideal) drop++; else if (d > 1.2 * ideal) late++; }
+        var mean = sum / n, varr = 0;
+        for (var j = 0; j < n; j++) { var e = w[j] - mean; varr += e * e; }
+        var sd = Math.sqrt(varr / n);
+        var sorted = w.slice().sort(function (a, b) { return a - b; });
+        var p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))];
+        debugLog("jitter", "PACE n=" + n + " ideal=" + ideal.toFixed(1) + " mean=" + mean.toFixed(1)
+          + " jit(sd)=" + sd.toFixed(1) + " p95=" + p95.toFixed(1) + " max=" + max.toFixed(1)
+          + " late(>1.2x)=" + late + " drop(>1.5x)=" + drop + " slew=" + peakSlew, true);
+      },
       // JITTER PROBE: dump the recent frame-interval ring + the probe world-pose rings, once, on a spike.
       // Frame token: "<dt>" for a normal frame, "<dt>*<cost>" for a frame that ran the capture body (cap).
       // A cap-tagged frame lining up with the dt spike ⇒ the capture is dropping the frame.
@@ -1501,7 +1530,7 @@
           return (this._jPoses[key] || []).map(function (p) {
             return p.x + "," + p.y + "," + p.z; }).join(" ");
         }.bind(this);
-        debugLog("jitter", "SPIKE dt=" + dt.toFixed(1) + "ms | frames[dt(*cap:cost)]: " + frames
+        debugLog("jitter", "SPIKE dt=" + dt.toFixed(1) + "ms slew=" + slewSet.size + " | frames[dt(*cap:cost)]: " + frames
           + " | wallW: " + pose("wall") + " | objW: " + pose("obj"), true);
       },
       tick: function (time, timeDelta) {
@@ -1511,12 +1540,28 @@
         if (!refSpace) return;
         var JIT = this._jitOn();
         if (JIT) {                                          // JITTER PROBE: per-frame pacing + pose sampling
+          var session = sceneEl.renderer.xr.getSession();
+          var refresh = (session && session.frameRate) || 72;   // Quest browser is often 72 Hz, not 90 — the true budget
+          var ideal = 1000 / refresh;                           // ideal inter-frame interval (ms)
+          if (!this._jLoggedRate) {                             // one-time: what rate are we ACTUALLY running at?
+            this._jLoggedRate = true;
+            var sr = session && session.supportedFrameRates;
+            debugLog("jitter", "RATE current=" + (session && session.frameRate || "?") + "Hz ideal=" + ideal.toFixed(1)
+              + "ms supported=[" + (sr ? Array.prototype.join.call(sr, ",") : "?") + "]", true);
+          }
           var dt = this._jLastTick ? (time - this._jLastTick) : 0;
           this._jLastTick = time;
           this._jFrames.push({ t: time, dt: dt, cap: 0, cost: 0 });
           if (this._jFrames.length > 24) this._jFrames.shift();
           this._jSample(time);
-          if (dt > (window.CONJURE_JITTER_DT_MS || 20)) this._jDump(time, dt);   // dropped-frame threshold
+          // Rolling pacing window: accumulate every dt, note peak slew activity, report every ~2 s (below).
+          if (dt > 0) this._jWin.push(dt);
+          if (slewSet.size > this._jWinSlew) this._jWinSlew = slewSet.size;
+          if (!this._jWinT0) this._jWinT0 = time;
+          if (time - this._jWinT0 >= 2000) this._jPacing(ideal);
+          // Hard-spike dump: refresh-relative by default (1.5x ideal = missed ≥1 vsync), CONJURE_JITTER_DT_MS overrides.
+          var dtThresh = window.CONJURE_JITTER_DT_MS || (1.5 * ideal);
+          if (dt > dtThresh) this._jDump(time, dt);
           if (this._jCapSeq !== this._jLoggedSeq && this._jMarks.length > 1) {    // sub-cost of the prev capture
             this._jLoggedSeq = this._jCapSeq; this._jBreakdown();
           }
