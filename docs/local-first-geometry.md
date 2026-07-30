@@ -406,6 +406,38 @@ draws — like-to-like across rendering, registration, anchors, and recovery. Th
 `room-snap.js`; it's in git history if the per-capture angular jitter it denoised ever proves worth
 revisiting (it would need to run on the local render too, to stay consistent).
 
+### 9.1 Wall sealing — top→ceiling, bottom→floor (`sealWalls`)
+
+**Symptom (measured, not theorised).** With solid ceiling fills on, an open slit shows at the wall/ceiling
+line — "outside shows through." A per-surface corner dump (`[surf]` probe) settled it: e.g. `wall_41`'s top
+edge sits at `y=2.669` while `ceiling_13` is at `y=2.673` — the Quest fit the wall **4 mm short** of the
+ceiling, and up to a few cm at some ends. It's in the **raw capture**, so it isn't an epoch/redraw problem
+(full re-lay with every apply-tolerance at 0 did **not** close it) and it isn't something a bleed/oversize
+should paper over (that overshoots and crosses lines in wireframe). Nothing joined a wall to a ceiling:
+`joinCorners` only closes wall∩wall **sides** and explicitly leaves height alone. Invisible in wireframe;
+visible the moment fills are solid.
+
+**Fix.** `sealWalls` (in `room-snap.js`, run right after `joinCorners`, **before** `snapInsets`, on both the
+local render and the posted seed — same like-to-like discipline as §9) snaps each wall's **top** onto the
+ceiling plane above it and its **bottom** onto the floor below it:
+
+- **Vertical only.** It mutates the wall's centre height (`_lp.y` / `position[1]`) and height (`extent[1]`).
+  The wall's **plane** — normal, horizontal offset, width (`extent[0]`) — is untouched, so registration and
+  plane-relative anchors (which key off the horizontal plane + the floor/ceiling **edges**) are unaffected;
+  if anything the wall now matches the very floor/ceiling references those anchors already assume.
+- **Guarded by a tolerance** (`--wall-seal-tol`, default 0.15 m; `0` disables). A wall edge is snapped only
+  if it is **already within tol** of the plane, so a genuine partial/knee wall — or a wall in a room whose
+  ceiling wasn't captured — is left alone (a 29 cm-short wall isn't stretched to a 2.7 m ceiling).
+- **Multi-room safe.** `detectedPlanes` is the whole house, so a wall snaps to the **nearest** ceiling/floor
+  (by horizontal centre distance) that sits above/below it, not to some other room's ceiling.
+- **No hole compensation needed.** Because it runs before `snapInsets`, door/window openings — placed
+  relative to the wall centre — are cut against the **sealed** wall automatically.
+
+**Not covered (yet).** The horizontal case where a wall ends short of a corner that has **no second wall** —
+a doorway (`joinCorners` needs two walls to define a corner, so a door-flanked corner is left at the raw
+end). Closing those needs snapping wall ends to the **ceiling outline** (the ceiling knows the room corner
+even where a doorway means no wall). Pending.
+
 ## 10. The linchpin risk — id correspondence
 
 With geometry local and placement plane-relative, **correctness hinges on each client mapping its local
@@ -507,10 +539,16 @@ the parity-test contract is far cheaper than embedding Node, and keeps server pu
    surfaces then opens a seam over a session (wall↔floor/ceiling junctions; inset↔cutout, since the cutout
    lives in the wall mesh while the inset is its own surface). Each capture is internally consistent
    (`joinCorners`/`snapInsets`), so the divergence is purely render epoch — a reset re-lays everything at
-   once, which is why it heals then. So when ANY real surface crosses tolerance this capture, `_renderLocal`
-   re-lays them ALL together (one epoch — the room shares one tracking frame). Off = per-surface baseline
-   (reproduces the seams) for A/B. *(Wall-WALL corners were the first to stay closed once walls were
-   grouped — that pointed the way; extending to all surfaces closes the wall-floor/ceiling and cutout seams.)*
+   once, which is why it heals then. So when ANY real surface moves (pose **or** shape) this capture,
+   `_renderLocal` re-lays them ALL together at one epoch — flagging **both** `_forcePoseRelay` and
+   `_forceGeoRelay`, so a wall's center and its `joinCorners` **width** (a matched pair) can never
+   materialize from different captures. A pose-*only* interlude (the register-worker commit) reopened the
+   seams *within tolerance*: the center advanced every capture while the width lagged until it crossed
+   tolerance, leaving the wall's ends off the shared corner by up to `--apply-tol-ext`. Co-relaying the
+   geometry closes them exactly; the rebuild is absorbed by the time-slice pump (§14), so it no longer risks
+   the dropped frame that first motivated gating it out. Off = per-surface baseline (reproduces the seams)
+   for A/B. *(Wall-WALL corners were the first to stay closed once walls were grouped — that pointed the way;
+   extending to all surfaces, pose **and** geometry, closes the wall-floor/ceiling and cutout seams.)*
 3. **✅ Free content / skybox / grounded via anchors** (§5 b–d). `_placeContent`, each capture, handles all
    four modes: **free** content multilaterates its F_ref pose against the local walls (§5b); **grounded**
    content (`meta.placement:"grounded"` — set on dropped models, which auto-sit on the floor) snaps Y to the
@@ -647,8 +685,21 @@ itself cause the hitch:
    orientation drift — same physical shape) and `surfaceShapeChanged` (extent/openings). A drift now re-lays
    only the **cheap transform**; the expensive holed-wall **re-triangulation** runs only on an actual shape
    change. Tracking drift (the common case while walking) no longer rebuilds the whole room's meshes every
-   capture. The group relay (§5, junction seams) flags a cheap pose re-lay (`_forcePoseRelay`) instead of
-   nulling every `_geoSig`.
+   capture. The group relay (§5, junction seams) re-lays surfaces at one epoch via targeted flags
+   (`_forcePoseRelay` + `_forceGeoRelay`) rather than nulling every `_geoSig` (which would also re-run the
+   styling gate). Two follow-ups hardened the split, after solid-ceiling testing exposed junction seams:
+   - **(A) hold the shape baseline on a pose-only re-lay** (`WM.advanceSig`). Advancing the *whole* signature
+     on a pose-only re-lay let sub-tolerance extent drift accumulate into the baseline un-drawn, so
+     `surfaceShapeChanged` measured against a shape the mesh never rendered and the rebuild never fired — the
+     rendered mesh ran away from the true shape over a session (a regression from the pose-only relay). Now a
+     pose-only re-lay advances only `p`/`r` and holds `ext`/`holes` at the last-rendered shape; drift past
+     tolerance still trips a real rebuild (self-heal).
+   - **(B) co-relay geometry with pose** (`_forceGeoRelay`). Even bounded, a pose-only relay left a wall's
+     fresh center paired with a lagging `joinCorners` width → ends off the shared corner by up to
+     `--apply-tol-ext` (the residual wall∩wall / wall∩ceiling seam). The group relay now re-triangulates the
+     moved surfaces on the same epoch as the pose, so the matched center+width materialize together and
+     junctions close exactly; trigger widened to pose-*or*-shape so a pure width drift still re-closes. Safe
+     because the rebuild is absorbed by the slice pump (item 4) rather than dropped as a frame.
 
 3. **Styling gate.** `material / visibility / edges / label` are global display state (or per-surface director
    material) that never change per capture and are already re-applied to every surface on a display toggle via

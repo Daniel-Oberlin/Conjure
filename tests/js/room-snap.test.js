@@ -717,3 +717,60 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
     assert.ok(c.pos.clone().applyMatrix4(reg.Tmat).distanceTo(c.pos) < 0.1, "register ≈ identity");
   });
 });
+
+// ---- sealWalls (§9.1): snap a wall's top→ceiling and bottom→floor so the shell has no open slit ----
+// A horizontal surface (floor/ceiling) as sealWalls reads it: semantic + ref-frame centre _lp + orientation
+// _lq (identity ⇒ normal up, axis-aligned footprint) + extent. sealWalls uses _lq/extent for its covers() test.
+function horiz(sem, x, y, z, ext) {
+  return { semantic: sem, _lp: new THREE.Vector3(x, y, z), _lq: new THREE.Quaternion(), extent: ext || [4, 4] };
+}
+
+test("sealWalls snaps a wall's top to the ceiling and bottom to the floor when within tolerance", () => {
+  // Wall centred at y=1.30, height 2.55 → top 2.575 (25 mm short of a 2.60 ceiling), bottom 0.025 (25 mm high).
+  const wall = vert("wall_1", "wall", [1, 1.30, 0], 0, [3, 2.55]);
+  RS.sealWalls(THREE, [wall, horiz("ceiling", 1, 2.60, 0), horiz("floor", 1, 0.0, 0)], 0.15);
+  assert.ok(Math.abs((wall._lp.y + wall.extent[1] / 2) - 2.60) < 1e-6, "top snapped to ceiling");
+  assert.ok(Math.abs((wall._lp.y - wall.extent[1] / 2) - 0.00) < 1e-6, "bottom snapped to floor");
+});
+
+test("sealWalls leaves a genuinely short wall (beyond tolerance) alone", () => {
+  const wall = vert("wall_1", "wall", [1, 1.30, 0], 0, [3, 1.0]);   // top 1.8, bottom 0.8 — both far from planes
+  RS.sealWalls(THREE, [wall, horiz("ceiling", 1, 2.60, 0), horiz("floor", 1, 0.0, 0)], 0.15);
+  assert.equal(wall.extent[1], 1.0, "height unchanged");
+  assert.equal(wall._lp.y, 1.30, "centre unchanged");
+});
+
+test("sealWalls seals to the ceiling whose FOOTPRINT covers the wall, ignoring a higher non-covering one", () => {
+  const wall = vert("wall_1", "wall", [10, 1.18, 0], 0, [3, 2.30]);   // top 2.33, at x=10
+  const far = horiz("ceiling", 0, 2.70, 0);      // higher, but its footprint (x 0±2.3) does NOT cover x=10
+  const over = horiz("ceiling", 10, 2.40, 0);    // covers x=10 (x 10±2.3), within tol of the top
+  RS.sealWalls(THREE, [wall, far, over, horiz("floor", 10, 0.03, 0)], 0.15);
+  assert.ok(Math.abs((wall._lp.y + wall.extent[1] / 2) - 2.40) < 1e-6, "sealed to the covering ceiling, not the taller far one");
+});
+
+// The wall_11 case: a wall shared between two rooms whose ceilings differ by a few mm. Both footprints cover
+// it; nearest-by-centre would pick the lower and leave a slit under the taller. Seal to the HIGHER.
+test("sealWalls on a shared boundary wall seals to the HIGHER of two covering ceilings", () => {
+  const wall = vert("wall_1", "wall", [0, 1.34, 0], 0, [3, 2.66]);    // top 2.67, on the room boundary
+  const lower = horiz("ceiling", 0.6, 2.690, 0);                      // covers x=0, 2.690
+  const higher = horiz("ceiling", -0.6, 2.695, 0);                    // also covers x=0, 4 mm higher
+  RS.sealWalls(THREE, [wall, lower, higher, horiz("floor", 0, 0.0, 0)], 0.15);
+  assert.ok(Math.abs((wall._lp.y + wall.extent[1] / 2) - 2.695) < 1e-6, "sealed to the higher ceiling (no slit under the taller)");
+});
+
+test("sealWalls changes only vertical extent — normal, width, and horizontal position are untouched", () => {
+  const wall = vert("wall_1", "wall", [1, 1.30, 2], 30, [3, 2.55]);
+  const n0 = normalOf(wall).clone(), w0 = wall.extent[0], x0 = wall._lp.x, z0 = wall._lp.z;
+  RS.sealWalls(THREE, [wall, horiz("ceiling", 1, 2.60, 2), horiz("floor", 1, 0.0, 2)], 0.15);
+  assert.equal(wall.extent[0], w0, "width (extent[0]) unchanged");
+  assert.equal(wall._lp.x, x0, "x unchanged");
+  assert.equal(wall._lp.z, z0, "z unchanged");
+  assert.ok(n0.distanceTo(normalOf(wall)) < 1e-9, "plane normal (_lq) unchanged");
+});
+
+test("sealWalls with tol<=0 is a no-op", () => {
+  const wall = vert("wall_1", "wall", [1, 1.28, 0], 0, [3, 2.55]);
+  RS.sealWalls(THREE, [wall, horiz("ceiling", 1, 2.60, 0), horiz("floor", 1, 0.0, 0)], 0);
+  assert.equal(wall.extent[1], 2.55, "height unchanged");
+  assert.equal(wall._lp.y, 1.28, "centre unchanged");
+});

@@ -94,6 +94,11 @@ def main() -> None:
     gate.add_argument("--on-surface-standoff", type=float, default=0.02, metavar="METERS",
                       help="how far (m) an on-surface IMAGE sits in front of its host surface (default: 0.02 "
                            "= 2 cm). Applies to newly placed / re-anchored images.")
+    gate.add_argument("--wall-seal-tol", type=float, default=0.15, metavar="METERS",
+                      help="seal a wall's top to the ceiling and bottom to the floor when the edge is already "
+                           "within this distance (m) of the plane (default: 0.15). Closes the open slit at the "
+                           "wall/ceiling line the Quest leaves by fitting walls a few cm short (docs §9.1); "
+                           "vertical-only, so plane/width and registration are untouched. 0 disables.")
     gate.add_argument("--wall-perp-tol", type=float, default=0.15, metavar="METERS",
                       help="how far apart (m) two captures' wall planes may sit and still be called the SAME "
                            "wall (default: 0.15). §5.3 wall identity by plane — bigger tolerates a guest's "
@@ -133,6 +138,7 @@ def main() -> None:
     os.environ["CONJURE_INSET_STANDOFF"] = str(args.inset_standoff)
     os.environ["CONJURE_GEO_SLICE_MS"] = str(args.geo_slice_ms)
     os.environ["CONJURE_ON_SURFACE_STANDOFF"] = str(args.on_surface_standoff)
+    os.environ["CONJURE_WALL_SEAL_TOL"] = str(args.wall_seal_tol)
     os.environ["CONJURE_WALL_PERP_TOL"] = str(args.wall_perp_tol)
     os.environ["CONJURE_WALL_YAW_TOL_DEG"] = str(args.wall_yaw_tol)
     os.environ["CONJURE_WALL_OVERLAP_SLOP"] = str(args.wall_overlap_slop)
