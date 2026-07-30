@@ -509,6 +509,75 @@
     });
   }
 
+  // Seal each wall's TOP to the ceiling plane above it and its BOTTOM to the floor below it — the vertical
+  // analogue of joinCorners (which only closes wall∩wall SIDES). The Quest often fits a wall a few mm–cm short
+  // of the ceiling/floor, which is invisible in wireframe but shows as an open slit ("outside shows through")
+  // once fills are solid. This snaps the wall's vertical extent onto those planes so the shell seals.
+  //
+  // VERTICAL ONLY: mutates a wall's centre height (`_lp.y` / `position[1]`) and height (`extent[1]`). The
+  // wall's PLANE — normal, horizontal offset, and width (`extent[0]`) — is untouched, so registration and
+  // plane-relative anchors (which use the horizontal plane + floor/ceiling edges) are unaffected; if anything
+  // the wall now matches the floor/ceiling edge references those anchors already assume.
+  //
+  // Guarded by `tol`: a wall edge is snapped ONLY if it is already within `tol` of the plane, so a genuine
+  // partial/knee wall — or a wall in a room whose ceiling wasn't captured — is left alone (a 29 cm-short wall
+  // won't be stretched to a 2.7 m ceiling). Multi-room safe: a wall seals to the ceiling/floor whose FOOTPRINT
+  // covers it — and for a wall shared between two rooms, to the HIGHEST covering ceiling (and LOWEST covering
+  // floor), so it reaches the taller room and only pokes hidden into the shorter (nearest-by-centre would seal
+  // it to the wrong room's ceiling and leave a slit). Runs BEFORE snapInsets so door/window holes — placed
+  // relative to the wall centre — are computed against the sealed wall (no separate hole compensation).
+  // Mutates in place.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces
+   * @param {number} [tol]   max gap (m) between a wall edge and its plane to still snap (default 0.15; <=0 = off)
+   * @returns {void}
+   */
+  function sealWalls(THREE, surfaces, tol) {
+    var T = tol == null ? 0.15 : tol;
+    if (!(T > 0)) return;
+    var MARGIN = 0.3;   // a wall on a shared room boundary counts as under BOTH adjoining rooms' footprints
+    var ceils = surfaces.filter(function (s) { return s.semantic === "ceiling" && s._lp && s._lq && s.extent; });
+    var floors = surfaces.filter(function (s) { return s.semantic === "floor" && s._lp && s._lq && s.extent; });
+    // Does a horizontal surface `h`'s footprint (its rectangle, grown by MARGIN) cover the plan point (wx,wz)?
+    // Project the point into h's own axes (its raw-plane local X and Z, both horizontal for a floor/ceiling)
+    // so a rotated/non-axis-aligned room is handled correctly.
+    /** @param {SnapSurface} h  @param {number} wx  @param {number} wz  @returns {boolean} */
+    function covers(h, wx, wz) {
+      var ax = new THREE.Vector3(1, 0, 0).applyQuaternion(h._lq);
+      var az = new THREE.Vector3(0, 0, 1).applyQuaternion(h._lq);
+      var dx = wx - h._lp.x, dz = wz - h._lp.z;
+      var u = dx * ax.x + dz * ax.z, v = dx * az.x + dz * az.z;
+      var e = h.extent || [0, 0];
+      return Math.abs(u) <= (e[0] || 0) / 2 + MARGIN && Math.abs(v) <= (e[1] || 0) / 2 + MARGIN;
+    }
+    surfaces.forEach(function (s) {
+      if (s.semantic !== "wall" || !s._lp || !s.extent) return;
+      var cy = s._lp.y, h = s.extent[1] || 0, top = cy + h / 2, bot = cy - h / 2;
+      // TOP → the HIGHEST ceiling that COVERS the wall and whose plane is within tol of the top. Highest so a
+      // wall shared between two rooms of slightly different ceiling height reaches the TALLER one and merely
+      // pokes (hidden, above the shorter ceiling) rather than leaving a visible slit under the taller. Only
+      // raised, never lowered: a wall already poking above a ceiling is hidden by it, so no need to trim.
+      var newTop = top;
+      ceils.forEach(function (c) {
+        if (c._lp.y > newTop && Math.abs(c._lp.y - top) <= T && covers(c, s._lp.x, s._lp.z)) newTop = c._lp.y;
+      });
+      // BOTTOM → symmetric: the LOWEST covering floor within tol (reach the lower floor; poke hidden below a
+      // higher one). Only lowered.
+      var newBot = bot;
+      floors.forEach(function (f) {
+        if (f._lp.y < newBot && Math.abs(f._lp.y - bot) <= T && covers(f, s._lp.x, s._lp.z)) newBot = f._lp.y;
+      });
+      if (newTop === top && newBot === bot) return;             // nothing covering within tol → leave it alone
+      var nh = newTop - newBot;
+      if (nh <= 0) return;                                      // degenerate → skip
+      var nc = (newTop + newBot) / 2;
+      s._lp.y = nc;
+      s.extent = [s.extent[0], nh];
+      if (s.position) s.position = [s.position[0], nc, s.position[2]];
+    });
+  }
+
   // Author an inset's CORNER-RELATIVE anchor (§5.3): its place on the wall expressed as distances to
   // SHARED structural features — the host wall's corner points (along-wall) and the floor/ceiling edges
   // (vertical) — never the wall's scan-artifact centroid. Any client reconstructs the same physical spot
@@ -771,5 +840,5 @@
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,
            wallCorners: wallCorners, authorInsetAnchor: authorInsetAnchor, reconstructInset: reconstructInset,
            insetAlong: insetAlong, hostWallFor: hostWallFor,
-           joinCorners: joinCorners, snapInsets: snapInsets };
+           joinCorners: joinCorners, sealWalls: sealWalls, snapInsets: snapInsets };
 });

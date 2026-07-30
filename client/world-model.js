@@ -180,7 +180,32 @@
     return false;
   }
 
+  // Advance the last-APPLIED signature baseline (el._geoSig) after an apply-gate re-lay — but ONLY the half
+  // that was actually re-laid. A SHAPE change enqueues a geometry rebuild (the slice pump will materialize
+  // it), so the whole signature becomes the new baseline. A POSE-ONLY re-lay redraws no geometry, so its
+  // SHAPE half (ext/holes) MUST stay pinned to the last-RENDERED shape. Advancing the shape half on a
+  // pose-only relay is the regression this fixes: it silently absorbs sub-tolerance extent drift into the
+  // baseline every capture, so surfaceShapeChanged then measures against a shape the mesh never drew → the
+  // rebuild NEVER fires → the rendered mesh runs away from the true shape over a session. For joinCorners
+  // walls (whose position + width move as a matched pair) that splits the two across render epochs, so the
+  // wall's ends miss the shared corners → wall∩wall and wall∩ceiling junction seams open (and grow). Holding
+  // the shape baseline instead bounds the lag to the extent tolerance and lets it self-heal: once true drift
+  // exceeds tolerance, surfaceShapeChanged fires and the mesh catches up.
+  /**
+   * @param {SurfaceSig|null} prev          the last-applied baseline (null/undefined on first lay)
+   * @param {SurfaceSig} sig                this capture's signature
+   * @param {boolean} poseMoved             the pose was re-laid this capture
+   * @param {boolean} shapeChanged          the geometry was (re)enqueued this capture
+   * @returns {SurfaceSig}                  the baseline to store as el._geoSig
+   */
+  function advanceSig(prev, sig, poseMoved, shapeChanged) {
+    if (shapeChanged || !prev) return sig;                          // geometry (re)laid → whole sig is truth
+    if (poseMoved) return { p: sig.p, r: sig.r, ext: prev.ext, holes: prev.holes };  // pose only → hold shape
+    return prev;                                                    // nothing re-laid → baseline unchanged
+  }
+
   return { nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            surfaceSig: surfaceSig, surfaceMoved: surfaceMoved,
-           surfacePoseMoved: surfacePoseMoved, surfaceShapeChanged: surfaceShapeChanged };
+           surfacePoseMoved: surfacePoseMoved, surfaceShapeChanged: surfaceShapeChanged,
+           advanceSig: advanceSig };
 });

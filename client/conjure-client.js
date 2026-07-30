@@ -270,9 +270,15 @@
     el.dataset.ext = w.toFixed(1) + " x " + h.toFixed(1) + " m";   // for the annotation label
     var hs = holesAttr(s.holes);
     el.dataset.holes = hs;
-    if (hs) el.setAttribute("geometry", { primitive: "holed-wall", width: w, height: h, holes: hs });
-    else el.setAttribute("geometry", { primitive: "plane", width: w, height: h });
-    el.setAttribute("surface-edges", { width: w, height: h });   // outline the surface border
+    // Fill weld (--surface-weld, default 2 mm): inflate ONLY the fill by `weld` (split evenly per side) so two
+    // independently-triangulated surfaces that ABUT overlap by a hair instead of leaving a float-rounding
+    // crack the passthrough flickers through ("noisy static"). The overlap tucks behind the neighbour (a
+    // wall's extra mm pokes above the ceiling / behind the perpendicular wall), so it's hidden. The wireframe
+    // outline (surface-edges) keeps the TRUE w/h — no overshoot there — so wireframe is unaffected. 0 = off.
+    var weld = +window.CONJURE_SURFACE_WELD || 0, fw = w + weld, fh = h + weld;
+    if (hs) el.setAttribute("geometry", { primitive: "holed-wall", width: fw, height: fh, holes: hs });
+    else el.setAttribute("geometry", { primitive: "plane", width: fw, height: fh });
+    el.setAttribute("surface-edges", { width: w, height: h });   // outline at TRUE size (not welded)
   }
 
   // Time-sliced geometry rebuild (branch fix/pops-and-jitters). applySurfaceGeometry re-triangulates the
@@ -285,6 +291,7 @@
   // the deferral is purely cosmetic. Coalesced by id (latest comps win); disconnected surfaces are skipped.
   var geoQueue = [];        // ids awaiting a mesh rebuild (FIFO order of first enqueue)
   var geoPending = {};      // id -> latest comps to rebuild with (coalesced; a re-enqueue just refreshes this)
+  var surfDumped = false;   // [surf] diagnostic (--debug-registration): dumped once per room entry (see _renderLocal)
   var geoBacklogWarnAt = 0; // performance.now() of the last backlog warning (throttle)
   // Enqueue a surface for a deferred mesh rebuild. Coalesced by id: a surface that re-shapes again before the
   // pump reaches it keeps its queue slot and just refreshes its target comps — churn can't inflate the queue
@@ -316,13 +323,23 @@
       debugLog("geo", "mesh-rebuild backlog " + geoQueue.length + " surfaces — pump behind (raise "
         + "--geo-slice-ms or reduce rebuilds); materializing progressively", true);
     }
+    var JITg = window.CONJURE_DEBUG_JITTER;              // [geoslow] probe: name a single rebuild that overruns
     do {
       var id = geoQueue.shift(), comps = geoPending[id];
       delete geoPending[id];
       var el = document.getElementById(id);
       if (el && el.isConnected && comps) {
+        var st = JITg ? performance.now() : 0;
         applySurfaceGeometry(el, comps);                 // the expensive holed-wall re-triangulation
         setSurfaceLabel(el, roomState.annotations);      // refresh dims: label reads dataset.ext, just set above
+        // The pump caps cost BETWEEN surfaces, but the do..while always finishes the CURRENT one — so a single
+        // heavy rebuild (a holed wall / wall art) can overshoot the whole slice in one frame. Log which surface
+        // and how long when it exceeds the budget, so a "pop on wall art" can be pinned to a specific rebuild.
+        if (JITg) {
+          var ms = performance.now() - st;
+          if (ms > budget) debugLog("geoslow", id + " rebuild=" + ms.toFixed(1) + "ms holes="
+            + ((comps.surface && comps.surface.holes || []).length) + " (budget=" + budget + "ms)", true);
+        }
       }
     } while (geoQueue.length && (performance.now() - t0) < budget);
   }
@@ -379,20 +396,26 @@
       // (setAttribute position/rotation — a drifted surface, same shape) from the expensive SHAPE rebuild
       // (applySurfaceGeometry re-triangulates the holed wall — only when extent/openings change). Pose drift
       // under tracking refinement is the common case; gating the mesh rebuild out of it is what removes the
-      // per-capture whole-room re-triangulation spike (the walking jitter). `_forcePoseRelay` (set by the
-      // group-relay) re-lays every surface's pose at one epoch for junction seams WITHOUT a mesh rebuild.
+      // per-capture whole-room re-triangulation spike (the walking jitter). The group relay sets BOTH
+      // `_forcePoseRelay` and `_forceGeoRelay` so junction surfaces re-lay pose AND geometry at one epoch
+      // (exact seam closure); that co-relayed rebuild is absorbed by the time-slice pump, not dropped-frame.
       // el._geoSig remembers the last-applied signature across patches (id is stable → same element).
       var sig = WM.surfaceSig(t, comps.surface), _tol = window.CONJURE_APPLY_TOL, _fresh = !el._geoSig;
       var poseMoved = _fresh || el._forcePoseRelay || WM.surfacePoseMoved(AFRAME.THREE, el._geoSig, sig, _tol);
-      var shapeChanged = _fresh || WM.surfaceShapeChanged(el._geoSig, sig, _tol);
+      // `_forceGeoRelay` (group relay) re-triangulates even on a SUB-tolerance shape drift, so a wall's
+      // center and its joinCorners width materialize at the SAME epoch → junctions close exactly (part B).
+      var shapeChanged = _fresh || el._forceGeoRelay || WM.surfaceShapeChanged(el._geoSig, sig, _tol);
       if (poseMoved) {
         if (t.position) el.setAttribute("position", v3(t.position));
         if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
         if (t.scale) el.setAttribute("scale", v3(t.scale));
       }
       if (shapeChanged) enqueueGeo(el, comps);   // expensive mesh re-triangulation → deferred, time-sliced (pumpGeo)
-      if (poseMoved || shapeChanged) el._geoSig = sig;   // advance the target now; the queue tracks "not yet materialized"
-      el._forcePoseRelay = false;
+      // Advance the baseline only for the half we re-laid: shape → full advance (the slice queue materializes
+      // it); pose-only → keep the last-RENDERED shape, so sub-tolerance extent drift can't run the baseline
+      // away un-drawn (the wall∩ceiling seam regression — see WM.advanceSig).
+      if (poseMoved || shapeChanged) el._geoSig = WM.advanceSig(el._geoSig, sig, poseMoved, shapeChanged);
+      el._forcePoseRelay = false; el._forceGeoRelay = false;
       // Styling gate: visibility/edges/label are GLOBAL display state, and director material is per-surface —
       // none change per capture. A display-setting toggle re-applies visibility/edges/label to EVERY surface
       // via applyImmersion(), so here we only (re)style on first lay (`_fresh`), on a dims change (the label
@@ -523,7 +546,7 @@
       if (rc && rc.resetFrame) rc.resetFrame();
     }
     root().innerHTML = "";
-    geoQueue = []; geoPending = {};    // world switch destroyed every surface el → drop stale rebuild entries
+    geoQueue = []; geoPending = {}; surfDumped = false;   // world switch destroyed every surface el → drop stale rebuild entries + re-arm the [surf] dump
     // LOCAL-FIRST: once a client renders its own capture (localRenderActive), real surfaces are NOT drawn
     // from the server — each headset draws its OWN live capture (_renderLocal), matching its passthrough. We
     // still consume the server's real surfaces below (docSurfaces) as the registration REFERENCE. A desktop
@@ -999,29 +1022,56 @@
       _renderLocal: function (surfaces) {
         localRenderActive = true;                  // from now on, server real-surface ops are ignored (local owns them)
         var THREE = AFRAME.THREE;
+        // [surf] DIAGNOSTIC (--debug-registration ONLY — never --debug-jitter, so it can't contaminate cost):
+        // dump each FLOOR and WALL's 4 world-space corners (rectangle ±w/2 ±h/2 in local X-Y, posed by
+        // position+rotation), ONCE per room entry (`surfDumped`, re-armed on world switch). Lets a specific
+        // floor↔wall gap be read in numbers — is the wall's bottom at the floor plane (vertical, sealed) or is
+        // the floor SHEET short of the wall (horizontal reach, not yet handled)? Cheap: one small burst, not
+        // per-capture. Remove once read.
+        if (window.CONJURE_DEBUG_REGISTRATION && !surfDumped) {
+          surfDumped = true;
+          var f3d = function (v) { return (+v).toFixed(3); };
+          surfaces.forEach(function (s) {
+            if (s.semantic !== "floor" && s.semantic !== "wall" && s.semantic !== "ceiling") return;
+            var pos = s.position || [0, 0, 0], q = eulerYXZToQuat(THREE, s.rotation || [0, 0, 0]);
+            var w = (s.extent && s.extent[0]) || 0, h = (s.extent && s.extent[1]) || 0;
+            var P = new THREE.Vector3(pos[0], pos[1], pos[2]);
+            var corner = function (sx, sy) {
+              return new THREE.Vector3(sx * w / 2, sy * h / 2, 0).applyQuaternion(q).add(P);
+            };
+            var cs = [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)]
+              .map(function (v) { return f3d(v.x) + "," + f3d(v.y) + "," + f3d(v.z); }).join(" | ");
+            debugLog("surf", s.id + " [" + s.semantic + "] ext=" + f3d(w) + "x" + f3d(h) + " corners=" + cs, true);
+          });
+        }
         // Grouped surface re-lay (--group-surface-relay, default on): the per-surface apply-gate holds EACH
         // surface on its own epoch, so under tracking drift a wall re-lays at one capture while its adjoining
         // floor/ceiling — and a door/window vs its wall's cutout — re-lay at another. Anything that must stay
         // aligned ACROSS surfaces then opens a seam over a session: wall↔floor/ceiling junctions, and
         // inset↔cutout (the cutout lives in the wall mesh, the inset is its own surface). `snapInsets`/
         // `joinCorners` make each capture internally consistent, so the only divergence is the render epoch;
-        // a reset re-lays everything at once, which is why it heals then. Fix: when ANY real surface's POSE
-        // crosses tolerance this capture, re-lay them ALL together (one epoch — the room shares one tracking
-        // frame). POSE/SHAPE-split: we flag a cheap POSE re-lay (`_forcePoseRelay`), NOT a geometry rebuild —
-        // junctions realign every capture while the expensive mesh re-triangulation stays gated per-surface
-        // on actual shape change. Off ⇒ each surface re-lays independently (the A/B baseline for the seams).
+        // a reset re-lays everything at once, which is why it heals then. Fix: when ANY real surface moves
+        // this capture, re-lay them ALL together at one epoch (the room shares one tracking frame). Both the
+        // POSE (`_forcePoseRelay`) AND the GEOMETRY (`_forceGeoRelay`) are re-laid, so a wall's center and its
+        // `joinCorners` width — a MATCHED pair — can never materialize from different captures. Under the
+        // earlier pose-only relay they could: center advanced every capture while width lagged until it
+        // crossed tolerance, leaving the wall's ends off the shared corner by up to a tolerance — the residual
+        // wall∩wall / wall∩ceiling seam. The geometry rebuild is time-sliced (`pumpGeo`, §14), so co-relaying
+        // it no longer risks the dropped frame that originally made us gate it out. Trigger is pose OR shape
+        // (`surfaceMoved`) so a pure width drift with no pose move still re-closes. Off ⇒ each surface re-lays
+        // independently (the A/B baseline that reproduces the seams).
         if (window.CONJURE_GROUP_SURFACE_RELAY !== false) {
-          var anyPoseMoved = surfaces.some(function (s) {
+          var anyMoved = surfaces.some(function (s) {
             var el = document.getElementById(s.id);
             if (!el || !el._geoSig) return true;   // new / never-laid surface counts as a change
             var sig = WM.surfaceSig({ position: s.position, rotation: s.rotation },
               { extent: s.extent, holes: s.holes || [] });
-            return WM.surfacePoseMoved(THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL);
+            return WM.surfaceMoved(THREE, el._geoSig, sig, window.CONJURE_APPLY_TOL);   // pose OR shape
           });
-          if (anyPoseMoved) {                      // re-lay every surface's POSE at one epoch (cheap transform)
+          if (anyMoved) {                          // re-lay every surface's POSE *and* GEOMETRY at one epoch
             surfaces.forEach(function (s) {
               var el = document.getElementById(s.id);
-              if (el) el._forcePoseRelay = true;
+              if (el) { el._forcePoseRelay = true; el._forceGeoRelay = true; }
             });
           }
         }
@@ -1718,6 +1768,7 @@
         // world-root stays identity (_updateWorldFrame). The apply-gate inside applyEntity means an unchanged
         // surface isn't re-laid, so nothing "pops".
         window.RoomSnap.joinCorners(THREE, localSurfaces);        // close wall corners (the recovery + snap basis)
+        window.RoomSnap.sealWalls(THREE, localSurfaces, window.CONJURE_WALL_SEAL_TOL);   // seal wall tops→ceiling, bottoms→floor (§9.1)
         this._localPlanes = localToPlanes(THREE, localSurfaces);   // stash for avatar anchors (§5.1) / presence
         // Reconstruct any seed surface this client didn't capture (§5.2) and fold it into the render set, so
         // recovered surfaces both draw and can host on-surface content just like captured ones.
@@ -1744,6 +1795,7 @@
         // the shared model stays consistent with the raw geometry every headset draws (docs §9). Pure
         // geometry, unit-tested in client/room-snap.js.
         window.RoomSnap.joinCorners(THREE, surfaces);
+        window.RoomSnap.sealWalls(THREE, surfaces, window.CONJURE_WALL_SEAL_TOL);   // same treatment as local render (§9.1)
         window.RoomSnap.snapInsets(THREE, surfaces, window.CONJURE_INSET_STANDOFF);
         // Author each captured inset's CORNER-RELATIVE anchor (§5.3 L2): its along-wall distances to the host
         // wall's corner points + its floor/ceiling edge distances — SHARED structural features, so any client
