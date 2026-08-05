@@ -1025,6 +1025,15 @@
         this._jWinT0 = 0;           // `time` the current window opened
         this._jWinSlew = 0;         // max slewSet.size seen this window (attributes per-frame pose motion when tau>0)
         this._jLoggedRate = false;  // one-time display-rate log (session.frameRate + supportedFrameRates)
+        // Per-LATE-frame forensics, BUFFERED in memory and flushed once per window inside the PACE fetch — so
+        // every late frame is characterised WITHOUT a per-event fetch (a fetch storm would itself drop frames,
+        // as an earlier probe did). Each record answers the two questions that pick the cause of a "flick out
+        // and back": did OUR sampled pose move that frame (jump ⇒ our transform bug; flat ⇒ compositor
+        // reprojected a dropped frame — outside our code), and did the JS heap just drop (⇒ a GC pause caused
+        // the stall). `_jHeap` is the previous frame's used-heap so we can diff it; `performance.memory` is
+        // Chromium-only (Oculus Browser has it) — absent ⇒ heap fields read 0.
+        this._jHeap = 0;            // previous frame's performance.memory.usedJSHeapSize (bytes), for the GC diff
+        this._jLate = [];           // buffered {dt, cap, dW, dO, dHeapKB} for late frames this window
         // --- GEOMETRY WORKER (fix/pops-and-jitters) ----------------------------------------------------
         // register() runs off the render thread so its ~7-11 ms solve never drops an XR frame. The capture
         // splits: the throttled tick reads planes and POSTS them; the worker's reply drives the render
@@ -1498,6 +1507,14 @@
           if (ring.length > 24) ring.shift();
         });
       },
+      // JITTER PROBE: how far a probe entity's sampled WORLD position moved on the latest frame (mm) — the
+      // last two entries of its _jPoses ring. ~0 on a late frame ⇒ our transform held (the shift was
+      // compositor reprojection); nonzero ⇒ we moved it that frame (our bug, or legitimate slew if slew>0).
+      _jRingDelta: function (key) {
+        var r = this._jPoses[key]; if (!r || r.length < 2) return 0;
+        var a = r[r.length - 1], b = r[r.length - 2];
+        return Math.round(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 1000);   // metres → mm
+      },
       // JITTER PROBE: stamp a phase boundary inside the capture body (sub-cost breakdown). Cheap; caller
       // gates on JIT so there's zero cost when off.
       _jMark: function (label) { this._jMarks.push({ l: label, t: performance.now() }); },
@@ -1516,13 +1533,14 @@
       // LATE (>1.2x ideal) vs a genuine DROP (>1.5x ideal = missed at least one vsync). `slew=` is the peak
       // slewSet size this window: with --pose-tau>0 the pump writes poses every frame, so nonzero slew means
       // some of any measured motion is EXPECTED easing, not a pipeline miss — the discriminator for tau>0 runs.
-      _jPacing: function (ideal) {
+      _jPacing: function (ideal, heap) {
         var w = this._jWin, n = w.length;
         this._jWin = []; this._jWinT0 = 0; var peakSlew = this._jWinSlew; this._jWinSlew = 0;
+        var late = this._jLate; this._jLate = [];
         if (n < 2) return;
-        var sum = 0, max = 0, late = 0, drop = 0;
+        var sum = 0, max = 0, lateN = 0, drop = 0;
         for (var i = 0; i < n; i++) { var d = w[i]; sum += d; if (d > max) max = d;
-          if (d > 1.5 * ideal) drop++; else if (d > 1.2 * ideal) late++; }
+          if (d > 1.5 * ideal) drop++; else if (d > 1.2 * ideal) lateN++; }
         var mean = sum / n, varr = 0;
         for (var j = 0; j < n; j++) { var e = w[j] - mean; varr += e * e; }
         var sd = Math.sqrt(varr / n);
@@ -1530,7 +1548,14 @@
         var p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))];
         debugLog("jitter", "PACE n=" + n + " ideal=" + ideal.toFixed(1) + " mean=" + mean.toFixed(1)
           + " jit(sd)=" + sd.toFixed(1) + " p95=" + p95.toFixed(1) + " max=" + max.toFixed(1)
-          + " late(>1.2x)=" + late + " drop(>1.5x)=" + drop + " slew=" + peakSlew, true);
+          + " late(>1.2x)=" + lateN + " drop(>1.5x)=" + drop + " slew=" + peakSlew
+          + " heap=" + (heap ? (heap / 1048576).toFixed(1) + "MB" : "n/a"), true);
+        // Per-late-frame forensics for this window, one line (no per-event fetch). Token:
+        //   dt(cap):dW/dO/heapKB  — dt ms, cap=prev frame ran capture, dW/dO = wall/obj move mm, heap delta KB.
+        // Read: dW/dO ~0 ⇒ our transforms held → compositor reprojection (outside our code); big negative
+        // heapKB on the same frame ⇒ a GC pause caused the stall. Nonzero dW/dO ⇒ WE moved it (bug, or slew).
+        if (late.length) debugLog("jitter", "LATE(" + late.length + ") " + late.map(function (r) {
+          return r.dt.toFixed(0) + "(" + r.cap + "):" + r.dW + "/" + r.dO + "/" + r.dHeapKB; }).join(" "), true);
       },
       // JITTER PROBE: dump the recent frame-interval ring + the probe world-pose rings, once, on a spike.
       // Frame token: "<dt>" for a normal frame, "<dt>*<cost>" for a frame that ran the capture body (cap).
@@ -1568,11 +1593,25 @@
           this._jFrames.push({ t: time, dt: dt, cap: 0, cost: 0 });
           if (this._jFrames.length > 24) this._jFrames.shift();
           this._jSample(time);
+          // Sample the JS heap: a used-heap DROP between frames means a GC just ran (Chromium/Oculus only).
+          var mem = /** @type {any} */ (performance).memory, heap = (mem && mem.usedJSHeapSize) || 0;
+          var dHeapKB = this._jHeap ? Math.round((heap - this._jHeap) / 1024) : 0;
+          this._jHeap = heap;
           // Rolling pacing window: accumulate every dt, note peak slew activity, report every ~2 s (below).
           if (dt > 0) this._jWin.push(dt);
           if (slewSet.size > this._jWinSlew) this._jWinSlew = slewSet.size;
           if (!this._jWinT0) this._jWinT0 = time;
-          if (time - this._jWinT0 >= 2000) this._jPacing(ideal);
+          // Per-late-frame forensics: a frame past 1.2x ideal is "late". Buffer a compact record (dt, whether
+          // the PREVIOUS frame ran the capture body — the usual overrun source — how far our sampled wall/obj
+          // moved THIS frame in mm, and the heap delta). dW/dO ~0 with a late dt ⇒ our transforms held and the
+          // compositor reprojected (outside our code); a nonzero dW/dO ⇒ WE moved it that frame. Flushed in
+          // the PACE line below (one fetch/window), so capturing every late frame adds no per-event fetch.
+          if (dt > 1.2 * ideal) {
+            var prev = this._jFrames[this._jFrames.length - 2];
+            this._jLate.push({ dt: dt, cap: prev ? prev.cap : 0,
+              dW: this._jRingDelta("wall"), dO: this._jRingDelta("obj"), dHeapKB: dHeapKB });
+          }
+          if (time - this._jWinT0 >= 2000) this._jPacing(ideal, heap);
           // Hard-spike dump: refresh-relative by default (1.5x ideal = missed ≥1 vsync), CONJURE_JITTER_DT_MS overrides.
           var dtThresh = window.CONJURE_JITTER_DT_MS || (1.5 * ideal);
           if (dt > dtThresh) this._jDump(time, dt);
