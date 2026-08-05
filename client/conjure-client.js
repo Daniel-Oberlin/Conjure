@@ -1033,7 +1033,8 @@
         // the stall). `_jHeap` is the previous frame's used-heap so we can diff it; `performance.memory` is
         // Chromium-only (Oculus Browser has it) — absent ⇒ heap fields read 0.
         this._jHeap = 0;            // previous frame's performance.memory.usedJSHeapSize (bytes), for the GC diff
-        this._jLate = [];           // buffered {dt, cap, dW, dO, dHeapKB} for late frames this window
+        this._jLate = [];           // buffered {dt, cap, dW, dO, dHeapKB, sT} for late frames this window
+        this._jCur = null;          // this frame's _jFrames entry (so the throttle point can stamp its self-time)
         // --- GEOMETRY WORKER (fix/pops-and-jitters) ----------------------------------------------------
         // register() runs off the render thread so its ~7-11 ms solve never drops an XR frame. The capture
         // splits: the throttled tick reads planes and POSTS them; the worker's reply drives the render
@@ -1551,11 +1552,15 @@
           + " late(>1.2x)=" + lateN + " drop(>1.5x)=" + drop + " slew=" + peakSlew
           + " heap=" + (heap ? (heap / 1048576).toFixed(1) + "MB" : "n/a"), true);
         // Per-late-frame forensics for this window, one line (no per-event fetch). Token:
-        //   dt(cap):dW/dO/heapKB  — dt ms, cap=prev frame ran capture, dW/dO = wall/obj move mm, heap delta KB.
-        // Read: dW/dO ~0 ⇒ our transforms held → compositor reprojection (outside our code); big negative
-        // heapKB on the same frame ⇒ a GC pause caused the stall. Nonzero dW/dO ⇒ WE moved it (bug, or slew).
+        //   dt(cap):dW/dO/heapKB/selfMs — dt ms; cap=prev frame ran capture; dW/dO = wall/obj move mm; heap
+        //   delta KB; selfMs = the PREVIOUS (overrunning) frame's tick self-time (our JS). Reads:
+        //   dW/dO ~0 ⇒ our transforms held → compositor reprojected a dropped frame (shift is outside our code).
+        //   selfMs small (<~2) with a big dt ⇒ the stall was OUTSIDE our JS (render/compositor/GC-between-frames)
+        //     — nothing left to fix in our code. selfMs ~= dt ⇒ our JS was on the critical path that frame.
+        //   big negative heapKB ⇒ a GC pause (Chromium only; Oculus freezes performance.memory, so usually 0).
         if (late.length) debugLog("jitter", "LATE(" + late.length + ") " + late.map(function (r) {
-          return r.dt.toFixed(0) + "(" + r.cap + "):" + r.dW + "/" + r.dO + "/" + r.dHeapKB; }).join(" "), true);
+          return r.dt.toFixed(0) + "(" + r.cap + "):" + r.dW + "/" + r.dO + "/" + r.dHeapKB
+            + "/" + r.sT.toFixed(1); }).join(" "), true);
       },
       // JITTER PROBE: dump the recent frame-interval ring + the probe world-pose rings, once, on a spike.
       // Frame token: "<dt>" for a normal frame, "<dt>*<cost>" for a frame that ran the capture body (cap).
@@ -1577,6 +1582,7 @@
         if (!frame) return;
         var refSpace = sceneEl.renderer.xr.getReferenceSpace();
         if (!refSpace) return;
+        var _jt0 = performance.now();                       // tick self-time start (our JS work this frame)
         var JIT = this._jitOn();
         if (JIT) {                                          // JITTER PROBE: per-frame pacing + pose sampling
           var session = sceneEl.renderer.xr.getSession();
@@ -1590,7 +1596,8 @@
           }
           var dt = this._jLastTick ? (time - this._jLastTick) : 0;
           this._jLastTick = time;
-          this._jFrames.push({ t: time, dt: dt, cap: 0, cost: 0 });
+          this._jCur = { t: time, dt: dt, cap: 0, cost: 0, self: 0 };
+          this._jFrames.push(this._jCur);
           if (this._jFrames.length > 24) this._jFrames.shift();
           this._jSample(time);
           // Sample the JS heap: a used-heap DROP between frames means a GC just ran (Chromium/Oculus only).
@@ -1609,7 +1616,8 @@
           if (dt > 1.2 * ideal) {
             var prev = this._jFrames[this._jFrames.length - 2];
             this._jLate.push({ dt: dt, cap: prev ? prev.cap : 0,
-              dW: this._jRingDelta("wall"), dO: this._jRingDelta("obj"), dHeapKB: dHeapKB });
+              dW: this._jRingDelta("wall"), dO: this._jRingDelta("obj"), dHeapKB: dHeapKB,
+              sT: prev ? (prev.self || 0) : 0 });   // PREVIOUS frame's tick self-time — the frame that overran
           }
           if (time - this._jWinT0 >= 2000) this._jPacing(ideal, heap);
           // Hard-spike dump: refresh-relative by default (1.5x ideal = missed ≥1 vsync), CONJURE_JITTER_DT_MS overrides.
@@ -1646,6 +1654,11 @@
                                                             // register, or post geometry into a space we're not in
         var CAPTURE_MS = window.CONJURE_CAPTURE_MS || 2000; // recapture cadence (--capture-interval), ~0.5 Hz
         var RETRY_MS = Math.max(0, CAPTURE_MS - 300);       // after a rejected capture, retry ~300 ms sooner
+        // Stamp this frame's tick self-time (our JS: updateWorldFrame + pinSky + pumpGeo + slewPoses + probes)
+        // BEFORE the throttle return — so ordinary frames (which return here, the ones that drop with cap=0)
+        // record their full per-frame JS cost. Capture frames continue past this; their heavier body is timed
+        // separately by COST, so self here is their pre-capture floor.
+        if (this._jCur) this._jCur.self = performance.now() - _jt0;
         if (time - this.lastPost < CAPTURE_MS) return;      // throttle
         if (JIT) {                                          // JITTER PROBE: this frame runs the capture body
           var _jfr = this._jFrames[this._jFrames.length - 1];
