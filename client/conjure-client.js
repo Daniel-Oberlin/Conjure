@@ -1635,6 +1635,20 @@
         this._pinSky();                                     // …and pin the sky to that SAME frame (see below)
         pumpGeo();                                           // EVERY frame: drain a few deferred mesh rebuilds (time-sliced)
         slewPoses((timeDelta || 0) / 1000);                  // EVERY frame: ease surfaces/content toward their targets (pose-smoothing; no-op when disabled)
+        // Apply the configured foveated-rendering level once the XR session exists — OVERRIDES index.html's
+        // hardcoded foveationLevel (docs: GPU-bound dropped frames while walking). Higher = periphery drawn
+        // at lower resolution = less GPU (fewer drops) at the cost of peripheral sharpness/moiré; 0 = full-res
+        // everywhere. Set via --foveation (window.CONJURE_FOVEATION); default 0 leaves today's behaviour.
+        if (!this._foveationSet) {
+          var fov = window.CONJURE_FOVEATION;
+          var xrm = sceneEl.renderer.xr;
+          if (fov == null) { this._foveationSet = true; }        // not injected → keep index.html default
+          else if (xrm && xrm.getSession()) {
+            try { xrm.setFoveation(Math.max(0, Math.min(1, +fov || 0))); } catch (e) { /* older three */ }
+            this._foveationSet = true;
+            debugLog("render", "foveation applied=" + fov + " (now " + xrm.getFoveation() + ")");
+          }
+        }
         // One-time render diagnostic: the actual foveation + XR framebuffer size + per-eye viewport. Tells
         // us whether foveation is really off (peripheral-blur suspect) and whether the used viewport is a
         // sub-rect of the framebuffer (the fuzzy right/bottom-band suspect). debug_log-gated, logged once.

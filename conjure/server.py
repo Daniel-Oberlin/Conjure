@@ -854,6 +854,7 @@ async def index() -> HTMLResponse:
                         f"window.CONJURE_SURFACE_WELD={settings.surface_weld};"
                         f"window.CONJURE_GEO_SLICE_MS={settings.geo_slice_ms};"
                         f"window.CONJURE_POSE_TAU={settings.pose_tau};"
+                        f"window.CONJURE_FOVEATION={settings.foveation};"
                         f'window.CONJURE_WORKER_URL="/static/room-worker.js?v={v}";</script>\n  </head>')
     return HTMLResponse(html, headers=_NO_STORE)
 

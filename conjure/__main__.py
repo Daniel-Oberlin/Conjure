@@ -101,6 +101,12 @@ def main() -> None:
     gate.add_argument("--on-surface-standoff", type=float, default=0.02, metavar="METERS",
                       help="how far (m) an on-surface IMAGE sits in front of its host surface (default: 0.02 "
                            "= 2 cm). Applies to newly placed / re-anchored images.")
+    gate.add_argument("--foveation", type=float, default=0.0, metavar="LEVEL",
+                      help="fixed-foveated-rendering level 0..1, applied at runtime over index.html's "
+                           "foveationLevel. Higher = periphery rendered at lower resolution = less GPU (fewer "
+                           "dropped frames / the walking micro-stutter) at the cost of peripheral sharpness + "
+                           "moire on fine edges; 0 (default) = full-res everywhere. Try ~0.3 if frames drop; "
+                           "A/B against 0 with --debug-jitter (watch the PACE 'drop' count).")
     gate.add_argument("--pose-tau", type=float, default=0.0, metavar="SECONDS",
                       help="pose-smoothing time constant (s): ease each surface (and its content) toward its "
                            "newly-captured pose over ~3x this instead of snapping, so a drift correction reads "
@@ -154,6 +160,7 @@ def main() -> None:
     os.environ["CONJURE_APPLY_TOL_EXT"] = str(args.apply_tol_ext)
     os.environ["CONJURE_INSET_STANDOFF"] = str(args.inset_standoff)
     os.environ["CONJURE_GEO_SLICE_MS"] = str(args.geo_slice_ms)
+    os.environ["CONJURE_FOVEATION"] = str(args.foveation)
     os.environ["CONJURE_POSE_TAU"] = str(args.pose_tau)
     os.environ["CONJURE_ON_SURFACE_STANDOFF"] = str(args.on_surface_standoff)
     os.environ["CONJURE_SURFACE_WELD"] = str(args.surface_weld)

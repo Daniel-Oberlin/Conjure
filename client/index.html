@@ -21,7 +21,9 @@
              webxr="optionalFeatures: plane-detection, mesh-detection, hit-test, anchors, depth-sensing, local-floor">
       <!-- foveationLevel: 0 disables fixed foveated rendering (A-Frame's default is 1 = MAX), which
            renders the periphery at reduced resolution → the fuzzy/moiré edge bands on fine geometry
-           (grid, surface edges). 0 = full-res everywhere (more GPU — dial up to ~0.3 if frames drop). -->
+           (grid, surface edges). 0 = full-res everywhere (more GPU — dial up to ~0.3 if frames drop).
+           This is the STARTUP default; --foveation (window.CONJURE_FOVEATION) overrides it at runtime
+           via renderer.xr.setFoveation() so you can A/B without an edit — see conjure-client.js tick. -->
       <a-sky id="sky" color="#1a2233"></a-sky>
       <!-- Opt-in ground-projected skybox (env.sky.grounded); idle until a grounded skybox is set. -->
       <a-entity id="grounded-sky" grounded-sky></a-entity>
