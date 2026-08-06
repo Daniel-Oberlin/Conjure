@@ -289,6 +289,7 @@
   // tick, drains a FEW per frame under a small time budget. Meshes materialize progressively over ~100-170 ms
   // instead of one hitch; nothing else depends on the mesh (content placement + snapping use pose/data), so
   // the deferral is purely cosmetic. Coalesced by id (latest comps win); disconnected surfaces are skipped.
+  var geoRebuilds = 0;      // [jitter] count of applySurfaceGeometry calls since last PACE (mesh-rebuild rate)
   var geoQueue = [];        // ids awaiting a mesh rebuild (FIFO order of first enqueue)
   var geoPending = {};      // id -> latest comps to rebuild with (coalesced; a re-enqueue just refreshes this)
   var surfDumped = false;   // [surf] diagnostic (--debug-registration): dumped once per room entry (see _renderLocal)
@@ -336,7 +337,7 @@
       var el = document.getElementById(id);
       if (el && el.isConnected && comps) {
         var st = JITg ? performance.now() : 0;
-        applySurfaceGeometry(el, comps);                 // the expensive holed-wall re-triangulation
+        applySurfaceGeometry(el, comps); geoRebuilds++;  // the expensive holed-wall re-triangulation (counted for PACE)
         setSurfaceLabel(el, roomState.annotations);      // refresh dims: label reads dataset.ext, just set above
         // The pump caps cost BETWEEN surfaces, but the do..while always finishes the CURRENT one — so a single
         // heavy rebuild (a holed wall / wall art) can overshoot the whole slice in one frame. Log which surface
@@ -1035,6 +1036,16 @@
         this._jHeap = 0;            // previous frame's performance.memory.usedJSHeapSize (bytes), for the GC diff
         this._jLate = [];           // buffered {dt, cap, dW, dO, dHeapKB, sT} for late frames this window
         this._jCur = null;          // this frame's _jFrames entry (so the throttle point can stamp its self-time)
+        // Camera/view JERK: the one variable we never sampled. Where content lands on-screen is camera×world;
+        // our entities are flat, so a translation-only "pop" that survives clean frame timing must be the VIEW.
+        // Sample the WebXR head pose every frame and compute its "jerk" — the second difference of position
+        // (p[n]-2p[n-1]+p[n-2]). Smooth walking = constant velocity = ~0 jerk; a jump-then-revert (the pop) =
+        // a large spike. Buffer jerk events with whether the frame was ON-TIME vs late — the decisive split:
+        // jerk on ON-TIME frames = a view/tracking stutter (platform positional prediction), NOT a dropped
+        // frame or our render cost, and no rendering fix touches it (→ depth-submission territory).
+        this._jHead = [];           // ring of recent head world positions {x,y,z} from frame.getViewerPose
+        this._jJerk = [];           // buffered {j(mm), dt, on} jerk events this window
+        this._jMaxJerk = 0;         // max per-frame jerk (mm) this window
         // --- GEOMETRY WORKER (fix/pops-and-jitters) ----------------------------------------------------
         // register() runs off the render thread so its ~7-11 ms solve never drops an XR frame. The capture
         // splits: the throttled tick reads planes and POSTS them; the worker's reply drives the render
@@ -1538,6 +1549,8 @@
         var w = this._jWin, n = w.length;
         this._jWin = []; this._jWinT0 = 0; var peakSlew = this._jWinSlew; this._jWinSlew = 0;
         var late = this._jLate; this._jLate = [];
+        var jerk = this._jJerk; this._jJerk = []; var maxJerk = this._jMaxJerk; this._jMaxJerk = 0;
+        var rebuilds = geoRebuilds; geoRebuilds = 0;
         if (n < 2) return;
         var sum = 0, max = 0, lateN = 0, drop = 0;
         for (var i = 0; i < n; i++) { var d = w[i]; sum += d; if (d > max) max = d;
@@ -1550,7 +1563,14 @@
         debugLog("jitter", "PACE n=" + n + " ideal=" + ideal.toFixed(1) + " mean=" + mean.toFixed(1)
           + " jit(sd)=" + sd.toFixed(1) + " p95=" + p95.toFixed(1) + " max=" + max.toFixed(1)
           + " late(>1.2x)=" + lateN + " drop(>1.5x)=" + drop + " slew=" + peakSlew
+          + " rebuilds=" + rebuilds + " maxjerk=" + maxJerk + "mm"
           + " heap=" + (heap ? (heap / 1048576).toFixed(1) + "MB" : "n/a"), true);
+        // Camera/view jerk events this window. Token: jerk-mm(on|late/dt). MANY "on" (on-time) jerks while
+        // walking = the pop is a VIEW/tracking stutter, invisible to entity+timing probes, unfixable by
+        // render tuning (points at depth-submission for positional reprojection). Only "late" jerks = it's
+        // just dropped-frame reprojection after all. No jerks despite a felt pop = look elsewhere entirely.
+        if (jerk.length) debugLog("jitter", "JERK(" + jerk.length + ") " + jerk.map(function (r) {
+          return r.j + "(" + (r.on ? "on" : "late") + "/dt" + r.dt.toFixed(0) + ")"; }).join(" "), true);
         // Per-late-frame forensics for this window, one line (no per-event fetch). Token:
         //   dt(cap):dW/dO/heapKB/selfMs — dt ms; cap=prev frame ran capture; dW/dO = wall/obj move mm; heap
         //   delta KB; selfMs = the PREVIOUS (overrunning) frame's tick self-time (our JS). Reads:
@@ -1604,6 +1624,22 @@
           var mem = /** @type {any} */ (performance).memory, heap = (mem && mem.usedJSHeapSize) || 0;
           var dHeapKB = this._jHeap ? Math.round((heap - this._jHeap) / 1024) : 0;
           this._jHeap = heap;
+          // Camera/view jerk: sample the head pose and compute the 2nd difference of its position (mm). A
+          // large jerk on an ON-TIME frame (dt within budget) is a view/tracking stutter the entity/timing
+          // probes can't see; a large jerk only on LATE frames = dropped-frame reprojection.
+          var vp = frame.getViewerPose(refSpace);
+          if (vp) {
+            var hp = vp.transform.position, hr = this._jHead;
+            hr.push({ x: hp.x, y: hp.y, z: hp.z });
+            if (hr.length > 4) hr.shift();
+            if (hr.length >= 3) {
+              var a3 = hr[hr.length - 1], b3 = hr[hr.length - 2], c3 = hr[hr.length - 3];
+              var jerk = Math.round(Math.hypot(a3.x - 2 * b3.x + c3.x, a3.y - 2 * b3.y + c3.y,
+                a3.z - 2 * b3.z + c3.z) * 1000);            // metres → mm
+              if (jerk > this._jMaxJerk) this._jMaxJerk = jerk;
+              if (jerk > 2) this._jJerk.push({ j: jerk, dt: dt, on: dt <= 1.5 * ideal ? 1 : 0 });
+            }
+          }
           // Rolling pacing window: accumulate every dt, note peak slew activity, report every ~2 s (below).
           if (dt > 0) this._jWin.push(dt);
           if (slewSet.size > this._jWinSlew) this._jWinSlew = slewSet.size;

@@ -19,10 +19,12 @@ def main() -> None:
                     help="enable ONLY the frame-pacing/jitter probes without the heavy registration "
                          "diagnostics — for a clean per-frame cost measurement (off by default). Emits: RATE "
                          "(actual display Hz + budget, once), PACE (rolling ~2 s window: mean/jitter-sd/p95/max "
-                         "dt + late/drop counts + peak slew + JS heap MB), LATE (per-late-frame forensics for "
-                         "the window, one line: dt(prev-cap):wall-move/obj-move mm/heap-delta KB/tick-self ms — "
-                         "flat move ⇒ compositor reprojection; small tick-self ⇒ stall is outside our JS), COST "
-                         "(per-capture sub-phase "
+                         "dt + late/drop counts + peak slew + mesh-rebuild count + max camera JERK mm + JS heap "
+                         "MB), LATE (per-late-frame forensics: dt(prev-cap):wall-move/obj-move mm/heap-delta "
+                         "KB/tick-self ms — flat move ⇒ compositor reprojection; small tick-self ⇒ stall "
+                         "outside our JS), JERK (per-frame camera 2nd-difference events: jerk-mm(on|late/dt) — "
+                         "'on'-time jerks ⇒ a view/tracking stutter, not a dropped frame), COST (per-capture "
+                         "sub-phase "
                          "breakdown), and SPIKE (one-shot dump on a frame past 1.5x the refresh interval; "
                          "CONJURE_JITTER_DT_MS overrides)")
     ap.add_argument("--force-geo", metavar="ZERO|/user/spaces/name", default=None,
