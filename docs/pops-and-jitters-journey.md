@@ -1,10 +1,9 @@
 # Pops & Jitters — investigation journey, fixes, instrumentation, and open theories
 
-**Branch:** `fix/pops-and-jitters`
-**Status at pause:** several real fixes shipped (some merged to `main`, some branch-only); the final
-"walking micro-stutter" **diagnosed** as a platform-level WebXR/Quest characteristic (dropped-frame
-positional reprojection during translation), **not our code**. This document is the durable record so the
-investigation doesn't have to be re-run.
+**Branch:** `fix/pops-and-jitters` — **fully merged into `main`** (final merge `789f2bb`; the branch is done).
+**Status:** all fixes and instrumentation shipped and merged; the final "walking micro-stutter" **diagnosed**
+as a platform-level WebXR/Quest characteristic (dropped-frame positional reprojection during translation),
+**not our code**. This document is the durable record so the investigation doesn't have to be re-run.
 
 The render model this all sits on is **local-first geometry** (`docs/local-first-geometry.md`): `#world-root`
 is held at identity, every surface renders at its own raw `F_track` pose, and a per-surface **apply-gate**
@@ -15,7 +14,8 @@ be there.
 
 ## 1. Fixes shipped
 
-Each entry: symptom → cause → fix → knob → **status** (merged to `main` vs branch-only).
+Each entry: symptom → cause → fix → knob → **commit** (all now merged to `main`; the merge each landed in is
+in §7).
 
 ### 1.1 Junction-seam runaway — `advanceSig` pose/shape baseline hold — **merged** (`1b25a5f`)
 - **Symptom:** wall∩ceiling and wall∩wall seams slowly opening over a session ("outside shows through").
@@ -64,7 +64,7 @@ Each entry: symptom → cause → fix → knob → **status** (merged to `main` 
   the *rate* of corrections and cannot fix a **noisy target** — if the target itself jitters, slew just turns
   a sharp pop into a gentle swim.
 
-### 1.6 Content shimmer — content apply-gate deadband — **branch-only** (`c11d92b`)
+### 1.6 Content shimmer — content apply-gate deadband — **merged** (`c11d92b`)
 - **Symptom:** placed content (esp. free-standing props like the dog) shimmered while the gated walls sat
   still.
 - **Cause (measured):** `_placeContent` re-solves each content anchor **every capture** against the **raw,
@@ -78,7 +78,7 @@ Each entry: symptom → cause → fix → knob → **status** (merged to `main` 
   (gated) wall poses** instead of the raw basis, so it inherits wall stability — deferred because the walls
   themselves still chase raw noise.
 
-### 1.7 GPU headroom — runtime foveation knob — **branch-only** (`fc24b01`)
+### 1.7 GPU headroom — runtime foveation knob — **merged** (`fc24b01`)
 - **What:** `--foveation LEVEL` (0..1) applied once at runtime via `renderer.xr.setFoveation()`, **overriding**
   `client/index.html`'s hard-coded `foveationLevel: 0`. `index.html` ships 0 deliberately (full-res kills
   moiré/fuzz on the grid + surface edges); this lets you A/B without an edit.
@@ -200,23 +200,20 @@ path. The only maybe is the **WebXR Layers API** (`XRWebGLBinding` projection la
 
 ## 7. Commit map
 
-**Merged to `main`:**
+**All merged to `main`** across three merges — the branch is fully integrated and done.
+
 - `da1931e` (merge): `advanceSig` seam fix (`1b25a5f`), `sealWalls` + group-relay B + `--wall-seal-tol`
   (`6569eca`), 2 mm fill weld + `--surface-weld` (`757df6d`), pipeline-guard tests (`cfa5328`), `[geoslow]`
   probe (`d2b68c3`), pose-smoothing design doc (`a769497`).
 - `ecae610` (merge): pose-smoothing Phase 1 slew + `--pose-tau` (`04cc058`), rolling frame-pacing report
   (`23d3c19`).
-
-**Branch-only (`fix/pops-and-jitters`, pushed, not merged):**
-- `c11d92b` content apply-gate deadband.
-- `3207a24` per-late-frame forensics + JS heap sampling.
-- `e0cb34f` tick self-time.
-- `fc24b01` `--foveation` knob.
-- `abe7a18` camera-jerk probe + mesh-rebuild counter.
+- `789f2bb` (merge): content apply-gate deadband (`c11d92b`), per-late-frame forensics + JS heap sampling
+  (`3207a24`), tick self-time (`e0cb34f`), `--foveation` knob (`fc24b01`), camera-jerk probe + mesh-rebuild
+  counter (`abe7a18`), and this journey doc (`0159f38`).
 
 **Tests added:** `advanceSig` regression tests + slew-math tests (`tests/js/world-model.test.js`);
 `joinCorners`/`sealWalls`/`snapInsets` pipeline-composition guards (`tests/js/room-snap.test.js`). Full suite
-green at pause (97 JS + 318 Python).
+green at merge (97 JS + 318 Python).
 
 ---
 
