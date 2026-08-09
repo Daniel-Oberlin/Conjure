@@ -289,6 +289,7 @@
   // tick, drains a FEW per frame under a small time budget. Meshes materialize progressively over ~100-170 ms
   // instead of one hitch; nothing else depends on the mesh (content placement + snapping use pose/data), so
   // the deferral is purely cosmetic. Coalesced by id (latest comps win); disconnected surfaces are skipped.
+  var geoRebuilds = 0;      // [jitter] count of applySurfaceGeometry calls since last PACE (mesh-rebuild rate)
   var geoQueue = [];        // ids awaiting a mesh rebuild (FIFO order of first enqueue)
   var geoPending = {};      // id -> latest comps to rebuild with (coalesced; a re-enqueue just refreshes this)
   var surfDumped = false;   // [surf] diagnostic (--debug-registration): dumped once per room entry (see _renderLocal)
@@ -336,7 +337,7 @@
       var el = document.getElementById(id);
       if (el && el.isConnected && comps) {
         var st = JITg ? performance.now() : 0;
-        applySurfaceGeometry(el, comps);                 // the expensive holed-wall re-triangulation
+        applySurfaceGeometry(el, comps); geoRebuilds++;  // the expensive holed-wall re-triangulation (counted for PACE)
         setSurfaceLabel(el, roomState.annotations);      // refresh dims: label reads dataset.ext, just set above
         // The pump caps cost BETWEEN surfaces, but the do..while always finishes the CURRENT one — so a single
         // heavy rebuild (a holed wall / wall art) can overshoot the whole slice in one frame. Log which surface
@@ -366,9 +367,23 @@
   // lock-step with the surface it's glued to. Content anchoring still solves against the surfaces' TARGET
   // (capture) poses upstream — this only governs HOW the solved pose is written to object3D, snap vs ease.
   function placeContent(el, pos, quat) {
+    // Content apply-gate — the SAME deadband the walls use (docs/local-first-geometry.md §4-6). _placeContent
+    // re-solves every capture against the RAW, ungated, sensor-noisy plane basis, so with no gate the solved
+    // pose wanders a few mm each capture and content shimmers while the gated walls sit dead-still (measured:
+    // the sampled content's world pos drifted in a ~5-6 mm envelope while the wall's was frozen to 4 dp).
+    // Hold unless the newly-solved pose moved past tolerance from the last COMMITTED pose, so content is as
+    // stable as the walls and only re-places on a real move. Reusing CONJURE_APPLY_TOL means content and
+    // walls share one deadband ⇒ they agree: both move together past tolerance, or neither moves.
+    if (el._contentPlaced) {
+      var tol = window.CONJURE_APPLY_TOL || {};
+      var pT = tol.pos != null ? tol.pos : 0.02, rT = (tol.rotDeg != null ? tol.rotDeg : 1) * Math.PI / 180;
+      if (pos.distanceTo(el._placedPos) <= pT && quat.angleTo(el._placedQuat) <= rT) return;   // sub-tolerance → hold
+    }
     var tau = +window.CONJURE_POSE_TAU || 0;
     if (tau > 0 && el._contentPlaced) adoptTarget(el, pos, quat);
     else { el.object3D.position.copy(pos); el.object3D.quaternion.copy(quat); slewSet.delete(el); el._settled = true; }
+    if (!el._placedPos) { el._placedPos = pos.clone(); el._placedQuat = quat.clone(); }   // baseline the gate compares against
+    else { el._placedPos.copy(pos); el._placedQuat.copy(quat); }
     el._contentPlaced = true;
   }
 
@@ -1011,6 +1026,26 @@
         this._jWinT0 = 0;           // `time` the current window opened
         this._jWinSlew = 0;         // max slewSet.size seen this window (attributes per-frame pose motion when tau>0)
         this._jLoggedRate = false;  // one-time display-rate log (session.frameRate + supportedFrameRates)
+        // Per-LATE-frame forensics, BUFFERED in memory and flushed once per window inside the PACE fetch — so
+        // every late frame is characterised WITHOUT a per-event fetch (a fetch storm would itself drop frames,
+        // as an earlier probe did). Each record answers the two questions that pick the cause of a "flick out
+        // and back": did OUR sampled pose move that frame (jump ⇒ our transform bug; flat ⇒ compositor
+        // reprojected a dropped frame — outside our code), and did the JS heap just drop (⇒ a GC pause caused
+        // the stall). `_jHeap` is the previous frame's used-heap so we can diff it; `performance.memory` is
+        // Chromium-only (Oculus Browser has it) — absent ⇒ heap fields read 0.
+        this._jHeap = 0;            // previous frame's performance.memory.usedJSHeapSize (bytes), for the GC diff
+        this._jLate = [];           // buffered {dt, cap, dW, dO, dHeapKB, sT} for late frames this window
+        this._jCur = null;          // this frame's _jFrames entry (so the throttle point can stamp its self-time)
+        // Camera/view JERK: the one variable we never sampled. Where content lands on-screen is camera×world;
+        // our entities are flat, so a translation-only "pop" that survives clean frame timing must be the VIEW.
+        // Sample the WebXR head pose every frame and compute its "jerk" — the second difference of position
+        // (p[n]-2p[n-1]+p[n-2]). Smooth walking = constant velocity = ~0 jerk; a jump-then-revert (the pop) =
+        // a large spike. Buffer jerk events with whether the frame was ON-TIME vs late — the decisive split:
+        // jerk on ON-TIME frames = a view/tracking stutter (platform positional prediction), NOT a dropped
+        // frame or our render cost, and no rendering fix touches it (→ depth-submission territory).
+        this._jHead = [];           // ring of recent head world positions {x,y,z} from frame.getViewerPose
+        this._jJerk = [];           // buffered {j(mm), dt, on} jerk events this window
+        this._jMaxJerk = 0;         // max per-frame jerk (mm) this window
         // --- GEOMETRY WORKER (fix/pops-and-jitters) ----------------------------------------------------
         // register() runs off the render thread so its ~7-11 ms solve never drops an XR frame. The capture
         // splits: the throttled tick reads planes and POSTS them; the worker's reply drives the render
@@ -1484,6 +1519,14 @@
           if (ring.length > 24) ring.shift();
         });
       },
+      // JITTER PROBE: how far a probe entity's sampled WORLD position moved on the latest frame (mm) — the
+      // last two entries of its _jPoses ring. ~0 on a late frame ⇒ our transform held (the shift was
+      // compositor reprojection); nonzero ⇒ we moved it that frame (our bug, or legitimate slew if slew>0).
+      _jRingDelta: function (key) {
+        var r = this._jPoses[key]; if (!r || r.length < 2) return 0;
+        var a = r[r.length - 1], b = r[r.length - 2];
+        return Math.round(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 1000);   // metres → mm
+      },
       // JITTER PROBE: stamp a phase boundary inside the capture body (sub-cost breakdown). Cheap; caller
       // gates on JIT so there's zero cost when off.
       _jMark: function (label) { this._jMarks.push({ l: label, t: performance.now() }); },
@@ -1502,13 +1545,16 @@
       // LATE (>1.2x ideal) vs a genuine DROP (>1.5x ideal = missed at least one vsync). `slew=` is the peak
       // slewSet size this window: with --pose-tau>0 the pump writes poses every frame, so nonzero slew means
       // some of any measured motion is EXPECTED easing, not a pipeline miss — the discriminator for tau>0 runs.
-      _jPacing: function (ideal) {
+      _jPacing: function (ideal, heap) {
         var w = this._jWin, n = w.length;
         this._jWin = []; this._jWinT0 = 0; var peakSlew = this._jWinSlew; this._jWinSlew = 0;
+        var late = this._jLate; this._jLate = [];
+        var jerk = this._jJerk; this._jJerk = []; var maxJerk = this._jMaxJerk; this._jMaxJerk = 0;
+        var rebuilds = geoRebuilds; geoRebuilds = 0;
         if (n < 2) return;
-        var sum = 0, max = 0, late = 0, drop = 0;
+        var sum = 0, max = 0, lateN = 0, drop = 0;
         for (var i = 0; i < n; i++) { var d = w[i]; sum += d; if (d > max) max = d;
-          if (d > 1.5 * ideal) drop++; else if (d > 1.2 * ideal) late++; }
+          if (d > 1.5 * ideal) drop++; else if (d > 1.2 * ideal) lateN++; }
         var mean = sum / n, varr = 0;
         for (var j = 0; j < n; j++) { var e = w[j] - mean; varr += e * e; }
         var sd = Math.sqrt(varr / n);
@@ -1516,7 +1562,25 @@
         var p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))];
         debugLog("jitter", "PACE n=" + n + " ideal=" + ideal.toFixed(1) + " mean=" + mean.toFixed(1)
           + " jit(sd)=" + sd.toFixed(1) + " p95=" + p95.toFixed(1) + " max=" + max.toFixed(1)
-          + " late(>1.2x)=" + late + " drop(>1.5x)=" + drop + " slew=" + peakSlew, true);
+          + " late(>1.2x)=" + lateN + " drop(>1.5x)=" + drop + " slew=" + peakSlew
+          + " rebuilds=" + rebuilds + " maxjerk=" + maxJerk + "mm"
+          + " heap=" + (heap ? (heap / 1048576).toFixed(1) + "MB" : "n/a"), true);
+        // Camera/view jerk events this window. Token: jerk-mm(on|late/dt). MANY "on" (on-time) jerks while
+        // walking = the pop is a VIEW/tracking stutter, invisible to entity+timing probes, unfixable by
+        // render tuning (points at depth-submission for positional reprojection). Only "late" jerks = it's
+        // just dropped-frame reprojection after all. No jerks despite a felt pop = look elsewhere entirely.
+        if (jerk.length) debugLog("jitter", "JERK(" + jerk.length + ") " + jerk.map(function (r) {
+          return r.j + "(" + (r.on ? "on" : "late") + "/dt" + r.dt.toFixed(0) + ")"; }).join(" "), true);
+        // Per-late-frame forensics for this window, one line (no per-event fetch). Token:
+        //   dt(cap):dW/dO/heapKB/selfMs — dt ms; cap=prev frame ran capture; dW/dO = wall/obj move mm; heap
+        //   delta KB; selfMs = the PREVIOUS (overrunning) frame's tick self-time (our JS). Reads:
+        //   dW/dO ~0 ⇒ our transforms held → compositor reprojected a dropped frame (shift is outside our code).
+        //   selfMs small (<~2) with a big dt ⇒ the stall was OUTSIDE our JS (render/compositor/GC-between-frames)
+        //     — nothing left to fix in our code. selfMs ~= dt ⇒ our JS was on the critical path that frame.
+        //   big negative heapKB ⇒ a GC pause (Chromium only; Oculus freezes performance.memory, so usually 0).
+        if (late.length) debugLog("jitter", "LATE(" + late.length + ") " + late.map(function (r) {
+          return r.dt.toFixed(0) + "(" + r.cap + "):" + r.dW + "/" + r.dO + "/" + r.dHeapKB
+            + "/" + r.sT.toFixed(1); }).join(" "), true);
       },
       // JITTER PROBE: dump the recent frame-interval ring + the probe world-pose rings, once, on a spike.
       // Frame token: "<dt>" for a normal frame, "<dt>*<cost>" for a frame that ran the capture body (cap).
@@ -1538,6 +1602,7 @@
         if (!frame) return;
         var refSpace = sceneEl.renderer.xr.getReferenceSpace();
         if (!refSpace) return;
+        var _jt0 = performance.now();                       // tick self-time start (our JS work this frame)
         var JIT = this._jitOn();
         if (JIT) {                                          // JITTER PROBE: per-frame pacing + pose sampling
           var session = sceneEl.renderer.xr.getSession();
@@ -1551,14 +1616,46 @@
           }
           var dt = this._jLastTick ? (time - this._jLastTick) : 0;
           this._jLastTick = time;
-          this._jFrames.push({ t: time, dt: dt, cap: 0, cost: 0 });
+          this._jCur = { t: time, dt: dt, cap: 0, cost: 0, self: 0 };
+          this._jFrames.push(this._jCur);
           if (this._jFrames.length > 24) this._jFrames.shift();
           this._jSample(time);
+          // Sample the JS heap: a used-heap DROP between frames means a GC just ran (Chromium/Oculus only).
+          var mem = /** @type {any} */ (performance).memory, heap = (mem && mem.usedJSHeapSize) || 0;
+          var dHeapKB = this._jHeap ? Math.round((heap - this._jHeap) / 1024) : 0;
+          this._jHeap = heap;
+          // Camera/view jerk: sample the head pose and compute the 2nd difference of its position (mm). A
+          // large jerk on an ON-TIME frame (dt within budget) is a view/tracking stutter the entity/timing
+          // probes can't see; a large jerk only on LATE frames = dropped-frame reprojection.
+          var vp = frame.getViewerPose(refSpace);
+          if (vp) {
+            var hp = vp.transform.position, hr = this._jHead;
+            hr.push({ x: hp.x, y: hp.y, z: hp.z });
+            if (hr.length > 4) hr.shift();
+            if (hr.length >= 3) {
+              var a3 = hr[hr.length - 1], b3 = hr[hr.length - 2], c3 = hr[hr.length - 3];
+              var jerk = Math.round(Math.hypot(a3.x - 2 * b3.x + c3.x, a3.y - 2 * b3.y + c3.y,
+                a3.z - 2 * b3.z + c3.z) * 1000);            // metres → mm
+              if (jerk > this._jMaxJerk) this._jMaxJerk = jerk;
+              if (jerk > 2) this._jJerk.push({ j: jerk, dt: dt, on: dt <= 1.5 * ideal ? 1 : 0 });
+            }
+          }
           // Rolling pacing window: accumulate every dt, note peak slew activity, report every ~2 s (below).
           if (dt > 0) this._jWin.push(dt);
           if (slewSet.size > this._jWinSlew) this._jWinSlew = slewSet.size;
           if (!this._jWinT0) this._jWinT0 = time;
-          if (time - this._jWinT0 >= 2000) this._jPacing(ideal);
+          // Per-late-frame forensics: a frame past 1.2x ideal is "late". Buffer a compact record (dt, whether
+          // the PREVIOUS frame ran the capture body — the usual overrun source — how far our sampled wall/obj
+          // moved THIS frame in mm, and the heap delta). dW/dO ~0 with a late dt ⇒ our transforms held and the
+          // compositor reprojected (outside our code); a nonzero dW/dO ⇒ WE moved it that frame. Flushed in
+          // the PACE line below (one fetch/window), so capturing every late frame adds no per-event fetch.
+          if (dt > 1.2 * ideal) {
+            var prev = this._jFrames[this._jFrames.length - 2];
+            this._jLate.push({ dt: dt, cap: prev ? prev.cap : 0,
+              dW: this._jRingDelta("wall"), dO: this._jRingDelta("obj"), dHeapKB: dHeapKB,
+              sT: prev ? (prev.self || 0) : 0 });   // PREVIOUS frame's tick self-time — the frame that overran
+          }
+          if (time - this._jWinT0 >= 2000) this._jPacing(ideal, heap);
           // Hard-spike dump: refresh-relative by default (1.5x ideal = missed ≥1 vsync), CONJURE_JITTER_DT_MS overrides.
           var dtThresh = window.CONJURE_JITTER_DT_MS || (1.5 * ideal);
           if (dt > dtThresh) this._jDump(time, dt);
@@ -1574,6 +1671,20 @@
         this._pinSky();                                     // …and pin the sky to that SAME frame (see below)
         pumpGeo();                                           // EVERY frame: drain a few deferred mesh rebuilds (time-sliced)
         slewPoses((timeDelta || 0) / 1000);                  // EVERY frame: ease surfaces/content toward their targets (pose-smoothing; no-op when disabled)
+        // Apply the configured foveated-rendering level once the XR session exists — OVERRIDES index.html's
+        // hardcoded foveationLevel (docs: GPU-bound dropped frames while walking). Higher = periphery drawn
+        // at lower resolution = less GPU (fewer drops) at the cost of peripheral sharpness/moiré; 0 = full-res
+        // everywhere. Set via --foveation (window.CONJURE_FOVEATION); default 0 leaves today's behaviour.
+        if (!this._foveationSet) {
+          var fov = window.CONJURE_FOVEATION;
+          var xrm = sceneEl.renderer.xr;
+          if (fov == null) { this._foveationSet = true; }        // not injected → keep index.html default
+          else if (xrm && xrm.getSession()) {
+            try { xrm.setFoveation(Math.max(0, Math.min(1, +fov || 0))); } catch (e) { /* older three */ }
+            this._foveationSet = true;
+            debugLog("render", "foveation applied=" + fov + " (now " + xrm.getFoveation() + ")");
+          }
+        }
         // One-time render diagnostic: the actual foveation + XR framebuffer size + per-eye viewport. Tells
         // us whether foveation is really off (peripheral-blur suspect) and whether the used viewport is a
         // sub-rect of the framebuffer (the fuzzy right/bottom-band suspect). debug_log-gated, logged once.
@@ -1593,6 +1704,11 @@
                                                             // register, or post geometry into a space we're not in
         var CAPTURE_MS = window.CONJURE_CAPTURE_MS || 2000; // recapture cadence (--capture-interval), ~0.5 Hz
         var RETRY_MS = Math.max(0, CAPTURE_MS - 300);       // after a rejected capture, retry ~300 ms sooner
+        // Stamp this frame's tick self-time (our JS: updateWorldFrame + pinSky + pumpGeo + slewPoses + probes)
+        // BEFORE the throttle return — so ordinary frames (which return here, the ones that drop with cap=0)
+        // record their full per-frame JS cost. Capture frames continue past this; their heavier body is timed
+        // separately by COST, so self here is their pre-capture floor.
+        if (this._jCur) this._jCur.self = performance.now() - _jt0;
         if (time - this.lastPost < CAPTURE_MS) return;      // throttle
         if (JIT) {                                          // JITTER PROBE: this frame runs the capture body
           var _jfr = this._jFrames[this._jFrames.length - 1];
