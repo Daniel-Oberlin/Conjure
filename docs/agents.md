@@ -106,10 +106,10 @@ world/space/user (autosave would resurrect them). Both hit the world server's `/
 endpoints, so they act on its live state, not raw files. **No auth yet** — a security/permission gate
 comes later; this is a dev-cleanup tool (e.g. `delete /testuser`, `delete /testuser/worlds/w1`).
 
-**Migration.** Today's `route_turn` (the `"let me talk to X"` regex in `director.py`) *is* the
-embryonic shell — it already intercepts deterministically before the LLM. The refactor lifts that logic
-out of the agent and into the shell, where it generalizes. Routing stops being an agent responsibility;
-the agent just runs turns.
+**Migration — done.** LLM switching used to live in the agent as `route_turn` (the `"let me talk to
+X"` regex in `director.py`). That logic has been removed from the agent and lives only in the shell
+now (`shell._switch`); routing is no longer an agent responsibility — the agent just runs turns on the
+**active** LLM. (See [agent-separation-plan.md](./agent-separation-plan.md).)
 
 **Grammar.** Keep it natural-language-friendly (good for voice) but **parsed, never modeled** — regex /
 a small grammar, deterministic. Commands that take free-text args (`save <name>`) capture the tail
@@ -119,9 +119,9 @@ verbatim.
 front-ends (CLI + voice). Shell mode (`conjure open shell` → `conjure:shell>`, `exit`), the `conjure`
 wake-prefix for inline commands, and a small command registry (`open`/`exit`, `help`, `whoami`,
 `llms`, `agents`, plus `talk to/use <llm>` LLM-switching) are in. Input that isn't a recognised command
-is forwarded to the agent unchanged. **Deferred:** fully migrating inline `route_turn` out of
-`director.handle` (bare "let me talk to Gemini" still routes inside the agent for now); world ops as
-commands (`reset`/`save`/`load`); agent-switching (waits on a second agent).
+is forwarded to the agent unchanged. LLM switching is now **shell-only** — `route_turn` has been
+removed from `director.handle`, so the agent no longer parses handovers out of an utterance.
+**Deferred:** world ops as commands (`reset`/`save`/`load`); agent-switching (waits on a second agent).
 
 ## 3. The agent  🟡
 
@@ -429,7 +429,7 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 
 1. ✅ **Server registry + shell skeleton** — `conjure/agents.py` (loader + `agents/servers.json`),
    `conjure/shell.py` (deterministic commands, `conjure open shell`, the wake-prefix). Inline
-   `route_turn` still lives in the agent (full migration deferred); existing routing tests stay green.
+   `route_turn` has since been **removed** from the agent — LLM switching is shell-only.
 2. ✅ **Defined the current director as `agents/builder/`** — `Director.connect("builder")` loads the
    def, scopes the roster, launches its server from the registry. Identical behavior, now declarative.
 3. ✅ **Resource context injection** (§5) — world server exposes `room://current`; builder injects it
@@ -443,7 +443,7 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 | Today | Becomes |
 |---|---|
 | `Director` (roster + 1 server + 1 prompt) | shell + agent runtime; `Director` → `builder` agent |
-| `route_turn` (inline `"talk to X"`) | shell command registry (§2) |
+| ~~`route_turn` (inline `"talk to X"`)~~ | ✅ done — shell command registry (`shell._switch`, §2) |
 | `DIRECTOR_PROMPT` (`director.py`) | `builder` agent's `prompt_file` |
 | single `mcp_server` | server **registry** entry `world` (later: split servers) |
 | single `WorldStore` (one world doc) | shared geometry **base** + `agent → world space → worlds`, one **globally-active** world, composed server-side (§3b–3c) |

@@ -1,66 +1,11 @@
-"""Director routing + orchestration — the shared brain for voice and CLI.
+"""Director orchestration — the shared brain for voice and CLI.
 
-Routing is pure and deterministic, so it gets thorough unit coverage (this is where the
-"switch / address an LLM mid-conversation" behavior lives). The orchestration test drives a real
-Director against fake LLMs + a fake MCP session — no network, no SDKs."""
+The orchestration test drives a real Director against fake LLMs + a fake MCP session — no network,
+no SDKs. LLM switching is deterministic and lives in the shell now (see test_shell.py); the Director
+no longer parses handovers out of an utterance."""
 
-import pytest
-
-from conjure.director import DIRECTOR_PROMPT, Director, route_turn
+from conjure.director import DIRECTOR_PROMPT, Director
 from conjure.llm import Turn
-
-ROSTER = {"Claude": object(), "Gemini": object()}  # route_turn only needs the names
-
-
-# --------------------------------------------------------------------------- routing
-
-def test_plain_request_goes_to_active():
-    r = route_turn("put an oak tree in front of me", ROSTER, "Claude")
-    assert (r.target, r.content, r.persistent) == ("Claude", "put an oak tree in front of me", False)
-
-
-def test_let_me_talk_to_is_a_persistent_handover():
-    r = route_turn("let me talk to Gemini", ROSTER, "Claude")
-    assert r.target == "Gemini" and r.persistent is True
-    assert r.content == ""  # no task → Director substitutes a greeting nudge (see handle())
-
-
-def test_handover_carries_a_trailing_task():
-    r = route_turn("let me speak with Gemini about the lighting", ROSTER, "Claude")
-    assert (r.target, r.persistent) == ("Gemini", True)
-    assert r.content == "about the lighting"
-
-
-def test_switch_to_is_persistent_and_case_insensitive():
-    r = route_turn("switch to gemini", ROSTER, "Claude")
-    assert (r.target, r.persistent) == ("Gemini", True)
-
-
-def test_take_over_is_a_persistent_handover_with_task():
-    r = route_turn("Gemini, take over and add a tree", ROSTER, "Claude")
-    assert (r.target, r.persistent) == ("Gemini", True)
-    assert r.content == "and add a tree"
-
-
-def test_direct_address_is_one_shot_not_persistent():
-    r = route_turn("Gemini, make a picture of a cat", ROSTER, "Claude")
-    assert (r.target, r.content, r.persistent) == ("Gemini", "make a picture of a cat", False)
-
-
-def test_direct_address_without_comma_still_routes():
-    # STT rarely punctuates, so "Claude make a cat" must still address Claude.
-    r = route_turn("Claude make a cat", ROSTER, "Gemini")
-    assert (r.target, r.content, r.persistent) == ("Claude", "make a cat", False)
-
-
-def test_unknown_name_falls_through_to_active():
-    r = route_turn("Bob, do something", ROSTER, "Claude")
-    assert r.target == "Claude" and r.content == "Bob, do something" and r.persistent is False
-
-
-def test_ordinary_first_word_is_not_mistaken_for_a_name():
-    r = route_turn("tree in front of me please", ROSTER, "Claude")
-    assert r.target == "Claude" and r.content == "tree in front of me please"
 
 
 # --------------------------------------------------------------------------- orchestration
@@ -119,41 +64,24 @@ async def test_handle_records_user_assistant_transcript():
     ]
 
 
-async def test_persistent_handover_changes_active():
+async def test_handle_always_runs_the_active_llm():
+    # No inline routing: even an utterance that names another LLM goes to the active one verbatim.
     d = _director(active="Claude")
-    await d.handle("let me talk to Gemini")
-    assert d.active == "Gemini"
-    # bare handover → Gemini is asked to greet (not replay the switch phrase, not build)
-    nudge = d.roster["Gemini"].seen[0]["user_text"].lower()
-    assert "greet" in nudge and "switched to you" in nudge
-    # subsequent plain turns now go to Gemini (recorded plainly as an assistant turn)
-    await d.handle("add a fountain")
-    assert d.roster["Gemini"].seen[-1]["user_text"] == "add a fountain"
+    await d.handle("Gemini, make a picture of a cat")
+    assert d.active == "Claude"                                   # unchanged — switching is the shell's job
+    assert d.roster["Claude"].seen[-1]["user_text"] == "Gemini, make a picture of a cat"  # full text, unrouted
+    assert d.roster["Gemini"].seen == []                          # the named LLM was NOT invoked
     assert d.transcript[-1].speaker == "assistant"
 
 
-async def test_failed_handover_reverts_active():
-    """If switching to an LLM fails on its first turn (e.g. quota error), don't strand the user on
-    the broken LLM — revert to whoever they were talking to. The error still propagates."""
-    class BoomLLM:
-        name = "Chat"
-
-        async def run_turn(self, **kw):
-            raise RuntimeError("insufficient_quota")
-
-    d = _director(active="Claude", Claude=FakeLLM("Claude"), Chat=BoomLLM())
-    with pytest.raises(RuntimeError, match="quota"):
-        await d.handle("let me speak with Chat")
-    assert d.active == "Claude"            # reverted
-    assert d.transcript == []             # nothing recorded for the failed turn
-
-
-async def test_one_shot_address_does_not_change_active():
+async def test_shell_switched_active_is_used_by_the_next_turn():
+    # The shell switches by setting director.active; the next handle() must run on it.
     d = _director(active="Claude")
-    await d.handle("Gemini, make a picture of a cat")
-    assert d.active == "Claude"                       # stayed put
-    assert d.transcript[-1].speaker == "assistant"    # recorded plainly, no LLM identity
-    assert d.roster["Gemini"].seen[0]["user_text"] == "make a picture of a cat"  # Gemini answered this turn
+    d.active = "Gemini"                                           # what shell._switch does
+    await d.handle("add a fountain")
+    assert d.roster["Gemini"].seen[-1]["user_text"] == "add a fountain"
+    assert d.roster["Claude"].seen == []
+    assert d.transcript[-1].speaker == "assistant"
 
 
 async def test_director_logs_utterance_tool_calls_and_reply():
@@ -192,12 +120,13 @@ async def test_emit_and_tools_are_wired_through():
     assert seen[-1][1] is True                                 # last emit is the final reply
 
 
-async def test_later_llm_sees_prior_turns_plainly():
+async def test_a_switched_in_llm_sees_prior_turns_plainly():
     d = _director(active="Claude")
-    await d.handle("Gemini, suggest a centerpiece")   # one-shot to Gemini
-    await d.handle("what do you think?")              # back to active Claude
-    history = d.roster["Claude"].seen[-1]["history"]
-    # Claude's view includes the earlier turn, but with no record of which LLM produced it —
+    await d.handle("suggest a centerpiece")           # Claude answers
+    d.active = "Gemini"                                # shell switch mid-conversation
+    await d.handle("what do you think?")              # Gemini now answers, inheriting the history
+    history = d.roster["Gemini"].seen[-1]["history"]
+    # Gemini's view includes the earlier turn, but with no record of which LLM produced it —
     # every reply is a plain "assistant" turn (the switch is invisible in the history).
     speakers = [t.speaker for t in history]
     assert speakers == ["user", "assistant"]

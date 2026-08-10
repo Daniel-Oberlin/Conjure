@@ -14,16 +14,10 @@ The agent owns:
     carries no record of which LLM authored a reply, so switching LLMs is invisible in the history,
   • the **LLM roster** (conjure.llm) — the named LLMs it allows, one *active* at a time,
   • the world-editing **MCP tools** (it is an MCP client of its scoped servers over stdio),
-  • the per-turn **context** it injects (e.g. `room://current` — the live room, agents.md §5),
-  • the inline **routing** that switches/addresses LLMs (the shell also does this deterministically;
-    migrating the inline path fully to the shell is deferred — agents.md §10).
+  • the per-turn **context** it injects (e.g. `room://current` — the live room, agents.md §5).
 
-Routing (deterministic — no tokens, fully testable):
-  • "let me talk to Gemini" / "switch to Gemini" / "Gemini, take over" → **persistent handover**:
-    that LLM becomes active going forward.
-  • "Gemini, make a picture of a cat" → **one-shot**: that LLM handles just this turn; the
-    previously-active LLM stays active afterward.
-  • anything else → the active LLM.
+Every turn runs on the **active** LLM. Switching the active LLM is the shell's job — deterministic,
+parsed there (conjure.shell), never inferred from the utterance here.
 """
 
 from __future__ import annotations
@@ -31,9 +25,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import re
 import sys
-from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 from .agents import AgentDef, ServerSpec, load_agent, load_server_registry, scoped_roster
@@ -48,63 +40,6 @@ DIRECTOR_PROMPT = load_agent("builder").prompt
 
 OnText = Callable[..., Awaitable[None]]   # (text, *, final: bool, speaker: str) -> None
 OnTool = Callable[..., Awaitable[None]]   # (name: str, args: dict) -> None
-
-
-# --------------------------------------------------------------------------- routing
-
-@dataclass
-class Route:
-    target: str       # casual name that handles this turn
-    content: str      # text to send the target (address/handover phrasing stripped)
-    persistent: bool  # True → target becomes the new active LLM
-
-
-# Persistent-handover phrasings. A trailing name is captured; any task after it is preserved.
-_HANDOVER = re.compile(
-    r"^(?:please\s+)?(?:can\s+i\s+|i'?d\s+like\s+to\s+|i\s+want\s+to\s+|i\s+wanna\s+|"
-    r"let'?s\s+|let\s+me\s+)?(?:speak|talk|chat)\s+(?:with|to)\s+(?P<name>[a-z0-9]+)\b",
-    re.I,
-)
-_SWITCH = re.compile(r"^(?:switch|change|hand(?:\s+it)?\s+over)\s+(?:to\s+)?(?P<name>[a-z0-9]+)\b", re.I)
-_TAKEOVER = re.compile(
-    r"^(?P<name>[a-z0-9]+)[,:]?\s+(?:take\s+over|take\s+it\s+from\s+here|you'?re\s+up|"
-    r"you\s+have\s+the\s+floor)\b",
-    re.I,
-)
-# Direct address: "<Name> ..." (comma optional — STT rarely punctuates). The name-match gate below
-# is what prevents false positives on ordinary first words.
-_ADDRESS = re.compile(r"^(?P<name>[a-z][a-z0-9]*)\b[,:]?\s+(?P<rest>.+)$", re.I | re.S)
-
-
-def _match_name(token: str, roster) -> Optional[str]:
-    for name in roster:
-        if name.lower() == token.lower():
-            return name
-    return None
-
-
-def route_turn(text: str, roster, active: str) -> Route:
-    """Decide who handles this utterance and whether it changes the active LLM. Pure + deterministic."""
-    s = text.strip()
-    # 1) explicit handover/switch → persistent
-    for rx in (_HANDOVER, _SWITCH, _TAKEOVER):
-        m = rx.match(s)
-        if m:
-            name = _match_name(m.group("name"), roster)
-            if name:
-                rest = s[m.end():].lstrip(" ,.:;-")
-                # A bare handover ("let me talk to Gemini") carries no task — content stays empty so
-                # the director hands the new LLM a greeting nudge instead of replaying the switch
-                # phrase (which it may misread as a build request). A trailing task is preserved.
-                return Route(name, rest, persistent=True)
-    # 2) direct address "<Name> …" → one-shot (active unchanged)
-    m = _ADDRESS.match(s)
-    if m:
-        name = _match_name(m.group("name"), roster)
-        if name:
-            return Route(name, m.group("rest").strip(), persistent=False)
-    # 3) default → the active LLM
-    return Route(active, s, persistent=False)
 
 
 # --------------------------------------------------------------------------- the director
@@ -251,21 +186,15 @@ class Director:
 
     async def handle(self, text: str, *, on_text: Optional[OnText] = None,
                      on_tool: Optional[OnTool] = None) -> str:
-        """Route one user utterance to an LLM, run its turn (with tools), record the user/assistant
+        """Run the **active** LLM on one user utterance (with tools), record the user/assistant
         transcript, and return the final reply. `on_text(text, final=, speaker=)` receives reply
-        text as it's produced; `on_tool(name, args)` fires before each tool call."""
-        await self._log("you", text.strip())
-        route = route_turn(text, self.roster, self.active)
-        # Attribute every LLM line to <agent>.<llm> (e.g. builder.claude); tool lines get a /tool suffix.
-        who = f"{getattr(self.agent, 'name', 'agent')}.{route.target.lower()}"
-        prev_active = self.active
-        if route.persistent:
-            self.active = route.target
-        llm = self.roster[route.target]
-        # A bare handover has no task: ask the newly-active LLM to greet rather than guess.
-        user_text = route.content or (
-            "You are now the active director (the user just switched to you). Greet them in one "
-            "short line; don't build anything yet.")
+        text as it's produced; `on_tool(name, args)` fires before each tool call. Switching the active
+        LLM is the shell's job (deterministic — conjure.shell), never inferred from `text` here."""
+        text = text.strip()
+        await self._log("you", text)
+        # Tag every log line <agent>.<llm> (e.g. builder.claude); tool lines get a /tool suffix.
+        who = f"{getattr(self.agent, 'name', 'agent')}.{self.active.lower()}"
+        llm = self.roster[self.active]
 
         async def emit(t, *, final):
             # Log intermediate spoken text (acks like "On it", and any pre-tool narration) under the
@@ -274,28 +203,21 @@ class Director:
             if not final and t and t.strip():
                 await self._log(who, t.strip())
             if on_text:
-                await on_text(t, final=final, speaker=route.target)
+                await on_text(t, final=final, speaker=self.active)
 
         async def execute(n, a):
             return await self._execute_tool(n, a, on_tool, who)
 
         system = self._system() + await self._fetch_context()
-        try:
-            final = await llm.run_turn(
-                system=system,
-                history=list(self.transcript),
-                user_text=user_text,
-                tools=self._tools,
-                execute_tool=execute,
-                emit=emit,
-            )
-        except Exception:
-            # A switch that failed on its first turn shouldn't strand the user on a broken LLM —
-            # revert to whoever they were talking to. (The caller surfaces the error.)
-            if route.persistent:
-                self.active = prev_active
-            raise
-        self.transcript.append(Turn("user", text.strip()))
+        final = await llm.run_turn(
+            system=system,
+            history=list(self.transcript),
+            user_text=text,
+            tools=self._tools,
+            execute_tool=execute,
+            emit=emit,
+        )
+        self.transcript.append(Turn("user", text))
         self.transcript.append(Turn("assistant", final))
         await self._log(who, final.strip())
         return final

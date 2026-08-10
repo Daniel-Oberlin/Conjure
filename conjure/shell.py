@@ -2,8 +2,9 @@
 
 Control that must be reliable — switching the active LLM, entering/leaving shell mode, inspecting
 what's loaded — runs here, *parsed, never sent to an LLM*. The shell wraps the active agent (today's
-`Director`): input it doesn't recognise as a command is forwarded to the agent unchanged, so existing
-behaviour (incl. inline "let me talk to Gemini" routing) is untouched.
+`Director`): input it doesn't recognise as a command is forwarded to the agent unchanged. Switching
+the active LLM lives *only* here (deterministic) — the agent no longer parses handovers out of an
+utterance.
 
 Entering: say/type `conjure open shell` → shell mode (prompt `conjure:shell>`); `exit` resumes the
 agent. While *in* an agent, only input led by the `conjure` wake word is taken as a command — so
@@ -15,7 +16,7 @@ import re
 from typing import Awaitable, Callable, Optional
 
 from .agents import AGENTS_DIR
-from .director import Director, _match_name
+from .director import Director
 
 OnText = Callable[..., Awaitable[None]]
 OnTool = Callable[..., Awaitable[None]]
@@ -24,6 +25,15 @@ OnTool = Callable[..., Awaitable[None]]
 _WAKE = re.compile(r"^conjure\b[,:]?\s*(?P<rest>.*)$", re.I | re.S)
 # Explicit LLM switch in the shell: "talk to / switch to / use <name>".
 _SWITCH = re.compile(r"^(?:talk\s+to|switch\s+to|use|become|be)\s+(?P<name>[a-z0-9]+)$", re.I)
+
+
+def _match_name(token: str, roster) -> Optional[str]:
+    """Case-insensitive lookup of a spoken/typed word against the roster's casual LLM names
+    ('gemini' → 'Gemini'); None if it matches none. The gate that keeps a switch deterministic."""
+    for name in roster:
+        if name.lower() == token.lower():
+            return name
+    return None
 
 
 class Shell:
