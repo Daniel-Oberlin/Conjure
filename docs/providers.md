@@ -31,8 +31,9 @@ Multiple named LLMs may be active in one session; this is the **default director
 members. The roster + switching are **built** (`conjure/llm.py`, `conjure/director.py`): one shared
 director serves both voice and CLI; add a provider by registering it in `build_roster` and it's
 usable everywhere with no other code change. Switch mid-conversation ("let me talk to Gemini") or
-address one for a single turn ("Gemini, make a picture of a cat"); the transcript is attributed so
-each LLM sees who said what.
+address one for a single turn ("Gemini, make a picture of a cat"); the shared transcript records no
+LLM identity, so a newly-active LLM inherits the whole history seamlessly and the switch is invisible
+in the context.
 | Option | Hosting | Notes |
 |---|---|---|
 | ✅ **Claude** (Anthropic) | cloud | Default director — strongest, most reliable **tool-calling** (it drives the MCP edits). |

@@ -22,7 +22,8 @@ with something you can actually experience on the Quest.
   **achieved** (local Whisper + Kokoro + cloud Claude; verified building/stacking shapes by voice).
 - **Shared director + LLM roster ✅** (`conjure/director.py`, `conjure/llm.py`): voice and CLI drive
   one director; an LLM roster (Claude + Gemini) is switchable mid-conversation ("let me talk to
-  Gemini") or addressable per-turn ("Gemini, …"), over an attributed transcript (arch §7a). New
+  Gemini") or addressable per-turn ("Gemini, …"), over a shared user/assistant transcript that
+  records no LLM identity (arch §7a). New
   providers register in one place — no caller changes. (Verified end-to-end via CLI.)
 - **Agent abstraction ✅ (in progress)** (`conjure/shell.py`, `conjure/agents.py`, `agents/`): the
   director is now generalized into a deterministic **shell** (reliable control: switch agent/LLM,

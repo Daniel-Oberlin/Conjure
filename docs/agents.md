@@ -359,9 +359,11 @@ args (`near="me"`). Needs a small channel for the headset to report its camera p
 ## 6. State & attribution  🟡
 
 - **Transcript ownership.** Switching *LLM* continues the conversation (same agent, new brain — as
-  today). Switching *agent* starts that agent's own context. So **transcript belongs to the agent**;
-  attribution extends from today's `[Name]` (LLM) to also cover **personas** that took a turn (their
-  utterances are logged in-character). (See [§7a](./architecture.md) — the attributed shared transcript.)
+  today). Switching *agent* starts that agent's own context. So **transcript belongs to the agent**.
+  Today the transcript records **no per-LLM identity** — it is plain user/assistant, so a switch is
+  invisible in the context. A future **personas** feature could reintroduce in-character attribution
+  (utterances logged in the persona's voice) if a use case needs it. (See
+  [§7a](./architecture.md) — the shared transcript.)
 - **No cross-agent patch provenance.** Because each agent edits only its **own** world space (§3b),
   patches never mix between agents — there's nothing to disambiguate, so we *don't* tag patches with
   agent identity. (The world store's existing `origin` field stays for its current uses.)
@@ -450,5 +452,5 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 | patch apply (one target) | **routed**: capture/geometry → base; agent view/content/env → active world (§3c) |
 | — (no equivalent) | **personas** — agent-hosted participants, invoked via `invoke_persona` (§3a) |
 | roster = available LLMs | global LLM pool; agent `llms` = allowed subset |
-| `_system_for` (prompt + roster_line) | prompt template + injected `context` resources |
+| `_system` (prompt + user identity) | prompt template + injected `context` resources |
 | `on_text`/`emit`/`on_tool` | unchanged; now per active agent |

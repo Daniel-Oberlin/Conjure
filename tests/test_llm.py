@@ -1,4 +1,4 @@
-"""LLM roster — attribution rendering, the per-provider tool-call loops (with faked SDKs), and the
+"""LLM roster — transcript rendering, the per-provider tool-call loops (with faked SDKs), and the
 registry. No network: anthropic/genai clients are monkeypatched."""
 
 from conjure.config import Settings
@@ -9,7 +9,7 @@ from conjure.llm import (
     OpenAILLM,
     ToolSpec,
     Turn,
-    _attributed,
+    _messages,
     build_image_generators,
     build_roster,
     select_generator,
@@ -27,24 +27,19 @@ def _settings(**overrides) -> Settings:
     return Settings(**base)
 
 
-# --------------------------------------------------------------------------- attribution
+# --------------------------------------------------------------------------- transcript
 
-def test_attributed_labels_other_llms_only():
+def test_messages_render_plain_user_assistant():
     history = [
         Turn("user", "hi"),
-        Turn("Claude", "I placed a tree"),
-        Turn("Gemini", "I'd add a fountain"),
+        Turn("assistant", "I placed a tree"),
+        Turn("assistant", "I'd add a fountain"),
     ]
-    # From Claude's perspective: its own turn is plain, Gemini's is prefixed.
-    assert _attributed(history, "Claude") == [
+    # No LLM identity survives into the history: every assistant turn is plain, no [Name] prefix,
+    # so a switch of LLMs is invisible.
+    assert _messages(history) == [
         ("user", "hi"),
         ("assistant", "I placed a tree"),
-        ("assistant", "[Gemini] I'd add a fountain"),
-    ]
-    # From Gemini's perspective the prefixes flip.
-    assert _attributed(history, "Gemini") == [
-        ("user", "hi"),
-        ("assistant", "[Claude] I placed a tree"),
         ("assistant", "I'd add a fountain"),
     ]
 
@@ -104,7 +99,7 @@ async def test_claude_runs_tools_then_returns_final(monkeypatch):
         return "ok"
 
     out = await ClaudeLLM("Claude", "key", "claude-x").run_turn(
-        system="SYS", history=[Turn("user", "earlier"), Turn("Gemini", "hello")],
+        system="SYS", history=[Turn("user", "earlier"), Turn("assistant", "hello")],
         user_text="put a tree in front of me",
         tools=[ToolSpec("place_asset", "place a model", {"type": "object"})],
         execute_tool=execute_tool, emit=emit,
@@ -112,10 +107,10 @@ async def test_claude_runs_tools_then_returns_final(monkeypatch):
     assert out == "Done — there's your tree."
     assert tool_calls == [("place_asset", {"query": "tree", "size_m": 7})]
     assert (False, "On it") in emitted and emitted[-1] == (True, "Done — there's your tree.")
-    # history was serialized with attribution (Gemini's turn prefixed) ahead of the new user msg
+    # history was serialized plainly (no LLM attribution) ahead of the new user msg
     msgs = calls["last_kwargs"]["messages"]
     assert msgs[0] == {"role": "user", "content": "earlier"}
-    assert msgs[1] == {"role": "assistant", "content": "[Gemini] hello"}
+    assert msgs[1] == {"role": "assistant", "content": "hello"}
     assert calls["last_kwargs"]["system"] == "SYS"
 
 
@@ -207,7 +202,7 @@ async def test_openai_director_runs_a_tool_then_returns_final(monkeypatch):
     async def execute_tool(name, args): tool_calls.append((name, args)); return "ok"
 
     out = await OpenAILLM("Chat", "key", "gpt-x").run_turn(
-        system="SYS", history=[Turn("user", "hi"), Turn("Gemini", "yo")],
+        system="SYS", history=[Turn("user", "hi"), Turn("assistant", "yo")],
         user_text="put a tree in front of me",
         tools=[ToolSpec("place_asset", "place", {"type": "object"})],
         execute_tool=execute_tool, emit=emit,
@@ -218,7 +213,7 @@ async def test_openai_director_runs_a_tool_then_returns_final(monkeypatch):
     msgs = state["last"]["messages"]
     assert msgs[0] == {"role": "system", "content": "SYS"}                   # system first
     assert {"role": "tool", "tool_call_id": "c1", "content": "ok"} in msgs   # tool result fed back
-    assert msgs[2] == {"role": "assistant", "content": "[Gemini] yo"}        # attributed history
+    assert msgs[2] == {"role": "assistant", "content": "yo"}                 # plain history, no attribution
 
 
 # --------------------------------------------------------------------------- image registry + capabilities

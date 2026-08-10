@@ -108,13 +108,14 @@ def _director(active="Claude", tools=None, **llms):
     return Director(settings=None, session=FakeSession(), roster=roster, active=active, tools=tools or [])
 
 
-async def test_handle_records_attributed_transcript():
+async def test_handle_records_user_assistant_transcript():
     d = _director()
     out = await d.handle("put a tree in front of me")
     assert out == "Claude: done «put a tree in front of me»"
+    # the transcript is plain user/assistant — it records no LLM identity
     assert [(t.speaker, t.text) for t in d.transcript] == [
         ("user", "put a tree in front of me"),
-        ("Claude", "Claude: done «put a tree in front of me»"),
+        ("assistant", "Claude: done «put a tree in front of me»"),
     ]
 
 
@@ -125,9 +126,10 @@ async def test_persistent_handover_changes_active():
     # bare handover → Gemini is asked to greet (not replay the switch phrase, not build)
     nudge = d.roster["Gemini"].seen[0]["user_text"].lower()
     assert "greet" in nudge and "switched to you" in nudge
-    # subsequent plain turns now go to Gemini
+    # subsequent plain turns now go to Gemini (recorded plainly as an assistant turn)
     await d.handle("add a fountain")
-    assert d.transcript[-1].speaker == "Gemini"
+    assert d.roster["Gemini"].seen[-1]["user_text"] == "add a fountain"
+    assert d.transcript[-1].speaker == "assistant"
 
 
 async def test_failed_handover_reverts_active():
@@ -150,8 +152,8 @@ async def test_one_shot_address_does_not_change_active():
     d = _director(active="Claude")
     await d.handle("Gemini, make a picture of a cat")
     assert d.active == "Claude"                       # stayed put
-    assert d.transcript[-1].speaker == "Gemini"       # but Gemini answered this turn
-    assert d.roster["Gemini"].seen[0]["user_text"] == "make a picture of a cat"
+    assert d.transcript[-1].speaker == "assistant"    # recorded plainly, no LLM identity
+    assert d.roster["Gemini"].seen[0]["user_text"] == "make a picture of a cat"  # Gemini answered this turn
 
 
 async def test_director_logs_utterance_tool_calls_and_reply():
@@ -190,15 +192,16 @@ async def test_emit_and_tools_are_wired_through():
     assert seen[-1][1] is True                                 # last emit is the final reply
 
 
-async def test_later_llm_sees_prior_turns_with_attribution():
+async def test_later_llm_sees_prior_turns_plainly():
     d = _director(active="Claude")
     await d.handle("Gemini, suggest a centerpiece")   # one-shot to Gemini
     await d.handle("what do you think?")              # back to active Claude
     history = d.roster["Claude"].seen[-1]["history"]
-    # Claude's view includes Gemini's earlier turn; it is attributed (Director hands raw Turns;
-    # the [Name] prefixing happens in llm._attributed, covered in test_llm).
+    # Claude's view includes the earlier turn, but with no record of which LLM produced it —
+    # every reply is a plain "assistant" turn (the switch is invisible in the history).
     speakers = [t.speaker for t in history]
-    assert "Gemini" in speakers and "user" in speakers
+    assert speakers == ["user", "assistant"]
+    assert all(t.speaker in ("user", "assistant") for t in history)
 
 
 async def test_agent_context_is_injected_into_the_system_prompt():
@@ -231,19 +234,20 @@ async def test_context_fetch_failure_is_not_fatal():
     assert "Live context (current" not in llm.seen[0]["system"]   # nothing injected, turn still ran
 
 
-def test_system_prompt_is_per_llm_and_roster_aware():
+def test_system_prompt_is_llm_agnostic():
+    # The prompt names no LLM and mentions no roster/attribution — it is identical whichever LLM is
+    # active, so switching LLMs is invisible to the model.
     d = _director(active="Claude")
-    sys_claude = d._system_for("Claude")
-    assert sys_claude.startswith("You are Claude,")
-    assert "Gemini" in sys_claude                     # told who else is present
-    assert "[Name]" in sys_claude                     # told how attribution is marked
+    system = d._system()
+    assert system.startswith("You are the director")
+    assert "Claude" not in system and "Gemini" not in system   # no LLM identity
+    assert "[Name]" not in system                              # no attribution machinery
 
 
-def test_prompt_template_has_a_single_name_placeholder():
-    # Guards against accidental stray braces breaking .format(name=...). DIRECTOR_PROMPT now reads from
-    # prompts/builder.md (the builder agent's prompt_file), so this also guards that file.
-    assert DIRECTOR_PROMPT.count("{name}") == 1
-    DIRECTOR_PROMPT.format(name="X")  # must not raise
+def test_prompt_has_no_llm_name_placeholder():
+    # The old {name} placeholder (filled with the active LLM's casual name) is gone: the builder
+    # prompt is now LLM-agnostic. DIRECTOR_PROMPT reads from agents/builder/prompt.md.
+    assert "{name}" not in DIRECTOR_PROMPT
 
 
 def test_stdio_params_maps_python_and_substitutes_world_url():

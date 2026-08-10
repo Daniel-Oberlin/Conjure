@@ -9,7 +9,7 @@ One module, one provider family. A vendor (Anthropic, Google, OpenAI) can offer 
 
 Claude is director-only. Gemini and OpenAI do both. Everything is wired from ONE place — the `ROSTER`
 table below: casual names, which key powers them, which models, and which ops each generator is the
-default for. Change a name there and it changes everywhere (addressing, attribution, image selection).
+default for. Change a name there and it changes everywhere (addressing, image selection).
 
 Providers call the vendor SDKs directly (`anthropic`, `google-genai`, `openai`) and import them
 *lazily inside methods* — so importing this module pulls no heavy SDK, and the world server can use
@@ -26,9 +26,9 @@ from .config import Settings
 
 @dataclass
 class Turn:
-    """One entry in the attributed transcript (architecture §7a)."""
+    """One entry in the shared transcript (architecture §7a)."""
 
-    speaker: str  # "user" or an LLM's casual name ("Claude", "Gemini", …)
+    speaker: str  # "user" or "assistant"
     text: str
 
 
@@ -59,19 +59,11 @@ class LLM(Protocol):
         ...
 
 
-def _attributed(history: list[Turn], me: str) -> list[tuple[str, str]]:
-    """Render the shared transcript for `me` as (role, text) pairs. Assistant turns from *other*
-    LLMs get a ``[Name]`` prefix so `me` can see who said what (architecture §7a); the user's turns
-    and `me`'s own turns pass through plain."""
-    out: list[tuple[str, str]] = []
-    for t in history:
-        if t.speaker == "user":
-            out.append(("user", t.text))
-        elif t.speaker == me:
-            out.append(("assistant", t.text))
-        else:
-            out.append(("assistant", f"[{t.speaker}] {t.text}"))
-    return out
+def _messages(history: list[Turn]) -> list[tuple[str, str]]:
+    """Render the shared transcript as (role, text) pairs. Every turn is either the user's or the
+    assistant's — the transcript carries no record of which LLM authored a reply, so a switch of
+    LLMs is invisible in the history (architecture §7a)."""
+    return [("user" if t.speaker == "user" else "assistant", t.text) for t in history]
 
 
 # =================================================================== director LLMs
@@ -90,7 +82,7 @@ class ClaudeLLM:
         client = anthropic.AsyncAnthropic(api_key=self._api_key)
         ant_tools = [{"name": t.name, "description": t.description, "input_schema": t.input_schema}
                      for t in tools]
-        messages: list = [{"role": role, "content": text} for role, text in _attributed(history, self.name)]
+        messages: list = [{"role": role, "content": text} for role, text in _messages(history)]
         messages.append({"role": "user", "content": user_text})
 
         final_text = ""
@@ -141,7 +133,7 @@ class GeminiLLM:
         )
         contents: list = [
             types.Content(role=("user" if role == "user" else "model"), parts=[types.Part(text=text)])
-            for role, text in _attributed(history, self.name)
+            for role, text in _messages(history)
         ]
         contents.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
 
@@ -187,7 +179,7 @@ class OpenAILLM:
         oa_tools = [{"type": "function", "function": {
             "name": t.name, "description": t.description, "parameters": t.input_schema}} for t in tools]
         messages: list = [{"role": "system", "content": system}]
-        messages += [{"role": role, "content": text} for role, text in _attributed(history, self.name)]
+        messages += [{"role": role, "content": text} for role, text in _messages(history)]
         messages.append({"role": "user", "content": user_text})
 
         final_text = ""

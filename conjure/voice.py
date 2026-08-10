@@ -8,7 +8,7 @@ PipeCat here is only *ears and mouth*: STT, TTS, VAD, end-of-turn detection, and
 echo mitigation. Spoken turns go through the deterministic `conjure.shell.Shell` (commands like
 "conjure open shell" run there, never reaching an LLM) which forwards the rest to the active agent —
 the shared `conjure.director.Director` (today's `builder`), the SAME agent the CLI drives. It owns the
-LLM roster (Claude/Gemini/…, switchable mid-conversation), the attributed transcript, the world-editing
+LLM roster (Claude/Gemini/…, switchable mid-conversation), the shared transcript, the world-editing
 MCP tools, and the live room injected into its prompt. So spoken requests turn into world patches that
 broadcast live to every connected headset, and adding/switching LLMs or agents needs no change here.
 

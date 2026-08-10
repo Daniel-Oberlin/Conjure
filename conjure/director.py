@@ -10,7 +10,8 @@ arrives (mic vs typing) and leaves (TTS vs print):
         await director.handle("put a tree in front of me", on_text=..., on_tool=...)
 
 The agent owns:
-  • the **attributed transcript** — every turn tagged with its speaker (architecture §7a),
+  • the **shared transcript** — a single user/assistant conversation log (architecture §7a); it
+    carries no record of which LLM authored a reply, so switching LLMs is invisible in the history,
   • the **LLM roster** (conjure.llm) — the named LLMs it allows, one *active* at a time,
   • the world-editing **MCP tools** (it is an MCP client of its scoped servers over stdio),
   • the per-turn **context** it injects (e.g. `room://current` — the live room, agents.md §5),
@@ -42,8 +43,7 @@ from .llm import LLM, ToolSpec, Turn, build_roster
 # Shared system prompt for the builder agent. It lives in the agent's prompt_file
 # (agents/builder.json → prompts/builder.md), so the agent definition owns it — including the path.
 # This constant goes through the loader (single source) for the default `Director()` prompt and tests.
-# `{name}` is filled per-call with the active LLM's casual name; roster awareness is appended by
-# `Director._system_for`.
+# `Director._system` appends the logged-in-user identity; the prompt is the same for every LLM.
 DIRECTOR_PROMPT = load_agent("builder").prompt
 
 OnText = Callable[..., Awaitable[None]]   # (text, *, final: bool, speaker: str) -> None
@@ -182,14 +182,7 @@ class Director:
             if close_errlog is not None:
                 close_errlog.close()
 
-    def _system_for(self, name: str) -> str:
-        others = [n for n in self.roster if n != name]
-        roster_line = (
-            f" Other AIs are present in this session: {', '.join(others)}. The user may switch to "
-            f"one ('let me talk to {others[0]}') or address one directly; you only receive turns "
-            f"meant for you. In the transcript, assistant lines prefixed like [Name] were said by "
-            f"another AI — unprefixed assistant lines are yours; you may reference what they said."
-        ) if others else ""
+    def _system(self) -> str:
         identity_line = (
             f" The logged-in user you act for is '{self.user}' — if asked who is logged in / who they "
             f"are, that's the answer. Worlds and spaces belong to whoever created them. You can freely "
@@ -209,9 +202,7 @@ class Director:
             f"a public world — or making a world public — publishes the assets it uses; the tool tells you "
             f"when it does, and you should pass that along."
         )
-        # `.replace` (not `.format`) so the prompt can freely contain braces (markdown/code/JSON examples)
-        # without needing to escape them; the only placeholder is `{name}`.
-        return self._prompt.replace("{name}", name) + roster_line + identity_line
+        return self._prompt + identity_line
 
     async def _log(self, tag: str, msg: str) -> None:
         """Best-effort diagnostic line → the world server's /client_log (same temp/conjure.log + console
@@ -260,7 +251,7 @@ class Director:
 
     async def handle(self, text: str, *, on_text: Optional[OnText] = None,
                      on_tool: Optional[OnTool] = None) -> str:
-        """Route one user utterance to an LLM, run its turn (with tools), record the attributed
+        """Route one user utterance to an LLM, run its turn (with tools), record the user/assistant
         transcript, and return the final reply. `on_text(text, final=, speaker=)` receives reply
         text as it's produced; `on_tool(name, args)` fires before each tool call."""
         await self._log("you", text.strip())
@@ -273,8 +264,8 @@ class Director:
         llm = self.roster[route.target]
         # A bare handover has no task: ask the newly-active LLM to greet rather than guess.
         user_text = route.content or (
-            f"You are now the active director (the user switched to you). Greet them in one short "
-            f"line as {route.target}; don't build anything yet.")
+            "You are now the active director (the user just switched to you). Greet them in one "
+            "short line; don't build anything yet.")
 
         async def emit(t, *, final):
             # Log intermediate spoken text (acks like "On it", and any pre-tool narration) under the
@@ -288,7 +279,7 @@ class Director:
         async def execute(n, a):
             return await self._execute_tool(n, a, on_tool, who)
 
-        system = self._system_for(route.target) + await self._fetch_context()
+        system = self._system() + await self._fetch_context()
         try:
             final = await llm.run_turn(
                 system=system,
@@ -305,6 +296,6 @@ class Director:
                 self.active = prev_active
             raise
         self.transcript.append(Turn("user", text.strip()))
-        self.transcript.append(Turn(route.target, final))
+        self.transcript.append(Turn("assistant", final))
         await self._log(who, final.strip())
         return final

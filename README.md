@@ -21,8 +21,8 @@ You stand in a holodeck (black void, 1 m white grid) and talk. Conjure can:
 - **Set the scene** — generate a high-res 360° **skybox** that wraps the whole environment, or
   turn any in-world image into the surrounding sky.
 - **Talk to more than one AI** — a roster of named LLMs (Claude + Gemini + "Chat"/OpenAI) shares one
-  attributed conversation; switch mid-stream ("let me talk to Gemini") or hand off a single turn
-  ("Gemini, make a picture of a cat"), and each AI sees who said what.
+  conversation; switch mid-stream ("let me talk to Gemini") or hand off a single turn ("Gemini, make
+  a picture of a cat"), and a newly-active LLM picks up the whole conversation seamlessly.
 - **Feel real-time** — a brief spoken acknowledgement ("on it") the instant you ask.
 
 Everything is live: edits broadcast over a WebSocket to every connected headset. Models for
@@ -55,8 +55,8 @@ squaring + corner-joining, real door/window cutouts, and upright mounted art. De
   **patches**, serves the WebXR app + cached assets, and exposes world-editing **MCP tools**.
 - **Shell + agent** — the **shell** (`conjure/shell.py`) is a deterministic command plane (switch
   agent/LLM, status — no LLM); below it the **builder agent** (`conjure/director.py`, loaded
-  declaratively from `agents/builder/`) is the brain for both voice and CLI: it owns the attributed
-  transcript, an **LLM roster** (`conjure/llm.py` — Claude/Gemini/OpenAI, switchable mid-conversation),
+  declaratively from `agents/builder/`) is the brain for both voice and CLI: it owns the shared
+  user/assistant transcript, an **LLM roster** (`conjure/llm.py` — Claude/Gemini/OpenAI, switchable mid-conversation),
   the MCP tools, and the live room injected into its prompt. PipeCat is just ears+mouth (Whisper STT →
   shell → agent → Kokoro TTS); the CLI feeds it typed text. New LLMs/agents register declaratively —
   nothing else changes.
