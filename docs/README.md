@@ -21,6 +21,13 @@ dynamic behavior, and the ability to pull in generated or pre-existing web conte
 - **[room-model.md](./room-model.md)** — the **next phase** (roadmap Phase 5): bringing the real room
   (AR / scene understanding — passthrough, semantic surfaces, mountable real walls/furniture,
   progressive mesh refinement) out of the Quest and into the world model.
+- **[agent-separation-plan.md](./agent-separation-plan.md)** — making `Director` a generic agent
+  runtime (everything builder-specific moves into the agent def), removing inline LLM handover, and a
+  two-layer tool-scoping design (client omission now, server-side hard gate on trigger); introduces the
+  skybox-only **`outdoor`** agent as the test.
+- **[agent-server-plan.md](./agent-server-plan.md)** — moving the director + shared transcript into a
+  long-lived **agent server** so voice/CLI become thin HTTP/SSE clients and multiple users share one
+  conversation (matching the shared world).
 
 > For current project status / what works today, see the top-level [README](../README.md) — it's
 > the single source of truth for status, so these docs don't drift.

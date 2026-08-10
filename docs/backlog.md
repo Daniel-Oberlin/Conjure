@@ -325,3 +325,35 @@ flow through to what you'd expect.
 **Also missing (either way):** an owner-controlled restriction on *who may be present in worlds here*,
 distinct from co-location (today co-location admits anyone physically in the room). Not a bug — a framing
 misstep worth fixing before it ossifies. See the full discussion in the session where step 6 landed.
+
+---
+
+## SigLIP embedder pings Hugging Face on every load (weights are already cached)
+
+**Status:** shelved · noted 2026-08-10 (diagnosed from a live startup log)
+
+**Symptom:** loading the local SigLIP embedder prints `You are sending unauthenticated requests to the
+HF Hub … set a HF_TOKEN`, plus benign `bos_token_id/eos_token_id … got 49406/49407` config warnings.
+Prompted "I thought we already downloaded the weights" — we have.
+
+**Diagnosis:** the weights *are* local — cached at
+`~/.cache/huggingface/hub/models--google--siglip2-so400m-patch14-384` (~4.3 GB), and the log's
+`Loading weights: 100% … 888/888 [00:00<…]` confirms an instant disk load, not a download. But
+`SigLipEmbedder._ensure` calls `AutoModel.from_pretrained(self.name)` / `AutoProcessor.from_pretrained`
+(`conjure/embeddings.py:86,88`) with **no offline flag** — no `local_files_only`, no `cache_dir`, and
+there's no prefetch/offline config anywhere in the repo. So every load still makes a **network
+metadata/revision (etag) call** to the HF Hub before falling back to cache. That ping is what emits the
+`HF_TOKEN` warning, makes first-embed **depend on the Hub being reachable** (can hang/stall offline or
+when HF is slow), and adds startup latency. The `bos/eos_token_id` lines are a cosmetic config mismatch
+(CLIP special-token ids outside the 32000 text vocab); irrelevant to embedding use (`pooler_output`).
+
+**Proposed fix:** load cache-first, network only as a fallback for a genuinely-empty cache. Either
+(a) set `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` in the environment (blunt, whole-process), or
+(b) pass `local_files_only=True` to both `from_pretrained` calls, wrapped so a first-ever run with an
+empty cache can still fall back to a one-time download (catch the not-cached error → retry without the
+flag). (b) is preferred: offline-by-default without breaking fresh setup. Optionally raise
+`TRANSFORMERS_VERBOSITY=error` to mute the cosmetic token-id warnings.
+
+**Open decision:** blunt env-var (a) vs. per-call `local_files_only` with download fallback (b); and
+whether to add an explicit prefetch/`doctor` step that warms the cache so the fallback path is never hit
+in normal use.
