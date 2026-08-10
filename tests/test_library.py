@@ -240,6 +240,49 @@ def test_reads_return_own_scope_plus_public(tmp_path):
     assert "friend_pub.glb" in found and "friend_priv.glb" not in found and "mine_priv.glb" in found
 
 
+def test_assets_are_hard_scoped_to_their_agent(tmp_path):
+    """The agent segment is an absolute wall: a `builder` caller never sees an `outdoor` asset — even
+    a PUBLIC one — across query/search/find; but same-agent, cross-user public still shows."""
+    lib = _lib(tmp_path)
+    builder, outdoor = "daniel/agents/builder", "daniel/agents/outdoor"
+    friend_builder = "friend/agents/builder"
+    lib.upsert("b.glb", kind="model", scope=builder, label="oak", query="oak tree")            # own
+    lib.upsert("o.glb", kind="model", scope=outdoor, label="oak", query="oak tree")            # other agent, public
+    lib.upsert("fb.glb", kind="model", scope=friend_builder, label="oak", query="oak tree")    # other user, same agent, public
+
+    q = {r["id"] for r in lib.query("SELECT id FROM assets", scope=builder)}
+    assert q == {"b.glb", "fb.glb"}                       # own + same-agent public; NOT o.glb (other agent)
+
+    s = {h["id"] for h in lib.search("oak tree", scope=builder)}
+    assert "o.glb" not in s and {"b.glb", "fb.glb"} <= s
+
+    f = {c["id"] for c in lib.find("oak tree", scope=builder)["candidates"]}
+    assert "o.glb" not in f and {"b.glb", "fb.glb"} <= f
+
+    # …and the wall is symmetric: outdoor sees only its own agent's assets.
+    assert {r["id"] for r in lib.query("SELECT id FROM assets", scope=outdoor)} == {"o.glb"}
+
+
+def test_vector_search_is_walled_by_agent(tmp_path):
+    lib = _lib(tmp_path)
+    if not lib.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    lib.upsert("b.png", kind="image", scope="daniel/agents/builder", prompt="x")
+    lib.upsert("o.png", kind="image", scope="daniel/agents/outdoor", prompt="x")   # other agent, public
+    lib.add_embedding("b.png", [1.0, 0.0, 0.0], "fake")
+    lib.add_embedding("o.png", [1.0, 0.0, 0.0], "fake")                            # identical vector
+    hits = {h["id"] for h in lib.vector_search([1.0, 0.0, 0.0], scope="daniel/agents/builder", limit=5)}
+    assert hits == {"b.png"}                              # outdoor's public asset is walled off
+
+
+def test_agent_of_extracts_the_agent_segment():
+    from conjure.config import agent_of
+    assert agent_of("daniel/agents/builder") == "builder"
+    assert agent_of("friend/agents/outdoor") == "outdoor"
+    assert agent_of("legacy-no-agents") == "legacy-no-agents"   # no /agents/ → matches only itself
+    assert agent_of("") == ""
+
+
 def test_vector_search_returns_nearest_and_records_space(tmp_path):
     lib = _lib(tmp_path)
     if not lib.has_vectors:

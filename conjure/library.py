@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import DEFAULT_USER
+from .config import DEFAULT_USER, agent_of
 
 try:                                  # optional: vector search. Absent ⇒ catalog still works (FTS/exact)
     import sqlite_vec
@@ -311,8 +311,10 @@ class AssetLibrary:
             for h in hits:
                 a = self._db.execute("SELECT * FROM assets WHERE id=?", (h["id"],)).fetchone()
                 if a:
+                    if scope is not None and agent_of(a["scope"] or "") != agent_of(scope):
+                        continue                        # different agent — hard wall (even if public)
                     if scope is not None and a["scope"] != scope and not a["public"]:
-                        continue                        # another scope's private asset — not visible to this caller
+                        continue                        # same agent, another user's private — not visible
                     d = dict(a)
                     d["distance"] = h["distance"]
                     d["match"] = "vector"
@@ -487,8 +489,10 @@ class AssetLibrary:
         ro = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
         ro.row_factory = sqlite3.Row
         try:
+            # Hard agent wall: own scope ∪ public, but public only within the SAME agent segment
+            # (scope + agent are sanitized to [\w/.-]+ above → safe to inline; no GLOB metachars).
             ro.execute(f"CREATE TEMP VIEW assets AS SELECT * FROM main.assets "
-                       f"WHERE scope = '{scope}' OR public = 1")
+                       f"WHERE scope = '{scope}' OR (public = 1 AND scope GLOB '*/agents/{agent_of(scope)}')")
             return [dict(r) for r in ro.execute(s).fetchmany(limit)]
         finally:
             ro.close()
@@ -513,9 +517,12 @@ class AssetLibrary:
         on the same server discovers your public assets, not your private ones — co-location-plan §8a)."""
         results: list[dict] = []
         seen: set[str] = set()
-        sc = " AND (scope=? OR public=1)" if scope else ""        # own scope ∪ public (alias for join tables: a.*)
-        sca = " AND (a.scope=? OR a.public=1)" if scope else ""
-        scv: list[Any] = [scope] if scope else []
+        # Hard agent wall: only assets whose scope has the SAME agent segment, and within that, own
+        # scope ∪ public (cross-user). `*/agents/<agent>` GLOB keeps public from crossing agents. The
+        # `a.`-prefixed variant is for the join queries. Both consume [scope, agent-glob] from scv.
+        sc = " AND (scope=? OR (public=1 AND scope GLOB ?))" if scope else ""
+        sca = " AND (a.scope=? OR (a.public=1 AND a.scope GLOB ?))" if scope else ""
+        scv: list[Any] = [scope, "*/agents/" + agent_of(scope)] if scope else []
 
         def add(rows, how: str) -> None:
             for r in rows:

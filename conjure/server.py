@@ -35,7 +35,7 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .captioner import build_captioner
-from .config import DEFAULT_USER, get_settings, scope_for
+from .config import DEFAULT_USER, agent_of, get_settings, scope_for
 from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
@@ -639,6 +639,18 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
     }}
 
 
+def _asset_in_agent_scope(rec: Optional[dict]) -> bool:
+    """By-id counterpart to the catalog's hard agent wall (see library.search/query): an asset is
+    reachable only if its scope has the SAME agent segment as the caller AND (it's the caller's own
+    scope OR public). Guards the reuse-by-id paths so a known/guessed id can't sidestep the wall."""
+    if not rec:
+        return False
+    sc = _caller_scope.get()
+    if agent_of(rec.get("scope") or "") != agent_of(sc):
+        return False                                  # different agent — hard wall (even if public)
+    return rec.get("scope") == sc or bool(rec.get("public", 0))
+
+
 def _inherit_visibility(asset_id: str) -> dict:
     """`{"public": 0|1}` for a NEW asset, inherited from the active world's visibility (spaces-and-users
     §4: created in a private world ⇒ private). Empty dict if the asset already exists — never overwrite a
@@ -734,6 +746,9 @@ def _get_image(image_id: str):
     path = ASSET_CACHE / image_id
     if not path.exists():
         return None, None, f"no image {image_id!r}"
+    cat = library.get(image_id)
+    if cat is not None and not _asset_in_agent_scope(cat):   # hard agent wall on reuse-by-id
+        return None, None, f"no image {image_id!r}"          # don't leak another agent's asset
     data = path.read_bytes()
     rec = IMAGES.get(image_id)
     if rec is None:
@@ -2175,7 +2190,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
     """Place a MODEL already in the library by id — the reuse counterpart to place_asset (no web
     fetch). Images reuse place_image; skyboxes reuse set_skybox/set_grounded_skybox."""
     rec = library.get(req.id)
-    if rec is None:
+    if rec is None or not _asset_in_agent_scope(rec):        # hard agent wall (cross-agent id → "not found")
         return {"ok": False, "error": f"no asset {req.id!r} in the library"}
     if rec["kind"] != "model":
         return {"ok": False, "error": f"{req.id!r} is a {rec['kind']}, not a model — "

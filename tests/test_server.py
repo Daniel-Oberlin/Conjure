@@ -460,12 +460,27 @@ def test_caption_without_captioner_errors(srv, client):
 
 
 def test_retag_skyboxes_makes_them_findable_by_kind(srv, client):
-    srv.library.upsert("pano.png", kind="image", width=2100, height=900, prompt="a sunset beach")
+    srv.library.upsert("pano.png", kind="image", scope=srv.DEFAULT_SCOPE, width=2100, height=900,
+                       prompt="a sunset beach")
     r = client.post("/library/retag-skyboxes", json={}).json()
     assert r["ok"] and r["retagged"] == 1
     assert srv.library.get("pano.png")["kind"] == "skybox"
     res = client.post("/library/search", json={"query": "a sunset beach", "kind": "skybox"}).json()
     assert any(c["id"] == "pano.png" for c in res["candidates"])  # now found specifically as a skybox
+
+
+def test_asset_in_agent_scope_walls_reuse_by_id_by_agent():
+    # The by-id guard (place_cached_asset / _get_image) mirrors the catalog's hard agent wall.
+    from conjure import server as S
+    tok = S._caller_scope.set("daniel/agents/builder")
+    try:
+        assert S._asset_in_agent_scope({"scope": "daniel/agents/builder", "public": 0})     # own private
+        assert S._asset_in_agent_scope({"scope": "friend/agents/builder", "public": 1})     # same agent, public
+        assert not S._asset_in_agent_scope({"scope": "friend/agents/builder", "public": 0}) # same agent, other user, private
+        assert not S._asset_in_agent_scope({"scope": "daniel/agents/outdoor", "public": 1}) # other agent, even public
+        assert not S._asset_in_agent_scope(None)
+    finally:
+        S._caller_scope.reset(tok)
 
 
 def test_set_grounded_skybox_marks_the_env(srv, client):
