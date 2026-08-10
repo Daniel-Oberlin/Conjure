@@ -4,7 +4,8 @@ The orchestration test drives a real Director against fake LLMs + a fake MCP ses
 no SDKs. LLM switching is deterministic and lives in the shell now (see test_shell.py); the Director
 no longer parses handovers out of an utterance."""
 
-from conjure.director import DIRECTOR_PROMPT, Director
+from conjure.agents import load_agent
+from conjure.director import Director, _fill_injection
 from conjure.llm import Turn
 
 
@@ -133,21 +134,48 @@ async def test_a_switched_in_llm_sees_prior_turns_plainly():
     assert all(t.speaker in ("user", "assistant") for t in history)
 
 
-async def test_agent_context_is_injected_into_the_system_prompt():
+def test_fill_injection_bare_section_and_drop():
+    # bare {name} → value
+    assert _fill_injection("hi {user}!", "user", "alice") == "hi alice!"
+    # {#name}…{name}…{/name} section kept (with {name} filled) when the value is non-blank
+    assert _fill_injection("a{#ctx}[{ctx}]{/ctx}b", "ctx", "X") == "a[X]b"
+    # …dropped ENTIRELY when the value is blank, so framing text vanishes with it (no dangling header)
+    assert _fill_injection("a{#ctx}[{ctx}]{/ctx}b", "ctx", "") == "ab"
+    assert _fill_injection("a{#ctx}[{ctx}]{/ctx}b", "ctx", "   ") == "ab"
+    # unrelated braces (JSON/SQL examples in a prompt) are never touched
+    assert _fill_injection('x {"k": 1} {user}', "user", "bob") == 'x {"k": 1} bob'
+
+
+async def test_context_section_rendered_when_present():
     llm, session = FakeLLM("Claude"), FakeSession()
     d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
-                 agent=_agent(["room://current"]))
+                 prompt="Build.\n{#context}scene:\n{context}{/context}", agent=_agent(["room://current"]))
     await d.handle("add a tree")
     system = llm.seen[0]["system"]
-    # the resource's text (not just the prompt's mention of it) is appended each turn
-    assert "Live context (current" in system and "Room: 2 surfaces (test)" in system
+    assert "scene:" in system and "Room: 2 surfaces (test)" in system   # agent's framing + the data
+    assert "{context}" not in system and "{#context}" not in system     # placeholders consumed
     assert session.resources_read == ["room://current"]
 
 
-async def test_no_context_injected_when_agent_has_none():
-    d = _director()  # agent defaults to None
+async def test_context_section_dropped_when_empty():
+    # No context data → the whole {#context} block (framing included) is removed: no dangling header.
+    llm, session = FakeLLM("Claude"), FakeSession()
+    d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
+                 prompt="Build.\n{#context}scene:\n{context}{/context}", agent=_agent([]))
     await d.handle("add a tree")
-    assert "Room: 2 surfaces (test)" not in d.roster["Claude"].seen[0]["system"]
+    system = llm.seen[0]["system"]
+    assert "scene:" not in system                                       # framing gone with the value
+    assert "{context}" not in system and "{#context}" not in system
+
+
+async def test_context_not_fetched_when_prompt_omits_placeholder():
+    # An agent whose prompt references neither {context} nor {#context} pays nothing — the fetch is
+    # skipped entirely, even though it declares context resources. (Many agents ignore room surfaces.)
+    llm, session = FakeLLM("Claude"), FakeSession()
+    d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
+                 prompt="Just build. No scene needed.", agent=_agent(["room://current"]))
+    await d.handle("add a tree")
+    assert session.resources_read == []                        # never fetched
 
 
 async def test_context_fetch_failure_is_not_fatal():
@@ -157,26 +185,39 @@ async def test_context_fetch_failure_is_not_fatal():
 
     llm = FakeLLM("Claude")
     d = Director(settings=None, session=BoomSession(), roster={"Claude": llm}, active="Claude",
-                 tools=[], agent=_agent(["room://current"]))
+                 tools=[], prompt="Build.\n{#context}scene:\n{context}{/context}",
+                 agent=_agent(["room://current"]))
     out = await d.handle("add a tree")                       # must not raise
     assert out == "Claude: done «add a tree»"
-    assert "Live context (current" not in llm.seen[0]["system"]   # nothing injected, turn still ran
+    assert "scene:" not in llm.seen[0]["system"]             # failed fetch → value "" → section dropped
+    assert "{context}" not in llm.seen[0]["system"]
 
 
-def test_system_prompt_is_llm_agnostic():
+async def test_system_prompt_is_llm_agnostic():
     # The prompt names no LLM and mentions no roster/attribution — it is identical whichever LLM is
     # active, so switching LLMs is invisible to the model.
     d = _director(active="Claude")
-    system = d._system()
+    system = await d._system()
     assert system.startswith("You are the director")
     assert "Claude" not in system and "Gemini" not in system   # no LLM identity
     assert "[Name]" not in system                              # no attribution machinery
 
 
-def test_prompt_has_no_llm_name_placeholder():
-    # The old {name} placeholder (filled with the active LLM's casual name) is gone: the builder
-    # prompt is now LLM-agnostic. DIRECTOR_PROMPT reads from agents/builder/prompt.md.
-    assert "{name}" not in DIRECTOR_PROMPT
+async def test_system_injects_only_referenced_placeholders():
+    # _system() carries NO agent-specific text of its own; it fills the injection placeholders the
+    # agent's prompt references ({user} here) and leaves the rest of the prompt untouched.
+    d = _director(active="Claude")
+    d._prompt, d.user = "You act for '{user}'. Build stuff.", "alice"
+    assert await d._system() == "You act for 'alice'. Build stuff."
+
+
+def test_builder_prompt_owns_its_identity_and_has_no_llm_placeholder():
+    # The old {name} (LLM) placeholder is gone; the builder prompt now owns the {user} placeholder and
+    # its ownership framing (moved out of the director runtime).
+    prompt = load_agent("builder").prompt
+    assert "{name}" not in prompt
+    assert "{user}" in prompt
+    assert "belong to whoever created them" in prompt   # the ownership text now lives in the prompt
 
 
 def test_stdio_params_maps_python_and_substitutes_world_url():

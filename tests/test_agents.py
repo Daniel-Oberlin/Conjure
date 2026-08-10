@@ -18,14 +18,10 @@ def test_registry_has_the_world_server():
 def test_builder_agent_reproduces_the_director():
     agent = load_agent("builder", registry=load_server_registry())
     assert agent.name == "builder"
-    assert agent.prompt.strip() and "{name}" not in agent.prompt          # the real director prompt (LLM-agnostic)
+    assert agent.prompt.strip() and "{name}" not in agent.prompt          # LLM-agnostic (no LLM name)
+    assert "{user}" in agent.prompt                                       # owns the logged-in-user placeholder
     assert agent.llms == [WILDCARD]                                       # any configured LLM
     assert [(s.server, s.access) for s in agent.servers] == [("world", "all")]
-
-
-def test_builder_prompt_is_the_single_source_for_DIRECTOR_PROMPT():
-    from conjure.director import DIRECTOR_PROMPT
-    assert load_agent("builder").prompt == DIRECTOR_PROMPT               # one file, no divergence
 
 
 def _write_agent(tmp_path, name, data, files=None):

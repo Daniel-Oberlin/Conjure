@@ -23,8 +23,10 @@ parsed there (conjure.shell), never inferred from the utterance here.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import os
+import re
 import sys
 from typing import Awaitable, Callable, Optional
 
@@ -32,14 +34,37 @@ from .agents import AgentDef, ServerSpec, load_agent, load_server_registry, scop
 from .config import DEFAULT_USER, Settings, scope_for
 from .llm import LLM, ToolSpec, Turn, build_roster
 
-# Shared system prompt for the builder agent. It lives in the agent's prompt_file
-# (agents/builder.json → prompts/builder.md), so the agent definition owns it — including the path.
-# This constant goes through the loader (single source) for the default `Director()` prompt and tests.
-# `Director._system` appends the logged-in-user identity; the prompt is the same for every LLM.
-DIRECTOR_PROMPT = load_agent("builder").prompt
+# The director runtime is agent-agnostic — it knows nothing about any particular agent. A real agent
+# always supplies its own prompt via its def (`Director.connect` passes `agentdef.prompt`). This
+# generic fallback is only for a bare `Director()` in examples/tests.
+_DEFAULT_PROMPT = "You are the director of a Conjure session. Use the tools to carry out requests."
 
 OnText = Callable[..., Awaitable[None]]   # (text, *, final: bool, speaker: str) -> None
 OnTool = Callable[..., Awaitable[None]]   # (name: str, args: dict) -> None
+
+
+def _fill_injection(prompt: str, name: str, value: str) -> str:
+    """Fill one prompt-injection placeholder, so an agent's prompt.md owns *all* its own text —
+    including the framing around an injected value:
+
+      • ``{name}``                       → replaced by ``value`` (bare substitution; e.g. ``{user}``)
+      • ``{#name}…{name}…{/name}``       → a **conditional section**: the inner block (with ``{name}``
+                                           substituted) is kept only when ``value`` is non-blank, and
+                                           dropped **entirely** otherwise — so header/label text framing
+                                           the value vanishes with it (no dangling `--- … ---` when the
+                                           room is empty).
+
+    Only touches this exact `name` (registered injections), so stray braces elsewhere in the prompt
+    (JSON/SQL examples) are never disturbed."""
+    token = "{" + name + "}"
+    keep = bool(value.strip())
+
+    def _section(m: "re.Match") -> str:
+        return m.group(1).replace(token, value) if keep else ""
+
+    prompt = re.sub(r"\{#" + re.escape(name) + r"\}(.*?)\{/" + re.escape(name) + r"\}",
+                    _section, prompt, flags=re.S)
+    return prompt.replace(token, value)
 
 
 # --------------------------------------------------------------------------- the director
@@ -57,7 +82,7 @@ def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", 
 
 class Director:
     def __init__(self, settings: Settings, session, roster: dict[str, LLM], active: str,
-                 tools: Optional[list[ToolSpec]] = None, prompt: str = DIRECTOR_PROMPT,
+                 tools: Optional[list[ToolSpec]] = None, prompt: str = _DEFAULT_PROMPT,
                  agent: Optional[AgentDef] = None, user: str = DEFAULT_USER):
         self._settings = settings
         self._session = session          # MCP ClientSession (or a stand-in in tests)
@@ -117,27 +142,30 @@ class Director:
             if close_errlog is not None:
                 close_errlog.close()
 
-    def _system(self) -> str:
-        identity_line = (
-            f" The logged-in user you act for is '{self.user}' — if asked who is logged in / who they "
-            f"are, that's the answer. Worlds and spaces belong to whoever created them. You can freely "
-            f"create and switch worlds (everyone present comes along) and edit any world you own. You "
-            f"can ALSO see and enter other users' PUBLIC worlds — list_worlds shows them under 'other "
-            f"users' public worlds', and switch_world(name, owner='<their-username>') takes you there — "
-            f"but you can't edit a world you don't own. Worlds are PUBLIC by default; make one private "
-            f"(or public again) with set_world_visibility(public=…), or create a private one via "
-            f"new_world(name, public=False). If a tool refuses an edit to another user's world, relay it "
-            f"plainly; never invent a name collision or claim a capability (like private worlds) is absent. "
-            f"Library ASSETS work the same way: public by default (others on this server can reuse them), "
-            f"and you can flip one with update_asset(id, public=…) — but only for assets YOU own; another "
-            f"user's asset that merely shows up in your searches stays theirs. An asset's owner is the user "
-            f"in its `scope` column (the part before '/agents/'), readable via query_assets — so state who "
-            f"owns one from that rather than guessing or saying you can't tell. A PUBLIC world can only "
-            f"contain PUBLIC assets (so a visitor sees the whole scene), so placing your private asset into "
-            f"a public world — or making a world public — publishes the assets it uses; the tool tells you "
-            f"when it does, and you should pass that along."
+    def _injections(self):
+        """The prompt-injection registry: placeholder name → provider producing its value. A provider
+        may be sync or async; it's invoked ONLY when its placeholder appears in the prompt, so an agent
+        pays only for what it references (e.g. `{context}` triggers no MCP resource fetch unless the
+        prompt uses it — many agents won't care about room surfaces). Add a row to add an injection."""
+        return (
+            ("user", lambda: self.user),          # the logged-in user (human identity)
+            ("context", self._fetch_context),     # live MCP context resources (async; agents.md §5)
         )
-        return self._prompt + identity_line
+
+    async def _system(self) -> str:
+        # Agent-agnostic: the whole system prompt — including how/where each injection is *framed* —
+        # is the agent's own prompt.md. The runtime only fills the placeholders it declares (see
+        # `_fill_injection` for the `{name}` / `{#name}…{/name}` forms), and only computes a value when
+        # its placeholder actually appears, so nothing agent-specific lives here.
+        prompt = self._prompt
+        for name, provider in self._injections():
+            if "{" + name + "}" not in prompt and "{#" + name + "}" not in prompt:
+                continue                          # not referenced → don't even compute it
+            value = provider()
+            if inspect.isawaitable(value):
+                value = await value
+            prompt = _fill_injection(prompt, name, value or "")
+        return prompt
 
     async def _log(self, tag: str, msg: str) -> None:
         """Best-effort diagnostic line → the world server's /client_log (same temp/conjure.log + console
@@ -165,9 +193,12 @@ class Director:
         return text
 
     async def _fetch_context(self) -> str:
-        """Prefetch the agent's `context` MCP resources (e.g. `room://current`) and return them as a
-        block to append to the system prompt — so the agent has live room state without a query_room
-        round-trip (docs/agents.md §5). A missing/failed resource is skipped, never fatal."""
+        """Fetch the agent's `context` MCP resources (e.g. `room://current`) as raw text, injected at
+        the prompt's `{context}` placeholder (the agent's prompt.md owns the surrounding framing via a
+        `{#context}…{/context}` section — see `_fill_injection`). Gives the agent live room state
+        without a query_room round-trip (docs/agents.md §5). Only called when the prompt references
+        `{context}`; returns "" when there's nothing (no resources, or all failed) so the section drops
+        out. A missing/failed resource is skipped, never fatal."""
         if not self.agent or not self.agent.context:
             return ""
         parts = []
@@ -179,10 +210,7 @@ class Director:
                     parts.append(text.strip())
             except Exception:
                 continue
-        if not parts:
-            return ""
-        return ("\n\n--- Live context (current; already fetched for you — use it, don't re-query) ---\n"
-                + "\n\n".join(parts))
+        return "\n\n".join(parts)
 
     async def handle(self, text: str, *, on_text: Optional[OnText] = None,
                      on_tool: Optional[OnTool] = None) -> str:
@@ -208,7 +236,7 @@ class Director:
         async def execute(n, a):
             return await self._execute_tool(n, a, on_tool, who)
 
-        system = self._system() + await self._fetch_context()
+        system = await self._system()
         final = await llm.run_turn(
             system=system,
             history=list(self.transcript),

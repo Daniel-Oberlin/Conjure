@@ -344,9 +344,23 @@ durable fix is removing the need.)
 
 **Status — shipped.** The world server exposes `room://current` (sharing `query_room`'s formatter, via
 a `_room_summary` helper); the builder declares `context: ["room://current"]`; `Director._fetch_context()`
-reads the agent's context resources via the MCP session and appends them to the system prompt each turn
-(a failed resource is skipped, never fatal). The narration *and* the round-trip are gone; the prompt also
-forbids narrating "checking the scene".
+reads the agent's context resources via the MCP session (a failed resource is skipped, never fatal). The
+narration *and* the round-trip are gone; the prompt also forbids narrating "checking the scene".
+
+**Injection is placeholder-gated, conditional, and general.** Context is *not* blindly appended to
+every agent's prompt — the agent's `prompt.md` owns **all** its text, including the framing around the
+injected value, via a small extensible framework: `Director._injections` (a `{placeholder} → provider`
+registry) filled by `Director._system` / `_fill_injection`. Two placeholder forms:
+
+- `{name}` — bare substitution (e.g. `{user}` → the logged-in user).
+- `{#name}…{name}…{/name}` — a **conditional section**: the inner block (with `{name}` filled) is kept
+  only when the value is non-blank, and dropped **entirely** otherwise. So an agent frames context as
+  `{#context}--- Live context --- {context}{/context}` and the header vanishes with the value when the
+  room is empty — no dangling `--- … ---`.
+
+A provider is invoked **only when its placeholder appears**, so an agent that references neither
+`{context}` nor `{#context}` pays no MCP fetch at all (many agents ignore room surfaces). More
+injections (e.g. a `{viewer}` head pose) slot in as new registry rows and get the same forms for free.
 
 **`viewer://current` — the live head pose.** The same mechanism fixes a subtler bug: the builder
 currently can't place things relative to the user, because **nothing reports the headset's pose to the
@@ -444,7 +458,7 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 |---|---|
 | `Director` (roster + 1 server + 1 prompt) | shell + agent runtime; `Director` → `builder` agent |
 | ~~`route_turn` (inline `"talk to X"`)~~ | ✅ done — shell command registry (`shell._switch`, §2) |
-| `DIRECTOR_PROMPT` (`director.py`) | `builder` agent's `prompt_file` |
+| ~~`DIRECTOR_PROMPT` (`director.py`)~~ | ✅ done — the `builder` agent's `prompt_file` (its identity/ownership text lives there too); the runtime default is a generic `_DEFAULT_PROMPT` |
 | single `mcp_server` | server **registry** entry `world` (later: split servers) |
 | single `WorldStore` (one world doc) | shared geometry **base** + `agent → world space → worlds`, one **globally-active** world, composed server-side (§3b–3c) |
 | real surface = entity with `transform`+`surface`+`material` | geometry in the **base**; `material`/`visible`/crop/hide become a per-world **view** (`room_view` + `surface_overrides`) over it (§3c) |
@@ -452,5 +466,5 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 | patch apply (one target) | **routed**: capture/geometry → base; agent view/content/env → active world (§3c) |
 | — (no equivalent) | **personas** — agent-hosted participants, invoked via `invoke_persona` (§3a) |
 | roster = available LLMs | global LLM pool; agent `llms` = allowed subset |
-| `_system` (prompt + user identity) | prompt template + injected `context` resources |
+| `_system` (agent prompt + placeholder injections) | prompt template with `{user}`/`{context}` filled by `Director._injections` (extensible) |
 | `on_text`/`emit`/`on_tool` | unchanged; now per active agent |

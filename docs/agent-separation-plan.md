@@ -52,14 +52,26 @@ intended. `outdoor` inherits this for free.
 - Drop one-shot addressing ("Gemini, make a cat") entirely — intended.
 - Deterministic switching stays exactly as-is in `shell.py:_switch` (sets `director.active`).
 
-### 3b. Identity/prompt → agent-owned; runtime injects only `{user}`
+### 3b. Identity/prompt → agent-owned; a general prompt-injection framework
 
 - Move the `identity_line` text into `agents/builder/prompt.md`.
-- `_system()` returns the agent prompt with runtime placeholders substituted; the only one is
-  **`{user}`** → `self.user` (agent-agnostic — the human, not the model; same substitution pattern as
-  the removed `{name}`, minus the LLM identity).
-- Result: `_system()` carries **nothing** agent-specific. A game agent can frame identity however it
-  likes in its own prompt.
+- Introduce a small, **extensible injection framework**: `Director._injections()` is a
+  `{placeholder} → provider` registry (provider may be sync or async); `Director._system()` +
+  `_fill_injection()` fill each placeholder **only if it appears in the prompt**. `_system()` carries
+  **nothing** agent-specific — the agent's `prompt.md` owns all its text, including framing.
+- Two placeholder forms so the framing lives in the prompt yet vanishes cleanly when there's no value:
+  - `{name}` — bare substitution.
+  - `{#name}…{name}…{/name}` — a **conditional section**, kept only when the value is non-blank,
+    dropped entirely otherwise (no dangling header when the room is empty).
+- Two injections to start, more to come:
+  - **`{user}`** → `self.user` (the logged-in human — replaces the old identity line's interpolation).
+  - **`{context}`** → `_fetch_context()` (live MCP resources, §5), now returning **raw data** — the
+    builder frames it in prompt.md as `{#context}--- Live context --- {context}{/context}`. This
+    replaces the old *unconditional append* to every agent's prompt: an agent that references neither
+    `{context}` nor `{#context}` pays **no MCP fetch at all** (many agents won't care about surfaces).
+- Result: a game agent frames identity however it likes and simply omits the context section; the
+  builder keeps both. New injections (e.g. `{viewer}` head pose) slot in as one more registry row and
+  get both placeholder forms for free.
 - *Note:* world-ownership rules aren't purely builder-specific (`outdoor` also creates worlds), so
   builder and outdoor will share some of that text by copy for now. Factor a shared prompt include
   later if it earns its keep.
