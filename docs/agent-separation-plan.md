@@ -157,7 +157,8 @@ focused, skybox-only framing (its own identity text, no surface-styling / object
    env scaffolded for Layer 2.
    - *Also shipped alongside:* **assets hard-scoped to their agent** (`config.agent_of`; public never
      crosses agents) — a server-side data-layer wall, see co-location-plan §8a.
-4. ⏭ **`--agent` flag** on cli/voice.
+4. ✅ **`--agent` flag** on cli/voice (default `builder`) → `Director.connect(agent=…)`; also fixed the
+   REPL/voice banners that still advertised the removed inline LLM switch.
 5. ⏭ **`agents/outdoor/`** (def + prompt), scoped to skybox tools; smoke-test `--agent outdoor`.
 6. ⏭ **Tool scoping Layer 2** (server-side hard gate) — *tracked; build when a §3c trigger lands.* The
    capability header from step 3 + a world-server middleware mirroring owner-only-writes; enforces

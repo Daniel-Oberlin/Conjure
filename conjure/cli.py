@@ -290,13 +290,14 @@ def cmd_skybox_from(s: Settings, a) -> None:
 
 # --------------------------------------------------------------------------- director (text)
 
-async def _director(s: Settings, make_instructions, verbose: bool, user: str = DEFAULT_USER) -> None:
+async def _director(s: Settings, make_instructions, verbose: bool, user: str = DEFAULT_USER,
+                    agent: str = "builder") -> None:
     """Drive the shell (conjure.shell) — which wraps the agent (conjure.director). `make_instructions`
     is a factory `shell -> async iterator of strings` (so the interactive prompt can reflect shell
     state). The shell owns deterministic commands + LLM switching; the agent builds the world; the CLI
-    only decides how to print."""
+    only decides how to print. `agent` selects which agent def to load (default `builder`)."""
     errlog = sys.stderr if verbose else None
-    async with Director.connect(s, user=user, errlog=errlog) as director:
+    async with Director.connect(s, agent=agent, user=user, errlog=errlog) as director:
         shell = Shell(director, s)
         multi = len(director.roster) > 1  # show who's speaking once there's more than one LLM
 
@@ -319,7 +320,7 @@ async def _director(s: Settings, make_instructions, verbose: bool, user: str = D
 def cmd_say(s: Settings, a) -> None:
     async def once(_shell):
         yield " ".join(a.text)
-    asyncio.run(_director(s, once, a.verbose, a.user))
+    asyncio.run(_director(s, once, a.verbose, a.user, a.agent))
 
 
 # Whole-line inputs that leave the REPL (case-insensitive). Exact match only, so "exit the room" is
@@ -329,8 +330,8 @@ _QUIT_WORDS = {":q", ":quit", "q", "quit", "exit", "bye", "goodbye"}
 
 def cmd_repl(s: Settings, a) -> None:
     print("Conjure REPL — type an instruction ('exit' or 'quit' to leave).\n"
-          "Switch LLM with 'let me talk to Gemini' or address one for a turn ('Claude, make a cat').\n"
-          "Type 'conjure open shell' for deterministic commands (switch agent/llm, status, …).")
+          "Type 'conjure open shell' for deterministic commands (switch LLM, status, …), then e.g. "
+          "'use Gemini' to switch the active LLM.")
 
     async def lines(shell: Shell):
         loop = asyncio.get_event_loop()
@@ -346,7 +347,7 @@ def cmd_repl(s: Settings, a) -> None:
             if line:
                 yield line
 
-    asyncio.run(_director(s, lines, a.verbose, a.user))
+    asyncio.run(_director(s, lines, a.verbose, a.user, a.agent))
 
 
 # --------------------------------------------------------------------------- argparse
@@ -359,6 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="conjure-cli", description="Drive the Conjure world from the terminal.")
     p.add_argument("-v", "--verbose", action="store_true", help="show tool calls and library logs")
     p.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
+    p.add_argument("--agent", default="builder", help="agent to load from agents/<name>/ (default: builder)")
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("world", help="print the current world").set_defaults(fn=cmd_world)

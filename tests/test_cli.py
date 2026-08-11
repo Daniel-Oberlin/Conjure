@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-from conjure.cli import _QUIT_WORDS
+from conjure.cli import _QUIT_WORDS, build_parser
 from conjure.config import get_settings
+
+
+def test_agent_flag_defaults_to_builder_and_is_captured():
+    p = build_parser()
+    assert p.parse_args(["say", "make a cat"]).agent == "builder"      # default
+    assert p.parse_args(["--agent", "outdoor", "repl"]).agent == "outdoor"
 
 
 def test_debug_registration_flag_defaults_off_and_reads_env(monkeypatch):
