@@ -37,9 +37,14 @@ class ServerSpec:
 
 @dataclass
 class ServerRef:
-    """An agent's reference to a registered server, with its access level."""
+    """An agent's reference to a registered server, with its access level and tool allow-list."""
     server: str
     access: str = "all"        # "all" | "read"  (read-only enforcement is a later slice)
+    # Tool allow-list — **opt-in only, no wildcard**: an agent gets exactly the tools it names, and the
+    # default (omitted) is NONE (default-deny), so every tool access is explicit and intentional.
+    # Enforced at launch by filtering the offered tools (director._scope_tools) + a runtime re-check;
+    # a hard server-side gate is a later slice (docs/agent-separation-plan.md §3c).
+    tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -101,7 +106,8 @@ def load_agent(name: str, *, agents_dir: Path = AGENTS_DIR,
 
     servers: list[ServerRef] = []
     for s in data.get("mcp_servers", []):
-        ref = ServerRef(server=s["server"], access=s.get("access", "all")) if isinstance(s, dict) \
+        ref = ServerRef(server=s["server"], access=s.get("access", "all"),
+                        tools=list(s.get("tools", []))) if isinstance(s, dict) \
             else ServerRef(server=str(s))
         servers.append(ref)
     if registry is not None:

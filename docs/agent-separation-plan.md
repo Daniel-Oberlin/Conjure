@@ -86,7 +86,8 @@ The agent def gains a per-server **tool allow-list**:
     "access": "all",
     "tools": ["generate_skybox_image", "set_skybox",
               "generate_grounded_skybox_image", "set_grounded_skybox",
-              "generate_image"] }      // omitted / "*" ⇒ all tools (builder today)
+              "generate_image"] }      // opt-in only, no wildcard: omitted ⇒ NONE (default-deny).
+                                       // builder enumerates the whole surface (a test keeps it in sync).
 ]
 ```
 
@@ -148,15 +149,17 @@ focused, skybox-only framing (its own identity text, no surface-styling / object
 
 ## 4. Order of work (each step green before the next)
 
-1. **Strip handover** from `director.py` (keep `_match_name`); fix `shell.py` docstring; update tests.
-2. **Identity → prompt**: move `identity_line` into `builder/prompt.md`; add `{user}` substitution;
-   `_system()` agent-agnostic; decouple the module-level builder default.
-3. **Tool scoping Layer 1**: allow-list field + connect-time filter + validate-at-connect +
-   `_execute_tool` re-check; unit-test. (Scaffold `CONJURE_TOOLS`/`CONJURE_ACCESS` plumbing here even
-   though the server doesn't read it yet — cheap, and it makes Layer 2 a drop-in.)
-4. **`--agent` flag** on cli/voice.
-5. **`agents/outdoor/`** (def + prompt), scoped to skybox tools; smoke-test `--agent outdoor`.
-6. **Tool scoping Layer 2** (server-side hard gate) — *tracked; build when a §3c trigger lands.* The
+1. ✅ **Strip handover** from `director.py` (kept `_match_name`); fixed `shell.py` docstring; tests.
+2. ✅ **Identity → prompt** + extensible injection framework (`{user}`, `{#context}…{/context}`);
+   `_system()` agent-agnostic; module-level builder default decoupled.
+3. ✅ **Tool scoping Layer 1**: `ServerRef.tools` allow-list + connect-time filter
+   (`_scope_tools`, fails loud on a typo) + `_execute_tool` re-check; `CONJURE_TOOLS`/`CONJURE_ACCESS`
+   env scaffolded for Layer 2.
+   - *Also shipped alongside:* **assets hard-scoped to their agent** (`config.agent_of`; public never
+     crosses agents) — a server-side data-layer wall, see co-location-plan §8a.
+4. ⏭ **`--agent` flag** on cli/voice.
+5. ⏭ **`agents/outdoor/`** (def + prompt), scoped to skybox tools; smoke-test `--agent outdoor`.
+6. ⏭ **Tool scoping Layer 2** (server-side hard gate) — *tracked; build when a §3c trigger lands.* The
    capability header from step 3 + a world-server middleware mirroring owner-only-writes; enforces
    both the tool allow-list and `access: "read"`.
 

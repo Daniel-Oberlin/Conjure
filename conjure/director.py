@@ -69,26 +69,48 @@ def _fill_injection(prompt: str, name: str, value: str) -> str:
 
 # --------------------------------------------------------------------------- the director
 
-def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", user: str = DEFAULT_USER):
+def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", user: str = DEFAULT_USER,
+                  *, tools: Optional[list[str]] = None, access: str = "all"):
     """Build stdio launch params from a registry ServerSpec: map a bare 'python' to this interpreter,
-    substitute ${world_url} in the env, and inject the (user, agent) catalog SCOPE as a capability (so
-    the MCP server's maintenance tools are scoped to this user+agent — never an LLM arg)."""
+    substitute ${world_url} in the env, and inject the agent's **capabilities** as env (never LLM args):
+    the (user, agent) catalog SCOPE, plus the tool allow-list + access level. The MCP server enforces
+    SCOPE today; CONJURE_TOOLS/CONJURE_ACCESS are scaffolded for the later server-side gate
+    (docs/agent-separation-plan.md §3c) — the client-side filter is what scopes tools for now."""
     from mcp import StdioServerParameters
     command = sys.executable if spec.command in ("python", "python3") else spec.command
     env = {**os.environ, **{k: v.replace("${world_url}", settings.world_url) for k, v in spec.env.items()}}
     env["CONJURE_SCOPE"] = scope_for(user, agent)
+    env["CONJURE_ACCESS"] = access
+    env["CONJURE_TOOLS"] = ",".join(tools or [])     # explicit allow-list (empty = no tools)
     return StdioServerParameters(command=command, args=list(spec.args), env=env)
+
+
+def _scope_tools(live, allow: list[str]):
+    """Filter the live MCP tools to an agent's explicit allow-list (`ServerRef.tools`). Tool access is
+    **opt-in only** — there is no wildcard: an agent gets exactly the tools it names, and an empty list
+    means none (default-deny). Raises if the allow-list names a tool the server doesn't expose — a typo
+    should fail loudly, not silently under-grant. Enforcement-by-omission: the LLM is only ever
+    *offered* the tools that survive this filter (a hard server-side gate is a later slice)."""
+    names = {t.name for t in live}
+    unknown = sorted(t for t in allow if t not in names)
+    if unknown:
+        raise RuntimeError(f"agent tool allow-list references unknown tool(s) {unknown}; "
+                           f"server exposes {sorted(names)}")
+    return [t for t in live if t.name in allow]
 
 
 class Director:
     def __init__(self, settings: Settings, session, roster: dict[str, LLM], active: str,
                  tools: Optional[list[ToolSpec]] = None, prompt: str = _DEFAULT_PROMPT,
-                 agent: Optional[AgentDef] = None, user: str = DEFAULT_USER):
+                 agent: Optional[AgentDef] = None, user: str = DEFAULT_USER,
+                 allowed_tools: Optional[set[str]] = None):
         self._settings = settings
         self._session = session          # MCP ClientSession (or a stand-in in tests)
         self.roster = roster
         self.active = active
         self._tools = tools or []
+        self._allowed_tools = allowed_tools  # the agent's explicit tool allow-list (names); None only for
+                                             # a bare Director()/tests (no scoping). `connect` always sets it.
         self._prompt = prompt
         self.agent = agent               # the loaded agent def (None in lightweight tests)
         self.user = user                 # the logged-in user this director acts as (owns its spaces/worlds)
@@ -120,12 +142,14 @@ class Director:
                   else default_active if default_active in roster            # then settings.llm
                   else next(iter(roster)))                                   # then first available
 
-        specs = [registry[r.server] for r in agentdef.servers if r.server in registry]
-        if len(specs) != 1:
+        refs = [r for r in agentdef.servers if r.server in registry]
+        if len(refs) != 1:
             raise RuntimeError(
-                f"agent {agent!r}: v1 launches exactly one MCP server (got {len(specs)}: "
-                f"{[s.name for s in specs]}).")
-        params = _stdio_params(specs[0], settings, agent, user)
+                f"agent {agent!r}: v1 launches exactly one MCP server (got {len(refs)}: "
+                f"{[r.server for r in refs]}).")
+        ref = refs[0]
+        params = _stdio_params(registry[ref.server], settings, agent, user,
+                               tools=ref.tools, access=ref.access)
 
         close_errlog = None
         if errlog is None:
@@ -134,10 +158,11 @@ class Director:
             async with stdio_client(params, errlog=errlog) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
-                    tools = [ToolSpec(t.name, t.description or "", t.inputSchema)
-                             for t in (await session.list_tools()).tools]
-                    yield cls(settings, session, roster, active, tools,
-                              prompt=agentdef.prompt, agent=agentdef, user=user)
+                    # Scope the offered tools to the agent's explicit allow-list (fails loud on a typo).
+                    scoped = _scope_tools((await session.list_tools()).tools, ref.tools)
+                    tools = [ToolSpec(t.name, t.description or "", t.inputSchema) for t in scoped]
+                    yield cls(settings, session, roster, active, tools, prompt=agentdef.prompt,
+                              agent=agentdef, user=user, allowed_tools={t.name for t in scoped})
         finally:
             if close_errlog is not None:
                 close_errlog.close()
@@ -184,6 +209,11 @@ class Director:
             pass
 
     async def _execute_tool(self, name: str, args: dict, on_tool: Optional[OnTool], who: str) -> str:
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            # Defense-in-depth beyond offering-only: a call outside the agent's tool scope (e.g. from a
+            # future programmatic/persona path, not the LLM's offered set) is refused, not executed.
+            await self._log(f"{who}/tool", f"BLOCKED {name} (out of agent tool scope)")
+            return f"error: tool {name!r} is not available to this agent"
         if on_tool:
             await on_tool(name, args)
         await self._log(f"{who}/tool", f"{name}({json.dumps(args, default=str)[:600]})")

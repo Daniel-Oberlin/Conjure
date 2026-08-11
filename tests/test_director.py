@@ -4,6 +4,8 @@ The orchestration test drives a real Director against fake LLMs + a fake MCP ses
 no SDKs. LLM switching is deterministic and lives in the shell now (see test_shell.py); the Director
 no longer parses handovers out of an utterance."""
 
+import pytest
+
 from conjure.agents import load_agent
 from conjure.director import Director, _fill_injection
 from conjure.llm import Turn
@@ -233,3 +235,45 @@ def test_stdio_params_maps_python_and_substitutes_world_url():
     assert p.command == sys.executable
     assert p.args == ["-m", "conjure.mcp_server"]
     assert p.env["CONJURE_URL"] == "http://host:9999"
+    # capabilities injected as env (never LLM args): scope + tool allow-list + access level
+    assert p.env["CONJURE_SCOPE"].endswith("/agents/builder")
+    assert p.env["CONJURE_TOOLS"] == "" and p.env["CONJURE_ACCESS"] == "all"   # no tools by default (opt-in)
+
+
+def test_stdio_params_scaffolds_tool_scope_capabilities():
+    import sys  # noqa: F401
+
+    from conjure.agents import ServerSpec
+    from conjure.director import _stdio_params
+
+    spec = ServerSpec(name="world", command="python", args=[], env={})
+    p = _stdio_params(spec, type("S", (), {"world_url": "http://h"})(), agent="outdoor",
+                      tools=["set_skybox", "generate_skybox_image"], access="read")
+    assert p.env["CONJURE_TOOLS"] == "set_skybox,generate_skybox_image"
+    assert p.env["CONJURE_ACCESS"] == "read"
+    assert p.env["CONJURE_SCOPE"].endswith("/agents/outdoor")
+
+
+def test_scope_tools_is_opt_in_only_and_fails_loud_on_typo():
+    from conjure.director import _scope_tools
+
+    def T(n):
+        return type("T", (), {"name": n, "description": "", "inputSchema": {}})()
+
+    live = [T("set_skybox"), T("style_surface"), T("generate_skybox_image")]
+    assert _scope_tools(live, []) == []                                                    # none by default (deny)
+    assert {t.name for t in _scope_tools(live, ["set_skybox"])} == {"set_skybox"}           # explicit opt-in
+    assert {t.name for t in _scope_tools(live, ["set_skybox", "style_surface"])} \
+        == {"set_skybox", "style_surface"}
+    with pytest.raises(RuntimeError, match="unknown tool"):
+        _scope_tools(live, ["set_skybox", "nope"])                                          # typo → loud
+
+
+async def test_execute_tool_blocks_out_of_agent_scope():
+    d = _director(active="Claude")
+    d._allowed_tools = {"set_skybox"}                       # e.g. an outdoor-style scoped director
+    out = await d._execute_tool("style_surface", {}, None, "outdoor.claude")
+    assert "not available" in out                          # refused
+    assert d._session.calls == []                          # never reached the MCP session
+    await d._execute_tool("set_skybox", {"image_id": "x"}, None, "outdoor.claude")
+    assert d._session.calls == [("set_skybox", {"image_id": "x"})]   # allowed tool runs

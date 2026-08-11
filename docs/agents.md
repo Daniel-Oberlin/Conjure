@@ -140,8 +140,10 @@ the agent's own dir. Sketch (schema firms up in §9):
   "llms": ["*"],                                 // allow-list, or "*" = any configured LLM
   "default_llm": "claude",                       // active brain when you switch to this agent
   "mcp_servers": [
-    { "server": "world", "access": "all" },      // ref into the server registry; access: "read" | "all"
-    { "server": "assets", "access": "all" }
+    // ref into the server registry; access: "read" | "all"; `tools` is opt-in only (no wildcard) —
+    // omitted = none. List exactly the tools this agent may call.
+    { "server": "world", "access": "all", "tools": ["set_skybox", "generate_skybox_image"] },
+    { "server": "assets", "access": "all", "tools": ["search_library"] }
   ],
   "context": ["room://current"],                 // MCP resources injected into the prompt each turn (§5)
   "personas": ["personas/goblin.json"]           // optional participants (§3a); may also be made at runtime
@@ -159,13 +161,21 @@ system picks a compatible LLM) — explicit list first.
 
 **Scoping MCP servers.** `mcp_servers` references the server **registry** (§4) by name. **Default-deny:**
 a server not listed is invisible. `"*"` grants any registered server — the deliberate "god" escape hatch.
-Enforcement is by **tool-list construction**, not runtime checks: the LLM is only handed the tools from
-its in-scope servers, so it *cannot* call anything else (nothing to call). `access: "read"` (vs `"all"`)
-exposes only a server's read-only tools/resources — see the granularity decision in §9.
+A per-server **`tools`** allow-list narrows further, and is **opt-in only — no wildcard**: an agent
+gets exactly the tools it names, and omitting `tools` grants **none** (default-deny), so every tool
+access is explicit and intentional. The `builder` therefore enumerates the whole world tool surface
+(a test asserts it stays in sync); `outdoor` lists just the skybox tools. Enforcement today is
+**client-side + fail-loud**: `director._scope_tools` filters the offered tool list to the allow-list
+(validating each name against the live server — a typo raises), so the LLM is only ever *handed* its
+in-scope tools and `_execute_tool` re-checks each call (defense-in-depth for non-LLM paths). The
+agent's `(tools, access)` are also injected as `CONJURE_TOOLS`/`CONJURE_ACCESS` env — **scaffolding**
+for the later hard server-side gate (agent-separation-plan §3c); `access: "read"` (vs `"all"`) enforcement
+is that same later slice. See the granularity decision in §9.
 
 **Prompt.** Inline string or `prompt_file` (long prompts — ours is already a screenful — don't belong in
-JSON). Template variables available to the prompt: `{name}` (agent), the active LLM name, the roster of
-other agents/LLMs present (today's `roster_line`), and the injected context (§5).
+JSON). The prompt is **LLM-agnostic** and owns all its own text; the runtime only fills injection
+placeholders (§5): `{user}` (the logged-in user) and `{context}` / `{#context}…{/context}` (live MCP
+context). The agent no longer sees which LLM speaks for it, nor a roster line.
 
 ### 3a. Personas — participants, not operators  🟡
 
