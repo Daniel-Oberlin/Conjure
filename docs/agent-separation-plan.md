@@ -159,7 +159,10 @@ focused, skybox-only framing (its own identity text, no surface-styling / object
      crosses agents) — a server-side data-layer wall, see co-location-plan §8a.
 4. ✅ **`--agent` flag** on cli/voice (default `builder`) → `Director.connect(agent=…)`; also fixed the
    REPL/voice banners that still advertised the removed inline LLM switch.
-5. ⏭ **`agents/outdoor/`** (def + prompt), scoped to skybox tools; smoke-test `--agent outdoor`.
+5. ✅ **`agents/outdoor/`** (def + prompt) — scoped to sky + world tools only (no context resources /
+   `{context}`: it pays zero per-turn context cost, a live contrast with builder). Test asserts it loads,
+   is skybox-scoped, and has no typo'd tool names. *Live `--agent outdoor` run is a manual on-device
+   smoke test (needs world server + LLM keys).*
 6. ⏭ **Tool scoping Layer 2** (server-side hard gate) — *tracked; build when a §3c trigger lands.* The
    capability header from step 3 + a world-server middleware mirroring owner-only-writes; enforces
    both the tool allow-list and `access: "read"`.

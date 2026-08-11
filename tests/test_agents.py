@@ -81,6 +81,25 @@ def test_builder_declares_exactly_the_world_tool_surface():
     }
 
 
+def test_outdoor_agent_is_scoped_to_skybox_tools():
+    import pathlib
+    import re
+
+    import conjure
+    a = load_agent("outdoor", registry=load_server_registry())     # registry validates the server exists
+    tools = set(a.servers[0].tools)
+    # it can make both kinds of sky + manage its own worlds…
+    assert {"generate_skybox_image", "set_skybox",
+            "generate_grounded_skybox_image", "set_grounded_skybox"} <= tools
+    # …and NOTHING builder-only (no surface/entity/asset-CRUD tools leak in)
+    assert not (tools & {"style_surface", "texture_surface", "add_entity", "update_entity",
+                         "place_asset", "update_asset", "query_assets"})
+    # every listed tool is real, so it won't fail at launch on a typo (director._scope_tools)
+    src = (pathlib.Path(conjure.__file__).parent / "mcp_server.py").read_text()
+    server_tools = set(re.findall(r"@mcp\.tool\([^)]*\)\s*\nasync def (\w+)", src))
+    assert tools <= server_tools, tools - server_tools
+
+
 def test_server_ref_tools_allow_list_parses(tmp_path):
     _write_agent(tmp_path, "sky", {"prompt": "hi", "mcp_servers": [
         {"server": "world", "tools": ["set_skybox", "generate_skybox_image"]}]})
