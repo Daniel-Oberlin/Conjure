@@ -7,9 +7,10 @@ self-contained directory — `agents/<name>/agent.json` plus its `prompt.md` (an
 identity. This module just **loads and validates** those defs; the runtime wiring (launching servers,
 building the roster) lives in director.py.
 
-v1 scope: the data model + loader, with the `builder` agent reproducing today's director. Scoping
-*enforcement* (read-only access, tool filtering), multi-server launch, personas, and context
-injection are later slices — their fields are carried here but not yet acted on.
+v1 scope: the data model + loader. Tool scoping (`tools` allow-list) and read-only `access` are now
+**enforced** — client-side in `director` and hard in `mcp_server._GatedMCP` (agent-separation-plan §3c).
+Context injection is wired too (director `{context}`). Multi-server launch and personas remain later
+slices — their fields are carried here but not yet acted on.
 """
 from __future__ import annotations
 
@@ -39,11 +40,12 @@ class ServerSpec:
 class ServerRef:
     """An agent's reference to a registered server, with its access level and tool allow-list."""
     server: str
-    access: str = "all"        # "all" | "read"  (read-only enforcement is a later slice)
+    access: str = "all"        # "all" | "read"  (read-only enforced by mcp_server._GatedMCP, §3c)
     # Tool allow-list — **opt-in only, no wildcard**: an agent gets exactly the tools it names, and the
     # default (omitted) is NONE (default-deny), so every tool access is explicit and intentional.
-    # Enforced at launch by filtering the offered tools (director._scope_tools) + a runtime re-check;
-    # a hard server-side gate is a later slice (docs/agent-separation-plan.md §3c).
+    # Enforced two ways (docs/agent-separation-plan.md §3c): client-side by filtering the offered tools
+    # (director._scope_tools) + a runtime re-check, AND a hard gate in mcp_server._GatedMCP (a separate
+    # process from the LLM) that refuses a disallowed tool before any world-server call.
     tools: list[str] = field(default_factory=list)
 
 

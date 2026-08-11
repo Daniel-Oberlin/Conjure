@@ -101,20 +101,23 @@ guards so omission fails **loud**, not open:
 2. **Re-check the allow-list in `Director._execute_tool`** — catches programmatic / persona /
    agent-to-agent calls that still route through the Director (not just the offered list).
 
-**Layer 2 — server-side hard gate (the real boundary; scaffolded now, enforced on trigger).**
-Layer 1 restricts the *model*, not the *capability*: `mcp_server.py` still exposes every tool and
-`server.py` still accepts every request, so any path that doesn't go through this Director's filtered
-list (a direct HTTP client, a second agent, the future shared agent-server) is unscoped. The hard gate
-closes that by making the world server itself refuse a disallowed tool — mirroring the existing
-**owner-only-writes** middleware (`server.py` ~400–410, 403 on `X-Conjure-User` ≠ owner):
+**Layer 2 — hard gate at the MCP server (the real boundary). ✅ DONE.**
+Layer 1 restricts the *model*, not the *capability*, so any path that doesn't go through the Director's
+filtered list (a persona, agent-to-agent, the future shared agent-server) would be unscoped. Layer 2
+closes that in **`mcp_server.py`** — a process *separate from the LLM/director* — via `_GatedMCP`, a
+`FastMCP` subclass whose `call_tool` refuses a disallowed tool (or, under `access: "read"`, a mutating
+one) **before** any world-server call, returning an error result. It reads the `CONJURE_TOOLS` /
+`CONJURE_ACCESS` **capability env** injected at MCP launch (alongside `CONJURE_SCOPE`), so it holds
+regardless of what the model was offered — a Layer-1 filter bug or a non-LLM path can't bypass it.
 
-- The agent's `(allowed tools, access level)` travels to the world server as a **capability**, the
-  same way `X-Conjure-Scope` already travels for ownership (`mcp_server.py:49`). Injected once at MCP
-  launch (`director.py` sets `CONJURE_SCOPE`; add `CONJURE_TOOLS` / `CONJURE_ACCESS`).
-- A small server-side middleware maps request → tool/capability and returns **403** if it's outside
-  the agent's grant (and enforces `access: "read"` = no mutating endpoints — the same unenforced slice
-  gets closed here).
-- Independent of what the LLM was offered, so a Layer-1 filter bug or a non-LLM path can't bypass it.
+*Why here, not a `server.py` middleware (as first sketched):* the world server can't do **per-tool**
+scoping — most mutating tools funnel through one generic `/patch` endpoint, so a path→tool mapping
+doesn't exist. Tool identity only exists at the MCP layer, which is where the gate must live. And under
+the no-auth, header-trust model, a `server.py` capability check adds nothing against a *malicious*
+direct HTTP client (it would just omit the header); the only honest client is our own MCP server, which
+now self-enforces. The out-of-model-process boundary (MCP server ≠ LLM) is what makes it a real second
+layer. (A direct raw HTTP client to `server.py` remains out of scope — same posture as the existing
+header-trusting owner-only-writes.)
 
 **Why staged, not gate-first:** for the current threat model (friendly users, your own agents, "no
 security" is the documented posture — spaces-and-users-plan) Layer 1 already achieves the *behavior*,
@@ -163,12 +166,15 @@ focused, skybox-only framing (its own identity text, no surface-styling / object
    `{context}`: it pays zero per-turn context cost, a live contrast with builder). Test asserts it loads,
    is skybox-scoped, and has no typo'd tool names. *Live `--agent outdoor` run is a manual on-device
    smoke test (needs world server + LLM keys).*
-6. ⏭ **Tool scoping Layer 2** (server-side hard gate) — *tracked; build when a §3c trigger lands.* The
-   capability header from step 3 + a world-server middleware mirroring owner-only-writes; enforces
-   both the tool allow-list and `access: "read"`.
+6. ✅ **Tool scoping Layer 2** (hard gate) — `_GatedMCP.call_tool` in `mcp_server.py` refuses a
+   disallowed tool (and, under `access: "read"`, a mutating one) from the `CONJURE_TOOLS`/`CONJURE_ACCESS`
+   capability env, before any world-server call. A separate process from the LLM, so it can't be
+   bypassed by a Layer-1 filter bug or a non-LLM path. (Built at the MCP layer, not `server.py` — see
+   §3c for why per-tool can't live at the world server.)
 
-Steps 1–5 are the near-term separation + test. Step 6 is the enforced boundary, deliberately deferred
-but with its trigger conditions written down so it can't be silently forgotten.
+All six steps done. Remaining: the live `--agent outdoor` on-device smoke test, and a future
+`server.py`-level check would only matter if the trust model gains auth (then a direct-HTTP gate
+becomes meaningful).
 
 ---
 

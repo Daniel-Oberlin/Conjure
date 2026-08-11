@@ -164,13 +164,15 @@ a server not listed is invisible. `"*"` grants any registered server — the del
 A per-server **`tools`** allow-list narrows further, and is **opt-in only — no wildcard**: an agent
 gets exactly the tools it names, and omitting `tools` grants **none** (default-deny), so every tool
 access is explicit and intentional. The `builder` therefore enumerates the whole world tool surface
-(a test asserts it stays in sync); `outdoor` lists just the skybox tools. Enforcement today is
-**client-side + fail-loud**: `director._scope_tools` filters the offered tool list to the allow-list
+(a test asserts it stays in sync); `outdoor` lists just the skybox tools. Enforcement is **two-layer**:
+(1) **client-side + fail-loud** — `director._scope_tools` filters the offered tool list to the allow-list
 (validating each name against the live server — a typo raises), so the LLM is only ever *handed* its
-in-scope tools and `_execute_tool` re-checks each call (defense-in-depth for non-LLM paths). The
-agent's `(tools, access)` are also injected as `CONJURE_TOOLS`/`CONJURE_ACCESS` env — **scaffolding**
-for the later hard server-side gate (agent-separation-plan §3c); `access: "read"` (vs `"all"`) enforcement
-is that same later slice. See the granularity decision in §9.
+in-scope tools, and `_execute_tool` re-checks each call; (2) a **hard gate** in `mcp_server.py`
+(`_GatedMCP.call_tool`), a process *separate from the LLM*, which refuses a disallowed tool — or, under
+`access: "read"`, a mutating one — from the `CONJURE_TOOLS`/`CONJURE_ACCESS` capability env, before any
+world-server call. Layer 2 holds regardless of what the model was offered (a persona/agent-to-agent path
+can't bypass it). It lives at the MCP layer, not `server.py`, because tool identity only exists there
+(most mutating tools share one `/patch` endpoint). See the granularity decision in §9.
 
 **Prompt.** Inline string or `prompt_file` (long prompts — ours is already a screenful — don't belong in
 JSON). The prompt is **LLM-agnostic** and owns all its own text; the runtime only fills injection
