@@ -121,7 +121,15 @@ wake-prefix for inline commands, and a small command registry (`open`/`exit`, `h
 `llms`, `agents`, plus `talk to/use <llm>` LLM-switching) are in. Input that isn't a recognised command
 is forwarded to the agent unchanged. LLM switching is now **shell-only** — `route_turn` has been
 removed from `director.handle`, so the agent no longer parses handovers out of an utterance.
-**Deferred:** world ops as commands (`reset`/`save`/`load`); agent-switching (waits on a second agent).
+Agent-switching is now in too: **`agent <name>`** tears down the current agent's MCP server and
+launches the named one in its own fresh context (the Shell owns the director lifecycle via
+`Shell.session`; **close-old-then-open-new**, LIFO-safe for the MCP client's anyio scopes, with a
+restore-on-failure so a bad switch doesn't strand you). It then makes a world in the **new agent's
+scope** live — resuming that scope's last-active world, or creating its `default` — via the world
+server's `POST /scope/activate`, so switching agents doesn't leave the previous agent's world showing.
+The **last-used agent persists** per user (the world server records it on `/scope/activate`; `GET
+/agent/last?user=` reads it), so a front-end launched **without** `--agent` resumes it (else `builder`).
+**Deferred:** world ops as commands (`reset`/`save`/`load`).
 
 ## 3. The agent  🟡
 

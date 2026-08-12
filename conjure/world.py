@@ -240,6 +240,16 @@ class WorldRepository:
         d.mkdir(parents=True, exist_ok=True)
         (d / "_active.txt").write_text(world_path(name))
 
+    def get_last_agent(self, user: str) -> str | None:
+        """The agent this `user` last used (persisted so a front-end can resume it on next launch)."""
+        p = self._scope_dir(user) / "_last_agent.txt"
+        return (p.read_text().strip() or None) if p.exists() else None
+
+    def set_last_agent(self, user: str, agent: str) -> None:
+        d = self._scope_dir(user)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "_last_agent.txt").write_text(agent)
+
     # -- admin (shell dir/delete; docs/agents.md §2) ---------------------------------------------
     def list_users(self) -> list[str]:
         """Every user with worlds on disk — the immediate subdirs of the root (`<root>/<user>/…`)."""

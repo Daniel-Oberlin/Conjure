@@ -25,11 +25,11 @@ import json
 import logging
 import sys
 import uuid
+from typing import Optional
 
 import httpx
 
 from .config import DEFAULT_USER, Settings, get_settings
-from .director import Director
 from .shell import Shell
 
 
@@ -291,19 +291,19 @@ def cmd_skybox_from(s: Settings, a) -> None:
 # --------------------------------------------------------------------------- director (text)
 
 async def _director(s: Settings, make_instructions, verbose: bool, user: str = DEFAULT_USER,
-                    agent: str = "builder") -> None:
+                    agent: Optional[str] = None) -> None:
     """Drive the shell (conjure.shell) — which wraps the agent (conjure.director). `make_instructions`
     is a factory `shell -> async iterator of strings` (so the interactive prompt can reflect shell
     state). The shell owns deterministic commands + LLM switching; the agent builds the world; the CLI
     only decides how to print. `agent` selects which agent def to load (default `builder`)."""
     errlog = sys.stderr if verbose else None
-    async with Director.connect(s, agent=agent, user=user, errlog=errlog) as director:
-        shell = Shell(director, s)
-        multi = len(director.roster) > 1  # show who's speaking once there's more than one LLM
+    async with Shell.session(s, agent=agent, user=user, errlog=errlog) as shell:
 
         async def on_text(text: str, *, final: bool, speaker: str) -> None:
             # Print every reply chunk — including the upfront acknowledgement ("On it") the agent emits
-            # before running the tools — so there's immediate feedback during slow work.
+            # before running the tools — so there's immediate feedback during slow work. Show who's
+            # speaking once there's more than one LLM (read live — the roster can change on agent switch).
+            multi = len(shell.director.roster) > 1
             print(f"{speaker}: {text}" if multi or speaker == "shell" else text)
 
         async def on_tool(name: str, args: dict) -> None:
@@ -360,7 +360,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="conjure-cli", description="Drive the Conjure world from the terminal.")
     p.add_argument("-v", "--verbose", action="store_true", help="show tool calls and library logs")
     p.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
-    p.add_argument("--agent", default="builder", help="agent to load from agents/<name>/ (default: builder)")
+    p.add_argument("--agent", default=None,
+                   help="agent to load from agents/<name>/ (default: resume your last-used, else builder)")
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("world", help="print the current world").set_defaults(fn=cmd_world)

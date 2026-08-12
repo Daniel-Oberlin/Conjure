@@ -138,8 +138,9 @@ trust boundary on it prematurely.
 ### 3d. Launch a non-builder agent
 
 `Director.connect(agent=…)` already supports it, but `cli.py`/`voice.py` always pass `builder`. Add an
-`--agent` flag to both (default `builder`) so we can run `--agent outdoor`. (No shell agent-switch yet
-— the shell only *lists* agents today; switch-agent-in-shell is a follow-up.)
+`--agent` flag to both (default `builder`) so we can run `--agent outdoor`. **Live switching** then
+followed via the shell command `agent <name>` (the Shell owns the director lifecycle — `Shell.session`
+— and relaunches the agent's MCP server on switch).
 
 ### 3e. The `outdoor` agent
 
@@ -187,8 +188,8 @@ becomes meaningful).
   shell remains. Intended.
 - **Prompt text duplication** (ownership rules) between builder and outdoor until a shared include —
   accepted for now.
-- **`--agent` at launch only** (no live agent switching yet) — fine for testing; revisit with the
-  shell.
+- **Agent switching** works at launch (`--agent`) and live (shell `agent <name>`). Switching relaunches
+  the MCP server and starts the new agent's own transcript (agents.md: switching agent = new context).
 
 ---
 
@@ -200,5 +201,6 @@ becomes meaningful).
   limits (e.g. outdoor may `generate_image` but only for skybox use)? Flat list first.
 - **`access: "read"` semantics:** exact set of endpoints classed as mutating (settle when Layer 2 is
   built).
-- **Shell agent-switch:** add `switch <agent>` to the shell (parallel to LLM switch) as the follow-up
-  to `--agent`.
+- ~~**Shell agent-switch:**~~ ✅ done — `agent <name>` in the shell (the Shell owns the director
+  lifecycle via `Shell.session`, tearing down/relaunching the agent's MCP server; new agent = fresh
+  context). Parallel to the LLM `use <name>` switch.

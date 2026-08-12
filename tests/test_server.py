@@ -1682,3 +1682,41 @@ def test_move_leaves_unanchored_content_alone(srv, client):
     client.post("/patch", json={"ops": [{"op": "update", "id": "ent_free", "set": {"transform.position": [1, 1, -2]}}]})
     e = next(x for x in _entities(client) if x["id"] == "ent_free")
     assert "anchor" not in (e.get("meta") or {})
+
+
+# ---- /scope/activate: switch the live world to a scope's world (agent switch) --------------------
+
+def test_scope_activate_is_noop_when_already_active(srv, client):
+    r = client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE}).json()
+    assert r["ok"] and r.get("unchanged") and srv.active_scope == srv.DEFAULT_SCOPE
+
+
+def test_scope_activate_creates_default_for_a_new_agent_scope(srv, client):
+    outdoor = "daniel/agents/outdoor"
+    r = client.post("/scope/activate", json={"scope": outdoor}).json()
+    assert r["ok"] and r["world"] == "default"
+    assert srv.active_scope == outdoor                        # the live world now belongs to outdoor
+    assert srv.worlds.exists(outdoor, "default")             # …created + persisted under its scope
+
+
+def test_scope_activate_resumes_last_active_with_its_content(srv, client):
+    outdoor = "daniel/agents/outdoor"
+    client.post("/scope/activate", json={"scope": outdoor})       # outdoor/default live
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {"id": "sky_marker", "components": {}}}]})
+    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})   # leave (saves outdoor/default)
+    assert srv.active_scope == srv.DEFAULT_SCOPE
+    client.post("/scope/activate", json={"scope": outdoor})       # return → resume, not recreate
+    assert srv.active_scope == outdoor
+    assert "sky_marker" in {e["id"] for e in _entities(client)}   # its content came back
+
+
+def test_agent_last_defaults_to_builder(srv, client):
+    assert client.get("/agent/last", params={"user": "someone_new"}).json()["agent"] == "builder"
+
+
+def test_scope_activate_records_the_users_last_used_agent(srv, client):
+    client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"})
+    assert srv.worlds.get_last_agent("daniel") == "outdoor"
+    assert client.get("/agent/last", params={"user": "daniel"}).json()["agent"] == "outdoor"
+    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})   # switching back records builder
+    assert client.get("/agent/last", params={"user": "daniel"}).json()["agent"] == "builder"

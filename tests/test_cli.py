@@ -6,9 +6,9 @@ from conjure.cli import _QUIT_WORDS, build_parser
 from conjure.config import get_settings
 
 
-def test_agent_flag_defaults_to_builder_and_is_captured():
+def test_agent_flag_defaults_to_none_resume_and_is_captured():
     p = build_parser()
-    assert p.parse_args(["say", "make a cat"]).agent == "builder"      # default
+    assert p.parse_args(["say", "make a cat"]).agent is None           # omitted → resume last-used
     assert p.parse_args(["--agent", "outdoor", "repl"]).agent == "outdoor"
 
 

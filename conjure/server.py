@@ -956,6 +956,38 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     return {"ok": True, "world": name, "rev": store.doc["rev"]}
 
 
+async def _activate_scope(scope: str) -> dict:
+    """Make a world in `scope` live: resume that scope's last-active world, or create its `default` if
+    the scope has none — the `_boot_world` logic generalized to any scope. A no-op when `scope` is
+    already active. Used on agent switch so the live world belongs to the NEW agent's scope, not the
+    previous agent's (a fresh world with no captured space resolves to VOID — skybox/objects only)."""
+    worlds.set_last_agent(scope.split("/", 1)[0], agent_of(scope))   # remember this user's last-used agent
+    if scope == active_scope:
+        return {"ok": True, "world": active_world, "scope": scope, "unchanged": True}
+    active = worlds.get_active(scope)
+    if active and worlds.exists(scope, active):
+        return await _switch_to(scope, active)                 # resume the scope's last-active world
+    return await _switch_to(scope, "default", store_override=_new_world_store(scope))  # or create its default
+
+
+class ActivateScopeRequest(BaseModel):
+    scope: str = DEFAULT_SCOPE
+
+
+@app.post("/scope/activate")
+async def scope_activate(req: ActivateScopeRequest) -> dict:
+    """Activate a world in `scope` (resume last-active, else create default). Called on agent switch so
+    the live world matches the new agent. Un-gated like /worlds/switch — everyone present comes along."""
+    return await _activate_scope(req.scope)
+
+
+@app.get("/agent/last")
+async def agent_last(user: str = DEFAULT_USER) -> dict:
+    """The agent `user` last used (recorded by /scope/activate), so a front-end launched without an
+    explicit --agent resumes it. Defaults to `builder` when the user has no record yet."""
+    return {"ok": True, "agent": worlds.get_last_agent(user) or "builder"}
+
+
 class WorldRef(BaseModel):
     name: str
     scope: str = DEFAULT_SCOPE
