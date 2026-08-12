@@ -144,6 +144,15 @@ like the maintenance tools — so it's no longer unscoped (fixes the old search-
 `place_cached_asset` resolves by hash and bytes are global, so a referenced public asset already places.
 Writes stay own-scope only; no prompt changes. **Not** cross-machine federation (a separate future item).
 
+**Hard agent wall (added later).** The `public` share is bounded by the **agent** segment of the scope:
+assets are hard-scoped to their agent, so a `builder` caller never sees an `outdoor` asset — *even a
+public one* — and vice-versa. The predicate is now `scope=? OR (public=1 AND same-agent)`
+(`config.agent_of`; `scope GLOB '*/agents/<agent>'` in SQL, an explicit check in `vector_search`), and
+the reuse-by-id paths (`place_cached_asset`, `_get_image`) enforce the same via `_asset_in_agent_scope`
+so a known id can't sidestep it. So the cross-user `public` share here means "another user's assets
+**for the same agent**" — the friend's `builder` sees your `builder` publics, never your `outdoor` ones.
+Rendering a shared world is unaffected (assets serve by hash, not via the scoped catalog).
+
 ## 9. What changes
 
 **Server:** per-connection `user` on `/ws`; world `public` flag + the join gate; `ingest_room` authority

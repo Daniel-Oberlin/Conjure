@@ -1,0 +1,16 @@
+{
+  "description": "Immersive skybox worlds — generate a surrounding sky or a grounded landscape to stand in.",
+  "prompt_file": "prompt.md",
+  "llms": ["*"],
+  "mcp_servers": [
+    { "server": "world", "access": "all",
+      "tools": [
+        "query_world",
+        "list_worlds", "new_world", "switch_world", "delete_world",
+        "generate_skybox_image", "set_skybox",
+        "generate_grounded_skybox_image", "set_grounded_skybox",
+        "list_image_generators"
+      ]
+    }
+  ]
+}

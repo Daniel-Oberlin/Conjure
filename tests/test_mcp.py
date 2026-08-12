@@ -400,3 +400,40 @@ async def test_switch_world_tool_reports_error(monkeypatch):
         return_value=httpx.Response(200, json={"ok": False, "error": "no world 'nope'"}))
     out = await _tool("switch_world")(name="nope")
     assert "Couldn't switch" in out and "nope" in out
+
+
+# --- Hard tool gate (agent-separation-plan §3c, Layer 2) -------------------------------------------
+
+async def test_tool_gate_blocks_out_of_scope_tool(monkeypatch):
+    # Enforced in the real wired dispatch (mcp.call_tool), a separate process from the LLM — so it
+    # holds regardless of what the model was offered. Denied BEFORE any HTTP to the world server.
+    monkeypatch.setattr(m, "_ALLOWED_TOOLS", {"set_skybox"})
+    monkeypatch.setattr(m, "_ACCESS", "all")
+    out = await m.mcp.call_tool("style_surface", {})
+    assert "not permitted" in "".join(getattr(c, "text", "") for c in out)
+    assert m._tool_denied("set_skybox") is None                 # an allowed tool passes the gate
+
+
+async def test_tool_gate_read_only_blocks_mutating(monkeypatch):
+    monkeypatch.setattr(m, "_ALLOWED_TOOLS", None)              # no tool-list restriction…
+    monkeypatch.setattr(m, "_ACCESS", "read")                  # …but read-only access
+    out = await m.mcp.call_tool("add_entity", {})
+    assert "read-only" in "".join(getattr(c, "text", "") for c in out)
+    assert m._tool_denied("query_world") is None                # read tools still allowed
+
+
+def test_tool_gate_unset_env_means_no_restriction(monkeypatch):
+    # CONJURE_TOOLS unset (e.g. a standalone `python -m conjure.mcp_server`) ⇒ no restriction.
+    monkeypatch.setattr(m, "_ALLOWED_TOOLS", None)
+    monkeypatch.setattr(m, "_ACCESS", "all")
+    assert m._tool_denied("style_surface") is None
+
+
+def test_readonly_tools_are_all_real_tool_names():
+    import pathlib
+    import re
+
+    import conjure
+    src = (pathlib.Path(conjure.__file__).parent / "mcp_server.py").read_text()
+    server_tools = set(re.findall(r"@mcp\.tool\([^)]*\)\s*\nasync def (\w+)", src))
+    assert m._READONLY_TOOLS <= server_tools, m._READONLY_TOOLS - server_tools

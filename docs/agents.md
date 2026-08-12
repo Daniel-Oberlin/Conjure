@@ -106,10 +106,10 @@ world/space/user (autosave would resurrect them). Both hit the world server's `/
 endpoints, so they act on its live state, not raw files. **No auth yet** — a security/permission gate
 comes later; this is a dev-cleanup tool (e.g. `delete /testuser`, `delete /testuser/worlds/w1`).
 
-**Migration.** Today's `route_turn` (the `"let me talk to X"` regex in `director.py`) *is* the
-embryonic shell — it already intercepts deterministically before the LLM. The refactor lifts that logic
-out of the agent and into the shell, where it generalizes. Routing stops being an agent responsibility;
-the agent just runs turns.
+**Migration — done.** LLM switching used to live in the agent as `route_turn` (the `"let me talk to
+X"` regex in `director.py`). That logic has been removed from the agent and lives only in the shell
+now (`shell._switch`); routing is no longer an agent responsibility — the agent just runs turns on the
+**active** LLM. (See [agent-separation-plan.md](./agent-separation-plan.md).)
 
 **Grammar.** Keep it natural-language-friendly (good for voice) but **parsed, never modeled** — regex /
 a small grammar, deterministic. Commands that take free-text args (`save <name>`) capture the tail
@@ -119,9 +119,17 @@ verbatim.
 front-ends (CLI + voice). Shell mode (`conjure open shell` → `conjure:shell>`, `exit`), the `conjure`
 wake-prefix for inline commands, and a small command registry (`open`/`exit`, `help`, `whoami`,
 `llms`, `agents`, plus `talk to/use <llm>` LLM-switching) are in. Input that isn't a recognised command
-is forwarded to the agent unchanged. **Deferred:** fully migrating inline `route_turn` out of
-`director.handle` (bare "let me talk to Gemini" still routes inside the agent for now); world ops as
-commands (`reset`/`save`/`load`); agent-switching (waits on a second agent).
+is forwarded to the agent unchanged. LLM switching is now **shell-only** — `route_turn` has been
+removed from `director.handle`, so the agent no longer parses handovers out of an utterance.
+Agent-switching is now in too: **`agent <name>`** tears down the current agent's MCP server and
+launches the named one in its own fresh context (the Shell owns the director lifecycle via
+`Shell.session`; **close-old-then-open-new**, LIFO-safe for the MCP client's anyio scopes, with a
+restore-on-failure so a bad switch doesn't strand you). It then makes a world in the **new agent's
+scope** live — resuming that scope's last-active world, or creating its `default` — via the world
+server's `POST /scope/activate`, so switching agents doesn't leave the previous agent's world showing.
+The **last-used agent persists** per user (the world server records it on `/scope/activate`; `GET
+/agent/last?user=` reads it), so a front-end launched **without** `--agent` resumes it (else `builder`).
+**Deferred:** world ops as commands (`reset`/`save`/`load`).
 
 ## 3. The agent  🟡
 
@@ -140,8 +148,10 @@ the agent's own dir. Sketch (schema firms up in §9):
   "llms": ["*"],                                 // allow-list, or "*" = any configured LLM
   "default_llm": "claude",                       // active brain when you switch to this agent
   "mcp_servers": [
-    { "server": "world", "access": "all" },      // ref into the server registry; access: "read" | "all"
-    { "server": "assets", "access": "all" }
+    // ref into the server registry; access: "read" | "all"; `tools` is opt-in only (no wildcard) —
+    // omitted = none. List exactly the tools this agent may call.
+    { "server": "world", "access": "all", "tools": ["set_skybox", "generate_skybox_image"] },
+    { "server": "assets", "access": "all", "tools": ["search_library"] }
   ],
   "context": ["room://current"],                 // MCP resources injected into the prompt each turn (§5)
   "personas": ["personas/goblin.json"]           // optional participants (§3a); may also be made at runtime
@@ -159,13 +169,23 @@ system picks a compatible LLM) — explicit list first.
 
 **Scoping MCP servers.** `mcp_servers` references the server **registry** (§4) by name. **Default-deny:**
 a server not listed is invisible. `"*"` grants any registered server — the deliberate "god" escape hatch.
-Enforcement is by **tool-list construction**, not runtime checks: the LLM is only handed the tools from
-its in-scope servers, so it *cannot* call anything else (nothing to call). `access: "read"` (vs `"all"`)
-exposes only a server's read-only tools/resources — see the granularity decision in §9.
+A per-server **`tools`** allow-list narrows further, and is **opt-in only — no wildcard**: an agent
+gets exactly the tools it names, and omitting `tools` grants **none** (default-deny), so every tool
+access is explicit and intentional. The `builder` therefore enumerates the whole world tool surface
+(a test asserts it stays in sync); `outdoor` lists just the skybox tools. Enforcement is **two-layer**:
+(1) **client-side + fail-loud** — `director._scope_tools` filters the offered tool list to the allow-list
+(validating each name against the live server — a typo raises), so the LLM is only ever *handed* its
+in-scope tools, and `_execute_tool` re-checks each call; (2) a **hard gate** in `mcp_server.py`
+(`_GatedMCP.call_tool`), a process *separate from the LLM*, which refuses a disallowed tool — or, under
+`access: "read"`, a mutating one — from the `CONJURE_TOOLS`/`CONJURE_ACCESS` capability env, before any
+world-server call. Layer 2 holds regardless of what the model was offered (a persona/agent-to-agent path
+can't bypass it). It lives at the MCP layer, not `server.py`, because tool identity only exists there
+(most mutating tools share one `/patch` endpoint). See the granularity decision in §9.
 
 **Prompt.** Inline string or `prompt_file` (long prompts — ours is already a screenful — don't belong in
-JSON). Template variables available to the prompt: `{name}` (agent), the active LLM name, the roster of
-other agents/LLMs present (today's `roster_line`), and the injected context (§5).
+JSON). The prompt is **LLM-agnostic** and owns all its own text; the runtime only fills injection
+placeholders (§5): `{user}` (the logged-in user) and `{context}` / `{#context}…{/context}` (live MCP
+context). The agent no longer sees which LLM speaks for it, nor a roster line.
 
 ### 3a. Personas — participants, not operators  🟡
 
@@ -344,9 +364,23 @@ durable fix is removing the need.)
 
 **Status — shipped.** The world server exposes `room://current` (sharing `query_room`'s formatter, via
 a `_room_summary` helper); the builder declares `context: ["room://current"]`; `Director._fetch_context()`
-reads the agent's context resources via the MCP session and appends them to the system prompt each turn
-(a failed resource is skipped, never fatal). The narration *and* the round-trip are gone; the prompt also
-forbids narrating "checking the scene".
+reads the agent's context resources via the MCP session (a failed resource is skipped, never fatal). The
+narration *and* the round-trip are gone; the prompt also forbids narrating "checking the scene".
+
+**Injection is placeholder-gated, conditional, and general.** Context is *not* blindly appended to
+every agent's prompt — the agent's `prompt.md` owns **all** its text, including the framing around the
+injected value, via a small extensible framework: `Director._injections` (a `{placeholder} → provider`
+registry) filled by `Director._system` / `_fill_injection`. Two placeholder forms:
+
+- `{name}` — bare substitution (e.g. `{user}` → the logged-in user).
+- `{#name}…{name}…{/name}` — a **conditional section**: the inner block (with `{name}` filled) is kept
+  only when the value is non-blank, and dropped **entirely** otherwise. So an agent frames context as
+  `{#context}--- Live context --- {context}{/context}` and the header vanishes with the value when the
+  room is empty — no dangling `--- … ---`.
+
+A provider is invoked **only when its placeholder appears**, so an agent that references neither
+`{context}` nor `{#context}` pays no MCP fetch at all (many agents ignore room surfaces). More
+injections (e.g. a `{viewer}` head pose) slot in as new registry rows and get the same forms for free.
 
 **`viewer://current` — the live head pose.** The same mechanism fixes a subtler bug: the builder
 currently can't place things relative to the user, because **nothing reports the headset's pose to the
@@ -359,9 +393,11 @@ args (`near="me"`). Needs a small channel for the headset to report its camera p
 ## 6. State & attribution  🟡
 
 - **Transcript ownership.** Switching *LLM* continues the conversation (same agent, new brain — as
-  today). Switching *agent* starts that agent's own context. So **transcript belongs to the agent**;
-  attribution extends from today's `[Name]` (LLM) to also cover **personas** that took a turn (their
-  utterances are logged in-character). (See [§7a](./architecture.md) — the attributed shared transcript.)
+  today). Switching *agent* starts that agent's own context. So **transcript belongs to the agent**.
+  Today the transcript records **no per-LLM identity** — it is plain user/assistant, so a switch is
+  invisible in the context. A future **personas** feature could reintroduce in-character attribution
+  (utterances logged in the persona's voice) if a use case needs it. (See
+  [§7a](./architecture.md) — the shared transcript.)
 - **No cross-agent patch provenance.** Because each agent edits only its **own** world space (§3b),
   patches never mix between agents — there's nothing to disambiguate, so we *don't* tag patches with
   agent identity. (The world store's existing `origin` field stays for its current uses.)
@@ -427,7 +463,7 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 
 1. ✅ **Server registry + shell skeleton** — `conjure/agents.py` (loader + `agents/servers.json`),
    `conjure/shell.py` (deterministic commands, `conjure open shell`, the wake-prefix). Inline
-   `route_turn` still lives in the agent (full migration deferred); existing routing tests stay green.
+   `route_turn` has since been **removed** from the agent — LLM switching is shell-only.
 2. ✅ **Defined the current director as `agents/builder/`** — `Director.connect("builder")` loads the
    def, scopes the roster, launches its server from the registry. Identical behavior, now declarative.
 3. ✅ **Resource context injection** (§5) — world server exposes `room://current`; builder injects it
@@ -441,8 +477,8 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 | Today | Becomes |
 |---|---|
 | `Director` (roster + 1 server + 1 prompt) | shell + agent runtime; `Director` → `builder` agent |
-| `route_turn` (inline `"talk to X"`) | shell command registry (§2) |
-| `DIRECTOR_PROMPT` (`director.py`) | `builder` agent's `prompt_file` |
+| ~~`route_turn` (inline `"talk to X"`)~~ | ✅ done — shell command registry (`shell._switch`, §2) |
+| ~~`DIRECTOR_PROMPT` (`director.py`)~~ | ✅ done — the `builder` agent's `prompt_file` (its identity/ownership text lives there too); the runtime default is a generic `_DEFAULT_PROMPT` |
 | single `mcp_server` | server **registry** entry `world` (later: split servers) |
 | single `WorldStore` (one world doc) | shared geometry **base** + `agent → world space → worlds`, one **globally-active** world, composed server-side (§3b–3c) |
 | real surface = entity with `transform`+`surface`+`material` | geometry in the **base**; `material`/`visible`/crop/hide become a per-world **view** (`room_view` + `surface_overrides`) over it (§3c) |
@@ -450,5 +486,5 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 | patch apply (one target) | **routed**: capture/geometry → base; agent view/content/env → active world (§3c) |
 | — (no equivalent) | **personas** — agent-hosted participants, invoked via `invoke_persona` (§3a) |
 | roster = available LLMs | global LLM pool; agent `llms` = allowed subset |
-| `_system_for` (prompt + roster_line) | prompt template + injected `context` resources |
+| `_system` (agent prompt + placeholder injections) | prompt template with `{user}`/`{context}` filled by `Director._injections` (extensible) |
 | `on_text`/`emit`/`on_tool` | unchanged; now per active agent |

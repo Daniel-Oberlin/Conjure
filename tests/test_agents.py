@@ -18,14 +18,10 @@ def test_registry_has_the_world_server():
 def test_builder_agent_reproduces_the_director():
     agent = load_agent("builder", registry=load_server_registry())
     assert agent.name == "builder"
-    assert agent.prompt.strip() and agent.prompt.count("{name}") == 1     # the real director prompt
+    assert agent.prompt.strip() and "{name}" not in agent.prompt          # LLM-agnostic (no LLM name)
+    assert "{user}" in agent.prompt                                       # owns the logged-in-user placeholder
     assert agent.llms == [WILDCARD]                                       # any configured LLM
     assert [(s.server, s.access) for s in agent.servers] == [("world", "all")]
-
-
-def test_builder_prompt_is_the_single_source_for_DIRECTOR_PROMPT():
-    from conjure.director import DIRECTOR_PROMPT
-    assert load_agent("builder").prompt == DIRECTOR_PROMPT               # one file, no divergence
 
 
 def _write_agent(tmp_path, name, data, files=None):
@@ -65,6 +61,56 @@ def test_inline_prompt_and_defaults(tmp_path):
     _write_agent(tmp_path, "mini", {"prompt": "you are {name}"})
     a = load_agent("mini", agents_dir=tmp_path)
     assert a.prompt == "you are {name}" and a.llms == [WILDCARD] and a.servers == []
+
+
+def test_builder_declares_exactly_the_world_tool_surface():
+    # Builder is the full-access agent: since tool access is opt-in only (no wildcard), it must list
+    # EVERY tool the world server exposes — no more, no less. Guards the enumeration footgun (a new
+    # server tool silently unavailable to builder, or a stale/typo'd name) at test time, not just at
+    # launch (where director._scope_tools would raise on a typo).
+    import pathlib
+    import re
+
+    import conjure
+    src = (pathlib.Path(conjure.__file__).parent / "mcp_server.py").read_text()
+    server_tools = set(re.findall(r"@mcp\.tool\([^)]*\)\s*\nasync def (\w+)", src))
+    builder_tools = set(load_agent("builder").servers[0].tools)
+    assert builder_tools == server_tools, {
+        "missing_from_builder": server_tools - builder_tools,
+        "stale_in_builder": builder_tools - server_tools,
+    }
+
+
+def test_outdoor_agent_is_scoped_to_skybox_tools():
+    import pathlib
+    import re
+
+    import conjure
+    a = load_agent("outdoor", registry=load_server_registry())     # registry validates the server exists
+    tools = set(a.servers[0].tools)
+    # it can make both kinds of sky + manage its own worlds…
+    assert {"generate_skybox_image", "set_skybox",
+            "generate_grounded_skybox_image", "set_grounded_skybox"} <= tools
+    # …and NOTHING builder-only (no surface/entity/asset-CRUD tools leak in)
+    assert not (tools & {"style_surface", "texture_surface", "add_entity", "update_entity",
+                         "place_asset", "update_asset", "query_assets"})
+    # every listed tool is real, so it won't fail at launch on a typo (director._scope_tools)
+    src = (pathlib.Path(conjure.__file__).parent / "mcp_server.py").read_text()
+    server_tools = set(re.findall(r"@mcp\.tool\([^)]*\)\s*\nasync def (\w+)", src))
+    assert tools <= server_tools, tools - server_tools
+
+
+def test_server_ref_tools_allow_list_parses(tmp_path):
+    _write_agent(tmp_path, "sky", {"prompt": "hi", "mcp_servers": [
+        {"server": "world", "tools": ["set_skybox", "generate_skybox_image"]}]})
+    ref = load_agent("sky", agents_dir=tmp_path).servers[0]
+    assert ref.tools == ["set_skybox", "generate_skybox_image"] and ref.access == "all"
+
+
+def test_server_ref_tools_default_to_none_opt_in(tmp_path):
+    # No wildcard, no implicit grant: omitting `tools` means the agent gets NO tools (default-deny).
+    _write_agent(tmp_path, "b", {"prompt": "hi", "mcp_servers": [{"server": "world"}]})
+    assert load_agent("b", agents_dir=tmp_path).servers[0].tools == []
 
 
 def test_scoped_roster_wildcard_and_explicit():

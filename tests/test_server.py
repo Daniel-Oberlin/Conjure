@@ -460,12 +460,27 @@ def test_caption_without_captioner_errors(srv, client):
 
 
 def test_retag_skyboxes_makes_them_findable_by_kind(srv, client):
-    srv.library.upsert("pano.png", kind="image", width=2100, height=900, prompt="a sunset beach")
+    srv.library.upsert("pano.png", kind="image", scope=srv.DEFAULT_SCOPE, width=2100, height=900,
+                       prompt="a sunset beach")
     r = client.post("/library/retag-skyboxes", json={}).json()
     assert r["ok"] and r["retagged"] == 1
     assert srv.library.get("pano.png")["kind"] == "skybox"
     res = client.post("/library/search", json={"query": "a sunset beach", "kind": "skybox"}).json()
     assert any(c["id"] == "pano.png" for c in res["candidates"])  # now found specifically as a skybox
+
+
+def test_asset_in_agent_scope_walls_reuse_by_id_by_agent():
+    # The by-id guard (place_cached_asset / _get_image) mirrors the catalog's hard agent wall.
+    from conjure import server as S
+    tok = S._caller_scope.set("daniel/agents/builder")
+    try:
+        assert S._asset_in_agent_scope({"scope": "daniel/agents/builder", "public": 0})     # own private
+        assert S._asset_in_agent_scope({"scope": "friend/agents/builder", "public": 1})     # same agent, public
+        assert not S._asset_in_agent_scope({"scope": "friend/agents/builder", "public": 0}) # same agent, other user, private
+        assert not S._asset_in_agent_scope({"scope": "daniel/agents/outdoor", "public": 1}) # other agent, even public
+        assert not S._asset_in_agent_scope(None)
+    finally:
+        S._caller_scope.reset(tok)
 
 
 def test_set_grounded_skybox_marks_the_env(srv, client):
@@ -1667,3 +1682,61 @@ def test_move_leaves_unanchored_content_alone(srv, client):
     client.post("/patch", json={"ops": [{"op": "update", "id": "ent_free", "set": {"transform.position": [1, 1, -2]}}]})
     e = next(x for x in _entities(client) if x["id"] == "ent_free")
     assert "anchor" not in (e.get("meta") or {})
+
+
+# ---- /scope/activate: switch the live world to a scope's world (agent switch) --------------------
+
+def test_scope_activate_is_noop_when_already_active(srv, client):
+    r = client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE}).json()
+    assert r["ok"] and r.get("unchanged") and srv.active_scope == srv.DEFAULT_SCOPE
+
+
+def test_scope_activate_creates_default_for_a_new_agent_scope(srv, client):
+    outdoor = "daniel/agents/outdoor"
+    r = client.post("/scope/activate", json={"scope": outdoor}).json()
+    assert r["ok"] and r["world"] == "default"
+    assert srv.active_scope == outdoor                        # the live world now belongs to outdoor
+    assert srv.worlds.exists(outdoor, "default")             # …created + persisted under its scope
+
+
+def test_scope_activate_resumes_last_active_with_its_content(srv, client):
+    outdoor = "daniel/agents/outdoor"
+    client.post("/scope/activate", json={"scope": outdoor})       # outdoor/default live
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {"id": "sky_marker", "components": {}}}]})
+    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})   # leave (saves outdoor/default)
+    assert srv.active_scope == srv.DEFAULT_SCOPE
+    client.post("/scope/activate", json={"scope": outdoor})       # return → resume, not recreate
+    assert srv.active_scope == outdoor
+    assert "sky_marker" in {e["id"] for e in _entities(client)}   # its content came back
+
+
+def test_agent_last_defaults_to_builder(srv, client):
+    assert client.get("/agent/last", params={"user": "someone_new"}).json()["agent"] == "builder"
+
+
+def test_scope_activate_records_the_users_last_used_agent(srv, client):
+    client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"})
+    assert srv.worlds.get_last_agent("daniel") == "outdoor"
+    assert client.get("/agent/last", params={"user": "daniel"}).json()["agent"] == "outdoor"
+    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})   # switching back records builder
+    assert client.get("/agent/last", params={"user": "daniel"}).json()["agent"] == "builder"
+
+
+def test_boot_world_resumes_the_last_used_agents_scope(srv):
+    # After a server restart, boot should resume the world of the agent the user last used — not always
+    # builder — so the viewer stays in sync with a front-end that resumes the same agent.
+    import conjure.server as S
+    from conjure.world import WorldStore
+    outdoor = S.scope_for(S.DEFAULT_USER, "outdoor")
+    S.worlds.set_last_agent(S.DEFAULT_USER, "outdoor")
+    S.worlds.save(outdoor, "beach", WorldStore(
+        {"id": "b", "name": "beach", "rev": 0, "environment": {"space": "<void>"}, "entities": []}))
+    S.worlds.set_active(outdoor, "beach")
+    scope, name, _ = S._boot_world()
+    assert scope == outdoor and name == "beach"
+
+
+def test_boot_world_defaults_to_builder_without_a_last_agent(srv):
+    import conjure.server as S
+    scope, name, _ = S._boot_world()
+    assert scope == S.DEFAULT_SCOPE and name == "default"     # no record → builder's default

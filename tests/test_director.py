@@ -1,66 +1,14 @@
-"""Director routing + orchestration — the shared brain for voice and CLI.
+"""Director orchestration — the shared brain for voice and CLI.
 
-Routing is pure and deterministic, so it gets thorough unit coverage (this is where the
-"switch / address an LLM mid-conversation" behavior lives). The orchestration test drives a real
-Director against fake LLMs + a fake MCP session — no network, no SDKs."""
+The orchestration test drives a real Director against fake LLMs + a fake MCP session — no network,
+no SDKs. LLM switching is deterministic and lives in the shell now (see test_shell.py); the Director
+no longer parses handovers out of an utterance."""
 
 import pytest
 
-from conjure.director import DIRECTOR_PROMPT, Director, route_turn
+from conjure.agents import load_agent
+from conjure.director import Director, _fill_injection
 from conjure.llm import Turn
-
-ROSTER = {"Claude": object(), "Gemini": object()}  # route_turn only needs the names
-
-
-# --------------------------------------------------------------------------- routing
-
-def test_plain_request_goes_to_active():
-    r = route_turn("put an oak tree in front of me", ROSTER, "Claude")
-    assert (r.target, r.content, r.persistent) == ("Claude", "put an oak tree in front of me", False)
-
-
-def test_let_me_talk_to_is_a_persistent_handover():
-    r = route_turn("let me talk to Gemini", ROSTER, "Claude")
-    assert r.target == "Gemini" and r.persistent is True
-    assert r.content == ""  # no task → Director substitutes a greeting nudge (see handle())
-
-
-def test_handover_carries_a_trailing_task():
-    r = route_turn("let me speak with Gemini about the lighting", ROSTER, "Claude")
-    assert (r.target, r.persistent) == ("Gemini", True)
-    assert r.content == "about the lighting"
-
-
-def test_switch_to_is_persistent_and_case_insensitive():
-    r = route_turn("switch to gemini", ROSTER, "Claude")
-    assert (r.target, r.persistent) == ("Gemini", True)
-
-
-def test_take_over_is_a_persistent_handover_with_task():
-    r = route_turn("Gemini, take over and add a tree", ROSTER, "Claude")
-    assert (r.target, r.persistent) == ("Gemini", True)
-    assert r.content == "and add a tree"
-
-
-def test_direct_address_is_one_shot_not_persistent():
-    r = route_turn("Gemini, make a picture of a cat", ROSTER, "Claude")
-    assert (r.target, r.content, r.persistent) == ("Gemini", "make a picture of a cat", False)
-
-
-def test_direct_address_without_comma_still_routes():
-    # STT rarely punctuates, so "Claude make a cat" must still address Claude.
-    r = route_turn("Claude make a cat", ROSTER, "Gemini")
-    assert (r.target, r.content, r.persistent) == ("Claude", "make a cat", False)
-
-
-def test_unknown_name_falls_through_to_active():
-    r = route_turn("Bob, do something", ROSTER, "Claude")
-    assert r.target == "Claude" and r.content == "Bob, do something" and r.persistent is False
-
-
-def test_ordinary_first_word_is_not_mistaken_for_a_name():
-    r = route_turn("tree in front of me please", ROSTER, "Claude")
-    assert r.target == "Claude" and r.content == "tree in front of me please"
 
 
 # --------------------------------------------------------------------------- orchestration
@@ -108,50 +56,35 @@ def _director(active="Claude", tools=None, **llms):
     return Director(settings=None, session=FakeSession(), roster=roster, active=active, tools=tools or [])
 
 
-async def test_handle_records_attributed_transcript():
+async def test_handle_records_user_assistant_transcript():
     d = _director()
     out = await d.handle("put a tree in front of me")
     assert out == "Claude: done «put a tree in front of me»"
+    # the transcript is plain user/assistant — it records no LLM identity
     assert [(t.speaker, t.text) for t in d.transcript] == [
         ("user", "put a tree in front of me"),
-        ("Claude", "Claude: done «put a tree in front of me»"),
+        ("assistant", "Claude: done «put a tree in front of me»"),
     ]
 
 
-async def test_persistent_handover_changes_active():
-    d = _director(active="Claude")
-    await d.handle("let me talk to Gemini")
-    assert d.active == "Gemini"
-    # bare handover → Gemini is asked to greet (not replay the switch phrase, not build)
-    nudge = d.roster["Gemini"].seen[0]["user_text"].lower()
-    assert "greet" in nudge and "switched to you" in nudge
-    # subsequent plain turns now go to Gemini
-    await d.handle("add a fountain")
-    assert d.transcript[-1].speaker == "Gemini"
-
-
-async def test_failed_handover_reverts_active():
-    """If switching to an LLM fails on its first turn (e.g. quota error), don't strand the user on
-    the broken LLM — revert to whoever they were talking to. The error still propagates."""
-    class BoomLLM:
-        name = "Chat"
-
-        async def run_turn(self, **kw):
-            raise RuntimeError("insufficient_quota")
-
-    d = _director(active="Claude", Claude=FakeLLM("Claude"), Chat=BoomLLM())
-    with pytest.raises(RuntimeError, match="quota"):
-        await d.handle("let me speak with Chat")
-    assert d.active == "Claude"            # reverted
-    assert d.transcript == []             # nothing recorded for the failed turn
-
-
-async def test_one_shot_address_does_not_change_active():
+async def test_handle_always_runs_the_active_llm():
+    # No inline routing: even an utterance that names another LLM goes to the active one verbatim.
     d = _director(active="Claude")
     await d.handle("Gemini, make a picture of a cat")
-    assert d.active == "Claude"                       # stayed put
-    assert d.transcript[-1].speaker == "Gemini"       # but Gemini answered this turn
-    assert d.roster["Gemini"].seen[0]["user_text"] == "make a picture of a cat"
+    assert d.active == "Claude"                                   # unchanged — switching is the shell's job
+    assert d.roster["Claude"].seen[-1]["user_text"] == "Gemini, make a picture of a cat"  # full text, unrouted
+    assert d.roster["Gemini"].seen == []                          # the named LLM was NOT invoked
+    assert d.transcript[-1].speaker == "assistant"
+
+
+async def test_shell_switched_active_is_used_by_the_next_turn():
+    # The shell switches by setting director.active; the next handle() must run on it.
+    d = _director(active="Claude")
+    d.active = "Gemini"                                           # what shell._switch does
+    await d.handle("add a fountain")
+    assert d.roster["Gemini"].seen[-1]["user_text"] == "add a fountain"
+    assert d.roster["Claude"].seen == []
+    assert d.transcript[-1].speaker == "assistant"
 
 
 async def test_director_logs_utterance_tool_calls_and_reply():
@@ -190,32 +123,61 @@ async def test_emit_and_tools_are_wired_through():
     assert seen[-1][1] is True                                 # last emit is the final reply
 
 
-async def test_later_llm_sees_prior_turns_with_attribution():
+async def test_a_switched_in_llm_sees_prior_turns_plainly():
     d = _director(active="Claude")
-    await d.handle("Gemini, suggest a centerpiece")   # one-shot to Gemini
-    await d.handle("what do you think?")              # back to active Claude
-    history = d.roster["Claude"].seen[-1]["history"]
-    # Claude's view includes Gemini's earlier turn; it is attributed (Director hands raw Turns;
-    # the [Name] prefixing happens in llm._attributed, covered in test_llm).
+    await d.handle("suggest a centerpiece")           # Claude answers
+    d.active = "Gemini"                                # shell switch mid-conversation
+    await d.handle("what do you think?")              # Gemini now answers, inheriting the history
+    history = d.roster["Gemini"].seen[-1]["history"]
+    # Gemini's view includes the earlier turn, but with no record of which LLM produced it —
+    # every reply is a plain "assistant" turn (the switch is invisible in the history).
     speakers = [t.speaker for t in history]
-    assert "Gemini" in speakers and "user" in speakers
+    assert speakers == ["user", "assistant"]
+    assert all(t.speaker in ("user", "assistant") for t in history)
 
 
-async def test_agent_context_is_injected_into_the_system_prompt():
+def test_fill_injection_bare_section_and_drop():
+    # bare {name} → value
+    assert _fill_injection("hi {user}!", "user", "alice") == "hi alice!"
+    # {#name}…{name}…{/name} section kept (with {name} filled) when the value is non-blank
+    assert _fill_injection("a{#ctx}[{ctx}]{/ctx}b", "ctx", "X") == "a[X]b"
+    # …dropped ENTIRELY when the value is blank, so framing text vanishes with it (no dangling header)
+    assert _fill_injection("a{#ctx}[{ctx}]{/ctx}b", "ctx", "") == "ab"
+    assert _fill_injection("a{#ctx}[{ctx}]{/ctx}b", "ctx", "   ") == "ab"
+    # unrelated braces (JSON/SQL examples in a prompt) are never touched
+    assert _fill_injection('x {"k": 1} {user}', "user", "bob") == 'x {"k": 1} bob'
+
+
+async def test_context_section_rendered_when_present():
     llm, session = FakeLLM("Claude"), FakeSession()
     d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
-                 agent=_agent(["room://current"]))
+                 prompt="Build.\n{#context}scene:\n{context}{/context}", agent=_agent(["room://current"]))
     await d.handle("add a tree")
     system = llm.seen[0]["system"]
-    # the resource's text (not just the prompt's mention of it) is appended each turn
-    assert "Live context (current" in system and "Room: 2 surfaces (test)" in system
+    assert "scene:" in system and "Room: 2 surfaces (test)" in system   # agent's framing + the data
+    assert "{context}" not in system and "{#context}" not in system     # placeholders consumed
     assert session.resources_read == ["room://current"]
 
 
-async def test_no_context_injected_when_agent_has_none():
-    d = _director()  # agent defaults to None
+async def test_context_section_dropped_when_empty():
+    # No context data → the whole {#context} block (framing included) is removed: no dangling header.
+    llm, session = FakeLLM("Claude"), FakeSession()
+    d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
+                 prompt="Build.\n{#context}scene:\n{context}{/context}", agent=_agent([]))
     await d.handle("add a tree")
-    assert "Room: 2 surfaces (test)" not in d.roster["Claude"].seen[0]["system"]
+    system = llm.seen[0]["system"]
+    assert "scene:" not in system                                       # framing gone with the value
+    assert "{context}" not in system and "{#context}" not in system
+
+
+async def test_context_not_fetched_when_prompt_omits_placeholder():
+    # An agent whose prompt references neither {context} nor {#context} pays nothing — the fetch is
+    # skipped entirely, even though it declares context resources. (Many agents ignore room surfaces.)
+    llm, session = FakeLLM("Claude"), FakeSession()
+    d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
+                 prompt="Just build. No scene needed.", agent=_agent(["room://current"]))
+    await d.handle("add a tree")
+    assert session.resources_read == []                        # never fetched
 
 
 async def test_context_fetch_failure_is_not_fatal():
@@ -225,25 +187,39 @@ async def test_context_fetch_failure_is_not_fatal():
 
     llm = FakeLLM("Claude")
     d = Director(settings=None, session=BoomSession(), roster={"Claude": llm}, active="Claude",
-                 tools=[], agent=_agent(["room://current"]))
+                 tools=[], prompt="Build.\n{#context}scene:\n{context}{/context}",
+                 agent=_agent(["room://current"]))
     out = await d.handle("add a tree")                       # must not raise
     assert out == "Claude: done «add a tree»"
-    assert "Live context (current" not in llm.seen[0]["system"]   # nothing injected, turn still ran
+    assert "scene:" not in llm.seen[0]["system"]             # failed fetch → value "" → section dropped
+    assert "{context}" not in llm.seen[0]["system"]
 
 
-def test_system_prompt_is_per_llm_and_roster_aware():
+async def test_system_prompt_is_llm_agnostic():
+    # The prompt names no LLM and mentions no roster/attribution — it is identical whichever LLM is
+    # active, so switching LLMs is invisible to the model.
     d = _director(active="Claude")
-    sys_claude = d._system_for("Claude")
-    assert sys_claude.startswith("You are Claude,")
-    assert "Gemini" in sys_claude                     # told who else is present
-    assert "[Name]" in sys_claude                     # told how attribution is marked
+    system = await d._system()
+    assert system.startswith("You are the director")
+    assert "Claude" not in system and "Gemini" not in system   # no LLM identity
+    assert "[Name]" not in system                              # no attribution machinery
 
 
-def test_prompt_template_has_a_single_name_placeholder():
-    # Guards against accidental stray braces breaking .format(name=...). DIRECTOR_PROMPT now reads from
-    # prompts/builder.md (the builder agent's prompt_file), so this also guards that file.
-    assert DIRECTOR_PROMPT.count("{name}") == 1
-    DIRECTOR_PROMPT.format(name="X")  # must not raise
+async def test_system_injects_only_referenced_placeholders():
+    # _system() carries NO agent-specific text of its own; it fills the injection placeholders the
+    # agent's prompt references ({user} here) and leaves the rest of the prompt untouched.
+    d = _director(active="Claude")
+    d._prompt, d.user = "You act for '{user}'. Build stuff.", "alice"
+    assert await d._system() == "You act for 'alice'. Build stuff."
+
+
+def test_builder_prompt_owns_its_identity_and_has_no_llm_placeholder():
+    # The old {name} (LLM) placeholder is gone; the builder prompt now owns the {user} placeholder and
+    # its ownership framing (moved out of the director runtime).
+    prompt = load_agent("builder").prompt
+    assert "{name}" not in prompt
+    assert "{user}" in prompt
+    assert "belong to whoever created them" in prompt   # the ownership text now lives in the prompt
 
 
 def test_stdio_params_maps_python_and_substitutes_world_url():
@@ -259,3 +235,45 @@ def test_stdio_params_maps_python_and_substitutes_world_url():
     assert p.command == sys.executable
     assert p.args == ["-m", "conjure.mcp_server"]
     assert p.env["CONJURE_URL"] == "http://host:9999"
+    # capabilities injected as env (never LLM args): scope + tool allow-list + access level
+    assert p.env["CONJURE_SCOPE"].endswith("/agents/builder")
+    assert p.env["CONJURE_TOOLS"] == "" and p.env["CONJURE_ACCESS"] == "all"   # no tools by default (opt-in)
+
+
+def test_stdio_params_scaffolds_tool_scope_capabilities():
+    import sys  # noqa: F401
+
+    from conjure.agents import ServerSpec
+    from conjure.director import _stdio_params
+
+    spec = ServerSpec(name="world", command="python", args=[], env={})
+    p = _stdio_params(spec, type("S", (), {"world_url": "http://h"})(), agent="outdoor",
+                      tools=["set_skybox", "generate_skybox_image"], access="read")
+    assert p.env["CONJURE_TOOLS"] == "set_skybox,generate_skybox_image"
+    assert p.env["CONJURE_ACCESS"] == "read"
+    assert p.env["CONJURE_SCOPE"].endswith("/agents/outdoor")
+
+
+def test_scope_tools_is_opt_in_only_and_fails_loud_on_typo():
+    from conjure.director import _scope_tools
+
+    def T(n):
+        return type("T", (), {"name": n, "description": "", "inputSchema": {}})()
+
+    live = [T("set_skybox"), T("style_surface"), T("generate_skybox_image")]
+    assert _scope_tools(live, []) == []                                                    # none by default (deny)
+    assert {t.name for t in _scope_tools(live, ["set_skybox"])} == {"set_skybox"}           # explicit opt-in
+    assert {t.name for t in _scope_tools(live, ["set_skybox", "style_surface"])} \
+        == {"set_skybox", "style_surface"}
+    with pytest.raises(RuntimeError, match="unknown tool"):
+        _scope_tools(live, ["set_skybox", "nope"])                                          # typo → loud
+
+
+async def test_execute_tool_blocks_out_of_agent_scope():
+    d = _director(active="Claude")
+    d._allowed_tools = {"set_skybox"}                       # e.g. an outdoor-style scoped director
+    out = await d._execute_tool("style_surface", {}, None, "outdoor.claude")
+    assert "not available" in out                          # refused
+    assert d._session.calls == []                          # never reached the MCP session
+    await d._execute_tool("set_skybox", {"image_id": "x"}, None, "outdoor.claude")
+    assert d._session.calls == [("set_skybox", {"image_id": "x"})]   # allowed tool runs

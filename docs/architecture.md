@@ -23,7 +23,7 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 | # | Component | Runs on | Responsibility |
 |---|---|---|---|
 | 1 | **Voice agent** | host | PipeCat pipeline: STT → shell → agent → TTS, barge-in, addressing gate |
-| 2 | **Shell + agents** | host | A deterministic **shell** (control: switch agent/LLM, reset — no LLM) above the active **agent** — an experience loaded from `agents/<name>/` ([agents.md](./agents.md)): an orchestrating LLM, MCP **client** of its scoped servers, with a **roster of named LLMs** (one active) sharing an attributed transcript (§7). The `builder` is the first agent (today's director) |
+| 2 | **Shell + agents** | host | A deterministic **shell** (control: switch agent/LLM, reset — no LLM) above the active **agent** — an experience loaded from `agents/<name>/` ([agents.md](./agents.md)): an orchestrating LLM, MCP **client** of its scoped servers, with a **roster of named LLMs** (one active) sharing a single user/assistant transcript (§7). The `builder` is the first agent (today's director) |
 | 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app; MCP **server** of world-editing tools; broadcasts state |
 | 4 | **Behavior runtime** | host **and** client | QuickJS-WASM sandbox executing behaviors + geometry code (decision #7) |
 | 5 | **Asset pipeline** | host (+ remote model APIs) | Resolve / generate / convert / optimize / cache content |
@@ -203,12 +203,14 @@ An agent is run by a **roster** of LLMs, not a single model (scoped to the agent
   is the **shell**'s job (a deterministic command — agents.md §2); the inline phrase is still also
   handled inside the agent today (migration deferred). The casual name doubles as an addressing target
   alongside the wake word (decision #5).
-- **Attributed shared transcript** — a single conversation log where every turn carries a
-  `speaker` (`user` | LLM name). All LLMs are prompted with this shared, attributed history, so a
-  newly-active LLM can **reference/comment on another LLM's contributions**. World state and
-  tool/edit history are shared too — switching never drops context.
-- Open design points: how much of a non-active LLM's internal reasoning is shared (we share the
-  visible transcript + edits, not hidden chain-of-thought); per-LLM system-prompt/persona.
+- **Shared transcript** — a single user/assistant conversation log. It carries **no record of which
+  LLM authored a reply**: every reply is a plain `assistant` turn, so a newly-active LLM inherits the
+  whole history seamlessly and a switch of LLMs is invisible in the context. The system prompt names
+  no LLM either — it is identical whichever LLM is active. World state and tool/edit history are
+  shared too, so switching never drops context. (Earlier revisions tagged each turn with its LLM and
+  prefixed other LLMs' lines `[Name]`; that identity-in-context machinery was removed.)
+- Open design points: whether a switch should ever be surfaced *to the model* (today it is not);
+  per-LLM system-prompt/persona.
 
 ## 8. MCP tool surface (world server)  🟡
 
@@ -346,8 +348,8 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
 - **Asset store** — content-addressed blobs + descriptors (§10).
 - **Vector index** — embeddings of world name/description/tags for semantic recall ("the beach world").
 - **Connection graph** — portals between worlds.
-- **Session store** — the **attributed transcript** (each turn tagged with speaker: `user` or an
-  LLM roster name, §7a) + edit provenance ("why is this here"). Shared across all roster LLMs.
+- **Session store** — the **shared transcript** (plain `user`/`assistant` turns, no per-LLM
+  attribution, §7a) + edit provenance ("why is this here"). Shared across all roster LLMs.
 - **Anchor registry** (forward-compat) — persistent real-world anchor id ↔ pose, keyed to a place.
 
 Storage choices 🔴 (open, low-stakes): SQLite + a vector extension and a filesystem blob store is a

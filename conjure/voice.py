@@ -8,7 +8,7 @@ PipeCat here is only *ears and mouth*: STT, TTS, VAD, end-of-turn detection, and
 echo mitigation. Spoken turns go through the deterministic `conjure.shell.Shell` (commands like
 "conjure open shell" run there, never reaching an LLM) which forwards the rest to the active agent —
 the shared `conjure.director.Director` (today's `builder`), the SAME agent the CLI drives. It owns the
-LLM roster (Claude/Gemini/…, switchable mid-conversation), the attributed transcript, the world-editing
+LLM roster (Claude/Gemini/…, switchable mid-conversation), the shared transcript, the world-editing
 MCP tools, and the live room injected into its prompt. So spoken requests turn into world patches that
 broadcast live to every connected headset, and adding/switching LLMs or agents needs no change here.
 
@@ -31,7 +31,6 @@ import urllib.request
 from typing import Callable, Optional
 
 from .config import DEFAULT_USER, Settings, get_settings
-from .director import Director
 from .shell import Shell
 
 # PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
@@ -75,7 +74,8 @@ def _world_reachable(url: str) -> bool:
         return False
 
 
-async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None) -> None:
+async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None,
+               agent: Optional[str] = None) -> None:
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
@@ -149,10 +149,12 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     stt = WhisperSTTService(settings=WhisperSTTService.Settings(model="base", language=Language.EN))
     tts = KokoroTTSService(settings=KokoroTTSService.Settings(voice="af_heart"))
 
-    # The shared director owns the LLM roster and the world-editing MCP tools (it spawns
-    # conjure.mcp_server over stdio itself). PipeCat no longer talks to any LLM.
-    async with Director.connect(settings, user=user) as director:
-        director_proc = DirectorProcessor(Shell(director, settings))
+    # The shell owns the agent's lifecycle (so `conjure agent <name>` can switch agents); the agent it
+    # drives owns the LLM roster + world-editing MCP tools (spawns conjure.mcp_server over stdio).
+    # PipeCat no longer talks to any LLM.
+    async with Shell.session(settings, agent=agent, user=user) as shell:
+        director = shell.director
+        director_proc = DirectorProcessor(shell)
 
         # We keep the LLM context aggregator ONLY for its end-of-turn detection and mute-while-
         # speaking — not for messages (the director owns the transcript). Its `on_user_turn_stopped`
@@ -215,8 +217,9 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
         runner = PipelineRunner(handle_sigint=True)
 
         roster = ", ".join(director.roster) or "none"
-        print(f"🎙️  Conjure voice is listening (active={director.active}; roster: {roster}). Speak "
-              f"to build the world; say 'let me talk to <name>' to switch LLMs. Ctrl+C to stop.")
+        print(f"🎙️  Conjure voice is listening (agent={director.agent.name}; active={director.active}; roster: "
+              f"{roster}). Speak to build the world; say 'conjure open shell' then 'use <name>' to "
+              f"switch LLMs or 'agent <name>' to switch agents. Ctrl+C to stop.")
         await runner.run(task)
 
 
@@ -225,6 +228,8 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(prog="conjure.voice", description="Voice front-end for the Conjure director.")
     ap.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
+    ap.add_argument("--agent", default=None,
+                    help="agent to load from agents/<name>/ (default: resume your last-used, else builder)")
     ap.add_argument("--wake-word", default=None, metavar="WORD",
                     help="only send phrases after this wake word to the director (e.g. --wake-word conjure); "
                          "then it waits for the wake word again")
@@ -244,7 +249,7 @@ def main() -> int:
     if args.wake_word:
         print(f"🔒 Wake word active: say '{args.wake_word}' before a command.")
     try:
-        asyncio.run(_run(settings, args.user, args.wake_word))
+        asyncio.run(_run(settings, args.user, args.wake_word, args.agent))
     except KeyboardInterrupt:
         print("\nStopped.")
     except ImportError as exc:

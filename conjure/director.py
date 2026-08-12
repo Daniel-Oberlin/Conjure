@@ -10,125 +10,107 @@ arrives (mic vs typing) and leaves (TTS vs print):
         await director.handle("put a tree in front of me", on_text=..., on_tool=...)
 
 The agent owns:
-  • the **attributed transcript** — every turn tagged with its speaker (architecture §7a),
+  • the **shared transcript** — a single user/assistant conversation log (architecture §7a); it
+    carries no record of which LLM authored a reply, so switching LLMs is invisible in the history,
   • the **LLM roster** (conjure.llm) — the named LLMs it allows, one *active* at a time,
   • the world-editing **MCP tools** (it is an MCP client of its scoped servers over stdio),
-  • the per-turn **context** it injects (e.g. `room://current` — the live room, agents.md §5),
-  • the inline **routing** that switches/addresses LLMs (the shell also does this deterministically;
-    migrating the inline path fully to the shell is deferred — agents.md §10).
+  • the per-turn **context** it injects (e.g. `room://current` — the live room, agents.md §5).
 
-Routing (deterministic — no tokens, fully testable):
-  • "let me talk to Gemini" / "switch to Gemini" / "Gemini, take over" → **persistent handover**:
-    that LLM becomes active going forward.
-  • "Gemini, make a picture of a cat" → **one-shot**: that LLM handles just this turn; the
-    previously-active LLM stays active afterward.
-  • anything else → the active LLM.
+Every turn runs on the **active** LLM. Switching the active LLM is the shell's job — deterministic,
+parsed there (conjure.shell), never inferred from the utterance here.
 """
 
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import os
 import re
 import sys
-from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 from .agents import AgentDef, ServerSpec, load_agent, load_server_registry, scoped_roster
 from .config import DEFAULT_USER, Settings, scope_for
 from .llm import LLM, ToolSpec, Turn, build_roster
 
-# Shared system prompt for the builder agent. It lives in the agent's prompt_file
-# (agents/builder.json → prompts/builder.md), so the agent definition owns it — including the path.
-# This constant goes through the loader (single source) for the default `Director()` prompt and tests.
-# `{name}` is filled per-call with the active LLM's casual name; roster awareness is appended by
-# `Director._system_for`.
-DIRECTOR_PROMPT = load_agent("builder").prompt
+# The director runtime is agent-agnostic — it knows nothing about any particular agent. A real agent
+# always supplies its own prompt via its def (`Director.connect` passes `agentdef.prompt`). This
+# generic fallback is only for a bare `Director()` in examples/tests.
+_DEFAULT_PROMPT = "You are the director of a Conjure session. Use the tools to carry out requests."
 
 OnText = Callable[..., Awaitable[None]]   # (text, *, final: bool, speaker: str) -> None
 OnTool = Callable[..., Awaitable[None]]   # (name: str, args: dict) -> None
 
 
-# --------------------------------------------------------------------------- routing
+def _fill_injection(prompt: str, name: str, value: str) -> str:
+    """Fill one prompt-injection placeholder, so an agent's prompt.md owns *all* its own text —
+    including the framing around an injected value:
 
-@dataclass
-class Route:
-    target: str       # casual name that handles this turn
-    content: str      # text to send the target (address/handover phrasing stripped)
-    persistent: bool  # True → target becomes the new active LLM
+      • ``{name}``                       → replaced by ``value`` (bare substitution; e.g. ``{user}``)
+      • ``{#name}…{name}…{/name}``       → a **conditional section**: the inner block (with ``{name}``
+                                           substituted) is kept only when ``value`` is non-blank, and
+                                           dropped **entirely** otherwise — so header/label text framing
+                                           the value vanishes with it (no dangling `--- … ---` when the
+                                           room is empty).
 
+    Only touches this exact `name` (registered injections), so stray braces elsewhere in the prompt
+    (JSON/SQL examples) are never disturbed."""
+    token = "{" + name + "}"
+    keep = bool(value.strip())
 
-# Persistent-handover phrasings. A trailing name is captured; any task after it is preserved.
-_HANDOVER = re.compile(
-    r"^(?:please\s+)?(?:can\s+i\s+|i'?d\s+like\s+to\s+|i\s+want\s+to\s+|i\s+wanna\s+|"
-    r"let'?s\s+|let\s+me\s+)?(?:speak|talk|chat)\s+(?:with|to)\s+(?P<name>[a-z0-9]+)\b",
-    re.I,
-)
-_SWITCH = re.compile(r"^(?:switch|change|hand(?:\s+it)?\s+over)\s+(?:to\s+)?(?P<name>[a-z0-9]+)\b", re.I)
-_TAKEOVER = re.compile(
-    r"^(?P<name>[a-z0-9]+)[,:]?\s+(?:take\s+over|take\s+it\s+from\s+here|you'?re\s+up|"
-    r"you\s+have\s+the\s+floor)\b",
-    re.I,
-)
-# Direct address: "<Name> ..." (comma optional — STT rarely punctuates). The name-match gate below
-# is what prevents false positives on ordinary first words.
-_ADDRESS = re.compile(r"^(?P<name>[a-z][a-z0-9]*)\b[,:]?\s+(?P<rest>.+)$", re.I | re.S)
+    def _section(m: "re.Match") -> str:
+        return m.group(1).replace(token, value) if keep else ""
 
-
-def _match_name(token: str, roster) -> Optional[str]:
-    for name in roster:
-        if name.lower() == token.lower():
-            return name
-    return None
-
-
-def route_turn(text: str, roster, active: str) -> Route:
-    """Decide who handles this utterance and whether it changes the active LLM. Pure + deterministic."""
-    s = text.strip()
-    # 1) explicit handover/switch → persistent
-    for rx in (_HANDOVER, _SWITCH, _TAKEOVER):
-        m = rx.match(s)
-        if m:
-            name = _match_name(m.group("name"), roster)
-            if name:
-                rest = s[m.end():].lstrip(" ,.:;-")
-                # A bare handover ("let me talk to Gemini") carries no task — content stays empty so
-                # the director hands the new LLM a greeting nudge instead of replaying the switch
-                # phrase (which it may misread as a build request). A trailing task is preserved.
-                return Route(name, rest, persistent=True)
-    # 2) direct address "<Name> …" → one-shot (active unchanged)
-    m = _ADDRESS.match(s)
-    if m:
-        name = _match_name(m.group("name"), roster)
-        if name:
-            return Route(name, m.group("rest").strip(), persistent=False)
-    # 3) default → the active LLM
-    return Route(active, s, persistent=False)
+    prompt = re.sub(r"\{#" + re.escape(name) + r"\}(.*?)\{/" + re.escape(name) + r"\}",
+                    _section, prompt, flags=re.S)
+    return prompt.replace(token, value)
 
 
 # --------------------------------------------------------------------------- the director
 
-def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", user: str = DEFAULT_USER):
+def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", user: str = DEFAULT_USER,
+                  *, tools: Optional[list[str]] = None, access: str = "all"):
     """Build stdio launch params from a registry ServerSpec: map a bare 'python' to this interpreter,
-    substitute ${world_url} in the env, and inject the (user, agent) catalog SCOPE as a capability (so
-    the MCP server's maintenance tools are scoped to this user+agent — never an LLM arg)."""
+    substitute ${world_url} in the env, and inject the agent's **capabilities** as env (never LLM args):
+    the (user, agent) catalog SCOPE, plus the tool allow-list + access level. The MCP server enforces
+    SCOPE today; CONJURE_TOOLS/CONJURE_ACCESS are scaffolded for the later server-side gate
+    (docs/agent-separation-plan.md §3c) — the client-side filter is what scopes tools for now."""
     from mcp import StdioServerParameters
     command = sys.executable if spec.command in ("python", "python3") else spec.command
     env = {**os.environ, **{k: v.replace("${world_url}", settings.world_url) for k, v in spec.env.items()}}
     env["CONJURE_SCOPE"] = scope_for(user, agent)
+    env["CONJURE_ACCESS"] = access
+    env["CONJURE_TOOLS"] = ",".join(tools or [])     # explicit allow-list (empty = no tools)
     return StdioServerParameters(command=command, args=list(spec.args), env=env)
+
+
+def _scope_tools(live, allow: list[str]):
+    """Filter the live MCP tools to an agent's explicit allow-list (`ServerRef.tools`). Tool access is
+    **opt-in only** — there is no wildcard: an agent gets exactly the tools it names, and an empty list
+    means none (default-deny). Raises if the allow-list names a tool the server doesn't expose — a typo
+    should fail loudly, not silently under-grant. Enforcement-by-omission: the LLM is only ever
+    *offered* the tools that survive this filter (a hard server-side gate is a later slice)."""
+    names = {t.name for t in live}
+    unknown = sorted(t for t in allow if t not in names)
+    if unknown:
+        raise RuntimeError(f"agent tool allow-list references unknown tool(s) {unknown}; "
+                           f"server exposes {sorted(names)}")
+    return [t for t in live if t.name in allow]
 
 
 class Director:
     def __init__(self, settings: Settings, session, roster: dict[str, LLM], active: str,
-                 tools: Optional[list[ToolSpec]] = None, prompt: str = DIRECTOR_PROMPT,
-                 agent: Optional[AgentDef] = None, user: str = DEFAULT_USER):
+                 tools: Optional[list[ToolSpec]] = None, prompt: str = _DEFAULT_PROMPT,
+                 agent: Optional[AgentDef] = None, user: str = DEFAULT_USER,
+                 allowed_tools: Optional[set[str]] = None):
         self._settings = settings
         self._session = session          # MCP ClientSession (or a stand-in in tests)
         self.roster = roster
         self.active = active
         self._tools = tools or []
+        self._allowed_tools = allowed_tools  # the agent's explicit tool allow-list (names); None only for
+                                             # a bare Director()/tests (no scoping). `connect` always sets it.
         self._prompt = prompt
         self.agent = agent               # the loaded agent def (None in lightweight tests)
         self.user = user                 # the logged-in user this director acts as (owns its spaces/worlds)
@@ -160,12 +142,14 @@ class Director:
                   else default_active if default_active in roster            # then settings.llm
                   else next(iter(roster)))                                   # then first available
 
-        specs = [registry[r.server] for r in agentdef.servers if r.server in registry]
-        if len(specs) != 1:
+        refs = [r for r in agentdef.servers if r.server in registry]
+        if len(refs) != 1:
             raise RuntimeError(
-                f"agent {agent!r}: v1 launches exactly one MCP server (got {len(specs)}: "
-                f"{[s.name for s in specs]}).")
-        params = _stdio_params(specs[0], settings, agent, user)
+                f"agent {agent!r}: v1 launches exactly one MCP server (got {len(refs)}: "
+                f"{[r.server for r in refs]}).")
+        ref = refs[0]
+        params = _stdio_params(registry[ref.server], settings, agent, user,
+                               tools=ref.tools, access=ref.access)
 
         close_errlog = None
         if errlog is None:
@@ -174,44 +158,39 @@ class Director:
             async with stdio_client(params, errlog=errlog) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
-                    tools = [ToolSpec(t.name, t.description or "", t.inputSchema)
-                             for t in (await session.list_tools()).tools]
-                    yield cls(settings, session, roster, active, tools,
-                              prompt=agentdef.prompt, agent=agentdef, user=user)
+                    # Scope the offered tools to the agent's explicit allow-list (fails loud on a typo).
+                    scoped = _scope_tools((await session.list_tools()).tools, ref.tools)
+                    tools = [ToolSpec(t.name, t.description or "", t.inputSchema) for t in scoped]
+                    yield cls(settings, session, roster, active, tools, prompt=agentdef.prompt,
+                              agent=agentdef, user=user, allowed_tools={t.name for t in scoped})
         finally:
             if close_errlog is not None:
                 close_errlog.close()
 
-    def _system_for(self, name: str) -> str:
-        others = [n for n in self.roster if n != name]
-        roster_line = (
-            f" Other AIs are present in this session: {', '.join(others)}. The user may switch to "
-            f"one ('let me talk to {others[0]}') or address one directly; you only receive turns "
-            f"meant for you. In the transcript, assistant lines prefixed like [Name] were said by "
-            f"another AI — unprefixed assistant lines are yours; you may reference what they said."
-        ) if others else ""
-        identity_line = (
-            f" The logged-in user you act for is '{self.user}' — if asked who is logged in / who they "
-            f"are, that's the answer. Worlds and spaces belong to whoever created them. You can freely "
-            f"create and switch worlds (everyone present comes along) and edit any world you own. You "
-            f"can ALSO see and enter other users' PUBLIC worlds — list_worlds shows them under 'other "
-            f"users' public worlds', and switch_world(name, owner='<their-username>') takes you there — "
-            f"but you can't edit a world you don't own. Worlds are PUBLIC by default; make one private "
-            f"(or public again) with set_world_visibility(public=…), or create a private one via "
-            f"new_world(name, public=False). If a tool refuses an edit to another user's world, relay it "
-            f"plainly; never invent a name collision or claim a capability (like private worlds) is absent. "
-            f"Library ASSETS work the same way: public by default (others on this server can reuse them), "
-            f"and you can flip one with update_asset(id, public=…) — but only for assets YOU own; another "
-            f"user's asset that merely shows up in your searches stays theirs. An asset's owner is the user "
-            f"in its `scope` column (the part before '/agents/'), readable via query_assets — so state who "
-            f"owns one from that rather than guessing or saying you can't tell. A PUBLIC world can only "
-            f"contain PUBLIC assets (so a visitor sees the whole scene), so placing your private asset into "
-            f"a public world — or making a world public — publishes the assets it uses; the tool tells you "
-            f"when it does, and you should pass that along."
+    def _injections(self):
+        """The prompt-injection registry: placeholder name → provider producing its value. A provider
+        may be sync or async; it's invoked ONLY when its placeholder appears in the prompt, so an agent
+        pays only for what it references (e.g. `{context}` triggers no MCP resource fetch unless the
+        prompt uses it — many agents won't care about room surfaces). Add a row to add an injection."""
+        return (
+            ("user", lambda: self.user),          # the logged-in user (human identity)
+            ("context", self._fetch_context),     # live MCP context resources (async; agents.md §5)
         )
-        # `.replace` (not `.format`) so the prompt can freely contain braces (markdown/code/JSON examples)
-        # without needing to escape them; the only placeholder is `{name}`.
-        return self._prompt.replace("{name}", name) + roster_line + identity_line
+
+    async def _system(self) -> str:
+        # Agent-agnostic: the whole system prompt — including how/where each injection is *framed* —
+        # is the agent's own prompt.md. The runtime only fills the placeholders it declares (see
+        # `_fill_injection` for the `{name}` / `{#name}…{/name}` forms), and only computes a value when
+        # its placeholder actually appears, so nothing agent-specific lives here.
+        prompt = self._prompt
+        for name, provider in self._injections():
+            if "{" + name + "}" not in prompt and "{#" + name + "}" not in prompt:
+                continue                          # not referenced → don't even compute it
+            value = provider()
+            if inspect.isawaitable(value):
+                value = await value
+            prompt = _fill_injection(prompt, name, value or "")
+        return prompt
 
     async def _log(self, tag: str, msg: str) -> None:
         """Best-effort diagnostic line → the world server's /client_log (same temp/conjure.log + console
@@ -230,6 +209,11 @@ class Director:
             pass
 
     async def _execute_tool(self, name: str, args: dict, on_tool: Optional[OnTool], who: str) -> str:
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            # Defense-in-depth beyond offering-only: a call outside the agent's tool scope (e.g. from a
+            # future programmatic/persona path, not the LLM's offered set) is refused, not executed.
+            await self._log(f"{who}/tool", f"BLOCKED {name} (out of agent tool scope)")
+            return f"error: tool {name!r} is not available to this agent"
         if on_tool:
             await on_tool(name, args)
         await self._log(f"{who}/tool", f"{name}({json.dumps(args, default=str)[:600]})")
@@ -239,9 +223,12 @@ class Director:
         return text
 
     async def _fetch_context(self) -> str:
-        """Prefetch the agent's `context` MCP resources (e.g. `room://current`) and return them as a
-        block to append to the system prompt — so the agent has live room state without a query_room
-        round-trip (docs/agents.md §5). A missing/failed resource is skipped, never fatal."""
+        """Fetch the agent's `context` MCP resources (e.g. `room://current`) as raw text, injected at
+        the prompt's `{context}` placeholder (the agent's prompt.md owns the surrounding framing via a
+        `{#context}…{/context}` section — see `_fill_injection`). Gives the agent live room state
+        without a query_room round-trip (docs/agents.md §5). Only called when the prompt references
+        `{context}`; returns "" when there's nothing (no resources, or all failed) so the section drops
+        out. A missing/failed resource is skipped, never fatal."""
         if not self.agent or not self.agent.context:
             return ""
         parts = []
@@ -253,28 +240,19 @@ class Director:
                     parts.append(text.strip())
             except Exception:
                 continue
-        if not parts:
-            return ""
-        return ("\n\n--- Live context (current; already fetched for you — use it, don't re-query) ---\n"
-                + "\n\n".join(parts))
+        return "\n\n".join(parts)
 
     async def handle(self, text: str, *, on_text: Optional[OnText] = None,
                      on_tool: Optional[OnTool] = None) -> str:
-        """Route one user utterance to an LLM, run its turn (with tools), record the attributed
+        """Run the **active** LLM on one user utterance (with tools), record the user/assistant
         transcript, and return the final reply. `on_text(text, final=, speaker=)` receives reply
-        text as it's produced; `on_tool(name, args)` fires before each tool call."""
-        await self._log("you", text.strip())
-        route = route_turn(text, self.roster, self.active)
-        # Attribute every LLM line to <agent>.<llm> (e.g. builder.claude); tool lines get a /tool suffix.
-        who = f"{getattr(self.agent, 'name', 'agent')}.{route.target.lower()}"
-        prev_active = self.active
-        if route.persistent:
-            self.active = route.target
-        llm = self.roster[route.target]
-        # A bare handover has no task: ask the newly-active LLM to greet rather than guess.
-        user_text = route.content or (
-            f"You are now the active director (the user switched to you). Greet them in one short "
-            f"line as {route.target}; don't build anything yet.")
+        text as it's produced; `on_tool(name, args)` fires before each tool call. Switching the active
+        LLM is the shell's job (deterministic — conjure.shell), never inferred from `text` here."""
+        text = text.strip()
+        await self._log("you", text)
+        # Tag every log line <agent>.<llm> (e.g. builder.claude); tool lines get a /tool suffix.
+        who = f"{getattr(self.agent, 'name', 'agent')}.{self.active.lower()}"
+        llm = self.roster[self.active]
 
         async def emit(t, *, final):
             # Log intermediate spoken text (acks like "On it", and any pre-tool narration) under the
@@ -283,28 +261,21 @@ class Director:
             if not final and t and t.strip():
                 await self._log(who, t.strip())
             if on_text:
-                await on_text(t, final=final, speaker=route.target)
+                await on_text(t, final=final, speaker=self.active)
 
         async def execute(n, a):
             return await self._execute_tool(n, a, on_tool, who)
 
-        system = self._system_for(route.target) + await self._fetch_context()
-        try:
-            final = await llm.run_turn(
-                system=system,
-                history=list(self.transcript),
-                user_text=user_text,
-                tools=self._tools,
-                execute_tool=execute,
-                emit=emit,
-            )
-        except Exception:
-            # A switch that failed on its first turn shouldn't strand the user on a broken LLM —
-            # revert to whoever they were talking to. (The caller surfaces the error.)
-            if route.persistent:
-                self.active = prev_active
-            raise
-        self.transcript.append(Turn("user", text.strip()))
-        self.transcript.append(Turn(route.target, final))
+        system = await self._system()
+        final = await llm.run_turn(
+            system=system,
+            history=list(self.transcript),
+            user_text=text,
+            tools=self._tools,
+            execute_tool=execute,
+            emit=emit,
+        )
+        self.transcript.append(Turn("user", text))
+        self.transcript.append(Turn("assistant", final))
         await self._log(who, final.strip())
         return final

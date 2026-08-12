@@ -35,7 +35,7 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .captioner import build_captioner
-from .config import DEFAULT_USER, get_settings, scope_for
+from .config import DEFAULT_USER, agent_of, get_settings, scope_for
 from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
@@ -138,9 +138,12 @@ def _migrate_world_dirs(root: Path) -> None:
 
 
 def _boot_world() -> tuple[str, str, WorldStore]:
-    """Resume the last-active world for the default scope, else create its `default` (running the
-    constructor). One-time courtesy: adopt a step-1 single-world file (.cache/world.json) as `default`."""
-    scope = DEFAULT_SCOPE
+    """Resume the world the user was last in — the last-used AGENT's scope (persisted by
+    `/scope/activate`), else the builder default — and that scope's last-active world, else create its
+    `default`. Booting the last-used agent's scope keeps the viewer in sync with a front-end that
+    resumes the same agent after a server restart (otherwise the server always came back on builder).
+    One-time courtesy: adopt a step-1 single-world file (.cache/world.json) as `default`."""
+    scope = scope_for(DEFAULT_USER, worlds.get_last_agent(DEFAULT_USER) or "builder")
     active = worlds.get_active(scope)
     if active and worlds.exists(scope, active):
         try:
@@ -639,6 +642,18 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
     }}
 
 
+def _asset_in_agent_scope(rec: Optional[dict]) -> bool:
+    """By-id counterpart to the catalog's hard agent wall (see library.search/query): an asset is
+    reachable only if its scope has the SAME agent segment as the caller AND (it's the caller's own
+    scope OR public). Guards the reuse-by-id paths so a known/guessed id can't sidestep the wall."""
+    if not rec:
+        return False
+    sc = _caller_scope.get()
+    if agent_of(rec.get("scope") or "") != agent_of(sc):
+        return False                                  # different agent — hard wall (even if public)
+    return rec.get("scope") == sc or bool(rec.get("public", 0))
+
+
 def _inherit_visibility(asset_id: str) -> dict:
     """`{"public": 0|1}` for a NEW asset, inherited from the active world's visibility (spaces-and-users
     §4: created in a private world ⇒ private). Empty dict if the asset already exists — never overwrite a
@@ -734,6 +749,9 @@ def _get_image(image_id: str):
     path = ASSET_CACHE / image_id
     if not path.exists():
         return None, None, f"no image {image_id!r}"
+    cat = library.get(image_id)
+    if cat is not None and not _asset_in_agent_scope(cat):   # hard agent wall on reuse-by-id
+        return None, None, f"no image {image_id!r}"          # don't leak another agent's asset
     data = path.read_bytes()
     rec = IMAGES.get(image_id)
     if rec is None:
@@ -939,6 +957,38 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} (space {active_space_owner}/{active_space})")
     await _broadcast(_snapshot_msg())
     return {"ok": True, "world": name, "rev": store.doc["rev"]}
+
+
+async def _activate_scope(scope: str) -> dict:
+    """Make a world in `scope` live: resume that scope's last-active world, or create its `default` if
+    the scope has none — the `_boot_world` logic generalized to any scope. A no-op when `scope` is
+    already active. Used on agent switch so the live world belongs to the NEW agent's scope, not the
+    previous agent's (a fresh world with no captured space resolves to VOID — skybox/objects only)."""
+    worlds.set_last_agent(scope.split("/", 1)[0], agent_of(scope))   # remember this user's last-used agent
+    if scope == active_scope:
+        return {"ok": True, "world": active_world, "scope": scope, "unchanged": True}
+    active = worlds.get_active(scope)
+    if active and worlds.exists(scope, active):
+        return await _switch_to(scope, active)                 # resume the scope's last-active world
+    return await _switch_to(scope, "default", store_override=_new_world_store(scope))  # or create its default
+
+
+class ActivateScopeRequest(BaseModel):
+    scope: str = DEFAULT_SCOPE
+
+
+@app.post("/scope/activate")
+async def scope_activate(req: ActivateScopeRequest) -> dict:
+    """Activate a world in `scope` (resume last-active, else create default). Called on agent switch so
+    the live world matches the new agent. Un-gated like /worlds/switch — everyone present comes along."""
+    return await _activate_scope(req.scope)
+
+
+@app.get("/agent/last")
+async def agent_last(user: str = DEFAULT_USER) -> dict:
+    """The agent `user` last used (recorded by /scope/activate), so a front-end launched without an
+    explicit --agent resumes it. Defaults to `builder` when the user has no record yet."""
+    return {"ok": True, "agent": worlds.get_last_agent(user) or "builder"}
 
 
 class WorldRef(BaseModel):
@@ -2175,7 +2225,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
     """Place a MODEL already in the library by id — the reuse counterpart to place_asset (no web
     fetch). Images reuse place_image; skyboxes reuse set_skybox/set_grounded_skybox."""
     rec = library.get(req.id)
-    if rec is None:
+    if rec is None or not _asset_in_agent_scope(rec):        # hard agent wall (cross-agent id → "not found")
         return {"ok": False, "error": f"no asset {req.id!r} in the library"}
     if rec["kind"] != "model":
         return {"ok": False, "error": f"{req.id!r} is a {rec['kind']}, not a model — "

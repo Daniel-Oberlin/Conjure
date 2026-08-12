@@ -25,6 +25,14 @@ def scope_for(user: str, agent: str) -> str:
     return f"{user}/agents/{agent}"
 
 
+def agent_of(scope: str) -> str:
+    """The agent segment of a capability scope `<user>/agents/<agent>` — the HARD asset boundary: an
+    agent only ever accesses assets whose scope has the SAME agent segment, regardless of
+    public/private (a `builder` never sees `outdoor` assets, and vice-versa). Falls back to the whole
+    scope when there's no `/agents/` segment (legacy), so it can only match itself."""
+    return scope.split("/agents/", 1)[1] if scope and "/agents/" in scope else (scope or "")
+
+
 def load_env() -> None:
     """Load `.env` from the repo root into the process environment, if present."""
     env_path = ROOT / ".env"

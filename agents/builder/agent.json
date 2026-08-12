@@ -3,7 +3,23 @@
   "prompt_file": "prompt.md",
   "llms": ["*"],
   "mcp_servers": [
-    { "server": "world", "access": "all" }
+    { "server": "world", "access": "all",
+      "tools": [
+        "query_world", "query_room", "view_relative",
+        "set_immersion", "realign_room", "reset_world",
+        "show_surface", "texture_surface", "style_surface",
+        "show_annotations", "style_annotations", "show_edges", "style_edges",
+        "add_entity", "move_entity", "update_entity", "remove_entity", "set_environment",
+        "place_asset", "place_cached_asset", "search_library",
+        "query_assets", "update_asset", "delete_asset",
+        "list_worlds", "new_world", "switch_world", "delete_world",
+        "set_world_visibility", "set_space_visibility",
+        "generate_image", "generate_skybox_image", "generate_grounded_skybox_image",
+        "edit_image", "outpaint_image", "skybox_from_image", "list_image_generators",
+        "place_image", "set_skybox", "set_grounded_skybox",
+        "edit_scene_image", "widen_scene_image", "skybox_from_scene_image"
+      ]
+    }
   ],
   "context": ["room://current", "world://current"],
   "world": {

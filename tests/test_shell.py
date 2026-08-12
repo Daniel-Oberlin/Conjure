@@ -185,3 +185,173 @@ async def test_delete_preview_error_does_not_arm():
     assert sh._pending_delete is None                        # bad target → nothing armed
     assert all(a != "delete" for a, _ in calls)
     assert any("ghost" in t for _, t in out)
+
+
+# --------------------------------------------------------------------------- agent switching
+
+async def test_agent_switch_unavailable_in_handbuilt_shell():
+    # A Shell(director) with no session-owned lifecycle can't relaunch an agent's MCP server.
+    sh, d, out, on_text = _shell()
+    await sh.feed("conjure agent outdoor", on_text=on_text)
+    assert any("isn't available" in t for _, t in out)
+    assert d.handled == []                                   # not forwarded to the agent as content
+
+
+async def test_agent_switch_to_unknown_reports_available(monkeypatch):
+    from contextlib import AsyncExitStack
+    sh, d, out, on_text = _shell()
+    sh._stack = AsyncExitStack()                             # pretend session-managed
+    tried = []
+    monkeypatch.setattr(sh, "_open_agent", lambda name: tried.append(name))
+    await sh.feed("conjure agent nope", on_text=on_text)
+    assert tried == []                                       # never attempted to open a bad agent
+    assert any("No agent 'nope'" in t for _, t in out)       # and it lists what IS available
+
+
+async def test_agent_switch_opens_the_named_agent(monkeypatch):
+    from contextlib import AsyncExitStack
+    sh, d, out, on_text = _shell()                           # current agent = builder
+    sh._stack = AsyncExitStack()
+
+    async def fake_open(name):                               # stand in for the real connect/relaunch
+        sh._director = type("D", (), {"agent": type("A", (), {"name": name})(), "active": "Claude"})()
+
+    monkeypatch.setattr(sh, "_open_agent", fake_open)
+    await sh.feed("conjure agent outdoor", on_text=on_text)
+    assert sh._agent_name() == "outdoor"                     # the shell now drives the new agent
+    assert any("Switched to agent outdoor" in t for _, t in out)
+
+
+async def test_agent_switch_already_on_it_is_a_noop(monkeypatch):
+    from contextlib import AsyncExitStack
+    sh, d, out, on_text = _shell()                           # already builder
+    sh._stack = AsyncExitStack()
+    tried = []
+    monkeypatch.setattr(sh, "_open_agent", lambda name: tried.append(name))
+    await sh.feed("conjure agent builder", on_text=on_text)
+    assert tried == [] and any("Already on builder" in t for _, t in out)
+
+
+async def test_open_agent_closes_current_before_opening_next(monkeypatch):
+    # Exercises the REAL _open_agent (not a monkeypatched stand-in): the current agent's connection
+    # must be torn down BEFORE the next is opened — anyio cancel scopes unwind LIFO in one task, so
+    # opening the new on top and closing the old underneath is the bug the live run hit.
+    from conjure import shell as shell_mod
+
+    log = []
+
+    class _FakeConnect:
+        def __init__(self, agent):
+            self.agent = agent
+
+        async def __aenter__(self):
+            log.append(("open", self.agent))
+            return type("D", (), {"agent": type("A", (), {"name": self.agent})(),
+                                  "active": "Claude", "roster": {"Claude": object()}})()
+
+        async def __aexit__(self, *exc):
+            log.append(("close", self.agent))
+            return False
+
+    monkeypatch.setattr(shell_mod.Director, "connect",
+                        lambda settings, *, agent, user, errlog: _FakeConnect(agent))
+
+    sh = Shell(None, settings=None)
+    sh._user = "daniel"
+    await sh._open_agent("builder")          # initial open (session start)
+    await sh._open_agent("outdoor")          # switch
+    assert log == [("open", "builder"), ("close", "builder"), ("open", "outdoor")]
+    assert sh._agent_name() == "outdoor"
+
+
+async def test_open_agent_restores_previous_on_failure(monkeypatch):
+    from conjure import shell as shell_mod
+    opened = []
+
+    class _FlakyConnect:
+        def __init__(self, agent):
+            self.agent = agent
+
+        async def __aenter__(self):
+            if self.agent == "outdoor":
+                raise RuntimeError("no LLM key for outdoor")
+            opened.append(self.agent)
+            return type("D", (), {"agent": type("A", (), {"name": self.agent})(),
+                                  "active": "Claude", "roster": {"Claude": object()}})()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(shell_mod.Director, "connect",
+                        lambda settings, *, agent, user, errlog: _FlakyConnect(agent))
+
+    sh = Shell(None, settings=None)
+    sh._user = "daniel"
+    await sh._open_agent("builder")
+    with pytest.raises(RuntimeError, match="no LLM key"):
+        await sh._open_agent("outdoor")      # fails…
+    assert sh._agent_name() == "builder"     # …and the shell is restored to builder, not stranded
+
+
+async def test_open_agent_activates_the_new_agents_world(monkeypatch):
+    # On switch, the shell asks the world server to make a world in the NEW agent's scope live.
+    from conjure import shell as shell_mod
+
+    class _C:
+        def __init__(self, agent):
+            self.agent = agent
+
+        async def __aenter__(self):
+            return type("D", (), {"agent": type("A", (), {"name": self.agent})(),
+                                  "active": "Claude", "roster": {"Claude": object()}})()
+
+        async def __aexit__(self, *e):
+            return False
+
+    monkeypatch.setattr(shell_mod.Director, "connect",
+                        lambda settings, *, agent, user, errlog: _C(agent))
+    sh = Shell(None, settings=None)
+    sh._user = "daniel"
+    activated = []
+
+    async def fake_activate(agent):
+        activated.append(agent)
+
+    monkeypatch.setattr(sh, "_activate_world", fake_activate)
+    await sh._open_agent("builder")
+    await sh._open_agent("outdoor")
+    assert activated == ["builder", "outdoor"]
+
+
+async def test_session_resolves_none_agent_to_last_used(monkeypatch):
+    from conjure import shell as shell_mod
+
+    class _C:
+        def __init__(self, agent):
+            self.agent = agent
+
+        async def __aenter__(self):
+            return type("D", (), {"agent": type("A", (), {"name": self.agent})(),
+                                  "active": "Claude", "roster": {"Claude": object()}})()
+
+        async def __aexit__(self, *e):
+            return False
+
+    monkeypatch.setattr(shell_mod.Director, "connect",
+                        lambda settings, *, agent, user, errlog: _C(agent))
+
+    async def fake_last(self):
+        return "outdoor"
+
+    monkeypatch.setattr(shell_mod.Shell, "_last_agent", fake_last)
+
+    async with shell_mod.Shell.session(settings=None, agent=None, user="daniel") as sh:
+        assert sh._agent_name() == "outdoor"                  # None resumes the last-used agent
+    async with shell_mod.Shell.session(settings=None, agent="builder", user="daniel") as sh:
+        assert sh._agent_name() == "builder"                  # explicit --agent overrides
+
+
+async def test_last_agent_falls_back_to_builder_without_server():
+    sh = Shell(None, settings=None)
+    sh._user = "daniel"
+    assert await sh._last_agent() == "builder"                # no world_url → safe default

@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.types import TextContent
 
 from .config import DEFAULT_USER, scope_for
 
@@ -28,7 +29,44 @@ BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
 # (env), NOT an LLM tool argument. Every maintenance call carries it so the world server enforces scope.
 SCOPE = os.environ.get("CONJURE_SCOPE", scope_for(DEFAULT_USER, "builder"))
 
-mcp = FastMCP("conjure-world")
+# --- Hard tool gate (agent-separation-plan §3c, Layer 2) -------------------------------------------
+# The agent's tool allow-list + access level, injected as env by the director at launch (never an LLM
+# arg). This MCP server is a SEPARATE process from the LLM/director, so enforcing here is a real second
+# layer: it holds regardless of what the LLM was *offered* (director-side Layer 1), catching any call
+# through this server — a future persona/agent-to-agent path, not just the model. `CONJURE_TOOLS` unset
+# = no restriction (e.g. a standalone `python -m conjure.mcp_server`); set (even "") = enforce.
+_raw_tools = os.environ.get("CONJURE_TOOLS")            # None = unset; "" = none; "a,b" = allow-list
+_ALLOWED_TOOLS: Optional[set[str]] = None if _raw_tools is None else set(filter(None, _raw_tools.split(",")))
+_ACCESS = os.environ.get("CONJURE_ACCESS", "all")       # "all" | "read"
+# Read-only tools: everything else is treated as mutating (safe default — a NEW tool is denied to a
+# read-only agent until it's classified here). `access: "read"` allows only these.
+_READONLY_TOOLS = {"query_world", "query_room", "view_relative", "list_worlds",
+                   "list_image_generators", "search_library", "query_assets"}
+
+
+def _tool_denied(name: str) -> Optional[str]:
+    """Return a deny message if the agent's capability forbids calling `name`, else None. Enforced in
+    `_GatedMCP.call_tool` below — a hard, out-of-LLM-process gate."""
+    if _ALLOWED_TOOLS is not None and name not in _ALLOWED_TOOLS:
+        return f"error: tool {name!r} is not permitted for this agent (out of its tool scope)"
+    if _ACCESS == "read" and name not in _READONLY_TOOLS:
+        return f"error: tool {name!r} mutates state, but this agent has read-only access"
+    return None
+
+
+class _GatedMCP(FastMCP):
+    """FastMCP with the capability gate on tool dispatch. `_setup_handlers` (in __init__) registers this
+    overridden `call_tool` as the handler, so every tool call is checked here before it runs — no
+    monkeypatching, no per-tool decorator."""
+
+    async def call_tool(self, name, arguments):
+        deny = _tool_denied(name)
+        if deny is not None:
+            return [TextContent(type="text", text=deny)]
+        return await super().call_tool(name, arguments)
+
+
+mcp = _GatedMCP("conjure-world")
 
 
 async def _post_patch(ops: list[dict[str, Any]], origin: str = "director") -> dict:
