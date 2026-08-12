@@ -1599,9 +1599,17 @@
       },
       tick: function (time, timeDelta) {
         var sceneEl = this.el.sceneEl, frame = sceneEl.frame;
-        if (!frame) return;
-        var refSpace = sceneEl.renderer.xr.getReferenceSpace();
-        if (!refSpace) return;
+        var refSpace = frame && sceneEl.renderer.xr.getReferenceSpace();
+        if (!frame || !refSpace) {
+          // Desktop / no XR session: A-Frame still ticks (rAF), but everything below (head-frame
+          // parking, sky pin, foveation, room capture, jitter probes) is XR-only. The deferred
+          // surface-mesh builder (pumpGeo) and pose easing (slewPoses) are frame-INDEPENDENT and MUST
+          // still run here — otherwise a desktop viewer never drains the geo queue, so real-surface
+          // planes are never built (walls invisible; only edges/wall-art/labels render).
+          pumpGeo();
+          slewPoses((timeDelta || 0) / 1000);
+          return;
+        }
         var _jt0 = performance.now();                       // tick self-time start (our JS work this frame)
         var JIT = this._jitOn();
         if (JIT) {                                          // JITTER PROBE: per-frame pacing + pose sampling
