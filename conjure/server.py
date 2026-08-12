@@ -138,9 +138,12 @@ def _migrate_world_dirs(root: Path) -> None:
 
 
 def _boot_world() -> tuple[str, str, WorldStore]:
-    """Resume the last-active world for the default scope, else create its `default` (running the
-    constructor). One-time courtesy: adopt a step-1 single-world file (.cache/world.json) as `default`."""
-    scope = DEFAULT_SCOPE
+    """Resume the world the user was last in — the last-used AGENT's scope (persisted by
+    `/scope/activate`), else the builder default — and that scope's last-active world, else create its
+    `default`. Booting the last-used agent's scope keeps the viewer in sync with a front-end that
+    resumes the same agent after a server restart (otherwise the server always came back on builder).
+    One-time courtesy: adopt a step-1 single-world file (.cache/world.json) as `default`."""
+    scope = scope_for(DEFAULT_USER, worlds.get_last_agent(DEFAULT_USER) or "builder")
     active = worlds.get_active(scope)
     if active and worlds.exists(scope, active):
         try:

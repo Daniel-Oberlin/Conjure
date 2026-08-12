@@ -1720,3 +1720,23 @@ def test_scope_activate_records_the_users_last_used_agent(srv, client):
     assert client.get("/agent/last", params={"user": "daniel"}).json()["agent"] == "outdoor"
     client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})   # switching back records builder
     assert client.get("/agent/last", params={"user": "daniel"}).json()["agent"] == "builder"
+
+
+def test_boot_world_resumes_the_last_used_agents_scope(srv):
+    # After a server restart, boot should resume the world of the agent the user last used — not always
+    # builder — so the viewer stays in sync with a front-end that resumes the same agent.
+    import conjure.server as S
+    from conjure.world import WorldStore
+    outdoor = S.scope_for(S.DEFAULT_USER, "outdoor")
+    S.worlds.set_last_agent(S.DEFAULT_USER, "outdoor")
+    S.worlds.save(outdoor, "beach", WorldStore(
+        {"id": "b", "name": "beach", "rev": 0, "environment": {"space": "<void>"}, "entities": []}))
+    S.worlds.set_active(outdoor, "beach")
+    scope, name, _ = S._boot_world()
+    assert scope == outdoor and name == "beach"
+
+
+def test_boot_world_defaults_to_builder_without_a_last_agent(srv):
+    import conjure.server as S
+    scope, name, _ = S._boot_world()
+    assert scope == S.DEFAULT_SCOPE and name == "default"     # no record → builder's default
