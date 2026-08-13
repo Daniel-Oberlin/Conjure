@@ -158,13 +158,15 @@ class Shell:
             return "conjure:shell> "
         return f"conjure:{self._director.user}.{self._agent_name()}.{self._director.active.lower()}> "
 
-    async def feed(self, text: str, *, on_text: Optional[OnText] = None,
+    async def feed(self, text: str, *, speaker: Optional[str] = None, on_text: Optional[OnText] = None,
                    on_tool: Optional[OnTool] = None) -> None:
         """Route one line: a recognised command runs here (deterministic); anything else goes to the
-        active agent."""
+        active agent, attributed to `speaker` (WHO said it). `speaker` is per-call so one shell can serve
+        many speakers (the agent server, shared-session-plan §6); it defaults to the shell's own `_user`
+        for a single-user front-end."""
         cmd = self._as_command(text)
         if cmd is None:
-            await self._director.handle(text, speaker=self._user, on_text=on_text, on_tool=on_tool)
+            await self._director.handle(text, speaker=speaker or self._user, on_text=on_text, on_tool=on_tool)
         else:
             await self._dispatch(cmd, on_text)
 
