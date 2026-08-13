@@ -28,6 +28,10 @@ dynamic behavior, and the ability to pull in generated or pre-existing web conte
 - **[agent-server-plan.md](./agent-server-plan.md)** — moving the director + shared transcript into a
   long-lived **agent server** so voice/CLI become thin HTTP/SSE clients and multiple users share one
   conversation (matching the shared world).
+- **[shared-session-plan.md](./shared-session-plan.md)** — the **state model** under the agent server:
+  the one shared reality `(space, world)` with `agent = f(world)`, how the world/agent servers, headsets
+  and dumb clients reconcile to a single session pointer, the two floors (conversational + spatial),
+  **pinning while held**, three-tier access (editor/viewer/locked-out), and the multi-user edge cases.
 
 > For current project status / what works today, see the top-level [README](../README.md) — it's
 > the single source of truth for status, so these docs don't drift.

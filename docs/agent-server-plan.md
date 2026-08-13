@@ -10,6 +10,12 @@ Depends on / follows the LLM-identity removal (branch `agent-refactor`, commit `
 transcript already carries no per-LLM identity, so the only attribution we (re)introduce here is the
 **human speaker**, never the model.
 
+The **state model** this transport binds to — the one shared reality `(space, world)` with
+`agent = f(world)`, the single session pointer, reconciliation, the two floors, pinning-while-held, and
+the multi-user permission tiers — lives in [shared-session-plan.md](./shared-session-plan.md). Read that
+first: it decides *what the agent server follows*. Step 1 there (per-turn `speaker` + the conversational
+floor) is Step 1 here, and is **done**.
+
 ---
 
 ## 1. Why
@@ -248,8 +254,10 @@ working.
 ### Migration path (incremental, each step shippable)
 
 - **Step 0 (done):** LLM identity removed from context/prompt (`agent-refactor`).
-- **Step 1:** add per-turn `speaker` to `Director.handle` + user-turn attribution + the turn lock;
-  unit-test in-process. No transport change yet — clients pass their own `--user` as speaker.
+- **Step 1 (done):** per-turn `speaker` on `Director.handle(text, *, speaker=)` → tags the *user* turn
+  (`Turn.by`, dropped by `_messages` so the model never sees it) and resolves `{user}` per turn; the
+  single floor is a `Busy`-raising flag (reject-while-busy, D4), not a queue. Clients pass their own
+  `--user` as speaker (`shell.feed`). In-process only — no transport change yet.
 - **Step 2:** stand up the agent server wrapping the existing Director; add `POST /turn` + `GET
   /stream`. Prove it with the CLI as an HTTP client (easiest to debug).
 - **Step 3:** move `mcp_server.py` to per-turn scope.
