@@ -312,13 +312,15 @@ Ordered so the browser/headset-independent pieces land first and each step is un
   render client / space-holder); convert **CLI first, voice later**; route both utterances *and*
   deterministic commands through **`POST /turn`** (keep `Shell.feed`'s wake-word routing; command output
   emits as a `notice` SSE event). Substeps:
-  - **C1 — stand up the server + convert the CLI** (agent-server-plan Step 2). `POST /turn {speaker, text}`
-    (fire-and-forget; `Busy` → 409/`busy` event) + `GET /stream` (SSE: backlog snapshot, then
-    `user_turn`/`assistant_delta`/`tool_call`/`assistant_final`/`notice`/`busy`/`context`). Wraps
-    `Shell.session`; CLI becomes an HTTP client with a background SSE listener + prompt from `context`.
-    `Shell.feed(text, *, speaker, …)` takes the speaker per call; add `agent_url` config. Voice stays
-    in-process (no regression — CLI/voice don't share a conversation today either). Integration tests with a
-    faked Director/world.
+  - **✅ C1 (done) — stand up the server + convert the CLI** (agent-server-plan Step 2).
+    `conjure/agent_server.py`: `POST /turn {speaker, text}` (fire-and-forget behind a single turn floor;
+    409/`busy`) + `GET /stream` (SSE: backlog snapshot, then `user_turn`/`assistant_delta`/`tool_call`/
+    `assistant_final`/`notice`/`busy`/`context`); `build_app(shell=…)` injects a shell for tests.
+    `conjure/agent_client.py`: pure `parse_sse_line`/`prompt_from_context`/`render_event`/`apply_context` +
+    `post_turn`/`stream_events`. CLI (`_repl_client`/`_say_client`) is now a thin client — background SSE
+    listener, prompt from `context`; `say` skips the backlog via its own turn marker. `Shell.feed(…,
+    speaker=)` per call; `agent_url` config; `conjure-agent` entrypoint. Verified live end-to-end (world +
+    agent servers, a command turn). Voice still in-process (no regression). Suite 364 py + 97 js.
   - **C2 — follow the pointer + re-bind** (shared-session Step C proper). Ride `/ws`; on an `agent` change
     re-bind via `_open_agent`; reset transcript on agent change / keep on same-agent world change; emit
     `context`. Tests drive simulated state changes.

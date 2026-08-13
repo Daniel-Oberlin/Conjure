@@ -39,6 +39,7 @@ dev = [
 
 [project.scripts]
 conjure = "conjure.__main__:main"
+conjure-agent = "conjure.agent_server:main"
 conjure-mcp = "conjure.mcp_server:main"
 conjure-doctor = "conjure.doctor:main"
 conjure-voice = "conjure.voice:main"

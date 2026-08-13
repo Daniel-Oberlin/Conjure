@@ -106,19 +106,26 @@ Kokoro TTS) runs **locally** — no keys. Full prerequisites + the doctor:
 
 ## CLI — drive it from the terminal (no voice)
 
-Quiet, fast, discrete testing without the mic. With the world server running:
+Quiet, fast, discrete testing without the mic. The direct tool commands hit the world server; the
+director paths (`say` / interactive REPL) are now **thin clients of the agent server** — start it first:
 
 ```bash
-conjure-cli asset "oak tree" --size 7      # direct, deterministic tool commands
+python -m conjure                          # terminal 1: world server
+conjure-agent                              # terminal 2: agent server (holds the shared director + transcript)
+
+conjure-cli asset "oak tree" --size 7      # direct, deterministic tool commands (→ world server)
 conjure-cli image "an oil painting of a red dragon"
 conjure-cli skybox "a misty pine forest"
 conjure-cli world                          # print the world
 
-conjure-cli say "put a tree in front of me and hang a sunset painting"   # the director, by text
+conjure-cli say "put a tree in front of me and hang a sunset painting"   # the director (→ agent server)
 conjure-cli                                # no args → interactive director REPL
 ```
 
-Quiet by default; add `-v` for tool calls and library logs. (`say`/REPL need `ANTHROPIC_API_KEY`.)
+Quiet by default; add `-v` for tool calls and library logs. (`say`/REPL need the agent server running +
+`ANTHROPIC_API_KEY`.) The agent server picks its agent at launch (`conjure-agent --agent outdoor`); switch
+live from the REPL with `conjure agent <name>`. *(Voice still hosts its own director in-process — it moves
+onto the agent server in a later step.)*
 
 ## On the Quest 3
 

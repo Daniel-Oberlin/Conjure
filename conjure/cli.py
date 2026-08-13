@@ -30,7 +30,6 @@ from typing import Optional
 import httpx
 
 from .config import DEFAULT_USER, Settings, get_settings
-from .shell import Shell
 
 
 # --------------------------------------------------------------------------- helpers
@@ -288,66 +287,124 @@ def cmd_skybox_from(s: Settings, a) -> None:
     _say(_post(s, "/skybox_from_image", {"id": a.id}), a.verbose, f"skybox from {a.id}")
 
 
-# --------------------------------------------------------------------------- director (text)
-
-async def _director(s: Settings, make_instructions, verbose: bool, user: str = DEFAULT_USER,
-                    agent: Optional[str] = None) -> None:
-    """Drive the shell (conjure.shell) — which wraps the agent (conjure.director). `make_instructions`
-    is a factory `shell -> async iterator of strings` (so the interactive prompt can reflect shell
-    state). The shell owns deterministic commands + LLM switching; the agent builds the world; the CLI
-    only decides how to print. `agent` selects which agent def to load (default `builder`)."""
-    errlog = sys.stderr if verbose else None
-    async with Shell.session(s, agent=agent, user=user, errlog=errlog) as shell:
-
-        async def on_text(text: str, *, final: bool, speaker: str) -> None:
-            # Print every reply chunk — including the upfront acknowledgement ("On it") the agent emits
-            # before running the tools — so there's immediate feedback during slow work. Show who's
-            # speaking once there's more than one LLM (read live — the roster can change on agent switch).
-            multi = len(shell.director.roster) > 1
-            print(f"{speaker}: {text}" if multi or speaker == "shell" else text)
-
-        async def on_tool(name: str, args: dict) -> None:
-            if verbose:
-                print(f"  · {name}({json.dumps(args)})")
-
-        async for text in make_instructions(shell):
-            try:
-                await shell.feed(text, on_text=on_text, on_tool=on_tool)
-            except Exception as exc:  # one bad turn (API error, quota, …) shouldn't kill the REPL
-                print(f"error: {exc}")
-
-
-def cmd_say(s: Settings, a) -> None:
-    async def once(_shell):
-        yield " ".join(a.text)
-    asyncio.run(_director(s, once, a.verbose, a.user, a.agent))
-
+# --------------------------------------------------------------------------- agent-server clients
+#
+# The CLI is a THIN client now (shared-session Step C1): the Director + shared transcript live in the
+# agent server (conjure.agent_server); the CLI POSTs a turn and renders the SSE conversation stream. The
+# agent is owned by the (separately launched) agent server, so --agent no longer selects it here — switch
+# with the `conjure agent <name>` command instead. Start the server first: `python -m conjure.agent_server`.
 
 # Whole-line inputs that leave the REPL (case-insensitive). Exact match only, so "exit the room" is
 # still passed through as an instruction.
 _QUIT_WORDS = {":q", ":quit", "q", "quit", "exit", "bye", "goodbye"}
 
 
-def cmd_repl(s: Settings, a) -> None:
-    print("Conjure REPL — type an instruction ('exit' or 'quit' to leave).\n"
-          "Type 'conjure open shell' for deterministic commands (switch LLM, status, …), then e.g. "
-          "'use Gemini' to switch the active LLM.")
+def _agent_unreachable_msg(s: Settings, err: str) -> str:
+    return (f"Agent server not reachable at {s.agent_url} ({err}).\n"
+            f"Start it first:  python -m conjure.agent_server")
 
-    async def lines(shell: Shell):
-        loop = asyncio.get_event_loop()
+
+async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
+    """Interactive REPL as a thin client: a background task renders the shared conversation stream (and
+    folds `context` into the prompt); the main loop reads a line and POSTs it. Eventually-consistent per
+    prompt (shared-session-plan §8) — the reply prints when it arrives, the next prompt reflects context."""
+    from .agent_client import (apply_context, post_turn, prompt_from_context, render_event, stream_events)
+
+    ctx = {"agent": "agent", "llm": "", "user": user, "in_shell": False}
+    stop = asyncio.Event()
+
+    async def listen() -> None:
+        while not stop.is_set():
+            try:
+                async for ev in stream_events(s.agent_url):
+                    if ev.get("type") == "context":
+                        apply_context(ctx, ev)
+                        continue
+                    out = render_event(ev, me=user, verbose=verbose)
+                    if out is not None:
+                        print(out)
+            except Exception:  # noqa: BLE001 — server down/restarting: back off and reconnect
+                if stop.is_set():
+                    return
+                await asyncio.sleep(1.0)
+
+    listen_task = asyncio.create_task(listen())
+    await asyncio.sleep(0.25)                               # let the first `context` arrive for prompt #1
+    loop = asyncio.get_event_loop()
+    try:
         while True:
             try:
-                line = await loop.run_in_executor(None, lambda: input(shell.prompt()))
+                line = await loop.run_in_executor(None, lambda: input(prompt_from_context(ctx)))
             except (EOFError, KeyboardInterrupt):
                 print()
-                return
+                break
             line = line.strip()
             if line.lower() in _QUIT_WORDS:
-                return
-            if line:
-                yield line
+                break
+            if not line:
+                continue
+            res = await post_turn(s.agent_url, user, line)
+            if res.get("error"):
+                print(_agent_unreachable_msg(s, res["error"]))
+            elif res.get("busy"):
+                print("[busy — another turn is in progress; try again]")
+    finally:
+        stop.set()
+        listen_task.cancel()
 
-    asyncio.run(_director(s, lines, a.verbose, a.user, a.agent))
+
+async def _say_client(s: Settings, verbose: bool, user: str, text: str) -> None:
+    """One-shot: submit `text` and print only THIS turn's reply, then exit. Skips the backlog snapshot by
+    waiting for our turn to begin — an utterance echoes our own `user_turn`; a command replies with a
+    `notice` (never in the backlog, since notices aren't stored)."""
+    import httpx
+
+    from .agent_client import parse_sse_line, post_turn, render_event
+
+    text = text.strip()
+    started = False
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("GET", f"{s.agent_url}/stream") as r:
+                async for line in r.aiter_lines():
+                    ev = parse_sse_line(line)
+                    if ev is None:
+                        continue
+                    t = ev.get("type")
+                    if t == "context":                     # subscribed → submit once
+                        res = await post_turn(s.agent_url, user, text)
+                        if res.get("error"):
+                            print(_agent_unreachable_msg(s, res["error"])); return
+                        if res.get("busy"):
+                            print("[busy — try again in a moment]"); return
+                        continue
+                    if not started:                        # skip replayed backlog until our turn begins
+                        if t == "user_turn" and ev.get("speaker") == user and ev.get("text") == text:
+                            started = True
+                        elif t in ("notice", "busy"):      # command reply → done
+                            out = render_event(ev, me=user, verbose=verbose)
+                            if out:
+                                print(out)
+                            return
+                        continue
+                    out = render_event(ev, me=user, verbose=verbose)
+                    if out is not None:
+                        print(out)
+                    if t == "assistant_final":
+                        return
+    except Exception as exc:  # noqa: BLE001
+        print(_agent_unreachable_msg(s, str(exc)))
+
+
+def cmd_say(s: Settings, a) -> None:
+    asyncio.run(_say_client(s, a.verbose, a.user, " ".join(a.text)))
+
+
+def cmd_repl(s: Settings, a) -> None:
+    print("Conjure REPL — thin client of the agent server (start it: 'python -m conjure.agent_server').\n"
+          "Type an instruction ('exit'/'quit' to leave). 'conjure open shell' for deterministic commands "
+          "(switch LLM/agent, status, …).")
+    asyncio.run(_repl_client(s, a.verbose, a.user))
 
 
 # --------------------------------------------------------------------------- argparse
