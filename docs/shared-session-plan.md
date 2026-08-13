@@ -99,8 +99,10 @@ world server: pointer change → broadcast { space, world, scope, agent, owner }
 ```
 
 - The agent server **subscribes** (not a one-shot GET) so it *follows* the pointer — including
-  headset-driven changes it didn't initiate. On an `agent` change it **re-binds** its Director (the existing
-  `_open_agent` close-old-then-open-new dance).
+  headset-driven changes it didn't initiate. **Decided (Step C):** it rides the world server's existing
+  `/ws` as a passive listener and reads `state` from each snapshot (reuses Step B; no new world-server
+  surface — verify a listener isn't counted as a render client / space-holder). On an `agent` change it
+  **re-binds** its Director (the existing `_open_agent` close-old-then-open-new dance).
 - Add a plain **`GET /state`** → `{space, world, scope, agent, owner}` as the reconciliation snapshot for a
   fresh subscriber / any client that just needs to ask.
 
@@ -302,10 +304,28 @@ Ordered so the browser/headset-independent pieces land first and each step is un
   renderer); new `GET /state` returns them flat (subsumes `/agent/last`). Tested: `/state` for the default,
   `/state` after a scope activation (agent derived, space reflected), snapshot carries `state` beside the
   doc.
-- **Step C — agent server follows the pointer.** Stand up the agent server (agent-server-plan Step 2) as a
-  **subscriber**: bind Director on the current `agent`, re-bind on `agent` change (reuse `_open_agent`),
-  reset transcript on agent change / keep on same-agent world change. Tests: simulated pointer events drive
-  bind/re-bind and transcript reset/keep.
+- **Step C — the agent server (new host of `Shell.session`).** Move the `Shell.session` host out of
+  cli.py/voice.py into `conjure/agent_server.py` (a small FastAPI app holding one Shell → one Director →
+  one shared transcript); clients become thin HTTP/SSE. `Director`/`Shell` stay **plain objects** (unit
+  tests unchanged); only their host moves. **Decisions (2026-08-13):** follow the world server by riding
+  its existing `/ws` as a passive listener (reuse Step B's `state`; verify a listener isn't counted as a
+  render client / space-holder); convert **CLI first, voice later**; route both utterances *and*
+  deterministic commands through **`POST /turn`** (keep `Shell.feed`'s wake-word routing; command output
+  emits as a `notice` SSE event). Substeps:
+  - **C1 — stand up the server + convert the CLI** (agent-server-plan Step 2). `POST /turn {speaker, text}`
+    (fire-and-forget; `Busy` → 409/`busy` event) + `GET /stream` (SSE: backlog snapshot, then
+    `user_turn`/`assistant_delta`/`tool_call`/`assistant_final`/`notice`/`busy`/`context`). Wraps
+    `Shell.session`; CLI becomes an HTTP client with a background SSE listener + prompt from `context`.
+    `Shell.feed(text, *, speaker, …)` takes the speaker per call; add `agent_url` config. Voice stays
+    in-process (no regression — CLI/voice don't share a conversation today either). Integration tests with a
+    faked Director/world.
+  - **C2 — follow the pointer + re-bind** (shared-session Step C proper). Ride `/ws`; on an `agent` change
+    re-bind via `_open_agent`; reset transcript on agent change / keep on same-agent world change; emit
+    `context`. Tests drive simulated state changes.
+  - **C3 — convert voice** to POST /turn + SSE→TTS (agent-server-plan Step 4; hardest — audio + timing).
+  - **C4 — delete the in-process director paths** from cli/voice (agent-server-plan Step 5).
+  - *Adjacent (after C2):* `mcp_server.py` per-turn scope (agent-server-plan Step 3) — needed before
+    multi-speaker ownership is truly correct.
 - **Step D — pinning while held (P7).** World server: while a space is occupied, constrain pointer moves
   (`/worlds/switch`, `/scope/activate`) to same-space or VOID; refuse cross-space moves with a clear reason.
   Tests: held + same-space ok; held + VOID ok; held + other-space refused; unheld free.
