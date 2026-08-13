@@ -86,11 +86,13 @@ async def test_run_turn_utterance_emits_full_event_sequence_and_clears_floor():
     q = app.state.hub.subscribe()
     await _run_turn(app, "alice", "put a tree here")
     events = _drain(q)
-    assert [e["type"] for e in events] == ["user_turn", "assistant_delta", "tool_call", "assistant_final"]
+    assert [e["type"] for e in events] == \
+        ["user_turn", "assistant_delta", "tool_call", "assistant_final", "turn_done"]
     assert events[0] == {"type": "user_turn", "speaker": "alice", "text": "put a tree here"}
     assert events[1]["text"] == "on it" and events[1]["llm"] == "Claude"       # delta tagged with the LLM
     assert events[2] == {"type": "tool_call", "name": "place_asset", "args": {"query": "tree"}}
     assert events[3] == {"type": "assistant_final", "text": "done — a tree", "llm": "Claude"}
+    assert events[4] == {"type": "turn_done", "speaker": "alice"}   # unambiguous end-of-turn (floor free)
     assert shell.fed == [("alice", "put a tree here")]        # speaker threaded through to feed
     assert app.state.turn_active is False                     # floor released in finally
 
@@ -101,7 +103,7 @@ async def test_run_turn_command_emits_notice_and_context_but_no_user_turn():
     q = app.state.hub.subscribe()
     await _run_turn(app, "alice", "conjure use gemini")
     events = _drain(q)
-    assert [e["type"] for e in events] == ["notice", "context"]   # command output, then refreshed prompt state
+    assert [e["type"] for e in events] == ["notice", "context", "turn_done"]  # reply, refreshed prompt, end
     assert events[0]["text"].startswith("Now talking to Gemini")
     assert events[1] == _context_event(shell)                 # agent/llm/user snapshot
     assert app.state.turn_active is False
@@ -118,6 +120,7 @@ async def test_run_turn_error_is_reported_and_never_strands_the_floor():
     events = _drain(q)
     assert events[0]["type"] == "user_turn"
     assert any(e["type"] == "notice" and "boom" in e["text"] for e in events)
+    assert events[-1]["type"] == "turn_done"                  # end-of-turn fires even on error
     assert app.state.turn_active is False                     # floor released despite the exception
 
 

@@ -312,13 +312,18 @@ async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
 
     ctx = {"agent": "agent", "llm": "", "user": user, "in_shell": False}
     stop = asyncio.Event()
+    turn_done = asyncio.Event()                            # set by the listener when our turn finishes
 
     async def listen() -> None:
         while not stop.is_set():
             try:
                 async for ev in stream_events(s.agent_url):
-                    if ev.get("type") == "context":
+                    kind = ev.get("type")
+                    if kind == "context":
                         apply_context(ctx, ev)
+                        continue
+                    if kind == "turn_done":                # end-of-turn: release the waiting prompt
+                        turn_done.set()
                         continue
                     out = render_event(ev, me=user, verbose=verbose)
                     if out is not None:
@@ -343,11 +348,19 @@ async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
                 break
             if not line:
                 continue
+            turn_done.clear()                              # clear BEFORE POST so we wait on THIS turn only
             res = await post_turn(s.agent_url, user, line)
             if res.get("error"):
                 print(_agent_unreachable_msg(s, res["error"]))
             elif res.get("busy"):
                 print("[busy — another turn is in progress; try again]")
+            else:                                          # accepted → wait for the reply to finish printing
+                try:                                       # before showing the next prompt (single floor:
+                    await asyncio.wait_for(turn_done.wait(), timeout=300.0)   # the next turn_done is ours)
+                except asyncio.TimeoutError:
+                    print("[still working — the turn hasn't reported done; returning to the prompt]")
+                except KeyboardInterrupt:
+                    print()                                # ^C stops waiting, back to the prompt
     finally:
         stop.set()
         listen_task.cancel()
@@ -381,16 +394,18 @@ async def _say_client(s: Settings, verbose: bool, user: str, text: str) -> None:
                     if not started:                        # skip replayed backlog until our turn begins
                         if t == "user_turn" and ev.get("speaker") == user and ev.get("text") == text:
                             started = True
-                        elif t in ("notice", "busy"):      # command reply → done
+                        elif t in ("notice", "busy"):      # command reply / rejection (no backlog notices)
                             out = render_event(ev, me=user, verbose=verbose)
                             if out:
                                 print(out)
+                            return
+                        elif t == "turn_done":             # a turn with no textual output → just stop
                             return
                         continue
                     out = render_event(ev, me=user, verbose=verbose)
                     if out is not None:
                         print(out)
-                    if t == "assistant_final":
+                    if t == "turn_done":                   # the definitive end (covers tool-only turns)
                         return
     except Exception as exc:  # noqa: BLE001
         print(_agent_unreachable_msg(s, str(exc)))

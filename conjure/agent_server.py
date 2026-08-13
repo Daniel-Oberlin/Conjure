@@ -125,6 +125,10 @@ async def _run_turn(app: FastAPI, speaker: str, text: str) -> None:
         await hub.publish({"type": "notice", "text": f"error: {exc}"})
     finally:
         app.state.turn_active = False
+        # The unambiguous end-of-turn signal (floor now free): clients gate their next prompt on it, so a
+        # reply never prints on top of a fresh prompt. Fires for every path — utterance, command, error,
+        # even a no-output turn — because it's in `finally`.
+        await hub.publish({"type": "turn_done", "speaker": speaker})
 
 
 class TurnRequest(BaseModel):

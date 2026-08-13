@@ -34,6 +34,7 @@ def test_render_event_formats_each_type():
     assert render_event({"type": "notice", "text": "Now on Gemini"}, me="alice", verbose=False) == "Now on Gemini"
     assert render_event({"type": "busy"}, me="alice", verbose=False).startswith("[busy")
     assert render_event({"type": "context", "agent": "builder"}, me="alice", verbose=False) is None
+    assert render_event({"type": "turn_done", "speaker": "alice"}, me="alice", verbose=False) is None  # control
 
 
 def test_render_tool_call_is_verbose_only():
