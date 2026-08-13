@@ -23,7 +23,10 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import signal
 import sys
+import threading
 import uuid
 from typing import Optional
 
@@ -304,6 +307,28 @@ def _agent_unreachable_msg(s: Settings, err: str) -> str:
             f"Start it first:  python -m conjure.agent_server")
 
 
+async def _ainput(prompt: str) -> str:
+    """Async `input()` on a DAEMON thread. `loop.run_in_executor(input)` uses a *non-daemon* worker whose
+    atexit join blocks interpreter shutdown while it's stuck in a blocking read — which is exactly why ^C
+    used to hang the REPL and force a kill. A daemon thread never blocks exit, so ^C propagates to
+    asyncio.run and the process exits cleanly. Raises EOFError on ^D."""
+    loop = asyncio.get_event_loop()
+    fut: "asyncio.Future[str]" = loop.create_future()
+
+    def _worker() -> None:
+        try:
+            line = input(prompt)
+        except EOFError:
+            loop.call_soon_threadsafe(lambda: fut.done() or fut.set_exception(EOFError()))
+        except Exception as exc:  # noqa: BLE001
+            loop.call_soon_threadsafe(lambda e=exc: fut.done() or fut.set_exception(e))
+        else:
+            loop.call_soon_threadsafe(lambda: fut.done() or fut.set_result(line))
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return await fut
+
+
 async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
     """Interactive REPL as a thin client: a background task renders the shared conversation stream (and
     folds `context` into the prompt); the main loop reads a line and POSTs it. Eventually-consistent per
@@ -333,14 +358,48 @@ async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
                     return
                 await asyncio.sleep(1.0)
 
+    async def _await_turn() -> None:
+        """Wait for our turn to finish before re-prompting. A heartbeat keeps long image/skybox turns from
+        looking hung — and, crucially, from returning to a prompt that would just reject the next input as
+        busy while the turn is still running. Caps at ~10 min as a safety against a dropped stream (a lost
+        turn_done)."""
+        waited = 0
+        while not turn_done.is_set():
+            try:
+                await asyncio.wait_for(turn_done.wait(), timeout=20.0)
+            except asyncio.TimeoutError:
+                waited += 20
+                print(f"[still working… {waited}s — image/skybox turns can take a while]")
+                if waited >= 600:
+                    print("[the turn is still running server-side; new input may be rejected until it finishes]")
+                    return
+
     listen_task = asyncio.create_task(listen())
     await asyncio.sleep(0.25)                               # let the first `context` arrive for prompt #1
+
+    # ^C handling: cancel the main task on SIGINT (whatever we're awaiting — the daemon input future or a
+    # turn wait — raises CancelledError, which we swallow for a clean exit). Relying on the default
+    # KeyboardInterrupt doesn't cleanly unwind asyncio.run here; this does. The daemon input thread is then
+    # abandoned harmlessly (it never blocks interpreter exit).
     loop = asyncio.get_event_loop()
+    main = asyncio.current_task()
+    interrupted = False
+
+    def _on_sigint() -> None:
+        nonlocal interrupted
+        interrupted = True
+        main.cancel()
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, _on_sigint)
+    except (NotImplementedError, RuntimeError):            # e.g. non-main thread / unsupported platform
+        pass
+
     try:
         while True:
             try:
-                line = await loop.run_in_executor(None, lambda: input(prompt_from_context(ctx)))
-            except (EOFError, KeyboardInterrupt):
+                line = await _ainput(prompt_from_context(ctx))
+            except EOFError:                               # ^D — clean exit
                 print()
                 break
             line = line.strip()
@@ -354,16 +413,20 @@ async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
                 print(_agent_unreachable_msg(s, res["error"]))
             elif res.get("busy"):
                 print("[busy — another turn is in progress; try again]")
-            else:                                          # accepted → wait for the reply to finish printing
-                try:                                       # before showing the next prompt (single floor:
-                    await asyncio.wait_for(turn_done.wait(), timeout=300.0)   # the next turn_done is ours)
-                except asyncio.TimeoutError:
-                    print("[still working — the turn hasn't reported done; returning to the prompt]")
-                except KeyboardInterrupt:
-                    print()                                # ^C stops waiting, back to the prompt
+            else:                                          # accepted → wait for the reply (single floor:
+                await _await_turn()                        # the next turn_done is ours)
+    except asyncio.CancelledError:
+        if not interrupted:                                # a real cancellation (not our ^C) → propagate
+            raise
+        print()                                            # ^C → clean newline
     finally:
+        try:
+            loop.remove_signal_handler(signal.SIGINT)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
         stop.set()
         listen_task.cancel()
+    return interrupted
 
 
 async def _say_client(s: Settings, verbose: bool, user: str, text: str) -> None:
@@ -417,9 +480,19 @@ def cmd_say(s: Settings, a) -> None:
 
 def cmd_repl(s: Settings, a) -> None:
     print("Conjure REPL — thin client of the agent server (start it: 'python -m conjure.agent_server').\n"
-          "Type an instruction ('exit'/'quit' to leave). 'conjure open shell' for deterministic commands "
+          "Type an instruction ('exit'/'quit'/^C to leave). 'conjure open shell' for deterministic commands "
           "(switch LLM/agent, status, …).")
-    asyncio.run(_repl_client(s, a.verbose, a.user))
+    interrupted = False
+    try:
+        interrupted = asyncio.run(_repl_client(s, a.verbose, a.user))
+    except KeyboardInterrupt:                               # fallback if the loop signal handler wasn't installed
+        interrupted = True
+        print()
+    if interrupted:
+        # A daemon input thread may still be blocked in input(), holding the stdin lock — interpreter
+        # finalization would then abort with "_enter_buffered_busy". Skip finalization entirely.
+        sys.stdout.flush()
+        os._exit(0)
 
 
 # --------------------------------------------------------------------------- argparse
