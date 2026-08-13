@@ -66,10 +66,10 @@ def _context_event(shell: Shell, live: Optional[dict] = None) -> dict:
     """The client's view of "what's live" for its prompt/state: the bound agent + active LLM + user +
     shell-mode, merged with the world server's live tuple (`scope`/`world`/`space`/`owner`) when known
     (Step C2 — folded in by the world-state follower). `live` absent → agent-side keys only."""
-    d = shell.director
+    d = shell.director                                   # transiently None while a re-bind is in flight
     ev = {"type": "context",
-          "agent": d.agent.name if d.agent else "agent",
-          "llm": d.active,
+          "agent": d.agent.name if (d and d.agent) else "agent",
+          "llm": d.active if d else "",
           "user": shell._user,
           "in_shell": shell.in_shell}
     if live:
@@ -90,7 +90,8 @@ def _backlog_events(shell: Shell, live: Optional[dict] = None) -> list[dict]:
     """The snapshot a newly-connected `/stream` subscriber receives before the live feed: the current
     `context` (with the live world tuple), then the transcript replayed as `user_turn`/`assistant_final`
     (so a late joiner has the history). Pure — no transport — so it's unit-testable on its own."""
-    return [_context_event(shell, live)] + [_turn_to_event(t) for t in list(shell.director.transcript)]
+    transcript = shell.director.transcript if shell.director else []   # None mid-rebind → no backlog
+    return [_context_event(shell, live)] + [_turn_to_event(t) for t in list(transcript)]
 
 
 def _sse(event: dict) -> str:
@@ -123,12 +124,17 @@ async def _run_turn(app: FastAPI, speaker: str, text: str) -> None:
         async def on_tool(name, args):
             await hub.publish({"type": "tool_call", "name": name, "args": args})
 
-        # The floor lock serializes a turn against the world-state follower's re-bind (C2): a turn never
-        # runs while the Director's MCP is being torn down and rebuilt, and vice-versa.
-        async with app.state.floor_lock:
+        if is_command:
+            # Commands don't call MCP tools, so they needn't hold the floor against a follower re-bind — and
+            # an agent-switch command MUST NOT hold it: its hook waits for the follower to re-bind, which
+            # itself needs the floor (→ would deadlock). Run it lock-free.
             await shell.feed(text, speaker=speaker, on_text=on_text, on_tool=on_tool)
-        if is_command:                                   # a switch may have changed agent/LLM → refresh prompts
-            await hub.publish(_context_event(shell, getattr(app.state, "live", None)))
+            await hub.publish(_context_event(shell, getattr(app.state, "live", None)))   # refresh prompts
+        else:
+            # An utterance runs the LLM + tools: hold the floor so a follower re-bind can't tear down the
+            # MCP session mid-tool-call (C2).
+            async with app.state.floor_lock:
+                await shell.feed(text, speaker=speaker, on_text=on_text, on_tool=on_tool)
     except Busy:                                         # defense-in-depth; the server floor normally prevents it
         await hub.publish({"type": "busy", "rejected_speaker": speaker})
     except Exception as exc:                             # a bad turn must not strand the floor or the server
@@ -219,11 +225,21 @@ def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(f"{settings.world_url}/scope/activate", json={"scope": scope})
-            if on_text:
-                await on_text(f"Switching to agent {agent_name}…", final=True, speaker=shell.director.active)
         except Exception as exc:  # noqa: BLE001
             if on_text:
                 await on_text(f"Couldn't switch to {agent_name}: {exc}", final=True, speaker=shell.director.active)
+            return
+        if on_text:
+            await on_text(f"Switching to agent {agent_name}…", final=True, speaker=shell.director.active)
+        # Wait for the /ws follower (owning task) to re-bind the Director before we return, so the command's
+        # context — and the client's next prompt — reflect the NEW agent instead of lagging a step. We hold
+        # no floor here, so the follower can take it. `shell.director` is transiently None mid-rebind (the
+        # LIFO close-then-open), so guard it. Best-effort with a ~10s cap.
+        for _ in range(200):
+            d = shell.director
+            if d is not None and d.agent is not None and d.agent.name == agent_name:
+                break
+            await asyncio.sleep(0.05)
 
     return _switch
 
