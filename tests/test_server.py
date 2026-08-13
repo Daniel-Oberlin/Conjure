@@ -1710,6 +1710,36 @@ def test_scope_activate_resumes_last_active_with_its_content(srv, client):
     assert "sky_marker" in {e["id"] for e in _entities(client)}   # its content came back
 
 
+def test_state_reports_the_live_tuple(srv, client):
+    # The canonical "what's live" seam: identifiers for the single shared session (shared-session-plan §2).
+    s = client.get("/state").json()
+    assert s["ok"]
+    assert s["scope"] == srv.DEFAULT_SCOPE and s["agent"] == "builder" and s["owner"] == "daniel"
+    assert s["world"] == "default"
+    assert s["space"] == "daniel/home"                       # fixture's active space, fully-qualified
+
+
+def test_state_reflects_a_scope_activation(srv, client):
+    # Switching agent/scope moves the live tuple; /state derives agent from the scope and reports the
+    # space the new world composes against (VOID for the outdoor default — no captured room).
+    client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"})
+    s = client.get("/state").json()
+    assert s["scope"] == "daniel/agents/outdoor" and s["agent"] == "outdoor" and s["world"] == "default"
+    expected_space = srv.VOID if srv.active_space == srv.VOID else f"{srv.active_space_owner}/{srv.active_space}"
+    assert s["space"] == expected_space
+
+
+def test_snapshot_msg_carries_live_state_beside_the_world_doc(srv):
+    # The /ws snapshot stays backward-compatible (world doc + top-level owner for the renderer) and adds
+    # the live-state identifiers under `state`, so headset + agent server reconcile from one broadcast.
+    msg = srv._snapshot_msg()
+    assert msg["type"] == "snapshot"
+    assert msg["world"] is srv.store.doc                     # full doc, top-level (renderer)
+    assert msg["owner"] == "daniel"                          # top-level owner (desktop-guest spawn hint)
+    assert msg["state"] == srv._live_state()                 # additive identifiers
+    assert msg["state"]["world"] == "default"                # here `world` is the NAME, not the doc
+
+
 def test_agent_last_defaults_to_builder(srv, client):
     assert client.get("/agent/last", params={"user": "someone_new"}).json()["agent"] == "builder"
 

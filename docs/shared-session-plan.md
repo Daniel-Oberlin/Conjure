@@ -296,9 +296,12 @@ Ordered so the browser/headset-independent pieces land first and each step is un
   `environment.space` (not stored in the pointer). `_last_agent.txt` retired to a migration-only fact.
   Tested: pointer round-trip (+ normalization), boot-from-pointer, pre-session migration, `/scope/activate`
   moves the pointer + live agent.
-- **Step B — enrich the broadcast + `GET /state`.** `_snapshot_msg` (and a dedicated context event) carry
-  `{space, world, scope, agent, owner}`; add `GET /state`. Tests: switch/relocalize emit the enriched
-  payload; `/state` matches globals.
+- **✅ Step B (done) — enrich the broadcast + `GET /state`.** `_live_state()` returns the canonical
+  identifiers `{scope, agent, world, owner, space}` (space = `<owner>/<name>` or VOID); every `/ws` snapshot
+  now carries them under `state` (backward-compatible — `world` doc + top-level `owner` unchanged for the
+  renderer); new `GET /state` returns them flat (subsumes `/agent/last`). Tested: `/state` for the default,
+  `/state` after a scope activation (agent derived, space reflected), snapshot carries `state` beside the
+  doc.
 - **Step C — agent server follows the pointer.** Stand up the agent server (agent-server-plan Step 2) as a
   **subscriber**: bind Director on the current `agent`, re-bind on `agent` change (reuse `_open_agent`),
   reset transcript on agent change / keep on same-agent world change. Tests: simulated pointer events drive

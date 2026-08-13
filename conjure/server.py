@@ -1004,6 +1004,15 @@ async def agent_last(user: str = DEFAULT_USER) -> dict:
     return {"ok": True, "agent": agent_of(active_scope)}
 
 
+@app.get("/state")
+async def live_state() -> dict:
+    """The canonical **"what's live"** snapshot for the single shared session (shared-session-plan §2) —
+    `{scope, agent, world, owner, space}`. The reconciliation seam a client / the agent server reads on
+    connect (and mirrored into every `/ws` snapshot's `state`). Identifiers only; `GET /world` returns the
+    full doc. Subsumes `GET /agent/last` (its `agent` is `state.agent`)."""
+    return {"ok": True, **_live_state()}
+
+
 class WorldRef(BaseModel):
     name: str
     scope: str = DEFAULT_SCOPE
@@ -3056,10 +3065,29 @@ def _head_from_anchor(anchor: dict | None) -> dict | None:
     return out
 
 
+def _live_state() -> dict:
+    """The canonical **"what's live"** identifiers for the single shared session (shared-session-plan §2):
+    the active world + its `scope`/`agent`/`owner`, and the `space` it composes against (the fully-qualified
+    `<owner>/<name>` ref, or VOID for an outdoor/space-less world). Identifiers only — no world doc — so it's
+    the cheap reconciliation seam every peripheral reads: the headset renders the world, the agent server
+    binds its brain to `agent` (Step C), any client refreshes its context/prompt. `GET /world` still returns
+    the full doc."""
+    return {
+        "scope": active_scope,
+        "agent": agent_of(active_scope),
+        "world": active_world,
+        "owner": active_scope.split("/", 1)[0],
+        "space": VOID if active_space == VOID else _space_ref(active_space_owner, active_space),
+    }
+
+
 def _snapshot_msg() -> dict:
-    """The snapshot a client receives — the world plus the active world's OWNER, so a desktop guest
-    knows whom to spawn next to (Phase 4 §6)."""
-    return {"type": "snapshot", "world": store.doc, "owner": active_scope.split("/", 1)[0]}
+    """The snapshot a client receives — the full world doc for rendering, the active world's OWNER (so a
+    desktop guest knows whom to spawn next to, Phase 4 §6), and the canonical live-state identifiers under
+    `state` so every subscriber reconciles from one broadcast (shared-session-plan §2). `world`/`owner` stay
+    top-level for the existing renderer; `state.world` is the world *name*, `state` is additive."""
+    return {"type": "snapshot", "world": store.doc, "owner": active_scope.split("/", 1)[0],
+            "state": _live_state()}
 
 
 async def _broadcast(message: dict, *, skip: "WebSocket | None" = None) -> None:
