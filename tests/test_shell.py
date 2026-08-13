@@ -222,6 +222,28 @@ async def test_agent_switch_opens_the_named_agent(monkeypatch):
     assert any("Switched to agent outdoor" in t for _, t in out)
 
 
+async def test_agent_switch_uses_the_host_hook_when_set(monkeypatch):
+    # In the agent server the switch is DELEGATED (routed via the world server, then its follower re-binds
+    # in the owning task) — never the in-process _open_agent teardown, which from a spawned turn task is a
+    # cross-task MCP aclose ("exit a cancel scope in a different task").
+    from contextlib import AsyncExitStack
+    sh, d, out, on_text = _shell()                           # current agent = builder
+    sh._stack = AsyncExitStack()
+    opened = []
+    monkeypatch.setattr(sh, "_open_agent", lambda *a, **k: opened.append(a))
+    hooked = []
+
+    async def hook(name, cb):
+        hooked.append(name)
+        await cb(f"Switching to agent {name}…", final=True, speaker="Claude")
+
+    sh._agent_switch_hook = hook
+    await sh.feed("conjure agent outdoor", on_text=on_text)
+    assert hooked == ["outdoor"]                             # delegated to the host
+    assert opened == []                                      # in-process teardown NOT used (no cross-task aclose)
+    assert any("Switching to agent outdoor" in t for _, t in out)
+
+
 async def test_agent_switch_already_on_it_is_a_noop(monkeypatch):
     from contextlib import AsyncExitStack
     sh, d, out, on_text = _shell()                           # already builder

@@ -199,9 +199,33 @@ async def _shell_and_follow(app: FastAPI, settings: Settings, agent: Optional[st
     (`call_tool`), which is safe; only re-binds (here) enter/exit it. Serialization against turns is via
     `floor_lock`."""
     async with Shell.session(settings, agent=agent, user=user, errlog=errlog) as shell:
+        shell._agent_switch_hook = _make_agent_switch_hook(app, settings, shell)
         app.state.shell = shell
         app.state.shell_ready.set()
         await _follow_world_state(app)                   # loops until stop_follow; re-binds happen in-task
+
+
+def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
+    """A client's `agent <name>` must NOT re-bind the Director from its (spawned) turn task — that's a
+    cross-task MCP teardown. Instead, assert the target scope on the world server; its `/ws` broadcast
+    makes THIS server's follower re-bind (in the owning task) and every other client (headsets) follow
+    too. So a client agent-switch is just another pointer move through the single source of truth."""
+    from .config import scope_for
+
+    async def _switch(agent_name: str, on_text) -> None:
+        scope = scope_for(app.state.user, agent_name)
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(f"{settings.world_url}/scope/activate", json={"scope": scope})
+            if on_text:
+                await on_text(f"Switching to agent {agent_name}…", final=True, speaker=shell.director.active)
+        except Exception as exc:  # noqa: BLE001
+            if on_text:
+                await on_text(f"Couldn't switch to {agent_name}: {exc}", final=True, speaker=shell.director.active)
+
+    return _switch
 
 
 class TurnRequest(BaseModel):

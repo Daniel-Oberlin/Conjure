@@ -50,6 +50,12 @@ class Shell:
         self._stack: Optional[AsyncExitStack] = None
         self.in_shell = False
         self._pending_delete: Optional[str] = None            # armed by `delete`, fired by a `y` confirmation
+        # Host override for `agent <name>`: when set, the switch is delegated instead of running the
+        # in-process `_open_agent` teardown. The agent server sets this so a client switch routes through
+        # the world server (assert scope → its /ws follower re-binds the Director in the OWNING task) —
+        # required because `_run_turn` runs a command in a *spawned* task, and a cross-task MCP `aclose()`
+        # raises "exit a cancel scope in a different task". `async (agent_name, on_text) -> None`.
+        self._agent_switch_hook = None
         # (matcher, handler, help). First match wins; an LLM switch and the unknown-command fallback
         # are tried after, in _dispatch. The handler is called as handler(on_text, match). Add a row
         # to add a command.
@@ -250,6 +256,9 @@ class Shell:
         if match == self._agent_name():
             await self._say(on_text, f"Already on {match}.")
             return
+        if self._agent_switch_hook is not None:               # hosted (agent server): delegate — route via
+            await self._agent_switch_hook(match, on_text)     # the world server so every client follows and
+            return                                            # the host re-binds the Director in its own task
         try:
             await self._open_agent(match)                     # relaunches its MCP server; keeps the current agent on failure
         except Exception as exc:                              # bad def, no LLM key for it, server won't start
