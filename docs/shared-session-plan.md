@@ -333,8 +333,15 @@ Ordered so the browser/headset-independent pieces land first and each step is un
     re-bind the Director (43↔10 tools). Suite 367 py + 97 js.
   - **C3 — convert voice** to POST /turn + SSE→TTS (agent-server-plan Step 4; hardest — audio + timing).
   - **C4 — delete the in-process director paths** from cli/voice (agent-server-plan Step 5).
-  - *Adjacent (after C2):* `mcp_server.py` per-turn scope (agent-server-plan Step 3) — needed before
-    multi-speaker ownership is truly correct.
+  - **✅ Adjacent (done) — `mcp_server.py` per-turn scope** (agent-server-plan Step 3). Identity was fixed
+    at MCP launch, so with a shared agent server every turn acted as the launch user — a real permission
+    bypass (a `--user guest` client edited daniel's world, and `list_worlds` showed daniel's worlds as
+    guest's). Now the director sends `set_caller(user, scope)` at the start of each turn (a control tool,
+    never in an agent's allow-list, exempt from the gate); the MCP server threads that speaker into BOTH
+    the request headers (`_headers()`, owner gate) AND the body scope (`_scope()`, "your worlds" / asset
+    ownership). `_post_patch` now carries identity too and raises a clean owner-only message on a 403 (the
+    patch path previously sent no header → bypassed the gate). Verified live: `--user guest` correctly sees
+    daniel's world as read-only and is refused edits.
 - **Step D — pinning while held (P7).** World server: while a space is occupied, constrain pointer moves
   (`/worlds/switch`, `/scope/activate`) to same-space or VOID; refuse cross-space moves with a clear reason.
   Tests: held + same-space ok; held + VOID ok; held + other-space refused; unheld free.

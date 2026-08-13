@@ -126,6 +126,8 @@ class Director:
         self._speaker = user             # WHO owns the turn currently in flight (set per turn in `handle`);
                                          # the `{user}` injection and ownership resolve from this.
         self._busy = False               # the single floor (D4); guarded in `handle`, see `Busy`.
+        self._identity_aware = False     # set by `connect`: tell the MCP server WHO speaks each turn (Step 3).
+                                         # Off for hand-built/test Directors (no set_caller call → clean tests).
         self.transcript: list[Turn] = []
 
     @classmethod
@@ -173,8 +175,10 @@ class Director:
                     # Scope the offered tools to the agent's explicit allow-list (fails loud on a typo).
                     scoped = _scope_tools((await session.list_tools()).tools, ref.tools)
                     tools = [ToolSpec(t.name, t.description or "", t.inputSchema) for t in scoped]
-                    yield cls(settings, session, roster, active, tools, prompt=agentdef.prompt,
-                              agent=agentdef, user=user, allowed_tools={t.name for t in scoped})
+                    director = cls(settings, session, roster, active, tools, prompt=agentdef.prompt,
+                                   agent=agentdef, user=user, allowed_tools={t.name for t in scoped})
+                    director._identity_aware = True   # real MCP session → set the per-turn speaker (Step 3)
+                    yield director
         finally:
             if close_errlog is not None:
                 close_errlog.close()
@@ -274,10 +278,23 @@ class Director:
         finally:
             self._busy = False
 
+    async def _set_caller(self, speaker: str) -> None:
+        """Tell the MCP server which user THIS turn's tool calls act as — the speaker — so the world server
+        resolves ownership/permissions per-speaker in a shared session (agent-server-plan Step 3). Turns are
+        serialized (single floor), so a per-turn identity on the one MCP server is safe. Best-effort: an MCP
+        server without the control tool just keeps its launch identity."""
+        agent = self.agent.name if self.agent else "builder"
+        try:
+            await self._session.call_tool("set_caller", {"user": speaker, "scope": scope_for(speaker, agent)})
+        except Exception:  # noqa: BLE001 — older/other MCP server, or a stand-in session in tests
+            pass
+
     async def _handle(self, text: str, speaker: str, on_text: Optional[OnText],
                       on_tool: Optional[OnTool]) -> str:
         text = text.strip()
         self._speaker = speaker                           # owns this turn: {user} injection + attribution
+        if self._identity_aware:                          # thread the speaker to the tools (owner gate) — Step 3
+            await self._set_caller(speaker)
         await self._log("you", text)
         # Tag every log line <agent>.<llm> (e.g. builder.claude); tool lines get a /tool suffix.
         who = f"{getattr(self.agent, 'name', 'agent')}.{self.active.lower()}"

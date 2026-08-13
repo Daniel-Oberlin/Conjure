@@ -329,6 +329,23 @@ def test_scope_tools_is_opt_in_only_and_fails_loud_on_typo():
         _scope_tools(live, ["set_skybox", "nope"])                                          # typo → loud
 
 
+async def test_identity_aware_director_tells_mcp_the_per_turn_speaker():
+    # Step 3: a connect-built (identity-aware) director sends set_caller(speaker, scope) before the turn's
+    # tools, so they act as WHO spoke — not the MCP server's fixed launch identity.
+    d = _director(active="Claude")
+    d._identity_aware = True
+    d.agent = type("A", (), {"name": "builder", "context": []})()
+    await d.handle("put a tree", speaker="guest")
+    assert ("set_caller", {"user": "guest", "scope": "guest/agents/builder"}) in d._session.calls
+
+
+async def test_hand_built_director_does_not_set_caller():
+    # Hand-built/test directors (no real MCP) skip set_caller, so existing call-sequence tests stay clean.
+    d = _director(active="Claude")                          # _identity_aware defaults False
+    await d.handle("put a tree", speaker="guest")
+    assert all(name != "set_caller" for name, _ in d._session.calls)
+
+
 async def test_execute_tool_blocks_out_of_agent_scope():
     d = _director(active="Claude")
     d._allowed_tools = {"set_skybox"}                       # e.g. an outdoor-style scoped director

@@ -260,7 +260,8 @@ working.
   `--user` as speaker (`shell.feed`). In-process only — no transport change yet.
 - **Step 2:** stand up the agent server wrapping the existing Director; add `POST /turn` + `GET
   /stream`. Prove it with the CLI as an HTTP client (easiest to debug).
-- **Step 3:** move `mcp_server.py` to per-turn scope.
+- **Step 3 (done):** `mcp_server.py` per-turn scope — the director sends `set_caller(user, scope)` at each
+  turn; the MCP server threads that speaker into request headers + body scope (see shared-session-plan §10).
 - **Step 4:** convert the voice client to the HTTP/SSE model (hardest — audio + streaming timing).
 - **Step 5:** delete the in-process director paths from voice/cli once both clients are HTTP.
 
