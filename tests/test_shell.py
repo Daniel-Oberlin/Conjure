@@ -19,8 +19,8 @@ class FakeDirector:
         self.user = "daniel"
         self.handled = []
 
-    async def handle(self, text, *, on_text=None, on_tool=None):
-        self.handled.append(text)
+    async def handle(self, text, *, speaker=None, on_text=None, on_tool=None):
+        self.handled.append((speaker, text))
         if on_text:
             await on_text(f"did «{text}»", final=True, speaker=self.active)
 
@@ -40,14 +40,14 @@ def _shell():
 async def test_plain_text_in_agent_mode_is_forwarded():
     sh, d, out, on_text = _shell()
     await sh.feed("put an oak tree in front of me", on_text=on_text)
-    assert d.handled == ["put an oak tree in front of me"]   # went to the agent, not the shell
+    assert d.handled == [("daniel", "put an oak tree in front of me")]   # went to the agent, not the shell
 
 
 async def test_agent_content_mentioning_shell_is_not_a_command():
     # The whole reason for the wake word: "shell" as content must reach the agent.
     sh, d, out, on_text = _shell()
     await sh.feed("put a shell on the table", on_text=on_text)
-    assert d.handled == ["put a shell on the table"] and sh.in_shell is False
+    assert d.handled == [("daniel", "put a shell on the table")] and sh.in_shell is False
 
 
 async def test_conjure_open_shell_enters_shell_mode():
@@ -149,7 +149,7 @@ async def test_dir_narrows_by_path():
 async def test_dir_is_not_a_command_in_agent_mode():
     sh, d, out, on_text = _shell()                           # not in shell → needs the wake word
     await sh.feed("dir", on_text=on_text)
-    assert d.handled == ["dir"]                              # forwarded to the agent, not run as a command
+    assert d.handled == [("daniel", "dir")]                              # forwarded to the agent, not run as a command
 
 
 async def test_delete_asks_before_acting_then_confirms():

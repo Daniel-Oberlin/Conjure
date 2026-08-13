@@ -43,6 +43,13 @@ OnText = Callable[..., Awaitable[None]]   # (text, *, final: bool, speaker: str)
 OnTool = Callable[..., Awaitable[None]]   # (name: str, args: dict) -> None
 
 
+class Busy(RuntimeError):
+    """A turn was submitted while another is already in flight. The Director holds a **single floor**
+    (agent-server-plan D4, reject-while-busy): among people co-located in one room, concurrent speech
+    is an edge case and they naturally take turns, so we reject rather than queue or interleave. The
+    agent server (later slice) turns this into a `busy` event; in-process callers can catch it."""
+
+
 def _fill_injection(prompt: str, name: str, value: str) -> str:
     """Fill one prompt-injection placeholder, so an agent's prompt.md owns *all* its own text —
     including the framing around an injected value:
@@ -113,7 +120,12 @@ class Director:
                                              # a bare Director()/tests (no scoping). `connect` always sets it.
         self._prompt = prompt
         self.agent = agent               # the loaded agent def (None in lightweight tests)
-        self.user = user                 # the logged-in user this director acts as (owns its spaces/worlds)
+        self.user = user                 # the default speaker — the logged-in user a lone client acts as.
+                                         # With a shared agent server the speaker varies per turn (D5), so
+                                         # `handle(..., speaker=)` overrides it; `self.user` is the fallback.
+        self._speaker = user             # WHO owns the turn currently in flight (set per turn in `handle`);
+                                         # the `{user}` injection and ownership resolve from this.
+        self._busy = False               # the single floor (D4); guarded in `handle`, see `Busy`.
         self.transcript: list[Turn] = []
 
     @classmethod
@@ -173,7 +185,7 @@ class Director:
         pays only for what it references (e.g. `{context}` triggers no MCP resource fetch unless the
         prompt uses it — many agents won't care about room surfaces). Add a row to add an injection."""
         return (
-            ("user", lambda: self.user),          # the logged-in user (human identity)
+            ("user", lambda: self._speaker),      # WHO is speaking this turn (human identity; per-turn)
             ("context", self._fetch_context),     # live MCP context resources (async; agents.md §5)
         )
 
@@ -242,13 +254,30 @@ class Director:
                 continue
         return "\n\n".join(parts)
 
-    async def handle(self, text: str, *, on_text: Optional[OnText] = None,
-                     on_tool: Optional[OnTool] = None) -> str:
+    async def handle(self, text: str, *, speaker: Optional[str] = None,
+                     on_text: Optional[OnText] = None, on_tool: Optional[OnTool] = None) -> str:
         """Run the **active** LLM on one user utterance (with tools), record the user/assistant
-        transcript, and return the final reply. `on_text(text, final=, speaker=)` receives reply
-        text as it's produced; `on_tool(name, args)` fires before each tool call. Switching the active
-        LLM is the shell's job (deterministic — conjure.shell), never inferred from `text` here."""
+        transcript, and return the final reply. `speaker` is WHO is talking (the human's id) — it tags
+        the user turn and resolves the prompt's `{user}`/ownership for this turn; it defaults to
+        `self.user` for a lone client that owns the whole conversation. `on_text(text, final=,
+        speaker=)` receives reply text as it's produced (its `speaker` is the *display* LLM name, not
+        the human); `on_tool(name, args)` fires before each tool call. Switching the active LLM is the
+        shell's job (deterministic — conjure.shell), never inferred from `text` here.
+
+        The Director holds a **single floor** (D4): a turn submitted while another is in flight raises
+        `Busy` rather than interleaving into the one shared transcript."""
+        if self._busy:                                    # single floor — reject, don't queue (D4).
+            raise Busy("the agent is already handling a turn")
+        self._busy = True                                 # atomic: no await between the check and here.
+        try:
+            return await self._handle(text, speaker or self.user, on_text, on_tool)
+        finally:
+            self._busy = False
+
+    async def _handle(self, text: str, speaker: str, on_text: Optional[OnText],
+                      on_tool: Optional[OnTool]) -> str:
         text = text.strip()
+        self._speaker = speaker                           # owns this turn: {user} injection + attribution
         await self._log("you", text)
         # Tag every log line <agent>.<llm> (e.g. builder.claude); tool lines get a /tool suffix.
         who = f"{getattr(self.agent, 'name', 'agent')}.{self.active.lower()}"
@@ -275,7 +304,7 @@ class Director:
             execute_tool=execute,
             emit=emit,
         )
-        self.transcript.append(Turn("user", text))
-        self.transcript.append(Turn("assistant", final))
+        self.transcript.append(Turn("user", text, by=speaker))   # attribute the turn to who spoke
+        self.transcript.append(Turn("assistant", final))         # no LLM attribution (switch stays invisible)
         await self._log(who, final.strip())
         return final

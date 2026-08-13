@@ -44,6 +44,13 @@ def test_messages_render_plain_user_assistant():
     ]
 
 
+def test_messages_drop_the_human_speaker_attribution():
+    # A user turn records WHO spoke (`by`) for ownership/display, but that never reaches the model —
+    # the LLM sees a plain "user" role, not "alice said…".
+    history = [Turn("user", "hi", by="alice"), Turn("assistant", "hello")]
+    assert _messages(history) == [("user", "hi"), ("assistant", "hello")]
+
+
 # --------------------------------------------------------------------------- registry
 
 def test_build_roster_includes_only_keyed_providers():

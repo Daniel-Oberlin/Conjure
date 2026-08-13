@@ -28,8 +28,10 @@ from .config import Settings
 class Turn:
     """One entry in the shared transcript (architecture §7a)."""
 
-    speaker: str  # "user" or "assistant"
+    speaker: str  # the role: "user" or "assistant"
     text: str
+    by: str = ""  # for a *user* turn, WHO spoke (the human's id); "" for assistant turns. This is the
+                  # only attribution the transcript carries — never the LLM (a switch stays invisible).
 
 
 @dataclass

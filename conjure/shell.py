@@ -164,7 +164,7 @@ class Shell:
         active agent."""
         cmd = self._as_command(text)
         if cmd is None:
-            await self._director.handle(text, on_text=on_text, on_tool=on_tool)
+            await self._director.handle(text, speaker=self._user, on_text=on_text, on_tool=on_tool)
         else:
             await self._dispatch(cmd, on_text)
 
