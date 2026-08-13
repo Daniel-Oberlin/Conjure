@@ -321,9 +321,16 @@ Ordered so the browser/headset-independent pieces land first and each step is un
     listener, prompt from `context`; `say` skips the backlog via its own turn marker. `Shell.feed(…,
     speaker=)` per call; `agent_url` config; `conjure-agent` entrypoint. Verified live end-to-end (world +
     agent servers, a command turn). Voice still in-process (no regression). Suite 364 py + 97 js.
-  - **C2 — follow the pointer + re-bind** (shared-session Step C proper). Ride `/ws`; on an `agent` change
-    re-bind via `_open_agent`; reset transcript on agent change / keep on same-agent world change; emit
-    `context`. Tests drive simulated state changes.
+  - **✅ C2 (done) — follow the pointer + re-bind** (shared-session Step C proper). The agent server rides
+    the world `/ws` as a passive listener (`_follow_world_state`), reconciling each snapshot's `state`
+    (`_reconcile_state`): on an **agent** change it re-binds the Director via `_open_agent(…,
+    activate_world=False)` (fresh Director = fresh transcript); a same-agent world/space change keeps the
+    transcript; either way it emits an enriched `context` (`{agent, llm, user, scope, world, space,
+    owner}`) so clients refresh. **Structured-concurrency fix:** the follow loop runs in the *same task*
+    that owns `Shell.session` (`_shell_and_follow`) — a cross-task `_open_agent` `aclose()` raised an anyio
+    cancel-scope error; turns still run in their own tasks (they only *call* the session) and are
+    serialized against a re-bind by `floor_lock`. Verified live: forced builder↔outdoor transitions
+    re-bind the Director (43↔10 tools). Suite 367 py + 97 js.
   - **C3 — convert voice** to POST /turn + SSE→TTS (agent-server-plan Step 4; hardest — audio + timing).
   - **C4 — delete the in-process director paths** from cli/voice (agent-server-plan Step 5).
   - *Adjacent (after C2):* `mcp_server.py` per-turn scope (agent-server-plan Step 3) — needed before

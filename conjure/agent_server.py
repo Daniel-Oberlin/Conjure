@@ -22,6 +22,7 @@ an agent change. For now the `context` event carries the agent/LLM the shell was
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -61,15 +62,21 @@ class Hub:
         return len(self._subs)
 
 
-def _context_event(shell: Shell) -> dict:
-    """The client's view of "what's live" for its prompt/state. C1: the agent + active LLM + user +
-    shell-mode the shell was launched with. (Step C2 folds in the world server's scope/world/space.)"""
+def _context_event(shell: Shell, live: Optional[dict] = None) -> dict:
+    """The client's view of "what's live" for its prompt/state: the bound agent + active LLM + user +
+    shell-mode, merged with the world server's live tuple (`scope`/`world`/`space`/`owner`) when known
+    (Step C2 — folded in by the world-state follower). `live` absent → agent-side keys only."""
     d = shell.director
-    return {"type": "context",
-            "agent": d.agent.name if d.agent else "agent",
-            "llm": d.active,
-            "user": shell._user,
-            "in_shell": shell.in_shell}
+    ev = {"type": "context",
+          "agent": d.agent.name if d.agent else "agent",
+          "llm": d.active,
+          "user": shell._user,
+          "in_shell": shell.in_shell}
+    if live:
+        for k in ("scope", "world", "space", "owner"):
+            if k in live:
+                ev[k] = live[k]
+    return ev
 
 
 def _turn_to_event(turn) -> dict:
@@ -79,11 +86,11 @@ def _turn_to_event(turn) -> dict:
     return {"type": "assistant_final", "text": turn.text}
 
 
-def _backlog_events(shell: Shell) -> list[dict]:
+def _backlog_events(shell: Shell, live: Optional[dict] = None) -> list[dict]:
     """The snapshot a newly-connected `/stream` subscriber receives before the live feed: the current
-    `context`, then the transcript replayed as `user_turn`/`assistant_final` (so a late joiner has the
-    history). Pure — no transport — so it's unit-testable on its own."""
-    return [_context_event(shell)] + [_turn_to_event(t) for t in list(shell.director.transcript)]
+    `context` (with the live world tuple), then the transcript replayed as `user_turn`/`assistant_final`
+    (so a late joiner has the history). Pure — no transport — so it's unit-testable on its own."""
+    return [_context_event(shell, live)] + [_turn_to_event(t) for t in list(shell.director.transcript)]
 
 
 def _sse(event: dict) -> str:
@@ -116,9 +123,12 @@ async def _run_turn(app: FastAPI, speaker: str, text: str) -> None:
         async def on_tool(name, args):
             await hub.publish({"type": "tool_call", "name": name, "args": args})
 
-        await shell.feed(text, speaker=speaker, on_text=on_text, on_tool=on_tool)
+        # The floor lock serializes a turn against the world-state follower's re-bind (C2): a turn never
+        # runs while the Director's MCP is being torn down and rebuilt, and vice-versa.
+        async with app.state.floor_lock:
+            await shell.feed(text, speaker=speaker, on_text=on_text, on_tool=on_tool)
         if is_command:                                   # a switch may have changed agent/LLM → refresh prompts
-            await hub.publish(_context_event(shell))
+            await hub.publish(_context_event(shell, getattr(app.state, "live", None)))
     except Busy:                                         # defense-in-depth; the server floor normally prevents it
         await hub.publish({"type": "busy", "rejected_speaker": speaker})
     except Exception as exc:                             # a bad turn must not strand the floor or the server
@@ -129,6 +139,69 @@ async def _run_turn(app: FastAPI, speaker: str, text: str) -> None:
         # reply never prints on top of a fresh prompt. Fires for every path — utterance, command, error,
         # even a no-output turn — because it's in `finally`.
         await hub.publish({"type": "turn_done", "speaker": speaker})
+
+
+async def _reconcile_state(app: FastAPI, state: dict) -> None:
+    """Reconcile the agent server to the world server's live `state` (shared-session-plan §2, C2). If the
+    **agent** changed — a headset relocalized, or another client switched — re-bind the Director to it
+    (a fresh Director = fresh transcript: a different agent is a different conversation). A same-agent
+    world/space change keeps the transcript. Either way, emit a `context` so every client refreshes its
+    prompt/state. `activate_world=False`: we're *following* the world server, not re-asserting (no loop)."""
+    shell: Shell = app.state.shell
+    hub: Hub = app.state.hub
+    new_agent = state.get("agent")
+    current = shell.director.agent.name if shell.director.agent else None
+    if new_agent and new_agent != current:
+        async with app.state.floor_lock:                 # serialize against in-flight turns
+            current = shell.director.agent.name if shell.director.agent else None
+            if new_agent != current:                     # re-check under the lock (state may have moved)
+                try:
+                    await shell._open_agent(new_agent, activate_world=False)
+                except Exception as exc:  # noqa: BLE001 — a bad follow must not kill the follower
+                    await hub.publish({"type": "notice", "text": f"[couldn't follow to agent {new_agent}: {exc}]"})
+                    return
+    app.state.live = state
+    await hub.publish(_context_event(shell, state))
+
+
+async def _follow_world_state(app: FastAPI) -> None:
+    """Ride the world server's `/ws` as a **passive listener** (never sends `hold`, so it's not a
+    space-holder): every snapshot carries the live `state` (Step B), which we reconcile to. Reconnects
+    with backoff — the world server may start after us or restart under us (order-independent, §4)."""
+    import websockets
+
+    settings: Settings = app.state.settings
+    ws_url = settings.world_url.replace("https://", "wss://").replace("http://", "ws://").rstrip("/")
+    ws_url = f"{ws_url}/ws?user={app.state.user}"
+    while not app.state.stop_follow.is_set():
+        try:
+            async with websockets.connect(ws_url) as ws:
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    state = msg.get("state")             # only snapshots carry it (patches/presence don't)
+                    if state:
+                        await _reconcile_state(app, state)
+        except Exception:  # noqa: BLE001 — world server down/restarting → back off and reconnect
+            if app.state.stop_follow.is_set():
+                return
+            await asyncio.sleep(1.0)
+
+
+async def _shell_and_follow(app: FastAPI, settings: Settings, agent: Optional[str], user: str,
+                            errlog) -> None:
+    """Own the `Shell.session` **and** run the world-state follow loop in ONE task. This is required by
+    anyio's structured concurrency: the Director's MCP `ClientSession` must be entered, exited, and
+    **re-bound** (on an agent change) all in the same task — a cross-task `aclose()` raises "exit a cancel
+    scope that isn't the current task's". Turns run in their own tasks but only *call* the session
+    (`call_tool`), which is safe; only re-binds (here) enter/exit it. Serialization against turns is via
+    `floor_lock`."""
+    async with Shell.session(settings, agent=agent, user=user, errlog=errlog) as shell:
+        app.state.shell = shell
+        app.state.shell_ready.set()
+        await _follow_world_state(app)                   # loops until stop_follow; re-binds happen in-task
 
 
 class TurnRequest(BaseModel):
@@ -149,16 +222,34 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
         app.state.hub = Hub()
         app.state.turn_active = False
         app.state.turn_task = None
+        app.state.live = None                            # last world-server state tuple (set by the follower)
+        app.state.floor_lock = asyncio.Lock()            # serializes turns against a follower re-bind (C2)
+        app.state.stop_follow = asyncio.Event()
+        app.state.shell_ready = asyncio.Event()
+        app.state.worker_task = None
         if shell is not None:                            # tests / embedding: use the injected shell as-is
             app.state.shell = shell
             yield
             return
-        async with Shell.session(settings, agent=agent, user=user, errlog=errlog) as live:
-            app.state.shell = live
+        # One task owns the shell + the follow loop (see _shell_and_follow for why they can't be split).
+        task = asyncio.create_task(_shell_and_follow(app, settings, agent, user, errlog))
+        app.state.worker_task = task
+        while not app.state.shell_ready.is_set():        # wait until the shell is open (or the worker died)
+            if task.done():
+                task.result()                            # re-raise a startup failure (no keys, bad agent…)
+                break
+            await asyncio.sleep(0.05)
+        try:
             yield
+        finally:
+            app.state.stop_follow.set()
+            task.cancel()                                # unwinds Shell.session in ITS own task (clean anyio)
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
     app = FastAPI(lifespan=lifespan)
     app.state.settings = settings
+    app.state.user = user
 
     @app.get("/health")
     async def health() -> dict:
@@ -186,7 +277,7 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
 
         async def gen():
             try:
-                for event in _backlog_events(shell):
+                for event in _backlog_events(shell, app.state.live):
                     yield _sse(event)
                 while True:
                     try:

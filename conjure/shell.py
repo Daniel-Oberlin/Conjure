@@ -105,13 +105,17 @@ class Shell:
     def director(self) -> Director:
         return self._director
 
-    async def _open_agent(self, agent: str) -> None:
+    async def _open_agent(self, agent: str, *, activate_world: bool = True) -> None:
         """Switch the active agent, tearing down the current one's MCP server and launching the new one.
         Order matters: the MCP client uses anyio task groups whose cancel scopes must unwind **LIFO in
         the same task**, so we CLOSE the current connection *before* opening the next (opening on top and
         closing underneath raises "exit cancel scope that isn't the current task's current"). If the new
         agent fails to start we restore the previous one so the shell isn't stranded. New agent = its own
-        fresh transcript."""
+        fresh transcript.
+
+        `activate_world=True` (a user-driven switch) also asserts a world in the new scope on the world
+        server. The agent server sets it **False** when *following* a world-server-driven agent change
+        (shared-session C2): the world is already live there, so re-asserting would be a redundant loop."""
         prev_agent = self._agent_name() if self._director else None
         keep_active = self._director.active if self._director else None
 
@@ -132,7 +136,8 @@ class Shell:
             if prev_agent is not None:                        # restore so the shell keeps working
                 await _open(prev_agent)
             raise
-        await self._activate_world(agent)                     # make a world in the new agent's scope live
+        if activate_world:
+            await self._activate_world(agent)                 # make a world in the new agent's scope live
 
     async def _activate_world(self, agent: str) -> None:
         """Ask the world server to make a world in the new agent's scope live (resume its last-active

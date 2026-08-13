@@ -4,9 +4,11 @@ The turn logic (`_run_turn`) and the fan-out (`Hub`) are exercised directly with
 network, no MCP subprocess, no LLM. The endpoints are covered with a TestClient over an injected fake
 shell (build_app's `shell=` bypasses the real Shell.session/lifespan)."""
 
+import asyncio
 import types
 
-from conjure.agent_server import Hub, _backlog_events, _context_event, _run_turn, build_app
+from conjure.agent_server import (Hub, _backlog_events, _context_event, _reconcile_state, _run_turn,
+                                   build_app)
 from conjure.config import get_settings
 from conjure.llm import Turn
 
@@ -30,6 +32,13 @@ class FakeShell:
         self._user = "daniel"
         self.in_shell = False
         self.fed: list[tuple] = []
+        self.opened: list[tuple] = []
+
+    async def _open_agent(self, agent, *, activate_world=True):
+        # mirror the real _open_agent: a new agent means a fresh Director (empty transcript)
+        self.opened.append((agent, activate_world))
+        self.director.agent = types.SimpleNamespace(name=agent)
+        self.director.transcript = []
 
     def _as_command(self, text):
         s = text.strip()
@@ -56,7 +65,8 @@ class FakeShell:
 
 
 def _app_like(shell):
-    return types.SimpleNamespace(state=types.SimpleNamespace(shell=shell, hub=Hub(), turn_active=True))
+    return types.SimpleNamespace(state=types.SimpleNamespace(
+        shell=shell, hub=Hub(), turn_active=True, floor_lock=asyncio.Lock(), live=None))
 
 
 def _drain(q):
@@ -122,6 +132,44 @@ async def test_run_turn_error_is_reported_and_never_strands_the_floor():
     assert any(e["type"] == "notice" and "boom" in e["text"] for e in events)
     assert events[-1]["type"] == "turn_done"                  # end-of-turn fires even on error
     assert app.state.turn_active is False                     # floor released despite the exception
+
+
+# --------------------------------------------------------------------------- follow world state (C2)
+
+def test_context_event_merges_the_live_world_tuple():
+    shell = FakeShell()
+    live = {"scope": "daniel/agents/builder", "world": "garden", "space": "daniel/home", "owner": "daniel"}
+    ev = _context_event(shell, live)
+    assert ev["agent"] == "builder" and ev["llm"] == "Claude" and ev["user"] == "daniel"
+    assert ev["world"] == "garden" and ev["space"] == "daniel/home" and ev["scope"].endswith("builder")
+    assert "world" not in _context_event(shell)              # no live tuple → agent-side keys only
+
+
+async def test_reconcile_rebinds_on_agent_change_without_reasserting_the_world():
+    shell = FakeShell()                                       # bound to builder
+    app = _app_like(shell)
+    q = app.state.hub.subscribe()
+    await _reconcile_state(app, {"agent": "outdoor", "scope": "daniel/agents/outdoor",
+                                 "world": "default", "space": "<void>", "owner": "daniel"})
+    assert shell.opened == [("outdoor", False)]              # re-bound, world NOT re-asserted (following)
+    assert shell.director.agent.name == "outdoor"
+    assert app.state.live["agent"] == "outdoor"
+    ctx = _drain(q)[-1]
+    assert ctx["type"] == "context" and ctx["agent"] == "outdoor" and ctx["world"] == "default" \
+        and ctx["space"] == "<void>"
+
+
+async def test_reconcile_keeps_transcript_on_same_agent_world_change():
+    shell = FakeShell()                                       # builder
+    shell.director.transcript = [Turn("user", "hi", by="alice"), Turn("assistant", "hello")]
+    app = _app_like(shell)
+    q = app.state.hub.subscribe()
+    await _reconcile_state(app, {"agent": "builder", "scope": "daniel/agents/builder",
+                                 "world": "garden", "space": "daniel/home", "owner": "daniel"})
+    assert shell.opened == []                                # same agent → no re-bind
+    assert len(shell.director.transcript) == 2               # …transcript kept
+    ctx = _drain(q)[-1]
+    assert ctx["type"] == "context" and ctx["world"] == "garden" and ctx["space"] == "daniel/home"
 
 
 # --------------------------------------------------------------------------- endpoints
