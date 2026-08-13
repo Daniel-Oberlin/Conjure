@@ -1714,26 +1714,45 @@ def test_agent_last_defaults_to_builder(srv, client):
     assert client.get("/agent/last", params={"user": "someone_new"}).json()["agent"] == "builder"
 
 
-def test_scope_activate_records_the_users_last_used_agent(srv, client):
+def test_scope_activate_moves_the_global_session_pointer_and_live_agent(srv, client):
+    # One shared session (shared-session-plan P1): the live agent is derived from the global session
+    # pointer (scope → agent), not a per-user _last_agent record.
     client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"})
-    assert srv.worlds.get_last_agent("daniel") == "outdoor"
-    assert client.get("/agent/last", params={"user": "daniel"}).json()["agent"] == "outdoor"
-    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})   # switching back records builder
-    assert client.get("/agent/last", params={"user": "daniel"}).json()["agent"] == "builder"
+    assert srv.worlds.get_session()[0] == "daniel/agents/outdoor"        # global pointer moved
+    assert srv.agent_of(srv.active_scope) == "outdoor"
+    assert client.get("/agent/last").json()["agent"] == "outdoor"        # derived; user param vestigial
+    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})    # switching back
+    assert srv.worlds.get_session()[0] == srv.DEFAULT_SCOPE
+    assert client.get("/agent/last").json()["agent"] == "builder"
 
 
-def test_boot_world_resumes_the_last_used_agents_scope(srv):
-    # After a server restart, boot should resume the world of the agent the user last used — not always
-    # builder — so the viewer stays in sync with a front-end that resumes the same agent.
+def test_boot_world_restores_the_global_session_pointer(srv):
+    # After a restart, boot resumes exactly the (scope, world) the session pointer records — so the
+    # viewer comes back where everyone was, agent derived from the scope (shared-session-plan §2).
     import conjure.server as S
     from conjure.world import WorldStore
     outdoor = S.scope_for(S.DEFAULT_USER, "outdoor")
-    S.worlds.set_last_agent(S.DEFAULT_USER, "outdoor")
+    S.worlds.save(outdoor, "beach", WorldStore(
+        {"id": "b", "name": "beach", "rev": 0, "environment": {"space": "<void>"}, "entities": []}))
+    S.worlds.set_session(outdoor, "beach")
+    scope, name, _ = S._boot_world()
+    assert scope == outdoor and name == "beach"
+
+
+def test_boot_world_migrates_a_pre_session_cache_from_last_agent(srv):
+    # A cache from before the session pointer existed has only the old facts (last-used agent + that
+    # scope's active world). Boot reconstructs the pointer from them and writes it going forward.
+    import conjure.server as S
+    from conjure.world import WorldStore
+    outdoor = S.scope_for(S.DEFAULT_USER, "outdoor")
+    S.worlds.set_last_agent(S.DEFAULT_USER, "outdoor")      # legacy fact, no _session.txt yet
     S.worlds.save(outdoor, "beach", WorldStore(
         {"id": "b", "name": "beach", "rev": 0, "environment": {"space": "<void>"}, "entities": []}))
     S.worlds.set_active(outdoor, "beach")
+    assert S.worlds.get_session() is None                  # pre-session
     scope, name, _ = S._boot_world()
     assert scope == outdoor and name == "beach"
+    assert S.worlds.get_session() == (outdoor, "beach")    # pointer now written for future boots
 
 
 def test_boot_world_defaults_to_builder_without_a_last_agent(srv):

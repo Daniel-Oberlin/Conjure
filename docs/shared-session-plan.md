@@ -288,9 +288,14 @@ Ordered so the browser/headset-independent pieces land first and each step is un
 
 - **✅ Step 1 (done) — per-turn `speaker` + conversational floor.** `Director.handle(text, *, speaker=)`,
   `Turn.by`, `Busy`. (agent-server-plan Step 1.)
-- **Step A — collapse to one session pointer.** World server: persist `(active_space, active_world)` as the
-  single global pointer; derive `agent = agent_of(scope)`; retire `_last_agent.txt` (read-through for
-  migration). Tests: boot restores the pointer; agent derives correctly.
+- **✅ Step A (done) — collapse to one session pointer.** World server persists a single global
+  `_session.txt` = `(scope, world)` (`WorldRepository.get_session`/`set_session`); `_boot_world` restores it
+  (migration read-through from `_last_agent` + per-scope `_active.txt` when absent, then writes it forward);
+  `_switch_to` updates it; `_activate_scope` no longer records a per-user last-agent; `/agent/last` derives
+  the live agent from `agent_of(active_scope)`. The active **space** stays derived from the world's
+  `environment.space` (not stored in the pointer). `_last_agent.txt` retired to a migration-only fact.
+  Tested: pointer round-trip (+ normalization), boot-from-pointer, pre-session migration, `/scope/activate`
+  moves the pointer + live agent.
 - **Step B — enrich the broadcast + `GET /state`.** `_snapshot_msg` (and a dedicated context event) carry
   `{space, world, scope, agent, owner}`; add `GET /state`. Tests: switch/relocalize emit the enriched
   payload; `/state` matches globals.
