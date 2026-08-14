@@ -292,10 +292,11 @@ def cmd_skybox_from(s: Settings, a) -> None:
 
 # --------------------------------------------------------------------------- agent-server clients
 #
-# The CLI is a THIN client now (shared-session Step C1): the Director + shared transcript live in the
-# agent server (conjure.agent_server); the CLI POSTs a turn and renders the SSE conversation stream. The
-# agent is owned by the (separately launched) agent server, so --agent no longer selects it here — switch
-# with the `conjure agent <name>` command instead. Start the server first: `python -m conjure.agent_server`.
+# The CLI is a THIN client (shared-session Step C/D): the Director + shell + shared transcript live in the
+# agent server (conjure.agent_server); the CLI opens one WebSocket, sends each line as {type:"turn", text},
+# and renders the conversation events. All command logic (wake word, shell mode) is server-side. The agent
+# is owned by the (separately launched) agent server, so --agent doesn't select it here — switch with the
+# `conjure agent <name>` command. Start the server first: `python -m conjure.agent_server`.
 
 # Whole-line inputs that end the CLIENT (case-insensitive). Exact match only, so "exit the room" is
 # still passed through. These quit the program in AGENT mode; in shell mode "exit" is a server command

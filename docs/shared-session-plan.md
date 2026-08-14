@@ -354,9 +354,14 @@ Ordered so the browser/headset-independent pieces land first and each step is un
     reply events (`assistant_delta`/`assistant_final`/`notice`) as TTS — streaming cadence preserved.
     PipeCat stays ears+mouth; the mic-activation wake gate stays a voice-input concern. No LLM/keys here
     (agent server owns them). Manual mic-smoke pending; unit paths green.
-  - **C3b — barge-in** via `{type:"interrupt"}` (VAD-during-TTS → cancel the in-flight turn server-side).
-    Needs the server to run turns as cancellable tasks so the receive loop stays responsive mid-turn.
-  - **C4 — delete the in-process director paths** from cli/voice (agent-server-plan Step 5).
+  - **⏸ C3b — barge-in** (`{type:"interrupt"}` → cancel the in-flight turn) — **shelved to
+    [backlog.md](./backlog.md)**. A UX polish, not required for the shared-conversation goal; the WS
+    protocol reserves the message. Needs the server to run turns as cancellable tasks.
+  - **✅ C4 (done) — in-process director paths deleted.** Both clients are WS-only now (C1b removed the
+    CLI's in-process Director, C3a removed voice's); `Shell.session` remains but is owned solely by the
+    agent server. Residual sweep: stale transport comments fixed (POST/SSE/`_run_turn` → WS); no orphaned
+    SSE/POST code (removed in D2); `Shell.feed` kept as the shell's single-connection routing convenience
+    (built on the D1 primitives; the agent server uses those primitives directly for per-connection mode).
   - **✅ Adjacent (done) — `mcp_server.py` per-turn scope** (agent-server-plan Step 3). Identity was fixed
     at MCP launch, so with a shared agent server every turn acted as the launch user — a real permission
     bypass (a `--user guest` client edited daniel's world, and `list_worlds` showed daniel's worlds as

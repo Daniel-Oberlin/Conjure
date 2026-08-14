@@ -357,3 +357,21 @@ flag). (b) is preferred: offline-by-default without breaking fresh setup. Option
 **Open decision:** blunt env-var (a) vs. per-call `local_files_only` with download fallback (b); and
 whether to add an explicit prefetch/`doctor` step that warms the cache so the fallback path is never hit
 in normal use.
+
+## Voice barge-in (shared-session C3b, shelved)
+
+**What:** interrupt the director mid-turn by talking over it — VAD detects the user speaking while TTS
+is playing → cancel the in-flight turn and take the new utterance.
+
+**Why shelved:** voice landed as a thin WebSocket client (C3a) with mute-while-speaking; barge-in is a
+UX polish, not required for the shared-conversation goal.
+
+**Proposed fix:** the WebSocket protocol already reserves a `{type:"interrupt"}` client→server message.
+Wiring it: (1) the agent server must run each turn as a **cancellable task** (not awaited inline in the
+connection's receive loop) so the loop stays responsive mid-turn; on `interrupt`, cancel that task, emit
+`interrupted`+`turn_done`, release the floor. (2) voice: turn OFF mute-while-speaking (or gate it), and on
+VAD-during-TTS send `{type:"interrupt"}` + stop local TTS. Needs echo handling (earbuds today) so the
+bot's own voice doesn't self-interrupt.
+
+**Open decision:** does an interrupt discard the partial turn's world edits, or keep them? (Probably keep
+what already applied; just stop further tool calls.)

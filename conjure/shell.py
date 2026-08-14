@@ -56,8 +56,8 @@ class Shell:
         # Host override for `agent <name>`: when set, the switch is delegated instead of running the
         # in-process `_open_agent` teardown. The agent server sets this so a client switch routes through
         # the world server (assert scope → its /ws follower re-binds the Director in the OWNING task) —
-        # required because `_run_turn` runs a command in a *spawned* task, and a cross-task MCP `aclose()`
-        # raises "exit a cancel scope in a different task". `async (agent_name, on_text) -> None`.
+        # required because a command runs in the connection's receive-loop task, and a cross-task MCP
+        # `aclose()` raises "exit a cancel scope in a different task". `async (agent_name, on_text) -> None`.
         self._agent_switch_hook = None
         # (matcher, handler, help). First match wins; an LLM switch and the unknown-command fallback
         # are tried after, in _dispatch. The handler is called as handler(on_text, match). Add a row
