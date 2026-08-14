@@ -1,28 +1,27 @@
-"""Thin-client helpers (shared-session Step C1) — the pure SSE parsing / prompt / rendering the CLI and
-voice share. No network (post_turn/stream_events are the only I/O, exercised live)."""
+"""Thin-client helpers (shared-session Step D) — the pure prompt/render/context pieces the CLI and voice
+share. No network (the WebSocket itself is opened by the caller)."""
 
-from conjure.agent_client import (apply_context, parse_sse_line, prompt_from_context, render_event)
-
-
-def test_parse_sse_line_reads_data_and_ignores_the_rest():
-    assert parse_sse_line('data: {"type": "notice", "text": "hi"}') == {"type": "notice", "text": "hi"}
-    assert parse_sse_line(": keepalive") is None            # SSE comment (heartbeat)
-    assert parse_sse_line("") is None                        # blank
-    assert parse_sse_line("event: notice") is None           # non-data field
-    assert parse_sse_line("data: not json") is None          # malformed → skipped, not fatal
+from conjure.agent_client import apply_context, prompt_from_context, render_event, ws_url
 
 
-def test_prompt_reflects_context_and_shell_mode():
+def test_ws_url_builds_the_per_connection_socket_url():
+    assert ws_url("http://localhost:8770", "guest") == "ws://localhost:8770/ws?user=guest"
+    assert ws_url("https://host:9/", "alice") == "wss://host:9/ws?user=alice"
+
+
+def test_prompt_reflects_context_data_and_shell_mode():
     assert prompt_from_context({"user": "alice", "agent": "builder", "llm": "Claude"}) \
         == "conjure:alice.builder.claude> "
     assert prompt_from_context({"in_shell": True}) == "conjure:shell> "
-    assert prompt_from_context({}) == "conjure:you.agent.?> "   # graceful before the first context event
+    assert prompt_from_context({}) == "conjure:you.agent.?> "     # graceful before the first context event
 
 
 def test_apply_context_folds_only_known_keys():
     ctx = {"agent": "builder", "llm": "Claude", "user": "alice", "in_shell": False}
-    apply_context(ctx, {"type": "context", "agent": "outdoor", "llm": "Gemini", "in_shell": True, "x": 1})
-    assert ctx == {"agent": "outdoor", "llm": "Gemini", "user": "alice", "in_shell": True}  # no stray "x"
+    apply_context(ctx, {"type": "context", "agent": "outdoor", "llm": "Gemini", "in_shell": True,
+                        "world": "meadow", "x": 1})
+    assert ctx == {"agent": "outdoor", "llm": "Gemini", "user": "alice", "in_shell": True, "world": "meadow"}
+    assert "x" not in ctx                                          # no stray keys
 
 
 def test_render_event_formats_each_type():
@@ -34,7 +33,7 @@ def test_render_event_formats_each_type():
     assert render_event({"type": "notice", "text": "Now on Gemini"}, me="alice", verbose=False) == "Now on Gemini"
     assert render_event({"type": "busy"}, me="alice", verbose=False).startswith("[busy")
     assert render_event({"type": "context", "agent": "builder"}, me="alice", verbose=False) is None
-    assert render_event({"type": "turn_done", "speaker": "alice"}, me="alice", verbose=False) is None  # control
+    assert render_event({"type": "turn_done"}, me="alice", verbose=False) is None   # control
 
 
 def test_render_tool_call_is_verbose_only():

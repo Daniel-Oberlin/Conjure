@@ -1,13 +1,13 @@
-"""Agent server (shared-session Step C1) — the HTTP/SSE host of the shared Shell/Director.
+"""Agent server (shared-session Step C/D) — the WebSocket host of the shared shell/Director.
 
-The turn logic (`_run_turn`) and the fan-out (`Hub`) are exercised directly with a fake shell — no
-network, no MCP subprocess, no LLM. The endpoints are covered with a TestClient over an injected fake
-shell (build_app's `shell=` bypasses the real Shell.session/lifespan)."""
+`_handle_turn` (per-connection routing), the fan-out, and `_reconcile_state` are exercised directly with
+a fake shell + fake connections — no network, no MCP subprocess, no LLM. The `/ws` endpoint is covered
+with a TestClient over an injected fake shell (build_app's `shell=` bypasses the real Shell.session)."""
 
 import asyncio
 import types
 
-from conjure.agent_server import (Hub, _backlog_events, _context_event, _reconcile_state, _run_turn,
+from conjure.agent_server import (Hub, _backlog_events, _context_event, _handle_turn, _reconcile_state,
                                    build_app)
 from conjure.config import get_settings
 from conjure.llm import Turn
@@ -21,183 +21,183 @@ class FakeDir:
         self.active = "Claude"
         self.transcript: list[Turn] = []
 
+    async def handle(self, text, *, speaker, on_text=None, on_tool=None):
+        if on_text:
+            await on_text("on it", final=False, speaker=self.active)
+        if on_tool:
+            await on_tool("place_asset", {"query": "tree"})
+        if on_text:
+            await on_text("done — a tree", final=True, speaker=self.active)
+        self.transcript.append(Turn("user", text.strip(), by=speaker))
+        self.transcript.append(Turn("assistant", "done — a tree"))
+
 
 class FakeShell:
-    """Just what the agent server reads/drives: _as_command routing, feed, and a director with a
-    transcript. feed mimics the real split — an utterance emits ack+tool+final and records the transcript;
-    a command emits a single reply."""
+    """Just what the agent server calls: the routing engine (mode as a param), command dispatch, a
+    re-bind, and a director with a transcript."""
 
     def __init__(self):
         self.director = FakeDir()
-        self._user = "daniel"
-        self.in_shell = False
-        self.fed: list[tuple] = []
         self.opened: list[tuple] = []
 
-    async def _open_agent(self, agent, *, activate_world=True):
-        # mirror the real _open_agent: a new agent means a fresh Director (empty transcript)
-        self.opened.append((agent, activate_world))
-        self.director.agent = types.SimpleNamespace(name=agent)
-        self.director.transcript = []
-
-    def _as_command(self, text):
+    def as_command(self, text, in_shell):
         s = text.strip()
-        if self.in_shell:
+        if in_shell:
             return s
         if s.lower().startswith("conjure"):
             return s[len("conjure"):].strip(" ,:") or "open shell"
         return None
 
-    async def feed(self, text, *, speaker=None, on_text=None, on_tool=None):
-        self.fed.append((speaker, text))
-        if self._as_command(text) is None:                       # an utterance
-            if on_text:
-                await on_text("on it", final=False, speaker=self.director.active)
-            if on_tool:
-                await on_tool("place_asset", {"query": "tree"})
-            if on_text:
-                await on_text("done — a tree", final=True, speaker=self.director.active)
-            self.director.transcript.append(Turn("user", text.strip(), by=speaker or self._user))
-            self.director.transcript.append(Turn("assistant", "done — a tree"))
-        else:                                                    # a deterministic command
-            if on_text:
-                await on_text("Now talking to Gemini (builder).", final=True, speaker=self.director.active)
+    @staticmethod
+    def is_open_shell(cmd):
+        return cmd.strip().lower() in ("shell", "open shell")
+
+    @staticmethod
+    def is_leave_shell(cmd):
+        return cmd.strip().lower() in ("exit", "leave", "close", "done")
+
+    async def _dispatch(self, cmd, on_text):
+        await on_text("Now talking to Gemini (builder).", final=True, speaker=self.director.active)
+
+    async def _open_agent(self, agent, *, activate_world=True):
+        self.opened.append((agent, activate_world))
+        self.director.agent = types.SimpleNamespace(name=agent)
+        self.director.transcript = []
 
 
-def _app_like(shell):
-    return types.SimpleNamespace(state=types.SimpleNamespace(
-        shell=shell, hub=Hub(), turn_active=True, floor_lock=asyncio.Lock(), live=None))
+class FakeConn:
+    def __init__(self, user="daniel"):
+        self.user = user
+        self.in_shell = False
+        self.sent: list[dict] = []
+
+    async def send(self, event):
+        self.sent.append(event)
 
 
-def _drain(q):
-    out = []
-    while not q.empty():
-        out.append(q.get_nowait())
-    return out
-
-
-# --------------------------------------------------------------------------- Hub
-
-async def test_hub_fans_out_to_all_and_unsubscribe_stops_delivery():
+def _app(shell, conns=()):
     hub = Hub()
-    a, b = hub.subscribe(), hub.subscribe()
-    await hub.publish({"type": "x"})
-    assert a.get_nowait() == {"type": "x"} and b.get_nowait() == {"type": "x"}
-    hub.unsubscribe(a)
-    await hub.publish({"type": "y"})
-    assert b.get_nowait() == {"type": "y"} and a.empty()      # unsubscribed no longer receives
+    for c in conns:
+        hub.add(c)
+    return types.SimpleNamespace(state=types.SimpleNamespace(
+        shell=shell, hub=hub, turn_active=False, floor_lock=asyncio.Lock(), live=None, user="daniel"))
 
 
-# --------------------------------------------------------------------------- _run_turn
+def _kinds(conn):
+    return [e["type"] for e in conn.sent]
 
-async def test_run_turn_utterance_emits_full_event_sequence_and_clears_floor():
+
+# --------------------------------------------------------------------------- _handle_turn
+
+async def test_utterance_broadcasts_conversation_and_ends_with_turn_done():
     shell = FakeShell()
-    app = _app_like(shell)
-    q = app.state.hub.subscribe()
-    await _run_turn(app, "alice", "put a tree here")
-    events = _drain(q)
-    assert [e["type"] for e in events] == \
-        ["user_turn", "assistant_delta", "tool_call", "assistant_final", "turn_done"]
-    assert events[0] == {"type": "user_turn", "speaker": "alice", "text": "put a tree here"}
-    assert events[1]["text"] == "on it" and events[1]["llm"] == "Claude"       # delta tagged with the LLM
-    assert events[2] == {"type": "tool_call", "name": "place_asset", "args": {"query": "tree"}}
-    assert events[3] == {"type": "assistant_final", "text": "done — a tree", "llm": "Claude"}
-    assert events[4] == {"type": "turn_done", "speaker": "alice"}   # unambiguous end-of-turn (floor free)
-    assert shell.fed == [("alice", "put a tree here")]        # speaker threaded through to feed
-    assert app.state.turn_active is False                     # floor released in finally
+    conn = FakeConn("alice")
+    app = _app(shell, [conn])
+    await _handle_turn(app, conn, "put a tree here")
+    k = _kinds(conn)
+    assert "user_turn" in k and "assistant_delta" in k and "tool_call" in k and "assistant_final" in k
+    assert k[-1] == "turn_done"                                   # the prompt gate always closes the line
+    ut = next(e for e in conn.sent if e["type"] == "user_turn")
+    assert ut == {"type": "user_turn", "speaker": "alice", "text": "put a tree here"}
+    assert app.state.turn_active is False                         # floor released
 
 
-async def test_run_turn_command_emits_notice_and_context_but_no_user_turn():
+async def test_second_utterance_is_rejected_busy_while_one_is_in_flight():
     shell = FakeShell()
-    app = _app_like(shell)
-    q = app.state.hub.subscribe()
-    await _run_turn(app, "alice", "conjure use gemini")
-    events = _drain(q)
-    assert [e["type"] for e in events] == ["notice", "context", "turn_done"]  # reply, refreshed prompt, end
-    assert events[0]["text"].startswith("Now talking to Gemini")
-    assert events[1] == _context_event(shell)                 # agent/llm/user snapshot
-    assert app.state.turn_active is False
+    conn = FakeConn("bob")
+    app = _app(shell, [conn])
+    app.state.turn_active = True                                  # simulate an in-flight turn (single floor)
+    await _handle_turn(app, conn, "make a tree")
+    k = _kinds(conn)
+    assert "busy" in k and k[-1] == "turn_done"
+    assert "user_turn" not in k                                   # nothing ran / broadcast
 
 
-async def test_run_turn_error_is_reported_and_never_strands_the_floor():
-    class BoomShell(FakeShell):
-        async def feed(self, *a, **k):
-            raise RuntimeError("boom")
-
-    app = _app_like(BoomShell())
-    q = app.state.hub.subscribe()
-    await _run_turn(app, "alice", "put a tree")               # an utterance → user_turn, then feed blows up
-    events = _drain(q)
-    assert events[0]["type"] == "user_turn"
-    assert any(e["type"] == "notice" and "boom" in e["text"] for e in events)
-    assert events[-1]["type"] == "turn_done"                  # end-of-turn fires even on error
-    assert app.state.turn_active is False                     # floor released despite the exception
-
-
-# --------------------------------------------------------------------------- follow world state (C2)
-
-def test_context_event_merges_the_live_world_tuple():
+async def test_open_shell_flips_only_this_connection():
     shell = FakeShell()
-    live = {"scope": "daniel/agents/builder", "world": "garden", "space": "daniel/home", "owner": "daniel"}
-    ev = _context_event(shell, live)
-    assert ev["agent"] == "builder" and ev["llm"] == "Claude" and ev["user"] == "daniel"
-    assert ev["world"] == "garden" and ev["space"] == "daniel/home" and ev["scope"].endswith("builder")
-    assert "world" not in _context_event(shell)              # no live tuple → agent-side keys only
+    a, b = FakeConn("alice"), FakeConn("bob")
+    app = _app(shell, [a, b])
+    await _handle_turn(app, a, "conjure open shell")
+    assert a.in_shell is True and b.in_shell is False            # per-connection — no leak to b
+    ctx = [e for e in a.sent if e["type"] == "context"][-1]
+    assert ctx["in_shell"] is True and ctx["user"] == "alice"
+    assert a.sent[-1]["type"] == "turn_done"
+    assert b.sent == []                                          # b's socket untouched
 
 
-async def test_reconcile_rebinds_on_agent_change_without_reasserting_the_world():
-    shell = FakeShell()                                       # bound to builder
-    app = _app_like(shell)
-    q = app.state.hub.subscribe()
-    await _reconcile_state(app, {"agent": "outdoor", "scope": "daniel/agents/outdoor",
-                                 "world": "default", "space": "<void>", "owner": "daniel"})
-    assert shell.opened == [("outdoor", False)]              # re-bound, world NOT re-asserted (following)
-    assert shell.director.agent.name == "outdoor"
-    assert app.state.live["agent"] == "outdoor"
-    ctx = _drain(q)[-1]
-    assert ctx["type"] == "context" and ctx["agent"] == "outdoor" and ctx["world"] == "default" \
-        and ctx["space"] == "<void>"
+async def test_exit_leaves_shell_mode_for_this_connection():
+    shell = FakeShell()
+    a = FakeConn("alice")
+    a.in_shell = True
+    app = _app(shell, [a])
+    await _handle_turn(app, a, "exit")                           # in shell mode → the whole line is a command
+    assert a.in_shell is False
+    assert any(e["type"] == "notice" and "Back to the agent" in e["text"] for e in a.sent)
+    assert a.sent[-1]["type"] == "turn_done"
 
 
-async def test_reconcile_keeps_transcript_on_same_agent_world_change():
-    shell = FakeShell()                                       # builder
-    shell.director.transcript = [Turn("user", "hi", by="alice"), Turn("assistant", "hello")]
-    app = _app_like(shell)
-    q = app.state.hub.subscribe()
-    await _reconcile_state(app, {"agent": "builder", "scope": "daniel/agents/builder",
-                                 "world": "garden", "space": "daniel/home", "owner": "daniel"})
-    assert shell.opened == []                                # same agent → no re-bind
-    assert len(shell.director.transcript) == 2               # …transcript kept
-    ctx = _drain(q)[-1]
-    assert ctx["type"] == "context" and ctx["world"] == "garden" and ctx["space"] == "daniel/home"
+async def test_command_notices_the_caller_and_refreshes_everyones_context():
+    shell = FakeShell()
+    a, b = FakeConn("alice"), FakeConn("bob")
+    app = _app(shell, [a, b])
+    await _handle_turn(app, a, "conjure use gemini")
+    assert any(e["type"] == "notice" and "Gemini" in e["text"] for e in a.sent)   # output → the caller
+    assert not any(e["type"] == "notice" for e in b.sent)                          # …not the others
+    assert any(e["type"] == "context" for e in a.sent)                             # shared LLM change →
+    assert any(e["type"] == "context" for e in b.sent)                             # everyone's prompt refreshes
+    assert a.sent[-1]["type"] == "turn_done"
 
 
-# --------------------------------------------------------------------------- endpoints
+# --------------------------------------------------------------------------- context (data, per-connection)
 
-def _client(shell=None):
-    from fastapi.testclient import TestClient
-    return TestClient(build_app(get_settings(), shell=shell or FakeShell()))
-
-
-def test_post_turn_accepted_when_idle():
-    with _client() as client:
-        r = client.post("/turn", json={"speaker": "alice", "text": "put a tree"})
-        assert r.status_code == 200 and r.json()["accepted"] is True
-
-
-def test_post_turn_rejected_with_busy_while_a_turn_is_in_flight():
-    with _client() as client:
-        client.app.state.turn_active = True                   # simulate an in-flight turn (single floor)
-        r = client.post("/turn", json={"speaker": "bob", "text": "hi"})
-        assert r.status_code == 409 and r.json()["busy"] is True
+def test_context_event_is_per_connection_data_no_prompt_string():
+    shell = FakeShell()
+    live = {"world": "garden", "space": "daniel/home", "scope": "daniel/agents/builder", "owner": "daniel"}
+    ev = _context_event(shell, live, "guest", True)
+    assert ev["type"] == "context" and ev["agent"] == "builder" and ev["llm"] == "Claude"
+    assert ev["user"] == "guest" and ev["in_shell"] is True                        # this connection's own state
+    assert ev["world"] == "garden" and ev["space"] == "daniel/home"
+    assert "prompt" not in ev                                                       # DATA only — the client formats
 
 
-def test_stream_backlog_is_context_then_the_transcript():
-    # The snapshot a late joiner gets before the live feed. Tested directly (the live SSE loop is a thin
-    # wrapper around this + the Hub, both covered above; the socket itself is smoke-tested by hand).
+def test_backlog_is_context_then_transcript():
     shell = FakeShell()
     shell.director.transcript = [Turn("user", "hi", by="alice"), Turn("assistant", "hello")]
-    events = _backlog_events(shell)
-    assert events[0]["type"] == "context" and events[0]["agent"] == "builder" and events[0]["llm"] == "Claude"
+    events = _backlog_events(shell, None, "bob", False)
+    assert events[0]["type"] == "context" and events[0]["user"] == "bob"
     assert events[1] == {"type": "user_turn", "speaker": "alice", "text": "hi"}
     assert events[2] == {"type": "assistant_final", "text": "hello"}
+
+
+# --------------------------------------------------------------------------- follow (C2)
+
+async def test_reconcile_rebinds_on_agent_change_and_refreshes_all_connections():
+    shell = FakeShell()
+    a, b = FakeConn("alice"), FakeConn("bob")
+    app = _app(shell, [a, b])
+    await _reconcile_state(app, {"agent": "outdoor", "scope": "daniel/agents/outdoor",
+                                 "world": "default", "space": "<void>", "owner": "daniel"})
+    assert shell.opened == [("outdoor", False)]                  # re-bound, not re-asserting the world
+    assert shell.director.agent.name == "outdoor"
+    assert app.state.live["agent"] == "outdoor"
+    for c in (a, b):
+        ctx = [e for e in c.sent if e["type"] == "context"][-1]
+        assert ctx["agent"] == "outdoor" and ctx["world"] == "default"
+
+
+# --------------------------------------------------------------------------- /ws endpoint
+
+def test_ws_sends_context_on_connect_and_roundtrips_a_turn():
+    from fastapi.testclient import TestClient
+    with TestClient(build_app(get_settings(), shell=FakeShell())) as client:
+        with client.websocket_connect("/ws?user=alice") as ws:
+            first = ws.receive_json()
+            assert first["type"] == "context" and first["user"] == "alice" and first["in_shell"] is False
+            ws.send_json({"type": "turn", "text": "put a tree"})
+            kinds = []
+            for _ in range(20):
+                ev = ws.receive_json()
+                kinds.append(ev["type"])
+                if ev["type"] == "turn_done":
+                    break
+    assert "user_turn" in kinds and "assistant_final" in kinds and kinds[-1] == "turn_done"

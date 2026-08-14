@@ -1,36 +1,30 @@
-"""Thin client of the agent server (shared-session Step C1) — the pieces voice/CLI share to submit turns
-and render the shared conversation stream. The heavy state (Director, transcript, LLM roster) lives in the
-agent server; a client only POSTs a turn and renders SSE events.
+"""Thin client of the agent server (shared-session Step C / D) — the pieces voice/CLI share to talk to
+the agent server's WebSocket and render the shared conversation.
 
-The parsing/formatting is **pure** (no I/O) so it's unit-testable; the two coroutines (`post_turn`,
-`stream_events`) are the only network."""
+The client is **dumb**: it opens one WebSocket, sends each line as `{type:"turn", text}`, renders the
+events it receives, and formats its own prompt from the `context` **data** the server sends. All command
+logic (wake word, "open shell"/"exit", routing, mode) lives server-side; the client never parses.
+
+Everything here is pure (no I/O) except `ws_url` (just a string) — the socket itself is opened by the
+caller with `websockets`."""
 
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator, Optional
+from typing import Optional
 
 
-# --------------------------------------------------------------------------- pure helpers
-
-def parse_sse_line(line: str) -> Optional[dict]:
-    """Parse one SSE line into an event dict, or None for comments/blanks/non-`data:` lines and malformed
-    JSON. (Keeps the network loop dumb: feed it raw lines.)"""
-    if not line or not line.startswith("data:"):
-        return None
-    payload = line[len("data:"):].strip()
-    if not payload:
-        return None
-    try:
-        return json.loads(payload)
-    except ValueError:
-        return None
+def ws_url(agent_url: str, user: str) -> str:
+    """The agent server's per-connection WebSocket URL. `user` is who this client acts as (the connection
+    is the session)."""
+    base = agent_url.replace("https://", "wss://").replace("http://", "ws://").rstrip("/")
+    return f"{base}/ws?user={user}"
 
 
 def prompt_from_context(ctx: dict) -> str:
-    """The REPL prompt, from the latest `context` event: `conjure:shell>` in shell mode, else
-    `conjure:<user>.<agent>.<llm>>` (who you are · the live agent · the LLM running it). Mirrors the old
-    in-process `Shell.prompt`, now driven by the stream (shared-session-plan §8)."""
+    """Format the REPL prompt from the latest `context` DATA: `conjure:shell>` in shell mode, else
+    `conjure:<user>.<agent>.<llm>>`. Formatting lives in the client (a voice client would render none) —
+    only the data comes from the server (shared-session-plan §8)."""
     if ctx.get("in_shell"):
         return "conjure:shell> "
     user = ctx.get("user") or "you"
@@ -40,9 +34,10 @@ def prompt_from_context(ctx: dict) -> str:
 
 
 def render_event(ev: dict, *, me: str, verbose: bool) -> Optional[str]:
-    """The line to print for a stream event (or None to print nothing). `me` is the local user, so we
-    don't echo our own submitted turns (but we DO show other speakers — one shared conversation).
-    `context` returns None (the caller folds it into its ctx for the prompt)."""
+    """The line to print for a conversation event (or None to print nothing). `me` is the local user, so
+    we don't echo our own submitted turns (but we DO show other speakers — one shared conversation).
+    `context`/`turn_done` are control events → None (the caller folds context into ctx / releases the
+    prompt gate)."""
     t = ev.get("type")
     if t == "user_turn":
         spk = ev.get("speaker")
@@ -53,40 +48,12 @@ def render_event(ev: dict, *, me: str, verbose: bool) -> Optional[str]:
         return "[busy — another turn is already in progress]"
     if t == "tool_call" and verbose:
         return f"  · {ev.get('name')}({json.dumps(ev.get('args', {}))})"
-    return None                                   # context / non-verbose tool_call / unknown → silent
+    return None                                   # context / turn_done / non-verbose tool_call / unknown
 
 
 def apply_context(ctx: dict, ev: dict) -> None:
     """Fold a `context` event into the local ctx (in place), so the next prompt reflects the live
-    agent/LLM/user/shell-mode."""
-    for k in ("agent", "llm", "user", "in_shell"):
+    agent/LLM/user/shell-mode the server reports for this connection."""
+    for k in ("agent", "llm", "user", "in_shell", "world", "space", "owner"):
         if k in ev:
             ctx[k] = ev[k]
-
-
-# --------------------------------------------------------------------------- network
-
-async def post_turn(base_url: str, speaker: str, text: str) -> dict:
-    """Submit one line. Returns the server's `{accepted}` / `{busy}` verdict (the reply itself arrives on
-    the stream). Returns an `{error}` dict if the agent server is unreachable — the caller surfaces it."""
-    import httpx
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(f"{base_url}/turn", json={"speaker": speaker, "text": text})
-            return r.json()
-    except Exception as exc:  # noqa: BLE001 — connectivity is the caller's to report
-        return {"ok": False, "error": str(exc)}
-
-
-async def stream_events(base_url: str) -> AsyncIterator[dict]:
-    """Yield parsed events from the agent server's SSE `/stream` (backlog snapshot, then the live feed).
-    Raises on connection failure — the caller decides whether to retry/backoff."""
-    import httpx
-
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream("GET", f"{base_url}/stream") as r:
-            async for line in r.aiter_lines():
-                ev = parse_sse_line(line)
-                if ev is not None:
-                    yield ev

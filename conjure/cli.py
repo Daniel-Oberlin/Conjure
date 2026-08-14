@@ -24,7 +24,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import signal
 import sys
 import threading
@@ -298,15 +297,10 @@ def cmd_skybox_from(s: Settings, a) -> None:
 # agent is owned by the (separately launched) agent server, so --agent no longer selects it here — switch
 # with the `conjure agent <name>` command instead. Start the server first: `python -m conjure.agent_server`.
 
-# Whole-line inputs that leave the REPL (case-insensitive). Exact match only, so "exit the room" is
-# still passed through as an instruction.
+# Whole-line inputs that end the CLIENT (case-insensitive). Exact match only, so "exit the room" is
+# still passed through. These quit the program in AGENT mode; in shell mode "exit" is a server command
+# (leave shell), so it's forwarded — the only client-side special-case; ALL shell logic is server-side.
 _QUIT_WORDS = {":q", ":quit", "q", "quit", "exit", "bye", "goodbye"}
-
-# Shell MODE is client-local (each client owns its own; not the agent server's shared state). The client
-# handles the mode toggles itself and forwards real commands wake-word-prefixed to the (stateless) server.
-_WAKE = re.compile(r"^conjure\b[,:]?\s*(?P<rest>.*)$", re.I | re.S)   # mirrors shell._WAKE
-_OPEN_SHELL = re.compile(r"^(?:open\s+)?shell$", re.I)
-_LEAVE_SHELL = re.compile(r"^(?:exit|leave|close|done)$", re.I)
 
 
 def _agent_unreachable_msg(s: Settings, err: str) -> str:
@@ -336,40 +330,48 @@ async def _ainput(prompt: str) -> str:
     return await fut
 
 
-async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
-    """Interactive REPL as a thin client: a background task renders the shared conversation stream (and
-    folds `context` into the prompt); the main loop reads a line and POSTs it. Eventually-consistent per
-    prompt (shared-session-plan §8) — the reply prints when it arrives, the next prompt reflects context."""
-    from .agent_client import (apply_context, post_turn, prompt_from_context, render_event, stream_events)
+async def _repl_client(s: Settings, verbose: bool, user: str) -> bool:
+    """Interactive REPL as a DUMB WebSocket client. A listener renders the shared conversation and folds
+    `context` DATA into the local ctx; the main loop reads a line and sends it verbatim as
+    `{type:"turn", text}`. No command parsing here — the server (shell) owns the wake word, shell mode,
+    and dispatch. The prompt is formatted client-side from context data. Returns True if exited via ^C."""
+    import websockets
+
+    from .agent_client import apply_context, prompt_from_context, render_event, ws_url
 
     ctx = {"agent": "agent", "llm": "", "user": user, "in_shell": False}
     stop = asyncio.Event()
-    turn_done = asyncio.Event()                            # set by the listener when our turn finishes
+    turn_done = asyncio.Event()
+    holder: dict = {"ws": None}                            # current socket (None while (re)connecting)
 
     async def listen() -> None:
+        url = ws_url(s.agent_url, user)
         while not stop.is_set():
             try:
-                async for ev in stream_events(s.agent_url):
-                    kind = ev.get("type")
-                    if kind == "context":
-                        apply_context(ctx, ev)
-                        continue
-                    if kind == "turn_done":                # end-of-turn: release the waiting prompt
-                        turn_done.set()
-                        continue
-                    out = render_event(ev, me=user, verbose=verbose)
-                    if out is not None:
-                        print(out)
+                async with websockets.connect(url) as ws:
+                    holder["ws"] = ws
+                    async for raw in ws:
+                        ev = json.loads(raw)
+                        kind = ev.get("type")
+                        if kind == "context":
+                            apply_context(ctx, ev)
+                            continue
+                        if kind == "turn_done":            # release the prompt gate
+                            turn_done.set()
+                            continue
+                        out = render_event(ev, me=user, verbose=verbose)
+                        if out is not None:
+                            print(out)
             except Exception:  # noqa: BLE001 — server down/restarting: back off and reconnect
+                holder["ws"] = None
                 if stop.is_set():
                     return
                 await asyncio.sleep(1.0)
 
     async def _await_turn() -> None:
         """Wait for our turn to finish before re-prompting. A heartbeat keeps long image/skybox turns from
-        looking hung — and, crucially, from returning to a prompt that would just reject the next input as
-        busy while the turn is still running. Caps at ~10 min as a safety against a dropped stream (a lost
-        turn_done)."""
+        looking hung and from dumping us back to a prompt that would just reject the next input as busy.
+        Caps at ~10 min as a safety against a dropped socket (a lost turn_done)."""
         waited = 0
         while not turn_done.is_set():
             try:
@@ -381,13 +383,23 @@ async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
                     print("[the turn is still running server-side; new input may be rejected until it finishes]")
                     return
 
-    listen_task = asyncio.create_task(listen())
-    await asyncio.sleep(0.25)                               # let the first `context` arrive for prompt #1
+    async def submit(text: str) -> None:
+        ws = holder["ws"]
+        if ws is None:
+            print(_agent_unreachable_msg(s, "not connected")); return
+        turn_done.clear()                                  # clear BEFORE send so we wait on THIS turn only
+        try:
+            await ws.send(json.dumps({"type": "turn", "text": text}))
+        except Exception as exc:  # noqa: BLE001
+            print(_agent_unreachable_msg(s, str(exc))); return
+        await _await_turn()
 
-    # ^C handling: cancel the main task on SIGINT (whatever we're awaiting — the daemon input future or a
-    # turn wait — raises CancelledError, which we swallow for a clean exit). Relying on the default
-    # KeyboardInterrupt doesn't cleanly unwind asyncio.run here; this does. The daemon input thread is then
-    # abandoned harmlessly (it never blocks interpreter exit).
+    listen_task = asyncio.create_task(listen())
+    await asyncio.sleep(0.4)                                # let the socket connect + first context arrive
+
+    # ^C handling: cancel the main task on SIGINT so whatever we're awaiting unwinds to a clean exit (the
+    # default KeyboardInterrupt doesn't cleanly unwind asyncio.run here; the daemon input thread is
+    # abandoned harmlessly).
     loop = asyncio.get_event_loop()
     main = asyncio.current_task()
     interrupted = False
@@ -399,62 +411,24 @@ async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
 
     try:
         loop.add_signal_handler(signal.SIGINT, _on_sigint)
-    except (NotImplementedError, RuntimeError):            # e.g. non-main thread / unsupported platform
+    except (NotImplementedError, RuntimeError):
         pass
 
-    async def submit(text: str) -> None:
-        turn_done.clear()                                  # clear BEFORE POST so we wait on THIS turn only
-        res = await post_turn(s.agent_url, user, text)
-        if res.get("error"):
-            print(_agent_unreachable_msg(s, res["error"]))
-        elif res.get("busy"):
-            print("[busy — another turn is in progress; try again]")
-        else:                                              # accepted → wait for the reply (single floor:
-            await _await_turn()                            # the next turn_done is ours)
-
-    # Shell mode is client-local (bug: it used to live on the server's shared Shell, so it leaked across
-    # clients and `exit` couldn't reach it). If the server is stale-stuck in shell mode from an older
-    # client, clear it once so plain utterances route as agent input again.
-    if ctx.get("in_shell"):
-        await submit("exit")
-
-    local_shell = False
     try:
         while True:
-            prompt = "conjure:shell> " if local_shell else prompt_from_context(ctx)
             try:
-                line = await _ainput(prompt)
+                line = await _ainput(prompt_from_context(ctx))
             except EOFError:                               # ^D — clean exit
                 print()
                 break
             raw = line.strip()
             if not raw:
                 continue
-            if local_shell:                                # every line is a command; toggles handled here
-                if _LEAVE_SHELL.match(raw):
-                    local_shell = False
-                    print("Back to the agent.")
-                elif _OPEN_SHELL.match(raw):
-                    pass                                   # already in shell
-                else:
-                    await submit("conjure " + raw)         # wake-prefix → the server routes it as a command
-                continue
-            # agent mode
-            if raw.lower() in _QUIT_WORDS:
-                break                                      # quit the client
-            m = _WAKE.match(raw)
-            if m:
-                rest = m.group("rest").strip()
-                if not rest or _OPEN_SHELL.match(rest):
-                    local_shell = True
-                    print("Shell — deterministic commands (help, llms, agents, use <llm>, agent <name>, "
-                          "whoami, dir, delete). 'exit' returns to the agent; ^C quits.")
-                    continue
-                await submit(raw)                          # inline `conjure <cmd>` → forward as-is
-                continue
-            await submit(raw)                              # agent utterance
+            if not ctx.get("in_shell") and raw.lower() in _QUIT_WORDS:
+                break                                      # quit the client (agent mode only)
+            await submit(raw)                              # everything else → the server routes it
     except asyncio.CancelledError:
-        if not interrupted:                                # a real cancellation (not our ^C) → propagate
+        if not interrupted:
             raise
         print()                                            # ^C → clean newline
     finally:
@@ -468,46 +442,40 @@ async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
 
 
 async def _say_client(s: Settings, verbose: bool, user: str, text: str) -> None:
-    """One-shot: submit `text` and print only THIS turn's reply, then exit. Skips the backlog snapshot by
-    waiting for our turn to begin — an utterance echoes our own `user_turn`; a command replies with a
-    `notice` (never in the backlog, since notices aren't stored)."""
-    import httpx
+    """One-shot: connect, submit `text`, print only THIS turn's output, exit. Skips the backlog by waiting
+    for our own turn to begin — an utterance echoes our `user_turn`; a command replies with a `notice`."""
+    import websockets
 
-    from .agent_client import parse_sse_line, post_turn, render_event
+    from .agent_client import render_event, ws_url
 
     text = text.strip()
     started = False
+    sent = False
     try:
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("GET", f"{s.agent_url}/stream") as r:
-                async for line in r.aiter_lines():
-                    ev = parse_sse_line(line)
-                    if ev is None:
-                        continue
-                    t = ev.get("type")
-                    if t == "context":                     # subscribed → submit once
-                        res = await post_turn(s.agent_url, user, text)
-                        if res.get("error"):
-                            print(_agent_unreachable_msg(s, res["error"])); return
-                        if res.get("busy"):
-                            print("[busy — try again in a moment]"); return
-                        continue
-                    if not started:                        # skip replayed backlog until our turn begins
-                        if t == "user_turn" and ev.get("speaker") == user and ev.get("text") == text:
-                            started = True
-                        elif t in ("notice", "busy"):      # command reply / rejection (no backlog notices)
-                            out = render_event(ev, me=user, verbose=verbose)
-                            if out:
-                                print(out)
-                            return
-                        elif t == "turn_done":             # a turn with no textual output → just stop
-                            return
-                        continue
-                    out = render_event(ev, me=user, verbose=verbose)
-                    if out is not None:
-                        print(out)
-                    if t == "turn_done":                   # the definitive end (covers tool-only turns)
+        async with websockets.connect(ws_url(s.agent_url, user)) as ws:
+            async for raw in ws:
+                ev = json.loads(raw)
+                t = ev.get("type")
+                if t == "context" and not sent:            # subscribed → submit once
+                    sent = True
+                    await ws.send(json.dumps({"type": "turn", "text": text}))
+                    continue
+                if not started:                            # skip replayed backlog until our turn begins
+                    if t == "user_turn" and ev.get("speaker") == user and ev.get("text") == text:
+                        started = True
+                    elif t in ("notice", "busy"):          # command reply / rejection → done
+                        out = render_event(ev, me=user, verbose=verbose)
+                        if out:
+                            print(out)
                         return
+                    elif t == "turn_done":                 # a turn with no textual output → just stop
+                        return
+                    continue
+                out = render_event(ev, me=user, verbose=verbose)
+                if out is not None:
+                    print(out)
+                if t == "turn_done":                       # the definitive end (covers tool-only turns)
+                    return
     except Exception as exc:  # noqa: BLE001
         print(_agent_unreachable_msg(s, str(exc)))
 

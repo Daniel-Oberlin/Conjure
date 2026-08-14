@@ -256,10 +256,16 @@ churn, lost on agent-server restart; persistence deferred, §9).
 
 - **Voice/CLI hold no state** (P3). They subscribe to the agent server's stream, submit `POST /turn
   {speaker, text}`, and render `assistant_delta`/`assistant_final`/`busy` + **context-change** events.
-- **Shell mode is client-local**, not the agent server's shared `Shell.in_shell` (which leaked across
-  clients — one client entering command mode dragged the others in, and `exit` couldn't reach it). The
-  client owns the toggle: it handles `open shell` / `exit` itself and forwards real commands to the
-  (stateless) server wake-word-prefixed; a client stale-clears a server left stuck in shell mode on connect.
+- **The client is dumb; the shell is server-side.** Clients talk to the agent server over one
+  per-connection **WebSocket** (`…/ws?user=<name>`), send each line verbatim as `{type:"turn", text}`, and
+  render events. ALL command logic — the wake word, the "open shell"/"exit" phrases, routing, dispatch —
+  lives in the server-side shell; the client never parses. **Shell mode is per-connection** (`Conn.in_shell`
+  on the agent server), so one client entering command mode never drags the others in (verified: daniel
+  enters shell, guest unaffected). The only client-side special-case is that quit words (`exit`/`quit`/^C)
+  end the *program* in agent mode; in shell mode `exit` is forwarded (a server command).
+- **The client formats its own prompt from context DATA.** The server sends `{context: user, agent, llm,
+  in_shell, world, space, owner}` — not a formatted string — so different clients present differently (a
+  voice client renders no prompt). Formatting is presentation (client); routing/state is logic (server).
 - **The prompt reflects live context and access tier**, updated whenever a context event arrives — not just
   lazily on the next line:
   ```
@@ -335,7 +341,15 @@ Ordered so the browser/headset-independent pieces land first and each step is un
     cancel-scope error; turns still run in their own tasks (they only *call* the session) and are
     serialized against a re-bind by `floor_lock`. Verified live: forced builder↔outdoor transitions
     re-bind the Director (43↔10 tools). Suite 367 py + 97 js.
-  - **C3 — convert voice** to POST /turn + SSE→TTS (agent-server-plan Step 4; hardest — audio + timing).
+  - **✅ D (done) — WebSocket transport + server-side shell.** Replaced POST /turn + SSE with one
+    per-connection WebSocket (`…/ws?user=<name>`); the connection is the session. Split the shell so `mode`
+    is a parameter (`as_command(text, in_shell)`, `is_open_shell`/`is_leave_shell`, `dispatch`) — one
+    server-side shell serves many connections, each with its own `Conn.in_shell` (no leak). The client went
+    dumb: sends `{type:"turn", text}`, renders events, formats its own prompt from context DATA (no
+    server-authored string). Barge-in reserved (`{type:"interrupt"}`, wired in C3). Verified live: two
+    clients, per-connection shell mode; `exit` leaves shell; guest permission still enforced.
+  - **C3 — convert voice** to the WS client + SSE→TTS, and add barge-in via `{type:"interrupt"}`
+    (agent-server-plan Step 4; hardest — audio + timing).
   - **C4 — delete the in-process director paths** from cli/voice (agent-server-plan Step 5).
   - **✅ Adjacent (done) — `mcp_server.py` per-turn scope** (agent-server-plan Step 3). Identity was fixed
     at MCP launch, so with a shared agent server every turn acted as the launch user — a real permission
