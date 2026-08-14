@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -301,6 +302,12 @@ def cmd_skybox_from(s: Settings, a) -> None:
 # still passed through as an instruction.
 _QUIT_WORDS = {":q", ":quit", "q", "quit", "exit", "bye", "goodbye"}
 
+# Shell MODE is client-local (each client owns its own; not the agent server's shared state). The client
+# handles the mode toggles itself and forwards real commands wake-word-prefixed to the (stateless) server.
+_WAKE = re.compile(r"^conjure\b[,:]?\s*(?P<rest>.*)$", re.I | re.S)   # mirrors shell._WAKE
+_OPEN_SHELL = re.compile(r"^(?:open\s+)?shell$", re.I)
+_LEAVE_SHELL = re.compile(r"^(?:exit|leave|close|done)$", re.I)
+
 
 def _agent_unreachable_msg(s: Settings, err: str) -> str:
     return (f"Agent server not reachable at {s.agent_url} ({err}).\n"
@@ -395,26 +402,57 @@ async def _repl_client(s: Settings, verbose: bool, user: str) -> None:
     except (NotImplementedError, RuntimeError):            # e.g. non-main thread / unsupported platform
         pass
 
+    async def submit(text: str) -> None:
+        turn_done.clear()                                  # clear BEFORE POST so we wait on THIS turn only
+        res = await post_turn(s.agent_url, user, text)
+        if res.get("error"):
+            print(_agent_unreachable_msg(s, res["error"]))
+        elif res.get("busy"):
+            print("[busy — another turn is in progress; try again]")
+        else:                                              # accepted → wait for the reply (single floor:
+            await _await_turn()                            # the next turn_done is ours)
+
+    # Shell mode is client-local (bug: it used to live on the server's shared Shell, so it leaked across
+    # clients and `exit` couldn't reach it). If the server is stale-stuck in shell mode from an older
+    # client, clear it once so plain utterances route as agent input again.
+    if ctx.get("in_shell"):
+        await submit("exit")
+
+    local_shell = False
     try:
         while True:
+            prompt = "conjure:shell> " if local_shell else prompt_from_context(ctx)
             try:
-                line = await _ainput(prompt_from_context(ctx))
+                line = await _ainput(prompt)
             except EOFError:                               # ^D — clean exit
                 print()
                 break
-            line = line.strip()
-            if line.lower() in _QUIT_WORDS:
-                break
-            if not line:
+            raw = line.strip()
+            if not raw:
                 continue
-            turn_done.clear()                              # clear BEFORE POST so we wait on THIS turn only
-            res = await post_turn(s.agent_url, user, line)
-            if res.get("error"):
-                print(_agent_unreachable_msg(s, res["error"]))
-            elif res.get("busy"):
-                print("[busy — another turn is in progress; try again]")
-            else:                                          # accepted → wait for the reply (single floor:
-                await _await_turn()                        # the next turn_done is ours)
+            if local_shell:                                # every line is a command; toggles handled here
+                if _LEAVE_SHELL.match(raw):
+                    local_shell = False
+                    print("Back to the agent.")
+                elif _OPEN_SHELL.match(raw):
+                    pass                                   # already in shell
+                else:
+                    await submit("conjure " + raw)         # wake-prefix → the server routes it as a command
+                continue
+            # agent mode
+            if raw.lower() in _QUIT_WORDS:
+                break                                      # quit the client
+            m = _WAKE.match(raw)
+            if m:
+                rest = m.group("rest").strip()
+                if not rest or _OPEN_SHELL.match(rest):
+                    local_shell = True
+                    print("Shell — deterministic commands (help, llms, agents, use <llm>, agent <name>, "
+                          "whoami, dir, delete). 'exit' returns to the agent; ^C quits.")
+                    continue
+                await submit(raw)                          # inline `conjure <cmd>` → forward as-is
+                continue
+            await submit(raw)                              # agent utterance
     except asyncio.CancelledError:
         if not interrupted:                                # a real cancellation (not our ^C) → propagate
             raise

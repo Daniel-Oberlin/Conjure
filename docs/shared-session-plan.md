@@ -256,6 +256,10 @@ churn, lost on agent-server restart; persistence deferred, §9).
 
 - **Voice/CLI hold no state** (P3). They subscribe to the agent server's stream, submit `POST /turn
   {speaker, text}`, and render `assistant_delta`/`assistant_final`/`busy` + **context-change** events.
+- **Shell mode is client-local**, not the agent server's shared `Shell.in_shell` (which leaked across
+  clients — one client entering command mode dragged the others in, and `exit` couldn't reach it). The
+  client owns the toggle: it handles `open shell` / `exit` itself and forwards real commands to the
+  (stateless) server wake-word-prefixed; a client stale-clears a server left stuck in shell mode on connect.
 - **The prompt reflects live context and access tier**, updated whenever a context event arrives — not just
   lazily on the next line:
   ```
