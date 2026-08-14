@@ -47,6 +47,8 @@ _READONLY_TOOLS = {"query_world", "query_room", "view_relative", "list_worlds",
 def _tool_denied(name: str) -> Optional[str]:
     """Return a deny message if the agent's capability forbids calling `name`, else None. Enforced in
     `_GatedMCP.call_tool` below — a hard, out-of-LLM-process gate."""
+    if name == "set_caller":
+        return None                                        # control tool (director-only): never gated
     if _ALLOWED_TOOLS is not None and name not in _ALLOWED_TOOLS:
         return f"error: tool {name!r} is not permitted for this agent (out of its tool scope)"
     if _ACCESS == "read" and name not in _READONLY_TOOLS:
@@ -71,7 +73,12 @@ mcp = _GatedMCP("conjure-world")
 
 async def _post_patch(ops: list[dict[str, Any]], origin: str = "director") -> dict:
     async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(f"{BASE}/patch", json={"origin": origin, "ops": ops})
+        resp = await client.post(f"{BASE}/patch", json={"origin": origin, "ops": ops}, headers=_headers())
+        if resp.status_code == 403:                  # owner-only write refused (a non-owner speaker) — RAISE
+            # so every patch tool surfaces the reason (they read patch['rev'] on success, and the
+            # fire-and-forget ones would otherwise report a false success). The message reaches the LLM as
+            # the tool error.
+            raise PermissionError(resp.json().get("error", "forbidden"))
         resp.raise_for_status()
         return resp.json()
 
@@ -81,15 +88,40 @@ def _body(**kw) -> dict[str, Any]:
     return {k: v for k, v in kw.items() if v is not None}
 
 
-_USER = SCOPE.split("/", 1)[0]   # the logged-in user, for the owner-only-writes header (server-enforced)
+_USER = SCOPE.split("/", 1)[0]   # launch identity (fallback until the director sets the per-turn speaker)
+
+# The identity subsequent calls act as, sent on every world-server request (owner gate + asset-ownership
+# scope). Defaults to the launch (user, scope); the director overrides it PER TURN via set_caller() so a
+# shared session attributes each turn to its actual SPEAKER — agent-server-plan Step 3. Turns are
+# serialized (single floor), so a process-global caller is safe against interleaving.
+_CALLER = {"user": _USER, "scope": SCOPE}
 
 
-_HEADERS = {"X-Conjure-User": _USER, "X-Conjure-Scope": SCOPE}   # identity (owner gate) + full asset-ownership scope
+def _headers() -> dict[str, str]:
+    return {"X-Conjure-User": _CALLER["user"], "X-Conjure-Scope": _CALLER["scope"]}
+
+
+def _scope() -> str:
+    """The current caller's catalog scope (`<user>/agents/<agent>`) — the per-turn speaker set by
+    set_caller, else the launch scope. Tools pass this in request BODIES for scoped reads/writes (which
+    worlds are 'yours', asset ownership), the counterpart to the identity HEADERS from `_headers()`."""
+    return _CALLER["scope"]
+
+
+@mcp.tool()
+async def set_caller(user: str, scope: str) -> str:
+    """[control — the director calls this, not the LLM] Set the identity subsequent tool calls act as: the
+    current turn's SPEAKER. Not in any agent's tool allow-list (never offered to the model) and exempt from
+    the capability gate. Lets one shared MCP server attribute each turn to whoever spoke, so the world
+    server enforces ownership/permissions per-speaker (agent-server-plan Step 3)."""
+    _CALLER["user"] = user or _USER
+    _CALLER["scope"] = scope or SCOPE
+    return "ok"
 
 
 async def _post(path: str, body: dict[str, Any], timeout: float = 150.0) -> dict:
     async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(f"{BASE}{path}", json=body, headers=_HEADERS)
+        resp = await client.post(f"{BASE}{path}", json=body, headers=_headers())
         if resp.status_code == 403:                  # owner-only write refused → report it, don't crash
             return {"ok": False, "error": resp.json().get("error", "forbidden")}
         resp.raise_for_status()
@@ -464,7 +496,7 @@ async def search_library(
     'none' (nothing — generate/fetch fresh). Then reuse: a model via place_cached_asset(id), an image
     via place_image(image_id), a skybox via set_skybox(image_id)/set_grounded_skybox(image_id).
     """
-    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind, scope=SCOPE))
+    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind, scope=_scope()))
     if not out.get("ok"):
         return f"Library search failed: {out.get('error', 'unknown error')}."
     cands, tier = out.get("candidates", []), out.get("confidence_tier", "none")
@@ -544,7 +576,7 @@ async def query_assets(sql: str) -> str:
     created_at, last_used, use_count). Use `PRAGMA table_info(assets)` to list columns. Examples:
     "SELECT kind, COUNT(*) FROM assets GROUP BY kind"; "SELECT id, label FROM assets WHERE label IS NULL".
     """
-    out = await _post("/query_assets", _body(sql=sql, scope=SCOPE))
+    out = await _post("/query_assets", _body(sql=sql, scope=_scope()))
     if not out.get("ok"):
         return f"Query failed: {out.get('error', 'unknown error')}."
     rows = out.get("rows", [])
@@ -582,7 +614,7 @@ async def update_asset(
     'make this my default dog', 'relabel that', 'reject it for X', 'make that image private'.
     """
     out = await _post("/update_asset", _body(
-        id=id, scope=SCOPE, label=label, query=query, tags=tags, notes=notes, kind=kind,
+        id=id, scope=_scope(), label=label, query=query, tags=tags, notes=notes, kind=kind,
         rating=rating, favorite=favorite, public=public, default_for=default_for, reject_for=reject_for))
     if not out.get("ok"):
         return f"Couldn't update {id!r}: {out.get('error', 'unknown error')}."
@@ -593,7 +625,7 @@ async def update_asset(
 async def delete_asset(id: str) -> str:
     """Delete an asset from your library catalog (its entry, aliases, and search index). The cached
     file is left on disk. Use to remove a bad or duplicate asset ('delete that duplicate woman model')."""
-    out = await _post("/delete_asset", _body(id=id, scope=SCOPE))
+    out = await _post("/delete_asset", _body(id=id, scope=_scope()))
     if not out.get("ok"):
         return f"Couldn't delete {id!r}: {out.get('error', 'unknown error')}."
     return f"Deleted {id} from the library."
@@ -610,12 +642,12 @@ async def list_worlds() -> str:
     Call this before switching so you match the user's description ('the dining hall', 'daniel's blade
     runner world') to a real world. To switch into someone else's public world, pass its `owner` to
     switch_world. You can enter another user's public world but can't edit it (it's theirs)."""
-    out = await _post("/worlds/list", _body(scope=SCOPE))
+    out = await _post("/worlds/list", _body(scope=_scope()))
     names = out.get("worlds", [])
     active = out.get("active")        # the caller's OWN live world, or None when they're in someone else's
     current = out.get("current")      # the true live (shared) world {owner, name}
     available = out.get("available", [])
-    caller = SCOPE.split("/", 1)[0]
+    caller = _scope().split("/", 1)[0]
     lines = []
     if names:
         lines.append("Your worlds:")
@@ -641,7 +673,7 @@ async def new_world(name: str, public: bool = True, outdoor: bool = False) -> st
     only you can see and enter. Pass outdoor=True for an OUTDOOR/void world — no room geometry, just a
     skybox + placed objects (use for 'a world set outdoors', 'floating in space', 'on a beach'); it's not
     tied to a captured room and holds its orientation on its own."""
-    out = await _post("/worlds/new", _body(name=name, scope=SCOPE, public=public, outdoor=outdoor))
+    out = await _post("/worlds/new", _body(name=name, scope=_scope(), public=public, outdoor=outdoor))
     if not out.get("ok"):
         return f"Couldn't create {name!r}: {out.get('error', 'unknown error')}."
     kind = "outdoor " if outdoor else ""
@@ -654,7 +686,7 @@ async def set_world_visibility(public: bool, name: Optional[str] = None) -> str:
     (list_worlds) and visit them. Set public=False to make one PRIVATE: only you can see or enter it.
     Defaults to your CURRENT world ('make this private'); pass `name` to target another of your worlds.
     You can only change the visibility of worlds you own."""
-    out = await _post("/worlds/visibility", _body(public=public, scope=SCOPE, name=name))
+    out = await _post("/worlds/visibility", _body(public=public, scope=_scope(), name=name))
     if not out.get("ok"):
         return f"Couldn't change visibility: {out.get('error', 'unknown error')}."
     pub = out.get("published_assets") or []
@@ -670,7 +702,7 @@ async def set_space_visibility(public: bool, name: Optional[str] = None) -> str:
     OWN worlds in it. Set public=False to make it PRIVATE — then only you can create NEW worlds in it
     (existing worlds are unaffected; joining/viewing still follows each WORLD's visibility). Defaults to your
     CURRENT space; pass `name` to target another space you own. You can only change spaces you own."""
-    out = await _post("/space/visibility", _body(public=public, scope=SCOPE, name=name))
+    out = await _post("/space/visibility", _body(public=public, scope=_scope(), name=name))
     if not out.get("ok"):
         return f"Couldn't change space visibility: {out.get('error', 'unknown error')}."
     return f"Space '{out.get('space', name or 'current')}' is now {'public' if public else 'private'}."
@@ -682,7 +714,7 @@ async def switch_world(name: str, owner: Optional[str] = None) -> str:
     to a real world from list_worlds; formatting/case doesn't need to be exact. For one of YOUR worlds,
     omit `owner`. To enter ANOTHER user's public world, pass their username as `owner` (e.g.
     owner='daniel'); you can inhabit it but not edit it."""
-    out = await _post("/worlds/switch", _body(name=name, scope=SCOPE, owner=owner))
+    out = await _post("/worlds/switch", _body(name=name, scope=_scope(), owner=owner))
     if not out.get("ok"):
         return f"Couldn't switch to {name!r}: {out.get('error', 'unknown error')}."
     return f"Switched to '{out.get('world', name)}'" + (f" (owned by {owner})." if owner else ".")
@@ -692,7 +724,7 @@ async def switch_world(name: str, owner: Optional[str] = None) -> str:
 async def delete_world(name: str) -> str:
     """Delete one of your worlds permanently. You can't delete the world you're currently in — switch
     away first."""
-    out = await _post("/worlds/delete", _body(name=name, scope=SCOPE))
+    out = await _post("/worlds/delete", _body(name=name, scope=_scope()))
     if not out.get("ok"):
         return f"Couldn't delete {name!r}: {out.get('error', 'unknown error')}."
     return f"Deleted world '{name}'."

@@ -74,6 +74,7 @@ def test_builder_declares_exactly_the_world_tool_surface():
     import conjure
     src = (pathlib.Path(conjure.__file__).parent / "mcp_server.py").read_text()
     server_tools = set(re.findall(r"@mcp\.tool\([^)]*\)\s*\nasync def (\w+)", src))
+    server_tools -= {"set_caller"}   # control tool (director-only, Step 3): never in an agent's allow-list
     builder_tools = set(load_agent("builder").servers[0].tools)
     assert builder_tools == server_tools, {
         "missing_from_builder": server_tools - builder_tools,

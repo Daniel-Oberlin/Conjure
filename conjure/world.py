@@ -241,14 +241,34 @@ class WorldRepository:
         (d / "_active.txt").write_text(world_path(name))
 
     def get_last_agent(self, user: str) -> str | None:
-        """The agent this `user` last used (persisted so a front-end can resume it on next launch)."""
+        """The agent this `user` last used. **Legacy / migration read-through only** — superseded by the
+        global session pointer (`get_session`), from which the live agent is now derived
+        (shared-session-plan §2). Read on boot solely to reconstruct the pointer from a pre-session cache."""
         p = self._scope_dir(user) / "_last_agent.txt"
         return (p.read_text().strip() or None) if p.exists() else None
 
     def set_last_agent(self, user: str, agent: str) -> None:
+        """Legacy writer, retained only to simulate a pre-session cache (migration tests). The runtime no
+        longer writes this — the live agent is derived from `get_session` (shared-session-plan §2)."""
         d = self._scope_dir(user)
         d.mkdir(parents=True, exist_ok=True)
         (d / "_last_agent.txt").write_text(agent)
+
+    def get_session(self) -> tuple[str, str] | None:
+        """The single global **session pointer** — the `(scope, world)` that is live across the whole
+        server (shared-session-plan §2). This is the one fact boot restores; `agent = agent_of(scope)` is
+        derived from it, so `_last_agent.txt` is no longer the source of truth. Distinct from the per-scope
+        `get_active` (which world to resume *for a given agent's scope*). The active SPACE isn't stored here
+        — it's derived from the live world's `environment.space`. Returns None when unset (fresh cache)."""
+        p = self.root / "_session.txt"
+        if not p.exists():
+            return None
+        scope, _, name = p.read_text().strip().partition("\t")
+        return (scope, name) if scope and name else None
+
+    def set_session(self, scope: str, name: str) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        (self.root / "_session.txt").write_text(f"{scope}\t{world_path(name)}")
 
     # -- admin (shell dir/delete; docs/agents.md §2) ---------------------------------------------
     def list_users(self) -> list[str]:

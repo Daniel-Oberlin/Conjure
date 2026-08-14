@@ -1,25 +1,24 @@
-"""Phase 2 — the voice loop (PipeCat).
+"""Phase 2 — the voice loop (PipeCat), a thin client of the agent server (shared-session Step C3).
 
-Wires a real-time voice agent to the Conjure world:
+Wires a real-time voice front-end to the shared agent:
 
-    mic → Silero VAD → Whisper STT → shell → agent (conjure.shell/director) → Kokoro TTS → speaker
+    mic → Silero VAD → Whisper STT → WebSocket → agent server → WebSocket → Kokoro TTS → speaker
 
 PipeCat here is only *ears and mouth*: STT, TTS, VAD, end-of-turn detection, and mute-while-speaking
-echo mitigation. Spoken turns go through the deterministic `conjure.shell.Shell` (commands like
-"conjure open shell" run there, never reaching an LLM) which forwards the rest to the active agent —
-the shared `conjure.director.Director` (today's `builder`), the SAME agent the CLI drives. It owns the
-LLM roster (Claude/Gemini/…, switchable mid-conversation), the shared transcript, the world-editing
-MCP tools, and the live room injected into its prompt. So spoken requests turn into world patches that
-broadcast live to every connected headset, and adding/switching LLMs or agents needs no change here.
+echo mitigation. A completed spoken turn is sent to the **agent server** over one WebSocket (as the
+`--user`), which owns the shell (command routing), the shared Director/transcript, the LLM roster, and
+the world-editing MCP tools. The server's replies stream back as events and are spoken as TTS — so
+voice shares one conversation with the CLI (and any other client). No LLM/Director/keys live here.
 
 Audio runs on the host (decision #5's shared-room-device default) — no audio is piped through Quest.
 
-Prerequisites (see docs/setup.md): `pip install -e ".[voice]"`, system libs (portaudio/espeak-ng),
-and ANTHROPIC_API_KEY and/or GOOGLE_API_KEY in `.env`. Run `python -m conjure.doctor` to check.
+Prerequisites (see docs/setup.md): `pip install -e ".[voice]"`, system libs (portaudio/espeak-ng).
+Keys live with the agent server, not here.
 
-Usage (two terminals):
-    1) python -m conjure          # the world server (must be running)
-    2) python -m conjure.voice    # this voice loop  (or the `conjure-voice` script)
+Usage (three terminals):
+    1) python -m conjure                # the world server
+    2) python -m conjure.agent_server   # the agent server (holds the director + keys)
+    3) python -m conjure.voice          # this voice loop  (or the `conjure-voice` script)
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ import urllib.request
 from typing import Callable, Optional
 
 from .config import DEFAULT_USER, Settings, get_settings
-from .shell import Shell
 
 # PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
 PIPELINE_IDLE_TIMEOUT_SECS = 3600  # 1 hour
@@ -65,9 +63,9 @@ def _make_wake_gate(wake_word: Optional[str]) -> Callable[[str], Optional[str]]:
     return gate
 
 
-def _world_reachable(url: str) -> bool:
+def _agent_reachable(url: str) -> bool:
     try:
-        with urllib.request.urlopen(f"{url}/world", timeout=2.0) as resp:
+        with urllib.request.urlopen(f"{url}/health", timeout=2.0) as resp:
             resp.read(1)
         return True
     except Exception:
@@ -98,34 +96,37 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     from pipecat.transcriptions.language import Language
     from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
-    # Our "brain" as a PipeCat processor: it passes audio/text frames through untouched and, when a
-    # user turn completes, runs the shared director and speaks its reply via TTSSpeakFrame (a
-    # self-contained utterance the TTS service synthesizes immediately — the early acknowledgement
-    # and the final confirmation each become one).
-    class DirectorProcessor(FrameProcessor):
-        def __init__(self, shell: Shell):
-            super().__init__()
-            self._shell = shell      # the shell (deterministic commands) wrapping the agent
+    import json
 
+    import websockets
+
+    from .agent_client import ws_url
+
+    holder: dict = {"ws": None}          # the current agent-server socket (None while (re)connecting)
+    stop = asyncio.Event()
+
+    # The voice client is DUMB (shared-session Step C3): it sends completed user turns to the agent server
+    # over a WebSocket and speaks the server's replies. No Director/shell/LLM here — pipecat is just ears +
+    # mouth. `bridge` passes frames through and provides speak()/submit(); a listener task turns server
+    # events into speech. The early-ack and the final each arrive as their own event → their own spoken
+    # utterance, so the streaming cadence is preserved.
+    class VoiceBridge(FrameProcessor):
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)
             await self.push_frame(frame, direction)
 
-        async def run_turn(self, text: str) -> None:
-            async def on_text(reply: str, *, final: bool, speaker: str) -> None:
-                await self.push_frame(TTSSpeakFrame(text=reply))
+        async def speak(self, text: str) -> None:
+            await self.push_frame(TTSSpeakFrame(text=text))
+
+        async def submit(self, text: str) -> None:
+            ws = holder["ws"]
+            if ws is None:
+                await self.speak("The agent server isn't connected yet.")
+                return
             try:
-                await self._shell.feed(text, on_text=on_text)
-            except Exception as exc:  # never let one bad turn tear down the pipeline
-                print(f"director error: {exc}", file=sys.stderr)
-                await self.push_frame(
-                    TTSSpeakFrame(
-                        text=(
-                            "There was an error with the Director. "
-                            "Please try again or switch to a different LLM."
-                        )
-                    )
-                )
+                await ws.send(json.dumps({"type": "turn", "text": text}))
+            except Exception as exc:  # noqa: BLE001 — a send failure shouldn't tear down the pipeline
+                print(f"voice send error: {exc}", file=sys.stderr)
 
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
@@ -149,78 +150,90 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     stt = WhisperSTTService(settings=WhisperSTTService.Settings(model="base", language=Language.EN))
     tts = KokoroTTSService(settings=KokoroTTSService.Settings(voice="af_heart"))
 
-    # The shell owns the agent's lifecycle (so `conjure agent <name>` can switch agents); the agent it
-    # drives owns the LLM roster + world-editing MCP tools (spawns conjure.mcp_server over stdio).
-    # PipeCat no longer talks to any LLM.
-    async with Shell.session(settings, agent=agent, user=user) as shell:
-        director = shell.director
-        director_proc = DirectorProcessor(shell)
+    bridge = VoiceBridge()
 
-        # We keep the LLM context aggregator ONLY for its end-of-turn detection and mute-while-
-        # speaking — not for messages (the director owns the transcript). Its `on_user_turn_stopped`
-        # event hands us the full utterance, which we run through the director.
-        aggregator = LLMContextAggregatorPair(
-            LLMContext(messages=[]),
-            user_params=LLMUserAggregatorParams(
-                # End the user's turn after a short silence (instead of pipecat 1.3's default
-                # Smart-Turn v3 model, which never completed the turn so nothing happened). Simple
-                # + predictable for a command interface.
-                user_turn_strategies=UserTurnStrategies(
-                    stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.8)],
-                ),
-                # Mute the mic while the bot speaks, so its own TTS leaking back through the room
-                # speaker can't disrupt its turn (the "a red cu..." cut-off). Removes the echo
-                # feedback loop without needing a headset.
-                user_mute_strategies=[AlwaysUserMuteStrategy()],
+    # Listener: turn agent-server events into speech. Reconnects with backoff. `backlog=False` so a fresh
+    # connection doesn't get the whole transcript spoken at us — just the current context (which voice
+    # ignores; it has no prompt). We speak the shared conversation's replies (assistant text + notices).
+    async def listen() -> None:
+        url = ws_url(settings.agent_url, user, backlog=False)
+        while not stop.is_set():
+            try:
+                async with websockets.connect(url) as ws:
+                    holder["ws"] = ws
+                    async for raw in ws:
+                        ev = json.loads(raw)
+                        t = ev.get("type")
+                        if t in ("assistant_delta", "assistant_final", "notice"):
+                            txt = ev.get("text")
+                            if txt and txt.strip():
+                                await bridge.speak(txt)
+                        elif t == "busy":
+                            await bridge.speak("One moment — I'm still working on the last request.")
+                        # context / user_turn / tool_call / turn_done → not spoken
+            except Exception:  # noqa: BLE001 — agent server down/restarting: back off and reconnect
+                holder["ws"] = None
+                if stop.is_set():
+                    return
+                await asyncio.sleep(1.0)
+
+    # The LLM context aggregator is kept ONLY for end-of-turn detection + mute-while-speaking — not for
+    # messages (the agent server owns the transcript). `on_user_turn_stopped` hands us the full utterance,
+    # which we send to the agent server.
+    aggregator = LLMContextAggregatorPair(
+        LLMContext(messages=[]),
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.8)],
             ),
-        )
+            user_mute_strategies=[AlwaysUserMuteStrategy()],
+        ),
+    )
 
-        gate = _make_wake_gate(wake_word)   # wake-word mode: only phrases after the wake word reach the LLM
-        @aggregator.user().event_handler("on_user_turn_stopped")
-        async def _on_user_turn(aggr, strategy, message):
-            text = (getattr(message, "content", "") or "").strip()
-            if not text:
-                return
-            cmd = gate(text)
-            if cmd:
-                await director_proc.run_turn(cmd)
-            elif wake_word:
-                print(f"[conjure] (idle — say '{wake_word}' to talk)")
+    gate = _make_wake_gate(wake_word)   # mic-activation gate: only speech after the wake word is submitted
+    @aggregator.user().event_handler("on_user_turn_stopped")
+    async def _on_user_turn(aggr, strategy, message):
+        text = (getattr(message, "content", "") or "").strip()
+        if not text:
+            return
+        cmd = gate(text)
+        if cmd:
+            await bridge.submit(cmd)        # the server routes it (agent utterance vs command)
+        elif wake_word:
+            print(f"[conjure] (idle — say '{wake_word}' to talk)")
 
-        pipeline = Pipeline(
-            [
-                transport.input(),       # mic
-                vad,                     # VAD → emits user-speaking frames (1.3.x: a processor)
-                stt,                     # speech → text
-                aggregator.user(),       # detect end-of-turn + mute while speaking
-                director_proc,           # brain anchor: speaks the director's replies as TTS frames
-                tts,                     # reply text → speech
-                transport.output(),      # speaker
-                aggregator.assistant(),  # (context unused, kept so the pair is wired normally)
-            ]
-        )
+    pipeline = Pipeline(
+        [
+            transport.input(),       # mic
+            vad,                     # VAD → emits user-speaking frames (1.3.x: a processor)
+            stt,                     # speech → text
+            aggregator.user(),       # detect end-of-turn + mute while speaking
+            bridge,                  # sends turns to the agent server; speaks its replies as TTS frames
+            tts,                     # reply text → speech
+            transport.output(),      # speaker
+            aggregator.assistant(),  # (context unused, kept so the pair is wired normally)
+        ]
+    )
 
-        # Interruptions OFF + mute-while-speaking (above): on an open room mic the bot's own TTS
-        # would otherwise leak back, get transcribed, and feed back as user input. Use earbuds for
-        # clean room use today; proper room-speaker support (echo cancellation / push-to-talk) is
-        # a roadmap audio-polish item.
-        # Idle timeout: these are PipelineTask kwargs, NOT PipelineParams fields. PipelineParams silently
-        # drops unknown kwargs, so the old idle_timeout_secs (and allow_interruptions) there did nothing —
-        # the pipeline kept pipecat's 300s default and tore down after ~5 min idle. Set a long timeout AND
-        # don't cancel on idle, so a quiet session is never killed.
-        task = PipelineTask(
-            pipeline,
-            idle_timeout_secs=PIPELINE_IDLE_TIMEOUT_SECS,
-            cancel_on_idle_timeout=False,
-            cancel_runner_on_idle_timeout=False,
-        )
-        runner = PipelineRunner(handle_sigint=True)
+    # Interruptions OFF + mute-while-speaking (above): on an open room mic the bot's own TTS would leak
+    # back, get transcribed, and feed back. Use earbuds today; room-speaker support (echo cancellation /
+    # barge-in via the WS `interrupt` message) is a follow-up.
+    task = PipelineTask(
+        pipeline,
+        idle_timeout_secs=PIPELINE_IDLE_TIMEOUT_SECS,
+        cancel_on_idle_timeout=False,
+        cancel_runner_on_idle_timeout=False,
+    )
+    runner = PipelineRunner(handle_sigint=True)
 
-        roster = ", ".join(director.roster) or "none"
-        print(f"🎙️  Conjure voice is listening (agent={director.agent.name}; active={director.active}; roster: "
-              f"{roster}). Speak to build the world; say 'conjure open shell' then 'use <name>' to "
-              f"switch LLMs or 'agent <name>' to switch agents. Ctrl+C to stop.")
+    listen_task = asyncio.create_task(listen())
+    print(f"🎙️  Conjure voice is listening (agent server {settings.agent_url}). Speak to build the world; "
+          f"say 'conjure open shell' then 'use <name>' / 'agent <name>' to switch. Ctrl+C to stop.")
+    try:
         await runner.run(task)
+    finally:
+        stop.set()
+        listen_task.cancel()
 
 
 def main() -> int:
@@ -237,13 +250,11 @@ def main() -> int:
 
     settings = get_settings()
 
-    if not (settings.anthropic_api_key or settings.google_api_key):
-        print("No director LLM keys set. Add ANTHROPIC_API_KEY and/or GOOGLE_API_KEY to .env, then "
-              "run `python -m conjure.doctor`.")
-        return 1
-    if not _world_reachable(settings.world_url):
-        print(f"World server not reachable at {settings.world_url}.\n"
-              f"Start it first in another terminal:  python -m conjure")
+    # Voice is a thin client of the agent server now — it holds no LLM keys itself (the agent server does).
+    if not _agent_reachable(settings.agent_url):
+        print(f"Agent server not reachable at {settings.agent_url}.\n"
+              f"Start it first in another terminal:  python -m conjure.agent_server\n"
+              f"(which itself needs the world server:  python -m conjure)")
         return 1
 
     if args.wake_word:

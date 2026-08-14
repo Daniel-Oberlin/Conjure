@@ -138,17 +138,25 @@ def _migrate_world_dirs(root: Path) -> None:
 
 
 def _boot_world() -> tuple[str, str, WorldStore]:
-    """Resume the world the user was last in — the last-used AGENT's scope (persisted by
-    `/scope/activate`), else the builder default — and that scope's last-active world, else create its
-    `default`. Booting the last-used agent's scope keeps the viewer in sync with a front-end that
-    resumes the same agent after a server restart (otherwise the server always came back on builder).
-    One-time courtesy: adopt a step-1 single-world file (.cache/world.json) as `default`."""
-    scope = scope_for(DEFAULT_USER, worlds.get_last_agent(DEFAULT_USER) or "builder")
-    active = worlds.get_active(scope)
+    """Restore the single global **session pointer** — the `(scope, world)` that was live across the whole
+    server (shared-session-plan §2) — so a restart resumes exactly where everyone was. `agent = agent_of
+    (scope)` is derived, so this subsumes the old "resume the last-used agent's scope" logic.
+
+    Migration read-through: a pre-session cache has no pointer, so reconstruct it from the old facts (the
+    last-used agent's scope + that scope's active world) and write the pointer going forward. Falls back to
+    the builder default when there's nothing. One-time courtesy: adopt a step-1 single-world file
+    (.cache/world.json) as `default`."""
+    session = worlds.get_session()
+    if session is not None:
+        scope, active = session
+    else:                                             # migration: reconstruct the pointer from old facts
+        scope = scope_for(DEFAULT_USER, worlds.get_last_agent(DEFAULT_USER) or "builder")
+        active = worlds.get_active(scope)
     if active and worlds.exists(scope, active):
         try:
             s = worlds.load(scope, active)
             _reset_room_authority(s)
+            worlds.set_session(scope, active)         # (re)assert the pointer — writes it on first migration
             return scope, active, s
         except Exception as exc:  # noqa: BLE001
             print(f"[conjure] active world {active!r} unreadable ({exc}); creating a fresh default")
@@ -164,6 +172,7 @@ def _boot_world() -> tuple[str, str, WorldStore]:
     _reset_room_authority(s)
     worlds.save(scope, "default", s)
     worlds.set_active(scope, "default")
+    worlds.set_session(scope, "default")
     return scope, "default", s
 
 
@@ -953,7 +962,8 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
                                               # (activate is read-only now; creating owns persistence — step 0)
     active_scope, active_world = scope, name
     active_space_owner, active_space, store = _activate(scope, name, raw)   # resolve space (owner+name) + compose
-    worlds.set_active(scope, name)
+    worlds.set_active(scope, name)                # per-scope memory: which world to resume for this agent
+    worlds.set_session(scope, name)               # global pointer: what's live across the whole server
     _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} (space {active_space_owner}/{active_space})")
     await _broadcast(_snapshot_msg())
     return {"ok": True, "world": name, "rev": store.doc["rev"]}
@@ -964,7 +974,8 @@ async def _activate_scope(scope: str) -> dict:
     the scope has none — the `_boot_world` logic generalized to any scope. A no-op when `scope` is
     already active. Used on agent switch so the live world belongs to the NEW agent's scope, not the
     previous agent's (a fresh world with no captured space resolves to VOID — skybox/objects only)."""
-    worlds.set_last_agent(scope.split("/", 1)[0], agent_of(scope))   # remember this user's last-used agent
+    # The live agent is derived from the global session pointer (set by _switch_to below) — no separate
+    # last-agent to record here (shared-session-plan §2).
     if scope == active_scope:
         return {"ok": True, "world": active_world, "scope": scope, "unchanged": True}
     active = worlds.get_active(scope)
@@ -986,9 +997,20 @@ async def scope_activate(req: ActivateScopeRequest) -> dict:
 
 @app.get("/agent/last")
 async def agent_last(user: str = DEFAULT_USER) -> dict:
-    """The agent `user` last used (recorded by /scope/activate), so a front-end launched without an
-    explicit --agent resumes it. Defaults to `builder` when the user has no record yet."""
-    return {"ok": True, "agent": worlds.get_last_agent(user) or "builder"}
+    """The **live** agent, so a front-end launched without an explicit --agent resumes it. There's one
+    shared session (shared-session-plan P1), so the answer is global: `agent = agent_of(active_scope)`,
+    derived from the session pointer — not a per-user record. The `user` param is vestigial (kept for
+    back-compat)."""
+    return {"ok": True, "agent": agent_of(active_scope)}
+
+
+@app.get("/state")
+async def live_state() -> dict:
+    """The canonical **"what's live"** snapshot for the single shared session (shared-session-plan §2) —
+    `{scope, agent, world, owner, space}`. The reconciliation seam a client / the agent server reads on
+    connect (and mirrored into every `/ws` snapshot's `state`). Identifiers only; `GET /world` returns the
+    full doc. Subsumes `GET /agent/last` (its `agent` is `state.agent`)."""
+    return {"ok": True, **_live_state()}
 
 
 class WorldRef(BaseModel):
@@ -3043,10 +3065,29 @@ def _head_from_anchor(anchor: dict | None) -> dict | None:
     return out
 
 
+def _live_state() -> dict:
+    """The canonical **"what's live"** identifiers for the single shared session (shared-session-plan §2):
+    the active world + its `scope`/`agent`/`owner`, and the `space` it composes against (the fully-qualified
+    `<owner>/<name>` ref, or VOID for an outdoor/space-less world). Identifiers only — no world doc — so it's
+    the cheap reconciliation seam every peripheral reads: the headset renders the world, the agent server
+    binds its brain to `agent` (Step C), any client refreshes its context/prompt. `GET /world` still returns
+    the full doc."""
+    return {
+        "scope": active_scope,
+        "agent": agent_of(active_scope),
+        "world": active_world,
+        "owner": active_scope.split("/", 1)[0],
+        "space": VOID if active_space == VOID else _space_ref(active_space_owner, active_space),
+    }
+
+
 def _snapshot_msg() -> dict:
-    """The snapshot a client receives — the world plus the active world's OWNER, so a desktop guest
-    knows whom to spawn next to (Phase 4 §6)."""
-    return {"type": "snapshot", "world": store.doc, "owner": active_scope.split("/", 1)[0]}
+    """The snapshot a client receives — the full world doc for rendering, the active world's OWNER (so a
+    desktop guest knows whom to spawn next to, Phase 4 §6), and the canonical live-state identifiers under
+    `state` so every subscriber reconciles from one broadcast (shared-session-plan §2). `world`/`owner` stay
+    top-level for the existing renderer; `state.world` is the world *name*, `state` is additive."""
+    return {"type": "snapshot", "world": store.doc, "owner": active_scope.split("/", 1)[0],
+            "state": _live_state()}
 
 
 async def _broadcast(message: dict, *, skip: "WebSocket | None" = None) -> None:

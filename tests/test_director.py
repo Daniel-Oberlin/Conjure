@@ -67,6 +67,66 @@ async def test_handle_records_user_assistant_transcript():
     ]
 
 
+async def test_handle_tags_user_turn_with_speaker():
+    # Per-turn attribution: the user turn records WHO spoke; the assistant turn stays unattributed
+    # (no LLM identity ever lands in the transcript).
+    d = _director()
+    await d.handle("put a tree here", speaker="alice")
+    user, assistant = d.transcript
+    assert (user.speaker, user.by) == ("user", "alice")
+    assert (assistant.speaker, assistant.by) == ("assistant", "")
+
+
+async def test_handle_defaults_speaker_to_director_user():
+    # A lone client that owns the whole conversation needn't pass a speaker — it falls back to
+    # self.user, so existing single-user callers keep attributing to their --user.
+    d = _director()
+    d.user = "daniel"
+    await d.handle("add a bench")
+    assert d.transcript[0].by == "daniel"
+
+
+async def test_user_injection_resolves_to_the_current_speaker():
+    # {user} is filled per turn from whoever is speaking — two speakers in one conversation each see
+    # their own name in the system prompt.
+    llm = FakeLLM("Claude")
+    d = Director(settings=None, session=FakeSession(), roster={"Claude": llm}, active="Claude",
+                 tools=[], prompt="You act for '{user}'.", user="daniel")
+    await d.handle("hi", speaker="alice")
+    await d.handle("hey", speaker="bob")
+    assert llm.seen[0]["system"] == "You act for 'alice'."
+    assert llm.seen[1]["system"] == "You act for 'bob'."
+
+
+async def test_second_turn_is_rejected_while_one_is_in_flight():
+    # Single floor (D4): a turn submitted mid-turn is rejected with Busy, never interleaved into the
+    # one shared transcript. The floor clears when the in-flight turn finishes.
+    import asyncio
+
+    from conjure.director import Busy
+
+    gate = asyncio.Event()
+
+    class BlockingLLM:
+        name = "Claude"
+
+        async def run_turn(self, *, system, history, user_text, tools, execute_tool, emit):
+            await gate.wait()
+            await emit("done", final=True)
+            return "done"
+
+    d = _director(active="Claude", Claude=BlockingLLM())
+    first = asyncio.create_task(d.handle("one", speaker="alice"))
+    await asyncio.sleep(0.02)                              # let the first turn take the floor
+    with pytest.raises(Busy):
+        await d.handle("two", speaker="bob")               # rejected — floor is taken
+    gate.set()
+    assert await first == "done"
+    assert [t.by for t in d.transcript if t.speaker == "user"] == ["alice"]  # bob's turn never recorded
+    await d.handle("three", speaker="carol")               # floor cleared → a new turn runs
+    assert d.transcript[-2].by == "carol"
+
+
 async def test_handle_always_runs_the_active_llm():
     # No inline routing: even an utterance that names another LLM goes to the active one verbatim.
     d = _director(active="Claude")
@@ -209,7 +269,7 @@ async def test_system_injects_only_referenced_placeholders():
     # _system() carries NO agent-specific text of its own; it fills the injection placeholders the
     # agent's prompt references ({user} here) and leaves the rest of the prompt untouched.
     d = _director(active="Claude")
-    d._prompt, d.user = "You act for '{user}'. Build stuff.", "alice"
+    d._prompt, d._speaker = "You act for '{user}'. Build stuff.", "alice"   # {user} = the current speaker
     assert await d._system() == "You act for 'alice'. Build stuff."
 
 
@@ -267,6 +327,23 @@ def test_scope_tools_is_opt_in_only_and_fails_loud_on_typo():
         == {"set_skybox", "style_surface"}
     with pytest.raises(RuntimeError, match="unknown tool"):
         _scope_tools(live, ["set_skybox", "nope"])                                          # typo → loud
+
+
+async def test_identity_aware_director_tells_mcp_the_per_turn_speaker():
+    # Step 3: a connect-built (identity-aware) director sends set_caller(speaker, scope) before the turn's
+    # tools, so they act as WHO spoke — not the MCP server's fixed launch identity.
+    d = _director(active="Claude")
+    d._identity_aware = True
+    d.agent = type("A", (), {"name": "builder", "context": []})()
+    await d.handle("put a tree", speaker="guest")
+    assert ("set_caller", {"user": "guest", "scope": "guest/agents/builder"}) in d._session.calls
+
+
+async def test_hand_built_director_does_not_set_caller():
+    # Hand-built/test directors (no real MCP) skip set_caller, so existing call-sequence tests stay clean.
+    d = _director(active="Claude")                          # _identity_aware defaults False
+    await d.handle("put a tree", speaker="guest")
+    assert all(name != "set_caller" for name, _ in d._session.calls)
 
 
 async def test_execute_tool_blocks_out_of_agent_scope():

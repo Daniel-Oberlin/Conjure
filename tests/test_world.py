@@ -147,6 +147,19 @@ def test_repository_active_pointer_roundtrips_and_clears_on_delete(tmp_path):
     assert repo.list("private/builder") == []                 # _active.txt not listed as a world
 
 
+def test_repository_session_pointer_roundtrips_globally(tmp_path):
+    # The single global session pointer (scope, world) — what's live across the whole server, distinct
+    # from the per-scope _active.txt. It carries the scope (hence the agent, derived) and the world name.
+    from conjure.world import WorldRepository
+    repo = WorldRepository(tmp_path)
+    assert repo.get_session() is None                          # unset on a fresh cache
+    repo.set_session("daniel/agents/outdoor", "beach")
+    assert repo.get_session() == ("daniel/agents/outdoor", "beach")
+    repo.set_session("daniel/agents/builder", "Castle Quest/Dining Hall")
+    assert repo.get_session() == ("daniel/agents/builder", "castle-quest/dining-hall")  # world normalized
+    assert repo.list_users() == []                             # _session.txt is a root file, not a user
+
+
 def test_repository_recall_is_normalized(tmp_path):
     from conjure.world import WorldRepository
     repo = WorldRepository(tmp_path)

@@ -19,8 +19,8 @@ class FakeDirector:
         self.user = "daniel"
         self.handled = []
 
-    async def handle(self, text, *, on_text=None, on_tool=None):
-        self.handled.append(text)
+    async def handle(self, text, *, speaker=None, on_text=None, on_tool=None):
+        self.handled.append((speaker, text))
         if on_text:
             await on_text(f"did «{text}»", final=True, speaker=self.active)
 
@@ -35,19 +35,38 @@ def _shell():
     return Shell(d), d, out, on_text
 
 
+# --------------------------------------------------------------------------- routing engine (mode as a param)
+
+def test_as_command_routes_by_the_passed_mode_not_instance_state():
+    # The shell (server-side command engine) takes in_shell as a PARAMETER, so one instance serves many
+    # connections each with their own mode (agent server, D). No wake word / phrases live in the client.
+    sh, d, out, on_text = _shell()
+    # agent mode: only a `conjure`-led line is a command
+    assert sh.as_command("make a tree", False) is None
+    assert sh.as_command("conjure use gemini", False) == "use gemini"
+    assert sh.as_command("conjure", False) == "open shell"        # bare wake → open shell
+    # shell mode: every line is a command
+    assert sh.as_command("use gemini", True) == "use gemini"
+    assert sh.as_command("make a tree", True) == "make a tree"
+    # the two mode toggles are recognised server-side
+    assert sh.is_open_shell("open shell") and sh.is_open_shell("shell")
+    assert sh.is_leave_shell("exit") and sh.is_leave_shell("done")
+    assert not sh.is_leave_shell("exit the room")
+
+
 # --------------------------------------------------------------------------- agent mode (default)
 
 async def test_plain_text_in_agent_mode_is_forwarded():
     sh, d, out, on_text = _shell()
     await sh.feed("put an oak tree in front of me", on_text=on_text)
-    assert d.handled == ["put an oak tree in front of me"]   # went to the agent, not the shell
+    assert d.handled == [("daniel", "put an oak tree in front of me")]   # went to the agent, not the shell
 
 
 async def test_agent_content_mentioning_shell_is_not_a_command():
     # The whole reason for the wake word: "shell" as content must reach the agent.
     sh, d, out, on_text = _shell()
     await sh.feed("put a shell on the table", on_text=on_text)
-    assert d.handled == ["put a shell on the table"] and sh.in_shell is False
+    assert d.handled == [("daniel", "put a shell on the table")] and sh.in_shell is False
 
 
 async def test_conjure_open_shell_enters_shell_mode():
@@ -149,7 +168,7 @@ async def test_dir_narrows_by_path():
 async def test_dir_is_not_a_command_in_agent_mode():
     sh, d, out, on_text = _shell()                           # not in shell → needs the wake word
     await sh.feed("dir", on_text=on_text)
-    assert d.handled == ["dir"]                              # forwarded to the agent, not run as a command
+    assert d.handled == [("daniel", "dir")]                              # forwarded to the agent, not run as a command
 
 
 async def test_delete_asks_before_acting_then_confirms():
@@ -220,6 +239,28 @@ async def test_agent_switch_opens_the_named_agent(monkeypatch):
     await sh.feed("conjure agent outdoor", on_text=on_text)
     assert sh._agent_name() == "outdoor"                     # the shell now drives the new agent
     assert any("Switched to agent outdoor" in t for _, t in out)
+
+
+async def test_agent_switch_uses_the_host_hook_when_set(monkeypatch):
+    # In the agent server the switch is DELEGATED (routed via the world server, then its follower re-binds
+    # in the owning task) — never the in-process _open_agent teardown, which from a spawned turn task is a
+    # cross-task MCP aclose ("exit a cancel scope in a different task").
+    from contextlib import AsyncExitStack
+    sh, d, out, on_text = _shell()                           # current agent = builder
+    sh._stack = AsyncExitStack()
+    opened = []
+    monkeypatch.setattr(sh, "_open_agent", lambda *a, **k: opened.append(a))
+    hooked = []
+
+    async def hook(name, cb):
+        hooked.append(name)
+        await cb(f"Switching to agent {name}…", final=True, speaker="Claude")
+
+    sh._agent_switch_hook = hook
+    await sh.feed("conjure agent outdoor", on_text=on_text)
+    assert hooked == ["outdoor"]                             # delegated to the host
+    assert opened == []                                      # in-process teardown NOT used (no cross-task aclose)
+    assert any("Switching to agent outdoor" in t for _, t in out)
 
 
 async def test_agent_switch_already_on_it_is_a_noop(monkeypatch):

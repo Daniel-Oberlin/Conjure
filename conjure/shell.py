@@ -27,6 +27,9 @@ OnTool = Callable[..., Awaitable[None]]
 _WAKE = re.compile(r"^conjure\b[,:]?\s*(?P<rest>.*)$", re.I | re.S)
 # Explicit LLM switch in the shell: "talk to / switch to / use <name>".
 _SWITCH = re.compile(r"^(?:talk\s+to|switch\s+to|use|become|be)\s+(?P<name>[a-z0-9]+)$", re.I)
+# The two shell-MODE toggles (open/leave). Recognised server-side (the client never knows these phrases).
+_OPEN_SHELL = re.compile(r"^(?:open\s+)?shell$", re.I)
+_LEAVE_SHELL = re.compile(r"^(?:exit|leave|close|done)$", re.I)
 
 
 def _match_name(token: str, roster) -> Optional[str]:
@@ -50,12 +53,18 @@ class Shell:
         self._stack: Optional[AsyncExitStack] = None
         self.in_shell = False
         self._pending_delete: Optional[str] = None            # armed by `delete`, fired by a `y` confirmation
+        # Host override for `agent <name>`: when set, the switch is delegated instead of running the
+        # in-process `_open_agent` teardown. The agent server sets this so a client switch routes through
+        # the world server (assert scope → its /ws follower re-binds the Director in the OWNING task) —
+        # required because a command runs in the connection's receive-loop task, and a cross-task MCP
+        # `aclose()` raises "exit a cancel scope in a different task". `async (agent_name, on_text) -> None`.
+        self._agent_switch_hook = None
         # (matcher, handler, help). First match wins; an LLM switch and the unknown-command fallback
         # are tried after, in _dispatch. The handler is called as handler(on_text, match). Add a row
         # to add a command.
         self._table = [
-            (re.compile(r"^(?:open\s+)?shell$", re.I), self._open, "open shell — enter command mode"),
-            (re.compile(r"^(?:exit|leave|close|done)$", re.I), self._exit, "exit — leave the shell, back to the agent"),
+            (_OPEN_SHELL, self._open, "open shell — enter command mode"),
+            (_LEAVE_SHELL, self._exit, "exit — leave the shell, back to the agent"),
             (re.compile(r"^(?:help|\?|commands)$", re.I), self._help, "help — list commands"),
             (re.compile(r"^(?:whoami|status|where)$", re.I), self._status, "whoami — the active LLM + agent"),
             (re.compile(r"^(?:llms|models)$", re.I), self._llms, "llms — list available LLMs"),
@@ -105,13 +114,17 @@ class Shell:
     def director(self) -> Director:
         return self._director
 
-    async def _open_agent(self, agent: str) -> None:
+    async def _open_agent(self, agent: str, *, activate_world: bool = True) -> None:
         """Switch the active agent, tearing down the current one's MCP server and launching the new one.
         Order matters: the MCP client uses anyio task groups whose cancel scopes must unwind **LIFO in
         the same task**, so we CLOSE the current connection *before* opening the next (opening on top and
         closing underneath raises "exit cancel scope that isn't the current task's current"). If the new
         agent fails to start we restore the previous one so the shell isn't stranded. New agent = its own
-        fresh transcript."""
+        fresh transcript.
+
+        `activate_world=True` (a user-driven switch) also asserts a world in the new scope on the world
+        server. The agent server sets it **False** when *following* a world-server-driven agent change
+        (shared-session C2): the world is already live there, so re-asserting would be a redundant loop."""
         prev_agent = self._agent_name() if self._director else None
         keep_active = self._director.active if self._director else None
 
@@ -132,7 +145,8 @@ class Shell:
             if prev_agent is not None:                        # restore so the shell keeps working
                 await _open(prev_agent)
             raise
-        await self._activate_world(agent)                     # make a world in the new agent's scope live
+        if activate_world:
+            await self._activate_world(agent)                 # make a world in the new agent's scope live
 
     async def _activate_world(self, agent: str) -> None:
         """Ask the world server to make a world in the new agent's scope live (resume its last-active
@@ -158,24 +172,43 @@ class Shell:
             return "conjure:shell> "
         return f"conjure:{self._director.user}.{self._agent_name()}.{self._director.active.lower()}> "
 
-    async def feed(self, text: str, *, on_text: Optional[OnText] = None,
+    async def feed(self, text: str, *, speaker: Optional[str] = None, on_text: Optional[OnText] = None,
                    on_tool: Optional[OnTool] = None) -> None:
         """Route one line: a recognised command runs here (deterministic); anything else goes to the
-        active agent."""
+        active agent, attributed to `speaker` (WHO said it). `speaker` is per-call so one shell can serve
+        many speakers (the agent server, shared-session-plan §6); it defaults to the shell's own `_user`
+        for a single-user front-end."""
         cmd = self._as_command(text)
         if cmd is None:
-            await self._director.handle(text, on_text=on_text, on_tool=on_tool)
+            await self._director.handle(text, speaker=speaker or self._user, on_text=on_text, on_tool=on_tool)
         else:
             await self._dispatch(cmd, on_text)
 
-    def _as_command(self, raw: str) -> Optional[str]:
+    def as_command(self, raw: str, in_shell: bool) -> Optional[str]:
+        """Route a line given the caller's shell MODE — the command string if it's a command, else None.
+        In shell mode every line is a command; in agent mode only a `conjure`-led line is (bare `conjure`
+        = open shell). **Mode is a parameter**, not instance state, so one shell serves many connections
+        each with their own mode (the agent server passes each connection's `in_shell`)."""
         s = raw.strip()
-        if self.in_shell:
+        if in_shell:
             return s                                          # shell mode: every line is a command
         m = _WAKE.match(s)
         if m:
             return m.group("rest").strip() or "open shell"   # bare "conjure" → open the shell
         return None                                           # agent mode, no wake word → not a command
+
+    def _as_command(self, raw: str) -> Optional[str]:
+        return self.as_command(raw, self.in_shell)            # in-process (voice) path: instance mode
+
+    @staticmethod
+    def is_open_shell(cmd: str) -> bool:
+        """Does this command string turn shell mode ON? (Recognised server-side; clients never know it.)"""
+        return bool(_OPEN_SHELL.match(cmd))
+
+    @staticmethod
+    def is_leave_shell(cmd: str) -> bool:
+        """Does this command string turn shell mode OFF (back to the agent)?"""
+        return bool(_LEAVE_SHELL.match(cmd))
 
     async def _dispatch(self, cmd: str, on_text) -> None:
         if not cmd:
@@ -232,9 +265,6 @@ class Shell:
 
     async def _switch_agent(self, on_text, m):
         name = m.group("name").strip()
-        if self._stack is None:                               # hand-built Shell(director) — no lifecycle
-            await self._say(on_text, "Agent switching isn't available in this session.")
-            return
         match = next((a for a in self._agent_names() if a.lower() == name.lower()), None)
         if not match:
             avail = ", ".join(self._agent_names()) or "none"
@@ -242,6 +272,12 @@ class Shell:
             return
         if match == self._agent_name():
             await self._say(on_text, f"Already on {match}.")
+            return
+        if self._agent_switch_hook is not None:               # hosted (agent server): delegate — route via
+            await self._agent_switch_hook(match, on_text)     # the world server so every client follows and
+            return                                            # the host re-binds the Director in its own task
+        if self._stack is None:                               # hand-built Shell(director) — no lifecycle
+            await self._say(on_text, "Agent switching isn't available in this session.")
             return
         try:
             await self._open_agent(match)                     # relaunches its MCP server; keeps the current agent on failure

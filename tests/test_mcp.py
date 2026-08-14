@@ -129,7 +129,7 @@ async def test_place_cached_asset_tool_forwards_id(monkeypatch):
 @respx.mock
 async def test_update_asset_tool_forwards_fields_with_scope(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     route = respx.post("http://world/update_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
     await _tool("update_asset")(id="x.glb", label="X-Wing", reject_for="starship enterprise")
     assert json.loads(route.calls.last.request.content) == {
@@ -139,7 +139,7 @@ async def test_update_asset_tool_forwards_fields_with_scope(monkeypatch):
 @respx.mock
 async def test_update_asset_tool_forwards_public(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     route = respx.post("http://world/update_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
     await _tool("update_asset")(id="pear.png", public=False)
     assert json.loads(route.calls.last.request.content) == {
@@ -149,7 +149,7 @@ async def test_update_asset_tool_forwards_public(monkeypatch):
 @respx.mock
 async def test_set_world_visibility_tool_forwards_and_reports_published(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     route = respx.post("http://world/worlds/visibility").mock(return_value=httpx.Response(200, json={
         "ok": True, "world": "home", "public": True, "published_assets": ["a pear"]}))
     out = await _tool("set_world_visibility")(public=True)
@@ -160,7 +160,7 @@ async def test_set_world_visibility_tool_forwards_and_reports_published(monkeypa
 @respx.mock
 async def test_view_relative_tool_forwards_and_formats(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     route = respx.post("http://world/view_relative").mock(return_value=httpx.Response(200, json={
         "ok": True, "direction": "forward", "distance": 1.0, "point": [0.0, 1.6, -1.0],
         "surface": {"id": "real_wall_7", "semantic": "wall", "friendly_id": 7, "distance": 3.0},
@@ -173,7 +173,7 @@ async def test_view_relative_tool_forwards_and_formats(monkeypatch):
 @respx.mock
 async def test_delete_asset_tool_forwards_id_with_scope(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     route = respx.post("http://world/delete_asset").mock(return_value=httpx.Response(200, json={"ok": True}))
     await _tool("delete_asset")(id="dup.glb")
     assert json.loads(route.calls.last.request.content) == {"id": "dup.glb", "scope": "private/builder"}
@@ -182,7 +182,7 @@ async def test_delete_asset_tool_forwards_id_with_scope(monkeypatch):
 @respx.mock
 async def test_query_assets_tool_forwards_sql_with_scope(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     route = respx.post("http://world/query_assets").mock(return_value=httpx.Response(200, json={
         "ok": True, "rows": [{"kind": "image", "n": 3}]}))
     out = await _tool("query_assets")(sql="SELECT kind, COUNT(*) AS n FROM assets GROUP BY kind")
@@ -373,7 +373,7 @@ async def test_tool_reports_failure(monkeypatch):
 @respx.mock
 async def test_new_world_tool_forwards_name_with_scope(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     route = respx.post("http://world/worlds/new").mock(
         return_value=httpx.Response(200, json={"ok": True, "world": "castle-quest/dining-hall"}))
     out = await _tool("new_world")(name="Castle Quest/Dining Hall")
@@ -385,7 +385,7 @@ async def test_new_world_tool_forwards_name_with_scope(monkeypatch):
 @respx.mock
 async def test_list_worlds_tool_marks_active(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     respx.post("http://world/worlds/list").mock(return_value=httpx.Response(200, json={
         "ok": True, "worlds": ["blade-runner-1", "default"], "active": "blade-runner-1"}))
     out = await _tool("list_worlds")()
@@ -395,7 +395,7 @@ async def test_list_worlds_tool_marks_active(monkeypatch):
 @respx.mock
 async def test_switch_world_tool_reports_error(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    monkeypatch.setattr(m, "SCOPE", "private/builder")
+    monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     respx.post("http://world/worlds/switch").mock(
         return_value=httpx.Response(200, json={"ok": False, "error": "no world 'nope'"}))
     out = await _tool("switch_world")(name="nope")
@@ -437,3 +437,40 @@ def test_readonly_tools_are_all_real_tool_names():
     src = (pathlib.Path(conjure.__file__).parent / "mcp_server.py").read_text()
     server_tools = set(re.findall(r"@mcp\.tool\([^)]*\)\s*\nasync def (\w+)", src))
     assert m._READONLY_TOOLS <= server_tools, m._READONLY_TOOLS - server_tools
+
+
+@respx.mock
+async def test_set_caller_threads_the_speaker_into_requests(monkeypatch):
+    # Step 3: the director sets the per-turn speaker; subsequent world-server calls carry that identity
+    # (owner gate + asset-ownership scope), not the fixed launch identity.
+    monkeypatch.setattr(m, "BASE", "http://world")
+    monkeypatch.setattr(m, "_CALLER", {"user": "daniel", "scope": "daniel/agents/builder"})
+    await _tool("set_caller")(user="guest", scope="guest/agents/builder")
+    assert m._headers() == {"X-Conjure-User": "guest", "X-Conjure-Scope": "guest/agents/builder"}
+
+    r_post = respx.post("http://world/query_world").mock(return_value=httpx.Response(200, json={"ok": True}))
+    await m._post("/query_world", {})
+    assert r_post.calls.last.request.headers["X-Conjure-User"] == "guest"
+
+    r_patch = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"ok": True, "rev": 1}))
+    await m._post_patch([{"op": "add", "entity": {"id": "x"}}])         # patch now carries identity too
+    assert r_patch.calls.last.request.headers["X-Conjure-User"] == "guest"
+
+
+def test_set_caller_is_exempt_from_the_capability_gate(monkeypatch):
+    # A restricted/read-only agent must still let the director set the caller (it's a control tool).
+    monkeypatch.setattr(m, "_ALLOWED_TOOLS", {"query_world"})
+    monkeypatch.setattr(m, "_ACCESS", "read")
+    assert m._tool_denied("set_caller") is None
+    assert m._tool_denied("place_asset") is not None                    # a normal tool stays gated
+
+
+@respx.mock
+async def test_post_patch_raises_owner_only_on_403(monkeypatch):
+    # A non-owner speaker's write is 403'd by the world server; _post_patch raises so the patch tools
+    # surface the reason instead of a KeyError (they read patch['rev']) or a false success.
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.post("http://world/patch").mock(return_value=httpx.Response(
+        403, json={"ok": False, "error": "This world belongs to daniel; only the owner can change it."}))
+    with pytest.raises(PermissionError, match="belongs to daniel"):
+        await m._post_patch([{"op": "add", "entity": {"id": "x"}}])
