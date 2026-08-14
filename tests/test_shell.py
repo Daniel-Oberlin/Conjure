@@ -35,6 +35,25 @@ def _shell():
     return Shell(d), d, out, on_text
 
 
+# --------------------------------------------------------------------------- routing engine (mode as a param)
+
+def test_as_command_routes_by_the_passed_mode_not_instance_state():
+    # The shell (server-side command engine) takes in_shell as a PARAMETER, so one instance serves many
+    # connections each with their own mode (agent server, D). No wake word / phrases live in the client.
+    sh, d, out, on_text = _shell()
+    # agent mode: only a `conjure`-led line is a command
+    assert sh.as_command("make a tree", False) is None
+    assert sh.as_command("conjure use gemini", False) == "use gemini"
+    assert sh.as_command("conjure", False) == "open shell"        # bare wake → open shell
+    # shell mode: every line is a command
+    assert sh.as_command("use gemini", True) == "use gemini"
+    assert sh.as_command("make a tree", True) == "make a tree"
+    # the two mode toggles are recognised server-side
+    assert sh.is_open_shell("open shell") and sh.is_open_shell("shell")
+    assert sh.is_leave_shell("exit") and sh.is_leave_shell("done")
+    assert not sh.is_leave_shell("exit the room")
+
+
 # --------------------------------------------------------------------------- agent mode (default)
 
 async def test_plain_text_in_agent_mode_is_forwarded():

@@ -27,6 +27,9 @@ OnTool = Callable[..., Awaitable[None]]
 _WAKE = re.compile(r"^conjure\b[,:]?\s*(?P<rest>.*)$", re.I | re.S)
 # Explicit LLM switch in the shell: "talk to / switch to / use <name>".
 _SWITCH = re.compile(r"^(?:talk\s+to|switch\s+to|use|become|be)\s+(?P<name>[a-z0-9]+)$", re.I)
+# The two shell-MODE toggles (open/leave). Recognised server-side (the client never knows these phrases).
+_OPEN_SHELL = re.compile(r"^(?:open\s+)?shell$", re.I)
+_LEAVE_SHELL = re.compile(r"^(?:exit|leave|close|done)$", re.I)
 
 
 def _match_name(token: str, roster) -> Optional[str]:
@@ -60,8 +63,8 @@ class Shell:
         # are tried after, in _dispatch. The handler is called as handler(on_text, match). Add a row
         # to add a command.
         self._table = [
-            (re.compile(r"^(?:open\s+)?shell$", re.I), self._open, "open shell — enter command mode"),
-            (re.compile(r"^(?:exit|leave|close|done)$", re.I), self._exit, "exit — leave the shell, back to the agent"),
+            (_OPEN_SHELL, self._open, "open shell — enter command mode"),
+            (_LEAVE_SHELL, self._exit, "exit — leave the shell, back to the agent"),
             (re.compile(r"^(?:help|\?|commands)$", re.I), self._help, "help — list commands"),
             (re.compile(r"^(?:whoami|status|where)$", re.I), self._status, "whoami — the active LLM + agent"),
             (re.compile(r"^(?:llms|models)$", re.I), self._llms, "llms — list available LLMs"),
@@ -181,14 +184,31 @@ class Shell:
         else:
             await self._dispatch(cmd, on_text)
 
-    def _as_command(self, raw: str) -> Optional[str]:
+    def as_command(self, raw: str, in_shell: bool) -> Optional[str]:
+        """Route a line given the caller's shell MODE — the command string if it's a command, else None.
+        In shell mode every line is a command; in agent mode only a `conjure`-led line is (bare `conjure`
+        = open shell). **Mode is a parameter**, not instance state, so one shell serves many connections
+        each with their own mode (the agent server passes each connection's `in_shell`)."""
         s = raw.strip()
-        if self.in_shell:
+        if in_shell:
             return s                                          # shell mode: every line is a command
         m = _WAKE.match(s)
         if m:
             return m.group("rest").strip() or "open shell"   # bare "conjure" → open the shell
         return None                                           # agent mode, no wake word → not a command
+
+    def _as_command(self, raw: str) -> Optional[str]:
+        return self.as_command(raw, self.in_shell)            # in-process (voice) path: instance mode
+
+    @staticmethod
+    def is_open_shell(cmd: str) -> bool:
+        """Does this command string turn shell mode ON? (Recognised server-side; clients never know it.)"""
+        return bool(_OPEN_SHELL.match(cmd))
+
+    @staticmethod
+    def is_leave_shell(cmd: str) -> bool:
+        """Does this command string turn shell mode OFF (back to the agent)?"""
+        return bool(_LEAVE_SHELL.match(cmd))
 
     async def _dispatch(self, cmd: str, on_text) -> None:
         if not cmd:
@@ -245,9 +265,6 @@ class Shell:
 
     async def _switch_agent(self, on_text, m):
         name = m.group("name").strip()
-        if self._stack is None:                               # hand-built Shell(director) — no lifecycle
-            await self._say(on_text, "Agent switching isn't available in this session.")
-            return
         match = next((a for a in self._agent_names() if a.lower() == name.lower()), None)
         if not match:
             avail = ", ".join(self._agent_names()) or "none"
@@ -259,6 +276,9 @@ class Shell:
         if self._agent_switch_hook is not None:               # hosted (agent server): delegate — route via
             await self._agent_switch_hook(match, on_text)     # the world server so every client follows and
             return                                            # the host re-binds the Director in its own task
+        if self._stack is None:                               # hand-built Shell(director) — no lifecycle
+            await self._say(on_text, "Agent switching isn't available in this session.")
+            return
         try:
             await self._open_agent(match)                     # relaunches its MCP server; keeps the current agent on failure
         except Exception as exc:                              # bad def, no LLM key for it, server won't start
