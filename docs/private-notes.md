@@ -1,39 +1,57 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
-# Bugs
-- I opened the desktop browser away from the space, none of the surfaces were covered, many of the walls weren't in the right place.  Coloring walls from the cli doesn't work.  What happened?
-
 # Agent refactor
-- agent prompt refactor (towards multi-agent)
-  - roster line -> optional per-agent injection
-  - identity line -> put into builder prompt (seems builder specific)
-  - context -> optional per-agent injection
-- dir paths /user/agent/worlds/..., /user/spaces...
-- switch agents during session, each agent has its own context
-  - should be able to switch via CLI, but also there should be a switch tool that the agent can use
-  - maintain context persistence?
-- do we need a persistent store for hierarchy now, mongodb?
-- agent initializer/constructor, setup state in persistent store?
-  - agent store is segregated by user
-  - agent has global store /agents/builder/
-  - agent has user store /user/agents/builder/
-  - do we need /system, /users, /agents as top level?
-   - /system/globalsettings (default info color)
-   - /users/daniel/agents/builder/worlds
-   - /users/daniel/spaces/home
-   - /agents/builder/prompt, default settings (world constructor)
+ - Are contexts persistent?
+ - sessions (have context, worlds, public/private)
+ - Do we want timestamps for entries?
+ - Persistence for other info
+ - Constructor
+  - agent initializer/constructor, setup state in persistent store?
+    - agent store is segregated by user
+    - agent has global store /agents/builder/
+    - agent has user store /user/agents/builder/
+    - do we need /system, /users, /agents as top level?
+- /users/daniel/agents/builder/worlds
+- /users/daniel/spaces/home
 - agent semantic versioning, upgrade path (default purge)?
+
+# CLI refactor
+- Sytax
+  - new (private) session (name)
+  - change/switch agent/session/llm to (something)
+  - rename (current session/world) or session "name" to "new name"
+  - list/ls agents/sessions/llms/spaces
+- dir paths /user/agent/worlds/..., /user/spaces...
+- Multi-paned CLI tool
+  - Launch servers, restart
+  - Launch clients via name (easy select previosu)
+  - up/down arrows go to different panes
+  - expand/collapse
+- Up/down arrows for history?
+
+# Other
+- Global settings /system/globalsettings (default info color)
 - space visibility (public access, public create worlds)
 
 # Outdoor agent
 
-# Graphics
-- Lighting
-
 # Dynamic content
+- Dynamic modules
+  - User provided
+  - LLM provided
+- Events
+  - From user (click, etc.)
+  - From other sources (music player - change key, tempo, etc.)
+- State variables accessible by LLM (per dynamic module)
+- Agent can emit events to affect modules
+- Maybe events only (event driven architecture)?
 - Fireflies
 - Point clouds
 - Water picture
+- Model animations via glTF/VRM
+
+# Graphics
+- Lighting
 
 # Web
 - Perform web requests
