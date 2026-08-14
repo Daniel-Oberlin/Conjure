@@ -62,10 +62,19 @@ class LLM(Protocol):
 
 
 def _messages(history: list[Turn]) -> list[tuple[str, str]]:
-    """Render the shared transcript as (role, text) pairs. Every turn is either the user's or the
-    assistant's — the transcript carries no record of which LLM authored a reply, so a switch of
-    LLMs is invisible in the history (architecture §7a)."""
-    return [("user" if t.speaker == "user" else "assistant", t.text) for t in history]
+    """Render the shared transcript as (role, text) pairs. A **user** turn is prefixed with WHO spoke
+    (`daniel: …`) so the director can attribute turns in a shared, multi-user conversation — otherwise it
+    can't tell two speakers apart and assumes every line is "you". An **assistant** turn stays
+    unattributed: the director is one voice, and the transcript records no LLM identity, so a model switch
+    stays invisible (architecture §7a). Portable across providers — it's just text, no per-message `name`
+    field — and role-alternation stays clean since each user turn is followed by the director's reply."""
+    out: list[tuple[str, str]] = []
+    for t in history:
+        if t.speaker == "user":
+            out.append(("user", f"{t.by}: {t.text}" if t.by else t.text))
+        else:
+            out.append(("assistant", t.text))
+    return out
 
 
 # =================================================================== director LLMs

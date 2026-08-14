@@ -44,11 +44,14 @@ def test_messages_render_plain_user_assistant():
     ]
 
 
-def test_messages_drop_the_human_speaker_attribution():
-    # A user turn records WHO spoke (`by`) for ownership/display, but that never reaches the model —
-    # the LLM sees a plain "user" role, not "alice said…".
-    history = [Turn("user", "hi", by="alice"), Turn("assistant", "hello")]
-    assert _messages(history) == [("user", "hi"), ("assistant", "hello")]
+def test_messages_label_user_turns_with_the_speaker():
+    # A shared, multi-user conversation: each user turn is prefixed with WHO spoke, so the director can
+    # attribute turns ("who said the last line?"). The assistant turn stays unattributed (one director,
+    # no LLM identity). A turn with no speaker (a lone client) is left bare.
+    history = [Turn("user", "hi", by="alice"), Turn("assistant", "hello"),
+               Turn("user", "yo", by="bob"), Turn("user", "no speaker")]
+    assert _messages(history) == [
+        ("user", "alice: hi"), ("assistant", "hello"), ("user", "bob: yo"), ("user", "no speaker")]
 
 
 # --------------------------------------------------------------------------- registry
