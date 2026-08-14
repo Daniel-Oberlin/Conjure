@@ -348,8 +348,14 @@ Ordered so the browser/headset-independent pieces land first and each step is un
     dumb: sends `{type:"turn", text}`, renders events, formats its own prompt from context DATA (no
     server-authored string). Barge-in reserved (`{type:"interrupt"}`, wired in C3). Verified live: two
     clients, per-connection shell mode; `exit` leaves shell; guest permission still enforced.
-  - **C3 — convert voice** to the WS client + SSE→TTS, and add barge-in via `{type:"interrupt"}`
-    (agent-server-plan Step 4; hardest — audio + timing).
+  - **✅ C3a (done) — convert voice to the WS client.** `voice.py` no longer hosts a Director/shell; it
+    connects one WebSocket to the agent server (`ws_url(…, backlog=False)` so history isn't *spoken* on
+    connect), sends completed spoken turns as `{type:"turn", text}` (as `--user`), and speaks the server's
+    reply events (`assistant_delta`/`assistant_final`/`notice`) as TTS — streaming cadence preserved.
+    PipeCat stays ears+mouth; the mic-activation wake gate stays a voice-input concern. No LLM/keys here
+    (agent server owns them). Manual mic-smoke pending; unit paths green.
+  - **C3b — barge-in** via `{type:"interrupt"}` (VAD-during-TTS → cancel the in-flight turn server-side).
+    Needs the server to run turns as cancellable tasks so the receive loop stays responsive mid-turn.
   - **C4 — delete the in-process director paths** from cli/voice (agent-server-plan Step 5).
   - **✅ Adjacent (done) — `mcp_server.py` per-turn scope** (agent-server-plan Step 3). Identity was fixed
     at MCP launch, so with a shared agent server every turn acted as the launch user — a real permission

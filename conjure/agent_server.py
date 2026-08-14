@@ -323,10 +323,14 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
         loop: `{type:"turn", text}` runs a line."""
         await websocket.accept()
         conn = Conn(websocket, websocket.query_params.get("user") or DEFAULT_USER)
+        want_backlog = websocket.query_params.get("backlog", "1").lower() not in ("0", "false", "no")
         app.state.hub.add(conn)
         try:
-            for event in _backlog_events(app.state.shell, app.state.live, conn.user, conn.in_shell):
-                await conn.send(event)
+            if want_backlog:                             # a text client replays history; a voice client can't
+                for event in _backlog_events(app.state.shell, app.state.live, conn.user, conn.in_shell):
+                    await conn.send(event)
+            else:
+                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell))
             while True:
                 msg = await websocket.receive_json()
                 if msg.get("type") == "turn":

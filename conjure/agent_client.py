@@ -14,11 +14,13 @@ import json
 from typing import Optional
 
 
-def ws_url(agent_url: str, user: str) -> str:
+def ws_url(agent_url: str, user: str, *, backlog: bool = True) -> str:
     """The agent server's per-connection WebSocket URL. `user` is who this client acts as (the connection
-    is the session)."""
+    is the session). `backlog=False` suppresses the transcript replay on connect — a voice client can't
+    *speak* the history, so it wants only the current context."""
     base = agent_url.replace("https://", "wss://").replace("http://", "ws://").rstrip("/")
-    return f"{base}/ws?user={user}"
+    url = f"{base}/ws?user={user}"
+    return url if backlog else f"{url}&backlog=0"
 
 
 def prompt_from_context(ctx: dict) -> str:

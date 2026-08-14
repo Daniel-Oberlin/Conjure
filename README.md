@@ -81,8 +81,12 @@ python scripts/send_patch.py examples/patches/add_cube.json   # a cube appears l
 #   then edit .env with your keys (see below), and:
 python -m conjure.doctor                # confirm prerequisites are green
 python -m conjure                       # terminal 1: world server
-python -m conjure.voice                 # terminal 2: voice loop (use earbuds — see note)
+conjure-agent                           # terminal 2: agent server (holds the director + keys)
+python -m conjure.voice                 # terminal 3: voice loop (use earbuds — see note)
 ```
+
+Voice and CLI are thin clients of the **agent server** — start it first. They share one conversation:
+speak on voice and type on `conjure-cli` and it's the same director, same transcript.
 
 Then speak: *"put an oak tree in front of me", "paint a sunset over mountains and hang it on the
 wall", "wrap me in a misty forest", "make the painting nighttime".*
