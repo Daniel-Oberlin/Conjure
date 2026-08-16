@@ -1033,6 +1033,123 @@ async def scope_activate(req: ActivateScopeRequest) -> dict:
     return await _activate_scope(req.scope)
 
 
+# ---- session management (docs/sessions-plan.md §3) --------------------------------------------------
+# Multiple sessions per scope, switchable. A session is an instance of the agent (its own transcript +
+# worlds + state); the agent server keys its transcript on the live (scope, session). Switching a session
+# writes the global pointer, so every peripheral follows — the same source-of-truth pattern as agents.
+
+def _next_sid(scope: str) -> str:
+    """A fresh, stable session id for `scope`: ``session-<N>``, N one past the highest existing."""
+    n = 0
+    for sid in sessions.list(scope):
+        m = re.fullmatch(r"session-(\d+)", sid)
+        if m:
+            n = max(n, int(m.group(1)))
+    return f"session-{n + 1}"
+
+
+def _resolve_sid(scope: str, ref: Optional[str]) -> Optional[str]:
+    """Resolve a session reference — its stable id, or a case-insensitive title match — to a session id
+    (or None). Lets clients say `session switch <title>` without knowing the id."""
+    ids = sessions.list(scope)
+    if not ref:
+        return None
+    if ref in ids:
+        return ref
+    r = ref.strip().lower()
+    for sid in ids:
+        try:
+            if (sessions.load_meta(scope, sid).get("title") or "").strip().lower() == r:
+                return sid
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+async def _switch_session(scope: str, sid: str) -> dict:
+    """Make session `sid` live: route worlds to it, resume its active world (or mint a blank ``home`` if
+    it has none yet — the constructor that seeds a richer first world is a later step), and switch — which
+    writes the global pointer ``(scope, sid)`` and broadcasts. The agent server follows the pointer and
+    swaps the transcript (step 2)."""
+    sessions.set_active(scope, sid)                 # so the world facade addresses THIS session's worlds
+    wdir = sessions.worlds(scope, sid)
+    active = wdir.get_active()
+    if not (active and wdir.exists(active)):
+        raw = _new_world_store(scope)               # a fresh session with no world yet → a blank home
+        _reset_room_authority(raw)
+        wdir.save("home", raw)
+        wdir.set_active("home")
+        active = "home"
+    return await _switch_to(scope, active)
+
+
+class SessionRef(BaseModel):
+    scope: str = DEFAULT_SCOPE
+    session: Optional[str] = None     # id or title; default (rename) = the active session
+    title: Optional[str] = None
+
+
+@app.get("/sessions")
+async def sessions_list(scope: str = DEFAULT_SCOPE) -> dict:
+    """Every session in `scope` with its meta + which is live. The shell's `sessions` verb renders this."""
+    active = sessions.get_active(scope)
+    out = []
+    for sid in sessions.list(scope):
+        try:
+            meta = sessions.load_meta(scope, sid)
+        except (OSError, ValueError):
+            meta = {}
+        out.append({"id": sid, "title": meta.get("title", sid), "active_world": meta.get("active_world"),
+                    "llm": meta.get("llm", ""), "active": sid == active})
+    return {"ok": True, "sessions": out, "active": active}
+
+
+@app.post("/session/new")
+async def session_new(req: SessionRef) -> dict:
+    """Create a new session in `scope` and switch to it. It starts with a blank ``home`` world (the
+    richer constructor — greeting, seeded state, generative first world — lands in a later step)."""
+    sid = _next_sid(req.scope)
+    user = req.scope.split("/", 1)[0]
+    sessions.save_meta(req.scope, sid, {
+        "id": sid, "owner": user, "agent": agent_of(req.scope),
+        "title": req.title or f"Session {sid.split('-')[-1]}", "public": True,
+        "active_world": "home", "llm": ""})
+    await _switch_session(req.scope, sid)
+    return {"ok": True, "session": sid, "title": sessions.load_meta(req.scope, sid)["title"]}
+
+
+@app.post("/session/switch")
+async def session_switch(req: SessionRef) -> dict:
+    sid = _resolve_sid(req.scope, req.session)
+    if not sid:
+        return {"ok": False, "error": f"no session {req.session!r} in {req.scope}"}
+    r = await _switch_session(req.scope, sid)
+    return {"ok": True, "session": sid, "world": r.get("world")}
+
+
+@app.post("/session/rename")
+async def session_rename(req: SessionRef) -> dict:
+    sid = _resolve_sid(req.scope, req.session) if req.session else sessions.get_active(req.scope)
+    if not sid or not sessions.exists(req.scope, sid):
+        return {"ok": False, "error": f"no session {req.session!r} in {req.scope}"}
+    if not req.title:
+        return {"ok": False, "error": "a new title is required"}
+    meta = sessions.load_meta(req.scope, sid)
+    meta["title"] = req.title                       # retitle only — the id is stable, nothing moves
+    sessions.save_meta(req.scope, sid, meta)
+    return {"ok": True, "session": sid, "title": req.title}
+
+
+@app.post("/session/delete")
+async def session_delete(req: SessionRef) -> dict:
+    sid = _resolve_sid(req.scope, req.session)
+    if not sid:
+        return {"ok": False, "error": f"no session {req.session!r} in {req.scope}"}
+    if req.scope == active_scope and sid == active_sid:
+        return {"ok": False, "error": "can't delete the active session — switch away first"}
+    return {"ok": sessions.delete(req.scope, sid), "session": sid}
+
+
 @app.get("/agent/last")
 async def agent_last(user: str = DEFAULT_USER) -> dict:
     """The **live** agent, so a front-end launched without an explicit --agent resumes it. There's one

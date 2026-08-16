@@ -1756,6 +1756,33 @@ def test_scope_activate_moves_the_global_session_pointer_and_live_agent(srv, cli
     assert client.get("/agent/last").json()["agent"] == "builder"
 
 
+def test_session_new_list_switch_rename_delete(srv, client):
+    scope = srv.DEFAULT_SCOPE
+    srv._ensure_session(scope)                                           # materialize session-1 (boot would)
+    # new session → created, switched to, global pointer moved
+    r = client.post("/session/new", json={"scope": scope, "title": "Playground"}).json()
+    assert r["ok"] and r["session"] == "session-2" and r["title"] == "Playground"
+    assert srv.active_sid == "session-2" and srv._read_session_ptr() == (scope, "session-2")
+    # list shows both, session-2 live
+    lst = client.get("/sessions", params={"scope": scope}).json()
+    by_id = {s["id"]: s for s in lst["sessions"]}
+    assert lst["active"] == "session-2" and {"session-1", "session-2"} <= set(by_id)
+    assert by_id["session-2"]["active"] is True and by_id["session-2"]["title"] == "Playground"
+    # switch back by TITLE (session-1's default title is "Session 1")
+    r = client.post("/session/switch", json={"scope": scope, "session": "Session 1"}).json()
+    assert r["ok"] and r["session"] == "session-1" and srv.active_sid == "session-1"
+    # rename the active session (retitle only — id stable)
+    r = client.post("/session/rename", json={"scope": scope, "title": "Home Base"}).json()
+    assert r["ok"] and r["session"] == "session-1"
+    titles = {s["id"]: s["title"] for s in client.get("/sessions", params={"scope": scope}).json()["sessions"]}
+    assert titles["session-1"] == "Home Base"
+    # can't delete the active session; can delete a non-active one
+    assert client.post("/session/delete", json={"scope": scope, "session": "session-1"}).json()["ok"] is False
+    assert client.post("/session/delete", json={"scope": scope, "session": "Playground"}).json()["ok"] is True
+    assert "session-2" not in {s["id"] for s in
+                               client.get("/sessions", params={"scope": scope}).json()["sessions"]}
+
+
 def test_boot_world_restores_the_global_session_pointer(srv):
     # After a restart, boot resumes exactly the session the global pointer records — the scope's active
     # session, and that session's active world — so the viewer comes back where everyone was, agent
