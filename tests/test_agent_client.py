@@ -25,9 +25,12 @@ def test_apply_context_folds_only_known_keys():
 
 
 def test_render_event_formats_each_type():
-    # our own turn isn't echoed; another speaker's is (one shared conversation)
+    # our own LIVE turn isn't echoed; another speaker's is (one shared conversation)
     assert render_event({"type": "user_turn", "speaker": "alice", "text": "hi"}, me="alice", verbose=False) is None
     assert render_event({"type": "user_turn", "speaker": "bob", "text": "hi"}, me="alice", verbose=False) == "bob: hi"
+    # but a BACKLOG turn IS shown even when it's ours — reviewing history we weren't here to type it
+    assert render_event({"type": "user_turn", "speaker": "alice", "text": "hi", "backlog": True},
+                        me="alice", verbose=False) == "alice: hi"
     assert render_event({"type": "assistant_delta", "text": "on it"}, me="alice", verbose=False) == "on it"
     assert render_event({"type": "assistant_final", "text": "done"}, me="alice", verbose=False) == "done"
     assert render_event({"type": "notice", "text": "Now on Gemini"}, me="alice", verbose=False) == "Now on Gemini"

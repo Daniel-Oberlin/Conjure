@@ -98,10 +98,12 @@ def _context_event(shell: Shell, live: Optional[dict], user: str, in_shell: bool
 
 
 def _turn_to_event(turn) -> dict:
-    """Replay a transcript Turn as an event for a late joiner (backlog)."""
+    """Replay a transcript Turn as an event for a (re)connecting client (backlog). Tagged `backlog: True`
+    so the client shows *every* speaker — including the connecting user's OWN past turns, which live
+    rendering suppresses (you already typed them) but history review should show."""
     if turn.speaker == "user":
-        return {"type": "user_turn", "speaker": turn.by or "", "text": turn.text}
-    return {"type": "assistant_final", "text": turn.text}
+        return {"type": "user_turn", "speaker": turn.by or "", "text": turn.text, "backlog": True}
+    return {"type": "assistant_final", "text": turn.text, "backlog": True}
 
 
 def _backlog_events(shell: Shell, live: Optional[dict], user: str, in_shell: bool) -> list[dict]:

@@ -195,8 +195,8 @@ def test_backlog_is_context_then_transcript():
     shell.director.transcript = [Turn("user", "hi", by="alice"), Turn("assistant", "hello")]
     events = _backlog_events(shell, None, "bob", False)
     assert events[0]["type"] == "context" and events[0]["user"] == "bob"
-    assert events[1] == {"type": "user_turn", "speaker": "alice", "text": "hi"}
-    assert events[2] == {"type": "assistant_final", "text": "hello"}
+    assert events[1] == {"type": "user_turn", "speaker": "alice", "text": "hi", "backlog": True}
+    assert events[2] == {"type": "assistant_final", "text": "hello", "backlog": True}
 
 
 # --------------------------------------------------------------------------- follow (C2)

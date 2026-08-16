@@ -43,7 +43,9 @@ def render_event(ev: dict, *, me: str, verbose: bool) -> Optional[str]:
     t = ev.get("type")
     if t == "user_turn":
         spk = ev.get("speaker")
-        return f"{spk}: {ev.get('text', '')}" if spk and spk != me else None
+        # Live: suppress our own turn (we already typed it). Backlog: show it — reviewing history, we
+        # weren't here to type it, so a transcript missing our own prompts reads as gaps.
+        return f"{spk}: {ev.get('text', '')}" if spk and (spk != me or ev.get("backlog")) else None
     if t in ("assistant_delta", "assistant_final", "notice"):
         return ev.get("text") or None
     if t == "busy":
