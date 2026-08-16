@@ -478,7 +478,10 @@ Newly settled from this round's comments:
    *Deferred:* storing `ts` (lands with the timestamps feature) and rolling summarization (§4 "Fitting the
    transcript…") — both non-blocking.
 3. **Session shell verbs:** list / switch / rename / delete / new (§8.10 guards), incl. `session.json.llm`
-   restore + the priority-list selection (§2).
+   restore + the priority-list selection (§2). ✅ **Done** — 3a: world-server session endpoints
+   (`/sessions`, `/session/{new,switch,rename,delete}`) + the switch flow; 3b: shell verbs (`sessions`,
+   `session …`); 3c: the `llms` priority list (`_pick_active`) + per-session last-used LLM persist/restore.
+   *Deferred:* a new session starts with a blank `home` world — the richer constructor is step 4.
 4. **Constructor** (§6): scripted tool-call runner (async, fail-soft), the `world`⊕`first_world` chain,
    state seed-copy, and the greeting (literal + generated).
 5. **Generic `state_*` tools** + `agent.json` `state` block + injection (§5); validation + undo (§5.6)
