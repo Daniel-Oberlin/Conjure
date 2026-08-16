@@ -4,6 +4,14 @@
 it covers worlds, agent scoping, and how the stores compose. See also `asset-library-plan.md`
 (the asset store) and `decisions.md` #7 (the capability/sandbox model this scoping rides on).
 
+> **Superseding layer — `sessions-plan.md`.** The next step generalizes the implicit "active world per
+> scope" into a first-class **session** (an *instance* of an agent-class): named, owned, persisted, and
+> switchable, carrying its transcript, its worlds, and its arbitrary state. Under that model worlds nest
+> **under a session** (`…/agents/<agent>/sessions/<id>/worlds/…`), ownership + visibility move up from
+> world to session, and the `state` store (§4) gains an `agent.json` declaration (schema + seed). This
+> doc's stores and scoping are the foundation `sessions-plan.md` builds on; where they differ, the
+> session plan is the forward direction.
+
 The idea: **one persistence service, scoped per agent, hosting several *typed* stores.** Each agent
 (the builder, a future role-playing "dungeonmaster", …) operates inside its own namespace and never
 sees another agent's private content. Assets, worlds, and arbitrary agent state are *different* kinds
@@ -92,7 +100,15 @@ scoped world store adds named **save / load / list / switch** under a scope. It'
 embeddings, no similarity search) precisely because worlds are named documents, not searchable media.
 
 A third **generic `state` store** (agent memory / settings — a scoped KV/doc store) can appear later
-under the same scheme if an agent needs arbitrary persistence.
+under the same scheme if an agent needs arbitrary persistence. **Design settled in `sessions-plan.md`
+§5:** the tools stay **generic and agent-agnostic** (`state_get/set/merge/delete/list/schema` — CRUD
+over named JSON docs by dotted path, reusing `world.py`'s `_set_path` + inverse machinery so state edits
+are undoable). The **domain schema is agent-owned data, not part of any tool definition** — declared in
+`agent.json` (a `state` block) as file references (`seed`, `schema`, `inject`), the same "declare +
+reference a file" pattern as `prompt_file`. One declaration feeds three consumers: prompt **injection**
+(via `director._injections`, like `{user}`), an **introspection** tool (`state_schema` for large state),
+and server-side **validation** (JSON Schema, reject-on-invalid). The Zork-style world-graph rides this
+with **no domain tools**: nodes = worlds, edges/progress = a `map` doc in session `state/`.
 
 ## 5. Composition — the persistence service
 
@@ -144,6 +160,14 @@ saving.
 no separate seed file is required (an agent may still ship a richer seed doc if it wants pre-placed
 content).
 
+**The constructor grows into a session constructor (`sessions-plan.md` §6).** Once a session is the
+instance, `on_create` is one of several `__init__` jobs run when a session is minted: the world macro
+(built), a **`greeting`** (the opening assistant turn, *appended to the transcript* so it persists and
+replays on resume), and **initial state** (the declared `state` seeds copied into the session — a fresh
+mutable copy per instance, leaving the agent-dir seed pristine as the class template). Same
+"macro-of-existing-ops, declared in `agent.json`, run once, baked in" principle, widened from world to
+session.
+
 **The real room is a shared live layer, not per-world.** Captured surfaces (`meta.real` entities) are
 the same physical room regardless of the active world, so they're a live layer merged into whatever
 world is active — *not* snapshotted into each world. "Edges on/off" is then a pure per-world display
@@ -168,7 +192,10 @@ branching are a separate, later feature** (a different shape: snapshots, not an 
   autosave-on-change, boot-into-last-active-or-`default`, the `list/new/switch/delete` endpoints +
   MCP tools, and the `agent.json` `on_create` constructor run at world creation. Scope is carried in
   the request body (server-side default for now; capability-injected when the second agent lands).
-- **Next:** session **undo/redo** (rides the existing inverses; blocks nothing) — independent, any time.
+- **Next:** the **session layer** (`sessions-plan.md`) — `SessionRepository` + disk layout, transcript
+  persistence (append-only JSONL), session shell verbs (list/switch/rename/delete/new), the session
+  constructor (`greeting` + state seed), and the generic `state_*` store. Undo/redo (rides the existing
+  inverses; blocks nothing) is independent and can land any time alongside.
 - **Deferred until the second agent (e.g. the RPG dungeonmaster) actually lands:**
   - scope **enforcement** — scoped handles + capability injection by the runtime (no scope in LLM
     tools), per §2;
