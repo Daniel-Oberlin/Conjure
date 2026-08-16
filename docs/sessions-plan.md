@@ -468,7 +468,10 @@ Newly settled from this round's comments:
 ## 9. Build order (proposed, incremental)
 
 1. **Disk relocation + `SessionRepository`** (§3, §7): the user-first tree, the `sessions/<id>/` layer,
-   world stable-`id`, the global pointer move — a one-time idempotent migration, no behavior change yet.
+   the global pointer move — a one-time idempotent migration. ✅ **Done** (`SessionRepository` + `WorldDir`
+   + `migrate_cache_to_users` + the `WorldRepository` session facade; boot/switch resolve the live session
+   via `.cache/_session.txt`). *Deferred within this step:* promoting the world doc `id` to the reference
+   identity (§3 Identity) — worlds are still addressed by slug; fine until the world-graph (§5.5) lands.
 2. **Transcript persistence** (§4): append on turn-done; **full replay** on load; wire the agent server's
    single writer. Store `ts`; context-injection of time stays off. (Rolling summarization to fit the
    context window is a later add — §4 "Fitting the transcript…" — and doesn't block anything.)
