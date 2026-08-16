@@ -106,13 +106,19 @@ def srv(tmp_path, monkeypatch):
     """The world-server module with a clean world, temp asset cache, and a fake image generator.
     Tests set `srv.resolver` per scenario."""
     import conjure.server as server
-    from conjure.world import SpaceStore, WorldRepository, WorldStore
+    from conjure.world import SessionRepository, SpaceStore, WorldRepository, WorldStore
 
     monkeypatch.setattr(server, "ASSET_CACHE", tmp_path)
-    # Isolated world + space stores + active pointers so autosave/reset/switch stay off the repo.
-    monkeypatch.setattr(server, "worlds", WorldRepository(tmp_path / "worlds"))
-    monkeypatch.setattr(server, "spaces", SpaceStore(tmp_path / "spaces"))
+    # Isolated user-first tree + session-backed world store + a tmp global pointer, so autosave/reset/
+    # switch stay off the real repo (docs/sessions-plan.md §3).
+    users = tmp_path / "users"
+    _sessions = SessionRepository(users)
+    monkeypatch.setattr(server, "sessions", _sessions)
+    monkeypatch.setattr(server, "worlds", WorldRepository(users, sessions=_sessions))
+    monkeypatch.setattr(server, "spaces", SpaceStore(users))
+    monkeypatch.setattr(server, "SESSION_PTR", tmp_path / "_session.txt")
     monkeypatch.setattr(server, "active_scope", server.DEFAULT_SCOPE)
+    monkeypatch.setattr(server, "active_sid", server.MIGRATED_SID)
     monkeypatch.setattr(server, "active_world", "default")
     monkeypatch.setattr(server, "active_space", "home")
     monkeypatch.setattr(server, "active_space_owner", "daniel")   # owner of the active space (D3-aware)

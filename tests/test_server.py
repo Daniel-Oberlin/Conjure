@@ -1748,44 +1748,41 @@ def test_scope_activate_moves_the_global_session_pointer_and_live_agent(srv, cli
     # One shared session (shared-session-plan P1): the live agent is derived from the global session
     # pointer (scope → agent), not a per-user _last_agent record.
     client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"})
-    assert srv.worlds.get_session()[0] == "daniel/agents/outdoor"        # global pointer moved
+    assert srv._read_session_ptr()[0] == "daniel/agents/outdoor"         # global pointer moved
     assert srv.agent_of(srv.active_scope) == "outdoor"
     assert client.get("/agent/last").json()["agent"] == "outdoor"        # derived; user param vestigial
     client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})    # switching back
-    assert srv.worlds.get_session()[0] == srv.DEFAULT_SCOPE
+    assert srv._read_session_ptr()[0] == srv.DEFAULT_SCOPE
     assert client.get("/agent/last").json()["agent"] == "builder"
 
 
 def test_boot_world_restores_the_global_session_pointer(srv):
-    # After a restart, boot resumes exactly the (scope, world) the session pointer records — so the
-    # viewer comes back where everyone was, agent derived from the scope (shared-session-plan §2).
+    # After a restart, boot resumes exactly the session the global pointer records — the scope's active
+    # session, and that session's active world — so the viewer comes back where everyone was, agent
+    # derived from the scope (docs/sessions-plan.md §3).
     import conjure.server as S
     from conjure.world import WorldStore
     outdoor = S.scope_for(S.DEFAULT_USER, "outdoor")
-    S.worlds.save(outdoor, "beach", WorldStore(
+    S.worlds.save(outdoor, "beach", WorldStore(                       # routes to outdoor's session-1/worlds
         {"id": "b", "name": "beach", "rev": 0, "environment": {"space": "<void>"}, "entities": []}))
-    S.worlds.set_session(outdoor, "beach")
+    S.worlds.set_active(outdoor, "beach")                             # active world within that session
+    S._write_session_ptr(outdoor, S.MIGRATED_SID)                    # the live SESSION
     scope, name, _ = S._boot_world()
     assert scope == outdoor and name == "beach"
 
 
-def test_boot_world_migrates_a_pre_session_cache_from_last_agent(srv):
-    # A cache from before the session pointer existed has only the old facts (last-used agent + that
-    # scope's active world). Boot reconstructs the pointer from them and writes it going forward.
+def test_boot_world_writes_the_pointer_for_future_boots(srv):
+    # A fresh cache (no pointer) boots to the builder default AND writes the pointer + session so the next
+    # boot resumes it. (The pre-session on-disk cache is handled earlier by migrate_cache_to_users.)
     import conjure.server as S
-    from conjure.world import WorldStore
-    outdoor = S.scope_for(S.DEFAULT_USER, "outdoor")
-    S.worlds.set_last_agent(S.DEFAULT_USER, "outdoor")      # legacy fact, no _session.txt yet
-    S.worlds.save(outdoor, "beach", WorldStore(
-        {"id": "b", "name": "beach", "rev": 0, "environment": {"space": "<void>"}, "entities": []}))
-    S.worlds.set_active(outdoor, "beach")
-    assert S.worlds.get_session() is None                  # pre-session
+    assert S._read_session_ptr() is None                             # fresh
     scope, name, _ = S._boot_world()
-    assert scope == outdoor and name == "beach"
-    assert S.worlds.get_session() == (outdoor, "beach")    # pointer now written for future boots
+    assert (scope, name) == (S.DEFAULT_SCOPE, "default")
+    assert S._read_session_ptr() == (S.DEFAULT_SCOPE, S.MIGRATED_SID)  # pointer written for next boot
+    assert S.sessions.exists(S.DEFAULT_SCOPE, S.MIGRATED_SID)          # and the session materialized
 
 
-def test_boot_world_defaults_to_builder_without_a_last_agent(srv):
+def test_boot_world_defaults_to_builder_without_a_pointer(srv):
     import conjure.server as S
     scope, name, _ = S._boot_world()
     assert scope == S.DEFAULT_SCOPE and name == "default"     # no record → builder's default

@@ -41,18 +41,26 @@ from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
-from .world import SpaceStore, WorldRepository, WorldStore, _set_path, slug, world_path
+from .world import (MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
+                    _set_path, migrate_cache_to_users, slug, world_path)
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
 LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settings.debug_log)
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 AGENTS_DIR = ROOT / "agents"
-# Scoped, hierarchical world store (docs/persistence-model.md §4/§6): .cache/worlds/<scope>/<name>.json.
-WORLDS_DIR = ROOT / ".cache" / "worlds"
-# User-owned physical spaces (docs/spaces-and-users-plan.md §5): .cache/spaces/<user>/<name>.json.
-SPACES_DIR = ROOT / ".cache" / "spaces"
-ASSET_CACHE = ROOT / ".cache" / "assets"
+CACHE = ROOT / ".cache"
+# User-first tree (docs/sessions-plan.md §3): everything a user owns lives under .cache/users/<user>/ —
+# their agents' sessions (worlds/state/transcript) AND their spaces. Worlds:
+#   .cache/users/<user>/agents/<agent>/sessions/<id>/worlds/<name>.json
+# Spaces:  .cache/users/<user>/spaces/<name>.json
+USERS_DIR = CACHE / "users"
+# Pre-session locations, kept only as MIGRATION INPUTS (relocated once into USERS_DIR on boot).
+WORLDS_DIR = CACHE / "worlds"                  # legacy world tree (pre-user step also ran here)
+SPACES_DIR = CACHE / "spaces"                  # legacy space tree
+# The single global session pointer — what's live across the WHOLE server (scope<TAB>session-id).
+SESSION_PTR = CACHE / "_session.txt"
+ASSET_CACHE = CACHE / "assets"
 ASSET_CACHE.mkdir(parents=True, exist_ok=True)
 LIBRARY_DB = ROOT / ".cache" / "library.db"   # durable asset catalog (docs/asset-library-plan.md)
 # The scope new assets/worlds are written under: <user>/agents/<agent> (docs/spaces-and-users-plan.md
@@ -137,42 +145,64 @@ def _migrate_world_dirs(root: Path) -> None:
         pass
 
 
-def _boot_world() -> tuple[str, str, WorldStore]:
-    """Restore the single global **session pointer** — the `(scope, world)` that was live across the whole
-    server (shared-session-plan §2) — so a restart resumes exactly where everyone was. `agent = agent_of
-    (scope)` is derived, so this subsumes the old "resume the last-used agent's scope" logic.
+def _read_session_ptr() -> tuple[str, str] | None:
+    """The single global **session pointer** (docs/sessions-plan.md §3) — `(scope, session-id)`, the one
+    fact boot restores. `agent = agent_of(scope)` and the active world are read back from that session.
+    None on a fresh cache (the boot migration writes it whenever there was anything to migrate)."""
+    if not SESSION_PTR.exists():
+        return None
+    scope, _, sid = SESSION_PTR.read_text().strip().partition("\t")
+    return (scope, sid) if scope and sid else None
 
-    Migration read-through: a pre-session cache has no pointer, so reconstruct it from the old facts (the
-    last-used agent's scope + that scope's active world) and write the pointer going forward. Falls back to
-    the builder default when there's nothing. One-time courtesy: adopt a step-1 single-world file
-    (.cache/world.json) as `default`."""
-    session = worlds.get_session()
-    if session is not None:
-        scope, active = session
-    else:                                             # migration: reconstruct the pointer from old facts
-        scope = scope_for(DEFAULT_USER, worlds.get_last_agent(DEFAULT_USER) or "builder")
-        active = worlds.get_active(scope)
+
+def _write_session_ptr(scope: str, sid: str) -> None:
+    SESSION_PTR.parent.mkdir(parents=True, exist_ok=True)
+    SESSION_PTR.write_text(f"{scope}\t{sid}")
+
+
+def _ensure_session(scope: str, sid: str | None = None, *, active_world: str | None = None) -> str:
+    """Guarantee a session exists and is the scope's active one; return its id. Creates a default
+    `session-1` (meta + active pointer) for a scope that has none yet (a fresh agent, or the fallback
+    boot path). Step 1: exactly one session per scope — switching/rename/new is step 3."""
+    if sessions is None:                               # unit-test paths without a session store: no-op
+        return sid or MIGRATED_SID
+    sid = sid or sessions.get_active(scope) or MIGRATED_SID
+    if not sessions.exists(scope, sid):
+        user = scope.split("/", 1)[0]
+        sessions.save_meta(scope, sid, {
+            "id": sid, "owner": user, "agent": agent_of(scope), "title": "Session 1",
+            "public": True, "active_world": active_world or worlds.get_active(scope) or "default",
+            "llm": ""})
+    sessions.set_active(scope, sid)
+    return sid
+
+
+def _boot_world() -> tuple[str, str, WorldStore]:
+    """Resume exactly where the server was: read the global session pointer `(scope, sid)`, make that the
+    live session, and load that session's active world (docs/sessions-plan.md §3, §7). `agent = agent_of
+    (scope)` is derived. The one-time on-disk relocation (`migrate_cache_to_users`, run in `_init_state`)
+    is what writes the pointer for a pre-session cache; here we just restore it, falling back to the
+    builder default when there's nothing."""
+    global active_sid
+    ptr = _read_session_ptr()
+    scope, sid = ptr if ptr is not None else (DEFAULT_SCOPE, MIGRATED_SID)
+    sid = _ensure_session(scope, sid)                 # make it the scope's live session (create if fresh)
+    active_sid = sid
+    active = worlds.get_active(scope)                  # active world within that session (WorldDir pointer)
     if active and worlds.exists(scope, active):
         try:
             s = worlds.load(scope, active)
             _reset_room_authority(s)
-            worlds.set_session(scope, active)         # (re)assert the pointer — writes it on first migration
+            _write_session_ptr(scope, sid)
             return scope, active, s
         except Exception as exc:  # noqa: BLE001
             print(f"[conjure] active world {active!r} unreadable ({exc}); creating a fresh default")
-    legacy = ROOT / ".cache" / "world.json"
-    if not worlds.list(scope) and legacy.exists():
-        try:
-            s = WorldStore.load(legacy)
-            print("[conjure] adopted .cache/world.json as the 'default' world")
-        except Exception:  # noqa: BLE001
-            s = _new_world_store(scope)
-    else:
-        s = _new_world_store(scope)
+    s = _new_world_store(scope)
     _reset_room_authority(s)
     worlds.save(scope, "default", s)
     worlds.set_active(scope, "default")
-    worlds.set_session(scope, "default")
+    _ensure_session(scope, sid, active_world="default")
+    _write_session_ptr(scope, sid)
     return scope, "default", s
 
 
@@ -190,9 +220,11 @@ resolver: AssetResolver | None = (
 # fires under a plain TestClient). See docs/backlog.md (the import-time-startup hazard).
 library: "AssetLibrary | None" = None
 worlds: "WorldRepository | None" = None
+sessions: "SessionRepository | None" = None    # the session container; `worlds` routes per-session through it
 spaces: "SpaceStore | None" = None
 store: "WorldStore | None" = None
 active_scope: str = DEFAULT_SCOPE
+active_sid: str = MIGRATED_SID       # the live SESSION within active_scope (one per scope in step 1)
 active_world: str = "default"
 active_space: str = "home"          # bare NAME of the space the active world composes against
 active_space_owner: str = DEFAULT_USER  # who OWNS that space — may differ from the active WORLD's owner
@@ -210,14 +242,18 @@ def _init_state() -> None:
     """Open the catalog (runs schema migrations), migrate the world layout, and boot the active world.
     All filesystem-mutating — so it runs on server startup, not at import. Idempotent enough to re-run.
     Back up library.db to protect curation: a lost catalog is NOT rebuilt from the cache files."""
-    global library, worlds, spaces, store, active_scope, active_world, active_space, active_space_owner
+    global library, worlds, sessions, spaces, store, active_scope, active_world, active_space, active_space_owner
     global _selected_cids, _space_holders
     _selected_cids = set()                           # a fresh session: every AR client re-selects (step 4/7)
     _space_holders = set()                           # nobody holds the space yet → provisional boot (D1)
     library = AssetLibrary(LIBRARY_DB)
-    worlds = WorldRepository(WORLDS_DIR)
-    spaces = SpaceStore(SPACES_DIR)
+    # One-time, idempotent relocations (docs/sessions-plan.md §7): first the pre-user layout under the
+    # legacy worlds tree, then the whole worlds/spaces tree → the user-first session tree.
     _migrate_world_dirs(WORLDS_DIR)                  # pre-user layout → <user>/agents/<agent> (one-time)
+    migrate_cache_to_users(CACHE)                    # worlds/spaces → .cache/users/…/sessions/session-1 (one-time)
+    sessions = SessionRepository(USERS_DIR)
+    worlds = WorldRepository(USERS_DIR, sessions=sessions)   # per-name ops route to the scope's active session
+    spaces = SpaceStore(USERS_DIR)
     active_scope, active_world, raw = _boot_world()
     active_space_owner, active_space, store = _activate(active_scope, active_world, raw)   # resolve + compose
     if settings.force_geo:
@@ -953,17 +989,19 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     """Make (scope, name) the live world: persist the outgoing one, set the incoming as `store`, record
     it as active, and broadcast a snapshot so the headset reloads. `store_override` installs a freshly
     built world (new_world) instead of loading from disk."""
-    global store, active_scope, active_world, active_space, active_space_owner
+    global store, active_scope, active_world, active_space, active_space_owner, active_sid
     name = world_path(name)                   # canonical path, so `active` matches list() + the pointer
     _save_active()                            # split + persist the outgoing world (+ its space)
+    sid = _ensure_session(scope)             # the target scope's live session (create if fresh) — so the
+                                             # world facade routes to it before we load/save below
     raw = store_override if store_override is not None else worlds.load(scope, name)
     if store_override is not None:
         worlds.save(scope, name, raw)         # a freshly-built world isn't on disk yet — persist it here
                                               # (activate is read-only now; creating owns persistence — step 0)
-    active_scope, active_world = scope, name
+    active_scope, active_world, active_sid = scope, name, sid
     active_space_owner, active_space, store = _activate(scope, name, raw)   # resolve space (owner+name) + compose
-    worlds.set_active(scope, name)                # per-scope memory: which world to resume for this agent
-    worlds.set_session(scope, name)               # global pointer: what's live across the whole server
+    worlds.set_active(scope, name)                # per-session memory: which world to resume in this session
+    _write_session_ptr(scope, sid)               # global pointer: which SESSION is live across the server
     _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} (space {active_space_owner}/{active_space})")
     await _broadcast(_snapshot_msg())
     return {"ok": True, "world": name, "rev": store.doc["rev"]}

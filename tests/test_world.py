@@ -113,8 +113,10 @@ def test_repository_save_list_load_delete(tmp_path):
 
 
 def test_repository_list_public_discovers_across_users(tmp_path):
-    from conjure.world import WorldRepository
-    repo = WorldRepository(tmp_path)
+    # list_public walks the real session tree (worlds live under sessions/<id>/worlds/), so back the repo
+    # with a SessionRepository — the way the server always constructs it.
+    from conjure.world import WorldRepository, SessionRepository
+    repo = WorldRepository(tmp_path, sessions=SessionRepository(tmp_path))
     repo.save("daniel/agents/builder", "default", WorldStore(_doc()))                 # daniel, public (default)
     repo.save("friend/agents/builder", "test-world", WorldStore(_doc()))              # friend, public
     priv = _doc(); priv["environment"]["public"] = False
@@ -382,6 +384,7 @@ def test_migrate_cache_to_users(tmp_path):
     meta = json.loads((base / "session.json").read_text())
     assert (meta["active_world"], meta["agent"], meta["owner"]) == ("home", "builder", "daniel")
     assert (base.parent / "_active.txt").read_text() == "session-1"
+    assert (base / "worlds" / "_active.txt").read_text() == "home"           # WorldDir active pointer
     assert (cache / "_session.txt").read_text() == "daniel/agents/builder\tsession-1"
     assert (cache / "users" / "daniel" / "spaces" / "home.json").exists()
     assert not (cache / "worlds").exists() and not (cache / "spaces").exists()   # old trees gone

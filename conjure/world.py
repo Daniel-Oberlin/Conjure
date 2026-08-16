@@ -216,10 +216,17 @@ class WorldRepository:
     and is validated component-by-component so it can't escape the root. World ``name`` is user-chosen
     (voice), so it's validated to a safe charset (no path separators / traversal). A tiny per-scope
     ``_active.txt`` pointer records which world is live, so a restart resumes where you were.
+
+    **Session facade (docs/sessions-plan.md §3, Option 1).** When constructed with a `SessionRepository`
+    (``sessions=``), every per-name op is transparently routed to the scope's **active session's**
+    ``worlds/`` dir instead of the bare scope dir — so worlds are stored per-session while the public API
+    and ``scope`` (the capability namespace) stay exactly as before, and no call site changes. Without
+    ``sessions`` (the default), it behaves as the flat pre-session store (used by unit tests).
     """
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, sessions: "SessionRepository | None" = None):
         self.root = Path(root)
+        self._sessions = sessions
 
     def _scope_dir(self, scope: str) -> Path:
         parts = (scope or "").split("/")
@@ -228,7 +235,12 @@ class WorldRepository:
         return self.root.joinpath(*parts)
 
     def _dir(self, scope: str) -> "WorldDir":
-        """The scope's world directory as a `WorldDir` — the name-addressed layer this scope wraps."""
+        """The name-addressed `WorldDir` this scope's per-name ops act on. With a `SessionRepository`
+        attached, that's the scope's **active session's** ``worlds/`` (default ``session-1``); otherwise
+        the bare scope dir (flat, pre-session)."""
+        if self._sessions is not None:
+            sid = self._sessions.get_active(scope) or MIGRATED_SID
+            return self._sessions.worlds(scope, sid)
         return WorldDir(self._scope_dir(scope))
 
     def list(self, scope: str) -> list[str]:
@@ -241,7 +253,9 @@ class WorldRepository:
         (co-location-plan §3). Returns `{scope, owner, name, public}` per world whose doc is public
         (default true when the flag is absent). A filesystem walk that reads each doc — fine at small
         scale; a derived world-index replaces it when discovery needs to scale (backlog). Scopes are
-        `<user>/agents/<agent>`, so we enumerate `<root>/*/agents/*` dirs."""
+        `<user>/agents/<agent>`; worlds live under each session's ``worlds/``, so we enumerate
+        `<root>/*/agents/*/sessions/*/worlds/`. (Step 1 keeps the semantics — "public **worlds**"; §8.2
+        reworks this to "public **sessions**" when visibility moves up.)"""
         out: list[dict] = []
         if not self.root.is_dir():
             return []
@@ -252,14 +266,15 @@ class WorldRepository:
             if scope == exclude_scope:
                 continue
             owner = scope.split("/", 1)[0]
-            for p in sorted(agent_dir.rglob("*.json")):
-                name = p.relative_to(agent_dir).as_posix()[: -len(".json")]
-                try:
-                    doc = json.loads(p.read_text())
-                except (OSError, ValueError):
-                    continue
-                if (doc.get("environment") or {}).get("public", True):
-                    out.append({"scope": scope, "owner": owner, "name": name, "public": True})
+            for wdir in sorted(agent_dir.glob("sessions/*/worlds")):
+                for p in sorted(wdir.rglob("*.json")):
+                    name = p.relative_to(wdir).as_posix()[: -len(".json")]
+                    try:
+                        doc = json.loads(p.read_text())
+                    except (OSError, ValueError):
+                        continue
+                    if (doc.get("environment") or {}).get("public", True):
+                        out.append({"scope": scope, "owner": owner, "name": name, "public": True})
         return out
 
     def exists(self, scope: str, name: str) -> bool:
@@ -322,11 +337,13 @@ class WorldRepository:
         return [f"{user}/agents/{p.name}" for p in sorted(base.iterdir()) if p.is_dir()] if base.is_dir() else []
 
     def delete_user(self, user: str) -> int:
-        """Remove ALL of a user's worlds (the whole `<root>/<user>` subtree). Returns the world count."""
-        d = self._scope_dir(user)                              # validates → no traversal
+        """Remove ALL of a user's worlds — the whole ``<root>/<user>/agents`` subtree (NOT the user dir,
+        which under the shared ``users/`` root also holds their spaces). Returns the world count (files
+        under each session's ``worlds/``, not counting session meta)."""
+        d = self._scope_dir(user) / "agents"                   # validates `user` → no traversal
         if not d.is_dir():
             return 0
-        n = sum(1 for _ in d.rglob("*.json"))
+        n = sum(1 for wdir in d.glob("*/sessions/*/worlds") for _ in wdir.rglob("*.json"))
         shutil.rmtree(d)
         return n
 
@@ -439,11 +456,13 @@ class SessionRepository:
 
 
 class SpaceStore:
-    """Named, **USER-owned** physical spaces on disk: ``<root>/<user>/<name>.json`` (docs/
-    spaces-and-users-plan.md §5). A *space* is the captured real geometry — `surfaces` (geometry +
-    default materials) + `boundary` + meta (`owner`, `public`, `geolocation`) — shared across all of a
-    user's worlds, *not* a full WorldStore doc and *not* per-agent. The owner's headset is its capture
-    authority. Stored as a plain JSON dict; a per-user ``_active.txt`` records the live space."""
+    """Named, **USER-owned** physical spaces on disk: ``<root>/<user>/spaces/<name>.json`` (docs/
+    spaces-and-users-plan.md §5; sessions-plan.md §3). A *space* is the captured real geometry —
+    `surfaces` (geometry + default materials) + `boundary` + meta (`owner`, `public`, `geolocation`) —
+    shared across all of a user's worlds, *not* a full WorldStore doc and *not* per-agent. The owner's
+    headset is its capture authority. Stored as a plain JSON dict; a per-user ``_active.txt`` records the
+    live space. Under the user-first tree the root is ``.cache/users`` (shared with agents), so spaces
+    live in a ``spaces/`` subdir beside ``agents/`` rather than at the user root."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -451,7 +470,7 @@ class SpaceStore:
     def _user_dir(self, user: str) -> Path:
         if not user or user in (".", "..") or not _SCOPE_PART.fullmatch(user):
             raise ValueError(f"bad user {user!r}")
-        return self.root / user
+        return self.root / user / "spaces"
 
     def _path(self, user: str, name: str) -> Path:
         return self._user_dir(user) / f"{slug(name)}.json"
@@ -493,12 +512,15 @@ class SpaceStore:
 
     # -- admin (shell dir/delete) ----------------------------------------------------------------
     def list_users(self) -> list[str]:
-        """Every user with spaces on disk (the immediate subdirs of the root)."""
+        """Users with a presence under the root (its immediate subdirs). Under the shared ``users/`` root
+        this includes users who have agents but no spaces yet — harmless for the callers, which union it
+        and then `list` each user's (possibly empty) spaces."""
         return sorted(p.name for p in self.root.iterdir() if p.is_dir()) if self.root.is_dir() else []
 
     def delete_user(self, user: str) -> int:
-        """Remove ALL of a user's spaces (the whole `<root>/<user>` subtree). Returns the space count."""
-        d = self._user_dir(user)                               # validates → no traversal
+        """Remove ALL of a user's spaces — only their ``<root>/<user>/spaces`` subtree (NOT the user dir,
+        which under the shared ``users/`` root also holds their agents). Returns the space count."""
+        d = self._user_dir(user)                               # validates → no traversal; = <user>/spaces
         if not d.is_dir():
             return 0
         n = len(list(d.glob("*.json")))
@@ -558,13 +580,14 @@ def migrate_cache_to_users(cache: str | Path) -> bool:
                     (dest_worlds / rel).parent.mkdir(parents=True, exist_ok=True)
                     wp.replace(dest_worlds / rel)
                     names.append(rel.as_posix()[: -len(".json")])
+                aw = active_world or (names[0] if names else "default")
+                (dest_worlds / "_active.txt").write_text(aw)                   # WorldDir active pointer
                 meta = {"id": MIGRATED_SID, "owner": user, "agent": agent, "title": "Session 1",
-                        "public": True, "active_world": active_world or (names[0] if names else "default"),
-                        "llm": ""}
+                        "public": True, "active_world": aw, "llm": ""}
                 tmp = dest_sess / "session.json.tmp"
                 tmp.write_text(json.dumps(meta))
                 tmp.replace(dest_sess / "session.json")
-                (dest_sess.parent / "_active.txt").write_text(MIGRATED_SID)   # sessions/_active.txt
+                (dest_sess.parent / "_active.txt").write_text(MIGRATED_SID)   # sessions/_active.txt (which session)
 
     # -- global pointer: worlds/_session.txt (scope\tworld) → cache/_session.txt (scope\tsid) ----
     old_ptr = old_worlds / "_session.txt"
