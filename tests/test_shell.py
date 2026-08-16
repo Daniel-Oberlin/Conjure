@@ -206,6 +206,53 @@ async def test_delete_preview_error_does_not_arm():
     assert any("ghost" in t for _, t in out)
 
 
+# --------------------------------------------------------------------------- session verbs (step 3b)
+
+def _session_shell(responder):
+    sh, d, out, on_text = _shell()
+    calls = []
+
+    async def fake_api(method, path, **kw):
+        calls.append((method, path, kw))
+        return responder(method, path, kw)
+
+    sh._settings = type("S", (), {"world_url": "http://x"})()
+    sh._session_api = fake_api
+    return sh, out, on_text, calls
+
+
+async def test_sessions_lists_via_the_world_server():
+    sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True, "active": "session-1", "sessions": [
+        {"id": "session-1", "title": "Home Base", "active_world": "home", "llm": "Claude", "active": True},
+        {"id": "session-2", "title": "Playground", "active_world": "home", "llm": "", "active": False}]})
+    await sh._dispatch("sessions", on_text)
+    assert calls[0][0] == "GET" and calls[0][1] == "/sessions"
+    assert calls[0][2]["scope"] == "daniel/agents/builder"                # the live (user, agent) scope
+    text = out[-1][1]
+    assert "* Home Base" in text and "Playground" in text                 # active marked, both listed
+
+
+async def test_session_verbs_route_to_the_right_endpoints():
+    sh, out, on_text, calls = _session_shell(
+        lambda mth, p, kw: {"ok": True, "session": "session-2", "title": kw.get("title")})
+    await sh._dispatch("session new Playground", on_text)
+    assert calls[-1][:2] == ("POST", "/session/new") and calls[-1][2]["title"] == "Playground"
+    await sh._dispatch("session switch Playground", on_text)
+    assert calls[-1][:2] == ("POST", "/session/switch") and calls[-1][2]["session"] == "Playground"
+    await sh._dispatch("session Home Base", on_text)                      # bare → switch, whole ref kept
+    assert calls[-1][:2] == ("POST", "/session/switch") and calls[-1][2]["session"] == "Home Base"
+    await sh._dispatch("session rename Cozy Corner", on_text)
+    assert calls[-1][:2] == ("POST", "/session/rename") and calls[-1][2]["title"] == "Cozy Corner"
+    await sh._dispatch("session delete session-2", on_text)
+    assert calls[-1][:2] == ("POST", "/session/delete") and calls[-1][2]["session"] == "session-2"
+
+
+async def test_session_error_is_surfaced_to_the_client():
+    sh, out, on_text, calls = _session_shell(lambda *a: {"ok": False, "error": "no session 'zzz'"})
+    await sh._dispatch("session switch zzz", on_text)
+    assert "no session" in out[-1][1]
+
+
 # --------------------------------------------------------------------------- agent switching
 
 async def test_agent_switch_unavailable_in_handbuilt_shell():

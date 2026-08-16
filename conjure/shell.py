@@ -71,6 +71,9 @@ class Shell:
             (re.compile(r"^agents$", re.I), self._agents, "agents — list available agents"),
             (re.compile(r"^agent\s+(?P<name>[\w./-]+)$", re.I), self._switch_agent,
              "agent <name> — switch to another agent (relaunches its tools; starts its own context)"),
+            (re.compile(r"^sessions$", re.I), self._sessions, "sessions — list this agent's saved sessions"),
+            (re.compile(r"^session(?:\s+(?P<rest>\S.*))?$", re.I), self._session,
+             "session [new|switch|rename|delete] <arg> — manage sessions ('session <name>' switches)"),
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
              "dir [path] — list users/spaces/worlds/assets (e.g. dir /alice/worlds)"),
             (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
@@ -285,6 +288,64 @@ class Shell:
             await self._say(on_text, f"Couldn't switch to {match}: {exc}")
             return
         await self._say(on_text, f"Switched to agent {match} ({self._director.active}).")
+
+    # -- sessions: list/new/switch/rename/delete, driven through the world server (the source of truth for
+    # the live (scope, session)). A session switch doesn't re-bind the Director — same agent/tools; the
+    # agent server's /ws follower just swaps the transcript (step 2) — so these can run in the connection
+    # task and POST directly, no cross-task hook (unlike agent switching, docs/sessions-plan.md §3).
+    def _scope(self) -> str:
+        return scope_for(self._user, self._agent_name())
+
+    async def _session_api(self, method: str, path: str, **kw) -> dict:
+        url = getattr(self._settings, "world_url", None) if self._settings else None
+        if not url:
+            return {"ok": False, "error": "no world server configured"}
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await (client.get(f"{url}{path}", params=kw) if method == "GET"
+                              else client.post(f"{url}{path}", json=kw))
+                return resp.json()
+        except Exception as exc:  # noqa: BLE001 — network / server down / bad JSON
+            return {"ok": False, "error": f"session request failed: {exc}"}
+
+    async def _sessions(self, on_text, m=None):
+        data = await self._session_api("GET", "/sessions", scope=self._scope())
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        rows = []
+        for s in data.get("sessions", []):
+            extra = f", {s['llm']}" if s.get("llm") else ""
+            rows.append(("* " if s.get("active") else "  ")
+                        + f"{s.get('title')} ({s['id']}) — world {s.get('active_world')}{extra}")
+        await self._say(on_text, "Sessions:\n" + ("\n".join(rows) or "  (none)"))
+
+    async def _session(self, on_text, m):
+        rest = (m.group("rest") or "").strip()
+        if not rest:                                          # bare `session` → list
+            await self._sessions(on_text)
+            return
+        verb, _, arg = rest.partition(" ")
+        verb, arg = verb.strip().lower(), arg.strip()
+        scope = self._scope()
+        if verb == "new":
+            data = await self._session_api("POST", "/session/new", scope=scope, title=arg or None)
+            msg = f"Created and switched to {data.get('title')} ({data.get('session')})."
+        elif verb == "rename":
+            if not arg:
+                await self._say(on_text, "Usage: session rename <new title>")
+                return
+            data = await self._session_api("POST", "/session/rename", scope=scope, title=arg)
+            msg = f"Renamed to {arg}."
+        elif verb == "delete":
+            data = await self._session_api("POST", "/session/delete", scope=scope, session=arg)
+            msg = f"Deleted {data.get('session')}."
+        else:                                                 # `switch <ref>` OR bare `session <ref>`
+            ref = arg if verb == "switch" else rest
+            data = await self._session_api("POST", "/session/switch", scope=scope, session=ref)
+            msg = f"Switched to session {data.get('session')}."
+        await self._say(on_text, msg if data.get("ok") else data.get("error", "error"))
 
     # -- dir / delete: a filesystem-like view + purge of the namespace (docs/agents.md §2). Both go
     # through the world server's /admin endpoints, so they act on its live state (not raw files).
