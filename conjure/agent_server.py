@@ -151,14 +151,40 @@ def _turn(entry: dict) -> "Turn":
 def _sync_transcript(app: FastAPI) -> None:
     """Load the live session's saved transcript into the Director once per session change — so a restart or
     an agent switch resumes the conversation (a re-bind gives a fresh, empty Director; this refills it from
-    disk). Idempotent: tracked by `app.state.loaded_session`."""
+    disk). Also restore the session's last-used LLM (docs/sessions-plan.md §2): a remembered choice beats
+    the agent's default priority. Idempotent: tracked by `app.state.loaded_session`."""
     cur = _current_session(app)
     d = app.state.shell.director if app.state.shell else None
     if d is None or cur is None or cur == app.state.loaded_session:
         return
     scope, sid = cur
     d.transcript = [_turn(e) for e in app.state.sessions.read_transcript(scope, sid)]
+    try:                                                     # restore the session's remembered LLM, if valid
+        llm = (app.state.sessions.load_meta(scope, sid).get("llm") or "")
+        if llm and llm in d.roster:
+            d.active = llm
+    except (OSError, ValueError):
+        pass
     app.state.loaded_session = cur
+
+
+def _persist_llm(app: FastAPI) -> None:
+    """Remember the live session's active LLM in its meta, so a switch sticks across restart/switch-back
+    (docs/sessions-plan.md §2). No-op until a session is known."""
+    cur = _current_session(app)
+    d = app.state.shell.director if app.state.shell else None
+    if d is None or cur is None:
+        return
+    scope, sid = cur
+    if not app.state.sessions.exists(scope, sid):
+        return
+    try:
+        meta = app.state.sessions.load_meta(scope, sid)
+        if meta.get("llm") != d.active:
+            meta["llm"] = d.active
+            app.state.sessions.save_meta(scope, sid, meta)
+    except (OSError, ValueError):
+        pass
 
 
 def _persist_new_turns(app: FastAPI, before: int) -> None:
@@ -224,7 +250,10 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
                 if t and t.strip():
                     await conn.send({"type": "notice", "text": t})
 
+            before_llm = shell.director.active if shell.director else None
             await shell._dispatch(cmd, on_text)
+            if shell.director and shell.director.active != before_llm:
+                _persist_llm(app)                        # a `use <llm>` sticks to the session (step 3c)
             await _broadcast_context(app)                # an LLM/agent switch changes everyone's prompt
     except Busy:                                         # defense-in-depth; the floor normally prevents it
         await conn.send({"type": "busy"})

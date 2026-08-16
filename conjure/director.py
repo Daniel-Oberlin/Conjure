@@ -106,6 +106,19 @@ def _scope_tools(live, allow: list[str]):
     return [t for t in live if t.name in allow]
 
 
+def _pick_active(agentdef: AgentDef, roster: dict, default_active: str) -> str:
+    """The LLM a session starts on (docs/sessions-plan.md §2). The agent's `llms` list doubles as a
+    PRIORITY list: the first entry that's actually available wins. `scoped_roster` filters by global
+    ROSTER order, so we consult `agentdef.llms` directly to honor the *agent's* ordering. A wildcard
+    (`["*"]`) or no match falls back to the agent's `default_llm`, then settings.llm (`default_active`),
+    then whatever's first available. (A session's *remembered* LLM overrides this on load — restored by
+    the agent server.)"""
+    return (next((n for n in agentdef.llms if n in roster), None)
+            or (agentdef.default_llm if agentdef.default_llm in roster else None)
+            or (default_active if default_active in roster else None)
+            or next(iter(roster)))
+
+
 class Director:
     def __init__(self, settings: Settings, session, roster: dict[str, LLM], active: str,
                  tools: Optional[list[ToolSpec]] = None, prompt: str = _DEFAULT_PROMPT,
@@ -152,9 +165,7 @@ class Director:
             raise RuntimeError(
                 f"No LLMs available for agent {agent!r} — set ANTHROPIC_API_KEY and/or GOOGLE_API_KEY "
                 f"in .env (the agent allows: {agentdef.llms}).")
-        active = (agentdef.default_llm if agentdef.default_llm in roster      # agent's preference
-                  else default_active if default_active in roster            # then settings.llm
-                  else next(iter(roster)))                                   # then first available
+        active = _pick_active(agentdef, roster, default_active)
 
         refs = [r for r in agentdef.servers if r.server in registry]
         if len(refs) != 1:

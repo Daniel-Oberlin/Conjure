@@ -118,6 +118,27 @@ async def test_utterance_is_persisted_to_the_session_transcript(tmp_path):
         ("user", "alice", "put a tree here"), ("assistant", "", "done — a tree")]
 
 
+async def test_llm_switch_is_remembered_and_restored_per_session(tmp_path):
+    from conjure.agent_server import _persist_llm, _sync_transcript
+    sessions = SessionRepository(tmp_path)
+    scope = "daniel/agents/builder"
+    sessions.save_meta(scope, "session-1", {"id": "session-1", "owner": "daniel", "agent": "builder",
+                                            "title": "S1", "public": True, "active_world": "home", "llm": ""})
+    shell = FakeShell()
+    shell.director.roster = {"Claude": object(), "Gemini": object()}
+    app = _app(shell, [], sessions=sessions)
+    app.state.live = {"scope": scope, "session": "session-1"}
+    # a switch to Gemini is remembered in the session meta
+    shell.director.active = "Gemini"
+    _persist_llm(app)
+    assert sessions.load_meta(scope, "session-1")["llm"] == "Gemini"
+    # a later bind starts on Claude but is restored to the session's remembered Gemini
+    shell.director.active = "Claude"
+    app.state.loaded_session = None
+    _sync_transcript(app)
+    assert shell.director.active == "Gemini"
+
+
 async def test_reconcile_loads_the_saved_transcript_for_the_live_session(tmp_path):
     # A saved session's dialog is replayed into the Director when it becomes live (restart / switch-back).
     sessions = SessionRepository(tmp_path)

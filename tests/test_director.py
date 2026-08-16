@@ -6,9 +6,20 @@ no longer parses handovers out of an utterance."""
 
 import pytest
 
-from conjure.agents import load_agent
-from conjure.director import Director, _fill_injection
+from conjure.agents import AgentDef, load_agent
+from conjure.director import Director, _fill_injection, _pick_active
 from conjure.llm import Turn
+
+
+def test_pick_active_uses_the_agents_llms_list_as_priority():
+    roster = {"Claude": object(), "Gemini": object(), "Chat": object()}   # all available
+    # explicit priority: first entry in the agent's list that's available wins (Gemini before Claude)
+    assert _pick_active(AgentDef(name="a", prompt="p", llms=["Gemini", "Claude"]), roster, "Claude") == "Gemini"
+    # first choice unavailable → fall through the list to the next available one
+    assert _pick_active(AgentDef(name="a", prompt="p", llms=["Nope", "Chat"]), roster, "Claude") == "Chat"
+    # wildcard (any) → agent default_llm, else settings default (default_active), else first
+    assert _pick_active(AgentDef(name="a", prompt="p", llms=["*"], default_llm="Chat"), roster, "Claude") == "Chat"
+    assert _pick_active(AgentDef(name="a", prompt="p", llms=["*"]), roster, "Gemini") == "Gemini"
 
 
 # --------------------------------------------------------------------------- orchestration
