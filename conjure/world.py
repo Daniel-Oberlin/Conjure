@@ -504,3 +504,84 @@ class SpaceStore:
         n = len(list(d.glob("*.json")))
         shutil.rmtree(d)
         return n
+
+
+MIGRATED_SID = "session-1"
+
+
+def migrate_cache_to_users(cache: str | Path) -> bool:
+    """One-time, idempotent relocation to the user-first, session tree (docs/sessions-plan.md §3, §7).
+
+    Moves the pre-session layout::
+
+        <cache>/worlds/<user>/agents/<agent>/<world>.json   (+ per-scope _active.txt)
+        <cache>/spaces/<user>/<space>.json
+        <cache>/worlds/_session.txt   =  <scope>\\t<world>
+
+    to::
+
+        <cache>/users/<user>/agents/<agent>/sessions/session-1/worlds/<world>.json
+        <cache>/users/<user>/agents/<agent>/sessions/session-1/session.json
+        <cache>/users/<user>/agents/<agent>/sessions/_active.txt   = session-1
+        <cache>/users/<user>/spaces/<space>.json
+        <cache>/_session.txt          =  <scope>\\t session-1     (the active SESSION)
+
+    Each scope's existing worlds become the ``worlds/`` of a single ``session-1``; that scope's old
+    ``_active.txt`` becomes the session's ``active_world`` in ``session.json``. Acts only when an old
+    ``worlds/``/``spaces/`` dir exists and ``users/`` does not, so re-running is a no-op. Returns True iff
+    it moved anything. (Legacy ``_last_agent.txt`` is dropped — the live agent now derives from the active
+    session.)"""
+    cache = Path(cache)
+    users = cache / "users"
+    old_worlds = cache / "worlds"
+    old_spaces = cache / "spaces"
+    if users.exists() or not (old_worlds.is_dir() or old_spaces.is_dir()):
+        return False
+
+    # -- worlds → users/<user>/agents/<agent>/sessions/session-1/worlds/ -------------------------
+    if old_worlds.is_dir():
+        for user_dir in sorted(p for p in old_worlds.iterdir() if p.is_dir()):
+            user = user_dir.name
+            agents_dir = user_dir / "agents"
+            if not agents_dir.is_dir():
+                continue
+            for agent_dir in sorted(p for p in agents_dir.iterdir() if p.is_dir()):
+                agent = agent_dir.name
+                active_txt = agent_dir / "_active.txt"          # read the old pointer before moving files
+                active_world = (active_txt.read_text().strip() or None) if active_txt.exists() else None
+                dest_sess = users / user / "agents" / agent / "sessions" / MIGRATED_SID
+                dest_worlds = dest_sess / "worlds"
+                dest_worlds.mkdir(parents=True, exist_ok=True)
+                names: list[str] = []
+                for wp in sorted(agent_dir.rglob("*.json")):    # sorted() materializes → safe to move mid-loop
+                    rel = wp.relative_to(agent_dir)
+                    (dest_worlds / rel).parent.mkdir(parents=True, exist_ok=True)
+                    wp.replace(dest_worlds / rel)
+                    names.append(rel.as_posix()[: -len(".json")])
+                meta = {"id": MIGRATED_SID, "owner": user, "agent": agent, "title": "Session 1",
+                        "public": True, "active_world": active_world or (names[0] if names else "default"),
+                        "llm": ""}
+                tmp = dest_sess / "session.json.tmp"
+                tmp.write_text(json.dumps(meta))
+                tmp.replace(dest_sess / "session.json")
+                (dest_sess.parent / "_active.txt").write_text(MIGRATED_SID)   # sessions/_active.txt
+
+    # -- global pointer: worlds/_session.txt (scope\tworld) → cache/_session.txt (scope\tsid) ----
+    old_ptr = old_worlds / "_session.txt"
+    if old_ptr.exists():
+        scope, _, _world = old_ptr.read_text().strip().partition("\t")
+        if scope:
+            (cache / "_session.txt").write_text(f"{scope}\t{MIGRATED_SID}")
+
+    # -- spaces → users/<user>/spaces/ ----------------------------------------------------------
+    if old_spaces.is_dir():
+        for user_dir in sorted(p for p in old_spaces.iterdir() if p.is_dir()):
+            dest = users / user_dir.name / "spaces"
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in sorted(user_dir.iterdir()):
+                if f.is_file():
+                    f.replace(dest / f.name)
+
+    shutil.rmtree(old_worlds, ignore_errors=True)               # remove the emptied old trees
+    shutil.rmtree(old_spaces, ignore_errors=True)
+    return True

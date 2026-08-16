@@ -1,5 +1,7 @@
 """Unit tests for the world document + patch protocol (the foundation everything rides on)."""
 
+import json
+
 import pytest
 
 from conjure.world import WorldStore
@@ -356,3 +358,53 @@ def test_sessionrepo_worlds_is_a_worlddir_under_the_session(tmp_path):
             / "worlds" / "home.json").exists()
     repo.delete(scope, "session-1")                                   # deleting the session takes worlds
     assert repo.worlds(scope, "session-1").list() == []
+
+
+# -- migration to the user-first session tree (docs/sessions-plan.md §7) --------------------------
+
+def test_migrate_cache_to_users(tmp_path):
+    from conjure.world import migrate_cache_to_users, SessionRepository
+    cache = tmp_path
+    w = cache / "worlds" / "daniel" / "agents" / "builder"
+    (w / "castle-quest").mkdir(parents=True)
+    (w / "home.json").write_text(json.dumps(_doc("Home")))
+    (w / "castle-quest" / "throne.json").write_text(json.dumps(_doc("Throne")))
+    (w / "_active.txt").write_text("home")
+    (cache / "worlds" / "_session.txt").write_text("daniel/agents/builder\thome")
+    sp = cache / "spaces" / "daniel"; sp.mkdir(parents=True)
+    (sp / "home.json").write_text("{}"); (sp / "_active.txt").write_text("home")
+
+    assert migrate_cache_to_users(cache) is True
+
+    base = cache / "users" / "daniel" / "agents" / "builder" / "sessions" / "session-1"
+    assert (base / "worlds" / "home.json").exists()
+    assert (base / "worlds" / "castle-quest" / "throne.json").exists()      # nesting preserved
+    meta = json.loads((base / "session.json").read_text())
+    assert (meta["active_world"], meta["agent"], meta["owner"]) == ("home", "builder", "daniel")
+    assert (base.parent / "_active.txt").read_text() == "session-1"
+    assert (cache / "_session.txt").read_text() == "daniel/agents/builder\tsession-1"
+    assert (cache / "users" / "daniel" / "spaces" / "home.json").exists()
+    assert not (cache / "worlds").exists() and not (cache / "spaces").exists()   # old trees gone
+    repo = SessionRepository(cache / "users")                                # reachable via the repo
+    assert repo.list("daniel/agents/builder") == ["session-1"]
+    assert repo.worlds("daniel/agents/builder", "session-1").list() == ["castle-quest/throne", "home"]
+
+
+def test_migrate_active_world_falls_back_when_no_pointer(tmp_path):
+    from conjure.world import migrate_cache_to_users
+    w = tmp_path / "worlds" / "daniel" / "agents" / "outdoor"
+    w.mkdir(parents=True)
+    (w / "meadow.json").write_text(json.dumps(_doc("Meadow")))            # no _active.txt
+    assert migrate_cache_to_users(tmp_path) is True
+    meta = json.loads((tmp_path / "users" / "daniel" / "agents" / "outdoor"
+                       / "sessions" / "session-1" / "session.json").read_text())
+    assert meta["active_world"] == "meadow"                                # fell back to the only world
+
+
+def test_migrate_is_idempotent_and_noop_on_fresh(tmp_path):
+    from conjure.world import migrate_cache_to_users
+    assert migrate_cache_to_users(tmp_path) is False                       # nothing to migrate
+    w = tmp_path / "worlds" / "daniel" / "agents" / "builder"; w.mkdir(parents=True)
+    (w / "home.json").write_text(json.dumps(_doc()))
+    assert migrate_cache_to_users(tmp_path) is True
+    assert migrate_cache_to_users(tmp_path) is False                       # users/ exists now → no-op
