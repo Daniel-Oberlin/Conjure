@@ -473,8 +473,10 @@ Newly settled from this round's comments:
    via `.cache/_session.txt`). *Deferred within this step:* promoting the world doc `id` to the reference
    identity (§3 Identity) — worlds are still addressed by slug; fine until the world-graph (§5.5) lands.
 2. **Transcript persistence** (§4): append on turn-done; **full replay** on load; wire the agent server's
-   single writer. Store `ts`; context-injection of time stays off. (Rolling summarization to fit the
-   context window is a later add — §4 "Fitting the transcript…" — and doesn't block anything.)
+   single writer. ✅ **Done** (`SessionRepository.append/read_transcript`; world `/state` carries the live
+   `session`; the agent server appends each turn and replays the saved dialog on session bind/change).
+   *Deferred:* storing `ts` (lands with the timestamps feature) and rolling summarization (§4 "Fitting the
+   transcript…") — both non-blocking.
 3. **Session shell verbs:** list / switch / rename / delete / new (§8.10 guards), incl. `session.json.llm`
    restore + the priority-list selection (§2).
 4. **Constructor** (§6): scripted tool-call runner (async, fail-soft), the `world`⊕`first_world` chain,
