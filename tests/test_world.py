@@ -323,3 +323,36 @@ def test_sessionrepo_paths_and_rejects_traversal(tmp_path):
     for bad_scope in ("../../etc", "daniel/..", ""):
         with pytest.raises(ValueError):
             repo.list(bad_scope)
+
+
+# -- WorldDir (the name-addressed layer WorldRepository + SessionRepository both reuse) -----------
+
+def test_worlddir_roundtrip_active_nested_and_prune(tmp_path):
+    from conjure.world import WorldDir
+    wd = WorldDir(tmp_path / "worlds")
+    assert wd.list() == [] and wd.get_active() is None
+    wd.save("home", WorldStore(_doc("Home")))
+    wd.save("Castle Quest/Throne Room", WorldStore(_doc()))
+    assert wd.list() == ["castle-quest/throne-room", "home"]          # slugged + nested, recursive
+    assert wd.exists("HOME") and wd.load("home").doc["name"] == "Home"
+    wd.set_active("home")
+    assert wd.get_active() == "home"
+    assert wd.delete("home") is True and wd.get_active() is None      # pointer cleared with its target
+    assert (tmp_path / "worlds" / "castle-quest" / "throne-room.json").exists()
+    wd.delete("castle-quest/throne-room")
+    assert not (tmp_path / "worlds" / "castle-quest").exists()        # now-empty parent pruned
+
+
+def test_sessionrepo_worlds_is_a_worlddir_under_the_session(tmp_path):
+    from conjure.world import SessionRepository, WorldDir
+    repo = SessionRepository(tmp_path)
+    scope = "daniel/agents/builder"
+    repo.save_meta(scope, "session-1", _meta())
+    wd = repo.worlds(scope, "session-1")
+    assert isinstance(wd, WorldDir)
+    wd.save("home", WorldStore(_doc("Home")))
+    assert wd.list() == ["home"]
+    assert (tmp_path / "daniel" / "agents" / "builder" / "sessions" / "session-1"
+            / "worlds" / "home.json").exists()
+    repo.delete(scope, "session-1")                                   # deleting the session takes worlds
+    assert repo.worlds(scope, "session-1").list() == []

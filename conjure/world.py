@@ -153,6 +153,62 @@ class WorldStore:
                 raise ValueError("patch op missing 'op'")
 
 
+class WorldDir:
+    """Named, hierarchical world documents inside ONE directory: ``<dir>/<name>.json`` (a name may nest,
+    e.g. ``castle-quest/dining-hall``, each segment slug-normalized). A per-dir ``_active.txt`` records
+    the live world.
+
+    This is the **name-addressed** layer that both `WorldRepository` (which roots one per capability
+    scope, ``<root>/<scope>/``) and `SessionRepository` (which roots one per session's ``worlds/``) reuse
+    — the only difference between them is *which directory* the worlds live in (docs/sessions-plan.md §3,
+    Option 1). Keeping this separate is what lets `scope` stay the pure capability namespace while worlds
+    move under a session.
+    """
+
+    def __init__(self, dir: str | Path):
+        self.dir = Path(dir)
+
+    def _path(self, name: str) -> Path:
+        return self.dir / f"{world_path(name)}.json"
+
+    def list(self) -> list[str]:
+        """Every world as a canonical hierarchical path, recursively. ``_active.txt`` is a .txt, so it's
+        never matched and never listed."""
+        if not self.dir.is_dir():
+            return []
+        return sorted(p.relative_to(self.dir).as_posix()[: -len(".json")] for p in self.dir.rglob("*.json"))
+
+    def exists(self, name: str) -> bool:
+        return self._path(name).exists()
+
+    def load(self, name: str) -> "WorldStore":
+        return WorldStore.load(self._path(name))
+
+    def save(self, name: str, store: "WorldStore") -> None:
+        store.save(self._path(name))
+
+    def delete(self, name: str) -> bool:
+        p = self._path(name)
+        if not p.exists():
+            return False
+        p.unlink()
+        if self.get_active() == world_path(name):
+            (self.dir / "_active.txt").unlink(missing_ok=True)
+        d = p.parent                                       # prune now-empty parent folders in the tree
+        while d != self.dir and d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+            d = d.parent
+        return True
+
+    def get_active(self) -> str | None:
+        p = self.dir / "_active.txt"
+        return (p.read_text().strip() or None) if p.exists() else None
+
+    def set_active(self, name: str) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / "_active.txt").write_text(world_path(name))
+
+
 class WorldRepository:
     """Named world documents on disk under a scope: ``<root>/<scope>/<name>.json``.
 
@@ -171,16 +227,14 @@ class WorldRepository:
             raise ValueError(f"bad scope {scope!r}")
         return self.root.joinpath(*parts)
 
-    def _path(self, scope: str, name: str) -> Path:
-        return self._scope_dir(scope) / f"{world_path(name)}.json"
+    def _dir(self, scope: str) -> "WorldDir":
+        """The scope's world directory as a `WorldDir` — the name-addressed layer this scope wraps."""
+        return WorldDir(self._scope_dir(scope))
 
     def list(self, scope: str) -> list[str]:
         """All worlds in the scope, as canonical hierarchical paths ('castle-quest/dining-hall'),
         recursively. The per-scope '_active.txt' pointer isn't a world, so it's never listed."""
-        d = self._scope_dir(scope)
-        if not d.is_dir():
-            return []
-        return sorted(p.relative_to(d).as_posix()[: -len(".json")] for p in d.rglob("*.json"))
+        return self._dir(scope).list()
 
     def list_public(self, *, exclude_scope: str | None = None) -> list[dict]:
         """Every PUBLIC world across *all* scopes — the cross-user 'worlds available to me' discovery
@@ -209,36 +263,22 @@ class WorldRepository:
         return out
 
     def exists(self, scope: str, name: str) -> bool:
-        return self._path(scope, name).exists()
+        return self._dir(scope).exists(name)
 
     def load(self, scope: str, name: str) -> "WorldStore":
-        return WorldStore.load(self._path(scope, name))
+        return self._dir(scope).load(name)
 
     def save(self, scope: str, name: str, store: "WorldStore") -> None:
-        store.save(self._path(scope, name))
+        self._dir(scope).save(name, store)
 
     def delete(self, scope: str, name: str) -> bool:
-        p = self._path(scope, name)
-        if not p.exists():
-            return False
-        p.unlink()
-        if self.get_active(scope) == world_path(name):
-            (self._scope_dir(scope) / "_active.txt").unlink(missing_ok=True)
-        scope_dir = self._scope_dir(scope)                 # prune now-empty parent folders in the tree
-        d = p.parent
-        while d != scope_dir and d.is_dir() and not any(d.iterdir()):
-            d.rmdir()
-            d = d.parent
-        return True
+        return self._dir(scope).delete(name)
 
     def get_active(self, scope: str) -> str | None:
-        p = self._scope_dir(scope) / "_active.txt"
-        return (p.read_text().strip() or None) if p.exists() else None
+        return self._dir(scope).get_active()
 
     def set_active(self, scope: str, name: str) -> None:
-        d = self._scope_dir(scope)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "_active.txt").write_text(world_path(name))
+        self._dir(scope).set_active(name)
 
     def get_last_agent(self, user: str) -> str | None:
         """The agent this `user` last used. **Legacy / migration read-through only** — superseded by the
@@ -346,6 +386,13 @@ class SessionRepository:
 
     def worlds_dir(self, scope: str, sid: str) -> Path:
         return self.dir(scope, sid) / "worlds"
+
+    def worlds(self, scope: str, sid: str) -> "WorldDir":
+        """The session's worlds as a name-addressed `WorldDir` rooted at ``.../sessions/<id>/worlds/``
+        (docs/sessions-plan.md §3, Option 1) — the same per-name API as a scope's worlds, one level
+        deeper. This is how the runtime reaches the live session's worlds without threading a scope
+        through every call: resolve the active session once, then address worlds by name."""
+        return WorldDir(self.worlds_dir(scope, sid))
 
     # -- meta CRUD -------------------------------------------------------------------------------
     def list(self, scope: str) -> list[str]:
