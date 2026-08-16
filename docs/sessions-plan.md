@@ -451,15 +451,15 @@ Newly settled from this round's comments:
     in-plan (§6). Any **nondeterministic (generative) step that fails aborts construction** — fail-hard +
     rollback (optionally after a bounded retry), never fail-soft. ✅
 
-**Still open:**
+**Deferred (decided, not day-one):**
 
 9. **Resume UX — what happens when you re-open a saved session?** Three sub-questions:
    - **(a) How much of the transcript goes back into the model's context?** → **Full replay now; add
      generic rolling summarization when it exceeds the model's budget** (§4 "Fitting the transcript into
      the context window"). The on-disk transcript always stays complete; only the context view compacts. ✅
-   - **(b) Do we show the user a recap on return?** A UX nicety *separate* from (a): an optional
-     `on_resume` step that emits "Previously, you were in the throne room…" as a visible/spoken turn.
-     **Lean:** optional `on_resume` hook, later.
+   - **(b) Do we show the user a recap on return?** → **Deferred.** An optional `on_resume` step that
+     emits "Previously, you were in the throne room…" as a visible/spoken turn — a nicety *separate* from
+     (a), added later; blocks nothing.
    - **(c) Does the model get a sense of elapsed time between sessions?** Covered by §4 Timestamps —
      opt-in, coarse, off by default.
 
