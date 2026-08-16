@@ -59,6 +59,8 @@ class AgentDef:
     servers: list[ServerRef] = field(default_factory=list)
     context: list[str] = field(default_factory=list)    # MCP resources to inject (later slice)
     personas: list[str] = field(default_factory=list)   # persona refs (later slice)
+    session: dict = field(default_factory=dict)         # session constructor block (greeting, first_world,
+                                                        # state seed) — docs/sessions-plan.md §6
 
     def allows_any_llm(self) -> bool:
         return WILDCARD in self.llms
@@ -123,7 +125,7 @@ def load_agent(name: str, *, agents_dir: Path = AGENTS_DIR,
         name=name, description=data.get("description", ""), prompt=prompt,
         llms=list(data.get("llms", [WILDCARD])), default_llm=data.get("default_llm"),
         servers=servers, context=list(data.get("context", [])),
-        personas=list(data.get("personas", [])),
+        personas=list(data.get("personas", [])), session=dict(data.get("session") or {}),
     )
 
 

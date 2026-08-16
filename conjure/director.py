@@ -289,6 +289,30 @@ class Director:
         finally:
             self._busy = False
 
+    async def greet(self, instruction: str) -> str:
+        """Produce a session's **generated** opening line (docs/sessions-plan.md §6): run the active LLM
+        once on `instruction` with the agent's system prompt, record ONLY the assistant turn (no user turn
+        — the greeting is system-initiated, not a human utterance), and return it. No tools (a greeting
+        shouldn't act on the world). Holds the single floor like `handle`."""
+        if self._busy:
+            raise Busy("the agent is already handling a turn")
+        self._busy = True
+        try:
+            async def _noop_exec(name, args):        # tools=[] ⇒ never called; satisfy the signature
+                return ""
+
+            async def _noop_emit(t, *, final):
+                return None
+
+            llm = self.roster[self.active]
+            final = await llm.run_turn(system=await self._system(), history=list(self.transcript),
+                                       user_text=instruction, tools=[], execute_tool=_noop_exec,
+                                       emit=_noop_emit)
+            self.transcript.append(Turn("assistant", final))
+            return final
+        finally:
+            self._busy = False
+
     async def _set_caller(self, speaker: str) -> None:
         """Tell the MCP server which user THIS turn's tool calls act as — the speaker — so the world server
         resolves ownership/permissions per-speaker in a shared session (agent-server-plan Step 3). Turns are

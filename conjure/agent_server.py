@@ -187,6 +187,42 @@ def _persist_llm(app: FastAPI) -> None:
         pass
 
 
+async def _maybe_greet(app: FastAPI) -> None:
+    """Speak a new session's opening line ONCE (docs/sessions-plan.md §6). The world server marks a fresh
+    session ``greeted: False``; here — if the transcript is empty and the agent declares a greeting — we
+    append it (literal verbatim, or generated via one LLM turn), persist it, broadcast it to live clients,
+    and flip ``greeted: True`` so reconnects/re-syncs never repeat it."""
+    cur = _current_session(app)
+    d = app.state.shell.director if app.state.shell else None
+    if d is None or cur is None:
+        return
+    scope, sid = cur
+    try:
+        meta = app.state.sessions.load_meta(scope, sid)
+    except (OSError, ValueError):
+        return
+    if meta.get("greeted") is not False or d.transcript:      # only a fresh, un-greeted, empty session
+        return
+    greeting = (getattr(d.agent, "session", {}) or {}).get("greeting")
+    text = ""
+    try:
+        if isinstance(greeting, str):
+            text = greeting.strip()
+        elif isinstance(greeting, dict) and greeting.get("generate"):
+            async with app.state.floor_lock:                  # serialize the LLM turn against user turns
+                text = (await d.greet(greeting["generate"])).strip()
+    except Exception as exc:  # noqa: BLE001 — a greeting must never strand the session
+        await app.state.hub.broadcast({"type": "notice", "text": f"[greeting failed: {exc}]"})
+        text = ""
+    if text:
+        if not (d.transcript and d.transcript[-1].text == text):   # `greet` already appended; literal didn't
+            d.transcript.append(Turn("assistant", text))
+        app.state.sessions.append_transcript(scope, sid, {"role": "assistant", "by": "", "text": text})
+        await app.state.hub.broadcast({"type": "assistant_final", "text": text, "llm": d.active})
+    meta["greeted"] = True                                     # mark greeted even if empty → never retry
+    app.state.sessions.save_meta(scope, sid, meta)
+
+
 def _persist_new_turns(app: FastAPI, before: int) -> None:
     """Append the turns the Director added this turn (its transcript grew past `before`) to the live
     session's `transcript.jsonl`. No-op until a session is known."""
@@ -285,6 +321,7 @@ async def _reconcile_state(app: FastAPI, state: dict) -> None:
                     return
     app.state.live = state
     _sync_transcript(app)                                # (re)load the live session's saved dialog (step 2)
+    await _maybe_greet(app)                              # speak a new session's opening line once (step 4b)
     await _broadcast_context(app)
 
 

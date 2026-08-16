@@ -33,6 +33,11 @@ class FakeDir:
         self.transcript.append(Turn("user", text.strip(), by=speaker))
         self.transcript.append(Turn("assistant", "done — a tree"))
 
+    async def greet(self, instruction):
+        text = f"welcome «{instruction}»"
+        self.transcript.append(Turn("assistant", text))
+        return text
+
 
 class FakeShell:
     """Just what the agent server calls: the routing engine (mode as a param), command dispatch, a
@@ -137,6 +142,40 @@ async def test_llm_switch_is_remembered_and_restored_per_session(tmp_path):
     app.state.loaded_session = None
     _sync_transcript(app)
     assert shell.director.active == "Gemini"
+
+
+def _greet_app(tmp_path, greeting, conns=()):
+    sessions = SessionRepository(tmp_path)
+    scope = "daniel/agents/builder"
+    sessions.save_meta(scope, "session-2", {"id": "session-2", "owner": "daniel", "agent": "builder",
+        "title": "S2", "public": True, "active_world": "home", "llm": "", "greeted": False})
+    shell = FakeShell()
+    shell.director.agent = types.SimpleNamespace(name="builder", session={"greeting": greeting})
+    app = _app(shell, conns, sessions=sessions)
+    app.state.live = {"scope": scope, "session": "session-2", "agent": "builder"}
+    return app, shell, sessions, scope
+
+
+async def test_new_session_speaks_a_literal_greeting_once(tmp_path):
+    from conjure.agent_server import _maybe_greet
+    conn = FakeConn("alice")
+    app, shell, sessions, scope = _greet_app(tmp_path, "Hello there", [conn])
+    await _maybe_greet(app)
+    assert [t.text for t in shell.director.transcript] == ["Hello there"]        # appended once
+    assert sessions.read_transcript(scope, "session-2")[-1]["text"] == "Hello there"   # persisted
+    assert sessions.load_meta(scope, "session-2")["greeted"] is True             # flag flipped
+    assert any(e.get("type") == "assistant_final" and e.get("text") == "Hello there" for e in conn.sent)
+    n = len(shell.director.transcript)
+    await _maybe_greet(app)                                                       # idempotent
+    assert len(shell.director.transcript) == n
+
+
+async def test_new_session_generated_greeting_runs_one_turn(tmp_path):
+    from conjure.agent_server import _maybe_greet
+    app, shell, sessions, scope = _greet_app(tmp_path, {"generate": "be warm"})
+    await _maybe_greet(app)
+    assert [t.text for t in shell.director.transcript] == ["welcome «be warm»"]   # generated, appended once
+    assert sessions.load_meta(scope, "session-2")["greeted"] is True
 
 
 async def test_reconcile_loads_the_saved_transcript_for_the_live_session(tmp_path):

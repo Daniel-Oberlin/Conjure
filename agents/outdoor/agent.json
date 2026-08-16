@@ -12,5 +12,8 @@
         "list_image_generators"
       ]
     }
-  ]
+  ],
+  "session": {
+    "greeting": "New session. Where would you like to go? Describe a place and I'll build the sky around you."
+  }
 }

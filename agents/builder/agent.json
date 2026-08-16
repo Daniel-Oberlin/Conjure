@@ -27,5 +27,8 @@
       { "cmd": "show_edges", "args": { "on": true } }
     ],
     "on_exit": []
+  },
+  "session": {
+    "greeting": "New session ready. What would you like to build or change?"
   }
 }
