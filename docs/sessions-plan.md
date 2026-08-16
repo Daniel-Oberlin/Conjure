@@ -482,8 +482,12 @@ Newly settled from this round's comments:
    (`/sessions`, `/session/{new,switch,rename,delete}`) + the switch flow; 3b: shell verbs (`sessions`,
    `session …`); 3c: the `llms` priority list (`_pick_active`) + per-session last-used LLM persist/restore.
    *Deferred:* a new session starts with a blank `home` world — the richer constructor is step 4.
-4. **Constructor** (§6): scripted tool-call runner (async, fail-soft), the `world`⊕`first_world` chain,
-   state seed-copy, and the greeting (literal + generated).
+4. **Constructor** (§6): the `world`⊕`first_world` chain, and the greeting (literal + generated).
+   ✅ **4a** — first-world naming + the on_create chain (`cmd`/`tool` steps → world ops); **4b** — the
+   greeting (`Director.greet` + the agent server's `_maybe_greet`, `greeted` flag). *Still to do:* **4c**
+   the async generative constructor step (skybox-from-description; fail-hard + rollback) — needs the image
+   pipeline + API keys, so it lands as a live-tested follow-up. State seed-copy folds into step 5 (it's
+   coupled to the `state_*` store).
 5. **Generic `state_*` tools** + `agent.json` `state` block + injection (§5); validation + undo (§5.6)
    follow.
 6. **Visibility/ownership move to session** (§8.2) + multi-user gate re-key (§8.3).
