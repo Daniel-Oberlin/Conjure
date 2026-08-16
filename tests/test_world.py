@@ -244,3 +244,82 @@ def test_spacestore_active_pointer_and_bad_user(tmp_path):
     for bad in ("../etc", "a/b", ".", ""):
         with pytest.raises(ValueError):
             s.list(bad)
+
+
+# -- SessionRepository (docs/sessions-plan.md §3) ------------------------------------------------
+
+def _meta(title="Session 1", agent="builder"):
+    return {"id": "session-1", "owner": "daniel", "agent": agent, "title": title,
+            "public": True, "active_world": "home", "llm": ""}
+
+
+def test_sessionrepo_meta_save_list_load_delete(tmp_path):
+    from conjure.world import SessionRepository
+    repo = SessionRepository(tmp_path)
+    scope = "daniel/agents/builder"
+    assert repo.list(scope) == []
+    assert not repo.exists(scope, "session-1")
+    repo.save_meta(scope, "session-1", _meta())
+    assert repo.list(scope) == ["session-1"]
+    assert repo.exists(scope, "session-1")
+    assert repo.load_meta(scope, "session-1")["title"] == "Session 1"
+    repo.save_meta(scope, "session-1", _meta(title="Renamed"))          # retitle = metadata edit
+    assert repo.load_meta(scope, "session-1")["title"] == "Renamed"
+    assert repo.delete(scope, "session-1") is True
+    assert repo.list(scope) == [] and repo.delete(scope, "session-1") is False
+
+
+def test_sessionrepo_delete_takes_the_whole_tree(tmp_path):
+    # Worlds/state/transcript belong to the session (§8.10) — deleting it removes them too.
+    from conjure.world import SessionRepository
+    repo = SessionRepository(tmp_path)
+    scope = "daniel/agents/builder"
+    repo.save_meta(scope, "session-1", _meta())
+    repo.worlds_dir(scope, "session-1").mkdir(parents=True)
+    (repo.worlds_dir(scope, "session-1") / "home.json").write_text("{}")
+    repo.state_dir(scope, "session-1").mkdir(parents=True)
+    (repo.state_dir(scope, "session-1") / "map.json").write_text("{}")
+    repo.transcript_path(scope, "session-1").write_text("{}\n")
+    assert repo.delete(scope, "session-1") is True
+    assert not repo.dir(scope, "session-1").exists()
+
+
+def test_sessionrepo_active_pointer_roundtrips_and_clears_on_delete(tmp_path):
+    from conjure.world import SessionRepository
+    repo = SessionRepository(tmp_path)
+    scope = "daniel/agents/builder"
+    repo.save_meta(scope, "session-1", _meta())
+    assert repo.get_active(scope) is None
+    repo.set_active(scope, "session-1")
+    assert repo.get_active(scope) == "session-1"
+    repo.delete(scope, "session-1")
+    assert repo.get_active(scope) is None                                # cleared with its target
+    assert repo.list(scope) == []                                        # _active.txt not a session
+
+
+def test_sessionrepo_scope_isolation(tmp_path):
+    from conjure.world import SessionRepository
+    repo = SessionRepository(tmp_path)
+    repo.save_meta("daniel/agents/builder", "session-1", _meta())
+    repo.save_meta("daniel/agents/outdoor", "session-1", _meta(agent="outdoor"))  # same id, other scope
+    assert repo.list("daniel/agents/builder") == ["session-1"]
+    assert repo.list("daniel/agents/outdoor") == ["session-1"]
+    repo.delete("daniel/agents/builder", "session-1")
+    assert repo.list("daniel/agents/outdoor") == ["session-1"]                     # untouched
+
+
+def test_sessionrepo_paths_and_rejects_traversal(tmp_path):
+    from conjure.world import SessionRepository
+    repo = SessionRepository(tmp_path)
+    scope = "daniel/agents/builder"
+    base = tmp_path / "daniel" / "agents" / "builder" / "sessions" / "session-1"
+    assert repo.meta_path(scope, "session-1") == base / "session.json"
+    assert repo.transcript_path(scope, "session-1") == base / "transcript.jsonl"
+    assert repo.worlds_dir(scope, "session-1") == base / "worlds"
+    assert repo.state_dir(scope, "session-1") == base / "state"
+    for bad_id in ("../evil", "a/b", ".", "", "  "):
+        with pytest.raises(ValueError):
+            repo.dir(scope, bad_id)
+    for bad_scope in ("../../etc", "daniel/..", ""):
+        with pytest.raises(ValueError):
+            repo.list(bad_scope)

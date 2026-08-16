@@ -291,6 +291,106 @@ class WorldRepository:
         return n
 
 
+def _session_seg(seg: str) -> str:
+    """Validate a session **id** as one safe path segment — kept **verbatim** (not slugified, so a
+    stable id never shifts under us) and rejecting traversal/empties. The mutable human *title* lives in
+    the meta doc, not the path, so a rename never moves anything on disk (docs/sessions-plan.md §3)."""
+    if not seg or seg in (".", "..") or not _SCOPE_PART.fullmatch(seg):
+        raise ValueError(f"bad session id {seg!r}")
+    return seg
+
+
+class SessionRepository:
+    """Sessions on disk under a scope: ``<root>/<user>/agents/<agent>/sessions/<id>/`` (docs/
+    sessions-plan.md §3). A *session* is an instance of an agent — its meta (``session.json``), its
+    append-only transcript (``transcript.jsonl``), its agent state (``state/``), and the worlds created
+    within it (``worlds/``).
+
+    The **scope** (``<user>/agents/<agent>``) is the same trusted, runtime-injected capability namespace
+    as `WorldRepository` — never an LLM argument — validated segment-by-segment so a session can't escape
+    the root. The session **id** is a stable, safe segment; the mutable human **title** lives in the meta
+    doc, so a rename is a metadata edit that moves nothing. A per-scope ``sessions/_active.txt`` records
+    the live session for that scope.
+
+    **Step 1 scope (docs/sessions-plan.md §9):** the container — meta CRUD, the per-scope active pointer,
+    and the **path helpers** (`worlds_dir`/`state_dir`/`transcript_path`) that later steps' transcript,
+    state, and world sub-stores build on. Those I/O layers wire in on steps 2, 4, 5; nothing imports this
+    class yet, so it changes no runtime behavior.
+    """
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root)
+
+    def _scope_dir(self, scope: str) -> Path:
+        parts = (scope or "").split("/")
+        if not parts or any(p in ("", ".", "..") or not _SCOPE_PART.fullmatch(p) for p in parts):
+            raise ValueError(f"bad scope {scope!r}")
+        return self.root.joinpath(*parts)
+
+    def _sessions_dir(self, scope: str) -> Path:
+        return self._scope_dir(scope) / "sessions"
+
+    # -- addressing (the seam later steps build on) ----------------------------------------------
+    def dir(self, scope: str, sid: str) -> Path:
+        """The session's directory; its ``worlds/``, ``state/`` and transcript live beneath it."""
+        return self._sessions_dir(scope) / _session_seg(sid)
+
+    def meta_path(self, scope: str, sid: str) -> Path:
+        return self.dir(scope, sid) / "session.json"
+
+    def transcript_path(self, scope: str, sid: str) -> Path:
+        return self.dir(scope, sid) / "transcript.jsonl"
+
+    def state_dir(self, scope: str, sid: str) -> Path:
+        return self.dir(scope, sid) / "state"
+
+    def worlds_dir(self, scope: str, sid: str) -> Path:
+        return self.dir(scope, sid) / "worlds"
+
+    # -- meta CRUD -------------------------------------------------------------------------------
+    def list(self, scope: str) -> list[str]:
+        """The session ids under a scope (immediate subdirs of ``sessions/``); the ``_active.txt``
+        pointer is not a session, so it's never listed."""
+        d = self._sessions_dir(scope)
+        return sorted(p.name for p in d.iterdir() if p.is_dir()) if d.is_dir() else []
+
+    def exists(self, scope: str, sid: str) -> bool:
+        return self.meta_path(scope, sid).exists()
+
+    def load_meta(self, scope: str, sid: str) -> dict:
+        return json.loads(self.meta_path(scope, sid).read_text())
+
+    def save_meta(self, scope: str, sid: str, meta: dict) -> None:
+        """Create-or-update the session's ``session.json`` (atomic temp+rename). Creating the file also
+        materializes the session directory."""
+        p = self.meta_path(scope, sid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(meta))
+        tmp.replace(p)
+
+    def delete(self, scope: str, sid: str) -> bool:
+        """Remove the whole session directory — its transcript, state, and worlds included (worlds belong
+        to the session; docs/sessions-plan.md §8.10). Clears the active pointer if it named this one."""
+        d = self.dir(scope, sid)
+        if not d.is_dir():
+            return False
+        shutil.rmtree(d)
+        if self.get_active(scope) == sid:
+            (self._sessions_dir(scope) / "_active.txt").unlink(missing_ok=True)
+        return True
+
+    # -- per-scope active pointer ----------------------------------------------------------------
+    def get_active(self, scope: str) -> str | None:
+        p = self._sessions_dir(scope) / "_active.txt"
+        return (p.read_text().strip() or None) if p.exists() else None
+
+    def set_active(self, scope: str, sid: str) -> None:
+        d = self._sessions_dir(scope)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "_active.txt").write_text(_session_seg(sid))
+
+
 class SpaceStore:
     """Named, **USER-owned** physical spaces on disk: ``<root>/<user>/<name>.json`` (docs/
     spaces-and-users-plan.md §5). A *space* is the captured real geometry — `surfaces` (geometry +
