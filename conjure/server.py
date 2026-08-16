@@ -3113,6 +3113,8 @@ def _live_state() -> dict:
     return {
         "scope": active_scope,
         "agent": agent_of(active_scope),
+        "session": active_sid,          # the live SESSION within the scope (docs/sessions-plan.md §3); the
+                                        # agent server keys its transcript on (scope, session)
         "world": active_world,
         "owner": active_scope.split("/", 1)[0],
         "space": VOID if active_space == VOID else _space_ref(active_space_owner, active_space),

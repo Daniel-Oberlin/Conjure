@@ -5,12 +5,14 @@ a fake shell + fake connections — no network, no MCP subprocess, no LLM. The `
 with a TestClient over an injected fake shell (build_app's `shell=` bypasses the real Shell.session)."""
 
 import asyncio
+import tempfile
 import types
 
 from conjure.agent_server import (Hub, _backlog_events, _context_event, _handle_turn, _reconcile_state,
-                                   build_app)
+                                   _sync_transcript, build_app)
 from conjure.config import get_settings
 from conjure.llm import Turn
+from conjure.world import SessionRepository
 
 
 # --------------------------------------------------------------------------- fakes
@@ -75,12 +77,13 @@ class FakeConn:
         self.sent.append(event)
 
 
-def _app(shell, conns=()):
+def _app(shell, conns=(), sessions=None):
     hub = Hub()
     for c in conns:
         hub.add(c)
     return types.SimpleNamespace(state=types.SimpleNamespace(
-        shell=shell, hub=hub, turn_active=False, floor_lock=asyncio.Lock(), live=None, user="daniel"))
+        shell=shell, hub=hub, turn_active=False, floor_lock=asyncio.Lock(), live=None, user="daniel",
+        sessions=sessions or SessionRepository(tempfile.mkdtemp()), loaded_session=None))
 
 
 def _kinds(conn):
@@ -100,6 +103,33 @@ async def test_utterance_broadcasts_conversation_and_ends_with_turn_done():
     ut = next(e for e in conn.sent if e["type"] == "user_turn")
     assert ut == {"type": "user_turn", "speaker": "alice", "text": "put a tree here"}
     assert app.state.turn_active is False                         # floor released
+
+
+# --------------------------------------------------------------------------- transcript persistence (step 2)
+
+async def test_utterance_is_persisted_to_the_session_transcript(tmp_path):
+    shell = FakeShell()
+    conn = FakeConn("alice")
+    app = _app(shell, [conn], sessions=SessionRepository(tmp_path))
+    app.state.live = {"scope": "daniel/agents/builder", "session": "session-1"}
+    await _handle_turn(app, conn, "put a tree here")
+    saved = app.state.sessions.read_transcript("daniel/agents/builder", "session-1")
+    assert [(e["role"], e["by"], e["text"]) for e in saved] == [
+        ("user", "alice", "put a tree here"), ("assistant", "", "done — a tree")]
+
+
+async def test_reconcile_loads_the_saved_transcript_for_the_live_session(tmp_path):
+    # A saved session's dialog is replayed into the Director when it becomes live (restart / switch-back).
+    sessions = SessionRepository(tmp_path)
+    sessions.append_transcript("daniel/agents/builder", "session-1", {"role": "user", "by": "bob", "text": "hi"})
+    sessions.append_transcript("daniel/agents/builder", "session-1", {"role": "assistant", "by": "", "text": "hello"})
+    shell = FakeShell()
+    app = _app(shell, [], sessions=sessions)
+    await _reconcile_state(app, {"agent": "builder", "scope": "daniel/agents/builder",
+                                 "session": "session-1", "world": "default", "space": "<void>", "owner": "daniel"})
+    assert [(t.speaker, t.by, t.text) for t in shell.director.transcript] == [
+        ("user", "bob", "hi"), ("assistant", "", "hello")]
+    assert app.state.loaded_session == ("daniel/agents/builder", "session-1")
 
 
 async def test_second_utterance_is_rejected_busy_while_one_is_in_flight():

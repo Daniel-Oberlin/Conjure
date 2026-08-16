@@ -411,6 +411,33 @@ class SessionRepository:
         through every call: resolve the active session once, then address worlds by name."""
         return WorldDir(self.worlds_dir(scope, sid))
 
+    # -- transcript (append-only JSONL; docs/sessions-plan.md §4) --------------------------------
+    def append_transcript(self, scope: str, sid: str, entry: dict) -> None:
+        """Append one turn as a JSON line — cheap O(1) growth, no whole-file rewrite. Entries are plain
+        dicts (``{role, by, text, …}``); the agent server converts to/from its `Turn`, so this layer stays
+        free of any conversation type."""
+        p = self.transcript_path(scope, sid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def read_transcript(self, scope: str, sid: str) -> list[dict]:
+        """The saved dialog as a list of entry dicts (empty if none). A torn final line (crash mid-append)
+        is skipped rather than fatal — the append-only format degrades to "lose the last turn"."""
+        p = self.transcript_path(scope, sid)
+        if not p.exists():
+            return []
+        out: list[dict] = []
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue                                   # tolerate a torn final line
+        return out
+
     # -- meta CRUD -------------------------------------------------------------------------------
     def list(self, scope: str) -> list[str]:
         """The session ids under a scope (immediate subdirs of ``sessions/``); the ``_active.txt``

@@ -362,6 +362,21 @@ def test_sessionrepo_worlds_is_a_worlddir_under_the_session(tmp_path):
     assert repo.worlds(scope, "session-1").list() == []
 
 
+def test_sessionrepo_transcript_append_read_roundtrip_and_tolerates_torn_line(tmp_path):
+    from conjure.world import SessionRepository
+    repo = SessionRepository(tmp_path)
+    scope = "daniel/agents/builder"
+    assert repo.read_transcript(scope, "session-1") == []             # none yet
+    repo.append_transcript(scope, "session-1", {"role": "user", "by": "daniel", "text": "hi"})
+    repo.append_transcript(scope, "session-1", {"role": "assistant", "by": "", "text": "hello"})
+    got = repo.read_transcript(scope, "session-1")
+    assert [(e["role"], e["by"], e["text"]) for e in got] == [
+        ("user", "daniel", "hi"), ("assistant", "", "hello")]
+    with repo.transcript_path(scope, "session-1").open("a") as f:     # a crash mid-append → torn last line
+        f.write('{"role": "user", "by": "dan')
+    assert len(repo.read_transcript(scope, "session-1")) == 2         # torn line skipped, not fatal
+
+
 # -- migration to the user-first session tree (docs/sessions-plan.md §7) --------------------------
 
 def test_migrate_cache_to_users(tmp_path):

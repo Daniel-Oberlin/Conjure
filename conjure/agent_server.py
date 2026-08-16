@@ -30,9 +30,11 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from .config import DEFAULT_USER, Settings
+from .config import DEFAULT_USER, USERS_DIR, Settings
 from .director import Busy
+from .llm import Turn
 from .shell import Shell
+from .world import MIGRATED_SID, SessionRepository
 
 
 # --------------------------------------------------------------------------- connections + fan-out
@@ -120,6 +122,55 @@ async def _broadcast_context(app: FastAPI) -> None:
         await _send_context(app, c)
 
 
+# --------------------------------------------------------------------------- transcript persistence (step 2)
+
+def _current_session(app: FastAPI) -> Optional[tuple[str, str]]:
+    """The `(scope, session-id)` of the live session, from the world server's state (Step 2). `session`
+    is authoritative when present; else fall back to the scope's on-disk active session (one per scope in
+    step 1). None until the first world snapshot names a scope."""
+    live = app.state.live
+    if not live or not live.get("scope"):
+        return None
+    scope = live["scope"]
+    sid = live.get("session") or app.state.sessions.get_active(scope) or MIGRATED_SID
+    return (scope, sid)
+
+
+def _entry(turn: "Turn") -> dict:
+    """A transcript `Turn` → its persisted JSON entry (and back via `_turn`). `role` is user/assistant;
+    `by` is the human speaker (user turns only)."""
+    return {"role": turn.speaker, "by": turn.by, "text": turn.text}
+
+
+def _turn(entry: dict) -> "Turn":
+    return Turn(entry.get("role", "user"), entry.get("text", ""), by=entry.get("by", ""))
+
+
+def _sync_transcript(app: FastAPI) -> None:
+    """Load the live session's saved transcript into the Director once per session change — so a restart or
+    an agent switch resumes the conversation (a re-bind gives a fresh, empty Director; this refills it from
+    disk). Idempotent: tracked by `app.state.loaded_session`."""
+    cur = _current_session(app)
+    d = app.state.shell.director if app.state.shell else None
+    if d is None or cur is None or cur == app.state.loaded_session:
+        return
+    scope, sid = cur
+    d.transcript = [_turn(e) for e in app.state.sessions.read_transcript(scope, sid)]
+    app.state.loaded_session = cur
+
+
+def _persist_new_turns(app: FastAPI, before: int) -> None:
+    """Append the turns the Director added this turn (its transcript grew past `before`) to the live
+    session's `transcript.jsonl`. No-op until a session is known."""
+    cur = _current_session(app)
+    d = app.state.shell.director if app.state.shell else None
+    if d is None or cur is None:
+        return
+    scope, sid = cur
+    for turn in d.transcript[before:]:
+        app.state.sessions.append_transcript(scope, sid, _entry(turn))
+
+
 # --------------------------------------------------------------------------- handling one line
 
 async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
@@ -150,7 +201,9 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
 
                 # Hold the floor so a follower re-bind can't tear down the MCP session mid-tool-call (C2).
                 async with app.state.floor_lock:
+                    before = len(shell.director.transcript)
                     await shell.director.handle(text, speaker=conn.user, on_text=on_text, on_tool=on_tool)
+                    _persist_new_turns(app, before)      # append this turn to the session's transcript (step 2)
             finally:
                 app.state.turn_active = False
         elif shell.is_open_shell(cmd):                   # ---- enter shell mode (this connection only)
@@ -200,6 +253,7 @@ async def _reconcile_state(app: FastAPI, state: dict) -> None:
                     await hub.broadcast({"type": "notice", "text": f"[couldn't follow to agent {new_agent}: {exc}]"})
                     return
     app.state.live = state
+    _sync_transcript(app)                                # (re)load the live session's saved dialog (step 2)
     await _broadcast_context(app)
 
 
@@ -285,6 +339,8 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
         app.state.hub = Hub()
         app.state.turn_active = False
         app.state.live = None                            # last world-server state tuple (set by the follower)
+        app.state.sessions = SessionRepository(USERS_DIR)  # transcript store; tests may repoint at a tmp
+        app.state.loaded_session = None                  # (scope, sid) whose transcript is loaded (step 2)
         app.state.floor_lock = asyncio.Lock()            # serializes turns against a follower re-bind (C2)
         app.state.stop_follow = asyncio.Event()
         app.state.shell_ready = asyncio.Event()

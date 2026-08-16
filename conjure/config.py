@@ -14,6 +14,14 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# The on-disk cache root + the user-first tree (docs/sessions-plan.md §3). Defined here (not just in
+# server.py) so the agent server can locate a session's transcript/state without importing the heavy
+# world-server module. `<user>/agents/<agent>/sessions/<id>/…` and `<user>/spaces/…` live under USERS_DIR;
+# the global session pointer is `<CACHE_DIR>/_session.txt`.
+CACHE_DIR = ROOT / ".cache"
+USERS_DIR = CACHE_DIR / "users"
+SESSION_PTR = CACHE_DIR / "_session.txt"
+
 # The default logged-in user when none is specified (--user / the /tunnel/<user> route).
 # No security — users are identity only (docs/spaces-and-users-plan.md).
 DEFAULT_USER = "daniel"
