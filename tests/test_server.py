@@ -1783,6 +1783,34 @@ def test_session_new_list_switch_rename_delete(srv, client):
                                client.get("/sessions", params={"scope": scope}).json()["sessions"]}
 
 
+def test_first_world_spec_and_constructor_command_forms(srv):
+    import conjure.server as S
+    assert S._first_world_spec("daniel/agents/builder") == ("home", [])   # no session block → default
+    # a constructor step names its command as `cmd` OR `tool` — both resolve
+    ops = S._run_world_commands([{"cmd": "show_edges", "args": {"on": True}},
+                                 {"tool": "set_sky_color", "args": {"color": "#123456"}}])
+    assert {"op": "env", "set": {"room.edgesVisible": True}} in ops
+    assert {"op": "env", "set": {"sky": {"color": "#123456"}}} in ops
+
+
+def test_new_world_store_runs_world_then_first_world_chain(srv):
+    # world.on_create (builder: edges ON) runs first, then the first-world-only chain (edges OFF) — the
+    # later step wins, proving the chain order (docs/sessions-plan.md §6).
+    import conjure.server as S
+    s = S._new_world_store("daniel/agents/builder",
+                           extra_on_create=[{"tool": "show_edges", "args": {"on": False}}])
+    assert s.doc["environment"]["room"]["edgesVisible"] is False
+
+
+def test_session_new_builds_the_first_world_from_the_constructor(srv, client):
+    scope = srv.DEFAULT_SCOPE
+    srv._ensure_session(scope)
+    client.post("/session/new", json={"scope": scope})
+    assert srv.active_world == "home"                                     # default first-world name
+    assert srv.worlds.list(scope) == ["home"]                            # built in the new session
+    assert srv.store.doc["environment"]["room"]["edgesVisible"] is True   # builder's world.on_create ran
+
+
 def test_boot_world_restores_the_global_session_pointer(srv):
     # After a restart, boot resumes exactly the session the global pointer records — the scope's active
     # session, and that session's active world — so the viewer comes back where everyone was, agent

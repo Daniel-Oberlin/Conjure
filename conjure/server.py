@@ -89,25 +89,52 @@ _WORLD_COMMANDS = {
 }
 
 
-def _agent_world_config(scope: str) -> dict:
-    """The owning agent's `world` block from agents/<agent>/agent.json (agent = the scope's last
-    segment). Missing/unreadable → no hooks."""
+def _agent_block(scope: str, key: str) -> dict:
+    """A named top-level block (`world`/`session`) from agents/<agent>/agent.json (agent = the scope's
+    last segment). Missing/unreadable → {}."""
     agent = (scope or "").rsplit("/", 1)[-1]
     try:
-        return json.loads((AGENTS_DIR / agent / "agent.json").read_text()).get("world") or {}
+        return json.loads((AGENTS_DIR / agent / "agent.json").read_text()).get(key) or {}
     except Exception:  # noqa: BLE001
         return {}
 
 
-def _new_world_store(scope: str) -> WorldStore:
-    """A fresh world: the blank starter + the owning agent's on_create constructor (run once)."""
+def _agent_world_config(scope: str) -> dict:
+    return _agent_block(scope, "world")
+
+
+def _first_world_spec(scope: str) -> tuple[str, list[dict]]:
+    """The session constructor's first-world spec (docs/sessions-plan.md §6): its NAME (default ``home``,
+    overridable) + the first-world-only `on_create` steps. `first_world` may be a bare string (name only)
+    or an object ``{name, on_create}``."""
+    fw = _agent_block(scope, "session").get("first_world")
+    if isinstance(fw, str):
+        return (fw or "home"), []
+    if isinstance(fw, dict):
+        return (fw.get("name") or "home"), list(fw.get("on_create") or [])
+    return "home", []
+
+
+def _run_world_commands(cmds: list[dict]) -> list[dict]:
+    """Compile constructor steps to world patch ops. A step names a command as ``cmd`` OR ``tool`` (the
+    scripted-tool-call form, §6); both resolve against `_WORLD_COMMANDS`. Unknown/generative steps (e.g.
+    skybox-from-description) aren't handled here yet — that's the async generative pass (step 4c)."""
+    ops: list[dict] = []
+    for c in cmds:
+        fn = _WORLD_COMMANDS.get(c.get("cmd") or c.get("tool"))
+        if fn:
+            ops.extend(fn(c.get("args") or {}))
+    return ops
+
+
+def _new_world_store(scope: str, *, extra_on_create: list[dict] = ()) -> WorldStore:
+    """A fresh world: the blank starter + the owning agent's `world.on_create` constructor. `extra_on_create`
+    appends the first-world-only chain (§6) when minting a session's first world — generic steps first,
+    then the specific ones."""
     s = WorldStore.load(SAMPLE_WORLD)
     s.doc.setdefault("environment", {})["public"] = True          # worlds are public by default (§4)
-    ops: list[dict] = []
-    for cmd in _agent_world_config(scope).get("on_create", []):
-        fn = _WORLD_COMMANDS.get(cmd.get("cmd"))
-        if fn:
-            ops.extend(fn(cmd.get("args") or {}))
+    ops = _run_world_commands(_agent_world_config(scope).get("on_create", []))
+    ops += _run_world_commands(list(extra_on_create))
     if ops:
         s.apply_patch(ops, origin="constructor")
     return s
@@ -985,15 +1012,19 @@ async def reset_world() -> dict:
 
 
 # ---- world management (scoped; scope is injected server-side, never an LLM argument) ----------------
-async def _switch_to(scope: str, name: str, store_override: WorldStore | None = None) -> dict:
+async def _switch_to(scope: str, name: str, store_override: WorldStore | None = None,
+                     *, sid: Optional[str] = None) -> dict:
     """Make (scope, name) the live world: persist the outgoing one, set the incoming as `store`, record
     it as active, and broadcast a snapshot so the headset reloads. `store_override` installs a freshly
-    built world (new_world) instead of loading from disk."""
+    built world (new_world) instead of loading from disk. `sid` names the target SESSION (default: the
+    scope's active session) — resolved AFTER `_save_active` so the outgoing world is written to the
+    session it actually belongs to, not the incoming one."""
     global store, active_scope, active_world, active_space, active_space_owner, active_sid
     name = world_path(name)                   # canonical path, so `active` matches list() + the pointer
-    _save_active()                            # split + persist the outgoing world (+ its space)
-    sid = _ensure_session(scope)             # the target scope's live session (create if fresh) — so the
-                                             # world facade routes to it before we load/save below
+    _save_active()                            # split + persist the outgoing world (+ its space) FIRST,
+                                              # while the OLD session is still the active one
+    sid = _ensure_session(scope, sid)        # now flip to the target session (create if fresh) — the
+                                             # world facade routes here for the load/save below
     raw = store_override if store_override is not None else worlds.load(scope, name)
     if store_override is not None:
         worlds.save(scope, name, raw)         # a freshly-built world isn't on disk yet — persist it here
@@ -1070,9 +1101,9 @@ async def _switch_session(scope: str, sid: str) -> dict:
     """Make session `sid` live: route worlds to it, resume its active world (or mint a blank ``home`` if
     it has none yet — the constructor that seeds a richer first world is a later step), and switch — which
     writes the global pointer ``(scope, sid)`` and broadcasts. The agent server follows the pointer and
-    swaps the transcript (step 2)."""
-    sessions.set_active(scope, sid)                 # so the world facade addresses THIS session's worlds
-    wdir = sessions.worlds(scope, sid)
+    swaps the transcript (step 2). We DON'T flip the scope's active session here — `_switch_to(sid=…)`
+    does it after saving the outgoing world, so it lands in the right session."""
+    wdir = sessions.worlds(scope, sid)              # explicit target — no active-pointer flip yet
     active = wdir.get_active()
     if not (active and wdir.exists(active)):
         raw = _new_world_store(scope)               # a fresh session with no world yet → a blank home
@@ -1080,7 +1111,7 @@ async def _switch_session(scope: str, sid: str) -> dict:
         wdir.save("home", raw)
         wdir.set_active("home")
         active = "home"
-    return await _switch_to(scope, active)
+    return await _switch_to(scope, active, sid=sid)
 
 
 class SessionRef(BaseModel):
@@ -1106,15 +1137,23 @@ async def sessions_list(scope: str = DEFAULT_SCOPE) -> dict:
 
 @app.post("/session/new")
 async def session_new(req: SessionRef) -> dict:
-    """Create a new session in `scope` and switch to it. It starts with a blank ``home`` world (the
-    richer constructor — greeting, seeded state, generative first world — lands in a later step)."""
+    """Create a new session in `scope` and switch to it. Its first world is built by the constructor
+    (docs/sessions-plan.md §6): named by the agent's `session.first_world` (default ``home``), set up by
+    `world.on_create` ⊕ the first-world-only `on_create` chain. The greeting is appended by the agent
+    server; generative first-world steps (skybox) are a later pass."""
     sid = _next_sid(req.scope)
     user = req.scope.split("/", 1)[0]
+    wname, fw_on_create = _first_world_spec(req.scope)
     sessions.save_meta(req.scope, sid, {
         "id": sid, "owner": user, "agent": agent_of(req.scope),
         "title": req.title or f"Session {sid.split('-')[-1]}", "public": True,
-        "active_world": "home", "llm": ""})
-    await _switch_session(req.scope, sid)
+        "active_world": wname, "llm": "", "greeted": False})
+    wdir = sessions.worlds(req.scope, sid)               # explicit target (no active-pointer flip — that's
+    raw = _new_world_store(req.scope, extra_on_create=fw_on_create)   # world ⊕ first_world constructor chain
+    _reset_room_authority(raw)                           #  done in _switch_to, after the outgoing save)
+    wdir.save(wname, raw)
+    wdir.set_active(wname)
+    await _switch_session(req.scope, sid)                # resumes the first world we just built
     return {"ok": True, "session": sid, "title": sessions.load_meta(req.scope, sid)["title"]}
 
 
