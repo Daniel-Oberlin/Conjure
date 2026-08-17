@@ -359,7 +359,7 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
                     await conn.send({"type": "notice", "text": t})
 
             before_llm = shell.director.active if shell.director else None
-            await shell._dispatch(cmd, on_text)
+            await shell._dispatch(cmd, on_text, speaker=conn.user)   # act as the SPEAKER (own scope), not host
             if shell.director and shell.director.active != before_llm:
                 _persist_llm(app)                        # a `use <llm>` sticks to the session (step 3c)
             await _broadcast_context(app)                # an LLM/agent switch changes everyone's prompt

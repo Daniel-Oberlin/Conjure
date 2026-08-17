@@ -251,6 +251,15 @@ async def test_session_verbs_route_to_the_right_endpoints():
     assert calls[-1][:2] == ("POST", "/session/visibility") and calls[-1][2]["public"] is True
 
 
+async def test_session_command_acts_as_the_speaker_not_the_host():
+    # A guest's session verb must target the GUEST's own scope — not the shared shell's host user — so a
+    # guest can't manage the host's sessions (reported bug: guest made the owner's session private).
+    sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True, "public": kw.get("public")})
+    await sh._dispatch("session private", on_text, speaker="guest")
+    assert calls[-1][:2] == ("POST", "/session/visibility")
+    assert calls[-1][2]["scope"] == "guest/agents/builder"          # guest's own scope, not daniel's
+
+
 async def test_session_error_is_surfaced_to_the_client():
     sh, out, on_text, calls = _session_shell(lambda *a: {"ok": False, "error": "no session 'zzz'"})
     await sh._dispatch("session switch zzz", on_text)

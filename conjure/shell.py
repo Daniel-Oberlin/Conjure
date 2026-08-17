@@ -49,6 +49,7 @@ class Shell:
         # `agent <name>` can tear down the current agent's MCP server and launch the next. Set by
         # `Shell.session`; None for a hand-built Shell(director) (e.g. tests — no switching).
         self._user = getattr(director, "user", DEFAULT_USER)
+        self._acting = self._user        # WHO the current command acts as (the speaker); set per `_dispatch`
         self._errlog = None
         self._stack: Optional[AsyncExitStack] = None
         self.in_shell = False
@@ -214,9 +215,13 @@ class Shell:
         """Does this command string turn shell mode OFF (back to the agent)?"""
         return bool(_LEAVE_SHELL.match(cmd))
 
-    async def _dispatch(self, cmd: str, on_text) -> None:
+    async def _dispatch(self, cmd: str, on_text, *, speaker: Optional[str] = None) -> None:
         if not cmd:
             return
+        # WHO typed this command (the connection's user), so identity-scoped verbs act as the speaker, not
+        # the shared shell's host user (else a guest could manage the host's sessions). Read synchronously
+        # by `_scope()` at each handler's start (before any await), so concurrent dispatches don't race.
+        self._acting = speaker or self._user
         if self._pending_delete is not None:                  # a delete is armed — this line is the y/n answer
             await self._confirm_delete(cmd, on_text)
             return
@@ -295,7 +300,7 @@ class Shell:
     # agent server's /ws follower just swaps the transcript (step 2) — so these can run in the connection
     # task and POST directly, no cross-task hook (unlike agent switching, docs/sessions-plan.md §3).
     def _scope(self) -> str:
-        return scope_for(self._user, self._agent_name())
+        return scope_for(self._acting, self._agent_name())    # the SPEAKER's scope (set per-dispatch), not host
 
     async def _session_api(self, method: str, path: str, **kw) -> dict:
         url = getattr(self._settings, "world_url", None) if self._settings else None
