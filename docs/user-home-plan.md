@@ -1,6 +1,6 @@
 # User home, settings & agent search-path — plan
 
-**Status:** PLAN (design agreed 2026-08-17; not yet built). Moves runtime state and agent definitions
+**Status:** BUILT (design agreed + implemented 2026-08-17; see §8). Moves runtime state and agent definitions
 out of the project directory into a user-owned home, adds a user settings file, and makes agent
 definitions a **search path** (user + bundled) instead of a single project dir. No security — users
 are identity only. Extends `spaces-and-users-plan.md` (namespace) and `sessions-plan.md` (the
@@ -166,18 +166,30 @@ Resolved: **build the local model now, don't preclude the server one.**
   Per-remote-user custom *definitions* (guests uploading their own agent dirs) is the only piece this
   layout doesn't yet cover — and it isn't precluded.
 
-## 8. Build order (proposed)
+## 8. Build order
 
-1. Central path resolver in `config.py` — `CONFIG_DIR`/`DATA_DIR`/`CACHE_DIR`/`AGENTS_PATH` from
-   settings > env > XDG (with `CONJURE_HOME` consolidation). Everything downstream reads these.
-2. `settings.json` load/create + defaults.
-3. Repoint `CACHE_DIR`/`USERS_DIR`/`SESSION_PTR` consumers (server.py, world.py, agent_server.py) at
-   `DATA_DIR`. Rename the tree `.cache` → `data`.
-4. Agent search path — `load_agent` + `shell.agents()` iterate `AGENTS_PATH`; user shadows bundled.
-5. Migration §6 + backup + breadcrumb.
-6. Docs: README, sessions-plan §3, spaces-and-users-plan §3 updated to the new roots.
+1. ✅ Central path resolver in `config.py` — `CONFIG_DIR`/`DATA_DIR`/`CACHE_ROOT`/`AGENTS_PATH` from
+   env > settings.json > XDG (with `CONJURE_HOME` consolidation). Monkeypatchable module constants.
+2. ✅ `settings.json` template + `ensure_settings_file()` (create-on-first-run, idempotent).
+3. ✅ + 5. Repoint `CACHE`/`USERS_DIR`/`SESSION_PTR`/`ASSET_CACHE`/`LIBRARY_DB` (config + server) at
+   `DATA_DIR`, **together with** the migration `migrate_project_cache_to_home()` (§6), so the app never
+   faces an empty home. (Landed as one commit; steps 3 and 5 were merged for this reason.)
+4. ✅ Agent search path — `load_agent`/`resolve_agent_dir`/`list_agents` iterate `AGENTS_PATH`; user
+   shadows bundled; `shell agents` tags user defs.
+6. ✅ Docs: README (data-location note), sessions-plan §3, spaces-and-users-plan §3 (superseded-root
+   banners).
 
-Each step tested (pytest + `node --test`) and committed; env override keeps tests on a tmpdir.
+Each step tested (pytest + `node --test`) and committed; env/monkeypatch overrides keep tests on tmpdirs.
+
+**Note — the tree keeps its `.cache`-era *relative* shape; only the root moved.** The plan spoke of a
+`.cache`→`data` *rename*; in practice the precious tree keeps its internal names (`users/`, `assets/`,
+`library.db`, `_session.txt`) and simply relocates under `DATA_DIR`. The rename that matters — cache
+(disposable) vs data (precious) — is expressed by the *root* it lives under, not by renaming children.
+
+**Note — two processes, one migration.** Only the world server runs the migration (in `_init_state`).
+The agent server reads `USERS_DIR` lazily (per request, via `SessionRepository`), so if it happens to
+boot before the world server on the very first migrating run, it simply sees no sessions until the
+world server relocates them — no crash, self-heals. Normal launch starts the world server first.
 
 ## 9. Decisions (resolved 2026-08-17)
 

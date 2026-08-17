@@ -35,6 +35,10 @@ user. Every item carries a `public: bool` flag (§4).
 
 ## 3. Namespace & scope
 
+> **Superseded root (docs/user-home-plan.md).** `.cache/…` paths in this doc describe the *relative*
+> tree; the root now resolves to the user home (`~/.local/share/conjure/`, `config.DATA_DIR`), not the
+> in-project `.cache/`. The namespace below is unchanged.
+
 ```
 /<user>/[agents/<agent>/]<category>/<name>
 

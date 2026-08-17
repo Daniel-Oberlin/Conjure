@@ -82,6 +82,11 @@ mid-conversation, that choice sticks and is restored on resume. So the selection
 
 ## 3. Disk layout
 
+> **Superseded root (docs/user-home-plan.md).** The `.cache/…` paths below describe the *relative*
+> tree, which is unchanged — but the root is no longer the in-project `.cache/`. It now resolves to the
+> user home (`~/.local/share/conjure/` by default, i.e. `config.DATA_DIR`); read every `.cache/` prefix
+> below as "the data root." Existing in-project `.cache/` is migrated there on first run.
+
 This is a **real directory change, not a virtual view** — but it *extends* the layout already on disk
 rather than replacing it. Everything lives under the world store's root, which today is `.cache/worlds/`.
 

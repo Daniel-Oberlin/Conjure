@@ -145,7 +145,8 @@ onto the agent server in a later step.)*
 conjure/    world server (schema · world store · FastAPI app · MCP tools + room resource) · shell ·
             agents (loader + server registry) · builder/LLM roster · voice loop · CLI ·
             assets pipeline · image-gen registry · config · doctor
-agents/     declarative agent defs (builder/: agent.json + prompt.md) + servers.json (MCP registry)
+agents/     bundled agent defs (builder/: agent.json + prompt.md) + servers.json (MCP registry);
+            user-authored agents in ~/.config/conjure/agents/ shadow these (docs/user-home-plan.md)
 client/     A-Frame WebXR client + live patch applier
 examples/   starter world + hand-authored example patches
 scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
@@ -154,5 +155,11 @@ tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" &
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
 docs/       vision · spec · architecture · agents · room-model · decisions · providers · roadmap · setup · testing/https guides
 ```
+
+**Where your data lives.** Runtime state is stored in your user home, not the repo (docs/user-home-plan.md):
+worlds, sessions, generated assets, and the asset catalog under `~/.local/share/conjure/` (precious —
+back it up); settings + your own agent defs under `~/.config/conjure/`; disposable scratch under
+`~/.cache/conjure/`. Override any location via `settings.json` or env, or set `CONJURE_HOME` to
+consolidate all three under one directory. An existing in-project `.cache/` is migrated here on first run.
 
 [Poly Pizza]: https://poly.pizza
