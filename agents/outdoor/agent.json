@@ -14,6 +14,12 @@
     }
   ],
   "session": {
-    "greeting": "New session. Where would you like to go? Describe a place and I'll build the sky around you."
+    "greeting": "New session. Where would you like to go? Describe a place and I'll build the sky around you.",
+    "first_world": { "name": "home", "on_create": [
+      { "tool": "generate_skybox_image",
+        "args": { "description": "You are standing in a forest.  In front, behind, to the left and right are stone circle gates like moon gates.  Inside each gate is a path to a different imaginary world." },
+        "as": "sky" },
+      { "tool": "set_skybox", "args": { "image_id": "${sky.image_id}" } }
+    ]}
   }
 }

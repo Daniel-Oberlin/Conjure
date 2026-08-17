@@ -342,9 +342,14 @@ This unifies the vocabulary (the builder already *has* `show_edges`, `set_skybox
 a description" is achievable because it's just two scripted tool calls:
 
 ```jsonc
-{ "tool": "generate_skybox_image", "args": { "description": "a calm dawn meadow, soft light" } },
-{ "tool": "set_skybox",           "args": { "use": "last" } }
+{ "tool": "generate_skybox_image", "args": { "description": "a calm dawn meadow, soft light" }, "as": "sky" },
+{ "tool": "set_skybox",           "args": { "image_id": "${sky.image_id}" } }
 ```
+
+**Steps thread data explicitly.** A step may bind its result under `"as": "<name>"`, and a later step
+references it with `${name.field}` in its args (resolved recursively through dicts/lists; a whole-value
+`${…}` keeps the referenced value's type). There is **no hidden "last image"** — an unresolved reference
+is an error (fail-hard). This generalizes to any generate→use chain, and keeps each step a real tool call.
 
 The catch: generative steps are **slow and can fail** (see the known grounded-skybox timeout). So
 construction is an **async** operation with progress — and **if any nondeterministic step fails, the whole
@@ -372,8 +377,8 @@ There are three setup layers; creating the first world **chains** them in order:
   "first_world": {
     "name": "home",                                                    // default "home", overridable
     "on_create": [                                                     // ONLY the first world
-      { "tool": "generate_skybox_image", "args": { "description": "a calm dawn meadow" } },
-      { "tool": "set_skybox",            "args": { "use": "last" } }
+      { "tool": "generate_skybox_image", "args": { "description": "a calm dawn meadow" }, "as": "sky" },
+      { "tool": "set_skybox",            "args": { "image_id": "${sky.image_id}" } }
     ]
   },
   "greeting": "Welcome. Where shall we begin?",                        // literal — or { "generate": "…" }

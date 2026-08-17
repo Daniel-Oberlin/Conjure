@@ -141,35 +141,76 @@ def _new_world_store(scope: str, *, extra_on_create: list[dict] = ()) -> WorldSt
     return s
 
 
+_REF = re.compile(r"\$\{([^}]+)\}")     # ${name} / ${name.field} — a constructor step-output reference
+
+
+def _lookup_ref(bindings: dict, path: str):
+    """Walk ``name.field.sub`` through the bound step results. Raises KeyError(path) if any segment is
+    missing — so an unknown reference fails hard, not silently."""
+    cur = bindings
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            raise KeyError(path)
+        cur = cur[part]
+    return cur
+
+
+def _resolve_refs(value, bindings: dict):
+    """Interpolate ``${name.field}`` references (docs/sessions-plan.md §6) through an arg value, recursing
+    into dicts/lists. A whole-value ``${…}`` preserves the referenced value's type; an embedded one
+    substitutes as text. Unknown references raise KeyError (→ fail-hard)."""
+    if isinstance(value, str):
+        m = re.fullmatch(r"\$\{([^}]+)\}", value)
+        if m:                                             # the whole value is one ref → keep its real type
+            return _lookup_ref(bindings, m.group(1).strip())
+        return _REF.sub(lambda mm: str(_lookup_ref(bindings, mm.group(1).strip())), value)
+    if isinstance(value, dict):
+        return {k: _resolve_refs(v, bindings) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_refs(v, bindings) for v in value]
+    return value
+
+
 async def _build_generative_ops(steps: list[dict]) -> tuple[list[dict], Optional[str]]:
     """Run the **generative** constructor steps (docs/sessions-plan.md §6, 4c) → world patch ops, WITHOUT
     touching the live world. Skybox-from-description generates + registers the image and emits an `env`
-    patch pointing the sky at it; the caller applies the ops to the world it's about to build. **Fail-hard**
-    (decision §8.13): the first failing step returns ``([], error)`` so the caller aborts before creating
-    anything — nothing to roll back. Sync steps (`_WORLD_COMMANDS`) are skipped (already applied). Async +
-    slow: image generation can take tens of seconds."""
+    patch pointing the sky at it; the caller applies the ops to the world it's about to build.
+
+    Steps thread data **explicitly**: a step may bind its result under ``as: <name>``, and a later step
+    references it via ``${name.field}`` in its args (e.g. ``set_skybox`` takes ``image_id: ${sky.image_id}``).
+    No hidden "last image" — an unresolved reference is an error. **Fail-hard** (§8.13): the first failing
+    step returns ``([], error)`` so the caller aborts before creating anything. Sync steps
+    (`_WORLD_COMMANDS`) are skipped (already applied). Async + slow: image gen can take tens of seconds."""
     ops: list[dict] = []
-    last_url: Optional[str] = None
+    bindings: dict = {}
     for s in steps:
         tool = s.get("tool") or s.get("cmd")
-        args = s.get("args") or {}
+        if _WORLD_COMMANDS.get(tool):
+            continue                                          # sync step — already applied by _new_world_store
+        try:
+            args = _resolve_refs(s.get("args") or {}, bindings)
+        except KeyError as e:
+            return [], f"{tool}: unknown reference ${{{e.args[0]}}}"
+        result: Optional[dict] = None
         if tool in ("generate_skybox_image", "generate_grounded_skybox_image"):
             grounded = "grounded" in tool
             desc = args.get("description") or args.get("prompt") or ""
             res = await (images_grounded_skybox if grounded else images_skybox)(SkyboxImageRequest(prompt=desc))
             if not res.get("ok"):
                 return [], res.get("error") or f"{tool} failed"
-            rec = IMAGES.get(res.get("image_id"))
-            last_url = rec.url if rec else None
+            result = res                                      # {ok, image_id, url?, …} — bindable via `as`
         elif tool == "set_skybox":
             img = args.get("image_id")
-            url = (IMAGES[img].url if (img and img in IMAGES) else last_url)
-            if not url:
-                return [], "set_skybox: no generated image to apply"
-            ops.append({"op": "env", "set": {"sky": {"src": url}}})
-        elif _WORLD_COMMANDS.get(tool):
-            continue                                          # sync step — already applied by _new_world_store
+            if not img:
+                return [], "set_skybox: image_id required (e.g. ${sky.image_id})"
+            rec = IMAGES.get(img)
+            if not rec:
+                return [], f"set_skybox: no image {img!r}"
+            ops.append({"op": "env", "set": {"sky": {"src": rec.url}}})
+            result = {"ok": True, "image_id": img}
         # unknown tool → ignore (forward-compatible; a future step type won't hard-fail an old server)
+        if s.get("as") and result is not None:
+            bindings[s["as"]] = result
     return ops, None
 
 

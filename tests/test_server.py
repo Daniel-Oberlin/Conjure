@@ -1811,23 +1811,29 @@ def test_session_new_builds_the_first_world_from_the_constructor(srv, client):
     assert srv.store.doc["environment"]["room"]["edgesVisible"] is True   # builder's world.on_create ran
 
 
-async def test_build_generative_ops_skybox_and_fail_hard(srv):
+async def test_build_generative_ops_binds_and_references_step_output(srv):
     import conjure.server as S
     ops, err = await S._build_generative_ops([
-        {"tool": "generate_skybox_image", "args": {"description": "a calm dawn meadow"}},
-        {"tool": "set_skybox", "args": {}}])                             # uses the just-generated image
+        {"tool": "generate_skybox_image", "args": {"description": "a calm dawn meadow"}, "as": "sky"},
+        {"tool": "set_skybox", "args": {"image_id": "${sky.image_id}"}}])   # explicit reference
     assert err is None and len(ops) == 1
-    assert ops[0]["op"] == "env" and "src" in ops[0]["set"]["sky"]        # a skybox env patch
+    assert ops[0]["op"] == "env" and "src" in ops[0]["set"]["sky"]          # a skybox env patch
+
+
+async def test_build_generative_ops_fail_hard_on_missing_ref_and_missing_image(srv):
+    import conjure.server as S
+    ops, err = await S._build_generative_ops([{"tool": "set_skybox", "args": {"image_id": "${sky.image_id}"}}])
+    assert ops == [] and "unknown reference" in err                        # no such binding → fail-hard
     ops2, err2 = await S._build_generative_ops([{"tool": "set_skybox", "args": {}}])
-    assert ops2 == [] and err2                                            # fail-hard: no image to apply
+    assert ops2 == [] and "image_id required" in err2                      # no implicit "last" → explicit error
 
 
 async def test_session_new_bakes_a_generative_first_world(srv, client, monkeypatch):
     import conjure.server as S
     S._ensure_session(S.DEFAULT_SCOPE)
     monkeypatch.setattr(S, "_first_world_spec", lambda scope: ("home", [
-        {"tool": "generate_skybox_image", "args": {"description": "a meadow"}},
-        {"tool": "set_skybox", "args": {}}]))
+        {"tool": "generate_skybox_image", "args": {"description": "a meadow"}, "as": "sky"},
+        {"tool": "set_skybox", "args": {"image_id": "${sky.image_id}"}}]))
     assert client.post("/session/new", json={"scope": S.DEFAULT_SCOPE}).json()["ok"]
     assert "src" in S.store.doc["environment"]["sky"]                     # skybox baked into the first world
 
@@ -1837,7 +1843,7 @@ async def test_session_new_aborts_on_constructor_failure(srv, client, monkeypatc
     S._ensure_session(S.DEFAULT_SCOPE)
     before = set(S.sessions.list(S.DEFAULT_SCOPE))
     monkeypatch.setattr(S, "_first_world_spec", lambda scope: ("home", [
-        {"tool": "set_skybox", "args": {}}]))                            # no image generated → fail-hard
+        {"tool": "set_skybox", "args": {"image_id": "${sky.image_id}"}}]))   # unresolved ref → fail-hard
     r = client.post("/session/new", json={"scope": S.DEFAULT_SCOPE}).json()
     assert r["ok"] is False and "constructor failed" in r["error"]
     assert set(S.sessions.list(S.DEFAULT_SCOPE)) == before               # nothing created (clean abort)
