@@ -435,7 +435,8 @@ class Shell:
         try:
             import httpx
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(f"{url}/admin/{action}", json={"path": path})
+                resp = await client.post(f"{url}/admin/{action}", json={"path": path},
+                                         headers={"X-Conjure-User": self._acting})   # WHO is browsing/deleting
                 return resp.json()
         except Exception as exc:                              # network / server down / bad JSON
             return {"ok": False, "error": f"admin request failed: {exc}"}

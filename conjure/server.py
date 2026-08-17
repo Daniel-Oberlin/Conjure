@@ -1804,14 +1804,20 @@ async def admin_tree(req: AdminPath) -> dict:
 
 
 @app.post("/admin/delete")
-async def admin_delete(req: AdminPath) -> dict:
-    """Purge whatever `path` points at (user / category / single item). Shell `delete` (post-confirm)."""
+async def admin_delete(req: AdminPath, request: Request) -> dict:
+    """Purge whatever `path` points at (user / category / single item). Shell `delete` (post-confirm).
+    Ownership-gated (§6e): the caller (X-Conjure-User) may only delete their OWN namespace — you can't
+    purge another user's worlds/spaces/assets. A missing caller header is treated as trusted-local
+    (back-compat, mirroring `_owner_only_writes`)."""
     segs = _admin_split(req.path)
     if not segs:
         return {"ok": False, "error": "refusing to delete everything — name a user (e.g. /alice)"}
     user = segs[0]
     if not _ADMIN_PART.fullmatch(user):
         return {"ok": False, "error": f"bad path segment {user!r}"}
+    caller = request.headers.get("X-Conjure-User")
+    if caller and caller != user:
+        return {"ok": False, "error": f"you can only delete your own namespace — {user!r} isn't yours."}
     au = _admin_active_user()
     try:
         if len(segs) == 1:                                     # a whole user

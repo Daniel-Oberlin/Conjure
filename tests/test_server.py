@@ -1834,6 +1834,22 @@ def test_switching_sessions_loads_the_target_sessions_world(srv, client):
     assert srv.active_sid == "session-1" and srv.active_world == "alpha"
 
 
+def test_admin_delete_is_ownership_gated(srv, client):
+    # §6e: a caller may only delete their OWN namespace — not another user's worlds/spaces/assets.
+    import conjure.server as S
+    S.worlds.save("bob/agents/builder", "keep", S.WorldStore(
+        {"id": "k", "name": "keep", "rev": 0, "environment": {"space": "<void>"}, "entities": []}))
+    # guest (a different user) tries to delete bob's namespace → refused, nothing deleted
+    r = client.post("/admin/delete", json={"path": "/bob/worlds/keep"},
+                    headers={"X-Conjure-User": "guest"}).json()
+    assert r["ok"] is False and "your own" in r["error"]
+    assert S.worlds.exists("bob/agents/builder", "keep")
+    # bob deleting his own is allowed
+    r = client.post("/admin/delete", json={"path": "/bob/worlds/keep"},
+                    headers={"X-Conjure-User": "bob"}).json()
+    assert r["ok"] is True and not S.worlds.exists("bob/agents/builder", "keep")
+
+
 def test_session_visibility_toggles_and_shows_in_the_listing(srv, client):
     scope = srv.DEFAULT_SCOPE
     srv._ensure_session(scope)
