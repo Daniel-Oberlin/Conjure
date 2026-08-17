@@ -63,7 +63,7 @@ class FakeShell:
     def is_leave_shell(cmd):
         return cmd.strip().lower() in ("exit", "leave", "close", "done")
 
-    async def _dispatch(self, cmd, on_text, *, speaker=None):
+    async def _dispatch(self, cmd, on_text, *, speaker=None, permitted=True):
         await on_text("Now talking to Gemini (builder).", final=True, speaker=self.director.active)
 
     async def _open_agent(self, agent, *, activate_world=True):

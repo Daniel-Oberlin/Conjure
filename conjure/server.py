@@ -310,6 +310,9 @@ def _boot_world() -> tuple[str, str, WorldStore]:
 
 settings = get_settings()  # loads .env
 clients: "dict[WebSocket, str]" = {}     # connected render clients → their user (owner or guest)
+_blocked: "dict[WebSocket, str]" = {}    # sockets bumped out of a now-PRIVATE live session (§6c/6d): kept
+                                         # (ws → user) so they can be re-admitted when it goes public, but
+                                         # OUT of `clients` so they get no world broadcasts meanwhile
 gaze: "dict[str, dict]" = {}             # user → {"origin","forward","right","up"} in the reference frame,
                                          # from presence — where each headset is looking. May also carry
                                          # "anchor" (plane-relative head anchor) for the §7b seed-solve.
@@ -1109,8 +1112,7 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     worlds.set_active(scope, name)                # per-session memory: which world to resume in this session
     _write_session_ptr(scope, sid)               # global pointer: which SESSION is live across the server
     _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} (space {active_space_owner}/{active_space})")
-    await _regate_clients()                       # switched into a private session ⇒ bump non-owner guests
-    await _broadcast(_snapshot_msg())             #   BEFORE the snapshot, so they don't receive it (§8.3)
+    await _propagate_visibility()                 # snapshot + bump/re-admit per the new session's visibility
     return {"ok": True, "world": name, "rev": store.doc["rev"]}
 
 
@@ -1293,10 +1295,8 @@ async def session_visibility(req: SessionVisibilityRequest) -> dict:
     meta["public"] = req.public
     sessions.save_meta(req.scope, sid, meta)
     if req.scope == active_scope and sid == active_sid:   # the LIVE session's visibility changed (§8.3)
-        if not req.public:
-            await _regate_clients()                       # bump connected headset guests
-        await _broadcast(_snapshot_msg())                 # propagate new state → the agent server re-gates
-    return {"ok": True, "session": sid, "public": req.public}     #   its CLI/voice clients (bump / restore)
+        await _propagate_visibility()                     # bump/re-admit headset + broadcast → agent re-gates
+    return {"ok": True, "session": sid, "public": req.public}
 
 
 def _session_public(scope: str, sid: str) -> bool:
@@ -1645,10 +1645,8 @@ async def worlds_visibility(req: WorldVisibilityRequest) -> dict:
         if req.public and req.scope == active_scope:   # the live session went public → publish its assets
             published = _publish_world_assets(store.doc, owner)
             _save_active()
-        elif not req.public and live:
-            await _regate_clients()                    # made the LIVE session private → bump headset guests
         if live:
-            await _broadcast(_snapshot_msg())          # propagate new state → agent server re-gates (§8.3)
+            await _propagate_visibility()              # bump/re-admit headset + broadcast → agent re-gates
         return {"ok": True, "world": req.name or active_world, "session": sid,
                 "public": req.public, "published_assets": published}
     except ValueError as exc:
@@ -3302,8 +3300,8 @@ async def ws(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
-            if not joined:
-                continue                                         # a refused guest's input is ignored
+            if not joined or websocket in _blocked:
+                continue                                         # a refused/bumped guest's input is ignored
             try:
                 msg = json.loads(raw)
             except (ValueError, TypeError):
@@ -3328,6 +3326,7 @@ async def ws(websocket: WebSocket) -> None:
         pass
     finally:
         clients.pop(websocket, None)
+        _blocked.pop(websocket, None)                            # drop any bump record for this socket
         _space_holders.discard(websocket)                        # a holder's socket closing = they left
         _unclaim()                                               # → unclaim the space if that was the last one
         if user not in clients.values():                         # last socket for this user gone
@@ -3412,10 +3411,10 @@ def _snapshot_msg() -> dict:
 
 
 async def _regate_clients() -> None:
-    """Re-run the join gate on already-connected `/ws` clients after a visibility change or a session switch
-    (docs/sessions-plan.md §8.3): a now-private live session drops every non-owner guest from the broadcast
-    set — they keep the socket but get an info line and lose the world (the "bump to no session, don't
-    disconnect" rule). A public session is a no-op. Owner always stays."""
+    """Bump already-connected `/ws` clients when the live session is private (docs/sessions-plan.md §8.3):
+    every non-owner guest is moved from `clients` to `_blocked` (kept, so a later go-public can re-admit
+    them), taken off the broadcast set, and sent an `evicted` message so the render client blanks to
+    passthrough. A public session is a no-op; the owner always stays."""
     if _active_public():
         return
     owner = active_scope.split("/", 1)[0]
@@ -3423,12 +3422,41 @@ async def _regate_clients() -> None:
         if u == owner:
             continue
         clients.pop(ws_, None)
+        _blocked[ws_] = u
         _space_holders.discard(ws_)
         try:
-            await ws_.send_json({"type": "info", "level": "info",
+            await ws_.send_json({"type": "evicted",
                 "msg": f"this session is now private — ask {owner} to make it public."})
         except Exception:  # noqa: BLE001 — a dead socket must not break the sweep
             pass
+
+
+async def _readmit_clients() -> None:
+    """The inverse of `_regate_clients` (§6c): when the live session is public, re-admit every socket we
+    blocked — back into `clients` and sent a fresh snapshot so its render client un-blanks and re-renders,
+    no page reload needed. A no-op while private."""
+    if not _active_public():
+        return
+    for ws_, u in list(_blocked.items()):
+        del _blocked[ws_]
+        clients[ws_] = u
+        try:
+            await ws_.send_json(_snapshot_msg())
+        except Exception:  # noqa: BLE001
+            clients.pop(ws_, None)
+
+
+async def _propagate_visibility() -> None:
+    """Fan the live session's current visibility out to everyone after a switch or a visibility toggle
+    (§6c). Private: bump non-owner guests FIRST, then snapshot the rest (so the bumped don't receive it).
+    Public: snapshot current clients, THEN re-admit + snapshot anyone previously blocked. Either way the
+    snapshot carries fresh `state`, so the agent server re-gates its CLI/voice clients too."""
+    if _active_public():
+        await _broadcast(_snapshot_msg())
+        await _readmit_clients()
+    else:
+        await _regate_clients()
+        await _broadcast(_snapshot_msg())
 
 
 async def _broadcast(message: dict, *, skip: "WebSocket | None" = None) -> None:

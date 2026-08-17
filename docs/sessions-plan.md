@@ -515,6 +515,18 @@ Newly settled from this round's comments:
    `set_live`, so live-scope world addressing uses one explicit source instead of re-reading the active
    pointer — done before step 6 so its per-session gates reason about one unambiguous live session.
 
+6d. **Multi-user control policy — collaborative navigation** (from the two-client smoke). Decision:
+    *any **permitted** participant may drive the shared session; a non-permitted (bumped) one may not* —
+    "permitted" = the session is public, or you're its owner (the same `_permitted` check the bump-out
+    uses). This deliberately avoids an owner/drivers/handoff apparatus: control isn't a scarce token, so
+    there's nothing to hand off. Two parts: **(a)** session **management** verbs (`visibility`/`rename`/
+    `delete`) act on the **speaker's own scope** (done — issue 1: a guest can only touch their own
+    sessions); **(b)** **shared-effect** verbs (`session switch`/`new`, `agent <name>`) are refused for a
+    non-permitted speaker (a bumped guest can't yank everyone out of a private session; a public-session
+    guest still can — collaborative). Accepted consequence: a permitted guest can switch everyone into
+    *their own* (possibly private) session, bumping others — fine for a cooperative holodeck ("identity
+    only, no security"). Plus the browser bump-out (blank on private, auto-readmit on public).
+
 6. **Visibility/ownership move to session** (§8.2) + multi-user gate re-key (§8.3). ✅ **Done** —
    **6a** session visibility model (`session.json.public`, `/session/visibility`, `session public|private`);
    **6b** re-keyed the join gate, asset inheritance, and `list_public` onto the session (per-world `public`

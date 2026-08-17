@@ -1272,9 +1272,15 @@ async def test_regate_bumps_connected_guests_when_the_live_session_goes_private(
     _set_session_public(srv, False)                                # live session now private
     await S._regate_clients()
     assert guest_ws not in S.clients and S.clients.get(owner_ws) == "daniel"   # guest bumped, owner kept
-    assert guest_ws.sent and guest_ws.sent[-1]["type"] == "info" and "private" in guest_ws.sent[-1]["msg"]
+    assert S._blocked.get(guest_ws) == "bob"                       # kept in _blocked for later re-admit
+    assert guest_ws.sent and guest_ws.sent[-1]["type"] == "evicted" and "private" in guest_ws.sent[-1]["msg"]
     assert owner_ws.sent == []                                     # owner untouched
-    S.clients.clear()
+    # go public → re-admit the blocked guest with a fresh snapshot, no reconnect
+    _set_session_public(srv, True)
+    await S._readmit_clients()
+    assert S.clients.get(guest_ws) == "bob" and guest_ws not in S._blocked
+    assert guest_ws.sent[-1]["type"] == "snapshot"                 # re-rendered
+    S.clients.clear(); S._blocked.clear()
 
 
 def test_presence_relayed_to_others_and_leave_on_disconnect(srv, client):

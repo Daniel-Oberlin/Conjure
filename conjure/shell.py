@@ -50,6 +50,8 @@ class Shell:
         # `Shell.session`; None for a hand-built Shell(director) (e.g. tests — no switching).
         self._user = getattr(director, "user", DEFAULT_USER)
         self._acting = self._user        # WHO the current command acts as (the speaker); set per `_dispatch`
+        self._permitted = True           # is the speaker permitted in the LIVE session? gates shared-effect
+                                         # verbs (switch/new/agent) so a bumped guest can't drive (§6d)
         self._errlog = None
         self._stack: Optional[AsyncExitStack] = None
         self.in_shell = False
@@ -215,13 +217,16 @@ class Shell:
         """Does this command string turn shell mode OFF (back to the agent)?"""
         return bool(_LEAVE_SHELL.match(cmd))
 
-    async def _dispatch(self, cmd: str, on_text, *, speaker: Optional[str] = None) -> None:
+    async def _dispatch(self, cmd: str, on_text, *, speaker: Optional[str] = None,
+                        permitted: bool = True) -> None:
         if not cmd:
             return
         # WHO typed this command (the connection's user), so identity-scoped verbs act as the speaker, not
         # the shared shell's host user (else a guest could manage the host's sessions). Read synchronously
-        # by `_scope()` at each handler's start (before any await), so concurrent dispatches don't race.
+        # by `_scope()`/`_require_permitted` at each handler's start (before any await), so concurrent
+        # dispatches don't race. `permitted` = is the speaker allowed in the live session (§6d).
         self._acting = speaker or self._user
+        self._permitted = permitted
         if self._pending_delete is not None:                  # a delete is armed — this line is the y/n answer
             await self._confirm_delete(cmd, on_text)
             return
@@ -273,6 +278,9 @@ class Shell:
         await self._say(on_text, "Agents:\n" + "\n".join(rows))
 
     async def _switch_agent(self, on_text, m):
+        if not self._permitted:                               # switching the shared agent is a shared-effect
+            await self._say(on_text, "This session is private — you can't switch the agent here.")   # verb (§6d)
+            return
         name = m.group("name").strip()
         match = next((a for a in self._agent_names() if a.lower() == name.lower()), None)
         if not match:
@@ -341,6 +349,13 @@ class Shell:
         verb, _, arg = rest.partition(" ")
         verb, arg = verb.strip().lower(), arg.strip()
         scope = self._scope()
+        # Shared-effect verbs move the GLOBAL live pointer (everyone follows) — allowed only for a speaker
+        # permitted in the live session (§6d), so a bumped guest can't yank everyone out of a private one.
+        if verb in ("new", "switch") or verb not in ("rename", "delete", "public", "private"):
+            if not self._permitted:
+                await self._say(on_text, "This session is private — ask its owner to make it public "
+                                         "before switching or creating sessions here.")
+                return
         if verb == "new":
             data = await self._session_api("POST", "/session/new", scope=scope, title=arg or None)
             msg = f"Created and switched to {data.get('title')} ({data.get('session')})."

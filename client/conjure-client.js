@@ -210,7 +210,7 @@
   }
 
   function applyImmersion() {
-    if (refused || awaitingSpace) {      // blanked to passthrough: hide everything renderable
+    if (refused || awaitingSpace || evicted) {   // blanked to passthrough: hide everything renderable
       document.querySelectorAll("[data-scaffold]").forEach(function (el) { el.setAttribute("visible", false); });
       var sky0 = document.getElementById("sky"); if (sky0) sky0.setAttribute("visible", false);
       var g0 = document.getElementById("grounded-sky"); if (g0) g0.setAttribute("visible", false);
@@ -608,6 +608,9 @@
   // gate and are HOLDING the active space; we tell the server (`hold` over /ws) so it counts us as
   // occupying it — and re-tell it after a ws reconnect. On refusal we hide content and stay in passthrough.
   var clientId = "c_" + Math.random().toString(36).slice(2, 8), amHolding = false, refused = false;
+  // Bumped out of a now-PRIVATE live session (§6c). Distinct from `refused` (co-location): a session
+  // eviction blanks to passthrough but a fresh snapshot (re-admit on go-public) clears it and re-renders.
+  var evicted = false;
   // While an AR headset is deciding WHICH space it's in (from enter-vr until /space/select resolves), we
   // blank to passthrough and show a "finding your space" notice — so a headset never renders the provisional
   // booted world (or anyone else's) misaligned to the real room before it has established/joined its space.
@@ -615,6 +618,10 @@
 
   function applySnapshot(world) {
     if (refused) return;                 // we're not in this space — stay blanked to passthrough (steps 4/7)
+    if (evicted) {                       // re-admitted to a now-public session (§6c) → un-blank + re-render
+      evicted = false;
+      hideHeadsetMessage(); hideInfo();
+    }
     if (awaitingSpace) {                 // a snapshot = selection resolved → un-blank BEFORE rendering, so
       awaitingSpace = false;             // applyImmersion (below) sets the world up instead of hiding it
       hideHeadsetMessage(); hideInfo();
@@ -707,7 +714,7 @@
 
 
   function applyPatch(patch) {
-    if (refused || awaitingSpace) return;   // ignore world updates while blanked to passthrough
+    if (refused || awaitingSpace || evicted) return;   // ignore world updates while blanked to passthrough
     (patch.ops || []).forEach(function (op) {
       if (op.op === "add") {
         if (op.entity.meta && op.entity.meta.real) {
@@ -955,6 +962,10 @@
       if (msg.type === "snapshot") { worldOwner = msg.owner || worldOwner; applySnapshot(msg.world); }
       else if (msg.type === "patch") applyPatch(msg.patch);
       else if (msg.type === "info") showInfo(msg.msg);    // e.g. "'<world>' is private — ask <owner>…"
+      else if (msg.type === "evicted") {                  // live session went private (§6c) → blank; a
+        evicted = true; showInfo(msg.msg); showHeadsetMessage(msg.msg); blankToPassthrough();   // later
+      }                                                   // snapshot (re-admit on go-public) un-blanks us
+
       else if (msg.type === "presence") {
         setAvatar(msg.user, msg.pose, msg.anchor);
         if (msg.user === worldOwner) maybeSpawnGuest(msg.pose);   // a guest drops in to the owner's right

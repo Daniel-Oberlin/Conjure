@@ -260,6 +260,18 @@ async def test_session_command_acts_as_the_speaker_not_the_host():
     assert calls[-1][2]["scope"] == "guest/agents/builder"          # guest's own scope, not daniel's
 
 
+async def test_shared_effect_verbs_refused_for_a_non_permitted_speaker():
+    # §6d: a bumped guest (permitted=False) can't drive the shared session — switch/new/agent are refused,
+    # but own-scope management (private/public/rename/delete) still works.
+    sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True})
+    await sh._dispatch("session switch beach", on_text, speaker="guest", permitted=False)
+    assert not calls and "private" in out[-1][1].lower()            # refused before any POST
+    await sh._dispatch("session new", on_text, speaker="guest", permitted=False)
+    assert not calls
+    await sh._dispatch("session private", on_text, speaker="guest", permitted=False)   # own-scope: allowed
+    assert calls[-1][:2] == ("POST", "/session/visibility")
+
+
 async def test_session_error_is_surfaced_to_the_client():
     sh, out, on_text, calls = _session_shell(lambda *a: {"ok": False, "error": "no session 'zzz'"})
     await sh._dispatch("session switch zzz", on_text)
