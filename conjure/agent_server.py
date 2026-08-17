@@ -47,6 +47,8 @@ class Conn:
         self.ws = ws
         self.user = user
         self.in_shell = False
+        self.bumped = False              # auto-forced into shell by a private session (§8.3) — distinct from
+                                         # a user who chose shell, so we only auto-restore what we bumped
 
     async def send(self, event: dict) -> None:
         await self.ws.send_json(event)
@@ -115,6 +117,45 @@ def _backlog_events(shell: Shell, live: Optional[dict], user: str, in_shell: boo
 
 async def _send_context(app: FastAPI, conn: Conn) -> None:
     await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell))
+
+
+def _permitted(app: FastAPI, conn: Conn) -> bool:
+    """Whether `conn` may take part in the live session (§8.3): a public session admits everyone; a private
+    one only its owner. Unknown state (pre-first-snapshot) admits — the world server is the gate of record."""
+    live = app.state.live
+    return (not live) or live.get("public", True) or (conn.user == live.get("owner"))
+
+
+async def _conv_broadcast(app: FastAPI, event: dict) -> None:
+    """Fan a CONVERSATION event out to PERMITTED clients only — a private session's dialog is never sent to
+    a non-owner guest (§8.3). (Control events like context/turn_done go per-connection, not through here.)"""
+    for c in app.state.hub.conns:
+        if _permitted(app, c):
+            try:
+                await c.send(event)
+            except Exception:  # noqa: BLE001 — a dead socket must not break the fan-out
+                pass
+
+
+async def _apply_bumps(app: FastAPI) -> None:
+    """Force non-permitted clients into shell mode when the live session is private, and restore the ones WE
+    bumped once it's public / they're permitted again (§8.3). `Conn.bumped` distinguishes our bump from a
+    user-chosen shell, so we never yank someone out of a shell they opened themselves."""
+    for c in app.state.hub.conns:
+        if not _permitted(app, c):
+            if not c.bumped:
+                c.bumped = c.in_shell = True
+                try:
+                    await c.send({"type": "notice", "text": "This session is private — you're in shell mode "
+                                  "until its owner makes it public (or you switch sessions)."})
+                except Exception:  # noqa: BLE001
+                    pass
+        elif c.bumped:                                       # regained access → undo OUR bump only
+            c.bumped = c.in_shell = False
+            try:
+                await c.send({"type": "notice", "text": "The session is public again — back in."})
+            except Exception:  # noqa: BLE001
+                pass
 
 
 async def _broadcast_context(app: FastAPI) -> None:
@@ -243,13 +284,13 @@ async def _maybe_greet(app: FastAPI) -> None:
             async with app.state.floor_lock:                  # serialize the LLM turn against user turns
                 text = (await d.greet(greeting["generate"])).strip()
     except Exception as exc:  # noqa: BLE001 — a greeting must never strand the session
-        await app.state.hub.broadcast({"type": "notice", "text": f"[greeting failed: {exc}]"})
+        await _conv_broadcast(app, {"type": "notice", "text": f"[greeting failed: {exc}]"})
         text = ""
     if text:
         if not (d.transcript and d.transcript[-1].text == text):   # `greet` already appended; literal didn't
             d.transcript.append(Turn("assistant", text))
         app.state.sessions.append_transcript(scope, sid, {"role": "assistant", "by": "", "text": text})
-        await app.state.hub.broadcast({"type": "assistant_final", "text": text, "llm": d.active})
+        await _conv_broadcast(app, {"type": "assistant_final", "text": text, "llm": d.active})
     meta["greeted"] = True                                     # mark greeted even if empty → never retry
     app.state.sessions.save_meta(scope, sid, meta)
 
@@ -284,15 +325,15 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
                 return
             app.state.turn_active = True
             try:
-                await hub.broadcast({"type": "user_turn", "speaker": conn.user, "text": text.strip()})
+                await _conv_broadcast(app, {"type": "user_turn", "speaker": conn.user, "text": text.strip()})
 
                 async def on_text(t, *, final, speaker):     # `speaker` = the LLM display name
                     if t and t.strip():
-                        await hub.broadcast({"type": "assistant_final" if final else "assistant_delta",
-                                             "text": t, "llm": speaker})
+                        await _conv_broadcast(app, {"type": "assistant_final" if final else "assistant_delta",
+                                                    "text": t, "llm": speaker})
 
                 async def on_tool(name, args):
-                    await hub.broadcast({"type": "tool_call", "name": name, "args": args})
+                    await _conv_broadcast(app, {"type": "tool_call", "name": name, "args": args})
 
                 # Hold the floor so a follower re-bind can't tear down the MCP session mid-tool-call (C2).
                 async with app.state.floor_lock:
@@ -354,6 +395,7 @@ async def _reconcile_state(app: FastAPI, state: dict) -> None:
     _sync_transcript(app)                                # (re)load the live session's saved dialog (step 2)
     _maybe_seed(app)                                     # seed a new session's agent-state once (step 5b)
     await _maybe_greet(app)                              # speak a new session's opening line once (step 4b)
+    await _apply_bumps(app)                              # private session ⇒ shell non-owner clients (step 6c)
     await _broadcast_context(app)
 
 
@@ -482,7 +524,12 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
         want_backlog = websocket.query_params.get("backlog", "1").lower() not in ("0", "false", "no")
         app.state.hub.add(conn)
         try:
-            if want_backlog:                             # a text client replays history; a voice client can't
+            if not _permitted(app, conn):                # joining a PRIVATE session → shell only, no dialog (§8.3)
+                conn.bumped = conn.in_shell = True
+                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell))
+                await conn.send({"type": "notice", "text": "This session is private — you're in shell mode "
+                                 "until its owner makes it public (or you switch sessions)."})
+            elif want_backlog:                           # a text client replays history; a voice client can't
                 for event in _backlog_events(app.state.shell, app.state.live, conn.user, conn.in_shell):
                     await conn.send(event)
             else:

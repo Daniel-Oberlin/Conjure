@@ -76,6 +76,7 @@ class FakeConn:
     def __init__(self, user="daniel"):
         self.user = user
         self.in_shell = False
+        self.bumped = False
         self.sent: list[dict] = []
 
     async def send(self, event):
@@ -142,6 +143,29 @@ async def test_llm_switch_is_remembered_and_restored_per_session(tmp_path):
     app.state.loaded_session = None
     _sync_transcript(app)
     assert shell.director.active == "Gemini"
+
+
+async def test_private_session_conversation_is_not_sent_to_guests():
+    from conjure.agent_server import _conv_broadcast
+    owner, guest = FakeConn("daniel"), FakeConn("bob")
+    app = _app(FakeShell(), [owner, guest])
+    app.state.live = {"scope": "daniel/agents/builder", "session": "s1", "public": False, "owner": "daniel"}
+    await _conv_broadcast(app, {"type": "assistant_final", "text": "secret"})
+    assert any(e.get("text") == "secret" for e in owner.sent)        # owner hears the private dialog
+    assert not any(e.get("text") == "secret" for e in guest.sent)    # a non-owner guest does not (§8.3)
+
+
+async def test_apply_bumps_shells_non_owner_guests_and_restores():
+    from conjure.agent_server import _apply_bumps
+    owner, guest = FakeConn("daniel"), FakeConn("bob")
+    app = _app(FakeShell(), [owner, guest])
+    app.state.live = {"public": False, "owner": "daniel"}            # private session
+    await _apply_bumps(app)
+    assert guest.in_shell and guest.bumped                           # guest forced to shell
+    assert not owner.in_shell and not owner.bumped                   # owner untouched
+    app.state.live = {"public": True, "owner": "daniel"}             # made public again
+    await _apply_bumps(app)
+    assert not guest.in_shell and not guest.bumped                   # OUR bump is undone
 
 
 def _greet_app(tmp_path, greeting, conns=()):
