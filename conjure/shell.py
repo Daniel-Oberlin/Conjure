@@ -302,7 +302,9 @@ class Shell:
             return {"ok": False, "error": "no world server configured"}
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            # `session new` can run a generative constructor (skybox-from-description) server-side, which
+            # takes tens of seconds — allow for it (the client's long-turn heartbeat covers the wait).
+            async with httpx.AsyncClient(timeout=180.0) as client:
                 resp = await (client.get(f"{url}{path}", params=kw) if method == "GET"
                               else client.post(f"{url}{path}", json=kw))
                 return resp.json()

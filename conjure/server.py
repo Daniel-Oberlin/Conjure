@@ -130,7 +130,8 @@ def _run_world_commands(cmds: list[dict]) -> list[dict]:
 def _new_world_store(scope: str, *, extra_on_create: list[dict] = ()) -> WorldStore:
     """A fresh world: the blank starter + the owning agent's `world.on_create` constructor. `extra_on_create`
     appends the first-world-only chain (§6) when minting a session's first world — generic steps first,
-    then the specific ones."""
+    then the specific ones. Only the SYNC (`_WORLD_COMMANDS`) steps are applied here; generative steps
+    (skybox-from-description) are compiled separately by `_build_generative_ops` (async)."""
     s = WorldStore.load(SAMPLE_WORLD)
     s.doc.setdefault("environment", {})["public"] = True          # worlds are public by default (§4)
     ops = _run_world_commands(_agent_world_config(scope).get("on_create", []))
@@ -138,6 +139,38 @@ def _new_world_store(scope: str, *, extra_on_create: list[dict] = ()) -> WorldSt
     if ops:
         s.apply_patch(ops, origin="constructor")
     return s
+
+
+async def _build_generative_ops(steps: list[dict]) -> tuple[list[dict], Optional[str]]:
+    """Run the **generative** constructor steps (docs/sessions-plan.md §6, 4c) → world patch ops, WITHOUT
+    touching the live world. Skybox-from-description generates + registers the image and emits an `env`
+    patch pointing the sky at it; the caller applies the ops to the world it's about to build. **Fail-hard**
+    (decision §8.13): the first failing step returns ``([], error)`` so the caller aborts before creating
+    anything — nothing to roll back. Sync steps (`_WORLD_COMMANDS`) are skipped (already applied). Async +
+    slow: image generation can take tens of seconds."""
+    ops: list[dict] = []
+    last_url: Optional[str] = None
+    for s in steps:
+        tool = s.get("tool") or s.get("cmd")
+        args = s.get("args") or {}
+        if tool in ("generate_skybox_image", "generate_grounded_skybox_image"):
+            grounded = "grounded" in tool
+            desc = args.get("description") or args.get("prompt") or ""
+            res = await (images_grounded_skybox if grounded else images_skybox)(SkyboxImageRequest(prompt=desc))
+            if not res.get("ok"):
+                return [], res.get("error") or f"{tool} failed"
+            rec = IMAGES.get(res.get("image_id"))
+            last_url = rec.url if rec else None
+        elif tool == "set_skybox":
+            img = args.get("image_id")
+            url = (IMAGES[img].url if (img and img in IMAGES) else last_url)
+            if not url:
+                return [], "set_skybox: no generated image to apply"
+            ops.append({"op": "env", "set": {"sky": {"src": url}}})
+        elif _WORLD_COMMANDS.get(tool):
+            continue                                          # sync step — already applied by _new_world_store
+        # unknown tool → ignore (forward-compatible; a future step type won't hard-fail an old server)
+    return ops, None
 
 
 def _reset_room_authority(s: WorldStore) -> None:
@@ -1141,15 +1174,25 @@ async def session_new(req: SessionRef) -> dict:
     (docs/sessions-plan.md §6): named by the agent's `session.first_world` (default ``home``), set up by
     `world.on_create` ⊕ the first-world-only `on_create` chain. The greeting is appended by the agent
     server; generative first-world steps (skybox) are a later pass."""
+    wname, fw_on_create = _first_world_spec(req.scope)
+    # Generative first-world steps (skybox-from-description) run FIRST, into patch ops — so a failure aborts
+    # here with nothing created/switched (fail-hard + rollback, §8.13). Slow (image gen); the client's
+    # long-turn heartbeat covers the wait.
+    if any((s.get("tool") or s.get("cmd")) not in _WORLD_COMMANDS for s in fw_on_create):
+        await _broadcast({"type": "notice", "text": "Setting up your new world…"})
+    gen_ops, gen_err = await _build_generative_ops(fw_on_create)
+    if gen_err:
+        return {"ok": False, "error": f"constructor failed: {gen_err}"}
     sid = _next_sid(req.scope)
     user = req.scope.split("/", 1)[0]
-    wname, fw_on_create = _first_world_spec(req.scope)
     sessions.save_meta(req.scope, sid, {
         "id": sid, "owner": user, "agent": agent_of(req.scope),
         "title": req.title or f"Session {sid.split('-')[-1]}", "public": True,
         "active_world": wname, "llm": "", "greeted": False})
     wdir = sessions.worlds(req.scope, sid)               # explicit target (no active-pointer flip — that's
     raw = _new_world_store(req.scope, extra_on_create=fw_on_create)   # world ⊕ first_world constructor chain
+    if gen_ops:
+        raw.apply_patch(gen_ops, origin="constructor")   # generative results (e.g. the skybox) bake in
     _reset_room_authority(raw)                           #  done in _switch_to, after the outgoing save)
     wdir.save(wname, raw)
     wdir.set_active(wname)

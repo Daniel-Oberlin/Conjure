@@ -1811,6 +1811,38 @@ def test_session_new_builds_the_first_world_from_the_constructor(srv, client):
     assert srv.store.doc["environment"]["room"]["edgesVisible"] is True   # builder's world.on_create ran
 
 
+async def test_build_generative_ops_skybox_and_fail_hard(srv):
+    import conjure.server as S
+    ops, err = await S._build_generative_ops([
+        {"tool": "generate_skybox_image", "args": {"description": "a calm dawn meadow"}},
+        {"tool": "set_skybox", "args": {}}])                             # uses the just-generated image
+    assert err is None and len(ops) == 1
+    assert ops[0]["op"] == "env" and "src" in ops[0]["set"]["sky"]        # a skybox env patch
+    ops2, err2 = await S._build_generative_ops([{"tool": "set_skybox", "args": {}}])
+    assert ops2 == [] and err2                                            # fail-hard: no image to apply
+
+
+async def test_session_new_bakes_a_generative_first_world(srv, client, monkeypatch):
+    import conjure.server as S
+    S._ensure_session(S.DEFAULT_SCOPE)
+    monkeypatch.setattr(S, "_first_world_spec", lambda scope: ("home", [
+        {"tool": "generate_skybox_image", "args": {"description": "a meadow"}},
+        {"tool": "set_skybox", "args": {}}]))
+    assert client.post("/session/new", json={"scope": S.DEFAULT_SCOPE}).json()["ok"]
+    assert "src" in S.store.doc["environment"]["sky"]                     # skybox baked into the first world
+
+
+async def test_session_new_aborts_on_constructor_failure(srv, client, monkeypatch):
+    import conjure.server as S
+    S._ensure_session(S.DEFAULT_SCOPE)
+    before = set(S.sessions.list(S.DEFAULT_SCOPE))
+    monkeypatch.setattr(S, "_first_world_spec", lambda scope: ("home", [
+        {"tool": "set_skybox", "args": {}}]))                            # no image generated → fail-hard
+    r = client.post("/session/new", json={"scope": S.DEFAULT_SCOPE}).json()
+    assert r["ok"] is False and "constructor failed" in r["error"]
+    assert set(S.sessions.list(S.DEFAULT_SCOPE)) == before               # nothing created (clean abort)
+
+
 def test_boot_world_restores_the_global_session_pointer(srv):
     # After a restart, boot resumes exactly the session the global pointer records — the scope's active
     # session, and that session's active world — so the viewer comes back where everyone was, agent
