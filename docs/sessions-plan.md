@@ -493,8 +493,11 @@ Newly settled from this round's comments:
    step (`_build_generative_ops`: skybox-from-description → build-then-commit, **fail-hard** abort with
    nothing to roll back, "setting up…" notice, 180s client timeout). *Deferred:* state seed-copy folds
    into step 5 (coupled to the `state_*` store); richer progress-to-agent-clients during construction.
-5. **Generic `state_*` tools** + `agent.json` `state` block + injection (§5); validation + undo (§5.6)
-   follow.
+5. **Generic `state_*` tools** + `agent.json` `state` block + injection (§5). ✅ **Done** — a schema-free
+   `StateStore`; **director-hosted** state tools (decision A — a reusable `_local_tools` seam, dispatched
+   in-process, never over MCP); `{…}` injection via `_injections`; seed-copy at construction
+   (`_maybe_seed`); JSON-Schema validation on write (reject-on-invalid). *Deferred:* undo for state (§5.6)
+   — rides the world inverse machinery whenever, near-free since `state_set` mirrors the op shape.
 6. **Visibility/ownership move to session** (§8.2) + multi-user gate re-key (§8.3).
 
 Each step's primitive feeds the next; nothing here blocks the current runtime until step 6 changes
