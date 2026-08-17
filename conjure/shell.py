@@ -388,6 +388,9 @@ class Shell:
         await self._say(on_text, self._render_tree(data["node"]))
 
     async def _delete(self, on_text, m):
+        if not self._permitted:                               # destructive — refuse for a bumped guest (§6d)
+            await self._say(on_text, "This session is private — you can't delete anything here.")
+            return
         path = m.group("path").strip()
         preview = await self._admin("tree", path)             # resolve + show what's about to go
         if not preview.get("ok"):
@@ -413,6 +416,9 @@ class Shell:
         name = _match_name(m.group("name") if m else cmd, self._director.roster)
         if not name:
             return False
+        if not self._permitted:                               # the active LLM is SHARED — a shared-effect
+            await self._say(on_text, "This session is private — you can't change the LLM here.")   # verb (§6d)
+            return True
         self._director.active = name
         await self._say(on_text, f"Now talking to {name} ({self._agent_name()}).")
         return True

@@ -272,6 +272,17 @@ async def test_shared_effect_verbs_refused_for_a_non_permitted_speaker():
     assert calls[-1][:2] == ("POST", "/session/visibility")
 
 
+async def test_llm_switch_and_delete_refused_for_a_non_permitted_speaker():
+    # The active LLM is SHARED, and delete is destructive — both refused for a bumped guest (§6d).
+    sh, d, out, on_text = _shell()
+    sh._permitted = False
+    handled = await sh._switch("use gemini", on_text)
+    assert handled and d.active == "Claude" and "private" in out[-1][1].lower()   # LLM unchanged, refused
+    import types as _t
+    await sh._delete(on_text, _t.SimpleNamespace(group=lambda k: "/daniel/worlds/x"))
+    assert sh._pending_delete is None and "private" in out[-1][1].lower()          # delete refused, not armed
+
+
 async def test_session_error_is_surfaced_to_the_client():
     sh, out, on_text, calls = _session_shell(lambda *a: {"ok": False, "error": "no session 'zzz'"})
     await sh._dispatch("session switch zzz", on_text)
