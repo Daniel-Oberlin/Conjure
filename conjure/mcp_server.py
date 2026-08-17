@@ -732,10 +732,12 @@ async def delete_world(name: str) -> str:
 
 # --- Image procurement (produce/transform an image, get back an image_id) ----------------------
 # Procurement is decoupled from scene use: these make/transform an image and return an `image_id`
-# you then pass to place_image / set_skybox. The `generator` arg is OPTIONAL — omit it to use the
-# best default for the task (Gemini for most; OpenAI when you ask for transparency). Only name a
-# generator if the user asked for a specific one, or you need a capability the default lacks (call
-# list_image_generators if unsure what each supports).
+# you then pass to place_image / set_skybox. The `generator` arg selects WHICH image generator runs.
+# Omit it to use the best default for the task (Gemini for most; OpenAI when you ask for transparency).
+# BUT if the user names one for the image — "use Grok", "make it with OpenAI", "have Gemini do it" —
+# you MUST pass that name as `generator` (casual name OR vendor, e.g. 'Grok'/'xai', 'Chat'/'OpenAI').
+# This is separate from which director LLM is talking: "use Grok for the picture" means generator='Grok',
+# even if Grok is already the active director. Call list_image_generators if unsure what each supports.
 
 @mcp.tool()
 async def generate_image(
@@ -753,7 +755,8 @@ async def generate_image(
     transparent: set **true** whenever the user wants a transparent/clear background, a cut-out, a
         sticker, a decal, or "no background" — you MUST set this flag, NOT just describe it in the
         prompt. Routes to a generator that supports alpha.
-    generator: optional — see the note above; omit to use the default.
+    generator: which generator to use — see the note above. Omit for the default; pass the user's
+        named choice (e.g. 'Grok', 'OpenAI') whenever they ask for a specific one.
     """
     out = await _post("/images/generate", _body(
         prompt=prompt, aspect_ratio=aspect_ratio, transparent=transparent, generator=generator))
