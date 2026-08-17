@@ -1783,6 +1783,22 @@ def test_session_new_list_switch_rename_delete(srv, client):
                                client.get("/sessions", params={"scope": scope}).json()["sessions"]}
 
 
+def test_session_visibility_toggles_and_shows_in_the_listing(srv, client):
+    scope = srv.DEFAULT_SCOPE
+    srv._ensure_session(scope)
+    # new sessions are public by default; listing reports it
+    by_id = {s["id"]: s for s in client.get("/sessions", params={"scope": scope}).json()["sessions"]}
+    assert by_id["session-1"]["public"] is True
+    # make the active session private
+    r = client.post("/session/visibility", json={"scope": scope, "public": False}).json()
+    assert r["ok"] and r["session"] == "session-1" and r["public"] is False
+    assert srv.sessions.load_meta(scope, "session-1")["public"] is False   # recorded on the session meta
+    by_id = {s["id"]: s for s in client.get("/sessions", params={"scope": scope}).json()["sessions"]}
+    assert by_id["session-1"]["public"] is False
+    # and back to public
+    assert client.post("/session/visibility", json={"scope": scope, "public": True}).json()["public"] is True
+
+
 def test_first_world_spec_and_constructor_command_forms(srv):
     import conjure.server as S
     assert S._first_world_spec("daniel/agents/builder") == ("home", [])   # no session block → default

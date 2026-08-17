@@ -245,6 +245,10 @@ async def test_session_verbs_route_to_the_right_endpoints():
     assert calls[-1][:2] == ("POST", "/session/rename") and calls[-1][2]["title"] == "Cozy Corner"
     await sh._dispatch("session delete session-2", on_text)
     assert calls[-1][:2] == ("POST", "/session/delete") and calls[-1][2]["session"] == "session-2"
+    await sh._dispatch("session private", on_text)
+    assert calls[-1][:2] == ("POST", "/session/visibility") and calls[-1][2]["public"] is False
+    await sh._dispatch("session public", on_text)
+    assert calls[-1][:2] == ("POST", "/session/visibility") and calls[-1][2]["public"] is True
 
 
 async def test_session_error_is_surfaced_to_the_client():

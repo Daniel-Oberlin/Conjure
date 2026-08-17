@@ -1207,7 +1207,7 @@ async def sessions_list(scope: str = DEFAULT_SCOPE) -> dict:
         except (OSError, ValueError):
             meta = {}
         out.append({"id": sid, "title": meta.get("title", sid), "active_world": meta.get("active_world"),
-                    "llm": meta.get("llm", ""), "active": sid == active})
+                    "llm": meta.get("llm", ""), "public": meta.get("public", True), "active": sid == active})
     return {"ok": True, "sessions": out, "active": active}
 
 
@@ -1273,6 +1273,26 @@ async def session_delete(req: SessionRef) -> dict:
     if req.scope == active_scope and sid == active_sid:
         return {"ok": False, "error": "can't delete the active session — switch away first"}
     return {"ok": sessions.delete(req.scope, sid), "session": sid}
+
+
+class SessionVisibilityRequest(BaseModel):
+    public: bool
+    scope: str = DEFAULT_SCOPE
+    session: Optional[str] = None     # id or title; default = the active session
+
+
+@app.post("/session/visibility")
+async def session_visibility(req: SessionVisibilityRequest) -> dict:
+    """Make a session public (discoverable + joinable by others) or private (owner only). Visibility now
+    lives on the SESSION and a world inherits it (docs/sessions-plan.md §8.2); step 6a records it, step 6b
+    re-keys discovery + the join/privacy gates onto it. Default target = the active session."""
+    sid = _resolve_sid(req.scope, req.session) if req.session else sessions.get_active(req.scope)
+    if not sid or not sessions.exists(req.scope, sid):
+        return {"ok": False, "error": f"no session {req.session!r} in {req.scope}"}
+    meta = sessions.load_meta(req.scope, sid)
+    meta["public"] = req.public
+    sessions.save_meta(req.scope, sid, meta)
+    return {"ok": True, "session": sid, "public": req.public}
 
 
 @app.get("/agent/last")

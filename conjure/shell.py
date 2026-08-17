@@ -73,7 +73,8 @@ class Shell:
              "agent <name> — switch to another agent (relaunches its tools; starts its own context)"),
             (re.compile(r"^sessions$", re.I), self._sessions, "sessions — list this agent's saved sessions"),
             (re.compile(r"^session(?:\s+(?P<rest>\S.*))?$", re.I), self._session,
-             "session [new|switch|rename|delete] <arg> — manage sessions ('session <name>' switches)"),
+             "session [new|switch|rename|delete|public|private] <arg> — manage sessions "
+             "('session <name>' switches)"),
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
              "dir [path] — list users/spaces/worlds/assets (e.g. dir /alice/worlds)"),
             (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
@@ -319,8 +320,9 @@ class Shell:
         rows = []
         for s in data.get("sessions", []):
             extra = f", {s['llm']}" if s.get("llm") else ""
+            vis = "" if s.get("public", True) else ", private"
             rows.append(("* " if s.get("active") else "  ")
-                        + f"{s.get('title')} ({s['id']}) — world {s.get('active_world')}{extra}")
+                        + f"{s.get('title')} ({s['id']}) — world {s.get('active_world')}{extra}{vis}")
         await self._say(on_text, "Sessions:\n" + ("\n".join(rows) or "  (none)"))
 
     async def _session(self, on_text, m):
@@ -343,6 +345,9 @@ class Shell:
         elif verb == "delete":
             data = await self._session_api("POST", "/session/delete", scope=scope, session=arg)
             msg = f"Deleted {data.get('session')}."
+        elif verb in ("public", "private"):
+            data = await self._session_api("POST", "/session/visibility", scope=scope, public=(verb == "public"))
+            msg = f"Session is now {verb}."
         else:                                                 # `switch <ref>` OR bare `session <ref>`
             ref = arg if verb == "switch" else rest
             data = await self._session_api("POST", "/session/switch", scope=scope, session=ref)
