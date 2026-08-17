@@ -1096,15 +1096,15 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     global store, active_scope, active_world, active_space, active_space_owner, active_sid
     name = world_path(name)                   # canonical path, so `active` matches list() + the pointer
     _save_active()                            # split + persist the outgoing world (+ its space) FIRST,
-                                              # while the OLD session is still the active one
-    sid = _ensure_session(scope, sid)        # now flip to the target session (create if fresh) — the
-                                             # world facade routes here for the load/save below
+                                              # while the OLD live session is still set on the facade
+    sid = _ensure_session(scope, sid)        # flip to the target session (create if fresh) — and point the
+    worlds.set_live(scope, sid)              # facade at it BEFORE the load/save, so the incoming world is
+                                             # read from the NEW session, not the old one (session-switch bug)
     raw = store_override if store_override is not None else worlds.load(scope, name)
     if store_override is not None:
         worlds.save(scope, name, raw)         # a freshly-built world isn't on disk yet — persist it here
                                               # (activate is read-only now; creating owns persistence — step 0)
     active_scope, active_world, active_sid = scope, name, sid
-    worlds.set_live(scope, sid)                   # one explicit source for the live scope's worlds (§3)
     active_space_owner, active_space, store = _activate(scope, name, raw)   # resolve space (owner+name) + compose
     worlds.set_active(scope, name)                # per-session memory: which world to resume in this session
     _write_session_ptr(scope, sid)               # global pointer: which SESSION is live across the server

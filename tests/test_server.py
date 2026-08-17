@@ -1812,6 +1812,22 @@ def test_session_new_list_switch_rename_delete(srv, client):
                                client.get("/sessions", params={"scope": scope}).json()["sessions"]}
 
 
+def test_switching_sessions_loads_the_target_sessions_world(srv, client):
+    # Regression (the set_live-ordering bug): a session-switch must load the incoming world from the TARGET
+    # session, not the outgoing one — else a session whose active world has a different name 500s with
+    # FileNotFoundError. (Earlier tests missed it: every test session had a 'home' world.)
+    scope = srv.DEFAULT_SCOPE
+    srv._ensure_session(scope)                                   # session-1
+    wd = srv.sessions.worlds(scope, "session-1")
+    wd.save("alpha", srv.WorldStore({"id": "a", "name": "alpha", "rev": 0,
+                                     "environment": {"space": "<void>"}, "entities": []}))
+    wd.set_active("alpha")
+    client.post("/session/new", json={"scope": scope})           # session-2 ('home'), now active
+    r = client.post("/session/switch", json={"scope": scope, "session": "session-1"}).json()
+    assert r["ok"] and r["world"] == "alpha"                     # loaded from session-1, not session-2
+    assert srv.active_sid == "session-1" and srv.active_world == "alpha"
+
+
 def test_session_visibility_toggles_and_shows_in_the_listing(srv, client):
     scope = srv.DEFAULT_SCOPE
     srv._ensure_session(scope)

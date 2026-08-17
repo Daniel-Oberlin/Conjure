@@ -308,8 +308,11 @@ class Shell:
             async with httpx.AsyncClient(timeout=180.0) as client:
                 resp = await (client.get(f"{url}{path}", params=kw) if method == "GET"
                               else client.post(f"{url}{path}", json=kw))
-                return resp.json()
-        except Exception as exc:  # noqa: BLE001 — network / server down / bad JSON
+                try:
+                    return resp.json()
+                except ValueError:                        # non-JSON (e.g. a plain-text 500) → a useful line
+                    return {"ok": False, "error": f"server error {resp.status_code}: {resp.text[:200].strip()}"}
+        except Exception as exc:  # noqa: BLE001 — network / server down
             return {"ok": False, "error": f"session request failed: {exc}"}
 
     async def _sessions(self, on_text, m=None):
