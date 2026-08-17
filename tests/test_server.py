@@ -1844,6 +1844,19 @@ def test_session_visibility_toggles_and_shows_in_the_listing(srv, client):
     assert client.post("/session/visibility", json={"scope": scope, "public": True}).json()["public"] is True
 
 
+async def test_visibility_change_broadcasts_state_so_the_agent_server_can_regate(srv, client):
+    # The bump-out runs on the agent server when it receives fresh state; the visibility toggle must
+    # BROADCAST it (the bug: it didn't, so a guest kept conversing in a "private" session).
+    import conjure.server as S
+    srv._ensure_session(srv.DEFAULT_SCOPE)
+    S.clients.clear()
+    ws = _FakeWS()
+    S.clients[ws] = "daniel"                                      # a connected /ws client (the agent follower)
+    client.post("/session/visibility", json={"scope": srv.DEFAULT_SCOPE, "public": False})
+    assert any(m.get("type") == "snapshot" and m.get("state", {}).get("public") is False for m in ws.sent)
+    S.clients.clear()
+
+
 def test_first_world_spec_and_constructor_command_forms(srv):
     import conjure.server as S
     assert S._first_world_spec("daniel/agents/builder") == ("home", [])   # no session block → default

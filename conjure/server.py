@@ -1292,9 +1292,11 @@ async def session_visibility(req: SessionVisibilityRequest) -> dict:
     meta = sessions.load_meta(req.scope, sid)
     meta["public"] = req.public
     sessions.save_meta(req.scope, sid, meta)
-    if not req.public and req.scope == active_scope and sid == active_sid:
-        await _regate_clients()                   # made the LIVE session private → bump connected guests (§8.3)
-    return {"ok": True, "session": sid, "public": req.public}
+    if req.scope == active_scope and sid == active_sid:   # the LIVE session's visibility changed (§8.3)
+        if not req.public:
+            await _regate_clients()                       # bump connected headset guests
+        await _broadcast(_snapshot_msg())                 # propagate new state → the agent server re-gates
+    return {"ok": True, "session": sid, "public": req.public}     #   its CLI/voice clients (bump / restore)
 
 
 def _session_public(scope: str, sid: str) -> bool:
@@ -1639,11 +1641,14 @@ async def worlds_visibility(req: WorldVisibilityRequest) -> dict:
         meta["public"] = req.public
         sessions.save_meta(req.scope, sid, meta)
         published = []
+        live = req.scope == active_scope and sid == active_sid
         if req.public and req.scope == active_scope:   # the live session went public → publish its assets
             published = _publish_world_assets(store.doc, owner)
             _save_active()
-        elif not req.public and req.scope == active_scope and sid == active_sid:
-            await _regate_clients()                    # made the LIVE session private → bump guests (§8.3)
+        elif not req.public and live:
+            await _regate_clients()                    # made the LIVE session private → bump headset guests
+        if live:
+            await _broadcast(_snapshot_msg())          # propagate new state → agent server re-gates (§8.3)
         return {"ok": True, "world": req.name or active_world, "session": sid,
                 "public": req.public, "published_assets": published}
     except ValueError as exc:
