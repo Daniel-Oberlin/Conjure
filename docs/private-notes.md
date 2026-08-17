@@ -52,6 +52,7 @@
 
 # Graphics
 - Lighting
+- billboards
 
 # Web
 - Perform web requests

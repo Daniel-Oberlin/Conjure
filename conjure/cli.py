@@ -370,16 +370,16 @@ async def _repl_client(s: Settings, verbose: bool, user: str) -> bool:
                 await asyncio.sleep(1.0)
 
     async def _await_turn() -> None:
-        """Wait for our turn to finish before re-prompting. A heartbeat keeps long image/skybox turns from
-        looking hung and from dumping us back to a prompt that would just reject the next input as busy.
-        Caps at ~10 min as a safety against a dropped socket (a lost turn_done)."""
+        """Wait for our turn to finish before re-prompting. A heartbeat keeps long turns from looking hung
+        and from dumping us back to a prompt that would just reject the next input as busy. Caps at ~10 min
+        as a safety against a dropped socket (a lost turn_done)."""
         waited = 0
         while not turn_done.is_set():
             try:
                 await asyncio.wait_for(turn_done.wait(), timeout=20.0)
             except asyncio.TimeoutError:
                 waited += 20
-                print(f"[still working… {waited}s — image/skybox turns can take a while]")
+                print(f"[still working… {waited}s — some operations (e.g. image generation) can take a while]")
                 if waited >= 600:
                     print("[the turn is still running server-side; new input may be rejected until it finishes]")
                     return
