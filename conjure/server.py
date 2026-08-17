@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .captioner import build_captioner
+from .agents import resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
@@ -49,7 +50,6 @@ ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
 LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settings.debug_log)
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
-AGENTS_DIR = ROOT / "agents"
 # The precious DATA root — the resolved user home (docs/user-home-plan.md §3), NOT the in-project
 # .cache anymore. On startup the in-project .cache is migrated into here (see _init_state).
 CACHE = DATA_DIR
@@ -98,7 +98,8 @@ def _agent_block(scope: str, key: str) -> dict:
     last segment). Missing/unreadable → {}."""
     agent = (scope or "").rsplit("/", 1)[-1]
     try:
-        return json.loads((AGENTS_DIR / agent / "agent.json").read_text()).get(key) or {}
+        agent_dir = resolve_agent_dir(agent)             # search path: user defs shadow bundled (§5)
+        return json.loads((agent_dir / "agent.json").read_text()).get(key) or {}
     except Exception:  # noqa: BLE001
         return {}
 

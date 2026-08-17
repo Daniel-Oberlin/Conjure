@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from conjure.agents import (WILDCARD, AgentDef, load_agent, load_server_registry, scoped_roster)
+from conjure.agents import (WILDCARD, AgentDef, agent_names, list_agents, load_agent,
+                            load_server_registry, resolve_agent_dir, scoped_roster)
 
 
 def test_registry_has_the_world_server():
@@ -32,6 +33,39 @@ def _write_agent(tmp_path, name, data, files=None):
     for rel, text in (files or {}).items():
         (d / rel).write_text(text)
     return tmp_path
+
+
+# ── agent-definition search path (docs/user-home-plan.md §5) ─────────────────────────────────────
+def test_search_path_user_shadows_bundled(tmp_path):
+    user = tmp_path / "user"; bundled = tmp_path / "bundled"
+    user.mkdir(); bundled.mkdir()
+    _write_agent(user, "builder", {"prompt": "USER builder"})
+    _write_agent(bundled, "builder", {"prompt": "bundled builder"})
+    _write_agent(bundled, "outdoor", {"prompt": "bundled outdoor"})
+    path = [user, bundled]
+    # user 'builder' wins; 'outdoor' only in bundled still resolves
+    assert load_agent("builder", agents_path=path).prompt == "USER builder"
+    assert load_agent("outdoor", agents_path=path).prompt == "bundled outdoor"
+    assert resolve_agent_dir("builder", path) == user / "builder"
+
+
+def test_list_agents_annotates_source(tmp_path, monkeypatch):
+    from conjure import config
+    user = tmp_path / "user"; bundled = tmp_path / "bundled"
+    user.mkdir(); bundled.mkdir()
+    _write_agent(user, "mine", {"prompt": "x"})
+    _write_agent(user, "builder", {"prompt": "shadow"})
+    _write_agent(bundled, "builder", {"prompt": "y"})
+    monkeypatch.setattr(config, "BUNDLED_AGENTS_DIR", bundled)
+    monkeypatch.setattr(config, "AGENTS_PATH", [user, bundled])
+    # read live via config.AGENTS_PATH (no explicit arg) → dedup, first-wins, sorted by name
+    assert list_agents() == [("builder", "user"), ("mine", "user")]
+    assert agent_names() == ["builder", "mine"]
+
+
+def test_resolve_agent_dir_missing_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="not found in search path"):
+        resolve_agent_dir("ghost", [tmp_path])
 
 
 def test_unknown_server_ref_is_rejected(tmp_path):

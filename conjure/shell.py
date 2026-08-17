@@ -16,7 +16,7 @@ import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Awaitable, Callable, Optional
 
-from .agents import AGENTS_DIR
+from .agents import agent_names, list_agents
 from .config import DEFAULT_USER, Settings, scope_for
 from .director import Director
 
@@ -267,14 +267,13 @@ class Shell:
         await self._say(on_text, "LLMs:\n" + "\n".join(rows))
 
     def _agent_names(self) -> list[str]:
-        """Available agents — every `agents/<name>/agent.json` on disk."""
-        if not AGENTS_DIR.exists():
-            return []
-        return sorted(p.name for p in AGENTS_DIR.iterdir() if (p / "agent.json").exists())
+        """Available agent names across the search path (user defs shadow bundled — user-home-plan §5)."""
+        return agent_names()
 
     async def _agents(self, on_text, m=None):
         active = self._agent_name()
-        rows = [("* " if n == active else "  ") + n for n in self._agent_names()]
+        rows = [("* " if n == active else "  ") + n + ("" if src == "bundled" else "  (user)")
+                for n, src in list_agents()]
         await self._say(on_text, "Agents:\n" + "\n".join(rows))
 
     async def _switch_agent(self, on_text, m):

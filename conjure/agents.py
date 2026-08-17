@@ -19,11 +19,47 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from . import config
+
 _ROOT = Path(__file__).resolve().parent.parent          # repo root (parent of the conjure package)
-AGENTS_DIR = _ROOT / "agents"
-DEFAULT_REGISTRY = AGENTS_DIR / "servers.json"
+AGENTS_DIR = config.BUNDLED_AGENTS_DIR                  # the bundled/example agent defs (repo `agents/`)
+DEFAULT_REGISTRY = AGENTS_DIR / "servers.json"          # shared MCP registry — bundled (user overlay: later)
 
 WILDCARD = "*"      # "any configured LLM" / "any registered server" — the explicit "god" escape hatch
+
+
+def _search_path(agents_path: Optional[list[Path]] = None) -> list[Path]:
+    """The agent-definition search path — the explicit arg, else the resolved `config.AGENTS_PATH`
+    (read live so tests can monkeypatch it). User dirs first, bundled last (docs/user-home-plan.md §5)."""
+    return agents_path if agents_path is not None else config.AGENTS_PATH
+
+
+def resolve_agent_dir(name: str, agents_path: Optional[list[Path]] = None) -> Path:
+    """First `<dir>/<name>/agent.json` in the search path — so a user agent shadows a bundled one of the
+    same name. Raises FileNotFoundError if the name is nowhere on the path."""
+    for base in _search_path(agents_path):
+        if (base / name / "agent.json").exists():
+            return base / name
+    tried = [str(p) for p in _search_path(agents_path)]
+    raise FileNotFoundError(f"agent {name!r} not found in search path: {tried}")
+
+
+def list_agents(agents_path: Optional[list[Path]] = None) -> list[tuple[str, str]]:
+    """Sorted unique `(name, source)` across the search path, first-match-wins (so a shadowing user
+    agent hides the bundled one). `source` is 'bundled' for the bundled dir, else 'user'."""
+    seen: dict[str, str] = {}
+    for base in _search_path(agents_path):
+        if not base.is_dir():
+            continue
+        for p in sorted(base.iterdir()):
+            if p.name not in seen and (p / "agent.json").exists():
+                seen[p.name] = "bundled" if base == config.BUNDLED_AGENTS_DIR else "user"
+    return sorted(seen.items())
+
+
+def agent_names(agents_path: Optional[list[Path]] = None) -> list[str]:
+    """Just the names from `list_agents` (the common case)."""
+    return [n for n, _ in list_agents(agents_path)]
 
 
 @dataclass
@@ -90,16 +126,21 @@ def load_server_registry(path: Path = DEFAULT_REGISTRY) -> dict[str, ServerSpec]
     }
 
 
-def load_agent(name: str, *, agents_dir: Path = AGENTS_DIR,
+def load_agent(name: str, *, agents_dir: Optional[Path] = None,
+               agents_path: Optional[list[Path]] = None,
                registry: Optional[dict[str, ServerSpec]] = None) -> AgentDef:
-    """Load and validate the agent definition `<agents_dir>/<name>/agent.json`.
+    """Load and validate an agent definition.
+
+    Resolution: an explicit `agents_dir` pins a single directory (`<agents_dir>/<name>`; used by tests);
+    otherwise the name is looked up on the search path (`agents_path`, else `config.AGENTS_PATH`), so a
+    user agent shadows a bundled one (docs/user-home-plan.md §5).
 
     The directory name is the agent's identity, so `agent.json` needn't repeat it (a `name` field, if
     present, is validated to match). `prompt_file` is resolved relative to the agent's directory.
     `registry` (if given) validates that every referenced MCP server exists — pass it to fail loudly
     on a typo'd server name. Raises ValueError on a malformed def, FileNotFoundError on a missing file.
     """
-    agent_dir = agents_dir / name
+    agent_dir = (agents_dir / name) if agents_dir is not None else resolve_agent_dir(name, agents_path)
     data = _read_json(agent_dir / "agent.json")
     if data.get("name", name) != name:
         raise ValueError(f"agent {name!r}: 'name' field is {data.get('name')!r}, expected {name!r}")
