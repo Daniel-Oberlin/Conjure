@@ -98,10 +98,12 @@ wall", "wrap me in a misty forest", "make the painting nighttime".*
 | `ANTHROPIC_API_KEY` | director "Claude" | billing |
 | `GOOGLE_API_KEY` | director "Gemini" + the default image generator | Gemini; billing |
 | `OPENAI_API_KEY` | director "Chat" + the OpenAI image generator (text/typography, transparency) | billing |
+| `XAI_API_KEY` | director "Grok" + the Grok image generator (generate-only) | billing |
 | `POLY_PIZZA_API_KEY` | `place_asset` (3D models) | free, no billing |
 
-At least one of `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` is required for the director
-(set more to grow the roster; `GOOGLE`/`OPENAI` also enable image generators). Speech (Whisper STT,
+At least one of `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` is required
+for the director (set more to grow the roster; `GOOGLE`/`OPENAI`/`XAI` also enable image generators).
+Speech (Whisper STT,
 Kokoro TTS) runs **locally** — no keys. Full prerequisites + the doctor:
 [docs/setup.md](./docs/setup.md). Provider options: [docs/providers.md](./docs/providers.md).
 

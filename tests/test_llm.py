@@ -5,6 +5,8 @@ from conjure.config import Settings
 from conjure.llm import (
     ClaudeLLM,
     GeminiLLM,
+    GrokImageGenerator,
+    GrokLLM,
     OpenAIImageGenerator,
     OpenAILLM,
     ToolSpec,
@@ -13,6 +15,7 @@ from conjure.llm import (
     build_image_generators,
     build_roster,
     select_generator,
+    vendor_for,
 )
 
 
@@ -226,6 +229,53 @@ async def test_openai_director_runs_a_tool_then_returns_final(monkeypatch):
     assert msgs[2] == {"role": "assistant", "content": "yo"}                 # plain history, no attribution
 
 
+# --------------------------------------------------------------------------- Grok (OpenAI-compatible) director
+
+async def _run_director(llm, monkeypatch):
+    """Drive one no-tool turn through an OpenAI-compatible director, capturing the AsyncOpenAI kwargs
+    (so a test can assert whether/where `base_url` is set)."""
+    import openai
+
+    captured = {}
+
+    class _Chat:
+        async def create(self, **kw):
+            return _oa_resp("hi there", None)
+
+    def _fake(**kw):
+        captured.update(kw)
+        return type("Cl", (), {"chat": type("C", (), {"completions": _Chat()})()})()
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", _fake)
+
+    async def emit(t, *, final): ...
+
+    async def execute_tool(name, args): return "ok"
+
+    out = await llm.run_turn(system="SYS", history=[], user_text="hi",
+                             tools=[], execute_tool=execute_tool, emit=emit)
+    return out, captured
+
+
+async def test_grok_director_points_at_xai_base_url(monkeypatch):
+    # Grok reuses the OpenAI loop verbatim; the only difference is the base URL.
+    out, kw = await _run_director(GrokLLM("Grok", "key", "grok-4"), monkeypatch)
+    assert out == "hi there"
+    assert kw["base_url"] == "https://api.x.ai/v1" and kw["api_key"] == "key"
+
+
+async def test_openai_director_uses_no_base_url(monkeypatch):
+    # The reference OpenAI director talks to the SDK default endpoint — no base_url override.
+    _, kw = await _run_director(OpenAILLM("Chat", "key", "gpt-x"), monkeypatch)
+    assert "base_url" not in kw
+
+
+def test_grok_is_in_the_roster_and_vendor_alias():
+    roster, _ = build_roster(_settings(xai_api_key="x"))
+    assert "Grok" in roster and roster["Grok"].name == "Grok"
+    assert vendor_for("Grok") == "xai"
+
+
 # --------------------------------------------------------------------------- image registry + capabilities
 
 def test_build_image_generators_keyed_by_casual_name():
@@ -325,3 +375,46 @@ async def test_openai_image_generate_decodes_b64(monkeypatch):
         "a red circle", aspect_ratio="21:9", transparent=True)
     assert res.data == b"PNGBYTES" and res.provider == "Chat"
     assert _Images.kw["size"] == "1536x1024" and _Images.kw["background"] == "transparent"
+
+
+# --------------------------------------------------------------------------- Grok image gen (faked)
+
+def test_grok_image_generator_is_generate_only():
+    gens = build_image_generators(_settings(xai_api_key="x"))
+    assert set(gens) == {"Grok"}
+    caps = gens["Grok"].capabilities
+    assert caps.operations == frozenset({"generate"})
+    assert caps.transparency is False and caps.aspect == "free" and caps.max_resolution == 2048
+
+
+def test_grok_is_never_auto_selected_but_honored_on_request():
+    # Gemini/OpenAI own every default op; Grok only appears when explicitly asked for (by name or alias).
+    reg = build_image_generators(_settings(google_api_key="g", xai_api_key="x"))
+    assert select_generator(reg, "generate")[0].name == "Gemini"          # default, not Grok
+    assert select_generator(reg, "generate", requested="Grok")[0].name == "Grok"
+    assert select_generator(reg, "generate", requested="xai")[0].name == "Grok"   # vendor alias
+    # it can't do the ops it doesn't advertise
+    gen, err = select_generator(reg, "edit", requested="Grok")
+    assert gen is None and "edit" in err
+
+
+async def test_grok_image_generate_decodes_b64_and_rides_extra_body(monkeypatch):
+    import base64
+
+    import openai
+
+    payload = base64.b64encode(b"GROKPNG").decode()
+
+    class _Images:
+        async def generate(self, **kw):
+            _Images.kw = kw
+            return type("R", (), {"data": [type("D", (), {"b64_json": payload})()]})()
+
+    monkeypatch.setattr(openai, "AsyncOpenAI",
+                        lambda **kw: type("Cl", (), {"images": _Images(), "_kw": kw})())
+    res = await GrokImageGenerator("Grok", "k", "grok-imagine-image-2.0").generate(
+        "a neon skyline", aspect_ratio="16:9")
+    assert res.data == b"GROKPNG" and res.provider == "Grok"
+    # aspect_ratio + resolution are xAI extensions → extra_body, and bytes come back as b64_json
+    assert _Images.kw["response_format"] == "b64_json"
+    assert _Images.kw["extra_body"] == {"resolution": "2k", "aspect_ratio": "16:9"}

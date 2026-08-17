@@ -1,17 +1,18 @@
 """Provider abstraction — the director's named LLMs *and* their image generators (decision #1).
 
-One module, one provider family. A vendor (Anthropic, Google, OpenAI) can offer two capabilities:
+One module, one provider family. A vendor (Anthropic, Google, OpenAI, xAI) can offer two capabilities:
 
   • **Director** — a conversational, tool-calling LLM (`LLM.run_turn`) the user talks to. The roster
     lets the director switch between them mid-conversation and gain new ones by registration alone.
   • **Image generation** — bytes-in/bytes-out with declared `ImageCapabilities`, so callers (and the
     director, via the world server) can reason about what each generator can and cannot do.
 
-Claude is director-only. Gemini and OpenAI do both. Everything is wired from ONE place — the `ROSTER`
-table below: casual names, which key powers them, which models, and which ops each generator is the
-default for. Change a name there and it changes everywhere (addressing, image selection).
+Claude is director-only. Gemini, OpenAI, and xAI ("Grok") do both. Everything is wired from ONE place —
+the `ROSTER` table below: casual names, which key powers them, which models, and which ops each generator
+is the default for. Change a name there and it changes everywhere (addressing, image selection).
 
-Providers call the vendor SDKs directly (`anthropic`, `google-genai`, `openai`) and import them
+Providers call the vendor SDKs directly (`anthropic`, `google-genai`, `openai` — xAI reuses the `openai`
+SDK against its own base URL) and import them
 *lazily inside methods* — so importing this module pulls no heavy SDK, and the world server can use
 the image side without dragging in director deps.
 """
@@ -173,20 +174,31 @@ class GeminiLLM:
         return final_text
 
 
-class OpenAILLM:
+class _OpenAICompatibleLLM:
+    """Director loop for the OpenAI Chat Completions API and any vendor that mirrors it. The whole
+    tool-call loop is vendor-neutral; a subclass only sets `base_url` (None = OpenAI's own endpoint,
+    otherwise e.g. xAI's ``https://api.x.ai/v1``)."""
+
     name: str
+    base_url: Optional[str] = None
 
     def __init__(self, name: str, api_key: str, model: str):
         self.name = name
         self._api_key = api_key
         self.model = model
 
+    def _client(self):
+        from openai import AsyncOpenAI
+
+        kwargs: dict = {"api_key": self._api_key}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        return AsyncOpenAI(**kwargs)
+
     async def run_turn(self, *, system, history, user_text, tools, execute_tool, emit) -> str:
         import json
 
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=self._api_key)
+        client = self._client()
         oa_tools = [{"type": "function", "function": {
             "name": t.name, "description": t.description, "parameters": t.input_schema}} for t in tools]
         messages: list = [{"role": "system", "content": system}]
@@ -227,6 +239,17 @@ class OpenAILLM:
                 out = await execute_tool(tc.function.name, args)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
         return final_text
+
+
+class OpenAILLM(_OpenAICompatibleLLM):
+    """OpenAI ("Chat") — the reference Chat Completions director."""
+
+
+class GrokLLM(_OpenAICompatibleLLM):
+    """xAI ("Grok") — the same Chat Completions loop pointed at api.x.ai. Tool calling is
+    OpenAI-compatible, so only the base URL differs."""
+
+    base_url = "https://api.x.ai/v1"
 
 
 # =================================================================== image generation
@@ -353,7 +376,36 @@ class GeminiImageGenerator:
         raise RuntimeError(f"Gemini returned no image part (finish_reason={last_reason})")
 
 
-class OpenAIImageGenerator:
+class _OpenAICompatibleImageGenerator:
+    """Shared plumbing for OpenAI-style image APIs (OpenAI, xAI): the client factory (subclasses set
+    `base_url`) and the base64 → bytes decode. Subclasses own `capabilities`, `generate`, and `edit`,
+    since the request bodies differ (gpt-image-1 takes `size`/`background`; grok takes `aspect_ratio`/
+    `resolution` via `extra_body` and returns `response_format="b64_json"`)."""
+
+    base_url: Optional[str] = None
+
+    def __init__(self, name: str, api_key: str, model: str):
+        self.name = name
+        self._api_key = api_key
+        self.model = model
+
+    def _client(self):
+        from openai import AsyncOpenAI
+
+        kwargs: dict = {"api_key": self._api_key, "timeout": _IMAGE_TIMEOUT_S}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        return AsyncOpenAI(**kwargs)
+
+    def _result(self, resp, model: str) -> ImageResult:
+        import base64
+
+        # OpenAI-compatible image endpoints return base64 (gpt-image-1 always; grok when asked).
+        data = base64.b64decode(resp.data[0].b64_json)
+        return ImageResult(data=data, mime_type="image/png", provider=self.name, model=model)
+
+
+class OpenAIImageGenerator(_OpenAICompatibleImageGenerator):
     """OpenAI gpt-image-1. Strong prompt adherence + legible text, mask/whole-image edit, and the
     only generator that can produce transparent (alpha) backgrounds — but fixed sizes ≤1536, no
     arbitrary aspect, no outpaint, no high-res skybox."""
@@ -363,11 +415,6 @@ class OpenAIImageGenerator:
         edit_mode="mask", max_resolution=1536, aspect="fixed",
         fixed_sizes=("1024x1024", "1536x1024", "1024x1536"), transparency=True,
     )
-
-    def __init__(self, name: str, api_key: str, model: str):
-        self.name = name
-        self._api_key = api_key
-        self.model = model
 
     def _size_for(self, aspect_ratio: Optional[str]) -> str:
         """Map a requested free aspect onto the nearest gpt-image-1 fixed size."""
@@ -386,9 +433,7 @@ class OpenAIImageGenerator:
 
     async def generate(self, prompt, *, aspect_ratio=None, image_size=None, model=None,
                        transparent=False) -> ImageResult:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=self._api_key, timeout=_IMAGE_TIMEOUT_S)
+        client = self._client()
         eff = model or self.model
         kwargs: dict = {"model": eff, "prompt": prompt, "size": self._size_for(aspect_ratio)}
         if transparent:
@@ -398,9 +443,7 @@ class OpenAIImageGenerator:
 
     async def edit(self, prompt, image, *, aspect_ratio=None, image_size=None, model=None,
                    transparent=False, mask=None) -> ImageResult:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=self._api_key, timeout=_IMAGE_TIMEOUT_S)
+        client = self._client()
         eff = model or self.model
         kwargs: dict = {"model": eff, "prompt": prompt, "image": ("image.png", image, "image/png")}
         if aspect_ratio:
@@ -412,12 +455,34 @@ class OpenAIImageGenerator:
         resp = await client.images.edit(**kwargs)
         return self._result(resp, eff)
 
-    def _result(self, resp, model: str) -> ImageResult:
-        import base64
 
-        # gpt-image-1 always returns base64 (no url).
-        data = base64.b64decode(resp.data[0].b64_json)
-        return ImageResult(data=data, mime_type="image/png", provider=self.name, model=model)
+class GrokImageGenerator(_OpenAICompatibleImageGenerator):
+    """xAI grok-imagine-image-2.0. Generate-only, OpenAI-compatible: `aspect_ratio` + `resolution`
+    ("1k"/"2k") ride in `extra_body`, bytes come back via `response_format="b64_json"`. No editing,
+    no mask, no transparency, no high-res skybox — so it's never auto-selected (Gemini owns
+    skybox/edit/outpaint, OpenAI owns transparency); it's reachable only when explicitly requested."""
+
+    base_url = "https://api.x.ai/v1"
+    capabilities = ImageCapabilities(
+        operations=frozenset({"generate"}),
+        edit_mode=None, max_resolution=2048, aspect="free", fixed_sizes=(), transparency=False,
+    )
+
+    async def generate(self, prompt, *, aspect_ratio=None, image_size=None, model=None,
+                       transparent=False) -> ImageResult:
+        client = self._client()
+        eff = model or self.model
+        extra: dict = {"resolution": image_size or "2k"}
+        if aspect_ratio:
+            extra["aspect_ratio"] = aspect_ratio
+        resp = await client.images.generate(
+            model=eff, prompt=prompt, n=1, response_format="b64_json", extra_body=extra)
+        return self._result(resp, eff)
+
+    async def edit(self, prompt, image, *, aspect_ratio=None, image_size=None, model=None,
+                   transparent=False, mask=None) -> ImageResult:
+        # Not advertised in `capabilities`, so mediation never routes an edit here; defensive only.
+        raise RuntimeError("Grok image generation can't edit — use Gemini or OpenAI")
 
 
 # =================================================================== the single-source roster
@@ -444,6 +509,8 @@ ROSTER: list[RosterEntry] = [
                 GeminiImageGenerator, "image_model", ("generate", "edit", "outpaint", "skybox")),
     RosterEntry("Chat", "openai", "openai_api_key", OpenAILLM, "openai_director_model",
                 OpenAIImageGenerator, "openai_image_model", ()),  # opt-in; default for transparency
+    RosterEntry("Grok", "xai", "xai_api_key", GrokLLM, "xai_director_model",
+                GrokImageGenerator, "xai_image_model", ()),       # opt-in; default for nothing
 ]
 
 

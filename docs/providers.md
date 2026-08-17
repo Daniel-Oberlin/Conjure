@@ -39,7 +39,8 @@ in the context.
 | ✅ **Claude** (Anthropic) | cloud | Default director — strongest, most reliable **tool-calling** (it drives the MCP edits). |
 | ✅ **Google Gemini** | cloud | Built roster member (casual name "Gemini"); `CONJURE_GEMINI_MODEL`, default `gemini-2.5-flash`. |
 | ✅ **OpenAI** | cloud | Built roster member (casual name "Chat"); `CONJURE_OPENAI_DIRECTOR_MODEL`, default `gpt-4.1`. Also an image generator (below). |
-| 💡 Groq | cloud | Very fast inference; good for snappy turns. |
+| ✅ **xAI Grok** | cloud | Built roster member (casual name "Grok", vendor alias `xai`); OpenAI-compatible API (reuses the `openai` SDK against `api.x.ai`). `XAI_API_KEY`, `CONJURE_XAI_DIRECTOR_MODEL`, default `grok-4`. Also an image generator (below). |
+| 💡 Groq | cloud | Very fast inference; good for snappy turns. *(Distinct from xAI Grok above.)* |
 
 The roster (casual name → vendor/key/models/roles) lives in **one place**: the `ROSTER` table in
 `conjure/llm.py`. Add a row and it's instantly a director and/or image generator everywhere.
@@ -79,6 +80,7 @@ one explicitly (clear error if it can't do the job), or omit it for the hard-cod
 |---|---|---|
 | ✅ **Gemini "Nano Banana"** (`gemini-2.5-flash-image`, `gemini-3-pro-image`) | cloud | Default for every op; the only one that can outpaint + make a 4K skybox. |
 | ✅ **OpenAI** (`gpt-image-1`, casual name "Chat") | cloud | Strong prompt adherence + text-in-image; **only one with transparency** (alpha cut-outs). Fixed sizes ≤1536. |
+| ✅ **xAI Grok** (`grok-imagine-image-2.0`, casual name "Grok") | cloud | Generate-only (no edit/mask/transparency/skybox); `aspect_ratio` + `resolution` (1k/2k) via `extra_body`. Never a default — reachable only when explicitly requested. |
 | 💡 FLUX (fal/Replicate) · Stable Diffusion (local) | cloud/local | Plug in as further generators (add a `ROSTER` row + an `ImageGenerator`). |
 
 **Capabilities** (`ImageCapabilities`, queryable via `list_image_generators`):

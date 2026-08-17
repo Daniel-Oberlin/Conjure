@@ -204,6 +204,11 @@ class Settings:
     gemini_model: str = "gemini-2.5-flash"           # Gemini director model
     openai_director_model: str = "gpt-4.1"           # OpenAI ("Chat") director model
     openai_image_model: str = "gpt-image-1"          # OpenAI image generator model
+    # xAI ("Grok") — OpenAI-compatible, so it reuses the same SDK against api.x.ai (conjure.llm).
+    xai_api_key: str | None = None                   # kept defaulted (unlike the older secrets above) so
+    #                                                  positional Settings(...) in tests stay valid
+    xai_director_model: str = "grok-4"               # Grok director model (grok-4.x / grok-3 also valid)
+    xai_image_model: str = "grok-imagine-image-2.0"  # Grok image generator (generate-only)
     debug_log: bool = True                           # append client diagnostics to temp/conjure.log
     debug_registration: bool = False                 # co-location registration HUD + per-capture log (opt-in)
     debug_jitter: bool = False                        # frame-pacing/jitter probes only (clean cost measurement)
@@ -304,6 +309,9 @@ def get_settings() -> Settings:
         gemini_model=os.environ.get("CONJURE_GEMINI_MODEL", "gemini-2.5-flash"),
         openai_director_model=os.environ.get("CONJURE_OPENAI_DIRECTOR_MODEL", "gpt-4.1"),
         openai_image_model=os.environ.get("CONJURE_OPENAI_IMAGE_MODEL", "gpt-image-1"),
+        xai_api_key=os.environ.get("XAI_API_KEY") or None,
+        xai_director_model=os.environ.get("CONJURE_XAI_DIRECTOR_MODEL", "grok-4"),
+        xai_image_model=os.environ.get("CONJURE_XAI_IMAGE_MODEL", "grok-imagine-image-2.0"),
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
         debug_jitter=os.environ.get("CONJURE_DEBUG_JITTER", "").strip().lower() in ("1", "true", "yes", "on"),

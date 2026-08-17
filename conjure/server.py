@@ -952,7 +952,7 @@ async def _procure(op: str, *, prompt: str, requested: Optional[str], transparen
     """Mediate + run one procurement op. `run(generator) -> ImageResult`. Returns the uniform image
     result dict (no scene effect)."""
     if not image_generators:
-        return {"ok": False, "error": "no image generator configured (set GOOGLE_API_KEY and/or OPENAI_API_KEY)"}
+        return {"ok": False, "error": "no image generator configured (set GOOGLE_API_KEY, OPENAI_API_KEY, and/or XAI_API_KEY)"}
     gen, err = select_generator(image_generators, op, requested=requested, transparent=transparent)
     if err:
         return {"ok": False, "error": err}
