@@ -28,6 +28,10 @@ CACHE_DIR = ROOT / ".cache"
 USERS_DIR = CACHE_DIR / "users"
 SESSION_PTR = CACHE_DIR / "_session.txt"
 
+# The default logged-in user when none is specified (--user / the /tunnel/<user> route).
+# No security — users are identity only (docs/spaces-and-users-plan.md).
+DEFAULT_USER = "daniel"
+
 # ---------------------------------------------------------------------------
 # User home resolution (docs/user-home-plan.md §3/§4).
 #
@@ -74,6 +78,28 @@ def load_settings(config_dir: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+# The template written on first run. `null` for a path key means "use the resolved default" — the
+# resolver treats a falsy value as absent (docs/user-home-plan.md §4), so a fresh file changes nothing;
+# it exists purely so the keys are discoverable and a user can fill one in.
+DEFAULT_SETTINGS: dict = {
+    "data_dir": None,        # override the precious data root (sessions/worlds/assets/library.db)
+    "cache_dir": None,       # override the disposable cache root
+    "agents_path": None,     # list of dirs; user-first search path for agent definitions
+    "default_user": DEFAULT_USER,
+}
+
+
+def ensure_settings_file(config_dir: Path) -> Path:
+    """Create `<config_dir>/settings.json` with the default template on first run; leave an existing
+    one untouched. Idempotent. Returns the path. Called at app startup (not import) — it's the one
+    place this module writes to the real home."""
+    path = config_dir / "settings.json"
+    if not path.exists():
+        config_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(DEFAULT_SETTINGS, indent=2) + "\n")
+    return path
 
 
 def _resolve_dir(env: Mapping[str, str], settings: Mapping, *, env_var: str, settings_key: str,
@@ -130,11 +156,6 @@ CONFIG_DIR = _RESOLVED["config_dir"]
 DATA_DIR = _RESOLVED["data_dir"]
 CACHE_ROOT = _RESOLVED["cache_dir"]      # genuinely-disposable cache (NOT the precious data tree)
 AGENTS_PATH: list[Path] = _RESOLVED["agents_path"]
-
-# The default logged-in user when none is specified (--user / the /tunnel/<user> route).
-# No security — users are identity only (docs/spaces-and-users-plan.md).
-DEFAULT_USER = "daniel"
-
 
 def scope_for(user: str, agent: str) -> str:
     """The capability scope a (user, agent) pair operates under: `<user>/agents/<agent>`

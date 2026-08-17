@@ -93,3 +93,25 @@ def test_load_settings_non_object_is_empty(tmp_path):
 def test_config_dir_env_beats_home_and_xdg():
     env = {"CONJURE_CONFIG_DIR": "/explicit/cfg", "CONJURE_HOME": "/srv/c", "XDG_CONFIG_HOME": "/x"}
     assert config.resolve_config_dir(env) == Path("/explicit/cfg")
+
+
+# ── settings.json create-on-first-run ────────────────────────────────────────
+def test_ensure_settings_file_creates_template(tmp_path):
+    cfg = tmp_path / "conjure"
+    path = config.ensure_settings_file(cfg)
+    assert path == cfg / "settings.json"
+    assert path.exists()
+    data = config.load_settings(cfg)
+    assert data["data_dir"] is None and data["agents_path"] is None
+    assert data["default_user"] == config.DEFAULT_USER
+    # A fresh template forces nothing: resolving with it == resolving with empty settings (same env).
+    env = {"XDG_DATA_HOME": "/x/data", "XDG_CONFIG_HOME": "/x/cfg", "XDG_CACHE_HOME": "/x/cache"}
+    assert config.resolve_paths(env=env, settings=data) == config.resolve_paths(env=env, settings={})
+
+
+def test_ensure_settings_file_is_idempotent(tmp_path):
+    cfg = tmp_path / "conjure"
+    config.ensure_settings_file(cfg)
+    (cfg / "settings.json").write_text('{"data_dir": "/mine"}')   # user edits it
+    config.ensure_settings_file(cfg)                             # must NOT clobber
+    assert config.load_settings(cfg) == {"data_dir": "/mine"}
