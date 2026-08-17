@@ -1254,6 +1254,29 @@ def test_ws_guest_refused_private_session_gets_info_and_no_broadcast(srv, client
         assert ws.receive_json()["type"] == "snapshot"
 
 
+class _FakeWS:
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, m):
+        self.sent.append(m)
+
+
+async def test_regate_bumps_connected_guests_when_the_live_session_goes_private(srv):
+    # §8.3: re-gating an already-joined set drops every non-owner guest (with an info line) once the live
+    # session is private — the owner stays. (Unit-level: TestClient can't hold a live ws across a POST.)
+    import conjure.server as S
+    S.clients.clear()
+    owner_ws, guest_ws = _FakeWS(), _FakeWS()
+    S.clients[owner_ws], S.clients[guest_ws] = "daniel", "bob"
+    _set_session_public(srv, False)                                # live session now private
+    await S._regate_clients()
+    assert guest_ws not in S.clients and S.clients.get(owner_ws) == "daniel"   # guest bumped, owner kept
+    assert guest_ws.sent and guest_ws.sent[-1]["type"] == "info" and "private" in guest_ws.sent[-1]["msg"]
+    assert owner_ws.sent == []                                     # owner untouched
+    S.clients.clear()
+
+
 def test_presence_relayed_to_others_and_leave_on_disconnect(srv, client):
     with client.websocket_connect("/ws?user=daniel") as ws1:
         ws1.receive_json()                                          # snapshot

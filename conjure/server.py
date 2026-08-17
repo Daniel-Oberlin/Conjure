@@ -1109,7 +1109,8 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
     worlds.set_active(scope, name)                # per-session memory: which world to resume in this session
     _write_session_ptr(scope, sid)               # global pointer: which SESSION is live across the server
     _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} (space {active_space_owner}/{active_space})")
-    await _broadcast(_snapshot_msg())
+    await _regate_clients()                       # switched into a private session ⇒ bump non-owner guests
+    await _broadcast(_snapshot_msg())             #   BEFORE the snapshot, so they don't receive it (§8.3)
     return {"ok": True, "world": name, "rev": store.doc["rev"]}
 
 
@@ -1291,6 +1292,8 @@ async def session_visibility(req: SessionVisibilityRequest) -> dict:
     meta = sessions.load_meta(req.scope, sid)
     meta["public"] = req.public
     sessions.save_meta(req.scope, sid, meta)
+    if not req.public and req.scope == active_scope and sid == active_sid:
+        await _regate_clients()                   # made the LIVE session private → bump connected guests (§8.3)
     return {"ok": True, "session": sid, "public": req.public}
 
 
@@ -1639,6 +1642,8 @@ async def worlds_visibility(req: WorldVisibilityRequest) -> dict:
         if req.public and req.scope == active_scope:   # the live session went public → publish its assets
             published = _publish_world_assets(store.doc, owner)
             _save_active()
+        elif not req.public and req.scope == active_scope and sid == active_sid:
+            await _regate_clients()                    # made the LIVE session private → bump guests (§8.3)
         return {"ok": True, "world": req.name or active_world, "session": sid,
                 "public": req.public, "published_assets": published}
     except ValueError as exc:
@@ -3387,6 +3392,7 @@ def _live_state() -> dict:
                                         # agent server keys its transcript on (scope, session)
         "world": active_world,
         "owner": active_scope.split("/", 1)[0],
+        "public": _active_public(),     # the live session's visibility (§8.2) — the agent server gates on it
         "space": VOID if active_space == VOID else _space_ref(active_space_owner, active_space),
     }
 
@@ -3398,6 +3404,26 @@ def _snapshot_msg() -> dict:
     top-level for the existing renderer; `state.world` is the world *name*, `state` is additive."""
     return {"type": "snapshot", "world": store.doc, "owner": active_scope.split("/", 1)[0],
             "state": _live_state()}
+
+
+async def _regate_clients() -> None:
+    """Re-run the join gate on already-connected `/ws` clients after a visibility change or a session switch
+    (docs/sessions-plan.md §8.3): a now-private live session drops every non-owner guest from the broadcast
+    set — they keep the socket but get an info line and lose the world (the "bump to no session, don't
+    disconnect" rule). A public session is a no-op. Owner always stays."""
+    if _active_public():
+        return
+    owner = active_scope.split("/", 1)[0]
+    for ws_, u in list(clients.items()):
+        if u == owner:
+            continue
+        clients.pop(ws_, None)
+        _space_holders.discard(ws_)
+        try:
+            await ws_.send_json({"type": "info", "level": "info",
+                "msg": f"this session is now private — ask {owner} to make it public."})
+        except Exception:  # noqa: BLE001 — a dead socket must not break the sweep
+            pass
 
 
 async def _broadcast(message: dict, *, skip: "WebSocket | None" = None) -> None:
