@@ -289,6 +289,7 @@ def _boot_world() -> tuple[str, str, WorldStore]:
     scope, sid = ptr if ptr is not None else (DEFAULT_SCOPE, MIGRATED_SID)
     sid = _ensure_session(scope, sid)                 # make it the scope's live session (create if fresh)
     active_sid = sid
+    worlds.set_live(scope, sid)                        # one explicit source for the live scope's worlds (§3)
     active = worlds.get_active(scope)                  # active world within that session (WorldDir pointer)
     if active and worlds.exists(scope, active):
         try:
@@ -1104,6 +1105,7 @@ async def _switch_to(scope: str, name: str, store_override: WorldStore | None = 
         worlds.save(scope, name, raw)         # a freshly-built world isn't on disk yet — persist it here
                                               # (activate is read-only now; creating owns persistence — step 0)
     active_scope, active_world, active_sid = scope, name, sid
+    worlds.set_live(scope, sid)                   # one explicit source for the live scope's worlds (§3)
     active_space_owner, active_space, store = _activate(scope, name, raw)   # resolve space (owner+name) + compose
     worlds.set_active(scope, name)                # per-session memory: which world to resume in this session
     _write_session_ptr(scope, sid)               # global pointer: which SESSION is live across the server

@@ -251,6 +251,15 @@ class WorldRepository:
     def __init__(self, root: str | Path, *, sessions: "SessionRepository | None" = None):
         self.root = Path(root)
         self._sessions = sessions
+        self._live: tuple[str, str] | None = None   # the server-declared live (scope, sid) — the ONE source
+                                                     # for the live scope's world addressing (§3, "5.5")
+
+    def set_live(self, scope: str, sid: str) -> None:
+        """Declare the globally-live session (docs/sessions-plan.md §3). Per-name ops on `scope` then
+        address `sid` explicitly — set by the server in ONE place (`_switch_to`/boot) — instead of the
+        facade independently re-reading the active-session pointer (which could lag the server and, before
+        this, leaked the outgoing world into a new session on a switch)."""
+        self._live = (scope, sid)
 
     def _scope_dir(self, scope: str) -> Path:
         parts = (scope or "").split("/")
@@ -260,10 +269,14 @@ class WorldRepository:
 
     def _dir(self, scope: str) -> "WorldDir":
         """The name-addressed `WorldDir` this scope's per-name ops act on. With a `SessionRepository`
-        attached, that's the scope's **active session's** ``worlds/`` (default ``session-1``); otherwise
+        attached: the **live scope** uses the server's declared live session (`set_live`); any **other**
+        scope resolves ITS active-session pointer (default ``session-1``). Without a `SessionRepository`,
         the bare scope dir (flat, pre-session)."""
         if self._sessions is not None:
-            sid = self._sessions.get_active(scope) or MIGRATED_SID
+            if self._live is not None and self._live[0] == scope:
+                sid = self._live[1]
+            else:
+                sid = self._sessions.get_active(scope) or MIGRATED_SID
             return self._sessions.worlds(scope, sid)
         return WorldDir(self._scope_dir(scope))
 

@@ -347,6 +347,26 @@ def test_worlddir_roundtrip_active_nested_and_prune(tmp_path):
     assert not (tmp_path / "worlds" / "castle-quest").exists()        # now-empty parent pruned
 
 
+def test_worldrepo_set_live_drives_the_live_scope_but_not_others(tmp_path):
+    # The facade addresses the LIVE scope via the server-declared live session (set_live), and any OTHER
+    # scope via its own active-session pointer (docs/sessions-plan.md §3, "5.5").
+    from conjure.world import WorldRepository, SessionRepository
+    se = SessionRepository(tmp_path)
+    repo = WorldRepository(tmp_path, sessions=se)
+    scope = "daniel/agents/builder"
+    se.worlds(scope, "session-1").save("s1world", WorldStore(_doc("S1")))
+    se.worlds(scope, "session-2").save("s2world", WorldStore(_doc("S2")))
+    se.set_active(scope, "session-1")                                # the pointer says session-1
+    assert repo.list(scope) == ["s1world"]                           # no set_live → falls back to the pointer
+    repo.set_live(scope, "session-2")                                # server declares session-2 live
+    assert repo.list(scope) == ["s2world"]                           # live scope now uses the explicit sid,
+    assert se.get_active(scope) == "session-1"                       #   even though the pointer still says s1
+    # a DIFFERENT scope is unaffected by set_live — it resolves its own pointer
+    other = "friend/agents/builder"
+    se.worlds(other, "session-1").save("fworld", WorldStore(_doc("F")))
+    assert repo.list(other) == ["fworld"]
+
+
 def test_sessionrepo_worlds_is_a_worlddir_under_the_session(tmp_path):
     from conjure.world import SessionRepository, WorldDir
     repo = SessionRepository(tmp_path)

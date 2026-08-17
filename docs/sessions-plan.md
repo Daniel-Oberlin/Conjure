@@ -136,6 +136,19 @@ Implementation-wise this is a `SessionRepository` mirroring `WorldRepository` (s
 traversal-guard / atomic temp+rename machinery), with `WorldRepository` re-homed one segment deeper:
 scope → **session** → worlds.
 
+**How `WorldRepository` finds a scope's session (the facade, and the "5.5" hardening).** With a
+`SessionRepository` attached, `worlds.<op>(scope, name)` transparently addresses the *session's* worlds —
+so `scope` stays the pure capability token and the ~50 call sites are untouched (Option 1). Which session?
+For the **live scope**, the server *tells* the repo via `set_live(scope, sid)` — set in ONE place
+(`_switch_to` / boot), so live-session world addressing uses the server's explicit live session rather
+than independently re-reading the `sessions/_active.txt` pointer (removing the second source of truth that
+caused the step-4a "outgoing world leaked into the new session" bug). For **other scopes** (admin browse,
+a switch target, a cross-user public world), it resolves that scope's own active-session pointer — the
+right answer there. Cross-session/cross-scope *discovery* (`list_public`, `delete_user`) walks
+`.../sessions/*/worlds` directly, since it isn't about a single active session. A fully session-explicit
+API (threading `sid` through every call) is deferred until multi-session-per-scope operations grow to
+need it — the current facade keeps `scope` pure with no churn, and `set_live` closes the drift hazard.
+
 **Identity — both sessions and worlds get a stable id + a mutable name.** A session has a stable `id`
 (immutable — so rename is free and its worlds/transcript never move) plus a mutable `title`. **Worlds get
 the same treatment**, for the same reason and one more: the world-graph (§5.5) links worlds to each
@@ -498,6 +511,10 @@ Newly settled from this round's comments:
    in-process, never over MCP); `{…}` injection via `_injections`; seed-copy at construction
    (`_maybe_seed`); JSON-Schema validation on write (reject-on-invalid). *Deferred:* undo for state (§5.6)
    — rides the world inverse machinery whenever, near-free since `state_set` mirrors the op shape.
+5.5 **Live-session hardening** (§3): the server tells `WorldRepository` the live `(scope, sid)` via
+   `set_live`, so live-scope world addressing uses one explicit source instead of re-reading the active
+   pointer — done before step 6 so its per-session gates reason about one unambiguous live session.
+
 6. **Visibility/ownership move to session** (§8.2) + multi-user gate re-key (§8.3).
 
 Each step's primitive feeds the next; nothing here blocks the current runtime until step 6 changes
