@@ -51,6 +51,20 @@ async def test_no_state_tools_without_a_declaration():
     assert not any(t.name.startswith("state_") for t in d._tools)     # opt-in only
 
 
+async def test_state_write_is_rejected_when_it_violates_the_schema(tmp_path):
+    from conjure.world import StateStore
+    schema = {"type": "object", "properties": {"hp": {"type": "integer"}}, "required": ["hp"],
+              "additionalProperties": False}
+    d = Director(settings=None, session=FakeSession(), roster={"Claude": object()}, active="Claude",
+                 tools=[], allowed_tools=set(), state_defs={"player": {"schema_data": schema}})
+    d.bind_state(StateStore(tmp_path))
+    ok = await d._execute_tool("state_set", {"doc": "player", "path": "hp", "value": 10}, None, "t")
+    assert ok == "ok" and d._state.get("player", "hp") == 10          # valid write goes through
+    bad = await d._execute_tool("state_set", {"doc": "player", "path": "hp", "value": "lots"}, None, "t")
+    assert bad.startswith("error:") and "schema" in bad              # invalid → rejected
+    assert d._state.get("player", "hp") == 10                        # and NOT written (unchanged)
+
+
 # --------------------------------------------------------------------------- orchestration
 
 class FakeLLM:

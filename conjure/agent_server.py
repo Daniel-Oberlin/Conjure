@@ -190,6 +190,34 @@ def _persist_llm(app: FastAPI) -> None:
         pass
 
 
+def _maybe_seed(app: FastAPI) -> None:
+    """Seed a new session's agent-state ONCE (docs/sessions-plan.md §5.4/§6). The world server marks a
+    fresh session ``seeded: False``; here we copy the agent's declared seed docs (`AgentDef.state[doc].
+    seed_data`, resolved at load) into the session's `StateStore` — a fresh mutable copy per instance —
+    then flip ``seeded: True``. Never clobbers a doc that already exists. Runs before the greeting so a
+    generated greeting can reference seeded state."""
+    cur = _current_session(app)
+    d = app.state.shell.director if app.state.shell else None
+    if d is None or cur is None:
+        return
+    scope, sid = cur
+    try:
+        meta = app.state.sessions.load_meta(scope, sid)
+    except (OSError, ValueError):
+        return
+    if meta.get("seeded") is not False:
+        return
+    defs = getattr(d.agent, "state", {}) or {}
+    store = app.state.sessions.state(scope, sid)
+    existing = set(store.list())
+    for doc, spec in defs.items():
+        seed = (spec or {}).get("seed_data")
+        if seed is not None and doc not in existing:
+            store.write(doc, seed)
+    meta["seeded"] = True
+    app.state.sessions.save_meta(scope, sid, meta)
+
+
 async def _maybe_greet(app: FastAPI) -> None:
     """Speak a new session's opening line ONCE (docs/sessions-plan.md §6). The world server marks a fresh
     session ``greeted: False``; here — if the transcript is empty and the agent declares a greeting — we
@@ -324,6 +352,7 @@ async def _reconcile_state(app: FastAPI, state: dict) -> None:
                     return
     app.state.live = state
     _sync_transcript(app)                                # (re)load the live session's saved dialog (step 2)
+    _maybe_seed(app)                                     # seed a new session's agent-state once (step 5b)
     await _maybe_greet(app)                              # speak a new session's opening line once (step 4b)
     await _broadcast_context(app)
 

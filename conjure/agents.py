@@ -123,12 +123,30 @@ def load_agent(name: str, *, agents_dir: Path = AGENTS_DIR,
                     f"agent {name!r}: references unknown MCP server {ref.server!r} "
                     f"(not in the registry: {sorted(registry)})")
 
+    # State declaration (docs/sessions-plan.md §5): resolve each doc's `seed` file (relative to the agent
+    # dir, like `prompt_file`) to its parsed JSON under `seed_data`, so the constructor can copy it into a
+    # new session without any file I/O at runtime. A missing/bad seed is left unresolved (skipped, not fatal).
+    state = dict(data.get("state") or {})
+    for doc, spec in state.items():
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("seed"):
+            try:
+                spec["seed_data"] = json.loads((agent_dir / spec["seed"]).read_text())
+            except (OSError, ValueError):
+                pass
+        if spec.get("schema"):                          # resolve the JSON Schema file (validation, §5.3)
+            try:
+                spec["schema_data"] = json.loads((agent_dir / spec["schema"]).read_text())
+            except (OSError, ValueError):
+                pass
+
     return AgentDef(
         name=name, description=data.get("description", ""), prompt=prompt,
         llms=list(data.get("llms", [WILDCARD])), default_llm=data.get("default_llm"),
         servers=servers, context=list(data.get("context", [])),
         personas=list(data.get("personas", [])), session=dict(data.get("session") or {}),
-        state=dict(data.get("state") or {}),
+        state=state,
     )
 
 

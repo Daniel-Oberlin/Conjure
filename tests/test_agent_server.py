@@ -156,6 +156,24 @@ def _greet_app(tmp_path, greeting, conns=()):
     return app, shell, sessions, scope
 
 
+async def test_new_session_state_is_seeded_once(tmp_path):
+    from conjure.agent_server import _maybe_seed
+    sessions = SessionRepository(tmp_path)
+    scope = "daniel/agents/dm"
+    sessions.save_meta(scope, "session-1", {"id": "session-1", "owner": "daniel", "agent": "dm",
+        "title": "S", "public": True, "active_world": "home", "llm": "", "greeted": False, "seeded": False})
+    shell = FakeShell()
+    shell.director.agent = types.SimpleNamespace(name="dm", state={"map": {"seed_data": {"start": "home"}}})
+    app = _app(shell, [], sessions=sessions)
+    app.state.live = {"scope": scope, "session": "session-1", "agent": "dm"}
+    _maybe_seed(app)
+    assert sessions.state(scope, "session-1").read("map") == {"start": "home"}
+    assert sessions.load_meta(scope, "session-1")["seeded"] is True
+    sessions.state(scope, "session-1").set("map", "start", "cave")    # a later edit
+    _maybe_seed(app)                                                  # idempotent — doesn't re-seed/clobber
+    assert sessions.state(scope, "session-1").get("map", "start") == "cave"
+
+
 async def test_new_session_speaks_a_literal_greeting_once(tmp_path):
     from conjure.agent_server import _maybe_greet
     conn = FakeConn("alice")

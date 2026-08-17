@@ -15,6 +15,7 @@ dependencies = [
     "openai>=1.40",
     "pillow>=10.0",
     "sqlite-vec>=0.1.6",
+    "jsonschema>=4.0",
 ]
 
 [project.optional-dependencies]

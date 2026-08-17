@@ -541,20 +541,24 @@ class StateStore:
         d = self.read(doc)
         return d if not path else _get_path(d, path)
 
-    def set(self, doc: str, path: str, value: Any) -> Any:
+    def set(self, doc: str, path: str, value: Any, *, validate=None) -> Any:
         d = self.read(doc)
         if not isinstance(d, dict):
             d = {}
         _set_path(d, path, value)
+        if validate:                                         # agent-owned check (schema-free store): the
+            validate(d)                                      # caller passes it; raising → no write
         self.write(doc, d)
         return d
 
-    def merge(self, doc: str, value: dict) -> Any:
+    def merge(self, doc: str, value: dict, *, validate=None) -> Any:
         d = self.read(doc)
         if isinstance(d, dict) and isinstance(value, dict):
             d.update(value)
         else:
             d = value
+        if validate:
+            validate(d)
         self.write(doc, d)
         return d
 

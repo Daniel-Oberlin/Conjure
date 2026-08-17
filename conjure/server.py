@@ -1229,7 +1229,7 @@ async def session_new(req: SessionRef) -> dict:
     sessions.save_meta(req.scope, sid, {
         "id": sid, "owner": user, "agent": agent_of(req.scope),
         "title": req.title or f"Session {sid.split('-')[-1]}", "public": True,
-        "active_world": wname, "llm": "", "greeted": False})
+        "active_world": wname, "llm": "", "greeted": False, "seeded": False})
     wdir = sessions.worlds(req.scope, sid)               # explicit target (no active-pointer flip — that's
     raw = _new_world_store(req.scope, extra_on_create=fw_on_create)   # world ⊕ first_world constructor chain
     if gen_ops:

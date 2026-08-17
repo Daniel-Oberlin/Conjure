@@ -125,3 +125,15 @@ def test_allows_llm():
     assert AgentDef(name="a", llms=[WILDCARD]).allows_llm("anything")
     assert AgentDef(name="b", llms=["Claude"]).allows_llm("Claude")
     assert not AgentDef(name="c", llms=["Claude"]).allows_llm("Gemini")
+
+
+def test_state_seed_is_resolved_at_load(tmp_path):
+    # The declared state doc's `seed` file (relative to the agent dir) is resolved to parsed JSON under
+    # `seed_data` at load, so the constructor copies it with no runtime file I/O (docs/sessions-plan.md §5.4).
+    _write_agent(tmp_path, "dm", {
+        "prompt": "hi",
+        "state": {"map": {"seed": "map-seed.json", "inject": "{map}"}},
+    }, files={"map-seed.json": '{"start": "home", "nodes": {}}'})
+    a = load_agent("dm", agents_dir=tmp_path)
+    assert a.state["map"]["seed_data"] == {"start": "home", "nodes": {}}
+    assert a.state["map"]["inject"] == "{map}"

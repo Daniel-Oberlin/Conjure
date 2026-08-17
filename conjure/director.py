@@ -314,16 +314,43 @@ class Director:
         if name == "state_get":
             return json.dumps(self._state.get(doc, args.get("path")))
         if name == "state_set":
-            self._state.set(doc, args["path"], args.get("value"))
+            try:
+                self._state.set(doc, args["path"], args.get("value"), validate=self._state_validator(doc))
+            except ValueError as e:
+                return f"error: {e}"
             return "ok"
         if name == "state_merge":
-            self._state.merge(doc, args.get("value") or {})
+            try:
+                self._state.merge(doc, args.get("value") or {}, validate=self._state_validator(doc))
+            except ValueError as e:
+                return f"error: {e}"
             return "ok"
         if name == "state_delete":
             return "ok" if self._state.delete(doc, args.get("path")) else "not found"
         if name == "state_schema":
-            return json.dumps(self.state_defs.get(doc) or {})   # declared shape; JSON-Schema load lands in 5c
+            spec = self.state_defs.get(doc) or {}
+            return json.dumps(spec.get("schema_data") or spec)   # the JSON Schema if declared, else the spec
         return f"error: unknown state tool {name!r}"
+
+    def _state_validator(self, doc: str):
+        """A validator for a state doc's declared JSON Schema (docs/sessions-plan.md §5.3), or None if the
+        doc has no schema. The callback raises ValueError on a schema violation → the write is refused
+        (§8.7 reject-on-invalid). No-op if `jsonschema` isn't installed (best-effort)."""
+        schema = (self.state_defs.get(doc) or {}).get("schema_data")
+        if not schema:
+            return None
+
+        def _validate(candidate):
+            try:
+                import jsonschema
+            except ImportError:            # validator unavailable → skip (don't block writes)
+                return
+            try:
+                jsonschema.validate(candidate, schema)
+            except jsonschema.ValidationError as e:
+                raise ValueError(f"state {doc!r} fails its schema: {e.message}")
+
+        return _validate
 
     async def _fetch_context(self) -> str:
         """Fetch the agent's `context` MCP resources (e.g. `room://current`) as raw text, injected at
