@@ -807,8 +807,7 @@ def _inherit_visibility(asset_id: str) -> dict:
     visibility the owner set after the fact."""
     if library.get(asset_id) is not None:
         return {}
-    world_public = bool((store.doc.get("environment") or {}).get("public", True)) if store else True
-    return {"public": 1 if world_public else 0}
+    return {"public": 1 if _active_public() else 0}       # inherits the SESSION's visibility (§8.2)
 
 
 def _ensure_referenced_public(asset_id: str) -> Optional[str]:
@@ -816,8 +815,8 @@ def _ensure_referenced_public(asset_id: str) -> Optional[str]:
     assets, so a visitor can load the whole scene. Placing one of YOUR OWN private assets into a public
     world publishes it (you're sharing it by placing it) and returns a notice for the director to relay;
     no-op in a private world, or for an already-public asset / another user's asset."""
-    if store is None or not bool((store.doc.get("environment") or {}).get("public", True)):
-        return None                                   # private world ⇒ anything goes
+    if store is None or not _active_public():
+        return None                                   # private session ⇒ anything goes
     rec = library.get(asset_id)
     owner = active_scope.split("/", 1)[0]
     if rec and not rec.get("public", 1) and (rec.get("scope") or "").split("/", 1)[0] == owner:
@@ -1295,6 +1294,22 @@ async def session_visibility(req: SessionVisibilityRequest) -> dict:
     return {"ok": True, "session": sid, "public": req.public}
 
 
+def _session_public(scope: str, sid: str) -> bool:
+    """A session's visibility (docs/sessions-plan.md §8.2) — the unit of visibility a world now inherits.
+    Defaults public (missing meta / pre-session). Source of truth for the join gate + asset inheritance."""
+    if sessions is None:
+        return True
+    try:
+        return bool(sessions.load_meta(scope, sid).get("public", True))
+    except (OSError, ValueError):
+        return True
+
+
+def _active_public() -> bool:
+    """Whether the LIVE session is public — what the `/ws` join gate + new-asset visibility key on (§8.2)."""
+    return _session_public(active_scope, active_sid)
+
+
 @app.get("/agent/last")
 async def agent_last(user: str = DEFAULT_USER) -> dict:
     """The **live** agent, so a front-end launched without an explicit --agent resumes it. There's one
@@ -1560,7 +1575,8 @@ async def worlds_new(req: WorldRef) -> dict:
                                           f"only {active_space_owner} can build worlds here."}
         fresh = _new_world_store(req.scope)
         env = fresh.doc.setdefault("environment", {})
-        env["public"] = req.public                                      # public by default; private if asked
+        # Visibility is the SESSION's now (§8.2): a new world inherits it — no per-world public flag. `req.public`
+        # is vestigial for worlds; use `session public|private` to change the session's visibility.
         # D5/step 5: a new world ADOPTS the active, geo+surface-selected space — "build your own world in
         # it", even someone else's (D3). No active space yet (unclaimed server) or an explicit outdoor world
         # → VOID, the honest "no room yet" (replaces the old anonymous-'home' Path B fallback).
@@ -1606,33 +1622,25 @@ class WorldVisibilityRequest(BaseModel):
 
 @app.post("/worlds/visibility")
 async def worlds_visibility(req: WorldVisibilityRequest) -> dict:
-    """Make one of YOUR worlds public (discoverable + visitable) or private (only you). Scope-bound —
-    you can only change a world in your own scope (like delete), so it can't be middleware-gated on the
-    active world's owner. `name` omitted ⇒ your current world (only if you actually own the active one).
-    `environment.public` drives both cross-user discovery (list_public) and the `/ws` join gate."""
+    """**Superseded by session visibility (§8.2)** — visibility is the SESSION's now, not per-world, and a
+    world inherits it. Kept as the surface the `set_world_visibility` tool still calls: it sets the target
+    scope's ACTIVE session public/private (so "make this world private" makes the session private), and —
+    when the LIVE session goes public — publishes its world's private assets so visitors can load them.
+    Use `/session/visibility` (or `session public|private`) directly for the same effect."""
     try:
-        name = req.name
-        is_active = False
-        if not name:                                  # "make THIS world private"
-            if active_scope != req.scope:
-                return {"ok": False, "error": "you're not in one of your own worlds — name the world to change"}
-            name, is_active = active_world, True
-        else:
-            name = world_path(name)
-            is_active = (req.scope == active_scope and name == active_world)
+        sid = active_sid if req.scope == active_scope else (sessions.get_active(req.scope) or MIGRATED_SID)
+        if not sessions.exists(req.scope, sid):
+            return {"ok": False, "error": f"no session to change visibility for in {req.scope}"}
         owner = req.scope.split("/", 1)[0]
-        if is_active:
-            store.doc.setdefault("environment", {})["public"] = req.public
-            published = _publish_world_assets(store.doc, owner) if req.public else []
+        meta = sessions.load_meta(req.scope, sid)
+        meta["public"] = req.public
+        sessions.save_meta(req.scope, sid, meta)
+        published = []
+        if req.public and req.scope == active_scope:   # the live session went public → publish its assets
+            published = _publish_world_assets(store.doc, owner)
             _save_active()
-        elif worlds.exists(req.scope, name):
-            s = worlds.load(req.scope, name)
-            s.doc.setdefault("environment", {})["public"] = req.public
-            published = _publish_world_assets(s.doc, owner) if req.public else []
-            worlds.save(req.scope, name, s)
-        else:
-            return {"ok": False, "error": f"no world {name!r}"}
-        return {"ok": True, "world": name, "public": req.public, "published_assets": published}
+        return {"ok": True, "world": req.name or active_world, "session": sid,
+                "public": req.public, "published_assets": published}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -3272,15 +3280,15 @@ async def skybox_from_image(req: SkyboxFromSceneRequest) -> dict:
 async def ws(websocket: WebSocket) -> None:
     await websocket.accept()
     user = websocket.query_params.get("user") or DEFAULT_USER     # from the /tunnel/<user> route's ?user=
-    owner = active_scope.split("/", 1)[0]
-    public = bool((store.doc.get("environment", {}) or {}).get("public", True))   # worlds default public
+    owner = active_scope.split("/", 1)[0]                          # = the live session's owner (§8.2)
+    public = _active_public()                                     # visibility lives on the SESSION now
     joined = (user == owner) or public
     if joined:
         clients[websocket] = user                                # joined → gets the world + broadcasts
         await websocket.send_json(_snapshot_msg())
-    else:                                                        # guest + private world → no world, info msg
+    else:                                                        # guest + private session → no world, info msg
         await websocket.send_json({"type": "info", "level": "info",
-            "msg": f"'{active_world}' is private — ask {owner} to make it public."})
+            "msg": f"this session is private — ask {owner} to make it public."})
     try:
         while True:
             raw = await websocket.receive_text()

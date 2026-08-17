@@ -112,20 +112,23 @@ def test_repository_save_list_load_delete(tmp_path):
     assert repo.list("private/builder") == []
 
 
-def test_repository_list_public_discovers_across_users(tmp_path):
-    # list_public walks the real session tree (worlds live under sessions/<id>/worlds/), so back the repo
-    # with a SessionRepository — the way the server always constructs it.
+def test_repository_list_public_discovers_public_sessions(tmp_path):
+    # Discovery is by SESSION visibility now (§8.2): a public session's worlds are listed; a private
+    # session's are not. Back the repo with a SessionRepository — the way the server constructs it.
     from conjure.world import WorldRepository, SessionRepository
-    repo = WorldRepository(tmp_path, sessions=SessionRepository(tmp_path))
-    repo.save("daniel/agents/builder", "default", WorldStore(_doc()))                 # daniel, public (default)
-    repo.save("friend/agents/builder", "test-world", WorldStore(_doc()))              # friend, public
-    priv = _doc(); priv["environment"]["public"] = False
-    repo.save("friend/agents/builder", "secret", WorldStore(priv))                    # friend, private
+    se = SessionRepository(tmp_path)
+    repo = WorldRepository(tmp_path, sessions=se)
+    se.save_meta("daniel/agents/builder", "session-1", {"public": True})
+    repo.save("daniel/agents/builder", "default", WorldStore(_doc()))                 # → daniel session-1 (public)
+    se.save_meta("friend/agents/builder", "session-1", {"public": True})
+    repo.save("friend/agents/builder", "test-world", WorldStore(_doc()))              # → friend session-1 (public)
+    se.save_meta("friend/agents/builder", "session-2", {"public": False})             # friend's PRIVATE session
+    se.worlds("friend/agents/builder", "session-2").save("secret", WorldStore(_doc()))
     avail = repo.list_public(exclude_scope="friend/agents/builder")                   # friend looks outward
     assert {(w["owner"], w["name"]) for w in avail} == {("daniel", "default")}        # only daniel's public
     seen = repo.list_public()                                                         # global view
     assert ("friend", "test-world") in {(w["owner"], w["name"]) for w in seen}
-    assert ("friend", "secret") not in {(w["owner"], w["name"]) for w in seen}        # private excluded
+    assert ("friend", "secret") not in {(w["owner"], w["name"]) for w in seen}        # private session excluded
 
 
 def test_repository_scope_isolation(tmp_path):

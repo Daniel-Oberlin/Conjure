@@ -287,39 +287,47 @@ def test_delete_asset_removes_from_catalog(srv, client):
     assert client.post("/delete_asset", json={"id": iid}).json()["ok"] is False   # gone now
 
 
+def _set_session_public(srv, public):
+    """Set the LIVE session's visibility (§8.2) — visibility now lives on the session, not the world."""
+    scope, sid = srv.active_scope, srv.active_sid
+    meta = srv.sessions.load_meta(scope, sid) if srv.sessions.exists(scope, sid) else {}
+    meta["public"] = public
+    srv.sessions.save_meta(scope, sid, meta)
+
+
 def test_public_uses_public_on_placement(srv, client):
-    # build privately → a new image inherits private
-    srv.store.doc.setdefault("environment", {})["public"] = False
+    # build in a PRIVATE session → a new image inherits private
+    _set_session_public(srv, False)
     iid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]
     assert srv.library.get(iid)["public"] == 0
-    # placing it while the world is still private is a no-op (no publish, no notice)
+    # placing it while the session is still private is a no-op (no publish, no notice)
     assert "notice" not in client.post("/place_image", json={"image_id": iid}).json()
     assert srv.library.get(iid)["public"] == 0
-    # now the world is public → placing the private asset publishes it + notices
-    srv.store.doc["environment"]["public"] = True
+    # now the session is public → placing the private asset publishes it + notices
+    _set_session_public(srv, True)
     r = client.post("/place_image", json={"image_id": iid}).json()
     assert r["ok"] and "notice" in r and srv.library.get(iid)["public"] == 1
 
 
 def test_public_uses_public_on_make_world_public(srv, client):
-    srv.store.doc.setdefault("environment", {})["public"] = False
+    _set_session_public(srv, False)
     iid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]   # private (inherited)
-    client.post("/place_image", json={"image_id": iid})                                   # placed in the private world
+    client.post("/place_image", json={"image_id": iid})                                   # placed in the private session
     assert srv.library.get(iid)["public"] == 0
-    # flip the world public → every private asset it references gets published, and reported
+    # flip the session public (via the world-visibility surface) → its private assets get published + reported
     r = client.post("/worlds/visibility", json={"public": True, "scope": "daniel/agents/builder"}).json()
     assert r["ok"] and r["published_assets"] == ["a pear"]
     assert srv.library.get(iid)["public"] == 1
 
 
-def test_new_asset_inherits_active_world_visibility(srv, client):
-    # made while a PRIVATE world is active ⇒ the asset is private (the reported bug — was always public)
-    srv.store.doc.setdefault("environment", {})["public"] = False
+def test_new_asset_inherits_active_session_visibility(srv, client):
+    # made while a PRIVATE session is active ⇒ the asset is private
+    _set_session_public(srv, False)
     iid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]
     assert srv.library.get(iid)["public"] == 0
-    # regenerated while a PUBLIC world is active ⇒ public
+    # regenerated while a PUBLIC session is active ⇒ public
     srv.library.delete(iid)
-    srv.store.doc["environment"]["public"] = True
+    _set_session_public(srv, True)
     jid = client.post("/images/generate", json={"prompt": "a pear"}).json()["image_id"]
     assert jid == iid and srv.library.get(jid)["public"] == 1
     # a re-procure must NOT silently undo an explicit later choice (inheritance is first-insert only)
@@ -1236,8 +1244,8 @@ def test_ws_owner_and_public_guest_receive_the_world(srv, client):
         assert ws.receive_json()["type"] == "snapshot"
 
 
-def test_ws_guest_refused_private_world_gets_info_and_no_broadcast(srv, client):
-    srv.store.doc.setdefault("environment", {})["public"] = False
+def test_ws_guest_refused_private_session_gets_info_and_no_broadcast(srv, client):
+    _set_session_public(srv, False)                                # visibility is the SESSION's now (§8.2)
     with client.websocket_connect("/ws?user=bob") as ws:           # guest + private → info, no world
         msg = ws.receive_json()
         assert msg["type"] == "info" and "private" in msg["msg"] and "daniel" in msg["msg"]
@@ -1385,23 +1393,21 @@ def test_guest_can_discover_and_enter_owners_public_world(srv, client):
     assert relist["current"] == {"owner": "daniel", "name": "default"}
 
 
-def test_world_visibility_create_private_and_toggle(srv, client):
+def test_session_visibility_controls_discovery(srv, client):
     sc = "bob/agents/builder"
-    # create a PRIVATE world → not discoverable by others
-    assert client.post("/worlds/new", json={"name": "secret", "scope": sc, "public": False},
+    # bob creates a world (in his session, public by default) → discoverable by others
+    assert client.post("/worlds/new", json={"name": "secret", "scope": sc},
                        headers={"X-Conjure-User": "bob"}).json()["ok"]
-    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
-    assert ("bob", "secret") not in seen
-    # flip the CURRENT (active) world public → now discoverable
-    r = client.post("/worlds/visibility", json={"public": True, "scope": sc},
+    seen = lambda: {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
+    assert ("bob", "secret") in seen()
+    # make bob's SESSION private → none of its worlds are discoverable (§8.2)
+    r = client.post("/worlds/visibility", json={"public": False, "scope": sc},
                     headers={"X-Conjure-User": "bob"}).json()
-    assert r["ok"] and r["public"] is True
-    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
-    assert ("bob", "secret") in seen
-    # flip it back private
-    client.post("/worlds/visibility", json={"public": False, "scope": sc}, headers={"X-Conjure-User": "bob"})
-    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
-    assert ("bob", "secret") not in seen
+    assert r["ok"] and r["public"] is False
+    assert ("bob", "secret") not in seen()
+    # flip it back public
+    client.post("/worlds/visibility", json={"public": True, "scope": sc}, headers={"X-Conjure-User": "bob"})
+    assert ("bob", "secret") in seen()
 
 
 def test_new_world_defaults_public(srv, client):

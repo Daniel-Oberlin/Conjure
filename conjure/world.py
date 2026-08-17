@@ -289,10 +289,10 @@ class WorldRepository:
         """Every PUBLIC world across *all* scopes — the cross-user 'worlds available to me' discovery
         (co-location-plan §3). Returns `{scope, owner, name, public}` per world whose doc is public
         (default true when the flag is absent). A filesystem walk that reads each doc — fine at small
-        scale; a derived world-index replaces it when discovery needs to scale (backlog). Scopes are
-        `<user>/agents/<agent>`; worlds live under each session's ``worlds/``, so we enumerate
-        `<root>/*/agents/*/sessions/*/worlds/`. (Step 1 keeps the semantics — "public **worlds**"; §8.2
-        reworks this to "public **sessions**" when visibility moves up.)"""
+        scale; a derived world-index replaces it when discovery needs to scale (backlog). Visibility is the
+        **session's** now (§8.2): we enumerate `<root>/*/agents/*/sessions/<id>` and, for each session
+        whose `session.json` is public, list its worlds. Returns `{scope, owner, name, public}` per world
+        of a public session (`session` id included so a caller can navigate to it)."""
         out: list[dict] = []
         if not self.root.is_dir():
             return []
@@ -303,15 +303,20 @@ class WorldRepository:
             if scope == exclude_scope:
                 continue
             owner = scope.split("/", 1)[0]
-            for wdir in sorted(agent_dir.glob("sessions/*/worlds")):
+            for sess_dir in sorted((agent_dir / "sessions").glob("*")):
+                if not sess_dir.is_dir():
+                    continue
+                try:
+                    meta = json.loads((sess_dir / "session.json").read_text())
+                except (OSError, ValueError):
+                    meta = {}                                    # no/unreadable meta → treat as public (default)
+                if not meta.get("public", True):                 # explicitly private session → skip its worlds
+                    continue
+                wdir = sess_dir / "worlds"
                 for p in sorted(wdir.rglob("*.json")):
                     name = p.relative_to(wdir).as_posix()[: -len(".json")]
-                    try:
-                        doc = json.loads(p.read_text())
-                    except (OSError, ValueError):
-                        continue
-                    if (doc.get("environment") or {}).get("public", True):
-                        out.append({"scope": scope, "owner": owner, "name": name, "public": True})
+                    out.append({"scope": scope, "owner": owner, "name": name,
+                                "session": sess_dir.name, "public": True})
         return out
 
     def exists(self, scope: str, name: str) -> bool:
