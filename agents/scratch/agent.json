@@ -1,0 +1,18 @@
+{
+  "description": "State demo — a tiny text-adventure keeper that reads/writes persistent session state.",
+  "prompt_file": "prompt.md",
+  "llms": ["*"],
+  "mcp_servers": [
+    { "server": "world", "access": "all", "tools": ["query_world"] }
+  ],
+  "session": {
+    "greeting": "New quest. You're at the cabin (a lantern sits on the table). Try 'go north', 'take the lantern', or 'where am I?'."
+  },
+  "state": {
+    "quest": {
+      "seed": "state/quest.json",
+      "schema": "schema/quest.schema.json",
+      "inject": "{quest}"
+    }
+  }
+}

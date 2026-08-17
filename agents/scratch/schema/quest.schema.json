@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "location": { "type": "string" },
+    "visited": { "type": "array", "items": { "type": "string" } },
+    "inventory": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["location", "visited", "inventory"],
+  "additionalProperties": false
+}
