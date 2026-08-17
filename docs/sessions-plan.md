@@ -515,7 +515,13 @@ Newly settled from this round's comments:
    `set_live`, so live-scope world addressing uses one explicit source instead of re-reading the active
    pointer — done before step 6 so its per-session gates reason about one unambiguous live session.
 
-6. **Visibility/ownership move to session** (§8.2) + multi-user gate re-key (§8.3).
+6. **Visibility/ownership move to session** (§8.2) + multi-user gate re-key (§8.3). ✅ **Done** —
+   **6a** session visibility model (`session.json.public`, `/session/visibility`, `session public|private`);
+   **6b** re-keyed the join gate, asset inheritance, and `list_public` onto the session (per-world `public`
+   retired/vestigial); **6c** bump-out — the world server re-gates connected headset clients
+   (`_regate_clients`) and the agent server shells non-owner CLI/voice clients + withholds a private
+   session's dialog (`_permitted`/`_conv_broadcast`/`_apply_bumps`). *Deferred cleanups:* delete the
+   vestigial world `environment.public`; admin-tree shows per-world visibility (now session-level).
 
 Each step's primitive feeds the next; nothing here blocks the current runtime until step 6 changes
 gating.
