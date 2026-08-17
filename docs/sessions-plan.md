@@ -527,6 +527,11 @@ Newly settled from this round's comments:
     *their own* (possibly private) session, bumping others — fine for a cooperative holodeck ("identity
     only, no security"). Plus the browser bump-out (blank on private, auto-readmit on public).
 
+6e. **Admin-ownership** ✅ — `/admin/delete` is caller-gated (shell sends `X-Conjure-User`; you can only
+    purge your OWN namespace), closing the cross-user delete hole. Also gated the shared-effect shell verbs
+    for a bumped guest: `talk to`/`use` (shared LLM) and `delete`. *Follow-up:* scope `dir` (admin read
+    listing) to the caller; a full auth model is out of the "identity only, no security" scope.
+
 6. **Visibility/ownership move to session** (§8.2) + multi-user gate re-key (§8.3). ✅ **Done** —
    **6a** session visibility model (`session.json.public`, `/session/visibility`, `session public|private`);
    **6b** re-keyed the join gate, asset inheritance, and `list_public` onto the session (per-world `public`
