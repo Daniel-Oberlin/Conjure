@@ -159,6 +159,9 @@ def _sync_transcript(app: FastAPI) -> None:
         return
     scope, sid = cur
     d.transcript = [_turn(e) for e in app.state.sessions.read_transcript(scope, sid)]
+    bind = getattr(d, "bind_state", None)                    # point state_* tools + {…} injections at this
+    if bind:                                                 # session's state store (step 5, decision A)
+        bind(app.state.sessions.state(scope, sid))
     try:                                                     # restore the session's remembered LLM, if valid
         llm = (app.state.sessions.load_meta(scope, sid).get("llm") or "")
         if llm and llm in d.roster:

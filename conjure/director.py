@@ -119,16 +119,41 @@ def _pick_active(agentdef: AgentDef, roster: dict, default_active: str) -> str:
             or next(iter(roster)))
 
 
+# The generic, agent-agnostic agent-state tools (docs/sessions-plan.md §5.1) — director-HOSTED (decision A):
+# offered to the LLM only when the agent declares a `state` block, and dispatched in-process against the
+# live session's StateStore (never over the world MCP server). CRUD over named JSON docs by dotted path;
+# no domain schema here (that's the agent's own data).
+_STATE_TOOL_SPECS = [
+    ToolSpec("state_get", "Read an agent-state document, or a dotted path within it (e.g. doc='map', "
+             "path='nodes.throne-room'). Returns JSON.",
+             {"type": "object", "properties": {"doc": {"type": "string"}, "path": {"type": "string"}},
+              "required": ["doc"]}),
+    ToolSpec("state_set", "Set a value at a dotted path in an agent-state document (creates it if absent).",
+             {"type": "object", "properties": {"doc": {"type": "string"}, "path": {"type": "string"},
+                                               "value": {}}, "required": ["doc", "path", "value"]}),
+    ToolSpec("state_merge", "Shallow-merge an object into an agent-state document.",
+             {"type": "object", "properties": {"doc": {"type": "string"}, "value": {"type": "object"}},
+              "required": ["doc", "value"]}),
+    ToolSpec("state_delete", "Delete an agent-state document, or a dotted path within it.",
+             {"type": "object", "properties": {"doc": {"type": "string"}, "path": {"type": "string"}},
+              "required": ["doc"]}),
+    ToolSpec("state_list", "List the agent-state document names.",
+             {"type": "object", "properties": {}}),
+    ToolSpec("state_schema", "Return the declared shape (schema/seed/inject) for an agent-state document.",
+             {"type": "object", "properties": {"doc": {"type": "string"}}, "required": ["doc"]}),
+]
+
+
 class Director:
     def __init__(self, settings: Settings, session, roster: dict[str, LLM], active: str,
                  tools: Optional[list[ToolSpec]] = None, prompt: str = _DEFAULT_PROMPT,
                  agent: Optional[AgentDef] = None, user: str = DEFAULT_USER,
-                 allowed_tools: Optional[set[str]] = None):
+                 allowed_tools: Optional[set[str]] = None, state_defs: Optional[dict] = None):
         self._settings = settings
         self._session = session          # MCP ClientSession (or a stand-in in tests)
         self.roster = roster
         self.active = active
-        self._tools = tools or []
+        self._tools = list(tools or [])
         self._allowed_tools = allowed_tools  # the agent's explicit tool allow-list (names); None only for
                                              # a bare Director()/tests (no scoping). `connect` always sets it.
         self._prompt = prompt
@@ -142,6 +167,22 @@ class Director:
         self._identity_aware = False     # set by `connect`: tell the MCP server WHO speaks each turn (Step 3).
                                          # Off for hand-built/test Directors (no set_caller call → clean tests).
         self.transcript: list[Turn] = []
+        # Director-HOSTED tools (docs/sessions-plan.md §5, decision A): tools the agent server offers the
+        # LLM in-process, dispatched here instead of over the world MCP server. The first is the generic
+        # `state_*` store; the seam (`_local_tools` + the `_execute_tool` short-circuit) is reusable for more.
+        self.state_defs = dict(state_defs or {})   # agent-owned state declaration ({doc: {seed, schema, inject}})
+        self._state = None                         # a StateStore bound by the agent server per live session
+        self._local_tools: set[str] = set()
+        if self.state_defs:                        # agent opted into state → offer + allow the state_* tools
+            self._tools += _STATE_TOOL_SPECS
+            self._local_tools = {t.name for t in _STATE_TOOL_SPECS}
+            if self._allowed_tools is not None:
+                self._allowed_tools = self._allowed_tools | self._local_tools
+
+    def bind_state(self, store) -> None:
+        """Point the `state_*` tools + `{…}` state injections at a session's `StateStore` (set by the agent
+        server whenever the live session changes). Until bound, state tools report no session."""
+        self._state = store
 
     @classmethod
     @contextlib.asynccontextmanager
@@ -187,7 +228,8 @@ class Director:
                     scoped = _scope_tools((await session.list_tools()).tools, ref.tools)
                     tools = [ToolSpec(t.name, t.description or "", t.inputSchema) for t in scoped]
                     director = cls(settings, session, roster, active, tools, prompt=agentdef.prompt,
-                                   agent=agentdef, user=user, allowed_tools={t.name for t in scoped})
+                                   agent=agentdef, user=user, allowed_tools={t.name for t in scoped},
+                                   state_defs=agentdef.state)
                     director._identity_aware = True   # real MCP session → set the per-turn speaker (Step 3)
                     yield director
         finally:
@@ -199,10 +241,18 @@ class Director:
         may be sync or async; it's invoked ONLY when its placeholder appears in the prompt, so an agent
         pays only for what it references (e.g. `{context}` triggers no MCP resource fetch unless the
         prompt uses it — many agents won't care about room surfaces). Add a row to add an injection."""
-        return (
+        rows = [
             ("user", lambda: self._speaker),      # WHO is speaking this turn (human identity; per-turn)
             ("context", self._fetch_context),     # live MCP context resources (async; agents.md §5)
-        )
+        ]
+        # Agent-state docs declaring an `inject` placeholder (docs/sessions-plan.md §5.3): wire each into
+        # the prompt as JSON, read from the live session's StateStore — the SAME mechanism as {user}.
+        for docname, spec in self.state_defs.items():
+            placeholder = ((spec or {}).get("inject") or "").strip().strip("{}").strip()
+            if placeholder:
+                rows.append((placeholder, lambda dn=docname: json.dumps(self._state.read(dn))
+                             if self._state is not None else ""))
+        return tuple(rows)
 
     async def _system(self) -> str:
         # Agent-agnostic: the whole system prompt — including how/where each injection is *framed* —
@@ -244,10 +294,36 @@ class Director:
         if on_tool:
             await on_tool(name, args)
         await self._log(f"{who}/tool", f"{name}({json.dumps(args, default=str)[:600]})")
+        if name in self._local_tools:                 # director-hosted tool → dispatch in-process (§5, A)
+            text = await self._state_tool(name, args)
+            await self._log(f"{who}/tool", f"  -> {text[:2000]}")
+            return text
         out = await self._session.call_tool(name, args)
         text = "".join(getattr(c, "text", "") for c in out.content)
         await self._log(f"{who}/tool", f"  -> {text[:2000]}")   # roomy enough to see a full query_world
         return text
+
+    async def _state_tool(self, name: str, args: dict) -> str:
+        """Dispatch a generic `state_*` tool against the live session's `StateStore` (docs/sessions-plan.md
+        §5.1). Returns a text result (JSON for reads, "ok"/"not found" for writes)."""
+        if self._state is None:
+            return "error: no session state is available yet"
+        doc = args.get("doc")
+        if name == "state_list":
+            return json.dumps(self._state.list())
+        if name == "state_get":
+            return json.dumps(self._state.get(doc, args.get("path")))
+        if name == "state_set":
+            self._state.set(doc, args["path"], args.get("value"))
+            return "ok"
+        if name == "state_merge":
+            self._state.merge(doc, args.get("value") or {})
+            return "ok"
+        if name == "state_delete":
+            return "ok" if self._state.delete(doc, args.get("path")) else "not found"
+        if name == "state_schema":
+            return json.dumps(self.state_defs.get(doc) or {})   # declared shape; JSON-Schema load lands in 5c
+        return f"error: unknown state tool {name!r}"
 
     async def _fetch_context(self) -> str:
         """Fetch the agent's `context` MCP resources (e.g. `room://current`) as raw text, injected at

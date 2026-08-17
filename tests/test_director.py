@@ -22,6 +22,35 @@ def test_pick_active_uses_the_agents_llms_list_as_priority():
     assert _pick_active(AgentDef(name="a", prompt="p", llms=["*"]), roster, "Gemini") == "Gemini"
 
 
+# --------------------------------------------------------------------------- director-hosted state tools (§5)
+
+async def test_state_tools_offered_and_dispatched_in_process(tmp_path):
+    from conjure.world import StateStore
+    d = Director(settings=None, session=FakeSession(), roster={"Claude": object()}, active="Claude",
+                 tools=[], allowed_tools=set(), state_defs={"map": {"inject": "{map}"}})
+    names = {t.name for t in d._tools}
+    assert {"state_get", "state_set", "state_list"} <= names          # offered when the agent declares state
+    d.bind_state(StateStore(tmp_path))
+    assert await d._execute_tool("state_set", {"doc": "map", "path": "start", "value": "home"}, None, "t") == "ok"
+    assert await d._execute_tool("state_get", {"doc": "map", "path": "start"}, None, "t") == '"home"'
+    assert d._session.calls == []                                     # dispatched locally, NOT over MCP
+
+
+async def test_state_injection_reads_the_bound_store(tmp_path):
+    from conjure.world import StateStore
+    d = Director(settings=None, session=FakeSession(), roster={"Claude": object()}, active="Claude",
+                 tools=[], prompt="Map: {map}", state_defs={"map": {"inject": "{map}"}})
+    d.bind_state(StateStore(tmp_path))
+    d._state.set("map", "start", "home")
+    sys = await d._system()
+    assert "home" in sys and "Map:" in sys                            # {map} filled from the store
+
+
+async def test_no_state_tools_without_a_declaration():
+    d = Director(settings=None, session=FakeSession(), roster={"Claude": object()}, active="Claude", tools=[])
+    assert not any(t.name.startswith("state_") for t in d._tools)     # opt-in only
+
+
 # --------------------------------------------------------------------------- orchestration
 
 class FakeLLM:

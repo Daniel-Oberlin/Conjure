@@ -66,6 +66,30 @@ def _set_path(obj: dict, dotted: str, value: Any) -> Any:
     return old
 
 
+def _get_path(obj: Any, dotted: str) -> Any:
+    """Read a dotted path; None if any segment is missing."""
+    cur = obj
+    for k in dotted.split("."):
+        if not isinstance(cur, dict) or k not in cur:
+            return None
+        cur = cur[k]
+    return cur
+
+
+def _del_path(obj: dict, dotted: str) -> bool:
+    """Delete the key at a dotted path. Returns True if it existed."""
+    keys = dotted.split(".")
+    cur = obj
+    for k in keys[:-1]:
+        if not isinstance(cur, dict) or k not in cur:
+            return False
+        cur = cur[k]
+    if isinstance(cur, dict) and keys[-1] in cur:
+        del cur[keys[-1]]
+        return True
+    return False
+
+
 class WorldStore:
     def __init__(self, doc: dict):
         self.doc = doc
@@ -411,6 +435,11 @@ class SessionRepository:
         through every call: resolve the active session once, then address worlds by name."""
         return WorldDir(self.worlds_dir(scope, sid))
 
+    def state(self, scope: str, sid: str) -> "StateStore":
+        """The session's agent-state as a `StateStore` rooted at ``.../sessions/<id>/state/`` (docs/
+        sessions-plan.md §5) — the storage behind the agent's generic ``state_*`` tools."""
+        return StateStore(self.state_dir(scope, sid))
+
     # -- transcript (append-only JSONL; docs/sessions-plan.md §4) --------------------------------
     def append_transcript(self, scope: str, sid: str, entry: dict) -> None:
         """Append one turn as a JSON line — cheap O(1) growth, no whole-file rewrite. Entries are plain
@@ -480,6 +509,66 @@ class SessionRepository:
         d = self._sessions_dir(scope)
         d.mkdir(parents=True, exist_ok=True)
         (d / "_active.txt").write_text(_session_seg(sid))
+
+
+class StateStore:
+    """A per-session bag of named JSON documents in one directory (docs/sessions-plan.md §5) — the storage
+    behind the agent's generic ``state_*`` tools. Plain JSON docs, dotted-path CRUD, atomic per-doc writes.
+    The agent's data **schema** is declared/owned elsewhere (`agent.json`); this layer is schema-free — it
+    doesn't know a `map` from an `inventory`, which is the whole point (no domain baked into storage)."""
+
+    def __init__(self, dir: str | Path):
+        self.dir = Path(dir)
+
+    def _path(self, doc: str) -> Path:
+        return self.dir / f"{slug(doc)}.json"                # doc name → safe filename (no traversal)
+
+    def list(self) -> list[str]:
+        return sorted(p.stem for p in self.dir.glob("*.json")) if self.dir.is_dir() else []
+
+    def read(self, doc: str) -> Any:
+        p = self._path(doc)
+        return json.loads(p.read_text()) if p.exists() else {}
+
+    def write(self, doc: str, value: Any) -> None:
+        p = self._path(doc)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")               # atomic (temp + rename)
+        tmp.write_text(json.dumps(value))
+        tmp.replace(p)
+
+    def get(self, doc: str, path: str | None = None) -> Any:
+        d = self.read(doc)
+        return d if not path else _get_path(d, path)
+
+    def set(self, doc: str, path: str, value: Any) -> Any:
+        d = self.read(doc)
+        if not isinstance(d, dict):
+            d = {}
+        _set_path(d, path, value)
+        self.write(doc, d)
+        return d
+
+    def merge(self, doc: str, value: dict) -> Any:
+        d = self.read(doc)
+        if isinstance(d, dict) and isinstance(value, dict):
+            d.update(value)
+        else:
+            d = value
+        self.write(doc, d)
+        return d
+
+    def delete(self, doc: str, path: str | None = None) -> bool:
+        if not path:                                         # drop the whole doc
+            p = self._path(doc)
+            existed = p.exists()
+            p.unlink(missing_ok=True)
+            return existed
+        d = self.read(doc)
+        ok = _del_path(d, path) if isinstance(d, dict) else False
+        if ok:
+            self.write(doc, d)
+        return ok
 
 
 class SpaceStore:

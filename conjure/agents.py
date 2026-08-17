@@ -61,6 +61,8 @@ class AgentDef:
     personas: list[str] = field(default_factory=list)   # persona refs (later slice)
     session: dict = field(default_factory=dict)         # session constructor block (greeting, first_world,
                                                         # state seed) — docs/sessions-plan.md §6
+    state: dict = field(default_factory=dict)           # agent-owned state declaration: {doc: {seed, schema,
+                                                        # inject}} — drives the generic state_* tools (§5)
 
     def allows_any_llm(self) -> bool:
         return WILDCARD in self.llms
@@ -126,6 +128,7 @@ def load_agent(name: str, *, agents_dir: Path = AGENTS_DIR,
         llms=list(data.get("llms", [WILDCARD])), default_llm=data.get("default_llm"),
         servers=servers, context=list(data.get("context", [])),
         personas=list(data.get("personas", [])), session=dict(data.get("session") or {}),
+        state=dict(data.get("state") or {}),
     )
 
 

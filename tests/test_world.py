@@ -377,6 +377,35 @@ def test_sessionrepo_transcript_append_read_roundtrip_and_tolerates_torn_line(tm
     assert len(repo.read_transcript(scope, "session-1")) == 2         # torn line skipped, not fatal
 
 
+# -- StateStore (the generic agent-state store; docs/sessions-plan.md §5) -------------------------
+
+def test_statestore_crud_and_dotted_paths(tmp_path):
+    from conjure.world import StateStore
+    st = StateStore(tmp_path)
+    assert st.list() == [] and st.read("map") == {}                  # empty doc reads as {}
+    st.set("map", "nodes.throne", {"visited": False})                # dotted set creates nesting
+    assert st.get("map", "nodes.throne.visited") is False
+    st.set("map", "nodes.throne.visited", True)
+    assert st.get("map", "nodes.throne.visited") is True
+    st.merge("map", {"start": "home"})
+    assert st.get("map", "start") == "home" and st.get("map", "nodes.throne.visited") is True
+    assert st.list() == ["map"]
+    assert st.delete("map", "nodes.throne") is True                  # delete a path
+    assert st.get("map", "nodes.throne") is None and st.get("map", "start") == "home"
+    assert st.delete("map") is True and st.list() == []              # delete the whole doc
+    assert st.delete("map") is False
+
+
+def test_sessionrepo_state_is_a_statestore_under_the_session(tmp_path):
+    from conjure.world import SessionRepository, StateStore
+    repo = SessionRepository(tmp_path)
+    st = repo.state("daniel/agents/dm", "session-1")
+    assert isinstance(st, StateStore)
+    st.set("inventory", "lamp", True)
+    assert (tmp_path / "daniel" / "agents" / "dm" / "sessions" / "session-1"
+            / "state" / "inventory.json").exists()
+
+
 # -- migration to the user-first session tree (docs/sessions-plan.md §7) --------------------------
 
 def test_migrate_cache_to_users(tmp_path):
