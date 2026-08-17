@@ -1,18 +1,19 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
+# xAI
+- Share a base class with OpenAI, or just re-use OpenAI?
+- Add extra capabilities
+
+# Graphics
+- Lighting
+- Billboards
+- Stereo images
+- Import images (from temp/imports)
+
 # Agent refactor
- - Are contexts persistent?
- - sessions (have context, worlds, public/private)
- - Do we want timestamps for entries?
- - Persistence for other info
- - Constructor
-  - agent initializer/constructor, setup state in persistent store?
-    - agent store is segregated by user
-    - agent has global store /agents/builder/
-    - agent has user store /user/agents/builder/
-    - do we need /system, /users, /agents as top level?
-- /users/daniel/agents/builder/worlds
-- /users/daniel/spaces/home
+- agent has global store /agents/builder/
+  - agent has user store /user/agents/builder/
+  - do we need /system, /users, /agents as top level?
 - agent semantic versioning, upgrade path (default purge)?
 
 # CLI refactor
@@ -22,12 +23,15 @@
   - rename (current session/world) or session "name" to "new name"
   - list/ls agents/sessions/llms/spaces
 - dir paths /user/agent/worlds/..., /user/spaces...
-- Multi-paned CLI tool
-  - Launch servers, restart
-  - Launch clients via name (easy select previosu)
-  - up/down arrows go to different panes
-  - expand/collapse
-- Up/down arrows for history?
+
+- Menu-driven CLI tool
+  - Launch servers, restart, shutdown/exit
+  - client launch asks for user (defaults to previously used)
+  - Select servers/clients (added to menu) to enter window
+  - up/down arrows select menu
+  - Up/down arrows for history (goes in CLI tool only?)
+  - ESC goes back to home menu
+  - edit startup parameters (persisted)
 
 # Other
 - Global settings /system/globalsettings (default info color)
@@ -49,10 +53,6 @@
 - Point clouds
 - Water picture
 - Model animations via glTF/VRM
-
-# Graphics
-- Lighting
-- billboards
 
 # Web
 - Perform web requests
