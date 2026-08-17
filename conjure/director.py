@@ -451,10 +451,16 @@ class Director:
             return await self._execute_tool(n, a, on_tool, who)
 
         system = await self._system()
+        # Label the CURRENT utterance with its speaker, exactly as `_messages` labels history — so the
+        # model never sees an unlabeled human message. Without this, an agent told "user messages are
+        # labeled with who spoke" sees the current turn bare and can't tell who's asking (it correlates
+        # poorly with the `{user}` system-prompt hint, especially if a user types a name-like prefix).
+        # Stored RAW below; the label is re-derived from `by` on replay, so history never double-labels.
+        labeled = f"{speaker}: {text}" if speaker else text
         final = await llm.run_turn(
             system=system,
             history=list(self.transcript),
-            user_text=text,
+            user_text=labeled,
             tools=self._tools,
             execute_tool=execute,
             emit=emit,

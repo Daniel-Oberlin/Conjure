@@ -8,7 +8,7 @@ import pytest
 
 from conjure.agents import AgentDef, load_agent
 from conjure.director import Director, _fill_injection, _pick_active
-from conjure.llm import Turn
+from conjure.llm import Turn, _messages
 
 
 def test_pick_active_uses_the_agents_llms_list_as_priority():
@@ -113,11 +113,12 @@ def _director(active="Claude", tools=None, **llms):
 async def test_handle_records_user_assistant_transcript():
     d = _director()
     out = await d.handle("put a tree in front of me")
-    assert out == "Claude: done «put a tree in front of me»"
-    # the transcript is plain user/assistant — it records no LLM identity
+    # the current turn reaches the LLM speaker-labeled ("daniel: …"); the reply echoes what it saw
+    assert out == "Claude: done «daniel: put a tree in front of me»"
+    # the transcript is plain user/assistant — it records no LLM identity, and stores the RAW user text
     assert [(t.speaker, t.text) for t in d.transcript] == [
         ("user", "put a tree in front of me"),
-        ("assistant", "Claude: done «put a tree in front of me»"),
+        ("assistant", "Claude: done «daniel: put a tree in front of me»"),
     ]
 
 
@@ -186,7 +187,8 @@ async def test_handle_always_runs_the_active_llm():
     d = _director(active="Claude")
     await d.handle("Gemini, make a picture of a cat")
     assert d.active == "Claude"                                   # unchanged — switching is the shell's job
-    assert d.roster["Claude"].seen[-1]["user_text"] == "Gemini, make a picture of a cat"  # full text, unrouted
+    # full text, unrouted — and speaker-labeled (the current turn carries its label like history does)
+    assert d.roster["Claude"].seen[-1]["user_text"] == "daniel: Gemini, make a picture of a cat"
     assert d.roster["Gemini"].seen == []                          # the named LLM was NOT invoked
     assert d.transcript[-1].speaker == "assistant"
 
@@ -196,9 +198,23 @@ async def test_shell_switched_active_is_used_by_the_next_turn():
     d = _director(active="Claude")
     d.active = "Gemini"                                           # what shell._switch does
     await d.handle("add a fountain")
-    assert d.roster["Gemini"].seen[-1]["user_text"] == "add a fountain"
+    assert d.roster["Gemini"].seen[-1]["user_text"] == "daniel: add a fountain"
     assert d.roster["Claude"].seen == []
     assert d.transcript[-1].speaker == "assistant"
+
+
+async def test_current_turn_is_speaker_labeled_like_history():
+    # The model must never see an unlabeled human message: the current turn is prefixed with its
+    # speaker (like _messages labels history), and the next turn's history shows it labeled exactly once.
+    d = _director(active="Claude")
+    await d.handle("what's here?", speaker="alice")
+    assert d.roster["Claude"].seen[-1]["user_text"] == "alice: what's here?"     # current turn labeled
+    assert d.transcript[-2].speaker == "user" and d.transcript[-2].by == "alice"  # stored RAW + attributed
+    assert d.transcript[-2].text == "what's here?"                                # no label baked into storage
+    await d.handle("and now?", speaker="bob")
+    hist_texts = [t for _, t in _messages(list(d.transcript))]
+    assert "alice: what's here?" in hist_texts                                    # labeled once in history
+    assert "alice: alice: what's here?" not in hist_texts                         # never double-labeled
 
 
 async def test_director_logs_utterance_tool_calls_and_reply():
@@ -304,7 +320,7 @@ async def test_context_fetch_failure_is_not_fatal():
                  tools=[], prompt="Build.\n{#context}scene:\n{context}{/context}",
                  agent=_agent(["room://current"]))
     out = await d.handle("add a tree")                       # must not raise
-    assert out == "Claude: done «add a tree»"
+    assert out == "Claude: done «daniel: add a tree»"
     assert "scene:" not in llm.seen[0]["system"]             # failed fetch → value "" → section dropped
     assert "{context}" not in llm.seen[0]["system"]
 
