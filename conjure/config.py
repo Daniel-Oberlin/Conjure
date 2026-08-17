@@ -16,17 +16,9 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The on-disk cache root + the user-first tree (docs/sessions-plan.md §3). Defined here (not just in
-# server.py) so the agent server can locate a session's transcript/state without importing the heavy
-# world-server module. `<user>/agents/<agent>/sessions/<id>/…` and `<user>/spaces/…` live under USERS_DIR;
-# the global session pointer is `<CACHE_DIR>/_session.txt`.
-#
-# LEGACY (still the live location until the user-home migration lands — docs/user-home-plan.md §6):
-# these keep pointing at the in-project `.cache/` so behaviour is unchanged. The new resolver below
-# computes the *target* roots (CONFIG_DIR/DATA_DIR/CACHE_ROOT/AGENTS_PATH); step 3 repoints these.
-CACHE_DIR = ROOT / ".cache"
-USERS_DIR = CACHE_DIR / "users"
-SESSION_PTR = CACHE_DIR / "_session.txt"
+# The in-project cache — now only a MIGRATION INPUT (docs/user-home-plan.md §6): on startup its
+# contents are relocated into the resolved user home. Kept as a constant so the migration can find it.
+PROJECT_CACHE = ROOT / ".cache"
 
 # The default logged-in user when none is specified (--user / the /tunnel/<user> route).
 # No security — users are identity only (docs/spaces-and-users-plan.md).
@@ -156,6 +148,13 @@ CONFIG_DIR = _RESOLVED["config_dir"]
 DATA_DIR = _RESOLVED["data_dir"]
 CACHE_ROOT = _RESOLVED["cache_dir"]      # genuinely-disposable cache (NOT the precious data tree)
 AGENTS_PATH: list[Path] = _RESOLVED["agents_path"]
+
+# The precious data tree now lives in the resolved home (post-migration). These names are kept because
+# other modules import them (e.g. agent_server → USERS_DIR); they alias into DATA_DIR. `CACHE_DIR` is a
+# historical alias for the DATA root (it is NOT the disposable cache — that's CACHE_ROOT).
+CACHE_DIR = DATA_DIR
+USERS_DIR = DATA_DIR / "users"
+SESSION_PTR = DATA_DIR / "_session.txt"
 
 def scope_for(user: str, agent: str) -> str:
     """The capability scope a (user, agent) pair operates under: `<user>/agents/<agent>`

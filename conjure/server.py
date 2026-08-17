@@ -35,40 +35,44 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .captioner import build_captioner
-from .config import DEFAULT_USER, agent_of, get_settings, scope_for
+from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, agent_of,
+                     ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from .world import (MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
-                    _set_path, migrate_cache_to_users, slug, world_path)
+                    _set_path, migrate_cache_to_users, migrate_project_cache_to_home, slug, world_path)
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
 LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settings.debug_log)
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 AGENTS_DIR = ROOT / "agents"
-CACHE = ROOT / ".cache"
-# User-first tree (docs/sessions-plan.md §3): everything a user owns lives under .cache/users/<user>/ —
+# The precious DATA root — the resolved user home (docs/user-home-plan.md §3), NOT the in-project
+# .cache anymore. On startup the in-project .cache is migrated into here (see _init_state).
+CACHE = DATA_DIR
+# User-first tree (docs/sessions-plan.md §3): everything a user owns lives under <data>/users/<user>/ —
 # their agents' sessions (worlds/state/transcript) AND their spaces. Worlds:
-#   .cache/users/<user>/agents/<agent>/sessions/<id>/worlds/<name>.json
-# Spaces:  .cache/users/<user>/spaces/<name>.json
+#   <data>/users/<user>/agents/<agent>/sessions/<id>/worlds/<name>.json
+# Spaces:  <data>/users/<user>/spaces/<name>.json
 USERS_DIR = CACHE / "users"
 # Pre-session locations, kept only as MIGRATION INPUTS (relocated once into USERS_DIR on boot).
 WORLDS_DIR = CACHE / "worlds"                  # legacy world tree (pre-user step also ran here)
 SPACES_DIR = CACHE / "spaces"                  # legacy space tree
 # The single global session pointer — what's live across the WHOLE server (scope<TAB>session-id).
 SESSION_PTR = CACHE / "_session.txt"
-ASSET_CACHE = CACHE / "assets"
-ASSET_CACHE.mkdir(parents=True, exist_ok=True)
-LIBRARY_DB = ROOT / ".cache" / "library.db"   # durable asset catalog (docs/asset-library-plan.md)
+ASSET_CACHE = CACHE / "assets"                 # created in _init_state (after migration), not at import
+LIBRARY_DB = CACHE / "library.db"             # durable asset catalog (docs/asset-library-plan.md) — DATA
 # The scope new assets/worlds are written under: <user>/agents/<agent> (docs/spaces-and-users-plan.md
 # §3). A data seam for now — single user/agent, no enforcement yet; the builder is the only writer.
 DEFAULT_SCOPE = scope_for(DEFAULT_USER, "builder")
-# scripts/tunnel.sh writes the current cloudflared URL here; /tunnel redirects to it (a short, fixed
-# LAN address you can type on the Quest instead of the long random trycloudflare URL each session).
-TUNNEL_FILE = ROOT / ".cache" / "tunnel_url"
+# scripts/tunnel.sh (an external shell script, cwd = project) writes the current cloudflared URL here;
+# /tunnel redirects to it (a short, fixed LAN address you can type on the Quest instead of the long
+# random trycloudflare URL each session). Stays in the in-project .cache — it's ephemeral dev-tooling
+# scratch owned by that script, not part of the user-home data model (docs/user-home-plan.md §3.1).
+TUNNEL_FILE = PROJECT_CACHE / "tunnel_url"
 MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
 
 def _has_alpha(im) -> bool:
@@ -351,11 +355,17 @@ def _init_state() -> None:
     global _selected_cids, _space_holders
     _selected_cids = set()                           # a fresh session: every AR client re-selects (step 4/7)
     _space_holders = set()                           # nobody holds the space yet → provisional boot (D1)
+    # User-home migration FIRST (docs/user-home-plan.md §6): relocate the in-project .cache into the
+    # resolved home BEFORE anything opens a path under it (catalog, repositories, asset cache). Also
+    # ensures the settings.json template exists. Idempotent (breadcrumb-guarded).
+    ensure_settings_file(CONFIG_DIR)
+    migrate_project_cache_to_home(PROJECT_CACHE, DATA_DIR, CACHE_ROOT)
+    ASSET_CACHE.mkdir(parents=True, exist_ok=True)   # deferred from import → after the home exists
     library = AssetLibrary(LIBRARY_DB)
     # One-time, idempotent relocations (docs/sessions-plan.md §7): first the pre-user layout under the
     # legacy worlds tree, then the whole worlds/spaces tree → the user-first session tree.
     _migrate_world_dirs(WORLDS_DIR)                  # pre-user layout → <user>/agents/<agent> (one-time)
-    migrate_cache_to_users(CACHE)                    # worlds/spaces → .cache/users/…/sessions/session-1 (one-time)
+    migrate_cache_to_users(CACHE)                    # worlds/spaces → <data>/users/…/sessions/session-1 (one-time)
     sessions = SessionRepository(USERS_DIR)
     worlds = WorldRepository(USERS_DIR, sessions=sessions)   # per-name ops route to the scope's active session
     spaces = SpaceStore(USERS_DIR)

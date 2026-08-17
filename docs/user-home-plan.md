@@ -66,12 +66,15 @@ curation). It's an index but a *precious* one.
 | `_session.txt`                  | global session pointer                                 | **data/**`_session.txt` |
 | `assets/`                       | content-addressed media — images, skyboxes             | **data/**`assets/` |
 | `library.db` (+ `-shm`,`-wal`)  | asset catalog: curation + captions + embeddings; **not** regenerable | **data/**`library.db` (WAL sidecars move with it) |
-| `tunnel_url`                    | current run's public tunnel URL — ephemeral            | **cache/**`tunnel_url` |
+| `tunnel_url`                    | current run's public tunnel URL — ephemeral            | **stays in `<project>/.cache/`** (see note) |
 | `backups/`                      | manual backups — **NOT created or managed by our code**| **left in place / untouched by migration** (user-owned; §6) |
 
-So today the only genuinely disposable item is `tunnel_url`; the `cache/` root starts nearly empty and
-grows only as we externalize regenerable artifacts (thumbnails, etc.). `backups/` is not ours to move —
-the migration must skip it and never write there.
+**`tunnel_url` stays put** (revised during implementation): it's written by an *external shell script*
+(`scripts/tunnel.sh`, cwd = project) to `<project>/.cache/tunnel_url`, not by the app. Moving the read
+location would force XDG resolution into bash for zero benefit — it's ephemeral dev-tooling scratch, so
+it stays in the in-project `.cache`. The `cache/` root therefore starts **empty**, reserved for future
+*app-written* disposables (thumbnails, externalized embeddings). `backups/` is not ours to move — the
+migration skips it and never writes there.
 
 **Escape hatch — `CONJURE_HOME`.** If set, all three roots consolidate under it, for a portable /
 single-dir install (the `~/.conjure` feel) and for tests pointing at a tmpdir:
@@ -139,16 +142,18 @@ agents_path = [ <config>/agents , <project>/agents ]
 
 ## 6. Migration (one-time, idempotent)
 
-Like `migrate_cache_to_users` (world.py): on startup, if `<project>/.cache` exists and the new
-`data/` root is empty, relocate per the §3.1 table — **move** `users/`, `_session.txt`, `assets/`, and
-`library.db` (+ its `-shm`/`-wal` sidecars) into `$XDG_DATA_HOME/conjure/`, and `tunnel_url` into
-`$XDG_CACHE_HOME/conjure/`. Back up first (the existing `pre-sessions-*` pattern). Leave a
-`.cache/MOVED.txt` breadcrumb pointing at the new location.
+`migrate_project_cache_to_home(project_cache, data_dir, cache_dir)` (world.py), run in `_init_state`
+**before** anything opens a path under the home: **move** the §3.1 data items — `users/`,
+`_session.txt`, `assets/`, `library.db` (+ its `-shm`/`-wal` sidecars), and any legacy
+`worlds/`/`spaces/` — into `data_dir`. A **move, never a copy or delete**, so content is preserved and
+content-addressed assets stay valid; the WAL sidecars move with the DB. Idempotent via a
+`<project>/.cache/MOVED.txt` breadcrumb (once written, re-runs no-op; an interrupted run resumes
+because each item-move skips a missing source). A move into a *pre-created* empty dest dir (e.g.
+`assets/` from an import-time mkdir) **merges** rather than failing.
 
-**Skip `backups/`** — it is not created or managed by our code (user-owned manual backups); the
-migration must never move, read, or write it. `<project>/agents` is likewise **not** moved (it stays
-bundled). Move `library.db` while the server is stopped (WAL checkpointed) so the sidecars are
-consistent.
+**Skips `backups/` and `tunnel_url`** — `backups/` is user-owned; `tunnel_url` stays as project
+dev-scratch (§3.1). `<project>/agents` is likewise **not** moved (it stays bundled). A guard refuses to
+migrate the home onto itself (when `.cache` *is* the data root).
 
 ## 7. Local vs. server (scope of "user")
 

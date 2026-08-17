@@ -746,3 +746,66 @@ def migrate_cache_to_users(cache: str | Path) -> bool:
     shutil.rmtree(old_worlds, ignore_errors=True)               # remove the emptied old trees
     shutil.rmtree(old_spaces, ignore_errors=True)
     return True
+
+
+def _relocate(src: Path, dst: Path) -> bool:
+    """Move `src`→`dst`, merging into an existing destination directory (so a pre-created empty `dst`,
+    e.g. from an import-time mkdir, doesn't block the move). Atomic rename where possible, falling back
+    to a cross-device copy. Returns True iff `src` existed. Idempotent: a missing `src` is a no-op, so a
+    re-run after an interrupted migration simply resumes."""
+    if not src.exists():
+        return False
+    if src.is_dir() and dst.exists():
+        for child in list(src.iterdir()):
+            _relocate(child, dst / child.name)
+        try:
+            src.rmdir()                                          # drop the now-empty source dir
+        except OSError:
+            pass
+        return True
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        src.replace(dst)                                         # atomic within one filesystem
+    except OSError:
+        shutil.move(str(src), str(dst))                          # cross-device fallback
+    return True
+
+
+# The precious items that move into the DATA root (docs/user-home-plan.md §3.1). `backups/` is
+# intentionally absent — user-owned, never touched. `tunnel_url` is also absent — it stays in the
+# project .cache (external dev-tooling scratch). `worlds/`/`spaces/` are the pre-user legacy trees,
+# carried along if still present. The CACHE root has no migrated items yet (reserved for future
+# app-written disposables like thumbnails), but is passed through for the self-migration guard.
+_HOME_DATA_ITEMS = ("users", "_session.txt", "assets", "library.db", "library.db-shm",
+                    "library.db-wal", "worlds", "spaces")
+_HOME_CACHE_ITEMS: tuple[str, ...] = ()
+
+
+def migrate_project_cache_to_home(project_cache: str | Path, data_dir: str | Path,
+                                  cache_dir: str | Path) -> bool:
+    """One-time relocation of the in-project ``.cache`` into the user home (docs/user-home-plan.md §6).
+
+    Moves the precious tree (``users/``, ``_session.txt``, ``assets/``, ``library.db`` + WAL sidecars,
+    and any legacy ``worlds/``/``spaces/``) into ``data_dir``, and the disposable ``tunnel_url`` into
+    ``cache_dir``. **Skips ``backups/``** — user-owned, never touched. A move (never a copy or delete),
+    so content is preserved and content-addressed assets stay valid.
+
+    Idempotent via a ``<project_cache>/MOVED.txt`` breadcrumb: once written, re-runs are a no-op; an
+    interrupted run (breadcrumb not yet written) resumes, since each item-move skips a missing source.
+    Returns True iff it moved anything."""
+    project_cache, data_dir, cache_dir = Path(project_cache), Path(data_dir), Path(cache_dir)
+    breadcrumb = project_cache / "MOVED.txt"
+    if not project_cache.is_dir() or breadcrumb.exists():
+        return False
+    # Guard against migrating the home onto itself (e.g. a test that points .cache AT the data root).
+    if project_cache.resolve() in (data_dir.resolve(), cache_dir.resolve()):
+        return False
+    moved = False
+    for name in _HOME_DATA_ITEMS:
+        moved |= _relocate(project_cache / name, data_dir / name)
+    for name in _HOME_CACHE_ITEMS:
+        moved |= _relocate(project_cache / name, cache_dir / name)
+    if moved:
+        breadcrumb.write_text(f"Contents moved to the user home (docs/user-home-plan.md §6):\n"
+                              f"  data  → {data_dir}\n  cache → {cache_dir}\n")
+    return moved

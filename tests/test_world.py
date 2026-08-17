@@ -478,3 +478,77 @@ def test_migrate_is_idempotent_and_noop_on_fresh(tmp_path):
     (w / "home.json").write_text(json.dumps(_doc()))
     assert migrate_cache_to_users(tmp_path) is True
     assert migrate_cache_to_users(tmp_path) is False                       # users/ exists now → no-op
+
+
+# ── user-home migration (.cache → resolved home; docs/user-home-plan.md §6) ──────────────────────
+def _fake_cache(cache):
+    """A realistic in-project .cache: precious data, the disposable tunnel_url, and user backups/."""
+    (cache / "users" / "daniel" / "agents" / "builder").mkdir(parents=True)
+    (cache / "users" / "daniel" / "agents" / "builder" / "marker.txt").write_text("world")
+    (cache / "assets").mkdir()
+    (cache / "assets" / "abc123.png").write_bytes(b"\x89PNG")
+    (cache / "_session.txt").write_text("daniel/agents/builder\tsession-1")
+    (cache / "library.db").write_text("catalog")
+    (cache / "library.db-wal").write_text("wal")
+    (cache / "tunnel_url").write_text("https://x.trycloudflare.com")
+    (cache / "backups").mkdir()
+    (cache / "backups" / "keep.txt").write_text("mine")
+
+
+def test_migrate_project_cache_moves_data_keeps_backups_and_tunnel(tmp_path):
+    from conjure.world import migrate_project_cache_to_home
+    cache = tmp_path / ".cache"; cache.mkdir()
+    data = tmp_path / "home" / "data"; cacheroot = tmp_path / "home" / "cache"
+    _fake_cache(cache)
+
+    assert migrate_project_cache_to_home(cache, data, cacheroot) is True
+    # precious data relocated into the DATA root
+    assert (data / "users" / "daniel" / "agents" / "builder" / "marker.txt").read_text() == "world"
+    assert (data / "assets" / "abc123.png").read_bytes() == b"\x89PNG"
+    assert (data / "_session.txt").read_text().endswith("session-1")
+    assert (data / "library.db").read_text() == "catalog"
+    assert (data / "library.db-wal").read_text() == "wal"
+    # the moved items are GONE from .cache
+    assert not (cache / "users").exists() and not (cache / "assets").exists()
+    # backups/ + tunnel_url are UNTOUCHED (user-owned / dev scratch)
+    assert (cache / "backups" / "keep.txt").read_text() == "mine"
+    assert (cache / "tunnel_url").read_text() == "https://x.trycloudflare.com"
+    # breadcrumb written
+    assert (cache / "MOVED.txt").exists()
+
+
+def test_migrate_project_cache_is_idempotent(tmp_path):
+    from conjure.world import migrate_project_cache_to_home
+    cache = tmp_path / ".cache"; cache.mkdir()
+    data = tmp_path / "data"; cacheroot = tmp_path / "cache"
+    _fake_cache(cache)
+    assert migrate_project_cache_to_home(cache, data, cacheroot) is True
+    assert migrate_project_cache_to_home(cache, data, cacheroot) is False   # breadcrumb → no-op
+    # a fresh .cache created afterwards is still skipped while the breadcrumb stands
+    (cache / "users").mkdir(exist_ok=True)
+    assert migrate_project_cache_to_home(cache, data, cacheroot) is False
+
+
+def test_migrate_project_cache_merges_into_precreated_dest(tmp_path):
+    # ASSET_CACHE.mkdir may pre-create <data>/assets before migration runs — the move must MERGE.
+    from conjure.world import migrate_project_cache_to_home
+    cache = tmp_path / ".cache"; cache.mkdir()
+    data = tmp_path / "data"; cacheroot = tmp_path / "cache"
+    _fake_cache(cache)
+    (data / "assets").mkdir(parents=True)                                   # pre-existing empty dest
+    assert migrate_project_cache_to_home(cache, data, cacheroot) is True
+    assert (data / "assets" / "abc123.png").read_bytes() == b"\x89PNG"
+
+
+def test_migrate_project_cache_noop_when_absent(tmp_path):
+    from conjure.world import migrate_project_cache_to_home
+    assert migrate_project_cache_to_home(tmp_path / "nope", tmp_path / "d", tmp_path / "c") is False
+
+
+def test_migrate_project_cache_refuses_self(tmp_path):
+    # If .cache IS the data root (misconfig / test), don't eat itself.
+    from conjure.world import migrate_project_cache_to_home
+    cache = tmp_path / ".cache"; cache.mkdir()
+    _fake_cache(cache)
+    assert migrate_project_cache_to_home(cache, cache, tmp_path / "c") is False
+    assert (cache / "users").exists()                                       # untouched
