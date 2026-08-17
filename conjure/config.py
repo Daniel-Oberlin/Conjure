@@ -6,9 +6,11 @@ selection (STT/TTS/LLM) is config-driven so models stay swappable (decision #1, 
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from dotenv import load_dotenv
 
@@ -18,9 +20,116 @@ ROOT = Path(__file__).resolve().parent.parent
 # server.py) so the agent server can locate a session's transcript/state without importing the heavy
 # world-server module. `<user>/agents/<agent>/sessions/<id>/…` and `<user>/spaces/…` live under USERS_DIR;
 # the global session pointer is `<CACHE_DIR>/_session.txt`.
+#
+# LEGACY (still the live location until the user-home migration lands — docs/user-home-plan.md §6):
+# these keep pointing at the in-project `.cache/` so behaviour is unchanged. The new resolver below
+# computes the *target* roots (CONFIG_DIR/DATA_DIR/CACHE_ROOT/AGENTS_PATH); step 3 repoints these.
 CACHE_DIR = ROOT / ".cache"
 USERS_DIR = CACHE_DIR / "users"
 SESSION_PTR = CACHE_DIR / "_session.txt"
+
+# ---------------------------------------------------------------------------
+# User home resolution (docs/user-home-plan.md §3/§4).
+#
+# Locations resolve highest-wins:  env var  >  settings.json  >  XDG default.
+# By default the three roots follow the XDG Base Directory spec; if $CONJURE_HOME is set they
+# consolidate under it ($CONJURE_HOME/{config,data,cache}) — a portable single-dir install and the
+# handle tests use to relocate the whole home onto a tmpdir. Agent *definitions* resolve to a search
+# PATH (user config dir first, then the bundled repo set), so a user can add or shadow agents.
+# ---------------------------------------------------------------------------
+
+BUNDLED_AGENTS_DIR = ROOT / "agents"    # example/bundled agent defs shipped with the repo (never moved)
+
+
+def _home(env: Mapping[str, str]) -> Path | None:
+    """The `$CONJURE_HOME` consolidation root, if set — else None (→ XDG roots)."""
+    h = env.get("CONJURE_HOME", "").strip()
+    return Path(h).expanduser() if h else None
+
+
+def _xdg_root(env: Mapping[str, str], xdg_var: str, home_fallback: str) -> Path:
+    """The base dir for one XDG category: `$<xdg_var>` if set, else `~/<home_fallback>`."""
+    base = env.get(xdg_var, "").strip()
+    return Path(base).expanduser() if base else Path.home() / home_fallback
+
+
+def resolve_config_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Where `settings.json` + the user's own agent defs live. Config can't itself be set *by*
+    settings.json (chicken/egg), so only env + XDG feed it: env `CONJURE_CONFIG_DIR` > `$CONJURE_HOME/
+    config` > `$XDG_CONFIG_HOME/conjure` (~/.config/conjure)."""
+    env = os.environ if env is None else env
+    explicit = env.get("CONJURE_CONFIG_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    home = _home(env)
+    return (home / "config") if home else _xdg_root(env, "XDG_CONFIG_HOME", ".config") / "conjure"
+
+
+def load_settings(config_dir: Path) -> dict:
+    """Read `<config_dir>/settings.json` → dict; `{}` if absent or unreadable (never raises — a
+    broken settings file must not stop the app from booting on defaults)."""
+    path = config_dir / "settings.json"
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _resolve_dir(env: Mapping[str, str], settings: Mapping, *, env_var: str, settings_key: str,
+                 home: Path | None, home_sub: str, xdg_var: str, home_fallback: str) -> Path:
+    """One data/cache root, highest-wins: env `<env_var>` > settings[`<settings_key>`] >
+    `$CONJURE_HOME/<home_sub>` > `$<xdg_var>/conjure`."""
+    explicit = env.get(env_var, "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    from_settings = settings.get(settings_key)
+    if from_settings:
+        return Path(str(from_settings)).expanduser()
+    return (home / home_sub) if home else _xdg_root(env, xdg_var, home_fallback) / "conjure"
+
+
+def resolve_agents_path(env: Mapping[str, str], settings: Mapping, config_dir: Path) -> list[Path]:
+    """The ordered agent-definition search path (docs/user-home-plan.md §5): env
+    `CONJURE_AGENTS_PATH` (os-sep-separated) > settings["agents_path"] > [<config>/agents, bundled].
+    User entries come first so a user agent shadows a bundled one of the same name."""
+    explicit = env.get("CONJURE_AGENTS_PATH", "").strip()
+    if explicit:
+        return [Path(p).expanduser() for p in explicit.split(os.pathsep) if p]
+    from_settings = settings.get("agents_path")
+    if from_settings:
+        return [Path(str(p)).expanduser() for p in from_settings]
+    return [config_dir / "agents", BUNDLED_AGENTS_DIR]
+
+
+def resolve_paths(env: Mapping[str, str] | None = None, settings: Mapping | None = None) -> dict:
+    """Resolve the whole user home in one shot → {config_dir, data_dir, cache_dir, agents_path}.
+    Pure over its `env`/`settings` inputs (defaults: process env + the on-disk settings file), so tests
+    can drive it without touching the real home."""
+    env = os.environ if env is None else env
+    config_dir = resolve_config_dir(env)
+    settings = load_settings(config_dir) if settings is None else settings
+    home = _home(env)
+    data_dir = _resolve_dir(env, settings, env_var="CONJURE_DATA_DIR", settings_key="data_dir",
+                            home=home, home_sub="data", xdg_var="XDG_DATA_HOME", home_fallback=".local/share")
+    cache_dir = _resolve_dir(env, settings, env_var="CONJURE_CACHE_DIR", settings_key="cache_dir",
+                             home=home, home_sub="cache", xdg_var="XDG_CACHE_HOME", home_fallback=".cache")
+    return {
+        "config_dir": config_dir,
+        "data_dir": data_dir,
+        "cache_dir": cache_dir,
+        "agents_path": resolve_agents_path(env, settings, config_dir),
+    }
+
+
+# Import-time snapshot of the resolved home. Module-level constants (not just a resolver behind a
+# function) so tests can monkeypatch them exactly like the legacy paths (docs/user-home-plan.md §4.1).
+# NOTE: not yet consumed by the app — step 3 repoints the live paths onto these after migration.
+_RESOLVED = resolve_paths()
+CONFIG_DIR = _RESOLVED["config_dir"]
+DATA_DIR = _RESOLVED["data_dir"]
+CACHE_ROOT = _RESOLVED["cache_dir"]      # genuinely-disposable cache (NOT the precious data tree)
+AGENTS_PATH: list[Path] = _RESOLVED["agents_path"]
 
 # The default logged-in user when none is specified (--user / the /tunnel/<user> route).
 # No security — users are identity only (docs/spaces-and-users-plan.md).
