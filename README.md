@@ -126,6 +126,9 @@ conjure-cli world                          # print the world
 
 conjure-cli say "put a tree in front of me and hang a sunset painting"   # the director (→ agent server)
 conjure-cli                                # no args → interactive director REPL
+
+conjure-import ~/Photos/vr --recursive     # import files into the library (images, .glb models, …)
+conjure-import beach_SBS.jpg --stereo sbs  # import a side-by-side 3D photo (viewable in-headset per-eye)
 ```
 
 Quiet by default; add `-v` for tool calls and library logs. (`say`/REPL need the agent server running +

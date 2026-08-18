@@ -879,6 +879,7 @@ async def place_image(
     size_m: Optional[float] = None,
     name: Optional[str] = None,
     on_surface: Optional[str] = None,
+    stereo: Optional[str] = None,
 ) -> str:
     """Hang a procured image (by image_id from generate_image/edit_image/...) as a painting.
 
@@ -890,9 +891,13 @@ async def place_image(
     size_m: longest side in meters for the free-floating case (default 1.0; aspect preserved). Ignored
         when on_surface is given (the frame's size wins).
     name: pass an existing entity id to swap/move that painting; otherwise a new one is created.
+    stereo: 'sbs' (side-by-side) or 'tb' (top-bottom) to render a packed 3D stereo pair with real
+        per-eye depth in the headset. Usually unnecessary — imported stereo images carry this and it's
+        applied automatically; pass it only to force stereo on an image that wasn't tagged.
     """
     out = await _post("/place_image", _body(
-        image_id=image_id, position=position, size_m=size_m, name=name, on_surface=on_surface))
+        image_id=image_id, position=position, size_m=size_m, name=name, on_surface=on_surface,
+        stereo=stereo))
     if not out.get("ok"):
         return f"Couldn't place image: {out.get('error', 'unknown error')}."
     return f"Hung image {out['image_id']} as {out['id']}." + _notice(out)

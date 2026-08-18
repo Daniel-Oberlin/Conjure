@@ -3,6 +3,11 @@
 **Status:** Phases 0–3 **done** (catalog + embeddings + director-facing reuse/correction tools +
 director prompt policy). First-pass scope complete. Phases 4–5 deferred.
 **Scope of first pass:** Phases 0–3 (foundation + embeddings + tools + prompt). Phases 4–5 deferred.
+**Update (external importer):** a general file importer now exists — `conjure/importer.py` (extensible
+handler registry: images, stereo pairs, `.glb` models) + `POST /library/import` + the `conjure-import`
+CLI. All ingest paths (generation, Poly-Pizza models, import) share one write-through, `register_asset`
+/ `_catalog_asset` in `server.py`. This lands Phase 5's `scan(path)` seam early and generically; a NAS
+scanner becomes just another caller of the same registry.
 
 Turn the passive content-addressed byte cache into an **explicit, director-controlled asset
 library** with intelligent cross-session reuse — one that generalizes to new media kinds (audio,

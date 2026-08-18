@@ -160,6 +160,69 @@ def test_place_image_unknown_id_errors(srv, client):
     assert client.post("/place_image", json={"image_id": "nope.png"}).json()["ok"] is False
 
 
+# --- external asset import (POST /library/import) --------------------------------------------------
+
+def _import(client, filename, data, dry_run=False, **hints):
+    import base64
+    return client.post("/library/import", json={"dry_run": dry_run, "items": [
+        {"filename": filename, "data_b64": base64.b64encode(data).decode(), "hints": hints}]}).json()
+
+
+def test_import_catalogs_an_image_and_is_dedup_by_content(srv, client):
+    from conftest import TINY_PNG
+    out = _import(client, "sunset.png", TINY_PNG)
+    assert out["ok"] and out["imported"] == 1
+    aid = out["results"][0]["id"]
+    row = srv.library.get(aid)
+    assert row and row["kind"] == "image" and row["width"] == 4 and row["height"] == 4
+    assert row["source"] == f"cache://{aid}" and (srv.ASSET_CACHE / aid).exists()
+    # Re-importing the same bytes returns the SAME id (content-addressed) — no duplicate row.
+    again = _import(client, "sunset-copy.png", TINY_PNG)
+    assert again["results"][0]["id"] == aid and srv.library.count() == 1
+
+
+def test_import_dry_run_writes_nothing(srv, client):
+    from conftest import TINY_PNG
+    out = _import(client, "x.png", TINY_PNG, dry_run=True)
+    assert out["ok"] and out["results"][0]["dry_run"] is True and out["results"][0]["kind"] == "image"
+    assert srv.library.count() == 0                       # nothing catalogued
+
+
+def test_import_rejects_unrecognized_file(srv, client):
+    out = _import(client, "notes.txt", b"just text")
+    assert out["imported"] == 0 and out["failed"] == 1
+    assert out["results"][0]["ok"] is False
+
+
+def test_import_tags_stereo_and_place_image_renders_per_eye(srv, client):
+    from conftest import WIDE_PNG                          # 8x4 → each SBS eye is 4x4 (square)
+    aid = _import(client, "beach.png", WIDE_PNG, stereo="sbs")["results"][0]["id"]
+    assert _stereo_of(srv.library.get(aid)) == "sbs"
+    # Placing it auto-detects stereo (no explicit arg): the plane fits the PER-EYE aspect (square,
+    # not the packed 2:1) and carries the client-side `stereo` component.
+    r = client.post("/place_image", json={"image_id": aid, "size_m": 1.0}).json()
+    img = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert img["components"]["stereo"] == {"layout": "sbs"}
+    g = img["components"]["geometry"]
+    assert g["width"] == 1.0 and g["height"] == 1.0       # per-eye 4x4 → square, not 2:1
+
+
+def _stereo_of(row):
+    import json
+    return json.loads(row.get("attributes") or "{}").get("stereo")
+
+
+def test_first_eye_crops_the_stereo_pair_to_one_view(srv):
+    import io
+
+    from PIL import Image
+    from conftest import WIDE_PNG                          # 8x4
+    with Image.open(io.BytesIO(srv._first_eye(WIDE_PNG, "sbs"))) as im:
+        assert im.size == (4, 4)                           # left half
+    with Image.open(io.BytesIO(srv._first_eye(WIDE_PNG, "tb"))) as im:
+        assert im.size == (8, 2)                           # top half
+
+
 def test_opaque_image_is_not_marked_transparent(srv, client):
     eid = client.post("/place_image", json={"image_id": _procure(client)}).json()["id"]
     mat = next(e for e in _entities(client) if e["id"] == eid)["components"]["material"]

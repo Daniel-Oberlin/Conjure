@@ -162,6 +162,72 @@
     });
   }
 
+  // Show a packed stereo image (side-by-side or top-bottom) with true per-eye depth in XR. The trick is
+  // render layers: three.js gives the left XR eye-camera layers {0,1} and the right {0,2}. We build two
+  // half-UV eye meshes (left→layer 1, right→layer 2) so each eye sees its own half; the original
+  // full-texture mesh stays on layer 0 for the 2D/desktop view and is parked on an unused layer while
+  // presenting. All local to each client — never touches shared state, so it's correct for multi-user.
+  if (window.AFRAME && !AFRAME.components.stereo) {
+    AFRAME.registerComponent("stereo", {
+      schema: { layout: { default: "sbs" } },   // "sbs" (left|right) | "tb" (top/bottom, top = left eye)
+      init: function () {
+        this._build = this._build.bind(this);
+        this._sync = this._sync.bind(this);
+        this.el.addEventListener("materialtextureloaded", this._build);  // texture loads async
+        var sc = this.el.sceneEl;
+        if (sc) { sc.addEventListener("enter-vr", this._sync); sc.addEventListener("exit-vr", this._sync); }
+        this._build();
+      },
+      remove: function () {
+        this.el.removeEventListener("materialtextureloaded", this._build);
+        var sc = this.el.sceneEl;
+        if (sc) { sc.removeEventListener("enter-vr", this._sync); sc.removeEventListener("exit-vr", this._sync); }
+        if (this._eyes) this._eyes.forEach(function (m) { if (m.parent) m.parent.remove(m); });
+        this._eyes = null;
+      },
+      update: function () {
+        if (this._eyes) { this.remove(); this.el.addEventListener("materialtextureloaded", this._build); }
+        this._build();
+      },
+      _build: function () {
+        var mesh = this.el.getObject3D("mesh");
+        if (this._eyes || !mesh || !mesh.material || !mesh.material.map) return;   // wait for the texture
+        var THREE = AFRAME.THREE, tb = this.data.layout === "tb", base = mesh.material.map;
+        var halfMap = function (offX, offY) {          // a texture clone sampling just one eye's half
+          var t = base.clone(); t.needsUpdate = true;
+          t.repeat.set(tb ? 1 : 0.5, tb ? 0.5 : 1);
+          t.offset.set(offX, offY);
+          return t;
+        };
+        var eyeMesh = function (map) {
+          var mat = mesh.material.clone(); mat.map = map; mat.needsUpdate = true;
+          var m = new THREE.Mesh(mesh.geometry, mat);   // shares geometry + transform with the base mesh
+          mesh.add(m);
+          return m;
+        };
+        // UV origin is bottom-left, so for top-bottom the LEFT eye (top half) is offset y = 0.5.
+        var left = eyeMesh(halfMap(0, tb ? 0.5 : 0));
+        var right = eyeMesh(halfMap(tb ? 0 : 0.5, 0));
+        this._eyes = [left, right];
+        this._sync();
+      },
+      _sync: function () {   // toggle full-mesh (2D) vs eye-meshes (XR) by which cameras' layers they sit on
+        if (!this._eyes) return;
+        var mesh = this.el.getObject3D("mesh");
+        var presenting = !!(this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is("vr-mode"));
+        if (presenting) {
+          if (mesh) mesh.layers.set(3);          // park the full mesh where no eye-camera looks
+          this._eyes[0].layers.set(1);           // left eye  (camera layers {0,1})
+          this._eyes[1].layers.set(2);           // right eye (camera layers {0,2})
+        } else {
+          if (mesh) mesh.layers.set(0);          // desktop/2D: the plain full-frame image
+          this._eyes[0].layers.set(3);
+          this._eyes[1].layers.set(3);
+        }
+      },
+    });
+  }
+
   // ----------------------------------------------------------------- immersion / room state
   // Two axes (docs/room-model.md §5): passthrough (real room visible) × surface visibility.
   var roomState = { active: false, passthrough: false, defaultVisible: false,
