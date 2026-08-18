@@ -2851,19 +2851,23 @@ async def images_skybox_from(req: SkyboxFromImageAssetRequest) -> dict:
 # --- scene use: incorporate a procured image (by id) into the world ------------------------------
 
 def _image_plane(eid: str, pos: list[float], width: float, height: float, material: dict,
-                 meta: dict | None = None, rotation: list[float] | None = None) -> dict:
+                 meta: dict | None = None, rotation: list[float] | None = None,
+                 billboard: bool = False) -> dict:
     transform: dict = {"position": pos}
     if rotation is not None:
         transform["rotation"] = rotation
+    components: dict = {
+        "geometry": {"primitive": "plane", "width": width, "height": height},
+        "material": material,
+    }
+    if billboard:   # free-standing only: yaw-only face-the-viewer (each client aims at its own camera)
+        components["billboard"] = {"yaw": True}
     return {
         "op": "add",
         "entity": {
             "id": eid,
             "transform": transform,
-            "components": {
-                "geometry": {"primitive": "plane", "width": width, "height": height},
-                "material": material,
-            },
+            "components": components,
             **({"meta": meta} if meta else {}),
         },
     }
@@ -3120,6 +3124,7 @@ class PlaceImageRequest(BaseModel):
     size_m: Optional[float] = None
     name: Optional[str] = None
     on_surface: Optional[str] = None   # hang on a real surface (id/label/number) — align + fit to it
+    billboard: bool = False            # free-standing only: always turn to face the viewer (yaw-only)
 
 
 @app.post("/place_image")
@@ -3129,6 +3134,8 @@ async def place_image(req: PlaceImageRequest) -> dict:
     rec, _, err = _get_image(req.image_id)
     if err:
         return {"ok": False, "error": err}
+    if req.billboard and req.on_surface:   # a wall-hung image stays flush to its wall; can't also chase the viewer
+        return {"ok": False, "error": "billboard images are free-standing only — omit on_surface"}
     pos = req.position or [0.0, 1.5, -3.0]  # eye height, on the wall in front
     width, height = _plane_dims(rec, req.size_m or 1.0)
     rotation = None
@@ -3166,9 +3173,11 @@ async def place_image(req: PlaceImageRequest) -> dict:
             sets["transform.rotation"] = rotation
             sets["meta.on_surface"] = surf["id"]
             sets["meta.surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # §7c-B2
+        if req.billboard:   # turn an existing free-standing image into a viewer-facing billboard
+            sets["components.billboard"] = {"yaw": True}
         ops = [{"op": "update", "id": eid, "set": sets}]
     else:
-        ops = [_image_plane(eid, pos, width, height, material, meta, rotation)]
+        ops = [_image_plane(eid, pos, width, height, material, meta, rotation, billboard=req.billboard)]
     await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="image")})
     return _with_notice({"ok": True, "id": eid, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 

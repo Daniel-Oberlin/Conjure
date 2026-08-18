@@ -65,6 +65,26 @@ def test_place_image_takes_an_id_and_hangs_aspect_correct_plane(srv, client):
     # 4x4 image → square plane (longest side = size_m).
     assert img["components"]["geometry"]["width"] == 1.0
     assert img["components"]["geometry"]["height"] == 1.0
+    assert "billboard" not in img["components"]      # off by default
+
+
+def test_place_image_billboard_adds_a_yaw_only_component(srv, client):
+    # A free-standing billboard carries the client-side `billboard` component in yaw-only mode; each
+    # headset aims it at its own camera, so no server-authored facing rotation is involved.
+    r = client.post("/place_image", json={"image_id": _procure(client), "billboard": True}).json()
+    assert r["ok"] is True
+    img = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert img["components"]["billboard"] == {"yaw": True}
+
+
+def test_place_image_billboard_rejects_on_surface(srv, client):
+    # A wall-hung image stays flush to its wall — it can't also chase the viewer. Clean error, no silent drop.
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
+         "rotation": [0.0, -41.0, 0.0], "extent": [0.5, 0.4]}]})
+    r = client.post("/place_image", json={
+        "image_id": _procure(client), "on_surface": "wall art 18", "billboard": True}).json()
+    assert r["ok"] is False and "free-standing" in r["error"]
 
 
 def test_place_image_on_surface_aligns_and_fits_the_frame(srv, client):

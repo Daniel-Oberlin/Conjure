@@ -152,11 +152,20 @@
   // surface's orientation). Cheap: just a lookAt per frame, only on annotation labels.
   if (window.AFRAME && !AFRAME.components.billboard) {
     AFRAME.registerComponent("billboard", {
+      // yaw: keep the entity upright and rotate only about the vertical axis — so a tall free-standing
+      //   picture faces you without tipping its top toward you when you look up/down. Default off = full
+      //   face-camera lookAt, which is what the surface labels want.
+      schema: { yaw: { type: "boolean", default: false } },
       tick: function () {
         var cam = this.el.sceneEl && this.el.sceneEl.camera;
         if (!cam) return;
         this._t = this._t || new AFRAME.THREE.Vector3();
         cam.getWorldPosition(this._t);
+        if (this.data.yaw) {                 // flatten the target to our own height → look stays horizontal
+          this._w = this._w || new AFRAME.THREE.Vector3();
+          this.el.object3D.getWorldPosition(this._w);
+          this._t.y = this._w.y;
+        }
         this.el.object3D.lookAt(this._t);   // A-Frame text reads correctly after lookAt (no flip)
       },
     });
