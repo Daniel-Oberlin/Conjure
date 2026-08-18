@@ -240,9 +240,11 @@
           this._eyes[0].layers.set(1);           // left eye  (camera layers {0,1})
           this._eyes[1].layers.set(2);           // right eye (camera layers {0,2})
         } else {
-          if (mesh) mesh.layers.set(0);          // desktop/2D: the plain full-frame image
-          this._eyes[0].layers.set(3);
-          this._eyes[1].layers.set(3);
+          // desktop / 2D: show ONE eye (the left) as a normal single picture — the full mesh would
+          // otherwise show the whole side-by-side pair squished onto the per-eye-shaped plane.
+          if (mesh) mesh.layers.set(3);          // hide the packed full mesh
+          this._eyes[0].layers.set(0);           // left eye → the mono camera (layer 0)
+          this._eyes[1].layers.set(3);           // hide the right eye
         }
       },
     });
