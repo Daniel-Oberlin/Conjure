@@ -167,6 +167,9 @@
   // half-UV eye meshes (left→layer 1, right→layer 2) so each eye sees its own half; the original
   // full-texture mesh stays on layer 0 for the 2D/desktop view and is parked on an unused layer while
   // presenting. All local to each client — never touches shared state, so it's correct for multi-user.
+  // TEMP diagnostic: add ?stereodebug=1 to the client URL to tint what each eye receives —
+  // left eye → RED, right eye → GREEN, the full/mono mesh (should be HIDDEN while presenting) → BLUE.
+  var STEREO_DEBUG = /[?&]stereodebug=1/.test(window.location.search);
   if (window.AFRAME && !AFRAME.components.stereo) {
     AFRAME.registerComponent("stereo", {
       schema: { layout: { default: "sbs" } },   // "sbs" (left|right) | "tb" (top/bottom, top = left eye)
@@ -217,6 +220,11 @@
         // UV origin is bottom-left, so for top-bottom the LEFT eye (top half) is offset y = 0.5.
         this._eyes = [eyeMesh(halfMap(0, tb ? 0.5 : 0)), eyeMesh(halfMap(tb ? 0 : 0.5, 0))];
         this._builtMesh = mesh;
+        if (STEREO_DEBUG) {   // tint per eye so we can see exactly what each eye receives
+          if (this._eyes[0].material.color) this._eyes[0].material.color.setRGB(1, 0.35, 0.35);   // left → red
+          if (this._eyes[1].material.color) this._eyes[1].material.color.setRGB(0.35, 1, 0.35);   // right → green
+          if (mesh.material.color) mesh.material.color.setRGB(0.35, 0.35, 1);   // full/mono → blue (should hide)
+        }
         this._sync();
       },
       _sync: function () {   // toggle full-mesh (2D) vs eye-meshes (XR) by which cameras' layers they sit on
