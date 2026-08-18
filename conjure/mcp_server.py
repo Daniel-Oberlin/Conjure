@@ -896,9 +896,11 @@ async def place_image(
         upright) — good for a floating picture you walk around. Cannot combine with on_surface (a
         surface-hung image stays flush to its wall). Use it when the user says "always face me" or similar.
     stereo: 'sbs' (side-by-side) or 'tb' (top-bottom) to render a packed 3D stereo pair with real
-        per-eye depth in the headset. Usually unnecessary — imported stereo images carry this and it's
-        applied automatically; pass it only to force stereo on an image that wasn't tagged. Composes with
-        billboard (a floating stereo photo you can walk around).
+        per-eye depth in the headset. Almost always leave this OFF: imported stereo photos already carry
+        it and it's applied automatically. ONLY pass it for an imported stereo image that wasn't tagged.
+        NEVER pass it for a GENERATED image (generate_image output is a flat mono picture, not a stereo
+        pair — forcing stereo just splits it into two mismatched halves; the server will reject it).
+        Composes with billboard (a floating stereo photo you can walk around).
     """
     out = await _post("/place_image", _body(
         image_id=image_id, position=position, size_m=size_m, name=name, on_surface=on_surface,

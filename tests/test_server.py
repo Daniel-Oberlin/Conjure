@@ -244,6 +244,24 @@ def test_place_image_billboard_and_stereo_compose(srv, client):
     assert err["ok"] is False and "free-standing" in err["error"]
 
 
+def test_stereo_refused_on_a_generated_image(srv, client):
+    # The footgun: forcing stereo onto a generated (mono) image splits it into mismatched halves.
+    gen = _procure(client)                                 # a generated image (op="generate")
+    r = client.post("/place_image", json={"image_id": gen, "stereo": "sbs"}).json()
+    assert r["ok"] is False and "generated" in r["error"] and "stereo" in r["error"]
+
+
+def test_stereo_forced_ok_on_an_imported_untagged_image(srv, client):
+    # An imported image with no stereo tag is plausibly a real pair — forcing stereo IS allowed.
+    from conftest import WIDE_PNG
+    aid = _import(client, "plain.png", WIDE_PNG)["results"][0]["id"]   # no stereo hint → untagged
+    assert _stereo_of(srv.library.get(aid)) is None
+    r = client.post("/place_image", json={"image_id": aid, "stereo": "sbs"}).json()
+    assert r["ok"] is True
+    img = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert img["components"]["stereo"] == {"layout": "sbs"}
+
+
 def _stereo_of(row):
     import json
     return json.loads(row.get("attributes") or "{}").get("stereo")

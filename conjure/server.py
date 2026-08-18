@@ -3276,8 +3276,16 @@ async def place_image(req: PlaceImageRequest) -> dict:
         return {"ok": False, "error": err}
     if req.billboard and req.on_surface:   # a wall-hung image stays flush to its wall; can't also chase the viewer
         return {"ok": False, "error": "billboard images are free-standing only — omit on_surface"}
-    # Stereo: explicit request wins; else inherit what the importer recorded on the asset.
-    stereo = req.stereo or _stereo_layout(library.get(req.image_id) or {})
+    # Stereo: a tag recorded by the importer is authoritative; an explicit request only ADDS to that.
+    # Guard the footgun: forcing stereo onto a GENERATED image splits a mono picture into halves (looks
+    # like one eye is mirrored). Our generators never produce stereo, so refuse — stereo is for imported
+    # side-by-side/top-bottom photos only. (An imported-but-untagged image has no generation op → allowed.)
+    tagged = _stereo_layout(library.get(req.image_id) or {})
+    if req.stereo and not tagged and rec.op in PROCURE_OPS:
+        return {"ok": False, "error": (
+            f"stereo only applies to imported side-by-side/top-bottom photos — {req.image_id!r} was "
+            "generated, so it isn't a stereo pair (import a real stereo image instead)")}
+    stereo = req.stereo or tagged
     pos = req.position or [0.0, 1.5, -3.0]  # eye height, on the wall in front
     width, height = _plane_dims(rec, req.size_m or 1.0, stereo)
     rotation = None
