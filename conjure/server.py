@@ -3020,10 +3020,16 @@ def _fit_extent(aspect: float, extent: list[float]) -> tuple[float, float]:
     return round(ew, 3), round(ew / aspect, 3)  # width-limited
 
 
-def _fit_dims(rec: ImageRecord, extent: list[float]) -> tuple[float, float]:
+def _fit_dims(rec: ImageRecord, extent: list[float], stereo: str | None = None) -> tuple[float, float]:
     """Fit the image (preserving aspect) *inside* a surface's [w, h] frame — so a picture hung on a
-    wall-art surface fills its frame without stretching or overflowing."""
-    return _fit_extent((rec.w / rec.h) if (rec.w and rec.h) else 1.0, extent)
+    wall-art surface fills its frame without stretching or overflowing. For a packed stereo image, fit
+    the PER-EYE aspect (one eye is shown) so a side-by-side pair isn't squeezed to half its true shape."""
+    w, h = rec.w or 1, rec.h or 1
+    if stereo == "tb":
+        h = h / 2
+    elif stereo:
+        w = w / 2
+    return _fit_extent((w / h) if (w and h) else 1.0, extent)
 
 
 def _forward(rotation: list[float]) -> list[float]:
@@ -3279,7 +3285,7 @@ async def place_image(req: PlaceImageRequest) -> dict:
         spos = surf.get("transform", {}).get("position") or pos
         extent = surf.get("components", {}).get("surface", {}).get("extent")
         if extent:
-            width, height = _fit_dims(rec, extent)
+            width, height = _fit_dims(rec, extent, stereo)
         fr = _face_room(srot)                              # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]   # toward the viewer

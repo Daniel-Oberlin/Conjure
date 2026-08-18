@@ -171,27 +171,34 @@
     AFRAME.registerComponent("stereo", {
       schema: { layout: { default: "sbs" } },   // "sbs" (left|right) | "tb" (top/bottom, top = left eye)
       init: function () {
-        this._build = this._build.bind(this);
+        this._maybeBuild = this._maybeBuild.bind(this);
         this._sync = this._sync.bind(this);
-        this.el.addEventListener("materialtextureloaded", this._build);  // texture loads async
+        // Build once BOTH the mesh (object3dset) and its texture (materialtextureloaded) exist; either can
+        // arrive first, and the mesh can be replaced later (geometry rebuild), so we listen to both and
+        // rebuild idempotently. Scene listeners are added here ONCE and only removed in remove().
+        this.el.addEventListener("object3dset", this._maybeBuild);
+        this.el.addEventListener("materialtextureloaded", this._maybeBuild);
         var sc = this.el.sceneEl;
         if (sc) { sc.addEventListener("enter-vr", this._sync); sc.addEventListener("exit-vr", this._sync); }
-        this._build();
+        this._maybeBuild();
       },
+      update: function () { this._teardown(); this._maybeBuild(); },   // e.g. layout changed → rebuild
       remove: function () {
-        this.el.removeEventListener("materialtextureloaded", this._build);
+        this.el.removeEventListener("object3dset", this._maybeBuild);
+        this.el.removeEventListener("materialtextureloaded", this._maybeBuild);
         var sc = this.el.sceneEl;
         if (sc) { sc.removeEventListener("enter-vr", this._sync); sc.removeEventListener("exit-vr", this._sync); }
+        this._teardown();
+      },
+      _teardown: function () {
         if (this._eyes) this._eyes.forEach(function (m) { if (m.parent) m.parent.remove(m); });
-        this._eyes = null;
+        this._eyes = null; this._builtMesh = null;
       },
-      update: function () {
-        if (this._eyes) { this.remove(); this.el.addEventListener("materialtextureloaded", this._build); }
-        this._build();
-      },
-      _build: function () {
+      _maybeBuild: function () {
         var mesh = this.el.getObject3D("mesh");
-        if (this._eyes || !mesh || !mesh.material || !mesh.material.map) return;   // wait for the texture
+        if (!mesh || !mesh.material || !mesh.material.map) return;   // need the mesh AND a loaded texture
+        if (this._builtMesh === mesh && this._eyes) { this._sync(); return; }  // already built for this mesh
+        this._teardown();                                            // mesh was replaced → drop stale eyes
         var THREE = AFRAME.THREE, tb = this.data.layout === "tb", base = mesh.material.map;
         var halfMap = function (offX, offY) {          // a texture clone sampling just one eye's half
           var t = base.clone(); t.needsUpdate = true;
@@ -206,15 +213,17 @@
           return m;
         };
         // UV origin is bottom-left, so for top-bottom the LEFT eye (top half) is offset y = 0.5.
-        var left = eyeMesh(halfMap(0, tb ? 0.5 : 0));
-        var right = eyeMesh(halfMap(tb ? 0 : 0.5, 0));
-        this._eyes = [left, right];
+        this._eyes = [eyeMesh(halfMap(0, tb ? 0.5 : 0)), eyeMesh(halfMap(tb ? 0 : 0.5, 0))];
+        this._builtMesh = mesh;
         this._sync();
       },
       _sync: function () {   // toggle full-mesh (2D) vs eye-meshes (XR) by which cameras' layers they sit on
         if (!this._eyes) return;
-        var mesh = this.el.getObject3D("mesh");
-        var presenting = !!(this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is("vr-mode"));
+        var sc = this.el.sceneEl, mesh = this.el.getObject3D("mesh");
+        // isPresenting is the canonical WebXR flag (true for immersive AR *and* VR); is('vr-mode') is a
+        // fallback for A-Frame builds that set the state slightly differently.
+        var presenting = !!(sc && ((sc.renderer && sc.renderer.xr && sc.renderer.xr.isPresenting) ||
+                                   (sc.is && sc.is("vr-mode"))));
         if (presenting) {
           if (mesh) mesh.layers.set(3);          // park the full mesh where no eye-camera looks
           this._eyes[0].layers.set(1);           // left eye  (camera layers {0,1})

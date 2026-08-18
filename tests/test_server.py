@@ -212,6 +212,16 @@ def _stereo_of(row):
     return json.loads(row.get("attributes") or "{}").get("stereo")
 
 
+def test_fit_dims_uses_per_eye_aspect_for_stereo(srv):
+    from conjure.server import ImageRecord
+    rec = ImageRecord(id="x.png", url="/assets/x.png", w=8, h=4, provider="", model="", prompt="", op="")
+    frame = [2.0, 2.0]                                    # a square frame
+    # Mono 8x4 (2:1) fills the frame width-limited → 2.0 x 1.0.
+    assert srv._fit_dims(rec, frame) == (2.0, 1.0)
+    # SBS: per-eye is 4x4 (square) → fills the square frame fully, not squeezed to 2:1.
+    assert srv._fit_dims(rec, frame, "sbs") == (2.0, 2.0)
+
+
 def test_first_eye_crops_the_stereo_pair_to_one_view(srv):
     import io
 
