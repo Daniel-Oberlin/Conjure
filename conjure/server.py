@@ -13,6 +13,7 @@ state loop so we can get a scene onto the Quest and drive it with patches.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import copy
 import hashlib
@@ -449,6 +450,33 @@ async def _reindex_bg(assets: list[dict]) -> None:
 captioner = build_captioner(settings)
 
 
+def _stereo_layout(asset: dict) -> Optional[str]:
+    """The stereo packing of an asset ('sbs' | 'tb') from its catalog attributes, else None."""
+    raw = asset.get("attributes")
+    if not raw:
+        return None
+    try:
+        attrs = json.loads(raw) if isinstance(raw, str) else raw
+        return attrs.get("stereo")
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _first_eye(data: bytes, layout: str) -> bytes:
+    """Crop a packed stereo image to its first eye (SBS → left half, TB → top half), re-encoded as PNG.
+    Used so a caption/embedding sees one clean view of the scene, not the doubled stereo pair."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as im:
+        w, h = im.size
+        box = (0, 0, w, h // 2) if layout == "tb" else (0, 0, w // 2, h)
+        buf = io.BytesIO()
+        im.crop(box).save(buf, format="PNG")
+        return buf.getvalue()
+
+
 async def _caption_one(asset: dict) -> None:
     """Caption one asset and store it as the label. Best-effort (never raises into the pass)."""
     if captioner is None:
@@ -457,8 +485,12 @@ async def _caption_one(asset: dict) -> None:
     if not (fn and (ASSET_CACHE / fn).exists()):
         return
     mime = MEDIA_TYPES.get(Path(fn).suffix.lower(), "image/png")
+    data = (ASSET_CACHE / fn).read_bytes()
+    stereo = _stereo_layout(asset)
+    if stereo:                                     # caption one eye, not the side-by-side pair
+        data, mime = _first_eye(data, stereo), "image/png"
     try:
-        text = await captioner.caption((ASSET_CACHE / fn).read_bytes(), mime=mime,
+        text = await captioner.caption(data, mime=mime,
                                        skybox=asset.get("kind") in ("skybox", "grounded_skybox"))
         if text:
             library.upsert(asset["id"], label=text, attributes={"captioned": True})
@@ -879,25 +911,51 @@ def _publish_world_assets(doc: dict, owner: str) -> list[str]:
     return published
 
 
+def _catalog_asset(asset_id: str, *, kind: str, label: str | None = None, prompt: str | None = None,
+                   query: str | None = None, params: dict | None = None, attributes: dict | None = None,
+                   provider: str | None = None, model: str | None = None, width: int | None = None,
+                   height: int | None = None, transparent: bool | None = None, licence: str | None = None,
+                   attribution: str | None = None, creator: str | None = None, scope: str | None = None,
+                   embed_image: bytes | None = None) -> None:
+    """Register/merge a catalog row for an asset whose bytes already live in the store. The single
+    write-through every ingest path shares (generation, Poly-Pizza models, external import): one place
+    that applies the invariants — caller scope, `cache://` source, inherited world visibility (spaces-
+    and-users-plan §4: made private ⇒ private), and, for a visual kind with bytes, a vector embedding.
+    Only-non-None merge in `library.upsert` means a later partial write never clobbers creation data."""
+    library.upsert(asset_id, kind=kind, scope=scope if scope is not None else _caller_scope.get(),
+                   source=f"cache://{asset_id}", filename=asset_id, label=label, prompt=prompt,
+                   query=query, params=params, attributes=attributes, provider=provider, model=model,
+                   width=width, height=height,
+                   transparent=None if transparent is None else (1 if transparent else 0),
+                   licence=licence, attribution=attribution, creator=creator,
+                   **_inherit_visibility(asset_id))
+    if embed_image is not None and kind in _VISUAL_KINDS:
+        _embed_asset(asset_id, image=embed_image)   # embed the pixels into the shared space (best-effort)
+
+
+def register_asset(data: bytes, *, kind: str, ext: str, embed_image: bytes | None = None, **fields) -> str:
+    """Content-address `data` into the asset store and catalog it; return the id ('<sha16><ext>', which
+    is also the /assets filename). For callers holding raw bytes (image generation, external import).
+    Content-addressing gives free dedup — the same bytes re-import to the same id. `embed_image` lets a
+    caller embed a cleaned view (e.g. one eye of a stereo pair) instead of the stored bytes. (Poly-Pizza
+    models, whose bytes the resolver already cached, call `_catalog_asset` directly.)"""
+    asset_id = f"{hashlib.sha256(data).hexdigest()[:16]}{ext}"
+    (ASSET_CACHE / asset_id).write_bytes(data)
+    _catalog_asset(asset_id, kind=kind, embed_image=data if embed_image is None else embed_image, **fields)
+    return asset_id
+
+
 def _store_image(result, *, prompt: str, op: str) -> ImageRecord:
     """Write a procured image to the content store and register an ImageRecord; return it."""
     ext = ".png" if "png" in result.mime_type else (".webp" if "webp" in result.mime_type else ".jpg")
-    image_id = f"{hashlib.sha256(result.data).hexdigest()[:16]}{ext}"
-    (ASSET_CACHE / image_id).write_bytes(result.data)
     w, h, transparent = _img_meta(result.data)
+    image_id = register_asset(result.data, kind=_kind_for_op(op), ext=ext, label=prompt, prompt=prompt,
+                              params={"op": op, "transparent": transparent},
+                              provider=result.provider, model=result.model, width=w, height=h,
+                              transparent=transparent)
     rec = ImageRecord(id=image_id, url=f"/assets/{image_id}", w=w, h=h, provider=result.provider,
                       model=result.model, prompt=prompt, op=op, transparent=transparent)
     IMAGES[image_id] = rec
-    # Write through to the durable catalog (keyed on the prompt = intent), so reuse can find it later
-    # and its provenance survives a restart. New assets INHERIT the active world's visibility (spaces-
-    # and-users-plan §4): made in a private world ⇒ private. Only on first insert — a re-procure of the
-    # same bytes mustn't silently undo a visibility the owner set later.
-    library.upsert(image_id, kind=_kind_for_op(op), scope=_caller_scope.get(), source=f"cache://{image_id}",
-                   filename=image_id, label=prompt, prompt=prompt,
-                   params={"op": op, "transparent": transparent},
-                   provider=result.provider, model=result.model, width=w, height=h,
-                   transparent=1 if transparent else 0, **_inherit_visibility(image_id))
-    _embed_asset(image_id, image=result.data)   # embed the pixels into the shared space (best-effort)
     return rec
 
 
@@ -2511,11 +2569,10 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
     # Catalog the model keyed on the search query (its intent) so it's reusable later; touch it so
     # recency reflects this use. licence/attribution are captured for the legal record.
     model_id = f"{record.hash}.glb"
-    library.upsert(model_id, kind="model", scope=_caller_scope.get(), source=f"cache://{model_id}",
-                   filename=model_id, label=record.title, query=req.query, licence=record.licence,
+    _catalog_asset(model_id, kind="model", label=record.title, query=req.query, licence=record.licence,
                    attribution=record.attribution, creator=record.creator,
                    attributes={"tris": record.tris, "bbox_min": record.bbox_min,
-                               "bbox_max": record.bbox_max}, **_inherit_visibility(model_id))
+                               "bbox_max": record.bbox_max})   # models: not vector-embedded (see _VISUAL_KINDS)
     library.touch(model_id)
     # Models are NOT vector-embedded — found by FTS/exact on their title (see _VISUAL_KINDS).
 
@@ -2713,6 +2770,68 @@ async def library_caption() -> dict:
     return {"ok": True, "queued": len(targets)}
 
 
+class ImportItem(BaseModel):
+    filename: str            # original name (drives extension → handler, and stereo-name heuristics)
+    data_b64: str            # the file bytes, base64-encoded
+    hints: dict = {}         # optional: {'kind','stereo','label','licence','attribution','creator'}
+
+
+class ImportRequest(BaseModel):
+    items: list[ImportItem]
+    dry_run: bool = False    # report what WOULD import (sniffed kind + metadata) without writing
+
+
+@app.post("/library/import")
+async def library_import(req: ImportRequest) -> dict:
+    """Import external asset files into the library. The importer registry (conjure/importer.py) sniffs
+    each file by extension + magic bytes, extracts kind-specific metadata, then content-addresses the
+    bytes and catalogs the row via register_asset — dedup is automatic (same bytes → same id). Stereo
+    side-by-side/top-bottom images are tagged so place_image renders them per-eye. Freshly imported
+    visual assets are captioned in the background. `dry_run` reports the plan without writing."""
+    from .importer import plan_import
+
+    results: list[dict] = []
+    imported_ids: list[str] = []
+    for item in req.items:
+        try:
+            data = base64.b64decode(item.data_b64)
+        except (ValueError, TypeError):
+            results.append({"filename": item.filename, "ok": False, "error": "bad base64"})
+            continue
+        plan = plan_import(item.filename, data, dict(item.hints or {}))
+        if plan is None:
+            results.append({"filename": item.filename, "ok": False, "error": "unrecognized or invalid file"})
+            continue
+        if req.dry_run:
+            results.append({"filename": item.filename, "ok": True, "dry_run": True, "kind": plan.kind,
+                            "width": plan.width, "height": plan.height, "attributes": plan.attributes})
+            continue
+        stereo = plan.attributes.get("stereo")
+        embed = _first_eye(data, stereo) if stereo else None   # embed one clean eye, not the pair
+        asset_id = register_asset(data, kind=plan.kind, ext=plan.ext, label=plan.label,
+                                  width=plan.width, height=plan.height, transparent=plan.transparent,
+                                  attributes=plan.attributes or None, licence=plan.licence,
+                                  attribution=plan.attribution, creator=plan.creator,
+                                  params={"source": "import"}, embed_image=embed)
+        imported_ids.append(asset_id)
+        results.append({"filename": item.filename, "ok": True, "id": asset_id, "kind": plan.kind,
+                        "attributes": plan.attributes})
+    # Caption the freshly-imported visual assets that still lack a label (background, best-effort).
+    if imported_ids and captioner is not None:
+        rows = [r for r in (library.get(i) for i in imported_ids)
+                if r and r["kind"] in _VISUAL_KINDS and not r.get("label")]
+        if rows:
+            if _EMBED_BACKGROUND:
+                task = asyncio.create_task(_caption_bg(rows))
+                _embed_tasks.add(task)
+                task.add_done_callback(_embed_tasks.discard)
+            else:
+                for a in rows:
+                    await _caption_one(a)
+    return {"ok": True, "results": results, "imported": len(imported_ids),
+            "failed": sum(1 for r in results if not r.get("ok"))}
+
+
 # --- procurement: produce/transform an image, return an id; NO scene effect ---------------------
 
 _SKYBOX_PROMPT = (
@@ -2852,7 +2971,7 @@ async def images_skybox_from(req: SkyboxFromImageAssetRequest) -> dict:
 
 def _image_plane(eid: str, pos: list[float], width: float, height: float, material: dict,
                  meta: dict | None = None, rotation: list[float] | None = None,
-                 billboard: bool = False) -> dict:
+                 billboard: bool = False, stereo: str | None = None) -> dict:
     transform: dict = {"position": pos}
     if rotation is not None:
         transform["rotation"] = rotation
@@ -2862,6 +2981,8 @@ def _image_plane(eid: str, pos: list[float], width: float, height: float, materi
     }
     if billboard:   # free-standing only: yaw-only face-the-viewer (each client aims at its own camera)
         components["billboard"] = {"yaw": True}
+    if stereo:   # per-eye split rendered client-side (layers); layout 'sbs' (left|right) or 'tb'
+        components["stereo"] = {"layout": stereo}
     return {
         "op": "add",
         "entity": {
@@ -2873,12 +2994,24 @@ def _image_plane(eid: str, pos: list[float], width: float, height: float, materi
     }
 
 
-def _plane_dims(rec: ImageRecord, size: float) -> tuple[float, float]:
-    """Fit the image's longest side to `size` meters, preserving its aspect."""
-    w, h = rec.w or 1, rec.h or 1
+def _fit_longest(w: float, h: float, size: float) -> tuple[float, float]:
+    """Fit a w×h rectangle's longest side to `size` meters, preserving aspect → (width, height)."""
+    w, h = w or 1, h or 1
     if w >= h:
         return size, round(size * h / w, 3)
     return round(size * w / h, 3), size
+
+
+def _plane_dims(rec: ImageRecord, size: float, stereo: str | None = None) -> tuple[float, float]:
+    """Fit the image's longest side to `size` meters, preserving aspect. For a packed stereo image
+    (`stereo`='sbs'|'tb') the plane shows ONE eye, so fit the per-eye aspect (half width, or half
+    height for top-bottom) — otherwise a side-by-side pair would render twice as wide as it should."""
+    w, h = rec.w or 1, rec.h or 1
+    if stereo == "tb":
+        h = h / 2
+    elif stereo:
+        w = w / 2
+    return _fit_longest(w, h, size)
 
 
 def _fit_extent(aspect: float, extent: list[float]) -> tuple[float, float]:
@@ -2889,10 +3022,16 @@ def _fit_extent(aspect: float, extent: list[float]) -> tuple[float, float]:
     return round(ew, 3), round(ew / aspect, 3)  # width-limited
 
 
-def _fit_dims(rec: ImageRecord, extent: list[float]) -> tuple[float, float]:
+def _fit_dims(rec: ImageRecord, extent: list[float], stereo: str | None = None) -> tuple[float, float]:
     """Fit the image (preserving aspect) *inside* a surface's [w, h] frame — so a picture hung on a
-    wall-art surface fills its frame without stretching or overflowing."""
-    return _fit_extent((rec.w / rec.h) if (rec.w and rec.h) else 1.0, extent)
+    wall-art surface fills its frame without stretching or overflowing. For a packed stereo image, fit
+    the PER-EYE aspect (one eye is shown) so a side-by-side pair isn't squeezed to half its true shape."""
+    w, h = rec.w or 1, rec.h or 1
+    if stereo == "tb":
+        h = h / 2
+    elif stereo:
+        w = w / 2
+    return _fit_extent((w / h) if (w and h) else 1.0, extent)
 
 
 def _forward(rotation: list[float]) -> list[float]:
@@ -3125,6 +3264,7 @@ class PlaceImageRequest(BaseModel):
     name: Optional[str] = None
     on_surface: Optional[str] = None   # hang on a real surface (id/label/number) — align + fit to it
     billboard: bool = False            # free-standing only: always turn to face the viewer (yaw-only)
+    stereo: Optional[str] = None       # 'sbs' | 'tb' — render as a stereo pair; else auto from catalog
 
 
 @app.post("/place_image")
@@ -3136,8 +3276,10 @@ async def place_image(req: PlaceImageRequest) -> dict:
         return {"ok": False, "error": err}
     if req.billboard and req.on_surface:   # a wall-hung image stays flush to its wall; can't also chase the viewer
         return {"ok": False, "error": "billboard images are free-standing only — omit on_surface"}
+    # Stereo: explicit request wins; else inherit what the importer recorded on the asset.
+    stereo = req.stereo or _stereo_layout(library.get(req.image_id) or {})
     pos = req.position or [0.0, 1.5, -3.0]  # eye height, on the wall in front
-    width, height = _plane_dims(rec, req.size_m or 1.0)
+    width, height = _plane_dims(rec, req.size_m or 1.0, stereo)
     rotation = None
     if req.on_surface:  # hang on a real surface: face the room (upright), fit its frame, sit just in front
         surfaces = _room_targets(req.on_surface)
@@ -3148,7 +3290,7 @@ async def place_image(req: PlaceImageRequest) -> dict:
         spos = surf.get("transform", {}).get("position") or pos
         extent = surf.get("components", {}).get("surface", {}).get("extent")
         if extent:
-            width, height = _fit_dims(rec, extent)
+            width, height = _fit_dims(rec, extent, stereo)
         fr = _face_room(srot)                              # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]   # toward the viewer
@@ -3175,9 +3317,12 @@ async def place_image(req: PlaceImageRequest) -> dict:
             sets["meta.surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # §7c-B2
         if req.billboard:   # turn an existing free-standing image into a viewer-facing billboard
             sets["components.billboard"] = {"yaw": True}
+        if stereo:  # swapping in a stereo image ⇒ turn on the per-eye split
+            sets["components.stereo"] = {"layout": stereo}
         ops = [{"op": "update", "id": eid, "set": sets}]
     else:
-        ops = [_image_plane(eid, pos, width, height, material, meta, rotation, billboard=req.billboard)]
+        ops = [_image_plane(eid, pos, width, height, material, meta, rotation,
+                            billboard=req.billboard, stereo=stereo)]
     await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="image")})
     return _with_notice({"ok": True, "id": eid, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
