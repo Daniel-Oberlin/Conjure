@@ -227,6 +227,23 @@ def test_import_tags_stereo_and_place_image_renders_per_eye(srv, client):
     assert g["width"] == 1.0 and g["height"] == 1.0       # per-eye 4x4 → square, not 2:1
 
 
+def test_place_image_billboard_and_stereo_compose(srv, client):
+    # A free-standing stereo photo you can walk around: both components ride the same entity.
+    aid = _import(client, "trail.png", __import__("conftest").WIDE_PNG, stereo="sbs")["results"][0]["id"]
+    r = client.post("/place_image", json={"image_id": aid, "billboard": True}).json()
+    img = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert img["components"]["billboard"] == {"yaw": True}
+    assert img["components"]["stereo"] == {"layout": "sbs"}
+    # billboard is still free-standing only, even for a stereo image.
+    bad = client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_art_1", "semantic": "wall art", "position": [0, 1.5, -1],
+         "rotation": [0, 0, 0], "extent": [0.5, 0.4]}]})
+    assert bad.status_code == 200
+    err = client.post("/place_image", json={
+        "image_id": aid, "on_surface": "wall art 1", "billboard": True}).json()
+    assert err["ok"] is False and "free-standing" in err["error"]
+
+
 def _stereo_of(row):
     import json
     return json.loads(row.get("attributes") or "{}").get("stereo")
