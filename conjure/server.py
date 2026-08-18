@@ -1269,7 +1269,10 @@ class SessionRef(BaseModel):
 
 @app.get("/sessions")
 async def sessions_list(scope: str = DEFAULT_SCOPE) -> dict:
-    """Every session in `scope` with its meta + which is live. The shell's `sessions` verb renders this."""
+    """Every session in `scope` with its meta + which is live, plus `available` — other USERS' public
+    sessions a human can visit (session-scoping-plan §B). The shell's `sessions` verb renders both; the
+    agent never sees this (cross-user movement is a person's act, not the LLM's). `available` excludes the
+    caller's whole user, so your own other agents/sessions don't masquerade as strangers'."""
     active = sessions.get_active(scope)
     out = []
     for sid in sessions.list(scope):
@@ -1279,7 +1282,8 @@ async def sessions_list(scope: str = DEFAULT_SCOPE) -> dict:
             meta = {}
         out.append({"id": sid, "title": meta.get("title", sid), "active_world": meta.get("active_world"),
                     "llm": meta.get("llm", ""), "public": meta.get("public", True), "active": sid == active})
-    return {"ok": True, "sessions": out, "active": active}
+    available = worlds.list_public_sessions(exclude_user=scope.split("/", 1)[0])
+    return {"ok": True, "sessions": out, "active": active, "available": available}
 
 
 @app.post("/session/new")
@@ -1315,10 +1319,18 @@ async def session_new(req: SessionRef) -> dict:
 
 
 @app.post("/session/switch")
-async def session_switch(req: SessionRef) -> dict:
+async def session_switch(req: SessionRef, request: Request) -> dict:
+    """Switch the live session — to one of your own, or (cross-user) to ANOTHER user's session named by
+    `scope`. Visiting someone else's session is allowed only if it's PUBLIC; you land there as a guest
+    (you stay yourself — owner-only writes still refuse edits). Same-scope switches are ungated as before.
+    """
     sid = _resolve_sid(req.scope, req.session)
     if not sid:
         return {"ok": False, "error": f"no session {req.session!r} in {req.scope}"}
+    caller = request.headers.get("X-Conjure-User")           # missing (dev CLI) ⇒ treated as owner
+    target_user = req.scope.split("/", 1)[0]
+    if caller and caller != target_user and not _session_public(req.scope, sid):
+        return {"ok": False, "error": f"that session is private — ask {target_user} to make it public"}
     r = await _switch_session(req.scope, sid)
     return {"ok": True, "session": sid, "world": r.get("world")}
 
@@ -1405,7 +1417,6 @@ async def live_state() -> dict:
 class WorldRef(BaseModel):
     name: str
     scope: str = DEFAULT_SCOPE
-    owner: Optional[str] = None       # to switch into ANOTHER user's public world (cross-user navigation)
     public: bool = True               # new_world: create public (default) or private
     outdoor: bool = False             # new_world: an OUTDOOR/void world (skybox, no room; space = <void>)
 
@@ -1621,16 +1632,15 @@ async def _establish_world_in(user: str, space_ref: str, world_name: str = "defa
 
 @app.post("/worlds/list")
 async def worlds_list(req: ScopeRef) -> dict:
-    """The caller's own worlds, plus `available` (every OTHER user's PUBLIC worlds, owner-tagged, for
-    cross-user discovery — co-location §3). `active` is the caller's OWN world that is live, or null when
-    they're currently inhabiting someone else's world; `current` is always the true live (shared) world
-    `{owner, name}` — there's one shared active world, so a visitor's last-active pointer must NOT be
-    reported as 'active' (that lied: it showed your last world while you stood in the owner's)."""
+    """The caller's own worlds in their current session (session-scoping-plan §A) — NOT other users'
+    worlds: cross-user discovery/visiting is a human act at the shell, never handed to the agent. `active`
+    is the caller's OWN world that is live, or null when the live (shared) world is someone else's;
+    `current` is always the true live world `{owner, name}` so the agent knows when it's inhabiting
+    another user's shared world (it can be there, but can't edit it)."""
     in_own = req.scope == active_scope
     current = {"owner": active_scope.split("/", 1)[0], "name": active_world}
-    available = worlds.list_public(exclude_scope=req.scope)
     return {"ok": True, "worlds": worlds.list(req.scope),
-            "active": active_world if in_own else None, "current": current, "available": available}
+            "active": active_world if in_own else None, "current": current}
 
 
 @app.post("/worlds/new")
@@ -1662,18 +1672,13 @@ async def worlds_new(req: WorldRef) -> dict:
 
 @app.post("/worlds/switch")
 async def worlds_switch(req: WorldRef) -> dict:
+    """Switch to a world in the caller's OWN scope (session-scoping-plan §A, decision 3: no world-level
+    cross-user switch). Entering another user's world is a human act — visit their public session at the
+    shell (`session switch <owner>/<agent>/<sid>`)."""
     try:
-        scope = req.scope
-        caller = req.scope.split("/", 1)[0]
-        if req.owner and req.owner != caller:                 # switching into ANOTHER user's public world
-            match = next((w for w in worlds.list_public(exclude_scope=req.scope)
-                          if w["owner"] == req.owner and w["name"] == world_path(req.name)), None)
-            if match is None:
-                return {"ok": False, "error": f"no public world {req.name!r} owned by {req.owner!r}"}
-            scope = match["scope"]                             # resolve owner+name → the owner's scope
-        if not worlds.exists(scope, req.name):
+        if not worlds.exists(req.scope, req.name):
             return {"ok": False, "error": f"no world {req.name!r} (create it with new_world)"}
-        return await _switch_to(scope, req.name)
+        return await _switch_to(req.scope, req.name)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 

@@ -1,6 +1,10 @@
 # Session-scoped worlds + human-driven visiting — plan
 
-**Status:** PLAN (design agreed 2026-08-18; not yet built). Proposal only.
+**Status:** BUILT (2026-08-18). The agent's world tools are session-local; cross-user visiting is a
+human act via the shell `session switch <user>/<agent>/<sid>`, gated public. Discovery of other users'
+public sessions is surfaced by the shell `sessions` command (not `dir` — chosen for cohesion with the
+existing session listing). See `worlds.list_public_sessions`, `/sessions` `available`,
+`/session/switch` public-gate, and `Shell._session_target`.
 
 Tighten the boundary the storage already implies: **an agent only knows the worlds in its own
 session**, and **cross-user visiting is a human act at the shell, at the session level** — not a

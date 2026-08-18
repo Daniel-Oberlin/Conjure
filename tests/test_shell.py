@@ -479,3 +479,15 @@ async def test_last_agent_falls_back_to_builder_without_server():
     sh = Shell(None, settings=None)
     sh._user = "daniel"
     assert await sh._last_agent() == "builder"                # no world_url → safe default
+
+
+def test_session_target_parses_cross_user_visit_path():
+    """`session switch` resolves a `<user>/<agent>/<sid>` path (as shown by the public-sessions listing)
+    to that user's scope — a cross-user VISIT — while a plain id/title stays in the caller's scope."""
+    from conjure.config import scope_for
+    sh, *_ = _shell()
+    own = scope_for("daniel", "builder")
+    assert sh._session_target(own, "session-2") == (own, "session-2")        # same-scope by id
+    assert sh._session_target(own, "My Session") == (own, "My Session")      # same-scope by title
+    assert sh._session_target(own, "alice/outdoor/session-1") == (scope_for("alice", "outdoor"), "session-1")
+    assert sh._session_target(own, "/alice/outdoor/session-1") == (scope_for("alice", "outdoor"), "session-1")

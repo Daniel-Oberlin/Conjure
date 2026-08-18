@@ -1527,52 +1527,70 @@ def test_guest_cannot_edit_the_world_but_reads_are_open(srv, client):
     assert client.post("/worlds/list", json={}, headers={"X-Conjure-User": "bob"}).status_code == 200
 
 
-def test_guest_can_discover_and_enter_owners_public_world(srv, client):
-    # the guest creates a world (flips active to bob), so daniel's "default" gets persisted on the way out
+def test_guest_can_visit_owners_public_session(srv, client):
+    # bob creates a world (flips live to bob), persisting daniel's session on the way out
     client.post("/worlds/new", json={"name": "guest-world", "scope": "bob/agents/builder"},
                 headers={"X-Conjure-User": "bob"})
-    # bob lists worlds → daniel's default shows up under `available`, tagged by owner
-    listing = client.post("/worlds/list", json={"scope": "bob/agents/builder"}).json()
-    avail = {(w["owner"], w["name"]) for w in listing["available"]}
-    assert ("daniel", "default") in avail
-    # bob is currently in his own guest-world (he just created it), so it's reported active + current=bob
-    assert listing["active"] == "guest-world" and listing["current"]["owner"] == "bob"
-    # bob switches INTO daniel's public world by owner+name → everyone comes along, active = daniel's
-    r = client.post("/worlds/switch", json={"name": "default", "scope": "bob/agents/builder",
-                                            "owner": "daniel"}, headers={"X-Conjure-User": "bob"}).json()
+    # bob discovers daniel's public session in the shell-facing /sessions listing (NOT the agent's world list)
+    daniels = [a for a in sessions_available(client, "bob/agents/builder") if a["owner"] == "daniel"]
+    assert daniels, "daniel's public session should be discoverable"
+    tgt = daniels[0]
+    # bob VISITS daniel's public session (session-level cross-user switch) → everyone comes along
+    r = client.post("/session/switch", json={"scope": tgt["scope"], "session": tgt["session"]},
+                    headers={"X-Conjure-User": "bob"}).json()
     assert r["ok"] and srv.active_scope == "daniel/agents/builder"
-    # ...and bob still can't edit daniel's world
+    # ...and bob is a guest: still can't edit daniel's world (owner-only writes)
     assert client.post("/style_surface", json={"target": "wall", "color": "red"},
                        headers={"X-Conjure-User": "bob"}).status_code == 403
-    # now bob's list reports the TRUTH: none of HIS worlds is active; the live world is daniel's (the bug)
-    relist = client.post("/worlds/list", json={"scope": "bob/agents/builder"}).json()
-    assert relist["active"] is None                                   # not his stale guest-world pointer
-    assert relist["current"] == {"owner": "daniel", "name": "default"}
+
+
+def test_visiting_a_private_session_is_refused(srv, client):
+    # bob creates a world (his session becomes live), then makes his SESSION private
+    client.post("/worlds/new", json={"name": "den", "scope": "bob/agents/builder"},
+                headers={"X-Conjure-User": "bob"})
+    r0 = client.post("/session/visibility", json={"public": False, "scope": "bob/agents/builder"},
+                     headers={"X-Conjure-User": "bob"}).json()
+    assert r0["ok"] and r0["public"] is False
+    assert "bob" not in {a["owner"] for a in sessions_available(client, "daniel/agents/builder")}
+    # daniel can't VISIT bob's private session
+    bob_sid = client.get("/sessions", params={"scope": "bob/agents/builder"}).json()["active"]
+    r = client.post("/session/switch", json={"scope": "bob/agents/builder", "session": bob_sid},
+                    headers={"X-Conjure-User": "daniel"}).json()
+    assert r["ok"] is False and "private" in r["error"]
 
 
 def test_session_visibility_controls_discovery(srv, client):
     sc = "bob/agents/builder"
-    # bob creates a world (in his session, public by default) → discoverable by others
+    # bob creates a world in his session (public by default) → his session is discoverable by others
     assert client.post("/worlds/new", json={"name": "secret", "scope": sc},
                        headers={"X-Conjure-User": "bob"}).json()["ok"]
-    seen = lambda: {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
-    assert ("bob", "secret") in seen()
-    # make bob's SESSION private → none of its worlds are discoverable (§8.2)
-    r = client.post("/worlds/visibility", json={"public": False, "scope": sc},
+    owners = lambda: {a["owner"] for a in sessions_available(client, "daniel/agents/builder")}
+    assert "bob" in owners()
+    # make bob's SESSION private → it drops out of discovery (§8.2)
+    r = client.post("/session/visibility", json={"public": False, "scope": sc},
                     headers={"X-Conjure-User": "bob"}).json()
     assert r["ok"] and r["public"] is False
-    assert ("bob", "secret") not in seen()
+    assert "bob" not in owners()
     # flip it back public
-    client.post("/worlds/visibility", json={"public": True, "scope": sc}, headers={"X-Conjure-User": "bob"})
-    assert ("bob", "secret") in seen()
+    client.post("/session/visibility", json={"public": True, "scope": sc}, headers={"X-Conjure-User": "bob"})
+    assert "bob" in owners()
 
 
 def test_new_world_defaults_public(srv, client):
-    # created with no `public` arg → public by default ⇒ discoverable by other users
+    # created with no `public` arg → its session is public by default ⇒ discoverable by other users
     assert client.post("/worlds/new", json={"name": "shared", "scope": "bob/agents/builder"},
                        headers={"X-Conjure-User": "bob"}).json()["ok"]
-    seen = {(w["owner"], w["name"]) for w in worlds_seen(client, "daniel/agents/builder")}
-    assert ("bob", "shared") in seen
+    assert "bob" in {a["owner"] for a in sessions_available(client, "daniel/agents/builder")}
+
+
+def test_worlds_list_is_session_local_no_cross_user(srv, client):
+    # bob has a public world; the AGENT-facing world list must NOT surface it (session-scoping-plan §A) —
+    # cross-user discovery is gone from /worlds/list and lives only in the shell's /sessions listing.
+    client.post("/worlds/new", json={"name": "shared", "scope": "bob/agents/builder"},
+                headers={"X-Conjure-User": "bob"})
+    listing = client.post("/worlds/list", json={"scope": "daniel/agents/builder"}).json()
+    assert "available" not in listing
+    assert "shared" not in listing["worlds"]
 
 
 # ---- step 5: world-creation adopts the active space (D5), else VOID; Path B fallback removed -----------
@@ -1661,8 +1679,10 @@ def test_space_select_refuses_building_in_a_private_space_with_no_world(srv, cli
     assert srv.worlds.list("bob/agents/builder") == []          # nothing built for bob
 
 
-def worlds_seen(client, scope):
-    return client.post("/worlds/list", json={"scope": scope}).json()["available"]
+def sessions_available(client, scope):
+    """Other users' PUBLIC sessions the shell offers to visit (session-scoping-plan §B) — the discovery
+    that replaced the agent-facing 'available worlds' list."""
+    return client.get("/sessions", params={"scope": scope}).json()["available"]
 
 
 def test_guest_may_create_and_switch_worlds_everyone_comes_along(srv, client):

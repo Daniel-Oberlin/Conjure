@@ -638,15 +638,14 @@ async def delete_asset(id: str) -> str:
 
 @mcp.tool()
 async def list_worlds() -> str:
-    """List your saved worlds (and which one is active), plus other users' PUBLIC worlds you can visit.
-    Call this before switching so you match the user's description ('the dining hall', 'daniel's blade
-    runner world') to a real world. To switch into someone else's public world, pass its `owner` to
-    switch_world. You can enter another user's public world but can't edit it (it's theirs)."""
+    """List the worlds in your CURRENT SESSION (and which is active). Call this before switching so you
+    match the user's description ('the dining hall') to a real world. You only know the worlds in your own
+    session — other sessions, agents, and other users' worlds aren't yours to list or switch; a person
+    reaches those from the shell, not you."""
     out = await _post("/worlds/list", _body(scope=_scope()))
     names = out.get("worlds", [])
-    active = out.get("active")        # the caller's OWN live world, or None when they're in someone else's
+    active = out.get("active")        # the caller's OWN live world, or None when the live world is someone else's
     current = out.get("current")      # the true live (shared) world {owner, name}
-    available = out.get("available", [])
     caller = _scope().split("/", 1)[0]
     lines = []
     if names:
@@ -656,12 +655,9 @@ async def list_worlds() -> str:
             lines.append("(* = currently active)")
     else:
         lines.append("You have no saved worlds yet.")
-    if current and current.get("owner") != caller:    # you're inhabiting another user's (shared) world
+    if current and current.get("owner") != caller:    # a person visited another user's session → you're a guest
         lines.append(f"\nYou're currently in {current['owner']}'s world '{current['name']}' "
-                     f"(shared — you can be here but it's not one of your own worlds).")
-    if available:
-        lines.append("\nOther users' public worlds (switch with owner=…):")
-        lines += [f"  {w['owner']}: {w['name']}" for w in available]
+                     f"(shared — you can be here but can't change it; it's theirs).")
     return "\n".join(lines)
 
 
@@ -709,15 +705,14 @@ async def set_space_visibility(public: bool, name: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-async def switch_world(name: str, owner: Optional[str] = None) -> str:
-    """Switch to a world (saving the current one first), bringing everyone present along. Match `name`
-    to a real world from list_worlds; formatting/case doesn't need to be exact. For one of YOUR worlds,
-    omit `owner`. To enter ANOTHER user's public world, pass their username as `owner` (e.g.
-    owner='daniel'); you can inhabit it but not edit it."""
-    out = await _post("/worlds/switch", _body(name=name, scope=_scope(), owner=owner))
+async def switch_world(name: str) -> str:
+    """Switch to one of YOUR worlds in this session (saving the current one first), bringing everyone
+    present along. Match `name` to a real world from list_worlds; formatting/case needn't be exact.
+    (Visiting another user's world is a person's action at the shell — not something you do here.)"""
+    out = await _post("/worlds/switch", _body(name=name, scope=_scope()))
     if not out.get("ok"):
         return f"Couldn't switch to {name!r}: {out.get('error', 'unknown error')}."
-    return f"Switched to '{out.get('world', name)}'" + (f" (owned by {owner})." if owner else ".")
+    return f"Switched to '{out.get('world', name)}'."
 
 
 @mcp.tool()

@@ -319,6 +319,37 @@ class WorldRepository:
                                 "session": sess_dir.name, "public": True})
         return out
 
+    def list_public_sessions(self, *, exclude_user: str | None = None) -> list[dict]:
+        """Every PUBLIC session belonging to *other* users — the discovery a human browses to visit
+        someone else's live world (session-scoping-plan §B). One entry per public session:
+        `{scope, owner, agent, session, title, active_world}`. Excludes the caller's WHOLE user
+        (`exclude_user`), so your own other agents/sessions never appear here as if they were a
+        stranger's — the fix for the "another <you>" confusion. A filesystem walk; a derived index
+        replaces it if discovery needs to scale."""
+        out: list[dict] = []
+        if not self.root.is_dir():
+            return []
+        for agent_dir in sorted(self.root.glob("*/agents/*")):
+            if not agent_dir.is_dir():
+                continue
+            scope = agent_dir.relative_to(self.root).as_posix()
+            owner = scope.split("/", 1)[0]
+            if owner == exclude_user:                            # your own scopes are reached by navigation,
+                continue                                         # never surfaced here as "someone else's"
+            agent = scope.split("/agents/", 1)[1] if "/agents/" in scope else scope
+            for sess_dir in sorted((agent_dir / "sessions").glob("*")):
+                if not sess_dir.is_dir():
+                    continue
+                try:
+                    meta = json.loads((sess_dir / "session.json").read_text())
+                except (OSError, ValueError):
+                    meta = {}                                    # no/unreadable meta → treat as public (default)
+                if not meta.get("public", True):
+                    continue
+                out.append({"scope": scope, "owner": owner, "agent": agent, "session": sess_dir.name,
+                            "title": meta.get("title", sess_dir.name), "active_world": meta.get("active_world")})
+        return out
+
     def exists(self, scope: str, name: str) -> bool:
         return self._dir(scope).exists(name)
 

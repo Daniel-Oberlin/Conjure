@@ -315,11 +315,14 @@ class Shell:
             return {"ok": False, "error": "no world server configured"}
         try:
             import httpx
+            # Identify the caller so the server can gate a cross-user session VISIT (public-only). Same
+            # header the MCP client / headset send; harmless on the same-scope calls.
+            headers = {"X-Conjure-User": self._acting}
             # `session new` can run a generative constructor (skybox-from-description) server-side, which
             # takes tens of seconds — allow for it (the client's long-turn heartbeat covers the wait).
             async with httpx.AsyncClient(timeout=180.0) as client:
-                resp = await (client.get(f"{url}{path}", params=kw) if method == "GET"
-                              else client.post(f"{url}{path}", json=kw))
+                resp = await (client.get(f"{url}{path}", params=kw, headers=headers) if method == "GET"
+                              else client.post(f"{url}{path}", json=kw, headers=headers))
                 try:
                     return resp.json()
                 except ValueError:                        # non-JSON (e.g. a plain-text 500) → a useful line
@@ -338,7 +341,16 @@ class Shell:
             vis = "" if s.get("public", True) else ", private"
             rows.append(("* " if s.get("active") else "  ")
                         + f"{s.get('title')} ({s['id']}) — world {s.get('active_world')}{extra}{vis}")
-        await self._say(on_text, "Sessions:\n" + ("\n".join(rows) or "  (none)"))
+        text = "Sessions:\n" + ("\n".join(rows) or "  (none)")
+        # Other users' public sessions you can VISIT (session-scoping-plan §B) — a human act, so it lives
+        # here in the shell, not in the agent's world tools. Switch with the shown path.
+        avail = data.get("available", [])
+        if avail:
+            pub = [f"  {a['owner']}/{a['agent']}/{a['session']} — {a.get('title')} "
+                   f"(world {a.get('active_world')})" for a in avail]
+            text += ("\n\nOther users' public sessions (visit with 'session switch <path>'):\n"
+                     + "\n".join(pub))
+        await self._say(on_text, text)
 
     async def _session(self, on_text, m):
         rest = (m.group("rest") or "").strip()
@@ -372,9 +384,21 @@ class Shell:
             msg = f"Session is now {verb}."
         else:                                                 # `switch <ref>` OR bare `session <ref>`
             ref = arg if verb == "switch" else rest
-            data = await self._session_api("POST", "/session/switch", scope=scope, session=ref)
-            msg = f"Switched to session {data.get('session')}."
+            tgt_scope, tgt_ref = self._session_target(scope, ref)   # a cross-user path → that user's scope
+            data = await self._session_api("POST", "/session/switch", scope=tgt_scope, session=tgt_ref)
+            whose = f" ({tgt_scope.split('/', 1)[0]}'s)" if tgt_scope != scope else ""
+            msg = f"Switched to session {data.get('session')}{whose}."
         await self._say(on_text, msg if data.get("ok") else data.get("error", "error"))
+
+    def _session_target(self, own_scope: str, ref: str) -> tuple[str, str]:
+        """Resolve a session ref to (scope, id-or-title). A cross-user path — `<user>/<agent>/<sid>`
+        (optionally leading '/'), as shown by the 'public sessions' listing — targets that user's scope
+        so a person can VISIT it; anything else is a same-scope switch by id or title."""
+        parts = [p for p in ref.strip().strip("/").split("/") if p]
+        if len(parts) == 3:
+            user, agent, sid = parts
+            return scope_for(user, agent), sid
+        return own_scope, ref
 
     # -- dir / delete: a filesystem-like view + purge of the namespace (docs/agents.md §2). Both go
     # through the world server's /admin endpoints, so they act on its live state (not raw files).
