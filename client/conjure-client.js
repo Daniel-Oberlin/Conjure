@@ -207,7 +207,9 @@
           return t;
         };
         var eyeMesh = function (map) {
-          var mat = mesh.material.clone(); mat.map = map; mat.needsUpdate = true;
+          var mat = mesh.material.clone(); mat.map = map;
+          mat.side = THREE.FrontSide;   // NEVER double-sided: the back face renders mirrored → broken stereo
+          mat.needsUpdate = true;
           var m = new THREE.Mesh(mesh.geometry, mat);   // shares geometry + transform with the base mesh
           mesh.add(m);
           return m;
