@@ -131,7 +131,15 @@ def test_prompt_reflects_mode():
     sh, d, out, on_text = _shell()
     assert sh.prompt() == "conjure:daniel.builder.claude> "   # user · agent-primary; the LLM can vary
     sh.in_shell = True
-    assert sh.prompt() == "conjure:shell> "
+    assert sh.prompt() == "conjure:daniel.shell> "            # same shape, `shell` in the agent slot
+
+
+async def test_whoami_identifies_user_agent_llm_session():
+    sh, d, out, on_text = _shell()
+    await sh._status(on_text)
+    line = out[-1][1]
+    assert "user: daniel" in line and "agent: builder" in line and "LLM: Claude" in line
+    assert "session:" in line and "agent mode" in line       # session is fetched from the world server
 
 
 # --------------------------------------------------------------------------- dir / delete (admin)

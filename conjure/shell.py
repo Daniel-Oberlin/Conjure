@@ -6,7 +6,7 @@ what's loaded — runs here, *parsed, never sent to an LLM*. The shell wraps the
 the active LLM lives *only* here (deterministic) — the agent no longer parses handovers out of an
 utterance.
 
-Entering: say/type `conjure open shell` → shell mode (prompt `conjure:shell>`); `exit` resumes the
+Entering: say/type `conjure open shell` → shell mode (prompt `conjure:<user>.shell>`); `exit` resumes the
 agent. While *in* an agent, only input led by the `conjure` wake word is taken as a command — so
 "put a shell on the table" still reaches the builder. The command set is a small registry, easy to grow.
 """
@@ -172,11 +172,11 @@ class Shell:
             pass
 
     def prompt(self) -> str:
-        """The prompt the front-end shows: `conjure:shell>` in shell mode, else
-        `conjure:<user>.<agent>.<llm>>` (who you're logged in as · agent-primary — the experience is the
-        constant, the LLM running it can vary)."""
+        """The prompt the front-end shows: `conjure:<user>.shell>` in shell mode (same shape as agent
+        mode, with `shell` in the agent slot), else `conjure:<user>.<agent>.<llm>>` (who you're logged in
+        as · agent-primary — the experience is the constant, the LLM running it can vary)."""
         if self.in_shell:
-            return "conjure:shell> "
+            return f"conjure:{self._director.user}.shell> "
         return f"conjure:{self._director.user}.{self._agent_name()}.{self._director.active.lower()}> "
 
     async def feed(self, text: str, *, speaker: Optional[str] = None, on_text: Optional[OnText] = None,
@@ -259,8 +259,19 @@ class Shell:
 
     async def _status(self, on_text, m=None):
         d = self._director
-        await self._say(on_text, f"{d.active}.{self._agent_name()} · {len(d.roster)} LLMs · "
-                                 f"{len(d._tools)} tools · {'shell' if self.in_shell else 'agent'} mode")
+        sess = await self._session_api("GET", "/sessions", scope=self._scope())
+        if not sess.get("ok"):
+            session_str = "unknown"
+        elif sess.get("active"):
+            active = sess["active"]
+            title = next((s.get("title") for s in sess.get("sessions", []) if s.get("id") == active), active)
+            session_str = f"{title} ({active})"
+        else:
+            session_str = "none"
+        await self._say(on_text,
+                        f"user: {self._user} · agent: {self._agent_name()} · LLM: {d.active} · "
+                        f"session: {session_str} · {'shell' if self.in_shell else 'agent'} mode "
+                        f"({len(d.roster)} LLMs, {len(d._tools)} tools)")
 
     async def _llms(self, on_text, m=None):
         rows = [("* " if n == self._director.active else "  ") + n for n in self._director.roster]

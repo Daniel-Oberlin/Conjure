@@ -12,7 +12,8 @@ def test_ws_url_builds_the_per_connection_socket_url():
 def test_prompt_reflects_context_data_and_shell_mode():
     assert prompt_from_context({"user": "alice", "agent": "builder", "llm": "Claude"}) \
         == "conjure:alice.builder.claude> "
-    assert prompt_from_context({"in_shell": True}) == "conjure:shell> "
+    assert prompt_from_context({"user": "alice", "in_shell": True}) == "conjure:alice.shell> "
+    assert prompt_from_context({"in_shell": True}) == "conjure:you.shell> "   # no user yet → placeholder
     assert prompt_from_context({}) == "conjure:you.agent.?> "     # graceful before the first context event
 
 

@@ -24,12 +24,12 @@ def ws_url(agent_url: str, user: str, *, backlog: bool = True) -> str:
 
 
 def prompt_from_context(ctx: dict) -> str:
-    """Format the REPL prompt from the latest `context` DATA: `conjure:shell>` in shell mode, else
+    """Format the REPL prompt from the latest `context` DATA: `conjure:<user>.shell>` in shell mode, else
     `conjure:<user>.<agent>.<llm>>`. Formatting lives in the client (a voice client would render none) —
     only the data comes from the server (shared-session-plan §8)."""
-    if ctx.get("in_shell"):
-        return "conjure:shell> "
     user = ctx.get("user") or "you"
+    if ctx.get("in_shell"):
+        return f"conjure:{user}.shell> "                      # same shape, `shell` in the agent slot
     agent = ctx.get("agent") or "agent"
     llm = (ctx.get("llm") or "?").lower()
     return f"conjure:{user}.{agent}.{llm}> "
