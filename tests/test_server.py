@@ -1531,17 +1531,17 @@ def test_guest_cannot_edit_the_world_but_reads_are_open(srv, client):
 
 
 def test_guest_can_visit_owners_public_session(srv, client):
-    # bob creates a world (flips live to bob), persisting daniel's session on the way out
+    # bob creates a world (persists daniel's builder session), making it discoverable in the builder agent
     client.post("/worlds/new", json={"name": "guest-world", "scope": "bob/agents/builder"},
                 headers={"X-Conjure-User": "bob"})
-    # bob discovers daniel's public session in the shell-facing /sessions listing (NOT the agent's world list)
     daniels = [a for a in sessions_available(client, "bob/agents/builder") if a["owner"] == "daniel"]
-    assert daniels, "daniel's public session should be discoverable"
+    assert daniels, "daniel's public session should be discoverable in this agent"
     tgt = daniels[0]
-    # bob VISITS daniel's public session (session-level cross-user switch) → everyone comes along
-    r = client.post("/session/switch", json={"scope": tgt["scope"], "session": tgt["session"]},
+    # bob VISITS daniel's session by (owner, name) — resolved in bob's active agent → everyone comes along
+    r = client.post("/session/switch",
+                    json={"scope": "bob/agents/builder", "owner": "daniel", "session": tgt["title"]},
                     headers={"X-Conjure-User": "bob"}).json()
-    assert r["ok"] and srv.active_scope == "daniel/agents/builder"
+    assert r["ok"] and r.get("owner") == "daniel" and srv.active_scope == "daniel/agents/builder"
     # ...and bob is a guest: still can't edit daniel's world (owner-only writes)
     assert client.post("/style_surface", json={"target": "wall", "color": "red"},
                        headers={"X-Conjure-User": "bob"}).status_code == 403
@@ -1555,11 +1555,21 @@ def test_visiting_a_private_session_is_refused(srv, client):
                      headers={"X-Conjure-User": "bob"}).json()
     assert r0["ok"] and r0["public"] is False
     assert "bob" not in {a["owner"] for a in sessions_available(client, "daniel/agents/builder")}
-    # daniel can't VISIT bob's private session
+    # daniel can't VISIT bob's private session (by owner+name, in daniel's agent)
     bob_sid = client.get("/sessions", params={"scope": "bob/agents/builder"}).json()["active"]
-    r = client.post("/session/switch", json={"scope": "bob/agents/builder", "session": bob_sid},
-                    headers={"X-Conjure-User": "daniel"}).json()
+    r = client.post("/session/switch",
+                    json={"scope": "daniel/agents/builder", "owner": "bob", "session": bob_sid}).json()
     assert r["ok"] is False and "private" in r["error"]
+
+
+def test_visit_resolves_owner_and_session_case_insensitively(srv, client):
+    # Voice-friendly: owner + session name resolve exact-then-loose (case + separators).
+    client.post("/worlds/new", json={"name": "den", "scope": "bob/agents/builder"},
+                headers={"X-Conjure-User": "bob"})
+    bob_sid = client.get("/sessions", params={"scope": "bob/agents/builder"}).json()["active"]
+    r = client.post("/session/switch", json={
+        "scope": "daniel/agents/builder", "owner": "BOB", "session": bob_sid.upper()}).json()
+    assert r["ok"] and r.get("owner") == "bob" and srv.active_scope == "bob/agents/builder"
 
 
 def test_session_visibility_controls_discovery(srv, client):

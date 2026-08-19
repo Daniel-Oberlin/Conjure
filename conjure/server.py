@@ -1227,22 +1227,44 @@ def _next_sid(scope: str) -> str:
     return f"session-{n + 1}"
 
 
+def _loose(s: Optional[str]) -> str:
+    """Voice-friendly match key: case-insensitive with spaces/underscores/hyphens treated as equal
+    ('Test 7' == 'test-7' == 'test_7'). Lookup ONLY — never changes a stored name."""
+    return re.sub(r"[\s_-]+", " ", (s or "").strip().lower())
+
+
 def _resolve_sid(scope: str, ref: Optional[str]) -> Optional[str]:
-    """Resolve a session reference — its stable id, or a case-insensitive title match — to a session id
-    (or None). Lets clients say `session switch <title>` without knowing the id."""
-    ids = sessions.list(scope)
+    """Resolve a session reference to a session id: exact id, else exact title, else a UNIQUE loose
+    (case + separators) match on id or title. Ambiguous loose matches return None (caller reports
+    not-found). Voice-friendly — lets clients say `session <title>` in any case/spacing."""
     if not ref:
         return None
+    ids = sessions.list(scope)
     if ref in ids:
-        return ref
-    r = ref.strip().lower()
+        return ref                                             # exact id
+    titles: dict[str, str] = {}
     for sid in ids:
         try:
-            if (sessions.load_meta(scope, sid).get("title") or "").strip().lower() == r:
-                return sid
+            titles[sid] = sessions.load_meta(scope, sid).get("title") or ""
         except (OSError, ValueError):
-            continue
-    return None
+            titles[sid] = ""
+    exact = [sid for sid, t in titles.items() if t == ref]     # exact title (case-sensitive)
+    if len(exact) == 1:
+        return exact[0]
+    key = _loose(ref)                                          # unique loose match on id or title
+    loose = [sid for sid in ids if _loose(sid) == key or _loose(titles[sid]) == key]
+    return loose[0] if len(loose) == 1 else None
+
+
+def _resolve_user(spoken: str, agent: str) -> Optional[str]:
+    """Resolve a spoken owner to a real user that has sessions in `agent`: exact, else a UNIQUE loose
+    match. The bounded candidate set (users present in the caller's agent) keeps voice matching safe."""
+    users = worlds.users_in_agent(agent)
+    if spoken in users:
+        return spoken
+    key = _loose(spoken)
+    matches = [u for u in users if _loose(u) == key]
+    return matches[0] if len(matches) == 1 else None
 
 
 async def _switch_session(scope: str, sid: str) -> dict:
@@ -1266,6 +1288,7 @@ class SessionRef(BaseModel):
     scope: str = DEFAULT_SCOPE
     session: Optional[str] = None     # id or title; default (rename) = the active session
     title: Optional[str] = None
+    owner: Optional[str] = None       # cross-user VISIT: switch into this user's session, in the CALLER's agent
 
 
 @app.get("/sessions")
@@ -1283,8 +1306,11 @@ async def sessions_list(scope: str = DEFAULT_SCOPE) -> dict:
             meta = {}
         out.append({"id": sid, "title": meta.get("title", sid), "active_world": meta.get("active_world"),
                     "llm": meta.get("llm", ""), "public": meta.get("public", True), "active": sid == active})
-    available = worlds.list_public_sessions(exclude_user=scope.split("/", 1)[0])
-    return {"ok": True, "sessions": out, "active": active, "available": available}
+    # Discovery is scoped to the caller's AGENT (same lens as their own list); switch agents to cross.
+    available = worlds.list_public_sessions(agent=agent_of(scope), exclude_user=scope.split("/", 1)[0])
+    # The single global live session — lets the shell mark it '@' wherever it appears (yours or others').
+    return {"ok": True, "sessions": out, "active": active, "available": available,
+            "live": {"scope": active_scope, "session": active_sid}}
 
 
 @app.post("/session/new")
@@ -1320,18 +1346,29 @@ async def session_new(req: SessionRef) -> dict:
 
 
 @app.post("/session/switch")
-async def session_switch(req: SessionRef, request: Request) -> dict:
-    """Switch the live session — to one of your own, or (cross-user) to ANOTHER user's session named by
-    `scope`. Visiting someone else's session is allowed only if it's PUBLIC; you land there as a guest
-    (you stay yourself — owner-only writes still refuse edits). Same-scope switches are ungated as before.
-    """
-    sid = _resolve_sid(req.scope, req.session)
+async def session_switch(req: SessionRef) -> dict:
+    """Switch the live session — one of your own (`session <name>`), or with `owner` a cross-user VISIT
+    into that user's session **in the caller's active agent** (`session <user> <name>`). Owner and
+    session names resolve exact-then-unique-loose (case + separators) for voice. A visit is allowed only
+    if the target session is PUBLIC; you land there as a guest (you stay yourself — owner-only writes
+    still refuse edits)."""
+    caller_agent = agent_of(req.scope)
+    caller_user = req.scope.split("/", 1)[0]
+    if req.owner and _loose(req.owner) != _loose(caller_user):    # VISIT another user, in the caller's agent
+        owner = _resolve_user(req.owner, caller_agent)
+        if not owner:
+            return {"ok": False, "error": f"no user {req.owner!r} with sessions in the {caller_agent} agent"}
+        target_scope = scope_for(owner, caller_agent)
+        sid = _resolve_sid(target_scope, req.session)
+        if not sid:
+            return {"ok": False, "error": f"no session {req.session!r} owned by {owner}"}
+        if not _session_public(target_scope, sid):
+            return {"ok": False, "error": f"that session is private — ask {owner} to make it public"}
+        r = await _switch_session(target_scope, sid)
+        return {"ok": True, "session": sid, "owner": owner, "world": r.get("world")}
+    sid = _resolve_sid(req.scope, req.session)                   # own session
     if not sid:
         return {"ok": False, "error": f"no session {req.session!r} in {req.scope}"}
-    caller = request.headers.get("X-Conjure-User")           # missing (dev CLI) ⇒ treated as owner
-    target_user = req.scope.split("/", 1)[0]
-    if caller and caller != target_user and not _session_public(req.scope, sid):
-        return {"ok": False, "error": f"that session is private — ask {target_user} to make it public"}
     r = await _switch_session(req.scope, sid)
     return {"ok": True, "session": sid, "world": r.get("world")}
 

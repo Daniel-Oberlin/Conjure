@@ -247,8 +247,11 @@ async def test_session_verbs_route_to_the_right_endpoints():
     assert calls[-1][:2] == ("POST", "/session/new") and calls[-1][2]["title"] == "Playground"
     await sh._dispatch("session switch Playground", on_text)
     assert calls[-1][:2] == ("POST", "/session/switch") and calls[-1][2]["session"] == "Playground"
-    await sh._dispatch("session Home Base", on_text)                      # bare → switch, whole ref kept
+    await sh._dispatch('session "Home Base"', on_text)                    # 1 quoted arg → your own session
     assert calls[-1][:2] == ("POST", "/session/switch") and calls[-1][2]["session"] == "Home Base"
+    assert "owner" not in calls[-1][2]
+    await sh._dispatch('session daniel "Home Base"', on_text)             # 2 args → VISIT that user's session
+    assert calls[-1][2]["owner"] == "daniel" and calls[-1][2]["session"] == "Home Base"
     await sh._dispatch("session rename Cozy Corner", on_text)
     assert calls[-1][:2] == ("POST", "/session/rename") and calls[-1][2]["title"] == "Cozy Corner"
     await sh._dispatch("session delete session-2", on_text)
@@ -257,6 +260,22 @@ async def test_session_verbs_route_to_the_right_endpoints():
     assert calls[-1][:2] == ("POST", "/session/visibility") and calls[-1][2]["public"] is False
     await sh._dispatch("session public", on_text)
     assert calls[-1][:2] == ("POST", "/session/visibility") and calls[-1][2]["public"] is True
+
+
+async def test_sessions_listing_marks_live_and_last_used():
+    def api(mth, p, kw):
+        return {"ok": True, "active": "session-1",
+                "sessions": [{"id": "session-1", "title": "Mine", "active_world": "w", "public": True,
+                              "active": True}],
+                "available": [{"scope": "alice/agents/builder", "owner": "alice", "agent": "builder",
+                               "session": "s1", "title": "Alice One", "active_world": "wl"}],
+                "live": {"scope": "alice/agents/builder", "session": "s1"}}   # live is alice's — you're visiting
+    sh, out, on_text, calls = _session_shell(api)
+    await sh._dispatch("sessions", on_text)
+    text = out[-1][1]
+    assert "* Mine" in text                     # your last-used (per-agent resume) → *
+    assert "@ alice" in text                    # the one live session (you're here), in the others' list → @
+    assert "@ = live session" in text           # legend explains the markers
 
 
 async def test_session_command_acts_as_the_speaker_not_the_host():
@@ -489,13 +508,13 @@ async def test_last_agent_falls_back_to_builder_without_server():
     assert await sh._last_agent() == "builder"                # no world_url → safe default
 
 
-def test_session_target_parses_cross_user_visit_path():
-    """`session switch` resolves a `<user>/<agent>/<sid>` path (as shown by the public-sessions listing)
-    to that user's scope — a cross-user VISIT — while a plain id/title stays in the caller's scope."""
-    from conjure.config import scope_for
-    sh, *_ = _shell()
-    own = scope_for("daniel", "builder")
-    assert sh._session_target(own, "session-2") == (own, "session-2")        # same-scope by id
-    assert sh._session_target(own, "My Session") == (own, "My Session")      # same-scope by title
-    assert sh._session_target(own, "alice/outdoor/session-1") == (scope_for("alice", "outdoor"), "session-1")
-    assert sh._session_target(own, "/alice/outdoor/session-1") == (scope_for("alice", "outdoor"), "session-1")
+async def test_session_switch_own_vs_visit_by_arg_count():
+    """`session <name>` switches your own; `session <user> <name>` visits — the arg count decides, and
+    quoting keeps a spaced name as one token (no paths)."""
+    sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True, "session": "s", "owner": kw.get("owner")})
+    await sh._dispatch("session beach", on_text)                          # 1 arg → own
+    assert calls[-1][2]["session"] == "beach" and "owner" not in calls[-1][2]
+    await sh._dispatch("session daniel beach", on_text)                   # 2 args → visit
+    assert calls[-1][2]["owner"] == "daniel" and calls[-1][2]["session"] == "beach"
+    await sh._dispatch('session daniel "blade runner"', on_text)          # quoted spaced name stays one token
+    assert calls[-1][2]["owner"] == "daniel" and calls[-1][2]["session"] == "blade runner"

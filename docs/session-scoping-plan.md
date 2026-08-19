@@ -1,10 +1,19 @@
 # Session-scoped worlds + human-driven visiting — plan
 
-**Status:** BUILT (2026-08-18). The agent's world tools are session-local; cross-user visiting is a
-human act via the shell `session switch <user>/<agent>/<sid>`, gated public. Discovery of other users'
-public sessions is surfaced by the shell `sessions` command (not `dir` — chosen for cohesion with the
-existing session listing). See `worlds.list_public_sessions`, `/sessions` `available`,
-`/session/switch` public-gate, and `Shell._session_target`.
+**Status:** BUILT (2026-08-18; refined 2026-08-19). The agent's world tools are session-local;
+cross-user visiting is a human act at the shell. See `worlds.list_public_sessions`, `/sessions`
+`available`, `/session/switch`, and `Shell._session`.
+
+**Refinements (2026-08-19), after live use:**
+- **Discovery is scoped to the caller's active agent** (not all agents) — same lens for your own list
+  and others'. To see another agent's sessions, switch your agent. (`list_public_sessions(agent=…)`.)
+- **No paths — visit by name:** `session <name>` switches your own; `session <user> <name>` visits that
+  user's session, resolved *in your active agent*. Quote names with spaces. (Paths stay for `dir`/
+  `delete`; this reads better for voice.) Server: `/session/switch` gains `owner`.
+- **Two markers:** `@` = the one live session (you're here), shown wherever it is; `*` = your last-used
+  session in this agent (resume target); `@` wins if both. `/sessions` returns the live `(scope,session)`.
+- **Voice-friendly matching:** owner + session names resolve exact → unique loose (case-insensitive,
+  spaces/underscores/hyphens equal); ambiguous loose matches are rejected, not guessed. Lookup only.
 
 Tighten the boundary the storage already implies: **an agent only knows the worlds in its own
 session**, and **cross-user visiting is a human act at the shell, at the session level** — not a

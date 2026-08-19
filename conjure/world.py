@@ -319,24 +319,26 @@ class WorldRepository:
                                 "session": sess_dir.name, "public": True})
         return out
 
-    def list_public_sessions(self, *, exclude_user: str | None = None) -> list[dict]:
-        """Every PUBLIC session belonging to *other* users — the discovery a human browses to visit
-        someone else's live world (session-scoping-plan §B). One entry per public session:
-        `{scope, owner, agent, session, title, active_world}`. Excludes the caller's WHOLE user
-        (`exclude_user`), so your own other agents/sessions never appear here as if they were a
-        stranger's — the fix for the "another <you>" confusion. A filesystem walk; a derived index
-        replaces it if discovery needs to scale."""
+    def list_public_sessions(self, *, agent: str | None = None,
+                             exclude_user: str | None = None) -> list[dict]:
+        """Every PUBLIC session belonging to *other* users, in a given AGENT — the discovery a human
+        browses to visit someone else's live world (session-scoping-plan §B). One entry per public
+        session: `{scope, owner, agent, session, title, active_world}`. Scoped to the caller's active
+        `agent` (same lens as your own list — to see another agent's sessions you switch agents) and
+        excludes the caller's WHOLE user (`exclude_user`), so your own other agents/sessions never appear
+        here as a stranger's. A filesystem walk; a derived index replaces it if discovery needs to scale."""
         out: list[dict] = []
         if not self.root.is_dir():
             return []
-        for agent_dir in sorted(self.root.glob("*/agents/*")):
+        pattern = f"*/agents/{agent}" if agent else "*/agents/*"
+        for agent_dir in sorted(self.root.glob(pattern)):
             if not agent_dir.is_dir():
                 continue
             scope = agent_dir.relative_to(self.root).as_posix()
             owner = scope.split("/", 1)[0]
             if owner == exclude_user:                            # your own scopes are reached by navigation,
                 continue                                         # never surfaced here as "someone else's"
-            agent = scope.split("/agents/", 1)[1] if "/agents/" in scope else scope
+            agent_seg = scope.split("/agents/", 1)[1] if "/agents/" in scope else scope
             for sess_dir in sorted((agent_dir / "sessions").glob("*")):
                 if not sess_dir.is_dir():
                     continue
@@ -346,9 +348,17 @@ class WorldRepository:
                     meta = {}                                    # no/unreadable meta → treat as public (default)
                 if not meta.get("public", True):
                     continue
-                out.append({"scope": scope, "owner": owner, "agent": agent, "session": sess_dir.name,
+                out.append({"scope": scope, "owner": owner, "agent": agent_seg, "session": sess_dir.name,
                             "title": meta.get("title", sess_dir.name), "active_world": meta.get("active_world")})
         return out
+
+    def users_in_agent(self, agent: str) -> list[str]:
+        """Every user that has any scope under `agent` (`<user>/agents/<agent>`) — the candidate set for
+        resolving a spoken owner when visiting a session in the caller's active agent."""
+        if not self.root.is_dir():
+            return []
+        return sorted({d.relative_to(self.root).parts[0]
+                       for d in self.root.glob(f"*/agents/{agent}") if d.is_dir()})
 
     def exists(self, scope: str, name: str) -> bool:
         return self._dir(scope).exists(name)

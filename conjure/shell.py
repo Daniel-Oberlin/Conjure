@@ -13,6 +13,7 @@ agent. While *in* an agent, only input led by the `conjure` wake word is taken a
 from __future__ import annotations
 
 import re
+import shlex
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Awaitable, Callable, Optional
 
@@ -76,8 +77,8 @@ class Shell:
              "agent <name> — switch to another agent (relaunches its tools; starts its own context)"),
             (re.compile(r"^sessions$", re.I), self._sessions, "sessions — list this agent's saved sessions"),
             (re.compile(r"^session(?:\s+(?P<rest>\S.*))?$", re.I), self._session,
-             "session [new|switch|rename|delete|public|private] <arg> — manage sessions "
-             "('session <name>' switches)"),
+             "session [new|rename|delete|public|private] · session <name> · session <user> <name> — "
+             "list / switch to your session / visit a user's session (quote names with spaces)"),
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
              "dir [path] — list users/spaces/worlds/assets (e.g. dir /alice/worlds)"),
             (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
@@ -341,26 +342,38 @@ class Shell:
         except Exception as exc:  # noqa: BLE001 — network / server down
             return {"ok": False, "error": f"session request failed: {exc}"}
 
+    @staticmethod
+    def _mark(is_live: bool, is_last: bool) -> str:
+        """Row marker: `@` = the one live session (you're here) — wins over `*` = your last-used in this
+        agent (resume target). Two space if neither."""
+        return "@ " if is_live else ("* " if is_last else "  ")
+
     async def _sessions(self, on_text, m=None):
-        data = await self._session_api("GET", "/sessions", scope=self._scope())
+        scope = self._scope()
+        data = await self._session_api("GET", "/sessions", scope=scope)
         if not data.get("ok"):
             await self._say(on_text, data.get("error", "error"))
             return
+        live = data.get("live") or {}
         rows = []
         for s in data.get("sessions", []):
+            is_live = live.get("scope") == scope and live.get("session") == s["id"]
             extra = f", {s['llm']}" if s.get("llm") else ""
             vis = "" if s.get("public", True) else ", private"
-            rows.append(("* " if s.get("active") else "  ")
+            rows.append(self._mark(is_live, bool(s.get("active")))
                         + f"{s.get('title')} ({s['id']}) — world {s.get('active_world')}{extra}{vis}")
         text = "Sessions:\n" + ("\n".join(rows) or "  (none)")
-        # Other users' public sessions you can VISIT (session-scoping-plan §B) — a human act, so it lives
-        # here in the shell, not in the agent's world tools. Switch with the shown path.
+        # Other users' public sessions you can VISIT (session-scoping-plan §B), scoped to THIS agent — a
+        # human act, so it lives here in the shell, not in the agent's world tools. Visit by name.
         avail = data.get("available", [])
         if avail:
-            pub = [f"  {a['owner']}/{a['agent']}/{a['session']} — {a.get('title')} "
-                   f"(world {a.get('active_world')})" for a in avail]
-            text += ("\n\nOther users' public sessions (visit with 'session switch <path>'):\n"
-                     + "\n".join(pub))
+            pub = []
+            for a in avail:
+                is_live = live.get("scope") == a["scope"] and live.get("session") == a["session"]
+                pub.append(self._mark(is_live, False)
+                           + f"{a['owner']}  \"{a.get('title')}\"  — world {a.get('active_world')}")
+            text += ("\n\nOther users' public sessions (visit: session <user> <name>):\n" + "\n".join(pub))
+        text += "\n\n@ = live session (you're here) · * = your last-used in this agent"
         await self._say(on_text, text)
 
     async def _session(self, on_text, m):
@@ -368,48 +381,51 @@ class Shell:
         if not rest:                                          # bare `session` → list
             await self._sessions(on_text)
             return
-        verb, _, arg = rest.partition(" ")
-        verb, arg = verb.strip().lower(), arg.strip()
+        try:
+            tokens = shlex.split(rest)                        # quote-aware, so names with spaces survive
+        except ValueError:                                    # unbalanced quotes → naive split
+            tokens = rest.split()
+        verb = tokens[0].lower() if tokens else ""
         scope = self._scope()
+        # switch/visit/bare `session <…>` are everything that isn't a management verb.
+        is_switch = verb not in ("new", "rename", "delete", "public", "private")
         # Shared-effect verbs move the GLOBAL live pointer (everyone follows) — allowed only for a speaker
         # permitted in the live session (§6d), so a bumped guest can't yank everyone out of a private one.
-        if verb in ("new", "switch") or verb not in ("rename", "delete", "public", "private"):
-            if not self._permitted:
-                await self._say(on_text, "This session is private — ask its owner to make it public "
-                                         "before switching or creating sessions here.")
-                return
+        if (verb == "new" or is_switch) and not self._permitted:
+            await self._say(on_text, "This session is private — ask its owner to make it public "
+                                     "before switching or creating sessions here.")
+            return
         if verb == "new":
-            data = await self._session_api("POST", "/session/new", scope=scope, title=arg or None)
+            data = await self._session_api("POST", "/session/new", scope=scope, title=" ".join(tokens[1:]) or None)
             msg = f"Created and switched to {data.get('title')} ({data.get('session')})."
         elif verb == "rename":
-            if not arg:
+            title = " ".join(tokens[1:])
+            if not title:
                 await self._say(on_text, "Usage: session rename <new title>")
                 return
-            data = await self._session_api("POST", "/session/rename", scope=scope, title=arg)
-            msg = f"Renamed to {arg}."
+            data = await self._session_api("POST", "/session/rename", scope=scope, title=title)
+            msg = f"Renamed to {title}."
         elif verb == "delete":
-            data = await self._session_api("POST", "/session/delete", scope=scope, session=arg)
+            data = await self._session_api("POST", "/session/delete", scope=scope, session=" ".join(tokens[1:]))
             msg = f"Deleted {data.get('session')}."
         elif verb in ("public", "private"):
             data = await self._session_api("POST", "/session/visibility", scope=scope, public=(verb == "public"))
             msg = f"Session is now {verb}."
-        else:                                                 # `switch <ref>` OR bare `session <ref>`
-            ref = arg if verb == "switch" else rest
-            tgt_scope, tgt_ref = self._session_target(scope, ref)   # a cross-user path → that user's scope
-            data = await self._session_api("POST", "/session/switch", scope=tgt_scope, session=tgt_ref)
-            whose = f" ({tgt_scope.split('/', 1)[0]}'s)" if tgt_scope != scope else ""
+        else:                                                 # switch/visit: `session [switch] <name>` OR
+            args = tokens[1:] if verb == "switch" else tokens #                `session [switch] <user> <name>`
+            if len(args) == 1:                                # your own session (by name, in your agent)
+                data = await self._session_api("POST", "/session/switch", scope=scope, session=args[0])
+                whose = ""
+            elif len(args) == 2:                              # VISIT <user>'s session, in your active agent
+                data = await self._session_api("POST", "/session/switch",
+                                               scope=scope, owner=args[0], session=args[1])
+                whose = f" ({data.get('owner', args[0])}'s)"
+            else:
+                await self._say(on_text, "Usage: session <name>  |  session <user> <name>  "
+                                         "(quote a name with spaces)")
+                return
             msg = f"Switched to session {data.get('session')}{whose}."
         await self._say(on_text, msg if data.get("ok") else data.get("error", "error"))
-
-    def _session_target(self, own_scope: str, ref: str) -> tuple[str, str]:
-        """Resolve a session ref to (scope, id-or-title). A cross-user path — `<user>/<agent>/<sid>`
-        (optionally leading '/'), as shown by the 'public sessions' listing — targets that user's scope
-        so a person can VISIT it; anything else is a same-scope switch by id or title."""
-        parts = [p for p in ref.strip().strip("/").split("/") if p]
-        if len(parts) == 3:
-            user, agent, sid = parts
-            return scope_for(user, agent), sid
-        return own_scope, ref
 
     # -- dir / delete: a filesystem-like view + purge of the namespace (docs/agents.md §2). Both go
     # through the world server's /admin endpoints, so they act on its live state (not raw files).
