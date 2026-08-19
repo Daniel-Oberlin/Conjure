@@ -10,9 +10,13 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 PORT="${CONJURE_PORT:-8080}"
-TUNNEL_FILE=".cache/tunnel_url"
+# Resolve the disposable cache root from config (the SAME CACHE_ROOT the server reads TUNNEL_FILE from),
+# so the URL lands in the user-home cache, not the in-project .cache. Fall back to .cache if conjure isn't
+# importable (e.g. venv not active) — the server's one-time migration then relocates it.
+CACHE_DIR="$(python -c 'from conjure.config import CACHE_ROOT; print(CACHE_ROOT)' 2>/dev/null || echo .cache)"
+TUNNEL_FILE="$CACHE_DIR/tunnel_url"
 LOG="$(mktemp -t conjure-tunnel)"
-mkdir -p .cache
+mkdir -p "$CACHE_DIR"
 
 if ! command -v cloudflared >/dev/null 2>&1; then
   echo "cloudflared not found. Install it ('brew install cloudflared') — see docs/https-setup.md." >&2

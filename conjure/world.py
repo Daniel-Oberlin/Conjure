@@ -772,13 +772,13 @@ def _relocate(src: Path, dst: Path) -> bool:
 
 
 # The precious items that move into the DATA root (docs/user-home-plan.md §3.1). `backups/` is
-# intentionally absent — user-owned, never touched. `tunnel_url` is also absent — it stays in the
-# project .cache (external dev-tooling scratch). `worlds/`/`spaces/` are the pre-user legacy trees,
-# carried along if still present. The CACHE root has no migrated items yet (reserved for future
-# app-written disposables like thumbnails), but is passed through for the self-migration guard.
+# intentionally absent — user-owned, never touched. `worlds/`/`spaces/` are the pre-user legacy trees,
+# carried along if still present. The disposable `tunnel_url` (ephemeral dev-tooling scratch written by
+# scripts/tunnel.sh) moves into the CACHE root, not the DATA tree — so nothing lands in the in-project
+# .cache anymore.
 _HOME_DATA_ITEMS = ("users", "_session.txt", "assets", "library.db", "library.db-shm",
                     "library.db-wal", "worlds", "spaces")
-_HOME_CACHE_ITEMS: tuple[str, ...] = ()
+_HOME_CACHE_ITEMS: tuple[str, ...] = ("tunnel_url",)
 
 
 def migrate_project_cache_to_home(project_cache: str | Path, data_dir: str | Path,
