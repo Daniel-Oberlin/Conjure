@@ -1372,12 +1372,15 @@ def test_ws_owner_and_public_guest_receive_the_world(srv, client):
         assert ws.receive_json()["type"] == "snapshot"
 
 
-def test_ws_guest_refused_private_session_gets_info_and_no_broadcast(srv, client):
+def test_ws_guest_refused_private_session_is_blocked_and_evicted(srv, client):
     _set_session_public(srv, False)                                # visibility is the SESSION's now (§8.2)
-    with client.websocket_connect("/ws?user=bob") as ws:           # guest + private → info, no world
+    with client.websocket_connect("/ws?user=bob") as ws:           # guest + private → evicted, no world
         msg = ws.receive_json()
-        assert msg["type"] == "info" and "private" in msg["msg"] and "daniel" in msg["msg"]
+        # entry-block mirrors an eviction: the SAME `evicted` signal (client shows overlay + auto-resumes),
+        # not a top-only `info` that never resumed.
+        assert msg["type"] == "evicted" and "private" in msg["msg"] and "daniel" in msg["msg"]
         assert "bob" not in srv.clients.values()                   # not joined → excluded from broadcasts
+        assert "bob" in srv._blocked.values()                      # tracked so a go-public re-admits it
     with client.websocket_connect("/ws?user=daniel") as ws:        # owner still gets in
         assert ws.receive_json()["type"] == "snapshot"
 

@@ -3479,14 +3479,20 @@ async def ws(websocket: WebSocket) -> None:
     if joined:
         clients[websocket] = user                                # joined → gets the world + broadcasts
         await websocket.send_json(_snapshot_msg())
-    else:                                                        # guest + private session → no world, info msg
-        await websocket.send_json({"type": "info", "level": "info",
+    else:
+        # Guest + private session: no world. Track in `_blocked` (like a mid-session bump) so a later
+        # go-public re-admits it (§6c `_readmit_clients`), and send the SAME `evicted` signal an eviction
+        # does — so the render client shows the center overlay + top banner and auto-resumes on snapshot,
+        # instead of a bare top-only `info` that never resumed (entry vs eviction were inconsistent).
+        _blocked[websocket] = user
+        await websocket.send_json({"type": "evicted",
             "msg": f"this session is private — ask {owner} to make it public."})
     try:
         while True:
             raw = await websocket.receive_text()
-            if not joined or websocket in _blocked:
+            if websocket not in clients:
                 continue                                         # a refused/bumped guest's input is ignored
+                                                                 # (until a go-public re-admits it to `clients`)
             try:
                 msg = json.loads(raw)
             except (ValueError, TypeError):
