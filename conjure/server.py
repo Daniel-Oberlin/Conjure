@@ -69,11 +69,12 @@ LIBRARY_DB = CACHE / "library.db"             # durable asset catalog (docs/asse
 # The scope new assets/worlds are written under: <user>/agents/<agent> (docs/spaces-and-users-plan.md
 # §3). A data seam for now — single user/agent, no enforcement yet; the builder is the only writer.
 DEFAULT_SCOPE = scope_for(DEFAULT_USER, "builder")
-# scripts/tunnel.sh (an external shell script, cwd = project) writes the current cloudflared URL here;
-# /tunnel redirects to it (a short, fixed LAN address you can type on the Quest instead of the long
-# random trycloudflare URL each session). Stays in the in-project .cache — it's ephemeral dev-tooling
-# scratch owned by that script, not part of the user-home data model (docs/user-home-plan.md §3.1).
-TUNNEL_FILE = PROJECT_CACHE / "tunnel_url"
+# scripts/tunnel.sh (an external shell script) writes the current cloudflared URL here; /tunnel redirects
+# to it (a short, fixed LAN address you can type on the Quest instead of the long random trycloudflare URL
+# each session). Ephemeral dev-tooling scratch → the disposable CACHE_ROOT (the user-home cache), NOT the
+# in-project .cache and NOT the precious DATA tree (docs/user-home-plan.md §3.1). The script resolves the
+# same CACHE_ROOT from config, so both ends agree on one location.
+TUNNEL_FILE = CACHE_ROOT / "tunnel_url"
 MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
 
 def _has_alpha(im) -> bool:

@@ -495,7 +495,7 @@ def _fake_cache(cache):
     (cache / "backups" / "keep.txt").write_text("mine")
 
 
-def test_migrate_project_cache_moves_data_keeps_backups_and_tunnel(tmp_path):
+def test_migrate_project_cache_moves_data_and_tunnel_keeps_backups(tmp_path):
     from conjure.world import migrate_project_cache_to_home
     cache = tmp_path / ".cache"; cache.mkdir()
     data = tmp_path / "home" / "data"; cacheroot = tmp_path / "home" / "cache"
@@ -510,9 +510,11 @@ def test_migrate_project_cache_moves_data_keeps_backups_and_tunnel(tmp_path):
     assert (data / "library.db-wal").read_text() == "wal"
     # the moved items are GONE from .cache
     assert not (cache / "users").exists() and not (cache / "assets").exists()
-    # backups/ + tunnel_url are UNTOUCHED (user-owned / dev scratch)
+    # the disposable tunnel_url moves into the CACHE root (not the DATA tree) and leaves .cache
+    assert (cacheroot / "tunnel_url").read_text() == "https://x.trycloudflare.com"
+    assert not (cache / "tunnel_url").exists()
+    # backups/ is UNTOUCHED (user-owned)
     assert (cache / "backups" / "keep.txt").read_text() == "mine"
-    assert (cache / "tunnel_url").read_text() == "https://x.trycloudflare.com"
     # breadcrumb written
     assert (cache / "MOVED.txt").exists()
 
