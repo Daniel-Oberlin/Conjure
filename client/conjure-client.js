@@ -802,7 +802,11 @@
 
 
   function applyPatch(patch) {
-    if (refused || awaitingSpace || evicted) return;   // ignore world updates while blanked to passthrough
+    if (refused || awaitingSpace || evicted) {         // ignore world updates while blanked to passthrough
+      debugLog("patch", "DROPPED rev " + (patch && patch.rev) + " ops=" + ((patch && patch.ops) || []).length
+        + " (refused=" + refused + " awaitingSpace=" + awaitingSpace + " evicted=" + evicted + ")");
+      return;
+    }
     (patch.ops || []).forEach(function (op) {
       if (op.op === "add") {
         if (op.entity.meta && op.entity.meta.real) {
@@ -1047,6 +1051,12 @@
     ws.onclose = function () { console.log("[conjure] disconnected — retrying in 2s"); setTimeout(connect, 2000); };
     ws.onmessage = function (ev) {
       var msg = JSON.parse(ev.data);
+      // Delivery probe: log EVERY message so a store↔client desync (director says added/removed but the
+      // scene didn't change) is localizable — did the patch even arrive here? (server log via debugLog)
+      debugLog("ws", "recv " + msg.type + (
+        msg.type === "patch" && msg.patch ? " rev " + msg.patch.rev + " ops=" + ((msg.patch.ops || []).length)
+        : msg.type === "snapshot" && msg.world ? " rev " + msg.world.rev + " ents=" + ((msg.world.entities || []).length)
+        : ""));
       if (msg.type === "snapshot") { worldOwner = msg.owner || worldOwner; applySnapshot(msg.world); }
       else if (msg.type === "patch") applyPatch(msg.patch);
       else if (msg.type === "info") showInfo(msg.msg);    // e.g. "'<world>' is private — ask <owner>…"
