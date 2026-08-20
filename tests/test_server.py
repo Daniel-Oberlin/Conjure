@@ -1238,6 +1238,16 @@ def test_space_select_unmatched_always_mints_a_geo_stamped_space(srv, client):
     assert sp["geolocation"]["lat"] == 51.5 and sp["surfaces"] == []
 
 
+def test_index_injects_occlusion_mode(srv, client, monkeypatch):
+    import dataclasses
+    # default: off is injected so the client component resolves to today's behaviour.
+    assert 'window.CONJURE_OCCLUSION="off";' in client.get("/").text
+    # --occlusion hands|full flows through settings → the injected window global the component reads.
+    for mode in ("hands", "full"):
+        monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, occlusion=mode))
+        assert f'window.CONJURE_OCCLUSION="{mode}";' in client.get("/").text
+
+
 def test_forced_geo_resolves_zero_space_and_bad_specs(srv, monkeypatch):
     import dataclasses
     force = lambda v: monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, force_geo=v))

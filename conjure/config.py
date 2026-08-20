@@ -244,6 +244,14 @@ class Settings:
     #                                                  lower res = less GPU (fewer dropped frames while walking)
     #                                                  at the cost of peripheral sharpness; 0 = full-res (today's
     #                                                  default). Injected as window.CONJURE_FOVEATION.
+    occlusion: str = "off"                           # real-world depth occlusion mode: "off" | "hands" | "full"
+    #                                                  (docs/dynamic-content-plan.md §occlusion). A depth pre-pass
+    #                                                  writes real-world depth (color-write off) so virtual content is
+    #                                                  hidden where a nearer real surface is — e.g. your hand covers a
+    #                                                  virtual wall. off = today (virtual always over passthrough);
+    #                                                  hands = tracked-hand occluders only (sharp, cheap); full =
+    #                                                  environment depth (walls/furniture/people, coarse). Injected as
+    #                                                  window.CONJURE_OCCLUSION.
     pose_tau: float = 0.0                            # s: pose-smoothing time constant (docs/pose-smoothing-plan.md).
     #                                                  Per-surface SLEW eases each surface toward its newly-captured
     #                                                  pose over ~3·tau instead of snapping, turning the ~2 s drift
@@ -326,6 +334,7 @@ def get_settings() -> Settings:
         apply_tol_ext=float(os.environ.get("CONJURE_APPLY_TOL_EXT", "0.02")),
         inset_standoff=float(os.environ.get("CONJURE_INSET_STANDOFF", "0.02")),
         foveation=float(os.environ.get("CONJURE_FOVEATION", "0.0")),
+        occlusion=(os.environ.get("CONJURE_OCCLUSION", "off").strip().lower() or "off"),
         pose_tau=float(os.environ.get("CONJURE_POSE_TAU", "0.0")),
         geo_slice_ms=float(os.environ.get("CONJURE_GEO_SLICE_MS", "3.0")),
         on_surface_standoff=float(os.environ.get("CONJURE_ON_SURFACE_STANDOFF", "0.02")),

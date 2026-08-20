@@ -109,6 +109,12 @@ def main() -> None:
                            "dropped frames / the walking micro-stutter) at the cost of peripheral sharpness + "
                            "moire on fine edges; 0 (default) = full-res everywhere. Try ~0.3 if frames drop; "
                            "A/B against 0 with --debug-jitter (watch the PACE 'drop' count).")
+    gate.add_argument("--occlusion", choices=["off", "hands", "full"], default="off",
+                      help="real-world depth occlusion (docs/dynamic-content-plan.md): hide virtual content where a "
+                           "nearer real surface is, so your hand covers a virtual wall instead of vice-versa. "
+                           "off (default) = virtual always over passthrough (today); hands = tracked-hand occluders "
+                           "only (sharp, cheap); full = environment depth (walls/furniture/people, coarse edges, "
+                           "needs Quest depth-sensing). Per-client override: ?occlusion=off|hands|full in the URL.")
     gate.add_argument("--pose-tau", type=float, default=0.0, metavar="SECONDS",
                       help="pose-smoothing time constant (s): ease each surface (and its content) toward its "
                            "newly-captured pose over ~3x this instead of snapping, so a drift correction reads "
@@ -163,6 +169,7 @@ def main() -> None:
     os.environ["CONJURE_INSET_STANDOFF"] = str(args.inset_standoff)
     os.environ["CONJURE_GEO_SLICE_MS"] = str(args.geo_slice_ms)
     os.environ["CONJURE_FOVEATION"] = str(args.foveation)
+    os.environ["CONJURE_OCCLUSION"] = str(args.occlusion)
     os.environ["CONJURE_POSE_TAU"] = str(args.pose_tau)
     os.environ["CONJURE_ON_SURFACE_STANDOFF"] = str(args.on_surface_standoff)
     os.environ["CONJURE_SURFACE_WELD"] = str(args.surface_weld)

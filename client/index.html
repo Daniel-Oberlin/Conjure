@@ -17,8 +17,9 @@
     </div>
     <a-scene background="color: #1a2233"
              room-capture
+             occlusion
              renderer="foveationLevel: 0"
-             webxr="optionalFeatures: plane-detection, mesh-detection, hit-test, anchors, depth-sensing, local-floor">
+             webxr="optionalFeatures: plane-detection, mesh-detection, hit-test, anchors, depth-sensing, hand-tracking, local-floor">
       <!-- foveationLevel: 0 disables fixed foveated rendering (A-Frame's default is 1 = MAX), which
            renders the periphery at reduced resolution → the fuzzy/moiré edge bands on fine geometry
            (grid, surface edges). 0 = full-res everywhere (more GPU — dial up to ~0.3 if frames drop).
@@ -43,6 +44,7 @@
     </a-scene>
 
     <script src="/static/world-model.js"></script>
+    <script src="/static/occlusion.js"></script>
     <script src="/static/room-snap.js"></script>
     <script src="/static/plane-anchor.js"></script>
     <script src="/static/grounded-skybox.js"></script>

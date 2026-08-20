@@ -1049,13 +1049,15 @@ async def index() -> HTMLResponse:
     pm = int((CLIENT_DIR / "plane-anchor.js").stat().st_mtime)
     rwm = int((CLIENT_DIR / "room-worker.js").stat().st_mtime)   # geometry worker (fix/pops-and-jitters)
     tmm = int((CLIENT_DIR / "three.module.min.js").stat().st_mtime)  # worker's standalone three (ESM)
-    v = max(cm, sm, gm, wm, pm, rwm, tmm)     # badge reflects the newest of the scripts
+    om = int((CLIENT_DIR / "occlusion.js").stat().st_mtime)      # real-world depth occlusion (--occlusion)
+    v = max(cm, sm, gm, wm, pm, rwm, tmm, om)     # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
     html = html.replace("/static/plane-anchor.js", f"/static/plane-anchor.js?v={pm}")
     html = html.replace("/static/grounded-skybox.js", f"/static/grounded-skybox.js?v={gm}")
     html = html.replace("/static/world-model.js", f"/static/world-model.js?v={wm}")
+    html = html.replace("/static/occlusion.js", f"/static/occlusion.js?v={om}")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     # Tell the client which diagnostics are on so it doesn't POST/HUD when off. debug_log gates general
     # client logging; debug_registration gates the co-location registration HUD + per-capture log.
@@ -1092,6 +1094,7 @@ async def index() -> HTMLResponse:
                         f"window.CONJURE_GEO_SLICE_MS={settings.geo_slice_ms};"
                         f"window.CONJURE_POSE_TAU={settings.pose_tau};"
                         f"window.CONJURE_FOVEATION={settings.foveation};"
+                        f'window.CONJURE_OCCLUSION="{settings.occlusion}";'
                         f'window.CONJURE_WORKER_URL="/static/room-worker.js?v={v}";</script>\n  </head>')
     return HTMLResponse(html, headers=_NO_STORE)
 
