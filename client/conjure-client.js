@@ -1051,12 +1051,14 @@
     ws.onclose = function () { console.log("[conjure] disconnected — retrying in 2s"); setTimeout(connect, 2000); };
     ws.onmessage = function (ev) {
       var msg = JSON.parse(ev.data);
-      // Delivery probe: log EVERY message so a store↔client desync (director says added/removed but the
-      // scene didn't change) is localizable — did the patch even arrive here? (server log via debugLog)
-      debugLog("ws", "recv " + msg.type + (
-        msg.type === "patch" && msg.patch ? " rev " + msg.patch.rev + " ops=" + ((msg.patch.ops || []).length)
-        : msg.type === "snapshot" && msg.world ? " rev " + msg.world.rev + " ents=" + ((msg.world.entities || []).length)
-        : ""));
+      // Delivery probe: log inbound world updates (not the high-frequency presence stream) so a
+      // store↔client desync (director says added/removed but the scene didn't change) is localizable.
+      if (msg.type !== "presence" && msg.type !== "presence_leave") {
+        debugLog("ws", "recv " + msg.type + (
+          msg.type === "patch" && msg.patch ? " rev " + msg.patch.rev + " ops=" + ((msg.patch.ops || []).length)
+          : msg.type === "snapshot" && msg.world ? " rev " + msg.world.rev + " ents=" + ((msg.world.entities || []).length)
+          : ""));
+      }
       if (msg.type === "snapshot") { worldOwner = msg.owner || worldOwner; applySnapshot(msg.world); }
       else if (msg.type === "patch") applyPatch(msg.patch);
       else if (msg.type === "info") showInfo(msg.msg);    // e.g. "'<world>' is private — ask <owner>…"
