@@ -77,10 +77,11 @@
     init: function () {
       this.mode = resolveMode();
       this.T = AFRAME.THREE;
-      this._hands = [];                // [{ hand: XRHandSpace, occluders: {jointName: Mesh} }]
+      this._pool = {};                 // jointKey ("left:index-finger-tip") → depth-only occluder Mesh
       this._occMat = null;             // shared depth-only occluder material (hands)
       this._sphere = null;             // shared unit-sphere geometry (hands)
       this._loggedRuntime = false;
+      this._t = 0;
       log("mode=" + this.mode + " (injected=" + window.CONJURE_OCCLUSION + ")");
 
       if (this.mode === "off") return;
@@ -113,48 +114,57 @@
       var m = new T.Mesh(this._sphere, this._occMat);
       m.renderOrder = -1000;                                              // lay occluder depth before content
       m.frustumCulled = false;
+      m.matrixAutoUpdate = true;
+      this.el.object3D.add(m);                                            // live in the scene root = XR ref space
       return m;
     },
 
-    // Adopt the tracked hands as scene-graph groups once the session exists. three's WebXRManager keeps
-    // each hand's joint matrices + jointRadius up to date every frame; we only attach an occluder sphere
-    // per joint and scale it. Occluders inherit the joint's world transform and its visibility (three
-    // hides untracked joints), so they follow the hand and vanish when tracking drops.
-    _adoptHands: function () {
-      var sc = this.el, xr = sc.renderer && sc.renderer.xr;
-      if (!xr || !xr.getHand || this._hands.length) return;
-      for (var i = 0; i < 2; i++) {
-        var hand = xr.getHand(i);
-        if (!hand) continue;
-        sc.object3D.add(hand);                                            // put the hand space in the graph
-        this._hands.push({ hand: hand, occluders: {} });
-      }
-      if (this._hands.length) log("adopted " + this._hands.length + " hand(s) for occlusion");
-    },
-
+    // Read hand-joint poses DIRECTLY from the XR frame each tick and drop a depth-only occluder sphere at
+    // each — no dependence on three's getHand/controller machinery (which wasn't populating joints under
+    // A-Frame). Occluders live in the scene root, which Conjure pins to the headset reference space, so a
+    // joint pose (in that same reference space) positions 1:1. Joints not reported this frame are hidden.
     _syncHands: function () {
-      if (!this._hands.length) this._adoptHands();
-      var totalJoints = 0, totalOcc = 0;
-      for (var h = 0; h < this._hands.length; h++) {
-        var rec = this._hands[h], joints = rec.hand.joints || {};
-        for (var name in joints) {
-          if (!Object.prototype.hasOwnProperty.call(joints, name)) continue;
-          totalJoints++;
-          var joint = joints[name];
-          var occ = rec.occluders[name];
-          if (!occ) { occ = this._occluderMesh(); joint.add(occ); rec.occluders[name] = occ; }
-          // jointRadius (metres) is set by three from the XR joint pose; grow a touch so adjacent joint
-          // blobs overlap into a continuous occluder instead of a bead chain. Fall back for the wrist/tips
-          // that occasionally report no radius.
-          var r = (joint.jointRadius || 0.012) * 1.4;
+      var sc = this.el, xr = sc.renderer && sc.renderer.xr;
+      var frame = sc.frame;
+      var refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
+      var session = xr && xr.getSession && xr.getSession();
+      if (!frame || !refSpace || !session) return;
+
+      for (var k in this._pool) {                                         // hide all; re-show what we place
+        if (Object.prototype.hasOwnProperty.call(this._pool, k)) this._pool[k].visible = false;
+      }
+      var sources = session.inputSources || [], handsSeen = 0, placed = 0, self = this;
+      for (var s = 0; s < sources.length; s++) {
+        var src = sources[s];
+        if (!src.hand) continue;                                          // a controller, not a tracked hand
+        handsSeen++;
+        var prefix = (src.handedness || ("hand" + s)) + ":";
+        src.hand.forEach(function (jointSpace, jointName) {
+          var pose = frame.getJointPose && frame.getJointPose(jointSpace, refSpace);
+          if (!pose) return;
+          var key = prefix + jointName, occ = self._pool[key];
+          if (!occ) { occ = self._occluderMesh(); self._pool[key] = occ; }
+          var p = pose.transform.position;
+          occ.position.set(p.x, p.y, p.z);
+          var r = (pose.radius || 0.012) * 1.4;                          // grow so adjacent joint blobs merge
           occ.scale.set(r, r, r);
-          totalOcc++;
+          occ.visible = true;
+          placed++;
+        });
+      }
+      // Throttled status (~1 Hz). handsSeen counts input sources that ARE tracked hands; if it stays 0 you
+      // were holding controllers (or hands weren't up). placed = occluder spheres positioned this frame.
+      if (++this._t % 72 === 0) {
+        if (!handsSeen) {
+          var desc = [];
+          for (var i = 0; i < sources.length; i++) {
+            desc.push((sources[i].handedness || "?") + "/" + (sources[i].targetRayMode || "?"));
+          }
+          log("no tracked hands; inputSources=[" + desc.join(",") + "] (put controllers down to use hands)");
+        } else {
+          log("handsSeen=" + handsSeen + " occluders_placed=" + placed);
         }
       }
-      // Throttled status (~1 Hz): hands present, joints populated, occluders live. If joints stays 0 you're
-      // either holding controllers or hand-tracking wasn't granted (check the enter-vr enabledFeatures line).
-      var now = (this._t = (this._t || 0) + 1);
-      if (now % 72 === 0) log("hands=" + this._hands.length + " joints=" + totalJoints + " occluders=" + totalOcc);
     },
 
     // full mode: keep three's depth mesh alive. It renders BEFORE A-Frame's scene render, which would
