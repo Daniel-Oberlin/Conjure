@@ -179,6 +179,15 @@ class Director:
             if self._allowed_tools is not None:
                 self._allowed_tools = self._allowed_tools | self._local_tools
 
+    def _recent_history(self) -> list["Turn"]:
+        """The tail of the transcript sent to the LLM, capped to `settings.history_cap` TURNS. The FULL
+        transcript is still persisted and replayed to clients (backlog) — only the model's view is bounded,
+        so tool-calling stays reliable as a session grows (context bloat degrades tool use well before the
+        window fills; a bloated history was observed to make the director skip tool calls). 0 = unlimited.
+        Turn-count is a simple, predictable knob; a per-model token budget can refine it later."""
+        cap = getattr(self._settings, "history_cap", 0) or 0
+        return list(self.transcript[-cap:]) if cap > 0 else list(self.transcript)
+
     def bind_state(self, store) -> None:
         """Point the `state_*` tools + `{…}` state injections at a session's `StateStore` (set by the agent
         server whenever the live session changes). Until bound, state tools report no session."""
@@ -408,7 +417,7 @@ class Director:
                 return None
 
             llm = self.roster[self.active]
-            final = await llm.run_turn(system=await self._system(), history=list(self.transcript),
+            final = await llm.run_turn(system=await self._system(), history=self._recent_history(),
                                        user_text=instruction, tools=[], execute_tool=_noop_exec,
                                        emit=_noop_emit)
             self.transcript.append(Turn("assistant", final))
@@ -459,7 +468,7 @@ class Director:
         labeled = f"{speaker}: {text}" if speaker else text
         final = await llm.run_turn(
             system=system,
-            history=list(self.transcript),
+            history=self._recent_history(),
             user_text=labeled,
             tools=self._tools,
             execute_tool=execute,

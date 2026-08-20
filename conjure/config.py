@@ -244,6 +244,12 @@ class Settings:
     #                                                  lower res = less GPU (fewer dropped frames while walking)
     #                                                  at the cost of peripheral sharpness; 0 = full-res (today's
     #                                                  default). Injected as window.CONJURE_FOVEATION.
+    history_cap: int = 40                            # max transcript TURNS (user/assistant entries) sent to the
+    #                                                  LLM each turn; older turns are dropped from the MODEL's
+    #                                                  view (still persisted + replayed to clients) to keep
+    #                                                  tool-calling reliable as a session grows — context bloat
+    #                                                  degrades tool use well before the window fills. 0 =
+    #                                                  unlimited. Agent-server side; --history-cap / CONJURE_HISTORY_CAP.
     occlusion: str = "off"                           # real-world depth occlusion: "off" | "hands" | "hands-solid"
     #                                                  (docs/dynamic-content-plan.md §occlusion). A depth pre-pass
     #                                                  writes real-world depth (color-write off) so virtual content is
@@ -335,6 +341,7 @@ def get_settings() -> Settings:
         inset_standoff=float(os.environ.get("CONJURE_INSET_STANDOFF", "0.02")),
         foveation=float(os.environ.get("CONJURE_FOVEATION", "0.0")),
         occlusion=(os.environ.get("CONJURE_OCCLUSION", "off").strip().lower() or "off"),
+        history_cap=int(os.environ.get("CONJURE_HISTORY_CAP", "40")),
         pose_tau=float(os.environ.get("CONJURE_POSE_TAU", "0.0")),
         geo_slice_ms=float(os.environ.get("CONJURE_GEO_SLICE_MS", "3.0")),
         on_surface_standoff=float(os.environ.get("CONJURE_ON_SURFACE_STANDOFF", "0.02")),

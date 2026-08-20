@@ -580,7 +580,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="conjure-agent", description="Conjure agent server")
     parser.add_argument("--agent", default=None, help="agent to open (default: resume last-used)")
     parser.add_argument("--user", default=DEFAULT_USER, help="the host user for the session")
+    parser.add_argument("--history-cap", type=int, default=settings.history_cap, metavar="TURNS",
+                        help="max conversation turns sent to the LLM each turn (older ones dropped from the "
+                             "model's view; still saved + replayed to clients). Keeps tool-calling reliable as "
+                             "a session grows; 0 = unlimited (default: %(default)s). Also 'session clear'.")
     args = parser.parse_args()
+    import dataclasses
+    settings = dataclasses.replace(settings, history_cap=args.history_cap)
 
     port = urlparse(settings.agent_url).port or 8770
     app = build_app(settings, agent=args.agent, user=args.user)

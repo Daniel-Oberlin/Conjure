@@ -424,3 +424,16 @@ async def test_execute_tool_blocks_out_of_agent_scope():
     assert d._session.calls == []                          # never reached the MCP session
     await d._execute_tool("set_skybox", {"image_id": "x"}, None, "outdoor.claude")
     assert d._session.calls == [("set_skybox", {"image_id": "x"})]   # allowed tool runs
+
+
+def test_recent_history_caps_the_model_view_but_keeps_full_transcript():
+    import types
+    from conjure.director import Director, Turn
+    d = Director(settings=None, session=FakeSession(), roster={"Claude": object()}, active="Claude", tools=[])
+    d.transcript = [Turn("user" if i % 2 == 0 else "assistant", f"t{i}") for i in range(10)]
+    d._settings = types.SimpleNamespace(history_cap=4)
+    recent = d._recent_history()
+    assert [t.text for t in recent] == ["t6", "t7", "t8", "t9"]     # last 4 sent to the LLM
+    assert len(d.transcript) == 10                                   # full transcript untouched (persist/backlog)
+    d._settings = types.SimpleNamespace(history_cap=0)               # 0 = unlimited
+    assert len(d._recent_history()) == 10
