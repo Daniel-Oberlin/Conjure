@@ -3454,7 +3454,13 @@ async def dismiss_module(req: DismissModuleRequest) -> dict:
     if req.name:
         ids = [req.name] if any(e["id"] == req.name for e in store.doc["entities"]) else []
     elif req.module:
-        ids = [e["id"] for e in store.doc["entities"] if (e.get("meta") or {}).get("module") == req.module]
+        # Match by module meta OR by carrying the module's component — so "remove the fireflies" also
+        # catches entities placed outside the tool (a raw /patch add, a pre-meta/legacy instance) that
+        # have no meta.module but do have the fireflies component.
+        spec = DYNAMIC_MODULES.get(req.module)
+        comp = spec["component"] if spec else req.module
+        ids = [e["id"] for e in store.doc["entities"]
+               if (e.get("meta") or {}).get("module") == req.module or comp in (e.get("components") or {})]
     else:
         return {"ok": False, "error": "pass a module name (entity id) or a module kind to dismiss"}
     if not ids:

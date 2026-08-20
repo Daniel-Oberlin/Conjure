@@ -1272,10 +1272,14 @@ def test_conjure_and_dismiss_module(client):
     assert next(x for x in _entities(client) if x["id"] == eid)["components"]["fireflies"]["count"] == 99
     # unknown module → clean error, nothing added.
     assert client.post("/module", json={"module": "nope"}).json()["ok"] is False
-    # dismiss by kind → removed.
+    # a fireflies entity added OUTSIDE the tool (raw patch, no meta.module) — dismiss-by-kind must still
+    # catch it by its component, so "remove the fireflies" clears everything.
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {
+        "id": "raw-flies", "components": {"fireflies": {"count": 5}}}}]})
+    # dismiss by kind → removes both the tool-placed and the raw one.
     d = client.post("/module/dismiss", json={"module": "fireflies"}).json()
-    assert d["ok"] and eid in d["removed"]
-    assert all(x["id"] != eid for x in _entities(client))
+    assert d["ok"] and eid in d["removed"] and "raw-flies" in d["removed"]
+    assert not any(x["id"] in (eid, "raw-flies") for x in _entities(client))
 
 
 def test_forced_geo_resolves_zero_space_and_bad_specs(srv, monkeypatch):
