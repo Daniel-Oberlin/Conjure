@@ -156,11 +156,38 @@ plan treats captured geometry as *optional context*, never assumed.
 
 ## Real-world occlusion (depth pre-pass)
 
-**Status:** IN PROGRESS (branch `occlusion-depth`). Plumbing (`--occlusion off|hands|full` → config →
-`window.CONJURE_OCCLUSION` → `?occlusion=` URL override) and the **hands** path (scene-graph depth-only
-occluders following the tracked hand joints) are implemented in `client/occlusion.js`. **full** opts the
-session into WebXR depth-sensing so three r169's built-in depth mesh runs (holding the depth buffer via
-`autoClearDepth` while presenting) — best-effort, pending on-device tuning. Needs headset verification.
+**Status:** SHIPPED — `off` / `hands` / `hands-solid` (branch `occlusion-depth`). Plumbing (`--occlusion`
+→ config → `window.CONJURE_OCCLUSION` → `?occlusion=` URL override) plus a filled, depth-only **hand
+mesh** per tracked hand (finger ribbons + palm fan from `frame.getJointPose`, one BufferGeometry, added
+to the scene graph so it survives A-Frame's depth clear). `hands-solid` draws the same mesh as opaque
+white (a white-glove avatar that also occludes). Verified on Quest 3. **`full` (environment depth) is
+shelved — see below.**
+
+### Shelved: `full` (environment-depth occlusion) — learnings
+
+`full` would occlude *everything* real and dynamic (furniture, people, objects you hold), not just
+hands, via the Quest depth sensor. Shelved after on-device investigation:
+
+- **The Quest does provide it:** requesting WebXR depth-sensing yields `depthUsage=gpu-optimized`,
+  `depthDataFormat=unsigned-short`. So it's genuinely possible on the hardware.
+- **three r169's built-in occlusion doesn't consume it:** `renderer.xr.hasDepthSensing()` stayed
+  `false` — three's depth mesh expects a `luminance-alpha` `sampler2DArray`, and the Quest's
+  `unsigned-short` per-view delivery isn't accepted, so three never builds the texture / renders the
+  mesh. Confirms we can't ride three's built-in path here.
+- **Also, ordering:** three renders its depth mesh *before* A-Frame's scene render, which clears depth
+  (`autoClearDepth=true`) — so even if three had a texture, it'd be wiped without further intervention.
+- **To implement it ourselves:** create our own `XRWebGLBinding(session, gl)`; each frame, per eye view,
+  `getDepthInformation(view)` → `unsigned-short` texture + `rawValueToMeters` + `normDepthBufferFromNormView`;
+  a custom fullscreen occluder shader converts raw→meters→clip-space depth and writes `gl_FragDepth`,
+  added to the scene graph so it survives the clear (same trick as hands); handle both eye viewports +
+  foveation.
+- **Why shelved:** (1) it's device-specific WebGL that can't be unit-tested — every pass needs a headset
+  round-trip; (2) environment depth is low-res + ~1 frame laggy, so edges are inherently blocky/
+  shimmering (unlike the sharp hand mesh); (3) hands are already covered sharply by `hands`, so full's
+  marginal value is only moving real things (people/pets/held objects).
+- **Cheaper alternative recorded:** render the **`mesh-detection` captured room mesh** (walls + furniture)
+  as depth-only occluders — sharp, stable, no depth sensor — but static-only (no hands/people/moving).
+  Pairs well with `hands`. A better next step than full if static-furniture occlusion is the goal.
 
 In AR passthrough the compositor draws passthrough, then our opaque virtual layer on top — with **no
 knowledge of real-world depth**, so a virtual wall covers your real hands. The fix is a single **depth

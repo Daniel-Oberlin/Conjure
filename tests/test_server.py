@@ -1242,8 +1242,8 @@ def test_index_injects_occlusion_mode(srv, client, monkeypatch):
     import dataclasses
     # default: off is injected so the client component resolves to today's behaviour.
     assert 'window.CONJURE_OCCLUSION="off";' in client.get("/").text
-    # --occlusion hands|full flows through settings → the injected window global the component reads.
-    for mode in ("hands", "full"):
+    # --occlusion hands|hands-solid flows through settings → the injected window global the component reads.
+    for mode in ("hands", "hands-solid"):
         monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, occlusion=mode))
         assert f'window.CONJURE_OCCLUSION="{mode}";' in client.get("/").text
 

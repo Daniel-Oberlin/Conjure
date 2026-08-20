@@ -8,7 +8,7 @@
 // test → writes no colour → stays alpha 0 → the compositor fills it with passthrough (your hand shows
 // through the hole). One place, every material occludes for free — modules never opt in.
 //
-// MODES (window.CONJURE_OCCLUSION from --occlusion; per-client override ?occlusion=off|hands|full):
+// MODES (window.CONJURE_OCCLUSION from --occlusion; per-client override ?occlusion=off|hands|hands-solid):
 //   off   — no occlusion; virtual always over passthrough (today's behaviour).
 //   hands — a filled, depth-only HAND MESH per tracked hand (finger ribbons + a palm fan built from the
 //           XR joint poses), added to the SCENE GRAPH so it renders inside A-Frame's own pass (after its
@@ -16,8 +16,9 @@
 //           the headset actually producing hand input sources (put controllers down / auto-switch on).
 //   hands-solid — the SAME hand mesh, but drawn as opaque white polygons (a white-glove avatar) instead
 //           of an invisible occluder. Still occludes (opaque, writes depth); just also visible.
-//   full  — environment depth: opt the session into WebXR depth-sensing (gpu-optimized) so three r169's
-//           built-in depth mesh writes real-world depth every frame (walls/furniture/people, coarse).
+//
+// `full` (environment depth via WebXR depth-sensing) is SHELVED — see docs/dynamic-content-plan.md
+// (Real-world occlusion → Shelved) for the learnings and what implementing it would take.
 //
 // Joints come straight from the XR frame (frame.getJointPose), not three's getHand — that never
 // populated joints under A-Frame. The scene root is pinned to the XR reference space, so a joint pose
@@ -26,7 +27,7 @@
 (function () {
   "use strict";
 
-  var MODES = { off: 1, hands: 1, "hands-solid": 1, full: 1 };
+  var MODES = { off: 1, hands: 1, "hands-solid": 1 };
   function isHands(mode) { return mode === "hands" || mode === "hands-solid"; }
 
   // --- Hand skeleton we fill. Fingers are palm-plane "ribbons" (2 verts per joint, offset ± half-width
@@ -88,41 +89,18 @@
     } catch (e) { /* never let logging break a frame */ }
   }
 
-  // full mode: A-Frame lists depth-sensing as OPTIONAL but never supplies the required `depthSensing`
-  // init dict, so the browser drops it. Wrap requestSession once (before entering AR) to add it — then
-  // three r169 fetches the depth texture and renders its occlusion mesh. Harmless if unsupported.
-  var _wrapped = false;
-  function enableDepthSensing() {
-    if (_wrapped || !navigator.xr || !navigator.xr.requestSession) return;
-    _wrapped = true;
-    var orig = navigator.xr.requestSession.bind(navigator.xr);
-    navigator.xr.requestSession = function (mode, opts) {
-      opts = opts || {};
-      if (mode === "immersive-ar" && !opts.depthSensing) {
-        opts.depthSensing = {
-          usagePreference: ["gpu-optimized", "cpu-optimized"],
-          dataFormatPreference: ["luminance-alpha", "float32"]
-        };
-        log("requestSession: added depthSensing (gpu-optimized) init dict");
-      }
-      return orig(mode, opts);
-    };
-  }
-
   AFRAME.registerComponent("occlusion", {
     init: function () {
       this.mode = resolveMode();
       this.T = AFRAME.THREE;
       this._hands = {};                // handedness → { mesh, geo, pos }
-      this._material = null;           // shared depth-only material
-      this._loggedRuntime = false;
+      this._material = null;           // shared depth-only (or white) material
       this._t = 0;
       var V = this.T.Vector3;
       this._v = { a: new V(), b: new V(), n: new V(), dir: new V(), side: new V() };
       log("mode=" + this.mode + " (injected=" + window.CONJURE_OCCLUSION + ")");
 
       if (this.mode === "off") return;
-      if (this.mode === "full") enableDepthSensing();
 
       var self = this;
       this.el.addEventListener("enter-vr", function () {              // what did the runtime actually grant?
@@ -238,32 +216,8 @@
       }
     },
 
-    // full mode: keep three's depth mesh alive. It renders BEFORE A-Frame's scene render, which would
-    // otherwise clear its depth — so while presenting AR with a live depth texture, turn off
-    // autoClearDepth (three's own per-frame mesh reseeds the whole buffer). Restore it otherwise so
-    // normal rendering is untouched. Also log the granted depth usage/format so we can see WHY a device
-    // isn't giving three a GPU texture (hasDepthSensing stays false → no occlusion).
-    _fullSync: function () {
-      var r = this.el.renderer, xr = r && r.xr;
-      if (!r || !xr) return;
-      var has = !!(xr.hasDepthSensing && xr.hasDepthSensing());
-      var active = !!(xr.isPresenting && has);
-      r.autoClearDepth = !active;
-      if (active && !this._loggedRuntime) { this._loggedRuntime = true; log("full: depth-sensing active, holding depth buffer"); }
-      if (++this._t % 72 === 0) {
-        var s = xr.getSession && xr.getSession();
-        log("full: hasDepthSensing=" + has + " depthUsage=" + (s && s.depthUsage) + " depthDataFormat=" + (s && s.depthDataFormat));
-      }
-    },
-
     tick: function () {
       if (isHands(this.mode)) this._syncHands();
-      else if (this.mode === "full") this._fullSync();
-    },
-
-    remove: function () {
-      var r = this.el.renderer;                                       // don't leave the renderer stuck off
-      if (r) r.autoClearDepth = true;
     }
   });
 })();
