@@ -38,8 +38,15 @@
     return q || (MODES[g] ? g : "off");                          // URL override → injected default → off
   }
 
+  // Mirror to console AND the server log (POST /client_log → temp/conjure.log), like conjure-client's
+  // debugLog — headset-side console is invisible, so status has to reach the terminal.
   function log(msg) {
-    if (window.CONJURE_DEBUG_LOG) { try { console.log("[occlusion] " + msg); } catch (e) {} }
+    if (!window.CONJURE_DEBUG_LOG) return;
+    try { console.log("[occlusion] " + msg); } catch (e) {}
+    try {
+      fetch("/client_log", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: "occlusion", msg: msg }) }).catch(function () {});
+    } catch (e) { /* never let logging break a frame */ }
   }
 
   // --- full mode: A-Frame lists depth-sensing as an OPTIONAL feature but never supplies the required
@@ -79,6 +86,17 @@
       if (this.mode === "off") return;
       if (this.mode === "full") enableDepthSensing();
       // hands: nothing to do until the AR session (and its hand input sources) exist — see enter-vr/tick.
+
+      // Log what the runtime actually granted us the moment we enter immersive mode — the fastest way to
+      // see whether hand-tracking (hands mode) or depth-sensing (full mode) is present at all.
+      var self = this;
+      this.el.addEventListener("enter-vr", function () {
+        try {
+          var s = self.el.renderer && self.el.renderer.xr && self.el.renderer.xr.getSession();
+          var feats = s && s.enabledFeatures ? Array.prototype.join.call(s.enabledFeatures, ",") : "?";
+          log("enter-vr: mode=" + self.mode + " enabledFeatures=[" + feats + "]");
+        } catch (e) { log("enter-vr: feature probe failed: " + e); }
+      });
     },
 
     // A depth-only occluder: writes DEPTH but no COLOUR, so it never paints — it only carves holes that
@@ -116,10 +134,12 @@
 
     _syncHands: function () {
       if (!this._hands.length) this._adoptHands();
+      var totalJoints = 0, totalOcc = 0;
       for (var h = 0; h < this._hands.length; h++) {
         var rec = this._hands[h], joints = rec.hand.joints || {};
         for (var name in joints) {
           if (!Object.prototype.hasOwnProperty.call(joints, name)) continue;
+          totalJoints++;
           var joint = joints[name];
           var occ = rec.occluders[name];
           if (!occ) { occ = this._occluderMesh(); joint.add(occ); rec.occluders[name] = occ; }
@@ -128,8 +148,13 @@
           // that occasionally report no radius.
           var r = (joint.jointRadius || 0.012) * 1.4;
           occ.scale.set(r, r, r);
+          totalOcc++;
         }
       }
+      // Throttled status (~1 Hz): hands present, joints populated, occluders live. If joints stays 0 you're
+      // either holding controllers or hand-tracking wasn't granted (check the enter-vr enabledFeatures line).
+      var now = (this._t = (this._t || 0) + 1);
+      if (now % 72 === 0) log("hands=" + this._hands.length + " joints=" + totalJoints + " occluders=" + totalOcc);
     },
 
     // full mode: keep three's depth mesh alive. It renders BEFORE A-Frame's scene render, which would
