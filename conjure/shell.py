@@ -63,6 +63,10 @@ class Shell:
         # required because a command runs in the connection's receive-loop task, and a cross-task MCP
         # `aclose()` raises "exit a cancel scope in a different task". `async (agent_name, on_text) -> None`.
         self._agent_switch_hook = None
+        # `clear` wipes the live session's chat history. The agent server sets this to clear BOTH the
+        # Director's in-memory transcript (what the LLM sees) and the persisted JSONL; a hand-built shell
+        # (tests) leaves it None and clears in-memory only. `async (on_text) -> None`.
+        self._clear_transcript_hook = None
         # (matcher, handler, help). First match wins; an LLM switch and the unknown-command fallback
         # are tried after, in _dispatch. The handler is called as handler(on_text, match). Add a row
         # to add a command.
@@ -79,6 +83,8 @@ class Shell:
             (re.compile(r"^session(?:\s+(?P<rest>\S.*))?$", re.I), self._session,
              "session [new|rename|delete|public|private] · session <name> · session <user> <name> — "
              "list / switch to your session / visit a user's session (quote names with spaces)"),
+            (re.compile(r"^(?:clear|reset)$", re.I), self._clear,
+             "clear — wipe this session's chat history (keeps the world, assets, and session)"),
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
              "dir [path] — list users/spaces/worlds/assets (e.g. dir /alice/worlds)"),
             (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
@@ -273,6 +279,19 @@ class Shell:
                         f"user: {self._user} · agent: {self._agent_name()} · LLM: {d.active} · "
                         f"session: {session_str} · {'shell' if self.in_shell else 'agent'} mode "
                         f"({len(d.roster)} LLMs, {len(d._tools)} tools)")
+
+    async def _clear(self, on_text, m=None):
+        # Wipe the SHARED session's chat history — gate on being permitted in the live session, like other
+        # shared-effect verbs, so a bumped guest can't reset the host's conversation.
+        if not self._permitted:
+            await self._say(on_text, "You're a guest here — only someone in the session can clear its history.")
+            return
+        if self._clear_transcript_hook is not None:   # hosted (agent server): clears in-memory + persisted
+            await self._clear_transcript_hook(on_text)
+            return
+        if self._director is not None:                 # hand-built shell / tests: in-memory only
+            self._director.transcript = []
+        await self._say(on_text, "Chat history cleared.")
 
     async def _llms(self, on_text, m=None):
         rows = [("* " if n == self._director.active else "  ") + n for n in self._director.roster]

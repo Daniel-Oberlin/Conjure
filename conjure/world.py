@@ -509,6 +509,12 @@ class SessionRepository:
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
 
+    def clear_transcript(self, scope: str, sid: str) -> None:
+        """Wipe a session's saved dialog (chat-history reset). Keeps the world, assets, and state docs —
+        only the conversation JSONL is removed, so a fresh `read_transcript` returns []. Used by the shell
+        `clear` command to reset a bloated conversation that's degrading the model."""
+        self.transcript_path(scope, sid).unlink(missing_ok=True)
+
     def read_transcript(self, scope: str, sid: str) -> list[dict]:
         """The saved dialog as a list of entry dicts (empty if none). A torn final line (crash mid-append)
         is skipped rather than fatal — the append-only format degrades to "lose the last turn"."""

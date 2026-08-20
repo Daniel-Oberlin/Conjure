@@ -554,3 +554,15 @@ def test_migrate_project_cache_refuses_self(tmp_path):
     _fake_cache(cache)
     assert migrate_project_cache_to_home(cache, cache, tmp_path / "c") is False
     assert (cache / "users").exists()                                       # untouched
+
+
+def test_clear_transcript_removes_saved_dialog(tmp_path):
+    from conjure.world import SessionRepository
+    repo = SessionRepository(tmp_path)
+    scope, sid = "daniel/agents/builder", "s1"
+    repo.append_transcript(scope, sid, {"role": "user", "by": "daniel", "text": "hi"})
+    repo.append_transcript(scope, sid, {"role": "assistant", "by": "", "text": "hello"})
+    assert len(repo.read_transcript(scope, sid)) == 2
+    repo.clear_transcript(scope, sid)
+    assert repo.read_transcript(scope, sid) == []      # wiped
+    repo.clear_transcript(scope, sid)                  # idempotent — missing file is fine

@@ -433,6 +433,7 @@ async def _shell_and_follow(app: FastAPI, settings: Settings, agent: Optional[st
     re-binds (here) enter/exit it, serialized against turns by `floor_lock`."""
     async with Shell.session(settings, agent=agent, user=user, errlog=errlog) as shell:
         shell._agent_switch_hook = _make_agent_switch_hook(app, settings, shell)
+        shell._clear_transcript_hook = _make_clear_transcript_hook(app, shell)
         app.state.shell = shell
         app.state.shell_ready.set()
         await _follow_world_state(app)
@@ -468,6 +469,24 @@ def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
             await asyncio.sleep(0.05)
 
     return _switch
+
+
+def _make_clear_transcript_hook(app: FastAPI, shell: Shell):
+    """`clear` resets the live session's chat history — the Director's in-memory transcript (what the LLM
+    sees each turn) AND the persisted JSONL — so a bloated conversation that's degrading tool-calling can
+    be wiped without touching the world, assets, or session. No cross-task teardown, so it runs inline."""
+    async def _clear(on_text) -> None:
+        d = shell.director
+        cur = _current_session(app)
+        if d is not None:
+            d.transcript = []
+        if cur is not None:
+            app.state.sessions.clear_transcript(*cur)
+        if on_text:
+            await on_text("Chat history cleared — starting fresh (world and assets kept).", final=True,
+                          speaker=(d.active if d is not None else None))
+
+    return _clear
 
 
 # --------------------------------------------------------------------------- app
