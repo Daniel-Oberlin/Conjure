@@ -1248,6 +1248,15 @@ def test_index_injects_occlusion_mode(srv, client, monkeypatch):
         assert f'window.CONJURE_OCCLUSION="{mode}";' in client.get("/").text
 
 
+def test_time_endpoint_returns_epoch_ms(client):
+    import time
+    before = time.time() * 1000.0
+    t = client.get("/time").json()["t"]
+    after = time.time() * 1000.0
+    # epoch ms, bracketed by wall-clock either side of the call (generous slack for slow CI).
+    assert before - 1000.0 <= t <= after + 1000.0
+
+
 def test_forced_geo_resolves_zero_space_and_bad_specs(srv, monkeypatch):
     import dataclasses
     force = lambda v: monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, force_geo=v))
