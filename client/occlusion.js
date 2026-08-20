@@ -14,6 +14,8 @@
 //           XR joint poses), added to the SCENE GRAPH so it renders inside A-Frame's own pass (after its
 //           depth clear) and reliably seeds depth. Sharp + cheap; hands only. Needs 'hand-tracking' AND
 //           the headset actually producing hand input sources (put controllers down / auto-switch on).
+//   hands-solid — the SAME hand mesh, but drawn as opaque white polygons (a white-glove avatar) instead
+//           of an invisible occluder. Still occludes (opaque, writes depth); just also visible.
 //   full  — environment depth: opt the session into WebXR depth-sensing (gpu-optimized) so three r169's
 //           built-in depth mesh writes real-world depth every frame (walls/furniture/people, coarse).
 //
@@ -24,7 +26,8 @@
 (function () {
   "use strict";
 
-  var MODES = { off: 1, hands: 1, full: 1 };
+  var MODES = { off: 1, hands: 1, "hands-solid": 1, full: 1 };
+  function isHands(mode) { return mode === "hands" || mode === "hands-solid"; }
 
   // --- Hand skeleton we fill. Fingers are palm-plane "ribbons" (2 verts per joint, offset ± half-width
   //     along the in-plane perpendicular to the bone); the palm is a triangle fan from the wrist across
@@ -131,11 +134,14 @@
       });
     },
 
-    // A depth-only material: writes DEPTH but no COLOUR, so it never paints — it only carves holes that
-    // let passthrough show through virtual content behind it. DoubleSide so winding never culls it.
+    // hands: a depth-only material — writes DEPTH but no COLOUR, so it never paints, only carves holes
+    // that let passthrough show through virtual content behind it. hands-solid: opaque white instead, a
+    // visible white-glove avatar that still occludes. DoubleSide so winding never culls it.
     _mat: function () {
       if (!this._material) {
-        this._material = new this.T.MeshBasicMaterial({ colorWrite: false, side: this.T.DoubleSide });
+        this._material = this.mode === "hands-solid"
+          ? new this.T.MeshBasicMaterial({ color: 0xffffff, side: this.T.DoubleSide })
+          : new this.T.MeshBasicMaterial({ colorWrite: false, side: this.T.DoubleSide });
       }
       return this._material;
     },
@@ -251,7 +257,7 @@
     },
 
     tick: function () {
-      if (this.mode === "hands") this._syncHands();
+      if (isHands(this.mode)) this._syncHands();
       else if (this.mode === "full") this._fullSync();
     },
 

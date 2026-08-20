@@ -244,7 +244,7 @@ class Settings:
     #                                                  lower res = less GPU (fewer dropped frames while walking)
     #                                                  at the cost of peripheral sharpness; 0 = full-res (today's
     #                                                  default). Injected as window.CONJURE_FOVEATION.
-    occlusion: str = "off"                           # real-world depth occlusion mode: "off" | "hands" | "full"
+    occlusion: str = "off"                           # real-world depth occlusion: "off"|"hands"|"hands-solid"|"full"
     #                                                  (docs/dynamic-content-plan.md §occlusion). A depth pre-pass
     #                                                  writes real-world depth (color-write off) so virtual content is
     #                                                  hidden where a nearer real surface is — e.g. your hand covers a
