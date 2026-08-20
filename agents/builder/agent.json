@@ -17,7 +17,8 @@
         "generate_image", "generate_skybox_image", "generate_grounded_skybox_image",
         "edit_image", "outpaint_image", "skybox_from_image", "list_image_generators",
         "place_image", "set_skybox", "set_grounded_skybox",
-        "edit_scene_image", "widen_scene_image", "skybox_from_scene_image"
+        "edit_scene_image", "widen_scene_image", "skybox_from_scene_image",
+        "conjure_module", "dismiss_module"
       ]
     }
   ],

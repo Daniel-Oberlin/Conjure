@@ -591,6 +591,7 @@ _OWNER_ONLY_PATHS = {
     "/reset", "/patch", "/room", "/texture_surface", "/style_surface", "/place_asset",
     "/place_cached_asset", "/place_image", "/set_skybox", "/set_grounded_skybox",
     "/edit_image", "/outpaint_image", "/skybox_from_image",
+    "/module", "/module/dismiss",
 }
 
 
@@ -3392,6 +3393,75 @@ async def place_image(req: PlaceImageRequest) -> dict:
                             billboard=req.billboard, stereo=stereo)]
     await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="image")})
     return _with_notice({"ok": True, "id": eid, "image_id": rec.id}, _ensure_referenced_public(rec.id))
+
+
+# --- dynamic content modules (docs/dynamic-content-plan.md) -----------------------------------------
+# A module is an A-Frame component the client renders from an entity's `components` (see
+# client/dynamic-modules.js); placing one is just adding that entity, so it's config-in-snapshot,
+# shared, and persisted on the existing path. This registry is the seed of the per-module manifest
+# (tier/anchor/singleton/claims); grow it as modules land. Config passes through to the component,
+# which owns its own schema/defaults.
+DYNAMIC_MODULES: dict[str, dict] = {
+    "fireflies": {"component": "fireflies", "tier": "A", "anchor": "free",
+                  "singleton": False, "default_pos": [0.0, 1.3, -1.5]},
+}
+
+
+class PlaceModuleRequest(BaseModel):
+    module: str
+    config: Optional[dict] = None
+    position: Optional[list[float]] = None
+    name: Optional[str] = None
+
+
+@app.post("/module")
+async def place_module(req: PlaceModuleRequest) -> dict:
+    """Conjure a dynamic module (docs/dynamic-content-plan.md): add an entity carrying the module's
+    component, so every client renders the same effect (shared, deterministic from the shared clock).
+    `name` reuses/reconfigures an existing instance; a singleton module reuses its one instance."""
+    spec = DYNAMIC_MODULES.get(req.module)
+    if not spec:
+        return {"ok": False, "error": f"unknown module {req.module!r}; available: "
+                f"{', '.join(sorted(DYNAMIC_MODULES))}"}
+    config = dict(req.config or {})
+    pos = req.position or list(spec.get("default_pos") or [0.0, 1.3, -1.5])
+    comp = spec["component"]
+    eid = req.name
+    if not eid and spec.get("singleton"):   # one instance: reuse the existing entity if present
+        eid = next((e["id"] for e in store.doc["entities"]
+                    if (e.get("meta") or {}).get("module") == req.module), None)
+    eid = eid or f"mod_{req.module}_{uuid4().hex[:6]}"
+    existing = any(e["id"] == eid for e in store.doc["entities"])
+    if existing:   # reconfigure/move in place
+        ops = [{"op": "update", "id": eid,
+                "set": {f"components.{comp}": config, "transform.position": pos}}]
+    else:
+        ops = [{"op": "add", "entity": {"id": eid, "transform": {"position": pos},
+                "components": {comp: config}, "meta": {"module": req.module, "dynamic": True}}}]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="module")})
+    return {"ok": True, "id": eid, "module": req.module}
+
+
+class DismissModuleRequest(BaseModel):
+    name: Optional[str] = None     # a specific entity id
+    module: Optional[str] = None   # …or every instance of this module kind
+
+
+@app.post("/module/dismiss")
+async def dismiss_module(req: DismissModuleRequest) -> dict:
+    """Unload a dynamic module — remove its entity/entities (the client disposes GPU resources in the
+    component's remove())."""
+    if req.name:
+        ids = [req.name] if any(e["id"] == req.name for e in store.doc["entities"]) else []
+    elif req.module:
+        ids = [e["id"] for e in store.doc["entities"] if (e.get("meta") or {}).get("module") == req.module]
+    else:
+        return {"ok": False, "error": "pass a module name (entity id) or a module kind to dismiss"}
+    if not ids:
+        return {"ok": False, "error": "no matching module to dismiss"}
+    patch = store.apply_patch([{"op": "remove", "id": i} for i in ids], origin="module")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "removed": ids}
 
 
 class SetSkyboxRequest(BaseModel):

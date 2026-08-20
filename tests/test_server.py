@@ -1257,6 +1257,27 @@ def test_time_endpoint_returns_epoch_ms(client):
     assert before - 1000.0 <= t <= after + 1000.0
 
 
+def test_conjure_and_dismiss_module(client):
+    # conjure fireflies → an entity carrying the fireflies component + module meta, config passed through.
+    r = client.post("/module", json={"module": "fireflies", "config": {"count": 20, "seed": 3}}).json()
+    assert r["ok"] and r["module"] == "fireflies"
+    eid = r["id"]
+    e = next(x for x in _entities(client) if x["id"] == eid)
+    assert e["components"]["fireflies"] == {"count": 20, "seed": 3}
+    assert e["meta"]["module"] == "fireflies" and e["meta"]["dynamic"] is True
+    # reconfigure in place by id (no duplicate entity).
+    r2 = client.post("/module", json={"module": "fireflies", "name": eid, "config": {"count": 99}}).json()
+    assert r2["id"] == eid
+    assert sum(1 for x in _entities(client) if x["id"] == eid) == 1
+    assert next(x for x in _entities(client) if x["id"] == eid)["components"]["fireflies"]["count"] == 99
+    # unknown module → clean error, nothing added.
+    assert client.post("/module", json={"module": "nope"}).json()["ok"] is False
+    # dismiss by kind → removed.
+    d = client.post("/module/dismiss", json={"module": "fireflies"}).json()
+    assert d["ok"] and eid in d["removed"]
+    assert all(x["id"] != eid for x in _entities(client))
+
+
 def test_forced_geo_resolves_zero_space_and_bad_specs(srv, monkeypatch):
     import dataclasses
     force = lambda v: monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, force_geo=v))

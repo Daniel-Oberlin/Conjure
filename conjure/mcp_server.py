@@ -907,6 +907,42 @@ async def place_image(
 
 
 @mcp.tool()
+async def conjure_module(
+    module: str,
+    config: Optional[dict] = None,
+    position: Optional[list[float]] = None,
+    name: Optional[str] = None,
+) -> str:
+    """Conjure a DYNAMIC MODULE — a live, animated effect that runs in the headset and is shared by
+    everyone in the session (deterministic from a shared clock, so all viewers see the same thing).
+
+    module: which effect. Available now: 'fireflies' (a swarm of gently wandering glow points).
+    config: module-specific settings. For fireflies: count (int), color (hex), radius (m, swarm size),
+        height (m, centre), drift (m, wander), speed, size (point size m), seed (int → a specific swarm).
+        Omit to use the module's defaults.
+    position: [x, y, z] meters for where the effect centres (default just in front of the viewer).
+    name: reuse an id to move/reconfigure an existing instance; otherwise a new one is created.
+
+    Use this when the user asks for an ambient/animated effect ('add some fireflies', 'make it magical').
+    Remove it later with dismiss_module.
+    """
+    out = await _post("/module", _body(module=module, config=config, position=position, name=name))
+    if not out.get("ok"):
+        return f"Couldn't conjure module: {out.get('error', 'unknown error')}."
+    return f"Conjured {out['module']} (id {out['id']})."
+
+
+@mcp.tool()
+async def dismiss_module(name: Optional[str] = None, module: Optional[str] = None) -> str:
+    """Remove a dynamic module (unload it). Pass name (its entity id) to remove one instance, or module
+    (e.g. 'fireflies') to remove every instance of that kind."""
+    out = await _post("/module/dismiss", _body(name=name, module=module))
+    if not out.get("ok"):
+        return f"Couldn't dismiss module: {out.get('error', 'unknown error')}."
+    return f"Dismissed {', '.join(out['removed'])}."
+
+
+@mcp.tool()
 async def set_skybox(image_id: str) -> str:
     """Wrap the whole scene in a procured image (by image_id from generate_skybox_image /
     skybox_from_image) as the surrounding sky/environment."""

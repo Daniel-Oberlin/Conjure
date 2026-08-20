@@ -294,9 +294,12 @@ into the render loop.
 
 ## Build order
 
-1. **Shared clock** (step 0) — standalone, two-headset agreement test.
-2. **Fireflies** (tier A) — proves module lifecycle, **disposal**, config-in-snapshot, volume anchor
-   with a radius bound (works surfaceless), and the agent launching a module. Boring on purpose.
+1. **Shared clock** (step 0) — ✅ built; two-headset agreement confirmed via the fireflies swarm.
+2. **Fireflies** (tier A) — ✅ built. `client/dynamic-modules.js` (procedural from `ConjureClock`+seed,
+   full disposal), launched as an entity carrying the component (config-in-snapshot, shared, persisted).
+   Agent-launch: `conjure_module` / `dismiss_module` MCP tools → server `/module` + `/module/dismiss`
+   with a `DYNAMIC_MODULES` registry (the manifest seed: component/tier/anchor/singleton). Confirmed
+   in sync across two users.
 3. **Event bus + water ripple** (tier B) — proves shared events, XR touch raycast, multi-user input
    attribution, deterministic short-lived sim. If ripple-from-anyone's-touch looks right on two
    headsets, the architecture holds.
