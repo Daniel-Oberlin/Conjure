@@ -60,6 +60,13 @@ A/B). Anything authoritative goes to tier C.
 
 ## Prerequisite — the shared clock (step 0)
 
+**Status:** BUILT (branch `dynamic-content`). Server `GET /time` returns epoch ms; `client/conjure-clock.js`
+syncs to it Cristian-style (best-of-N round-trips, 30 s re-sync) and exposes `window.ConjureClock.now()`
+(shared epoch ms), `.status()`, `.sync()`, falling back to local time until the first sync. Chose HTTP
+`/time` over a `/ws` message for isolation + testability; can move onto `/ws` later if RTT variance
+matters. Two-headset `now()`-agreement check still pending on-device (needs a shared visual → arrives
+with fireflies).
+
 All of A/B/C need a common monotonic time. Build it first, standalone and independently testable:
 
 - A small NTP-ish handshake over the existing `/ws` estimates server-time offset per client and
