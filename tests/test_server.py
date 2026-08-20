@@ -1406,6 +1406,22 @@ def test_ar_hold_over_ws_occupies_then_release_unlocks_reselection(srv, client):
 
 
 # ---- Phase 4 step 1: per-connection user + public-join gate --------------------------------------
+def test_ws_resync_resends_current_snapshot(client):
+    # a client that dropped patches while blanked (AR space selection) sends `resync` on un-blank and
+    # gets the CURRENT world back, recovering anything added while it was blanked.
+    with client.websocket_connect("/ws?user=daniel") as ws:
+        ws.receive_json()                                        # initial snapshot
+        assert client.post("/module", json={"module": "fireflies", "name": "ff-resync"}).json()["ok"]
+        ws.send_json({"type": "resync"})
+        snap = None
+        for _ in range(6):                                       # drain the broadcast patch → find the snapshot
+            m = ws.receive_json()
+            if m["type"] == "snapshot":
+                snap = m; break
+        assert snap is not None
+        assert any(e["id"] == "ff-resync" for e in snap["world"]["entities"])
+
+
 def test_ws_owner_and_public_guest_receive_the_world(srv, client):
     with client.websocket_connect("/ws?user=daniel") as ws:        # owner
         snap = ws.receive_json()

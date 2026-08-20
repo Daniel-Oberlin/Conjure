@@ -3634,6 +3634,9 @@ async def ws(websocket: WebSocket) -> None:
             elif mtype == "release":                             # left AR (exit-vr) → no longer holding
                 _space_holders.discard(websocket)
                 _unclaim()                                       # frees the space if it was the last holder
+            elif mtype == "resync":                              # client cleared a blanked window (space
+                await websocket.send_json(_snapshot_msg())       # selection) → re-send the current world so
+                                                                 # any patches dropped while blanked are recovered
             elif mtype == "presence":                            # relay this client's pose to the others
                 pose = msg.get("pose")
                 g = _gaze_from_pose(pose)

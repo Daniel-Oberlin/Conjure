@@ -921,7 +921,15 @@
     if (!awaitingSpace) return;
     awaitingSpace = false;
     hideHeadsetMessage(); hideInfo();
-    if (lastWorld) applySnapshot(lastWorld);
+    if (lastWorld) applySnapshot(lastWorld);   // immediate: show the last-known world…
+    requestResync();                           // …then pull the CURRENT store, so any patch dropped while
+                                               // blanked (content added/removed during selection) is recovered
+  }
+
+  // Ask the server to re-send the current snapshot. Used after a blanked window (space selection) clears
+  // without a fresh snapshot, so world updates that arrived while we were dropping patches aren't lost.
+  function requestResync() {
+    if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: "resync" }));
   }
 
   // --- presence (Phase 4 §7): show the other users as a sphere-on-box avatar, co-located in the shared
