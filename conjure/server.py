@@ -1051,7 +1051,8 @@ async def index() -> HTMLResponse:
     tmm = int((CLIENT_DIR / "three.module.min.js").stat().st_mtime)  # worker's standalone three (ESM)
     om = int((CLIENT_DIR / "occlusion.js").stat().st_mtime)      # real-world depth occlusion (--occlusion)
     ckm = int((CLIENT_DIR / "conjure-clock.js").stat().st_mtime)  # shared clock (dynamic-content spine)
-    v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm)     # badge reflects the newest of the scripts
+    dmm = int((CLIENT_DIR / "dynamic-modules.js").stat().st_mtime)  # dynamic modules (fireflies, …)
+    v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm, dmm)     # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
@@ -1060,6 +1061,7 @@ async def index() -> HTMLResponse:
     html = html.replace("/static/world-model.js", f"/static/world-model.js?v={wm}")
     html = html.replace("/static/occlusion.js", f"/static/occlusion.js?v={om}")
     html = html.replace("/static/conjure-clock.js", f"/static/conjure-clock.js?v={ckm}")
+    html = html.replace("/static/dynamic-modules.js", f"/static/dynamic-modules.js?v={dmm}")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     # Tell the client which diagnostics are on so it doesn't POST/HUD when off. debug_log gates general
     # client logging; debug_registration gates the co-location registration HUD + per-capture log.
