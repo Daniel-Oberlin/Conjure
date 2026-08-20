@@ -3783,6 +3783,19 @@ async def _propagate_visibility() -> None:
 
 
 async def _broadcast(message: dict, *, skip: "WebSocket | None" = None) -> None:
+    # Server-side trace of every world update sent out, into the SAME temp/conjure.log the client writes
+    # (interleaved by timestamp). Pair with the client's [ws] recv / [patch] lines to localize a
+    # "director said done but nothing changed" bug: no [bcast] ⇒ the mutation never produced a patch
+    # (tool no-op/error/guard); [bcast] but no client [ws] recv ⇒ delivery; recv but [patch] DROPPED ⇒
+    # the client was blanked (space selection). Presence is excluded (high-frequency).
+    _t = message.get("type")
+    if _t == "patch":
+        _p = message.get("patch") or {}
+        _slog("bcast", f"patch rev {_p.get('rev')} ops={len(_p.get('ops') or [])} "
+                       f"origin={_p.get('origin')} → {len(clients)} client(s)")
+    elif _t == "snapshot":
+        _w = message.get("world") or {}
+        _slog("bcast", f"snapshot rev {_w.get('rev')} ents={len(_w.get('entities') or [])} → {len(clients)} client(s)")
     dead = []
     for ws_ in list(clients):
         if ws_ is skip:
