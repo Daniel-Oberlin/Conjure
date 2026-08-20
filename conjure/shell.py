@@ -81,10 +81,8 @@ class Shell:
              "agent <name> — switch to another agent (relaunches its tools; starts its own context)"),
             (re.compile(r"^sessions$", re.I), self._sessions, "sessions — list this agent's saved sessions"),
             (re.compile(r"^session(?:\s+(?P<rest>\S.*))?$", re.I), self._session,
-             "session [new|rename|delete|public|private] · session <name> · session <user> <name> — "
-             "list / switch to your session / visit a user's session (quote names with spaces)"),
-            (re.compile(r"^(?:clear|reset)$", re.I), self._clear,
-             "clear — wipe this session's chat history (keeps the world, assets, and session)"),
+             "session [new|rename|delete|public|private|clear] · session <name> · session <user> <name> — "
+             "list / switch / visit / clear chat history (keeps world+assets; quote names with spaces)"),
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
              "dir [path] — list users/spaces/worlds/assets (e.g. dir /alice/worlds)"),
             (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
@@ -280,12 +278,8 @@ class Shell:
                         f"session: {session_str} · {'shell' if self.in_shell else 'agent'} mode "
                         f"({len(d.roster)} LLMs, {len(d._tools)} tools)")
 
-    async def _clear(self, on_text, m=None):
-        # Wipe the SHARED session's chat history — gate on being permitted in the live session, like other
-        # shared-effect verbs, so a bumped guest can't reset the host's conversation.
-        if not self._permitted:
-            await self._say(on_text, "You're a guest here — only someone in the session can clear its history.")
-            return
+    async def _do_clear(self, on_text):
+        # Wipe the live session's chat history (invoked by `session clear`; permission gated by the caller).
         if self._clear_transcript_hook is not None:   # hosted (agent server): clears in-memory + persisted
             await self._clear_transcript_hook(on_text)
             return
@@ -405,9 +399,15 @@ class Shell:
         except ValueError:                                    # unbalanced quotes → naive split
             tokens = rest.split()
         verb = tokens[0].lower() if tokens else ""
+        if verb == "clear":                                   # wipe THIS session's chat history (keeps world/assets)
+            if not self._permitted:
+                await self._say(on_text, "You're a guest here — only someone in the session can clear its history.")
+                return
+            await self._do_clear(on_text)
+            return
         scope = self._scope()
         # switch/visit/bare `session <…>` are everything that isn't a management verb.
-        is_switch = verb not in ("new", "rename", "delete", "public", "private")
+        is_switch = verb not in ("new", "rename", "delete", "public", "private", "clear")
         # Shared-effect verbs move the GLOBAL live pointer (everyone follows) — allowed only for a speaker
         # permitted in the live session (§6d), so a bumped guest can't yank everyone out of a private one.
         if (verb == "new" or is_switch) and not self._permitted:

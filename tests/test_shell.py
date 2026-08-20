@@ -520,10 +520,10 @@ async def test_session_switch_own_vs_visit_by_arg_count():
     assert calls[-1][2]["owner"] == "daniel" and calls[-1][2]["session"] == "blade runner"
 
 
-async def test_clear_wipes_the_director_transcript_in_shell_mode():
+async def test_session_clear_wipes_the_director_transcript():
     sh, d, out, on_text = _shell()
     d.transcript = ["u1", "a1", "u2", "a2"]            # accumulated history
     sh.in_shell = True
-    await sh.feed("clear", on_text=on_text)            # hand-built shell → in-memory clear path
+    await sh.feed("session clear", on_text=on_text)    # hand-built shell → in-memory clear path
     assert d.transcript == []
     assert any("cleared" in t.lower() for _, t in out)
