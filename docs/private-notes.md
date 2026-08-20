@@ -1,21 +1,5 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
-# xAI
-- Share a base class with OpenAI, or just re-use OpenAI?
-- Add extra capabilities
-
-# Graphics
-- Lighting
-- Billboards
-- Stereo images
-- Import images (from temp/imports)
-
-# Agent refactor
-- agent has global store /agents/builder/
-  - agent has user store /user/agents/builder/
-  - do we need /system, /users, /agents as top level?
-- agent semantic versioning, upgrade path (default purge)?
-
 # CLI refactor
 - Sytax
   - new (private) session (name)
@@ -23,21 +7,23 @@
   - rename (current session/world) or session "name" to "new name"
   - list/ls agents/sessions/llms/spaces
 - dir paths /user/agent/worlds/..., /user/spaces...
+- Up/down arrows for history (goes in CLI tool only?)
 
-- Menu-driven CLI tool
-  - Launch servers, restart, shutdown/exit
-  - client launch asks for user (defaults to previously used)
-  - Select servers/clients (added to menu) to enter window
-  - up/down arrows select menu
-  - Up/down arrows for history (goes in CLI tool only?)
+# Menu-driven CLI tool
+  - Completely agnostic of Conjure
+  - Top level: launch servers, restart, shutdown/exit
+  - Add launch modules which are persisted
+    - Name and CLI launch string
+    - Launch by default (toggle on/off in submenu)
+    - Submenu (open with RETURN, show text window, startup/shutdown, toggle default on/off, edit, delete)
+    - Pressing ENTER on launch module enters the interactive CLI window for the module with highlighted top line identifying the module/session
+    - ON -> GREEN, OFF -> RED, OFF (not on by default) -> Yellow
   - ESC goes back to home menu
-  - edit startup parameters (persisted)
+  - Store config in .runner file (search up from current directory until home directory)
 
 # Other
-- Global settings /system/globalsettings (default info color)
-- space visibility (public access, public create worlds)
-
-# Outdoor agent
+  - Global settings /system/globalsettings (default info color)
+  - space visibility (public access, public create worlds)
 
 # Dynamic content
 - Dynamic modules
@@ -53,21 +39,39 @@
 - Point clouds
 - Water picture
 - Model animations via glTF/VRM
+- Animation for pending box sending dynamic code to the headset
+- Dynamic code should be deterministic and anchored to a precise timestamp for consistency across multiple headsets
+- Keep store of created content, version controlled?
+- Milkdrop style animations on ceiling, in stereo, planetarium style or in front of you
+- Solar system animation
+- Live webcam video
+- Terminal shell with voice
+- X11 window
+- Album covers and art
+
+# Graphics
+  - Lighting
+  - Panoramic photo
+
+# Audio
+  - Quest streaming
+    - User audio separation in same room
+  - Get better clarity for speech-to-text
 
 # Web
-- Perform web requests
-- Fetch images or other content from the web
+  - Perform web requests
+  - Fetch images or other content from the web
 
 # Utility
-- General status area to top - clock on right with adjustable widgets:
- - Clock (right default)
- - Date (right default)
- - Agent:LLM (right)
- - Status: Loading skybox, Loading image, Idle (left)
- - compass (center)
- - world "/scoped/builder/firstroom"
- - show or hide
- - conjure show status, conjure hide clock, conjure clock center
+  - General status area to top - clock on right with adjustable widgets:
+  - Clock (right default)
+  - Date (right default)
+  - Agent:LLM (right)
+  - Status: Loading skybox, Loading image, Idle (left)
+  - compass (center)
+  - world "/scoped/builder/firstroom"
+  - show or hide
+  - conjure show status, conjure hide clock, conjure clock center
 
 # Host Modes
 - How to reconcile host movement with real movement?
@@ -85,41 +89,7 @@
 - Related to permissions?  Ask permissions at the beginning?
 - Can we catch errors in JS, post them to server for logging, then exit (for visiblity)?
 
-# Dynamic content
-- What do we call dynamic modules?
-- Animation for pending box sending dynamic code to the headset- Dynamic code should be deterministic and anchored to a precise timestamp for consistency across multiple headsets
-- Keep store of created content, version controlled?
-- Milkdrop style animations on ceiling, in stereo, planetarium style or in front of you
-- Solar system animation
-- Live webcam video
-- Terminal shell with voice
-- X11 window
-- Album covers and art
-
-# Environment
-- Generalize under "Environment Map" concept
-- Implement skydome, panorama, holodeck, containing box
-
-# Applications
-- What are applications?
-- LLM app (agent), world app (world module), headset app (headset module) (can share a namespace)
-- Infocom Zmachine
-- "persona" is like an agent, but only a prompt and access to context, like a participant in a role playing game
-
-# Persistance
-- Preferences
- - colors
-- Dymamic module store
-
-# CLI Client
-- Don't hard-code deterministic commands — query the MCP server to build the list dynamically
-- Add a `help` command that displays available commands (decoupling)
-
 # 3D Models
-- Abstract model provider with capabilities
 - Smithsonian and other sources
 - Point clouds
-
-# Deployment and infrastructure
-- Put into container?
-- Discovery for MCP servers?
+- Gaussian splats
