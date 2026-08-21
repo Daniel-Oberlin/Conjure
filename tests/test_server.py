@@ -2294,3 +2294,69 @@ def test_index_injects_active_agent_module_scripts(srv, client):
     assert 'src="/dynamics/water/water.js?v=' in html
     # the deleted flat client files are no longer referenced
     assert "/static/dynamic-modules.js" not in html and "/static/water.js" not in html
+
+
+# ── water picture (image module) aspect-ratio handling (mirror place_image) ──────────────────────
+def _wall_art(client, extent=(0.5, 0.4)):
+    """A wall-art surface at a known upright orientation + size (a 0.5×0.4 frame by default)."""
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
+         "rotation": [0.0, -41.0, 0.0], "extent": list(extent)}]})
+
+
+def _water(client):
+    return next(e for e in _entities(client) if "water" in e.get("components", {}))["components"]["water"]
+
+
+def test_water_free_standing_respects_image_aspect(srv, client):
+    # A free-standing Water Picture sizes its plane to the picture's aspect (like place_image), NOT the
+    # component's fixed 1.2×0.9 default. A 4×4 square image ⇒ a 1.2×1.2 square plane (longest side 1.2).
+    image_id = _procure(client)
+    r = client.post("/module", json={"module": "water", "config": {"image": image_id}}).json()
+    assert r["ok"] is True
+    w = _water(client)
+    assert w["src"] == f"/assets/{image_id}"
+    assert w["width"] == 1.2 and w["height"] == 1.2       # square, not the 0.9 default height
+
+
+def test_water_on_surface_fits_inside_keeping_aspect(srv, client):
+    # On a 0.5×0.4 frame a square image fits INSIDE at 0.4×0.4 — not stretched to fill (0.5×0.4).
+    _wall_art(client)
+    image_id = _procure(client)
+    r = client.post("/module", json={"module": "water", "on_surface": "wall art 18",
+                                     "config": {"image": image_id}}).json()
+    assert r["ok"] is True
+    w = _water(client)
+    assert w["width"] == pytest.approx(0.4) and w["height"] == pytest.approx(0.4)
+
+
+def test_water_on_surface_stretch_fills_the_surface(srv, client):
+    # stretch=True is the opt-in fill: the plane matches the whole surface frame (aspect not preserved).
+    _wall_art(client)
+    image_id = _procure(client)
+    r = client.post("/module", json={"module": "water", "on_surface": "wall art 18",
+                                     "stretch": True, "config": {"image": image_id}}).json()
+    assert r["ok"] is True
+    w = _water(client)
+    assert w["width"] == pytest.approx(0.5) and w["height"] == pytest.approx(0.4)
+
+
+def test_water_explicit_size_is_honored(srv, client):
+    # An explicit width+height in config wins as-is (an intentional exact size / stretch).
+    image_id = _procure(client)
+    r = client.post("/module", json={"module": "water",
+                                     "config": {"image": image_id, "width": 2.0, "height": 1.0}}).json()
+    assert r["ok"] is True
+    w = _water(client)
+    assert w["width"] == 2.0 and w["height"] == 1.0
+
+
+def test_place_image_on_surface_stretch_fills_the_surface(srv, client):
+    # The same opt-in fill for regular images: stretch=True covers the entire surface frame.
+    _wall_art(client)
+    image_id = _procure(client)
+    r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 18",
+                                          "stretch": True}).json()
+    assert r["ok"] is True
+    g = next(e for e in _entities(client) if e["id"] == r["id"])["components"]["geometry"]
+    assert g["width"] == pytest.approx(0.5) and g["height"] == pytest.approx(0.4)

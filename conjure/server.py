@@ -3125,6 +3125,24 @@ def _fit_dims(rec: ImageRecord, extent: list[float], stereo: str | None = None) 
     return _fit_extent((w / h) if (w and h) else 1.0, extent)
 
 
+def _module_plane_dims(rec: ImageRecord, config: dict, extent, *, stretch: bool,
+                       default_size: float = 1.2) -> tuple[float, float]:
+    """(width, height) for a flat image-bearing dynamic module (e.g. a Water Picture), mirroring
+    place_image's aspect handling so a module respects its image's shape by default:
+    - explicit `width`+`height` in the caller's config win as-is (an intentional exact size);
+    - on a surface (extent given): fit the image's aspect INSIDE the frame (default), or `stretch` to
+      fill the whole surface;
+    - free-standing: fit the image's longest side to the requested size (a lone `width`/`height`, else
+      `default_size`), preserving aspect.
+    Water carries no stereo packing, so per-eye halving doesn't apply here."""
+    cw, ch = config.get("width"), config.get("height")
+    if cw and ch:
+        return float(cw), float(ch)
+    if extent:
+        return (float(extent[0]), float(extent[1])) if stretch else _fit_dims(rec, extent)
+    return _plane_dims(rec, float(cw or ch or default_size))
+
+
 def _forward(rotation: list[float]) -> list[float]:
     """World-space front (+Z) of an <a-plane> at A-Frame euler `rotation` (degrees, YXZ order) — the
     surface's own facing/normal (roll about +Z doesn't change it, so `rz` is ignored)."""
@@ -3372,6 +3390,7 @@ class PlaceImageRequest(BaseModel):
     on_surface: Optional[str] = None   # hang on a real surface (id/label/number) — align + fit to it
     billboard: bool = False            # free-standing only: always turn to face the viewer (yaw-only)
     stereo: Optional[str] = None       # 'sbs' | 'tb' — render as a stereo pair; else auto from catalog
+    stretch: bool = False              # on_surface: fill the whole surface (default fits inside, aspect-correct)
 
 
 @app.post("/place_image")
@@ -3404,8 +3423,8 @@ async def place_image(req: PlaceImageRequest) -> dict:
         srot = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
         spos = surf.get("transform", {}).get("position") or pos
         extent = surf.get("components", {}).get("surface", {}).get("extent")
-        if extent:
-            width, height = _fit_dims(rec, extent, stereo)
+        if extent:                                         # fit inside the frame (aspect-correct) unless stretch=fill
+            width, height = (float(extent[0]), float(extent[1])) if req.stretch else _fit_dims(rec, extent, stereo)
         fr = _face_room(srot)                              # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]   # toward the viewer
@@ -3501,6 +3520,7 @@ class PlaceModuleRequest(BaseModel):
     position: Optional[list[float]] = None
     on_surface: Optional[str] = None   # mount on a real surface (id/label/number) — align + fit like place_image
     billboard: bool = False            # compose the billboard component (always face viewer) onto this instance
+    stretch: bool = False              # on_surface: fill the whole surface (default fits inside, aspect-correct)
     name: Optional[str] = None
 
 
@@ -3522,6 +3542,7 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
     config = dict(req.config or {})
     # Convenience: a module can take an `image` id (from generate_image/import) — resolve it to a src URL
     # here (like place_image), so "a water picture of a koi pond" is generate_image → conjure_module.
+    rec = None
     if config.get("image"):
         rec, _, err = _get_image(str(config.pop("image")))
         if err:
@@ -3540,18 +3561,25 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
         srot = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
         spos = surf.get("transform", {}).get("position") or pos
         extent = surf.get("components", {}).get("surface", {}).get("extent")
-        if extent:   # fit the water plane to the surface frame
-            config["width"], config["height"] = extent[0], extent[1]
+        # An image module (water) fits its picture's aspect INSIDE the frame by default (like place_image);
+        # `stretch` fills the whole surface. A non-image module leaves its own sizing alone.
+        if rec is not None and extent:
+            config["width"], config["height"] = _module_plane_dims(rec, config, extent, stretch=req.stretch)
         fr = _face_room(srot)                                   # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]
         meta["on_surface"] = surf["id"]
         meta["surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # ride the surface on recapture
-    elif spec.face_user:   # free-standing flat content → face the viewer AT CREATION (fixed, not billboard)
-        caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
-        fu = _face_user(caller, req.position)
-        if fu:
-            pos, rotation = fu["position"], fu["rotation"]
+    else:
+        # Free-standing image module → size the plane to the picture's aspect (like place_image), instead
+        # of the component's fixed default; stretch is a surface-fill option, so it's irrelevant here.
+        if rec is not None:
+            config["width"], config["height"] = _module_plane_dims(rec, config, None, stretch=False)
+        if spec.face_user:   # free-standing flat content → face the viewer AT CREATION (fixed, not billboard)
+            caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
+            fu = _face_user(caller, req.position)
+            if fu:
+                pos, rotation = fu["position"], fu["rotation"]
     # Billboard is an ORTHOGONAL, composable behavior (its own A-Frame component) — attach it to ANY flat
     # module on request; it then always faces the viewer, over-riding the fixed spawn facing.
     if req.billboard:

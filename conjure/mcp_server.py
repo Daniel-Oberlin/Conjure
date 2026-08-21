@@ -891,13 +891,18 @@ async def place_image(
     on_surface: Optional[str] = None,
     billboard: bool = False,
     stereo: Optional[str] = None,
+    stretch: bool = False,
 ) -> str:
     """Hang a procured image (by image_id from generate_image/edit_image/...) as a painting.
 
     on_surface: hang it ON a real room surface — pass the surface's id ('real_wall_art_3'), its
         semantic+number ('wall art 18'), or just its number ('18'). The image is aligned to that
-        surface (upright, parallel) and fitted to its frame automatically — USE THIS whenever the user
-        says "put it in/on wall art N" or any specific surface (don't hand-compute position/rotation).
+        surface (upright, parallel) and fitted INSIDE its frame automatically, keeping the picture's
+        aspect ratio — USE THIS whenever the user says "put it in/on wall art N" or any specific surface
+        (don't hand-compute position/rotation).
+    stretch: only with on_surface — fill the ENTIRE surface, stretching the image to the frame's shape
+        (its aspect ratio is NOT preserved). Off by default (fit-inside, aspect-correct). Use only when
+        the user explicitly asks to fill/cover/stretch to the whole surface.
     position: [x, y, z] meters for a free-floating painting when NOT on a surface (default [0, 1.5, -3]).
     size_m: longest side in meters for the free-floating case (default 1.0; aspect preserved). Ignored
         when on_surface is given (the frame's size wins).
@@ -915,6 +920,7 @@ async def place_image(
     out = await _post("/place_image", _body(
         image_id=image_id, position=position, size_m=size_m, name=name, on_surface=on_surface,
         billboard=billboard or None,   # omit when off, so the wire stays minimal (server default = False)
+        stretch=stretch or None,
         stereo=stereo))
     if not out.get("ok"):
         return f"Couldn't place image: {out.get('error', 'unknown error')}."
@@ -928,6 +934,7 @@ async def conjure_module(
     position: Optional[list[float]] = None,
     on_surface: Optional[str] = None,
     billboard: bool = False,
+    stretch: bool = False,
     name: Optional[str] = None,
 ) -> str:
     """Conjure a DYNAMIC MODULE — a live, animated effect that runs in the headset and is shared by
@@ -939,10 +946,16 @@ async def conjure_module(
     config: module-specific settings (see each module's params in that catalog); omit to use defaults. A
         module that takes an `image` param accepts an image_id from generate_image (resolved to its src).
     position: [x, y, z] meters for where the effect centres (default just in front of the viewer). A
-        free-standing flat module faces the viewer at creation automatically (fixed, not tracking).
+        free-standing flat module faces the viewer at creation automatically (fixed, not tracking). An
+        image module (e.g. a Water Picture) sizes its plane to the picture's aspect ratio by default —
+        pass width/height in config only to force an exact size.
     on_surface: mount it ON a real room surface (e.g. a Water Picture on a wall) — pass the surface's
-        number or id, like place_image; it's aligned to the surface and fitted to its frame. (Leave off
-        for volume/ambient modules like a firefly swarm.)
+        number or id, like place_image; it's aligned to the surface and, for an image module, fitted
+        INSIDE the frame keeping the picture's aspect ratio. (Leave off for volume/ambient modules like a
+        firefly swarm.)
+    stretch: only with on_surface — fill the ENTIRE surface, stretching an image module's picture to the
+        frame's shape (aspect NOT preserved). Off by default (fit-inside, aspect-correct); use only when
+        the user explicitly asks to fill/cover/stretch to the whole surface.
     billboard: True makes it ALWAYS turn to face each viewer (yaw-only) as they move — use only when the
         user says 'always face me' / 'follow me'. Off by default (a fixed spawn-facing is the norm).
     name: reuse an id to move/reconfigure an existing instance; otherwise a new one is created.
@@ -952,7 +965,8 @@ async def conjure_module(
     dismiss_module.
     """
     out = await _post("/module", _body(module=module, config=config, position=position,
-                                       on_surface=on_surface, billboard=billboard or None, name=name))
+                                       on_surface=on_surface, billboard=billboard or None,
+                                       stretch=stretch or None, name=name))
     if not out.get("ok"):
         return f"Couldn't conjure module: {out.get('error', 'unknown error')}."
     return f"Conjured {out['module']} (id {out['id']})."
