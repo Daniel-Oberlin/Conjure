@@ -21,3 +21,6 @@ temp/
 
 # JS test tooling
 node_modules/
+
+# Tool configs
+mprocs.yaml
