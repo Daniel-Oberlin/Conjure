@@ -375,3 +375,35 @@ bot's own voice doesn't self-interrupt.
 
 **Open decision:** does an interrupt discard the partial turn's world edits, or keep them? (Probably keep
 what already applied; just stop further tool calls.)
+
+## Per-model token budget for history trim (shelved)
+
+**What:** replace the director's fixed **turn-count** history cap (`settings.history_cap`, default 40 —
+bounds the LLM's view of the transcript in `Director._recent_history`) with a **token budget derived
+from each LLM's context window**, so the trim adapts across models (Claude, Gemini, grok, gpt-*).
+
+**Why shelved:** the 40-turn cap already fixed the real problem (a bloated session made the director
+skip tool calls). Turn-count is predictable and enough for now; the token version is a refinement.
+
+**Key insight (don't lose this):** the binding constraint was **quality, not the window** — the model
+had plenty of context left and still degraded. So the trim length is a **reliability** knob, NOT a
+"fill the window" one; a bigger window is not a reason to keep more history. Size to the degradation
+knee, clamp by the window only on small models:
+`trim_budget = min(quality_budget, context_window × safety_frac − reserved)`.
+
+**Proposed fix:**
+- Add a static `context_window` (public, known metadata) to each roster adapter; conservative default
+  (~128k) for unknowns. (Provider APIs don't expose it reliably → curated map.)
+- `reserved` = system prompt (incl. the injected room+world context) + tool schemas + current turn +
+  response headroom (`max_tokens`); roughly constant since the injected context is bounded.
+- `_recent_history` keeps the most-recent turns whose cumulative token estimate ≤ available; `chars/4`
+  is plenty for trimming (no exact tokenizer needed).
+- The `quality_budget` stays the PRIMARY limit and is tuned **empirically** (watch the `[bcast]`/`[tool]`
+  trace as history grows — the window doesn't tell you the degradation knee). Optional per-model overrides.
+
+**Safe here specifically:** `world://current` + `room://current` are re-injected fresh every turn, so
+trimming old chat loses only conversational continuity, never scene knowledge — aggressive trimming is
+safe, and summarizing dropped turns is optional (narrative continuity only).
+
+**Open decision:** pure trim vs. rolling summarization of dropped turns; and whether the `quality_budget`
+is one shared cap or per-model (tuned by observation).
