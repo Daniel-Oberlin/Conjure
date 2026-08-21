@@ -1,0 +1,19 @@
+{
+  "component": "fireflies",
+  "entry": "fireflies.js",
+  "tier": "A",
+  "anchor": "volume",
+  "singleton": false,
+  "default_pos": [0.0, 1.3, -1.5],
+  "description": "A swarm of gently wandering warm glow points — ambient, autonomous, deterministic from the shared clock.",
+  "config_schema": {
+    "count": { "type": "int", "default": 40, "desc": "number of fireflies" },
+    "color": { "type": "color", "default": "#ffe08a", "desc": "warm glow color (hex)" },
+    "radius": { "type": "number", "default": 1.2, "desc": "swarm half-extent (m) around the origin" },
+    "height": { "type": "number", "default": 1.0, "desc": "vertical centre of the swarm (m)" },
+    "drift": { "type": "number", "default": 0.35, "desc": "wander amplitude (m)" },
+    "speed": { "type": "number", "default": 1.0, "desc": "time multiplier" },
+    "size": { "type": "number", "default": 0.05, "desc": "point size (m, size-attenuated)" },
+    "seed": { "type": "int", "default": 1, "desc": "PRNG seed → identical swarm on every client" }
+  }
+}

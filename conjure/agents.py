@@ -94,6 +94,9 @@ class AgentDef:
     default_llm: Optional[str] = None
     servers: list[ServerRef] = field(default_factory=list)
     context: list[str] = field(default_factory=list)    # MCP resources to inject (later slice)
+    dynamics: list[str] = field(default_factory=list)   # dynamic modules this agent may conjure — a
+    #                                                     required allow-list (docs/dynamic-modules-refactor-plan.md):
+    #                                                     scopes conjure_module + drives the director catalog.
     personas: list[str] = field(default_factory=list)   # persona refs (later slice)
     session: dict = field(default_factory=dict)         # session constructor block (greeting, first_world,
                                                         # state seed) — docs/sessions-plan.md §6
@@ -128,7 +131,8 @@ def load_server_registry(path: Path = DEFAULT_REGISTRY) -> dict[str, ServerSpec]
 
 def load_agent(name: str, *, agents_dir: Optional[Path] = None,
                agents_path: Optional[list[Path]] = None,
-               registry: Optional[dict[str, ServerSpec]] = None) -> AgentDef:
+               registry: Optional[dict[str, ServerSpec]] = None,
+               dynamics_path: Optional[list[Path]] = None) -> AgentDef:
     """Load and validate an agent definition.
 
     Resolution: an explicit `agents_dir` pins a single directory (`<agents_dir>/<name>`; used by tests);
@@ -138,7 +142,9 @@ def load_agent(name: str, *, agents_dir: Optional[Path] = None,
     The directory name is the agent's identity, so `agent.json` needn't repeat it (a `name` field, if
     present, is validated to match). `prompt_file` is resolved relative to the agent's directory.
     `registry` (if given) validates that every referenced MCP server exists — pass it to fail loudly
-    on a typo'd server name. Raises ValueError on a malformed def, FileNotFoundError on a missing file.
+    on a typo'd server name. `dynamics` are validated against the dynamics search path (`dynamics_path`,
+    else `config.DYNAMICS_PATH`): every listed module must resolve or the agent fails to load. Raises
+    ValueError on a malformed def, FileNotFoundError on a missing file.
     """
     agent_dir = (agents_dir / name) if agents_dir is not None else resolve_agent_dir(name, agents_path)
     data = _read_json(agent_dir / "agent.json")
@@ -164,6 +170,19 @@ def load_agent(name: str, *, agents_dir: Optional[Path] = None,
                     f"agent {name!r}: references unknown MCP server {ref.server!r} "
                     f"(not in the registry: {sorted(registry)})")
 
+    # Dynamic modules the agent may conjure — a REQUIRED allow-list (docs/dynamic-modules-refactor-plan.md
+    # §agent scoping): every listed module MUST resolve on the dynamics search path, or the agent fails to
+    # load (fail loud on a dangling reference, like an unknown MCP server). Imported lazily so the agents
+    # loader stays usable without the dynamics package present.
+    dynamics = list(data.get("dynamics", []))
+    if dynamics:
+        from . import dynamics as _dyn
+        for mod in dynamics:
+            try:
+                _dyn.resolve_module_dir(mod, dynamics_path)
+            except FileNotFoundError as e:
+                raise ValueError(f"agent {name!r}: references unknown dynamic module {mod!r} ({e})") from e
+
     # State declaration (docs/sessions-plan.md §5): resolve each doc's `seed` file (relative to the agent
     # dir, like `prompt_file`) to its parsed JSON under `seed_data`, so the constructor can copy it into a
     # new session without any file I/O at runtime. A missing/bad seed is left unresolved (skipped, not fatal).
@@ -185,7 +204,7 @@ def load_agent(name: str, *, agents_dir: Optional[Path] = None,
     return AgentDef(
         name=name, description=data.get("description", ""), prompt=prompt,
         llms=list(data.get("llms", [WILDCARD])), default_llm=data.get("default_llm"),
-        servers=servers, context=list(data.get("context", [])),
+        servers=servers, context=list(data.get("context", [])), dynamics=dynamics,
         personas=list(data.get("personas", [])), session=dict(data.get("session") or {}),
         state=state,
     )

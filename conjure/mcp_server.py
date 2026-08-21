@@ -265,6 +265,21 @@ async def world_resource() -> str:
     return "\n".join(lines)
 
 
+@mcp.resource("dynamics://available")
+async def dynamics_resource() -> str:
+    """The dynamic modules the active agent may conjure, as a one-line-per-module catalog
+    (`name — description; params: k(default)…`). Injected each turn into agents that list
+    `dynamics://available` in their context (docs/dynamic-modules-refactor-plan.md decision 1), so the
+    director discovers its scoped modules with no ritual and knows the params each accepts for
+    conjure_module. The world server scopes the catalog to the active agent + enforces it on /module."""
+    out = await _get("/dynamics/available")
+    catalog = (out.get("catalog") if isinstance(out, dict) else "") or ""
+    if not catalog.strip():
+        return "Dynamic modules (conjure_module): none available to you."
+    return ("Dynamic modules you can conjure (conjure_module module=<name>, config=<params>); "
+            "dismiss with dismiss_module:\n" + catalog)
+
+
 @mcp.tool()
 async def set_immersion(mode: str) -> str:
     """Set how much real room vs. virtual the user sees:
@@ -918,26 +933,22 @@ async def conjure_module(
     """Conjure a DYNAMIC MODULE — a live, animated effect that runs in the headset and is shared by
     everyone in the session (deterministic from a shared clock, so all viewers see the same thing).
 
-    module: which effect. Available now:
-        'fireflies' — a swarm of gently wandering glow points.
-        'water' — a Water Picture: an image seen through a rippling water surface that the user can
-            touch/drag (fingertip or controller) to make waves. Pass image=<image_id from generate_image>
-            for the picture; everyone sees it and can disturb it (each headset runs its own ripples).
-    config: module-specific settings; omit to use defaults.
-        fireflies: count (int), color (hex), radius (m), height (m), drift (m), speed, size (m), seed (int).
-        water: image (image_id), width/height (m), waveSpeed, damping (→1 = long-lived), brushRadius,
-            brushStrength, refraction, glint, tint (hex).
+    module: which effect (by name). The modules available to you — with a one-line description and the
+        config params each accepts — are listed in the 'Dynamic modules you can conjure' context injected
+        each turn (dynamics://available). Use a name from that list; an out-of-scope name is refused.
+    config: module-specific settings (see each module's params in that catalog); omit to use defaults. A
+        module that takes an `image` param accepts an image_id from generate_image (resolved to its src).
     position: [x, y, z] meters for where the effect centres (default just in front of the viewer). A
-        free-standing water picture faces the viewer at creation automatically (fixed, not tracking).
-    on_surface: mount it ON a real room surface (a Water Picture on a wall) — pass the surface's number
-        or id, like place_image; it's aligned to the surface and fitted to its frame. (Fireflies is a
-        volume effect — leave this off for it.)
+        free-standing flat module faces the viewer at creation automatically (fixed, not tracking).
+    on_surface: mount it ON a real room surface (e.g. a Water Picture on a wall) — pass the surface's
+        number or id, like place_image; it's aligned to the surface and fitted to its frame. (Leave off
+        for volume/ambient modules like a firefly swarm.)
     billboard: True makes it ALWAYS turn to face each viewer (yaw-only) as they move — use only when the
         user says 'always face me' / 'follow me'. Off by default (a fixed spawn-facing is the norm).
     name: reuse an id to move/reconfigure an existing instance; otherwise a new one is created.
 
     Use this when the user asks for an ambient/animated effect ('add some fireflies', 'make it magical')
-    or an interactive Water Picture ('a koi pond I can ripple', 'water on wall art 12'). Remove it with
+    or an interactive one ('a koi pond I can ripple', 'water on wall art 12'). Remove it with
     dismiss_module.
     """
     out = await _post("/module", _body(module=module, config=config, position=position,

@@ -2237,3 +2237,60 @@ def test_boot_world_defaults_to_builder_without_a_pointer(srv):
     import conjure.server as S
     scope, name, _ = S._boot_world()
     assert scope == S.DEFAULT_SCOPE and name == "default"     # no record → builder's default
+
+
+# ── dynamic modules: discovered registry, scoping, serving, injection ────────────────────────────
+# (docs/dynamic-modules-refactor-plan.md — first-class, extensible; scoped to the active agent.)
+def test_conjure_module_places_a_scoped_module(srv, client):
+    # builder is the active agent (DEFAULT_SCOPE) and lists 'fireflies' → allowed; the entity carries the
+    # module's component, so it's config-in-snapshot/shared/persisted on the existing path.
+    r = client.post("/module", json={"module": "fireflies", "position": [0, 1, -2]})
+    assert r.json()["ok"] is True, r.json()
+    ent = next(e for e in _entities(client) if (e.get("meta") or {}).get("module") == "fireflies")
+    assert "fireflies" in ent["components"] and ent["meta"]["dynamic"] is True
+
+
+def test_conjure_unknown_module_is_rejected(srv, client):
+    r = client.post("/module", json={"module": "nope"})
+    body = r.json()
+    assert body["ok"] is False and "unknown module" in body["error"]
+
+
+def test_conjure_out_of_scope_module_is_rejected(srv, client, monkeypatch):
+    # 'fireflies' IS discovered on the server, but the OUTDOOR agent doesn't list it → hard-refused
+    # (the plan's server-side scoping: soft catalog + hard endpoint). Fail closed.
+    import conjure.server as S
+    monkeypatch.setattr(S, "active_scope", S.scope_for(S.DEFAULT_USER, "outdoor"))
+    r = client.post("/module", json={"module": "fireflies"})
+    body = r.json()
+    assert body["ok"] is False and "not available to the active agent" in body["error"]
+
+
+def test_dynamics_available_catalog_reflects_the_active_agent(srv, client):
+    body = client.get("/dynamics/available").json()
+    assert body["ok"] is True
+    assert set(body["modules"]) == {"fireflies", "water"}
+    assert "fireflies —" in body["catalog"] and "water —" in body["catalog"]
+
+
+def test_dynamics_file_is_served_with_version_bust(srv, client):
+    r = client.get("/dynamics/fireflies/fireflies.js")
+    assert r.status_code == 200
+    assert "registerComponent" in r.text
+    assert r.headers["content-type"].startswith("application/javascript")
+
+
+def test_dynamics_file_traversal_is_blocked(srv, client):
+    # basename-only path components: a traversal attempt can't escape the module folder.
+    r = client.get("/dynamics/fireflies/module.json")   # a real sibling file is fine (basename kept)
+    assert r.status_code == 200
+    r2 = client.get("/dynamics/ghostmod/x.js")
+    assert r2.status_code == 404
+
+
+def test_index_injects_active_agent_module_scripts(srv, client):
+    html = client.get("/").text
+    assert 'src="/dynamics/fireflies/fireflies.js?v=' in html
+    assert 'src="/dynamics/water/water.js?v=' in html
+    # the deleted flat client files are no longer referenced
+    assert "/static/dynamic-modules.js" not in html and "/static/water.js" not in html

@@ -148,6 +148,32 @@ def test_server_ref_tools_default_to_none_opt_in(tmp_path):
     assert load_agent("b", agents_dir=tmp_path).servers[0].tools == []
 
 
+def test_dynamics_are_a_required_allow_list(tmp_path):
+    # An agent's `dynamics` are REQUIRED: a listed module that isn't on the dynamics path fails the load
+    # (docs/dynamic-modules-refactor-plan.md §agent scoping) — like an unknown MCP server.
+    _write_agent(tmp_path, "d", {"prompt": "hi", "dynamics": ["ghostmod"]})
+    with pytest.raises(ValueError, match="unknown dynamic module 'ghostmod'"):
+        load_agent("d", agents_dir=tmp_path, dynamics_path=[tmp_path])
+
+
+def test_dynamics_resolve_against_the_path(tmp_path):
+    # A present module resolves; the parsed list is carried on the def.
+    import json as _json
+    mod = tmp_path / "dyn" / "spark"
+    mod.mkdir(parents=True)
+    (mod / "module.json").write_text(_json.dumps({"component": "spark", "entry": "s.js"}))
+    (mod / "s.js").write_text("/* stub */")
+    _write_agent(tmp_path, "e", {"prompt": "hi", "dynamics": ["spark"]})
+    a = load_agent("e", agents_dir=tmp_path, dynamics_path=[tmp_path / "dyn"])
+    assert a.dynamics == ["spark"]
+
+
+def test_builder_declares_its_dynamics():
+    a = load_agent("builder")
+    assert a.dynamics == ["fireflies", "water"]
+    assert "dynamics://available" in a.context
+
+
 def test_scoped_roster_wildcard_and_explicit():
     roster = {"Claude": object(), "Gemini": object()}
     assert scoped_roster(AgentDef(name="any", llms=[WILDCARD]), roster) == roster

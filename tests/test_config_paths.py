@@ -17,6 +17,8 @@ def test_xdg_defaults_when_no_env(monkeypatch):
     assert p["cache_dir"] == Path("/home/tester/.cache/conjure")
     # Agent search path defaults to [<config>/agents, bundled], user first.
     assert p["agents_path"] == [Path("/home/tester/.config/conjure/agents"), config.BUNDLED_AGENTS_DIR]
+    # Dynamic-module search path mirrors agents: [<config>/dynamics, bundled], user first.
+    assert p["dynamics_path"] == [Path("/home/tester/.config/conjure/dynamics"), config.BUNDLED_DYNAMICS_DIR]
 
 
 def test_xdg_env_vars_honored(monkeypatch):
@@ -67,6 +69,15 @@ def test_agents_path_from_settings_then_env(monkeypatch):
     joined = os.pathsep.join(["/env/one", "/env/two"])
     e = config.resolve_paths(env={"CONJURE_AGENTS_PATH": joined}, settings={"agents_path": ["/a"]})
     assert e["agents_path"] == [Path("/env/one"), Path("/env/two")]
+
+
+def test_dynamics_path_from_settings_then_env(monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/home/tester")))
+    s = config.resolve_paths(env={}, settings={"dynamics_path": ["/a", "/b"]})
+    assert s["dynamics_path"] == [Path("/a"), Path("/b")]
+    joined = os.pathsep.join(["/env/one", "/env/two"])
+    e = config.resolve_paths(env={"CONJURE_DYNAMICS_PATH": joined}, settings={"dynamics_path": ["/a"]})
+    assert e["dynamics_path"] == [Path("/env/one"), Path("/env/two")]
 
 
 # ── settings.json loader ─────────────────────────────────────────────────────

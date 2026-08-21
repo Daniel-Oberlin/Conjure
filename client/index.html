@@ -44,8 +44,8 @@
     </a-scene>
 
     <script src="/static/conjure-clock.js"></script>
-    <script src="/static/dynamic-modules.js"></script>
-    <script src="/static/water.js"></script>
+    <!-- __DYNAMIC_MODULES__ : the server injects a <script> per module scoped to the ACTIVE agent
+         (docs/dynamic-modules-refactor-plan.md decision 3), re-injected on agent switch. -->
     <script src="/static/world-model.js"></script>
     <script src="/static/occlusion.js"></script>
     <script src="/static/room-snap.js"></script>

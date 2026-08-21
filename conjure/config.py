@@ -35,6 +35,7 @@ DEFAULT_USER = "daniel"
 # ---------------------------------------------------------------------------
 
 BUNDLED_AGENTS_DIR = ROOT / "agents"    # example/bundled agent defs shipped with the repo (never moved)
+BUNDLED_DYNAMICS_DIR = ROOT / "dynamics"  # bundled dynamic-module defs, sibling to agents/ (never moved)
 
 
 def _home(env: Mapping[str, str]) -> Path | None:
@@ -79,6 +80,7 @@ DEFAULT_SETTINGS: dict = {
     "data_dir": None,        # override the precious data root (sessions/worlds/assets/library.db)
     "cache_dir": None,       # override the disposable cache root
     "agents_path": None,     # list of dirs; user-first search path for agent definitions
+    "dynamics_path": None,   # list of dirs; user-first search path for dynamic-module definitions
     "default_user": DEFAULT_USER,
 }
 
@@ -120,10 +122,24 @@ def resolve_agents_path(env: Mapping[str, str], settings: Mapping, config_dir: P
     return [config_dir / "agents", BUNDLED_AGENTS_DIR]
 
 
+def resolve_dynamics_path(env: Mapping[str, str], settings: Mapping, config_dir: Path) -> list[Path]:
+    """The ordered dynamic-module search path — mirrors `resolve_agents_path` (docs/user-home-plan.md §5,
+    docs/dynamic-modules-refactor-plan.md): env `CONJURE_DYNAMICS_PATH` (os-sep-separated) >
+    settings["dynamics_path"] > [<config>/dynamics, bundled]. User entries come first so a user module
+    shadows a bundled one of the same name."""
+    explicit = env.get("CONJURE_DYNAMICS_PATH", "").strip()
+    if explicit:
+        return [Path(p).expanduser() for p in explicit.split(os.pathsep) if p]
+    from_settings = settings.get("dynamics_path")
+    if from_settings:
+        return [Path(str(p)).expanduser() for p in from_settings]
+    return [config_dir / "dynamics", BUNDLED_DYNAMICS_DIR]
+
+
 def resolve_paths(env: Mapping[str, str] | None = None, settings: Mapping | None = None) -> dict:
-    """Resolve the whole user home in one shot → {config_dir, data_dir, cache_dir, agents_path}.
-    Pure over its `env`/`settings` inputs (defaults: process env + the on-disk settings file), so tests
-    can drive it without touching the real home."""
+    """Resolve the whole user home in one shot → {config_dir, data_dir, cache_dir, agents_path,
+    dynamics_path}. Pure over its `env`/`settings` inputs (defaults: process env + the on-disk settings
+    file), so tests can drive it without touching the real home."""
     env = os.environ if env is None else env
     config_dir = resolve_config_dir(env)
     settings = load_settings(config_dir) if settings is None else settings
@@ -137,6 +153,7 @@ def resolve_paths(env: Mapping[str, str] | None = None, settings: Mapping | None
         "data_dir": data_dir,
         "cache_dir": cache_dir,
         "agents_path": resolve_agents_path(env, settings, config_dir),
+        "dynamics_path": resolve_dynamics_path(env, settings, config_dir),
     }
 
 
@@ -148,6 +165,7 @@ CONFIG_DIR = _RESOLVED["config_dir"]
 DATA_DIR = _RESOLVED["data_dir"]
 CACHE_ROOT = _RESOLVED["cache_dir"]      # genuinely-disposable cache (NOT the precious data tree)
 AGENTS_PATH: list[Path] = _RESOLVED["agents_path"]
+DYNAMICS_PATH: list[Path] = _RESOLVED["dynamics_path"]
 
 # The precious data tree now lives in the resolved home (post-migration). These names are kept because
 # other modules import them (e.g. agent_server → USERS_DIR); they alias into DATA_DIR. `CACHE_DIR` is a

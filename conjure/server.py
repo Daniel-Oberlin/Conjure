@@ -36,7 +36,8 @@ from pydantic import BaseModel
 
 from .assets import AssetResolver
 from .captioner import build_captioner
-from .agents import resolve_agent_dir
+from . import dynamics as dynamics_loader
+from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
@@ -1052,9 +1053,10 @@ async def index() -> HTMLResponse:
     tmm = int((CLIENT_DIR / "three.module.min.js").stat().st_mtime)  # worker's standalone three (ESM)
     om = int((CLIENT_DIR / "occlusion.js").stat().st_mtime)      # real-world depth occlusion (--occlusion)
     ckm = int((CLIENT_DIR / "conjure-clock.js").stat().st_mtime)  # shared clock (dynamic-content spine)
-    dmm = int((CLIENT_DIR / "dynamic-modules.js").stat().st_mtime)  # dynamic modules (fireflies, …)
-    wtm = int((CLIENT_DIR / "water.js").stat().st_mtime)     # water picture module (tier B)
-    v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm, dmm, wtm)     # badge reflects the newest of the scripts
+    # Dynamic modules are now discovered + scoped to the ACTIVE agent (docs/dynamic-modules-refactor-plan.md):
+    # inject a <script> per module from its folder, mtime-stamped so a code change busts the cache.
+    dyn_tags, dyn_mtimes = _dynamic_module_tags()
+    v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm, *dyn_mtimes)  # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
@@ -1063,8 +1065,7 @@ async def index() -> HTMLResponse:
     html = html.replace("/static/world-model.js", f"/static/world-model.js?v={wm}")
     html = html.replace("/static/occlusion.js", f"/static/occlusion.js?v={om}")
     html = html.replace("/static/conjure-clock.js", f"/static/conjure-clock.js?v={ckm}")
-    html = html.replace("/static/dynamic-modules.js", f"/static/dynamic-modules.js?v={dmm}")
-    html = html.replace("/static/water.js", f"/static/water.js?v={wtm}")
+    html = html.replace("    <!-- __DYNAMIC_MODULES__", dyn_tags + "    <!-- __DYNAMIC_MODULES__")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     # Tell the client which diagnostics are on so it doesn't POST/HUD when off. debug_log gates general
     # client logging; debug_registration gates the co-location registration HUD + per-capture log.
@@ -1153,6 +1154,34 @@ async def world_model_js() -> FileResponse:
 async def grounded_skybox_js() -> FileResponse:
     # Explicit no-store route for the grounded-skybox module (loaded before conjure-client.js).
     return FileResponse(CLIENT_DIR / "grounded-skybox.js", media_type="application/javascript", headers=_NO_STORE)
+
+
+@app.get("/dynamics/available")
+async def dynamics_available() -> dict:
+    """The ACTIVE agent's scoped dynamic-module catalog (docs/dynamic-modules-refactor-plan.md decision 1).
+    Rendered as `name — description; params: k(default)…` per module and injected into the director's
+    prompt via the `dynamics://available` MCP resource — so the director discovers its modules without a
+    ritual. Text under `catalog`; the raw name list under `modules`."""
+    registry = _dynamics_registry()
+    names = [n for n in _active_agent_dynamics() if n in registry]
+    lines = [registry[n].catalog_line() for n in names]
+    return {"ok": True, "modules": names, "catalog": "\n".join(lines)}
+
+
+@app.get("/dynamics/{module}/{filename}")
+async def dynamics_file(module: str, filename: str) -> FileResponse:
+    """Serve a discovered module's client script/asset from its folder (`dynamics/<name>/<file>`). Path
+    components are basename-only (no traversal), and the file must sit inside the resolved module dir."""
+    module, filename = Path(module).name, Path(filename).name    # strip any path parts (traversal guard)
+    try:
+        module_dir = dynamics_loader.resolve_module_dir(module)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"unknown dynamic module {module!r}")
+    target = (module_dir / filename).resolve()
+    if not str(target).startswith(str(module_dir.resolve())) or not target.is_file():
+        raise HTTPException(status_code=404, detail=f"no file {filename!r} in module {module!r}")
+    media = "application/javascript" if filename.endswith(".js") else None
+    return FileResponse(target, media_type=media, headers=_NO_STORE)
 
 
 @app.get("/world")
@@ -3413,20 +3442,57 @@ async def place_image(req: PlaceImageRequest) -> dict:
     return _with_notice({"ok": True, "id": eid, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
-# --- dynamic content modules (docs/dynamic-content-plan.md) -----------------------------------------
+# --- dynamic content modules (docs/dynamic-content-plan.md, docs/dynamic-modules-refactor-plan.md) ---
 # A module is an A-Frame component the client renders from an entity's `components` (see
-# client/dynamic-modules.js); placing one is just adding that entity, so it's config-in-snapshot,
-# shared, and persisted on the existing path. This registry is the seed of the per-module manifest
-# (tier/anchor/singleton/claims); grow it as modules land. Config passes through to the component,
-# which owns its own schema/defaults.
-DYNAMIC_MODULES: dict[str, dict] = {
-    "fireflies": {"component": "fireflies", "tier": "A", "anchor": "free",
-                  "singleton": False, "default_pos": [0.0, 1.3, -1.5]},
-    # Water Picture — an image seen through a rippling water surface; touch/drag to make waves (tier B,
-    # each headset runs its own sim from shared touch events). `image` in config is resolved to a src URL.
-    "water": {"component": "water", "tier": "B", "anchor": "free", "face_user": True,
-              "singleton": False, "default_pos": [0.0, 1.4, -1.2]},
-}
+# docs/dynamic-module-spec.md); placing one is just adding that entity, so it's config-in-snapshot,
+# shared, and persisted on the existing path. Modules are now FIRST-CLASS + extensible — discovered from
+# `dynamics/<name>/module.json` on a user-first search path (mirror of agents), not a hardcoded dict.
+# The world server serves + places ALL discovered modules; per-request it scopes to the ACTIVE agent's
+# `dynamics` allow-list (soft catalog + this hard endpoint check — the plan's decision 1).
+
+
+def _dynamics_registry() -> dict[str, "dynamics_loader.DynamicModuleDef"]:
+    """All discovered dynamic modules (loader-backed). Loaded fresh so a newly-added user module appears
+    without a restart; the set is tiny. A single malformed module is skipped, never fatal to the world."""
+    reg: dict = {}
+    for name in dynamics_loader.module_names():
+        try:
+            reg[name] = dynamics_loader.load_module(name)
+        except (ValueError, FileNotFoundError, OSError) as e:
+            _slog("dynamics", f"skipping module {name!r}: {e}")
+    return reg
+
+
+def _active_agent_dynamics() -> list[str]:
+    """The dynamic modules the ACTIVE agent may conjure (its agent.json `dynamics`) — scopes /module, the
+    served <script>s, and the director catalog. Empty if the agent can't be loaded (fail closed)."""
+    try:
+        return load_agent(agent_of(active_scope)).dynamics
+    except Exception as e:
+        _slog("dynamics", f"active agent dynamics unavailable: {e}")
+        return []
+
+
+def _dynamic_module_tags() -> tuple[str, list[int]]:
+    """The `<script>` tags for the ACTIVE agent's scoped modules, injected into index.html (decision 3),
+    each `src="/dynamics/<name>/<entry>?v=<mtime>"` so a code change busts the Quest's stubborn cache.
+    Returns (html, [mtimes]) — the mtimes feed the client-version badge. Re-evaluated per page load, so
+    switching agents swaps the available components. Unknown/broken modules are skipped."""
+    registry = _dynamics_registry()
+    tags: list[str] = []
+    mtimes: list[int] = []
+    for name in _active_agent_dynamics():
+        spec = registry.get(name)
+        if not spec:
+            continue
+        for fname in spec.entry:
+            try:
+                mt = int((spec.dir / fname).stat().st_mtime)
+            except OSError:
+                continue
+            mtimes.append(mt)
+            tags.append(f'    <script src="/dynamics/{name}/{fname}?v={mt}"></script>\n')
+    return "".join(tags), mtimes
 
 
 class PlaceModuleRequest(BaseModel):
@@ -3442,11 +3508,17 @@ class PlaceModuleRequest(BaseModel):
 async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
     """Conjure a dynamic module (docs/dynamic-content-plan.md): add an entity carrying the module's
     component, so every client renders the same effect (shared, deterministic from the shared clock).
-    `name` reuses/reconfigures an existing instance; a singleton module reuses its one instance."""
-    spec = DYNAMIC_MODULES.get(req.module)
+    `name` reuses/reconfigures an existing instance; a singleton module reuses its one instance.
+    Scoped to the ACTIVE agent's `dynamics` allow-list (the hard half of the plan's soft+hard scoping)."""
+    registry = _dynamics_registry()
+    spec = registry.get(req.module)
     if not spec:
         return {"ok": False, "error": f"unknown module {req.module!r}; available: "
-                f"{', '.join(sorted(DYNAMIC_MODULES))}"}
+                f"{', '.join(sorted(registry))}"}
+    allowed = _active_agent_dynamics()
+    if req.module not in allowed:
+        return {"ok": False, "error": f"module {req.module!r} is not available to the active agent "
+                f"(allowed: {', '.join(sorted(allowed)) or 'none'})"}
     config = dict(req.config or {})
     # Convenience: a module can take an `image` id (from generate_image/import) — resolve it to a src URL
     # here (like place_image), so "a water picture of a koi pond" is generate_image → conjure_module.
@@ -3455,8 +3527,8 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
         if err:
             return {"ok": False, "error": err}
         config["src"] = rec.url
-    comp = spec["component"]
-    pos = req.position or list(spec.get("default_pos") or [0.0, 1.3, -1.5])
+    comp = spec.component
+    pos = req.position or list(spec.default_pos or [0.0, 1.3, -1.5])
     rotation = None
     meta = {"module": req.module, "dynamic": True}
     extra_components: dict = {}
@@ -3475,7 +3547,7 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]
         meta["on_surface"] = surf["id"]
         meta["surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # ride the surface on recapture
-    elif spec.get("face_user"):   # free-standing flat content → face the viewer AT CREATION (fixed, not billboard)
+    elif spec.face_user:   # free-standing flat content → face the viewer AT CREATION (fixed, not billboard)
         caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
         fu = _face_user(caller, req.position)
         if fu:
@@ -3486,7 +3558,7 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
         extra_components["billboard"] = {"yaw": True}
 
     eid = req.name
-    if not eid and spec.get("singleton"):   # one instance: reuse the existing entity if present
+    if not eid and spec.singleton:   # one instance: reuse the existing entity if present
         eid = next((e["id"] for e in store.doc["entities"]
                     if (e.get("meta") or {}).get("module") == req.module), None)
     eid = eid or f"mod_{req.module}_{uuid4().hex[:6]}"
@@ -3522,8 +3594,8 @@ async def dismiss_module(req: DismissModuleRequest) -> dict:
         # Match by module meta OR by carrying the module's component — so "remove the fireflies" also
         # catches entities placed outside the tool (a raw /patch add, a pre-meta/legacy instance) that
         # have no meta.module but do have the fireflies component.
-        spec = DYNAMIC_MODULES.get(req.module)
-        comp = spec["component"] if spec else req.module
+        spec = _dynamics_registry().get(req.module)
+        comp = spec.component if spec else req.module
         ids = [e["id"] for e in store.doc["entities"]
                if (e.get("meta") or {}).get("module") == req.module or comp in (e.get("components") or {})]
     else:
