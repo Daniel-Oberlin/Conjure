@@ -95,6 +95,7 @@
     },
 
     init: function () {
+      this._id = this.el.id || ("water" + Math.floor(this.el.object3D.id));   // module instance id (bus routing)
       this._renderer = this.el.sceneEl.renderer;
       this._lastUV = {};                              // per input source, for drag rasterization
       this._remoteLast = {};                          // …and per remote source
@@ -104,13 +105,13 @@
       // Subscribe to peers' touches (shared-scope bus events) — each headset stamps them into its OWN sim.
       var self = this;
       this._onRemote = function (msg) {
-        var p = msg && msg.payload; if (!p || p.id !== self.id) return;
+        var p = msg && msg.payload; if (!p || p.id !== self._id) return;
         var key = "r:" + (p.src || "?");
         self._segment(self._remoteLast[key], { x: p.u, y: p.v }, p.strength);
         self._remoteLast[key] = (p.up ? null : { x: p.u, y: p.v });
       };
       if (window.ConjureBus) window.ConjureBus.on("water.touch", this._onRemote);
-      wlog("init id=" + this.id + " res=" + this.data.resolution + " src=" + (this.data.src ? "yes" : "none"));
+      wlog("init id=" + this._id + " res=" + this.data.resolution + " src=" + (this.data.src ? "yes" : "none"));
     },
 
     _buildSim: function () {
@@ -125,8 +126,12 @@
       var c = Math.min(0.7, Math.max(0.0, d.waveSpeed));
       this._simMat = new T.ShaderMaterial({ vertexShader: VERT, fragmentShader: SIM_FRAG, uniforms: {
         state: { value: null }, texel: { value: this._texel }, c2: { value: c * c }, damping: { value: d.damping } } });
+      // A vec3[MAX_SPLATS] uniform must ALWAYS be a full-length array — three uploads every slot and calls
+      // .toArray() on each, so short arrays crash. Pre-allocate; the shader ignores entries past `count`.
+      this._splatBuf = [];
+      for (var si = 0; si < MAX_SPLATS; si++) this._splatBuf.push(new T.Vector3());
       this._splatMat = new T.ShaderMaterial({ vertexShader: VERT, fragmentShader: SPLAT_FRAG, uniforms: {
-        state: { value: null }, splats: { value: [] }, count: { value: 0 },
+        state: { value: null }, splats: { value: this._splatBuf }, count: { value: 0 },
         radius: { value: d.brushRadius }, aspect: { value: d.width / d.height } } });
       this._quad = new T.Mesh(new T.PlaneGeometry(2, 2), this._simMat);
       this._simScene.add(this._quad);
@@ -207,10 +212,10 @@
           if (!this._touchLogged) { this._touchLogged = true; wlog("touch " + key + " uv=" + uv.x.toFixed(2) + "," + uv.y.toFixed(2)); }
           this._segment(this._lastUV[key], uv);                 // local: stamp immediately
           if (window.ConjureBus)                                // shared: peers stamp into their own sims
-            window.ConjureBus.emitShared("water.touch", { id: this.id, src: key, u: uv.x, v: uv.y, strength: -this.data.brushStrength });
+            window.ConjureBus.emitShared("water.touch", { id: this._id, src: key, u: uv.x, v: uv.y, strength: -this.data.brushStrength });
           this._lastUV[key] = uv;
         } else if (this._lastUV[key]) {
-          if (window.ConjureBus) window.ConjureBus.emitShared("water.touch", { id: this.id, src: key, u: this._lastUV[key].x, v: this._lastUV[key].y, up: true });
+          if (window.ConjureBus) window.ConjureBus.emitShared("water.touch", { id: this._id, src: key, u: this._lastUV[key].x, v: this._lastUV[key].y, up: true });
           this._lastUV[key] = null;                             // lifted → end the drag stroke
         }
       }
@@ -227,11 +232,11 @@
         this._pass(this._simMat);                               // one wave step
         if (!this._simOk) { this._simOk = true; wlog("first sim step ok"); }
         if (this._pending.length) {                             // stamp this frame's touches
-          var pts = this._pending.slice(0, MAX_SPLATS).map(function (p) { return new T.Vector3(p[0], p[1], p[2]); });
-          this._splatMat.uniforms.splats.value = pts;
-          this._splatMat.uniforms.count.value = pts.length;
+          var count = Math.min(this._pending.length, MAX_SPLATS);
+          for (var k = 0; k < count; k++) { var p = this._pending[k]; this._splatBuf[k].set(p[0], p[1], p[2]); }
+          this._splatMat.uniforms.count.value = count;          // splats.value stays the full pre-alloc buffer
           this._pass(this._splatMat);
-          if (!this._splatOk) { this._splatOk = true; wlog("first splat pass ok (" + pts.length + " pts)"); }
+          if (!this._splatOk) { this._splatOk = true; wlog("first splat pass ok (" + count + " pts)"); }
           this._pending.length = 0;
         }
         this._dispMat.uniforms.state.value = this._rt[this._cur].texture;
