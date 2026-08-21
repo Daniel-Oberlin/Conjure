@@ -3155,9 +3155,10 @@ def _forward(rotation: list[float]) -> list[float]:
 # down, and a surface's +Z is its OUTWARD normal → facing away). Every surface now stores its true outward
 # normal (client snapInsets no longer negates wall art), so the room interior is simply -normal; up is
 # gravity — one rule for walls, tables, ceilings, pictures. The ONE viewer-dependent case is a HORIZONTAL
-# surface (floor/table/ceiling), where gravity gives no in-plane up: there the content's up is oriented so
-# its bottom edge sits nearest the placing viewer (readable from where they stood), stored surface-local so
-# a re-capture reproduces it (see `_content_up_local` / `_face_room(up_local=…)`). A wall never needs this.
+# surface (floor/table/ceiling), where gravity gives no in-plane up: there the content's up is snapped to
+# the surface-rectangle axis whose bottom edge sits nearest the placing viewer (square to the surface,
+# readable from where they stood), stored surface-local so a re-capture reproduces it (see
+# `_content_up_local` / `_face_room(up_local=…)`). A wall never needs this.
 # Measured on-device (`[normals]` probe): surface normals are reliably outward-from-room, so -normal is the
 # interior in every room including a multi-room space (each wall's own normal marks its own room).
 def _norm3(v: list[float]) -> list[float]:
@@ -3235,10 +3236,11 @@ def _face_room(srot: list[float], up_local: Optional[list[float]] = None) -> dic
 def _content_up_local(srot: list[float], spos: list[float], user: str) -> Optional[list[float]]:
     """For a HORIZONTAL surface, the content's in-plane 'up' that puts its BOTTOM edge nearest the placing
     viewer — so a photo/water picture laid on a table reads upright from where they stood. 'Up' points
-    AWAY from the viewer (top edge far, bottom edge near). Returned as [a, b] coefficients on the surface's
-    own +X/+Y in-plane axes (stored in meta so re-anchoring rebuilds the SAME facing after the surface is
-    re-captured/moves). None for a vertical surface (gravity already gives up) or with no live gaze
-    (voice/desktop placement) → caller keeps the surface-rectangle fallback."""
+    AWAY from the viewer, SNAPPED to the nearest surface-rectangle axis (±X/±Y) so the content sits square
+    to the surface (edges parallel) rather than slightly askew at the viewer's exact angle. Returned as
+    [a, b] coefficients on the surface's own +X/+Y in-plane axes — one of [±1,0]/[0,±1] — stored in meta so
+    re-anchoring rebuilds the SAME facing after the surface is re-captured/moves. None for a vertical
+    surface (gravity already gives up) or with no live gaze (voice/desktop) → caller keeps the fallback."""
     n = _forward(srot)
     f = _norm3([-n[0], -n[1], -n[2]])
     d = f[1]
@@ -3253,8 +3255,12 @@ def _content_up_local(srot: list[float], spos: list[float], user: str) -> Option
     if w[0] * w[0] + w[2] * w[2] < 1e-6:                         # viewer directly above/below → no horizontal dir
         return None
     w = _norm3(w)
-    _, sr, su0 = _plane_basis(srot)                              # decompose into the surface's in-plane basis
-    return [round(sum(w[i] * sr[i] for i in range(3)), 5), round(sum(w[i] * su0[i] for i in range(3)), 5)]
+    _, sr, su0 = _plane_basis(srot)                              # project onto the surface's in-plane basis
+    a = sum(w[i] * sr[i] for i in range(3))
+    b = sum(w[i] * su0[i] for i in range(3))
+    if abs(a) >= abs(b):                                         # snap to the dominant rectangle axis → square
+        return [1.0 if a >= 0 else -1.0, 0.0]
+    return [0.0, 1.0 if b >= 0 else -1.0]
 
 
 # --- on-surface re-anchoring: keep place_image(on_surface=…) planes glued to their surface across a room

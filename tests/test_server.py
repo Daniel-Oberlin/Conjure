@@ -2378,10 +2378,11 @@ def test_water_on_surface_re_fits_size_when_the_surface_resizes(srv, client):
     assert _water(client)["width"] == pytest.approx(1.0) and _water(client)["height"] == pytest.approx(1.0)
 
 
-def test_on_surface_image_faces_the_viewer_on_a_horizontal_surface(srv, client):
-    # On a table (horizontal) gravity gives no in-plane up, so the image must orient toward the placing
-    # viewer: TOP edge away, BOTTOM edge nearest — readable from where they stood at placement.
-    srv.gaze["daniel"] = {"origin": [0.0, 1.6, 0.0]}          # viewer at the origin
+def test_on_surface_image_snaps_square_facing_the_viewer_on_a_horizontal_surface(srv, client):
+    # On a table (horizontal) gravity gives no in-plane up. The image must face the placing viewer (TOP
+    # edge away, BOTTOM nearest) AND snap SQUARE to the surface rectangle — even from an OBLIQUE angle it
+    # picks the nearest rectangle axis, not the exact askew viewer direction.
+    srv.gaze["daniel"] = {"origin": [0.3, 1.6, 0.0]}          # viewer offset in +x (oblique to the table)
     client.post("/room", json={"client_id": "h1", "surfaces": [
         {"id": "real_table_2", "semantic": "table", "position": [0.0, 0.7, -1.0],
          "rotation": [90.0, 0.0, 0.0], "extent": [1.0, 0.6]}]})
@@ -2390,9 +2391,9 @@ def test_on_surface_image_faces_the_viewer_on_a_horizontal_surface(srv, client):
     from conjure.server import _plane_basis
     img = next(e for e in _entities(client) if e["id"] == r["id"])
     _, _, up = _plane_basis(img["transform"]["rotation"])     # the image's own +Y (its top) in world
-    # viewer at z=0, table at z=-1 ⇒ "away from the viewer" is -z: the top points there, bottom toward viewer
-    assert up[2] < -0.9 and abs(up[1]) < 0.1
-    assert "content_up" in img["meta"]                        # facing recorded so re-capture reproduces it
+    # away-from-viewer is dominated by -z, so it snaps to the pure -z rectangle axis (NOT the askew x-tilt)
+    assert up[2] < -0.999 and abs(up[0]) < 1e-6 and abs(up[1]) < 1e-6
+    assert img["meta"]["content_up"] in ([0.0, -1.0], [0, -1])  # snapped surface-local axis, recorded
 
 
 def test_on_surface_horizontal_facing_survives_recapture(srv, client):
