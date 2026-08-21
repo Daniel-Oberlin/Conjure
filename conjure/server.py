@@ -3408,7 +3408,7 @@ DYNAMIC_MODULES: dict[str, dict] = {
                   "singleton": False, "default_pos": [0.0, 1.3, -1.5]},
     # Water Picture — an image seen through a rippling water surface; touch/drag to make waves (tier B,
     # each headset runs its own sim from shared touch events). `image` in config is resolved to a src URL.
-    "water": {"component": "water", "tier": "B", "anchor": "free",
+    "water": {"component": "water", "tier": "B", "anchor": "free", "billboard": True,
               "singleton": False, "default_pos": [0.0, 1.4, -1.2]},
 }
 
@@ -3417,6 +3417,7 @@ class PlaceModuleRequest(BaseModel):
     module: str
     config: Optional[dict] = None
     position: Optional[list[float]] = None
+    on_surface: Optional[str] = None   # mount on a real surface (id/label/number) — align + fit like place_image
     name: Optional[str] = None
 
 
@@ -3437,8 +3438,29 @@ async def place_module(req: PlaceModuleRequest) -> dict:
         if err:
             return {"ok": False, "error": err}
         config["src"] = rec.url
-    pos = req.position or list(spec.get("default_pos") or [0.0, 1.3, -1.5])
     comp = spec["component"]
+    pos = req.position or list(spec.get("default_pos") or [0.0, 1.3, -1.5])
+    rotation = None
+    meta = {"module": req.module, "dynamic": True}
+    extra_components: dict = {}
+    if req.on_surface:   # mount on a real surface: align to it, fit its frame, ride it (like place_image)
+        surfaces = _room_targets(req.on_surface)
+        if not surfaces:
+            return {"ok": False, "error": f"no room surface matches {req.on_surface!r}"}
+        surf = surfaces[0]
+        srot = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
+        spos = surf.get("transform", {}).get("position") or pos
+        extent = surf.get("components", {}).get("surface", {}).get("extent")
+        if extent:   # fit the water plane to the surface frame
+            config["width"], config["height"] = extent[0], extent[1]
+        fr = _face_room(srot)                                   # face the room interior (-normal), upright
+        rotation = fr["rotation"]
+        pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]
+        meta["on_surface"] = surf["id"]
+        meta["surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # ride the surface on recapture
+    elif spec.get("billboard"):   # free-standing → face the viewer (yaw-only, per-client)
+        extra_components["billboard"] = {"yaw": True}
+
     eid = req.name
     if not eid and spec.get("singleton"):   # one instance: reuse the existing entity if present
         eid = next((e["id"] for e in store.doc["entities"]
@@ -3446,11 +3468,17 @@ async def place_module(req: PlaceModuleRequest) -> dict:
     eid = eid or f"mod_{req.module}_{uuid4().hex[:6]}"
     existing = any(e["id"] == eid for e in store.doc["entities"])
     if existing:   # reconfigure/move in place
-        ops = [{"op": "update", "id": eid,
-                "set": {f"components.{comp}": config, "transform.position": pos}}]
+        sets = {f"components.{comp}": config, "transform.position": pos}
+        if rotation is not None:
+            sets["transform.rotation"] = rotation
+        ops = [{"op": "update", "id": eid, "set": sets}]
     else:
-        ops = [{"op": "add", "entity": {"id": eid, "transform": {"position": pos},
-                "components": {comp: config}, "meta": {"module": req.module, "dynamic": True}}}]
+        transform: dict = {"position": pos}
+        if rotation is not None:
+            transform["rotation"] = rotation
+        components = dict(extra_components); components[comp] = config
+        ops = [{"op": "add", "entity": {"id": eid, "transform": transform,
+                "components": components, "meta": meta}}]
     await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="module")})
     return {"ok": True, "id": eid, "module": req.module}
 

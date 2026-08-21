@@ -135,6 +135,18 @@
         radius: { value: d.brushRadius }, aspect: { value: d.width / d.height } } });
       this._quad = new T.Mesh(new T.PlaneGeometry(2, 2), this._simMat);
       this._simScene.add(this._quad);
+      // Half-float targets start UNINITIALIZED — clear both to 0 so idle (un-simulated) water is flat, not
+      // garbage. (Toggle xr off for the offscreen clear, same as the passes.)
+      var r = this._renderer, wasx = r.xr.enabled, pc = r.getClearColor(new T.Color()), pa = r.getClearAlpha();
+      r.xr.enabled = false; r.setClearColor(0x000000, 0);
+      r.setRenderTarget(this._rt[0]); r.clear();
+      r.setRenderTarget(this._rt[1]); r.clear();
+      r.setRenderTarget(null); r.setClearColor(pc, pa); r.xr.enabled = wasx;
+      // Idle optimization: after the last touch, keep simulating only until ripples damp out, then stop
+      // (no GPU work on still water). settleMs ≈ frames for amplitude→1% at this damping, capped.
+      var dd = Math.min(0.99999, d.damping);
+      this._settleMs = Math.min(10000, Math.max(1500, Math.log(0.01) / Math.log(dd) * 16.7));
+      this._activeUntil = 0;
     },
 
     _buildPlane: function () {
@@ -143,7 +155,7 @@
       if (tex) { tex.colorSpace = T.SRGBColorSpace; tex.wrapS = tex.wrapT = T.ClampToEdgeWrapping; }
       var col = new T.Color(d.tint);
       this._dispMat = new T.ShaderMaterial({ vertexShader: VERT, fragmentShader: DISPLAY_FRAG,
-        transparent: d.opacity < 1.0, side: T.DoubleSide, uniforms: {
+        transparent: d.opacity < 1.0, uniforms: {   // FrontSide: placement faces it correctly (billboard / surface)
           state: { value: this._rt[this._cur].texture }, image: { value: tex }, texel: { value: this._texel },
           refraction: { value: d.refraction }, glint: { value: d.glint }, opacity: { value: d.opacity },
           tint: { value: new T.Vector3(col.r, col.g, col.b) }, lightDir: { value: new T.Vector3(0.3, 0.6, 1.0) } } });
@@ -229,17 +241,25 @@
         var session = xr && xr.getSession && xr.getSession();
         if (frame && refSpace && session) this._scanInputs(frame, refSpace, session);
 
-        this._pass(this._simMat);                               // one wave step
-        if (!this._simOk) { this._simOk = true; wlog("first sim step ok"); }
-        if (this._pending.length) {                             // stamp this frame's touches
-          var count = Math.min(this._pending.length, MAX_SPLATS);
-          for (var k = 0; k < count; k++) { var p = this._pending[k]; this._splatBuf[k].set(p[0], p[1], p[2]); }
-          this._splatMat.uniforms.count.value = count;          // splats.value stays the full pre-alloc buffer
-          this._pass(this._splatMat);
-          if (!this._splatOk) { this._splatOk = true; wlog("first splat pass ok (" + count + " pts)"); }
-          this._pending.length = 0;
+        // Idle when the water is still: a touch (re)opens a settle window; outside it we skip ALL GPU work
+        // (the field is settled/flat and the display just shows the last state). New touches wake it up.
+        var now = (window.performance && performance.now) ? performance.now() : Date.now();
+        if (this._pending.length) this._activeUntil = now + this._settleMs;
+        if (now < this._activeUntil) {
+          this._pass(this._simMat);                             // one wave step
+          if (!this._simOk) { this._simOk = true; wlog("first sim step ok"); }
+          if (this._pending.length) {                           // stamp this frame's touches
+            var count = Math.min(this._pending.length, MAX_SPLATS);
+            for (var k = 0; k < count; k++) { var p = this._pending[k]; this._splatBuf[k].set(p[0], p[1], p[2]); }
+            this._splatMat.uniforms.count.value = count;        // splats.value stays the full pre-alloc buffer
+            this._pass(this._splatMat);
+            if (!this._splatOk) { this._splatOk = true; wlog("first splat pass ok (" + count + " pts)"); }
+            this._pending.length = 0;
+          }
+          this._dispMat.uniforms.state.value = this._rt[this._cur].texture;
+        } else if (this._pending.length) {
+          this._pending.length = 0;                             // shouldn't happen, but never leak stamps
         }
-        this._dispMat.uniforms.state.value = this._rt[this._cur].texture;
       } catch (e) {
         this._dead = true;                                      // stop after one failure so we don't hang the loop
         wlog("ERROR (disabled): " + (e && (e.message || e)) + " @sim=" + !!this._simOk + " splat=" + !!this._splatOk);

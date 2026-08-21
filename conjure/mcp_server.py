@@ -911,6 +911,7 @@ async def conjure_module(
     module: str,
     config: Optional[dict] = None,
     position: Optional[list[float]] = None,
+    on_surface: Optional[str] = None,
     name: Optional[str] = None,
 ) -> str:
     """Conjure a DYNAMIC MODULE — a live, animated effect that runs in the headset and is shared by
@@ -925,13 +926,19 @@ async def conjure_module(
         fireflies: count (int), color (hex), radius (m), height (m), drift (m), speed, size (m), seed (int).
         water: image (image_id), width/height (m), waveSpeed, damping (→1 = long-lived), brushRadius,
             brushStrength, refraction, glint, tint (hex).
-    position: [x, y, z] meters for where the effect centres (default just in front of the viewer).
+    position: [x, y, z] meters for where the effect centres (default just in front of the viewer). A
+        free-standing water picture faces the viewer automatically.
+    on_surface: mount it ON a real room surface (a Water Picture on a wall) — pass the surface's number
+        or id, like place_image; it's aligned to the surface and fitted to its frame. (Fireflies is a
+        volume effect — leave this off for it.)
     name: reuse an id to move/reconfigure an existing instance; otherwise a new one is created.
 
-    Use this when the user asks for an ambient/animated effect ('add some fireflies', 'make it magical').
-    Remove it later with dismiss_module.
+    Use this when the user asks for an ambient/animated effect ('add some fireflies', 'make it magical')
+    or an interactive Water Picture ('a koi pond I can ripple', 'water on wall art 12'). Remove it with
+    dismiss_module.
     """
-    out = await _post("/module", _body(module=module, config=config, position=position, name=name))
+    out = await _post("/module", _body(module=module, config=config, position=position,
+                                       on_surface=on_surface, name=name))
     if not out.get("ok"):
         return f"Couldn't conjure module: {out.get('error', 'unknown error')}."
     return f"Conjured {out['module']} (id {out['id']})."

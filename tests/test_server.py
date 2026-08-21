@@ -1265,6 +1265,7 @@ def test_conjure_and_dismiss_module(client):
     e = next(x for x in _entities(client) if x["id"] == eid)
     assert e["components"]["fireflies"] == {"count": 20, "seed": 3}
     assert e["meta"]["module"] == "fireflies" and e["meta"]["dynamic"] is True
+    assert "billboard" not in e["components"]                     # a volume effect doesn't face the viewer
     # reconfigure in place by id (no duplicate entity).
     r2 = client.post("/module", json={"module": "fireflies", "name": eid, "config": {"count": 99}}).json()
     assert r2["id"] == eid
@@ -1290,6 +1291,14 @@ def test_conjure_water_module(client):
     e = next(x for x in _entities(client) if x["id"] == r["id"])
     assert e["components"]["water"] == {"src": "http://x/koi.png", "damping": 0.99}
     assert e["meta"]["module"] == "water"
+    assert e["components"]["billboard"] == {"yaw": True}          # free-standing → faces the viewer
+    assert e["transform"]["rotation"] == [0.0, 0.0, 0.0]         # default, not surface-aligned
+
+
+def test_water_on_surface_needs_a_matching_surface(client):
+    r = client.post("/module", json={"module": "water", "on_surface": "no-such-42",
+                                     "config": {"src": "http://x/y.png"}}).json()
+    assert r["ok"] is False and "no room surface" in r["error"]
 
 
 def test_module_event_relays_to_peers_only(client):
