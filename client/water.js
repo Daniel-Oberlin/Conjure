@@ -20,6 +20,15 @@
   var T = AFRAME.THREE;
   var MAX_SPLATS = 24;
 
+  // Mirror status to console + server log (temp/conjure.log) like the other modules — headset console is
+  // invisible, so a crash/freeze has to reach the terminal.
+  function wlog(msg) {
+    if (!window.CONJURE_DEBUG_LOG) return;
+    try { console.log("[water] " + msg); } catch (e) {}
+    try { fetch("/client_log", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag: "water", msg: msg }) }).catch(function () {}); } catch (e) {}
+  }
+
   var VERT = "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }";
 
   // Wave step: (height, velocity) in RG. Clamped neighbor fetch = reflecting boundary.
@@ -101,6 +110,7 @@
         self._remoteLast[key] = (p.up ? null : { x: p.u, y: p.v });
       };
       if (window.ConjureBus) window.ConjureBus.on("water.touch", this._onRemote);
+      wlog("init id=" + this.id + " res=" + this.data.resolution + " src=" + (this.data.src ? "yes" : "none"));
     },
 
     _buildSim: function () {
@@ -128,7 +138,7 @@
       if (tex) { tex.colorSpace = T.SRGBColorSpace; tex.wrapS = tex.wrapT = T.ClampToEdgeWrapping; }
       var col = new T.Color(d.tint);
       this._dispMat = new T.ShaderMaterial({ vertexShader: VERT, fragmentShader: DISPLAY_FRAG,
-        transparent: d.opacity < 1.0, uniforms: {
+        transparent: d.opacity < 1.0, side: T.DoubleSide, uniforms: {
           state: { value: this._rt[this._cur].texture }, image: { value: tex }, texel: { value: this._texel },
           refraction: { value: d.refraction }, glint: { value: d.glint }, opacity: { value: d.opacity },
           tint: { value: new T.Vector3(col.r, col.g, col.b) }, lightDir: { value: new T.Vector3(0.3, 0.6, 1.0) } } });
@@ -153,8 +163,9 @@
     // Add splats along the segment last→cur (rasterized so fast drags leave no gaps).
     _segment: function (last, cur, strength) {
       var st = (strength == null ? -this.data.brushStrength : strength);
-      if (!last) { this._pending.push([cur.x, cur.y, st]); return; }
-      var dx = cur.x - last.x, dy = cur.y - last.y, steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / (this.data.brushRadius * 0.5)));
+      if (!last || !isFinite(cur.x) || !isFinite(cur.y)) { if (isFinite(cur.x)) this._pending.push([cur.x, cur.y, st]); return; }
+      var dx = cur.x - last.x, dy = cur.y - last.y, span = this.data.brushRadius * 0.5;
+      var steps = Math.min(64, Math.max(1, Math.ceil(Math.hypot(dx, dy) / (span > 1e-4 ? span : 1e-4))));  // clamp: never runaway
       for (var i = 1; i <= steps; i++) this._pending.push([last.x + dx * i / steps, last.y + dy * i / steps, st]);
     },
 
@@ -188,10 +199,12 @@
           var jp = tip && frame.getJointPose && frame.getJointPose(tip, refSpace);
           if (jp) uv = this._toUV(jp.transform.position, true);
         } else if (src.targetRaySpace && src.gamepad && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed) {
+          if (!this._trigLogged) { this._trigLogged = true; wlog("controller trigger seen (" + key + ")"); }
           var pp = frame.getPose(src.targetRaySpace, refSpace);
           if (pp) uv = this._rayUV(pp.transform);
         }
         if (uv) {
+          if (!this._touchLogged) { this._touchLogged = true; wlog("touch " + key + " uv=" + uv.x.toFixed(2) + "," + uv.y.toFixed(2)); }
           this._segment(this._lastUV[key], uv);                 // local: stamp immediately
           if (window.ConjureBus)                                // shared: peers stamp into their own sims
             window.ConjureBus.emitShared("water.touch", { id: this.id, src: key, u: uv.x, v: uv.y, strength: -this.data.brushStrength });
@@ -204,20 +217,28 @@
     },
 
     tick: function () {
-      var sc = this.el.sceneEl, xr = sc.renderer && sc.renderer.xr;
-      var frame = sc.frame, refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
-      var session = xr && xr.getSession && xr.getSession();
-      if (frame && refSpace && session) this._scanInputs(frame, refSpace, session);
+      if (this._dead) return;                                   // a prior crash disabled us — don't spam
+      try {
+        var sc = this.el.sceneEl, xr = sc.renderer && sc.renderer.xr;
+        var frame = sc.frame, refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
+        var session = xr && xr.getSession && xr.getSession();
+        if (frame && refSpace && session) this._scanInputs(frame, refSpace, session);
 
-      this._pass(this._simMat);                                 // one wave step
-      if (this._pending.length) {                               // stamp this frame's touches
-        var pts = this._pending.slice(0, MAX_SPLATS).map(function (p) { return new T.Vector3(p[0], p[1], p[2]); });
-        this._splatMat.uniforms.splats.value = pts;
-        this._splatMat.uniforms.count.value = pts.length;
-        this._pass(this._splatMat);
-        this._pending.length = 0;
+        this._pass(this._simMat);                               // one wave step
+        if (!this._simOk) { this._simOk = true; wlog("first sim step ok"); }
+        if (this._pending.length) {                             // stamp this frame's touches
+          var pts = this._pending.slice(0, MAX_SPLATS).map(function (p) { return new T.Vector3(p[0], p[1], p[2]); });
+          this._splatMat.uniforms.splats.value = pts;
+          this._splatMat.uniforms.count.value = pts.length;
+          this._pass(this._splatMat);
+          if (!this._splatOk) { this._splatOk = true; wlog("first splat pass ok (" + pts.length + " pts)"); }
+          this._pending.length = 0;
+        }
+        this._dispMat.uniforms.state.value = this._rt[this._cur].texture;
+      } catch (e) {
+        this._dead = true;                                      // stop after one failure so we don't hang the loop
+        wlog("ERROR (disabled): " + (e && (e.message || e)) + " @sim=" + !!this._simOk + " splat=" + !!this._splatOk);
       }
-      this._dispMat.uniforms.state.value = this._rt[this._cur].texture;
     },
 
     remove: function () {
