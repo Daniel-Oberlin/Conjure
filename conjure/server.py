@@ -3241,18 +3241,32 @@ def _surface_offset(spos: list[float], srot: list[float],
     return {"p": [round(c, 5) for c in p_off], "q": [round(c, 6) for c in q_off]}
 
 
-def _on_surface_set(spos: list[float], srot: list[float], extent, geo: dict) -> dict:
-    """The `update`-op `set` for an on-surface image: face the room interior (upright, via `_face_room`),
-    sit 2 cm in front, re-fit to the surface frame using the aspect from `geo`, and carry the host-local
-    offset (§7c-B2) so the client can ride it without its own copy of the host seed pose."""
+def _dims_component(e: dict) -> Optional[str]:
+    """The component key on `e` that carries its on-surface plane's size (width+height): `geometry` for a
+    placed image, or a flat dynamic module's own component (e.g. `water`). None if the entity has no sized
+    plane. Lets re-anchoring re-fit a Water Picture the SAME way it re-fits a regular image, so both ride
+    a re-captured surface's frame consistently (not just its pose)."""
+    for key, comp in (e.get("components") or {}).items():
+        if isinstance(comp, dict) and comp.get("width") and comp.get("height"):
+            return key
+    return None
+
+
+def _on_surface_set(spos: list[float], srot: list[float], extent, e: dict) -> dict:
+    """The `update`-op `set` for on-surface content (a placed image OR an image-bearing dynamic module):
+    face the room interior (upright, via `_face_room`), sit 2 cm in front, re-fit to the surface frame
+    keeping the content's current aspect, and carry the host-local offset (§7c-B2) so the client can ride
+    it without its own copy of the host seed pose."""
     fr = _face_room(srot)
     f = fr["forward"]
     pos = [spos[i] + get_settings().on_surface_standoff * f[i] for i in range(3)]
     out: dict = {"transform.position": pos, "transform.rotation": fr["rotation"],
                  "meta.surface_offset": _surface_offset(spos, srot, pos, fr["rotation"])}
-    if extent and geo.get("width") and geo.get("height"):
-        w, h = _fit_extent(geo["width"] / geo["height"], extent)
-        out["components.geometry.width"], out["components.geometry.height"] = w, h
+    dc = _dims_component(e)                       # geometry (image) or the module's own component (water)
+    if extent and dc:
+        comp = e["components"][dc]
+        w, h = _fit_extent(comp["width"] / comp["height"], extent)
+        out[f"components.{dc}.width"], out[f"components.{dc}.height"] = w, h
     return out
 
 
@@ -3267,8 +3281,7 @@ def _reanchor_surface_images(doc: dict) -> None:
         if not spos:
             continue
         sets = _on_surface_set(spos, surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0],
-                               surf.get("components", {}).get("surface", {}).get("extent"),
-                               e.get("components", {}).get("geometry", {}))
+                               surf.get("components", {}).get("surface", {}).get("extent"), e)
         for path, val in sets.items():
             _set_path(e, path, val)
 
@@ -3281,8 +3294,7 @@ def _reanchor_ops(doc: dict, moved: dict) -> list[dict]:
         s = moved.get((e.get("meta") or {}).get("on_surface"))
         if not s or not s.get("position"):
             continue
-        sets = _on_surface_set(s["position"], s.get("rotation") or [0.0, 0.0, 0.0], s.get("extent"),
-                               e.get("components", {}).get("geometry", {}))
+        sets = _on_surface_set(s["position"], s.get("rotation") or [0.0, 0.0, 0.0], s.get("extent"), e)
         ops.append({"op": "update", "id": e["id"], "set": sets})
     return ops
 

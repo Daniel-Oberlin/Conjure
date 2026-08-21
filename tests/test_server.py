@@ -2360,3 +2360,19 @@ def test_place_image_on_surface_stretch_fills_the_surface(srv, client):
     assert r["ok"] is True
     g = next(e for e in _entities(client) if e["id"] == r["id"])["components"]["geometry"]
     assert g["width"] == pytest.approx(0.5) and g["height"] == pytest.approx(0.4)
+
+
+def test_water_on_surface_re_fits_size_when_the_surface_resizes(srv, client):
+    # Consistency with regular images: a Water Picture must re-fit its plane to the surface's CURRENT
+    # frame on re-capture — not just ride its pose. The frame grows past the resize threshold (0.5 m),
+    # so the square image's fitted plane grows 0.4×0.4 → 1.0×1.0 (fit inside 1.2×1.0, aspect kept).
+    _wall_art(client, extent=(0.5, 0.4))
+    image_id = _procure(client)
+    client.post("/module", json={"module": "water", "on_surface": "wall art 18",
+                                 "config": {"image": image_id}})
+    assert _water(client)["width"] == pytest.approx(0.4) and _water(client)["height"] == pytest.approx(0.4)
+    # re-capture: same wall art, a genuinely-resized frame → the water plane re-fits inside it.
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
+         "rotation": [0.0, -41.0, 0.0], "extent": [1.2, 1.0]}]})
+    assert _water(client)["width"] == pytest.approx(1.0) and _water(client)["height"] == pytest.approx(1.0)
