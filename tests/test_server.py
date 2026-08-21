@@ -1291,8 +1291,16 @@ def test_conjure_water_module(client):
     e = next(x for x in _entities(client) if x["id"] == r["id"])
     assert e["components"]["water"] == {"src": "http://x/koi.png", "damping": 0.99}
     assert e["meta"]["module"] == "water"
-    assert e["components"]["billboard"] == {"yaw": True}          # free-standing → faces the viewer
-    assert e["transform"]["rotation"] == [0.0, 0.0, 0.0]         # default, not surface-aligned
+    assert "billboard" not in e["components"]                     # faces the viewer at creation, NOT a billboard
+    assert e["transform"]["rotation"] == [0.0, 0.0, 0.0]         # no live gaze in tests → default spawn facing
+
+
+def test_conjure_module_billboard_param_composes(client):
+    # billboard is orthogonal + composable: the param attaches the standalone component to ANY module.
+    r = client.post("/module", json={"module": "water", "billboard": True,
+                                     "config": {"src": "http://x/y.png"}}).json()
+    e = next(x for x in _entities(client) if x["id"] == r["id"])
+    assert e["components"]["billboard"] == {"yaw": True} and "water" in e["components"]
 
 
 def test_water_on_surface_needs_a_matching_surface(client):

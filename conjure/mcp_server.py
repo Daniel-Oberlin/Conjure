@@ -912,6 +912,7 @@ async def conjure_module(
     config: Optional[dict] = None,
     position: Optional[list[float]] = None,
     on_surface: Optional[str] = None,
+    billboard: bool = False,
     name: Optional[str] = None,
 ) -> str:
     """Conjure a DYNAMIC MODULE — a live, animated effect that runs in the headset and is shared by
@@ -927,10 +928,12 @@ async def conjure_module(
         water: image (image_id), width/height (m), waveSpeed, damping (→1 = long-lived), brushRadius,
             brushStrength, refraction, glint, tint (hex).
     position: [x, y, z] meters for where the effect centres (default just in front of the viewer). A
-        free-standing water picture faces the viewer automatically.
+        free-standing water picture faces the viewer at creation automatically (fixed, not tracking).
     on_surface: mount it ON a real room surface (a Water Picture on a wall) — pass the surface's number
         or id, like place_image; it's aligned to the surface and fitted to its frame. (Fireflies is a
         volume effect — leave this off for it.)
+    billboard: True makes it ALWAYS turn to face each viewer (yaw-only) as they move — use only when the
+        user says 'always face me' / 'follow me'. Off by default (a fixed spawn-facing is the norm).
     name: reuse an id to move/reconfigure an existing instance; otherwise a new one is created.
 
     Use this when the user asks for an ambient/animated effect ('add some fireflies', 'make it magical')
@@ -938,7 +941,7 @@ async def conjure_module(
     dismiss_module.
     """
     out = await _post("/module", _body(module=module, config=config, position=position,
-                                       on_surface=on_surface, name=name))
+                                       on_surface=on_surface, billboard=billboard or None, name=name))
     if not out.get("ok"):
         return f"Couldn't conjure module: {out.get('error', 'unknown error')}."
     return f"Conjured {out['module']} (id {out['id']})."

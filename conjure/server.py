@@ -3140,6 +3140,22 @@ def _basis_yxz(right: list[float], up: list[float], fwd: list[float]) -> list[fl
     return [math.degrees(x), math.degrees(y), math.degrees(z)]
 
 
+def _face_user(user: str, position: list[float] | None, distance: float = 1.2) -> dict | None:
+    """Spawn pose for FREE-STANDING flat content so it faces the viewer at creation (like a placed image),
+    from the caller's live gaze: place it `distance` m ahead of the head (unless a position is given) and
+    yaw it to face back at the head — upright, NOT a billboard (fixed at creation; it won't chase you).
+    Returns {position, rotation:[deg×3] YXZ} in the #world-root frame (same frame gaze/entities use), or
+    None with no live view (desktop / not looked around yet) → caller falls back to the default pose."""
+    g = gaze.get(user)
+    if not g:
+        return None
+    gv = _head_from_anchor(g.get("anchor")) or g
+    o, fwd = gv["origin"], gv["forward"]
+    pos = position or [round(o[i] + fwd[i] * distance, 3) for i in range(3)]
+    yaw = math.degrees(math.atan2(o[0] - pos[0], o[2] - pos[2]))     # +z of the plane → toward the head
+    return {"position": pos, "rotation": [0.0, round(yaw, 2), 0.0]}
+
+
 def _face_room(srot: list[float]) -> dict:
     """Orientation for content hung on a surface: face the room INTERIOR (upright). Surfaces store their
     OUTWARD normal, so the interior is `-normal`; `up` = gravity projected onto the plane (an arbitrary
@@ -3408,7 +3424,7 @@ DYNAMIC_MODULES: dict[str, dict] = {
                   "singleton": False, "default_pos": [0.0, 1.3, -1.5]},
     # Water Picture — an image seen through a rippling water surface; touch/drag to make waves (tier B,
     # each headset runs its own sim from shared touch events). `image` in config is resolved to a src URL.
-    "water": {"component": "water", "tier": "B", "anchor": "free", "billboard": True,
+    "water": {"component": "water", "tier": "B", "anchor": "free", "face_user": True,
               "singleton": False, "default_pos": [0.0, 1.4, -1.2]},
 }
 
@@ -3418,11 +3434,12 @@ class PlaceModuleRequest(BaseModel):
     config: Optional[dict] = None
     position: Optional[list[float]] = None
     on_surface: Optional[str] = None   # mount on a real surface (id/label/number) — align + fit like place_image
+    billboard: bool = False            # compose the billboard component (always face viewer) onto this instance
     name: Optional[str] = None
 
 
 @app.post("/module")
-async def place_module(req: PlaceModuleRequest) -> dict:
+async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
     """Conjure a dynamic module (docs/dynamic-content-plan.md): add an entity carrying the module's
     component, so every client renders the same effect (shared, deterministic from the shared clock).
     `name` reuses/reconfigures an existing instance; a singleton module reuses its one instance."""
@@ -3458,7 +3475,14 @@ async def place_module(req: PlaceModuleRequest) -> dict:
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]
         meta["on_surface"] = surf["id"]
         meta["surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # ride the surface on recapture
-    elif spec.get("billboard"):   # free-standing → face the viewer (yaw-only, per-client)
+    elif spec.get("face_user"):   # free-standing flat content → face the viewer AT CREATION (fixed, not billboard)
+        caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
+        fu = _face_user(caller, req.position)
+        if fu:
+            pos, rotation = fu["position"], fu["rotation"]
+    # Billboard is an ORTHOGONAL, composable behavior (its own A-Frame component) — attach it to ANY flat
+    # module on request; it then always faces the viewer, over-riding the fixed spawn facing.
+    if req.billboard:
         extra_components["billboard"] = {"yaw": True}
 
     eid = req.name
