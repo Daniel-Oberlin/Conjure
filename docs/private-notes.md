@@ -9,37 +9,14 @@
 - dir paths /user/agent/worlds/..., /user/spaces...
 - Up/down arrows for history (goes in CLI tool only?)
 
-# Menu-driven CLI tool
-  - Completely agnostic of Conjure
-  - Top level: launch servers, restart, shutdown/exit
-  - Add launch modules which are persisted
-    - Name and CLI launch string
-    - Launch by default (toggle on/off in submenu)
-    - Submenu (open with RETURN, show text window, startup/shutdown, toggle default on/off, edit, delete)
-    - Pressing ENTER on launch module enters the interactive CLI window for the module with highlighted top line identifying the module/session
-    - ON -> GREEN, OFF -> RED, OFF (not on by default) -> Yellow
-  - ESC goes back to home menu
-  - Store config in .runner file (search up from current directory until home directory)
-
 # Other
   - Global settings /system/globalsettings (default info color)
   - space visibility (public access, public create worlds)
 
 # Dynamic content
-- Dynamic modules
-  - User provided
-  - LLM provided
-- Events
-  - From user (click, etc.)
-  - From other sources (music player - change key, tempo, etc.)
-- State variables accessible by LLM (per dynamic module)
-- Agent can emit events to affect modules
-- Maybe events only (event driven architecture)?
 - Fireflies
 - Point clouds
-- Water picture
 - Model animations via glTF/VRM
-- Animation for pending box sending dynamic code to the headset
 - Dynamic code should be deterministic and anchored to a precise timestamp for consistency across multiple headsets
 - Keep store of created content, version controlled?
 - Milkdrop style animations on ceiling, in stereo, planetarium style or in front of you
@@ -51,6 +28,7 @@
 
 # Graphics
   - Lighting
+  - Water reflection lighting
   - Panoramic photo
 
 # Audio
