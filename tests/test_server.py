@@ -1282,6 +1282,30 @@ def test_conjure_and_dismiss_module(client):
     assert not any(x["id"] in (eid, "raw-flies") for x in _entities(client))
 
 
+def test_conjure_water_module(client):
+    # water is registered; config (incl. src + tuning) passes through to the component; module meta set.
+    r = client.post("/module", json={"module": "water",
+                                     "config": {"src": "http://x/koi.png", "damping": 0.99}}).json()
+    assert r["ok"] and r["module"] == "water"
+    e = next(x for x in _entities(client) if x["id"] == r["id"])
+    assert e["components"]["water"] == {"src": "http://x/koi.png", "damping": 0.99}
+    assert e["meta"]["module"] == "water"
+
+
+def test_module_event_relays_to_peers_only(client):
+    # tier-B shared bus: a client's module_event fans out to the OTHER clients, not back to the sender.
+    with client.websocket_connect("/ws?user=daniel") as a, client.websocket_connect("/ws?user=bob") as b:
+        a.receive_json(); b.receive_json()                       # initial snapshots
+        a.send_json({"type": "module_event", "event": "water.touch",
+                     "payload": {"id": "w1", "u": 0.25, "v": 0.75}})
+        got = None
+        for _ in range(6):                                        # drain any presence → find the relayed event
+            m = b.receive_json()
+            if m["type"] == "module_event":
+                got = m; break
+        assert got and got["event"] == "water.touch" and got["payload"]["u"] == 0.25
+
+
 def test_forced_geo_resolves_zero_space_and_bad_specs(srv, monkeypatch):
     import dataclasses
     force = lambda v: monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, force_geo=v))

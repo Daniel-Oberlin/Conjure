@@ -1053,7 +1053,8 @@ async def index() -> HTMLResponse:
     om = int((CLIENT_DIR / "occlusion.js").stat().st_mtime)      # real-world depth occlusion (--occlusion)
     ckm = int((CLIENT_DIR / "conjure-clock.js").stat().st_mtime)  # shared clock (dynamic-content spine)
     dmm = int((CLIENT_DIR / "dynamic-modules.js").stat().st_mtime)  # dynamic modules (fireflies, …)
-    v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm, dmm)     # badge reflects the newest of the scripts
+    wtm = int((CLIENT_DIR / "water.js").stat().st_mtime)     # water picture module (tier B)
+    v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm, dmm, wtm)     # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
@@ -1063,6 +1064,7 @@ async def index() -> HTMLResponse:
     html = html.replace("/static/occlusion.js", f"/static/occlusion.js?v={om}")
     html = html.replace("/static/conjure-clock.js", f"/static/conjure-clock.js?v={ckm}")
     html = html.replace("/static/dynamic-modules.js", f"/static/dynamic-modules.js?v={dmm}")
+    html = html.replace("/static/water.js", f"/static/water.js?v={wtm}")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     # Tell the client which diagnostics are on so it doesn't POST/HUD when off. debug_log gates general
     # client logging; debug_registration gates the co-location registration HUD + per-capture log.
@@ -3404,6 +3406,10 @@ async def place_image(req: PlaceImageRequest) -> dict:
 DYNAMIC_MODULES: dict[str, dict] = {
     "fireflies": {"component": "fireflies", "tier": "A", "anchor": "free",
                   "singleton": False, "default_pos": [0.0, 1.3, -1.5]},
+    # Water Picture — an image seen through a rippling water surface; touch/drag to make waves (tier B,
+    # each headset runs its own sim from shared touch events). `image` in config is resolved to a src URL.
+    "water": {"component": "water", "tier": "B", "anchor": "free",
+              "singleton": False, "default_pos": [0.0, 1.4, -1.2]},
 }
 
 
@@ -3424,6 +3430,13 @@ async def place_module(req: PlaceModuleRequest) -> dict:
         return {"ok": False, "error": f"unknown module {req.module!r}; available: "
                 f"{', '.join(sorted(DYNAMIC_MODULES))}"}
     config = dict(req.config or {})
+    # Convenience: a module can take an `image` id (from generate_image/import) — resolve it to a src URL
+    # here (like place_image), so "a water picture of a koi pond" is generate_image → conjure_module.
+    if config.get("image"):
+        rec, _, err = _get_image(str(config.pop("image")))
+        if err:
+            return {"ok": False, "error": err}
+        config["src"] = rec.url
     pos = req.position or list(spec.get("default_pos") or [0.0, 1.3, -1.5])
     comp = spec["component"]
     eid = req.name
@@ -3637,6 +3650,9 @@ async def ws(websocket: WebSocket) -> None:
             elif mtype == "resync":                              # client cleared a blanked window (space
                 await websocket.send_json(_snapshot_msg())       # selection) → re-send the current world so
                                                                  # any patches dropped while blanked are recovered
+            elif mtype == "module_event":                        # tier-B shared bus: relay a module's event
+                await _broadcast_others(websocket, {"type": "module_event",   # (e.g. a water touch) to the
+                    "event": msg.get("event"), "payload": msg.get("payload")})  # OTHER clients (not the sender)
             elif mtype == "presence":                            # relay this client's pose to the others
                 pose = msg.get("pose")
                 g = _gaze_from_pose(pose)

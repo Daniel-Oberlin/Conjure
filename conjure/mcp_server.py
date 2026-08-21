@@ -916,10 +916,15 @@ async def conjure_module(
     """Conjure a DYNAMIC MODULE — a live, animated effect that runs in the headset and is shared by
     everyone in the session (deterministic from a shared clock, so all viewers see the same thing).
 
-    module: which effect. Available now: 'fireflies' (a swarm of gently wandering glow points).
-    config: module-specific settings. For fireflies: count (int), color (hex), radius (m, swarm size),
-        height (m, centre), drift (m, wander), speed, size (point size m), seed (int → a specific swarm).
-        Omit to use the module's defaults.
+    module: which effect. Available now:
+        'fireflies' — a swarm of gently wandering glow points.
+        'water' — a Water Picture: an image seen through a rippling water surface that the user can
+            touch/drag (fingertip or controller) to make waves. Pass image=<image_id from generate_image>
+            for the picture; everyone sees it and can disturb it (each headset runs its own ripples).
+    config: module-specific settings; omit to use defaults.
+        fireflies: count (int), color (hex), radius (m), height (m), drift (m), speed, size (m), seed (int).
+        water: image (image_id), width/height (m), waveSpeed, damping (→1 = long-lived), brushRadius,
+            brushStrength, refraction, glint, tint (hex).
     position: [x, y, z] meters for where the effect centres (default just in front of the viewer).
     name: reuse an id to move/reconfigure an existing instance; otherwise a new one is created.
 

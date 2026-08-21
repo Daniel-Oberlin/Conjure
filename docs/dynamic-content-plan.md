@@ -300,7 +300,14 @@ into the render loop.
    Agent-launch: `conjure_module` / `dismiss_module` MCP tools → server `/module` + `/module/dismiss`
    with a `DYNAMIC_MODULES` registry (the manifest seed: component/tier/anchor/singleton). Confirmed
    in sync across two users.
-3. **Event bus + water ripple** (tier B) — proves shared events, XR touch raycast, multi-user input
+3. **Event bus + water ripple** (tier B) — ✅ first cut (branch `water-ripple`, needs on-device iteration).
+   `window.ConjureBus.emitShared/on` (client) + server `module_event` ws relay to peers = the shared-event
+   spine. `client/water.js`: GPU ping-pong wave-equation sim (height+velocity, reflecting/clamped walls,
+   Courant-clamped), refraction display (∇h → UV + specular), touch/drag via BOTH fingertip-proximity
+   (hand tracking) and controller ray+trigger. Per the user's call, tier-B is **NOT synchronized** — only
+   touch events broadcast; each headset evolves its own sim. `conjure_module("water", {image, …})`.
+   Original tier-B goal below —
+   proves shared events, XR touch raycast, multi-user input
    attribution, deterministic short-lived sim. If ripple-from-anyone's-touch looks right on two
    headsets, the architecture holds.
 4. **Everything else is a module** — milkdrop (+ server music module + rule layer), photo library

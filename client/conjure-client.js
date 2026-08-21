@@ -938,6 +938,20 @@
   // frame; desktop: world-root is at identity, so it's just the camera pose).
   var socket = null, R_AV = 0.13, GAP_AV = 0.03, worldOwner = null, guestSpawned = false;
 
+  // Minimal shared-event bus for dynamic modules (docs/dynamic-content-plan.md, tier B). `emitShared`
+  // relays an event to PEERS via the ws (the server fans it to the OTHER clients); on()/off() subscribe;
+  // inbound `module_event` messages are dispatched to subscribers. A module acts on its OWN input
+  // immediately (local); this bus carries only the shared, cross-client traffic (e.g. water touches).
+  window.ConjureBus = {
+    _subs: {},
+    on: function (event, fn) { (this._subs[event] = this._subs[event] || []).push(fn); },
+    off: function (event, fn) { var a = this._subs[event]; if (a) { var i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); } },
+    emitShared: function (event, payload) {
+      if (socket && socket.readyState === 1) socket.send(JSON.stringify({ type: "module_event", event: event, payload: payload }));
+    },
+    _dispatch: function (msg) { (this._subs[msg.event] || []).forEach(function (fn) { try { fn(msg); } catch (e) {} }); }
+  };
+
   // Desktop-guest spawn (Phase 4 §6): a guest viewing on a desktop browser (no AR) isn't physically in
   // the space, so drop them just to the OWNER's right the first time the owner's pose arrives, then let
   // wasd/mouse take over. Desktop only (in AR the headset places you); #world-root is identity on
@@ -1078,6 +1092,7 @@
         setAvatar(msg.user, msg.pose, msg.anchor);
         if (msg.user === worldOwner) maybeSpawnGuest(msg.pose);   // a guest drops in to the owner's right
       }
+      else if (msg.type === "module_event") window.ConjureBus._dispatch(msg);   // peer's dynamic-module event
       else if (msg.type === "presence_leave") removeAvatar(msg.user);
       else if (msg.type === "recapture") {                // realign request → re-capture the room
         var sc = document.querySelector("a-scene");
