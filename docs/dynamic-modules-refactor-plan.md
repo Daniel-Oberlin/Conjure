@@ -1,6 +1,6 @@
 # Dynamic modules → first-class, extensible (mirror the agents pattern) — plan
 
-**Status:** ALIGNED (2026-08-21), building. Make dynamic modules discoverable/extensible exactly like
+**Status:** BUILT (2026-08-21). Make dynamic modules discoverable/extensible exactly like
 agents: each module is a folder under a top-level `dynamics/` dir; user modules resolve on a search
 path (user shadows bundled); agents declare which modules they require; the director discovers its
 scoped modules via an injected catalog. Replaces the flat `client/water.js` + `client/dynamic-modules.js`
