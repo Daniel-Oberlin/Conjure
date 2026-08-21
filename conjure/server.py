@@ -3154,7 +3154,10 @@ def _forward(rotation: list[float]) -> list[float]:
 # CONTENT ourselves (never adopt the surface's own rotation — walls carry an arbitrary 180° roll → upside
 # down, and a surface's +Z is its OUTWARD normal → facing away). Every surface now stores its true outward
 # normal (client snapInsets no longer negates wall art), so the room interior is simply -normal; up is
-# gravity. One rule for walls, tables, ceilings, pictures — no per-type or viewer special-casing.
+# gravity — one rule for walls, tables, ceilings, pictures. The ONE viewer-dependent case is a HORIZONTAL
+# surface (floor/table/ceiling), where gravity gives no in-plane up: there the content's up is oriented so
+# its bottom edge sits nearest the placing viewer (readable from where they stood), stored surface-local so
+# a re-capture reproduces it (see `_content_up_local` / `_face_room(up_local=…)`). A wall never needs this.
 # Measured on-device (`[normals]` probe): surface normals are reliably outward-from-room, so -normal is the
 # interior in every room including a multi-room space (each wall's own normal marks its own room).
 def _norm3(v: list[float]) -> list[float]:
@@ -3203,17 +3206,23 @@ def _face_user(user: str, position: list[float] | None, distance: float = 1.2) -
     return {"position": pos, "rotation": [0.0, round(yaw, 2), 0.0]}
 
 
-def _face_room(srot: list[float]) -> dict:
+def _face_room(srot: list[float], up_local: Optional[list[float]] = None) -> dict:
     """Orientation for content hung on a surface: face the room INTERIOR (upright). Surfaces store their
-    OUTWARD normal, so the interior is `-normal`; `up` = gravity projected onto the plane (an arbitrary
-    in-plane axis for a floor/ceiling, whose normal is vertical). Returns {rotation:[deg×3] (YXZ),
-    forward:[x,y,z] unit}. Uniform for walls, tables, ceilings, pictures."""
+    OUTWARD normal, so the interior is `-normal`; `up` = gravity projected onto the plane. On a HORIZONTAL
+    surface (floor/table/ceiling) gravity gives no in-plane up, so the content's up is ambiguous — pass
+    `up_local` = [a, b] (coefficients on the surface's own +X/+Y in-plane axes, from `_content_up_local`)
+    to orient it toward the placing viewer; without it we fall back to the surface's own rectangle.
+    Returns {rotation:[deg×3] (YXZ), forward:[x,y,z] unit}. Uniform for walls, tables, ceilings, pictures."""
     n = _forward(srot)                                            # surface's OUTWARD normal
     f = _norm3([-n[0], -n[1], -n[2]])                             # content faces the interior = -normal
     d = f[1]                                                      # gravity (0,1,0) · forward
     up = [-d * f[0], 1.0 - d * f[1], -d * f[2]]                   # gravity ⟂ forward (upright on a wall)
     if sum(c * c for c in up) < 1e-6:                             # forward ≈ vertical (floor/ceiling/table):
-        su = _local_axis(srot, (0.0, -1.0, 0.0))                 # no gravity-up → align to the SURFACE's own
+        if up_local:                                             # viewer-derived up (bottom toward viewer),
+            _, sr, su0 = _plane_basis(srot)                      # rebuilt in the surface's CURRENT in-plane
+            su = [up_local[0] * sr[i] + up_local[1] * su0[i] for i in range(3)]   # basis so it rides recapture
+        else:
+            su = _local_axis(srot, (0.0, -1.0, 0.0))            # no viewer → align to the SURFACE's own
         d2 = sum(su[i] * f[i] for i in range(3))                 # rectangle so edges stay parallel. Use -Y
         up = [su[i] - d2 * f[i] for i in range(3)]               # (a 180° flip about vertical) — +Y read upside-down
         if sum(c * c for c in up) < 1e-6:                        # (su ∥ f, shouldn't happen) → any ⟂ axis
@@ -3221,6 +3230,31 @@ def _face_room(srot: list[float]) -> dict:
     up = _norm3(up)
     right = [up[1] * f[2] - up[2] * f[1], up[2] * f[0] - up[0] * f[2], up[0] * f[1] - up[1] * f[0]]  # up × fwd
     return {"rotation": _basis_yxz(right, up, f), "forward": f}
+
+
+def _content_up_local(srot: list[float], spos: list[float], user: str) -> Optional[list[float]]:
+    """For a HORIZONTAL surface, the content's in-plane 'up' that puts its BOTTOM edge nearest the placing
+    viewer — so a photo/water picture laid on a table reads upright from where they stood. 'Up' points
+    AWAY from the viewer (top edge far, bottom edge near). Returned as [a, b] coefficients on the surface's
+    own +X/+Y in-plane axes (stored in meta so re-anchoring rebuilds the SAME facing after the surface is
+    re-captured/moves). None for a vertical surface (gravity already gives up) or with no live gaze
+    (voice/desktop placement) → caller keeps the surface-rectangle fallback."""
+    n = _forward(srot)
+    f = _norm3([-n[0], -n[1], -n[2]])
+    d = f[1]
+    if sum(c * c for c in (-d * f[0], 1.0 - d * f[1], -d * f[2])) >= 1e-6:
+        return None                                              # vertical-ish → gravity up, viewer-independent
+    g = gaze.get(user)
+    if not g:
+        return None
+    gv = _head_from_anchor(g.get("anchor")) or g
+    o = gv["origin"]
+    w = [spos[0] - o[0], 0.0, spos[2] - o[2]]                    # horizontal viewer→surface (top points away)
+    if w[0] * w[0] + w[2] * w[2] < 1e-6:                         # viewer directly above/below → no horizontal dir
+        return None
+    w = _norm3(w)
+    _, sr, su0 = _plane_basis(srot)                              # decompose into the surface's in-plane basis
+    return [round(sum(w[i] * sr[i] for i in range(3)), 5), round(sum(w[i] * su0[i] for i in range(3)), 5)]
 
 
 # --- on-surface re-anchoring: keep place_image(on_surface=…) planes glued to their surface across a room
@@ -3256,8 +3290,9 @@ def _on_surface_set(spos: list[float], srot: list[float], extent, e: dict) -> di
     """The `update`-op `set` for on-surface content (a placed image OR an image-bearing dynamic module):
     face the room interior (upright, via `_face_room`), sit 2 cm in front, re-fit to the surface frame
     keeping the content's current aspect, and carry the host-local offset (§7c-B2) so the client can ride
-    it without its own copy of the host seed pose."""
-    fr = _face_room(srot)
+    it without its own copy of the host seed pose. A horizontal surface reuses the placing viewer's facing
+    from `meta.content_up` (surface-local), so a re-capture keeps the bottom edge toward where it was placed."""
+    fr = _face_room(srot, (e.get("meta") or {}).get("content_up"))
     f = fr["forward"]
     pos = [spos[i] + get_settings().on_surface_standoff * f[i] for i in range(3)]
     out: dict = {"transform.position": pos, "transform.rotation": fr["rotation"],
@@ -3406,7 +3441,7 @@ class PlaceImageRequest(BaseModel):
 
 
 @app.post("/place_image")
-async def place_image(req: PlaceImageRequest) -> dict:
+async def place_image(req: PlaceImageRequest, request: Request) -> dict:
     """Hang a previously-procured image (by id) as a textured plane facing the user. If `name` is an
     existing entity, swap its image in place (keeping position)."""
     rec, _, err = _get_image(req.image_id)
@@ -3437,7 +3472,9 @@ async def place_image(req: PlaceImageRequest) -> dict:
         extent = surf.get("components", {}).get("surface", {}).get("extent")
         if extent:                                         # fit inside the frame (aspect-correct) unless stretch=fill
             width, height = (float(extent[0]), float(extent[1])) if req.stretch else _fit_dims(rec, extent, stereo)
-        fr = _face_room(srot)                              # face the room interior (-normal), upright
+        caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
+        up_local = _content_up_local(srot, spos, caller)  # horizontal surface → bottom edge toward the viewer
+        fr = _face_room(srot, up_local)                   # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]   # toward the viewer
     eid = req.name or f"ent_image_{uuid4().hex[:6]}"
@@ -3445,6 +3482,8 @@ async def place_image(req: PlaceImageRequest) -> dict:
             "prompt": rec.prompt, "image_id": rec.id}
     if req.on_surface:                                 # remember the home surface so it re-anchors on re-capture
         meta["on_surface"] = surf["id"]
+        if up_local:                                   # remember the viewer facing so re-capture reproduces it
+            meta["content_up"] = up_local
         meta["surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # §7c-B2: client rides this offset
     # A transparent (alpha) image must render with transparency on, or three.js shows it opaque.
     material = {"src": rec.url, "shader": "flat", "side": "double", "transparent": rec.transparent}
@@ -3460,6 +3499,8 @@ async def place_image(req: PlaceImageRequest) -> dict:
             sets["transform.position"] = pos
             sets["transform.rotation"] = rotation
             sets["meta.on_surface"] = surf["id"]
+            if up_local:
+                sets["meta.content_up"] = up_local
             sets["meta.surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # §7c-B2
         if req.billboard:   # turn an existing free-standing image into a viewer-facing billboard
             sets["components.billboard"] = {"yaw": True}
@@ -3577,10 +3618,14 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
         # `stretch` fills the whole surface. A non-image module leaves its own sizing alone.
         if rec is not None and extent:
             config["width"], config["height"] = _module_plane_dims(rec, config, extent, stretch=req.stretch)
-        fr = _face_room(srot)                                   # face the room interior (-normal), upright
+        caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
+        up_local = _content_up_local(srot, spos, caller)       # horizontal surface → bottom edge toward viewer
+        fr = _face_room(srot, up_local)                        # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]
         meta["on_surface"] = surf["id"]
+        if up_local:
+            meta["content_up"] = up_local                      # reproduce the facing on recapture
         meta["surface_offset"] = _surface_offset(spos, srot, pos, rotation)   # ride the surface on recapture
     else:
         # Free-standing image module → size the plane to the picture's aspect (like place_image), instead

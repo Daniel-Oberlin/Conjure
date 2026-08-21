@@ -2376,3 +2376,39 @@ def test_water_on_surface_re_fits_size_when_the_surface_resizes(srv, client):
         {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
          "rotation": [0.0, -41.0, 0.0], "extent": [1.2, 1.0]}]})
     assert _water(client)["width"] == pytest.approx(1.0) and _water(client)["height"] == pytest.approx(1.0)
+
+
+def test_on_surface_image_faces_the_viewer_on_a_horizontal_surface(srv, client):
+    # On a table (horizontal) gravity gives no in-plane up, so the image must orient toward the placing
+    # viewer: TOP edge away, BOTTOM edge nearest — readable from where they stood at placement.
+    srv.gaze["daniel"] = {"origin": [0.0, 1.6, 0.0]}          # viewer at the origin
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_table_2", "semantic": "table", "position": [0.0, 0.7, -1.0],
+         "rotation": [90.0, 0.0, 0.0], "extent": [1.0, 0.6]}]})
+    r = client.post("/place_image", json={"image_id": _procure(client), "on_surface": "table 2"}).json()
+    assert r["ok"] is True
+    from conjure.server import _plane_basis
+    img = next(e for e in _entities(client) if e["id"] == r["id"])
+    _, _, up = _plane_basis(img["transform"]["rotation"])     # the image's own +Y (its top) in world
+    # viewer at z=0, table at z=-1 ⇒ "away from the viewer" is -z: the top points there, bottom toward viewer
+    assert up[2] < -0.9 and abs(up[1]) < 0.1
+    assert "content_up" in img["meta"]                        # facing recorded so re-capture reproduces it
+
+
+def test_on_surface_horizontal_facing_survives_recapture(srv, client):
+    # The viewer-derived facing is stored surface-local, so re-capturing the table keeps the same facing
+    # (doesn't revert to an arbitrary rectangle axis) — consistent with how pose/size ride a recapture.
+    srv.gaze["daniel"] = {"origin": [0.0, 1.6, 0.0]}
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_table_2", "semantic": "table", "position": [0.0, 0.7, -1.0],
+         "rotation": [90.0, 0.0, 0.0], "extent": [1.0, 0.6]}]})
+    r = client.post("/place_image", json={"image_id": _procure(client), "on_surface": "table 2"}).json()
+    from conjure.server import _plane_basis
+    up0 = _plane_basis(next(e for e in _entities(client) if e["id"] == r["id"])["transform"]["rotation"])[2]
+    # re-capture the same table, shifted past the move threshold (no gaze needed — facing comes from meta).
+    srv.gaze.clear()
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_table_2", "semantic": "table", "position": [0.9, 0.7, -1.0],
+         "rotation": [90.0, 0.0, 0.0], "extent": [1.0, 0.6]}]})
+    up1 = _plane_basis(next(e for e in _entities(client) if e["id"] == r["id"])["transform"]["rotation"])[2]
+    assert all(abs(up1[i] - up0[i]) < 0.02 for i in range(3))   # same facing, not the rectangle fallback
