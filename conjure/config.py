@@ -316,6 +316,15 @@ class Settings:
     # default; "none"/"fake" to disable/test.
     caption_provider: str = "gemini"
     caption_model: str = "gemini-2.5-flash"
+    # Controller pointer beams (see docs/dynamic-module-spec.md interaction): a laser from each controller,
+    # shown while you're pointing/interacting (e.g. rippling a Water Picture) and hidden otherwise. The beam
+    # arms when the trigger is pulled past `beam_trigger` (analog 0..1) and LINGERS for `beam_timeout`
+    # seconds after the most recent pull, so a momentary release mid-interaction doesn't flicker it off.
+    # Injected as window.CONJURE_BEAM_MS (ms) / CONJURE_BEAM_TRIGGER. beam_timeout=0 disables the linger
+    # (beam shows only while the trigger is held past threshold); the config is the single source of truth
+    # for the duration — it is never hard-coded in the client.
+    beam_timeout: float = 10.0
+    beam_trigger: float = 0.05
 
 
 def get_settings() -> Settings:
@@ -376,4 +385,6 @@ def get_settings() -> Settings:
         embed_model=os.environ.get("CONJURE_EMBED_MODEL", "google/siglip2-so400m-patch14-384"),
         caption_provider=os.environ.get("CONJURE_CAPTION_PROVIDER", "gemini"),
         caption_model=os.environ.get("CONJURE_CAPTION_MODEL", "gemini-2.5-flash"),
+        beam_timeout=float(os.environ.get("CONJURE_BEAM_TIMEOUT", "10.0")),
+        beam_trigger=float(os.environ.get("CONJURE_BEAM_TRIGGER", "0.05")),
     )

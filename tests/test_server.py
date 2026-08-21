@@ -1248,6 +1248,18 @@ def test_index_injects_occlusion_mode(srv, client, monkeypatch):
         assert f'window.CONJURE_OCCLUSION="{mode}";' in client.get("/").text
 
 
+def test_index_injects_controller_beam_settings(srv, client, monkeypatch):
+    import dataclasses
+    html = client.get("/").text
+    assert '<script src="/static/controller-beams.js?v=' in html   # the beam module loads
+    # the linger duration is config-driven (seconds → ms), never hard-coded in the client
+    assert "window.CONJURE_BEAM_MS=10000;" in html
+    assert "window.CONJURE_BEAM_TRIGGER=0.05;" in html
+    monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, beam_timeout=4.5, beam_trigger=0.2))
+    html2 = client.get("/").text
+    assert "window.CONJURE_BEAM_MS=4500;" in html2 and "window.CONJURE_BEAM_TRIGGER=0.2;" in html2
+
+
 def test_time_endpoint_returns_epoch_ms(client):
     import time
     before = time.time() * 1000.0
