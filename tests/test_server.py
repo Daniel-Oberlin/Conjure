@@ -2281,8 +2281,8 @@ def test_conjure_out_of_scope_module_is_rejected(srv, client, monkeypatch):
 def test_dynamics_available_catalog_reflects_the_active_agent(srv, client):
     body = client.get("/dynamics/available").json()
     assert body["ok"] is True
-    assert set(body["modules"]) == {"fireflies", "water"}
-    assert "fireflies —" in body["catalog"] and "water —" in body["catalog"]
+    assert set(body["modules"]) == {"fireflies", "water", "grab"}
+    assert "fireflies —" in body["catalog"] and "water —" in body["catalog"] and "grab —" in body["catalog"]
 
 
 def test_dynamics_file_is_served_with_version_bust(srv, client):
@@ -2304,6 +2304,7 @@ def test_index_injects_active_agent_module_scripts(srv, client):
     html = client.get("/").text
     assert 'src="/dynamics/fireflies/fireflies.js?v=' in html
     assert 'src="/dynamics/water/water.js?v=' in html
+    assert 'src="/dynamics/grab/grab.js?v=' in html          # the tier-C manipulation module
     # the deleted flat client files are no longer referenced
     assert "/static/dynamic-modules.js" not in html and "/static/water.js" not in html
 
@@ -2425,3 +2426,67 @@ def test_on_surface_horizontal_facing_survives_recapture(srv, client):
          "rotation": [90.0, 0.0, 0.0], "extent": [1.0, 0.6]}]})
     up1 = _plane_basis(next(e for e in _entities(client) if e["id"] == r["id"])["transform"]["rotation"])[2]
     assert all(abs(up1[i] - up0[i]) < 0.02 for i in range(3))   # same facing, not the rectangle fallback
+
+
+# ── tier-C manipulation: /manipulate commit (grab) ───────────────────────────────────────────────
+# (docs/dynamic-content-plan.md §Tier-C: grab — client drags locally, commits the resting transform.)
+def _place_box(client, eid="box1"):
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {
+        "id": eid, "transform": {"position": [0, 1, -2]},
+        "components": {"geometry": {"primitive": "box"}}, "meta": {"generated": True}}}]})
+    return eid
+
+
+def test_manipulate_applies_transform_and_broadcasts(srv, client):
+    eid = _place_box(client)
+    r = client.post("/manipulate", json={"id": eid, "position": [1, 1.5, -3],
+                                         "rotation": [0, 45, 0], "scale": [2, 2, 2]}).json()
+    assert r["ok"] is True
+    e = next(x for x in _entities(client) if x["id"] == eid)
+    assert e["transform"]["position"] == [1, 1.5, -3]
+    assert e["transform"]["rotation"] == [0, 45, 0]
+    assert e["transform"]["scale"] == [2, 2, 2]
+
+
+def test_manipulate_partial_update_leaves_other_fields(srv, client):
+    eid = _place_box(client)
+    client.post("/manipulate", json={"id": eid, "scale": [3, 3, 3]})
+    e = next(x for x in _entities(client) if x["id"] == eid)
+    assert e["transform"]["scale"] == [3, 3, 3] and e["transform"]["position"] == [0, 1, -2]  # unchanged
+
+
+def test_manipulate_recomputes_surface_offset_for_on_surface_content(srv, client):
+    # A picture hung on a wall carries meta.on_surface; moving it must refresh surface_offset so it still
+    # rides a room recapture (same contract as place_image).
+    _wall_art(client)
+    image_id = _procure(client)
+    r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 18"}).json()
+    before = next(x for x in _entities(client) if x["id"] == r["id"])["meta"]["surface_offset"]
+    # move it along the wall
+    client.post("/manipulate", json={"id": r["id"], "position": [0.8, 1.8, -1.1]})
+    e = next(x for x in _entities(client) if x["id"] == r["id"])
+    assert e["transform"]["position"] == [0.8, 1.8, -1.1]
+    assert e["meta"]["surface_offset"] != before        # offset refreshed from the new resting pose
+
+
+def test_manipulate_refuses_real_surfaces(srv, client):
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_9", "semantic": "wall", "position": [0, 1.5, -2],
+         "rotation": [0, 0, 0], "extent": [2, 2.5]}]})
+    r = client.post("/manipulate", json={"id": "real_wall_9", "position": [1, 1, -1]}).json()
+    assert r["ok"] is False and "real room surfaces" in r["error"]
+
+
+def test_manipulate_unknown_entity_is_rejected(srv, client):
+    r = client.post("/manipulate", json={"id": "ghost", "position": [0, 0, 0]}).json()
+    assert r["ok"] is False and "no entity" in r["error"]
+
+
+def test_manipulate_is_owner_gated(srv, client):
+    eid = _place_box(client)
+    # a guest (not the active world's owner 'daniel') is refused by the owner-only middleware
+    r = client.post("/manipulate", json={"id": eid, "position": [9, 9, 9]},
+                    headers={"X-Conjure-User": "someone-else"})
+    assert r.status_code == 403
+    e = next(x for x in _entities(client) if x["id"] == eid)
+    assert e["transform"]["position"] == [0, 1, -2]     # unchanged

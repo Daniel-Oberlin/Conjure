@@ -196,6 +196,22 @@ free-standing picture face the viewer at creation; `on_surface` hangs it on a wa
 `billboard` (composed by the server) makes it follow the viewer. `remove` disposes the render targets,
 geometry, material, and unsubscribes from the bus. See `dynamics/water/`.
 
+### `grab` — tier C (shared-authoritative-state, scene-entity manipulation)
+A singleton, `anchor: "ambient"` module that lets you reposition/rotate/resize **other** placed objects
+with the controllers — the first module to read + write scene entities beyond its own node (a curated
+capability). Interaction is GRIP-centric so it never collides with the TRIGGER (content interaction):
+hover → oriented highlight box + corner handles; grip on the body → grab (free objects 6DOF + thumbstick
+reel; surface-attached objects slide on their plane); grip on a corner → uniform resize; release → commit.
+
+Its **tier-C sync** is the point: dragging mutates the local `object3D` only (nothing broadcast mid-drag);
+on release it POSTs the resting transform to the generic `POST /manipulate`, and the **world server** is
+the authority — it authorizes (owner-only), applies, recomputes `meta.surface_offset` for on-surface
+content, persists, and broadcasts. The mover's echo is idempotent (`applyPatch` re-sets values it already
+holds) → no pop. This shows the tier-C pattern **without a custom server module**: grab's server side is
+generic, so it lives as a plain world-server endpoint. Custom per-module *server* logic (a runtime-agnostic
+"server module") is a deliberate future track driven by autonomous/emitting modules (music/rules), not by
+grab — see docs/dynamic-content-plan.md §Server modules & the Node question. See `dynamics/grab/`.
+
 ---
 
 ## 9. Checklist for a new module

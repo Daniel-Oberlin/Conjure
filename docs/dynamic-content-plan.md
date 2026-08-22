@@ -310,9 +310,86 @@ into the render loop.
    proves shared events, XR touch raycast, multi-user input
    attribution, deterministic short-lived sim. If ripple-from-anyone's-touch looks right on two
    headsets, the architecture holds.
-4. **Everything else is a module** — milkdrop (+ server music module + rule layer), photo library
+4. **`grab`** (tier C) — 🔜 next. The first **shared-authoritative-state** example: an ambient,
+   singleton client module that lets you reposition/rotate/resize *other* placed objects. See
+   §Tier-C: grab below.
+5. **Everything else is a module** — milkdrop (+ server music module + rule layer), photo library
    (bridges to `library.db` / the asset catalog), solar system, spirographs, model articulations.
-5. **Later:** LLM/user-generated modules behind the now-designed boundary.
+6. **Later:** LLM/user-generated modules behind the now-designed boundary.
+
+## Tier-C: `grab` — object manipulation (aligned 2026-08-21, building)
+
+The worked example for tier C. An **ambient, singleton client module** (`dynamics/grab/`, scoped to the
+builder agent) that manipulates the transforms of *other* placed entities — the first module that reads
+and writes scene entities beyond its own node (a curated capability). Its *presence* is owner-gated world
+state (conjure/dismiss like any module); the *resting transforms it produces* are the tier-C shared state.
+
+**Interaction (aligned).** Controllers, GRIP-centric so it never collides with TRIGGER (= content
+interaction, e.g. rippling a water picture):
+- **Hover** (no button) → an oriented highlight box + corner handles around the pointed-at object.
+- **Grip on the body** → rigid grab. *Free* objects: full 6DOF (move + wrist-twist together); thumbstick
+  reels in/out along the ray. *Surface-attached* objects (`meta.on_surface`): translate on the plane
+  (clamped to the frame) + yaw about the normal.
+- **Grip on a corner handle** → uniform resize (`transform.scale`), proportions preserved.
+- **Release** → commit.
+
+**Sync (aligned, generic — NOT a custom server module).** Dragging mutates the local `object3D` only;
+nothing is broadcast mid-drag (peers see the object jump to its resting spot on release — tier-C shared
+*resting* state, naturally rate-limited). On release the client POSTs the final transform to a generic
+`POST /manipulate` in the world server, which authorizes (owner), applies it, recomputes
+`meta.surface_offset` for surface objects (so they still ride recapture), persists (autosave), and
+broadcasts to all. The mover's echo is idempotent (`applyPatch` re-sets values it already holds → no pop).
+
+**Permissions.** Owner-only, gated **client-side** (a guest gets the highlight + an "ask the owner" hint,
+grip won't grab → no local divergence) **and** server-side (`/manipulate` ∈ `_OWNER_ONLY_PATHS`).
+
+**Deliberately NOT built for grab:** a per-module *server module*. grab's server side is 100% generic
+(authorize + apply + `surface_offset` + broadcast), so it lives as a plain world-server endpoint, not
+module code. And **snapping/clamping is a client-side, live-feedback concern** (you must see it snap as
+you drag — a server-commit snap would hop after release), so it's out of the server's job entirely.
+
+## Server modules & the Node question (deliberate future track)
+
+The reciprocal idea — per-module **server** logic (a "server module") — is real and in this plan's DNA
+(the music transport, the rule engine, semantic-cue emitters). But **`grab` does not motivate it**: its
+server side is generic. The framework's genuine driver is **autonomous/emitting** modules (music, rules,
+a shared-selection arbiter), so it should be designed *by* that module, not retrofitted onto grab. Held
+as a deliberate track, with these alignments already made:
+
+- **The world server stays the single authority/store.** A server module is *behavior operating on the
+  world store through a constrained capability object* (the server mirror of the client capability:
+  `apply_patch`, `broadcast`, `clock`, `store` reads, `on_event`/`emit` on the ws bus, optional `tick`) —
+  **not** a parallel database.
+- **Runtime-agnostic contract.** The server-module contract is `input → ops/events`, so the same manifest
+  (`module.json` gains an optional `server` entry + `runtime`) can be hosted by Python now and JS later.
+- **Two channels, by purpose.** Authoritative tier-C commits go over **HTTP** (owner-gated, persisted,
+  request/response — what grab uses); reactive/autonomous behavior goes over the **ws bus** (which today
+  only relays to peers — a server module would make it bidirectional) + an optional server `tick`.
+
+### The world-server → Node migration (endorsed direction, incremental — NOT big-bang)
+
+The prize is real and compounding: **one runtime kills the server↔client geometry-math duplication**
+(`_face_room`/`_plane_basis`/`_fit_extent`/`_surface_offset`/quaternion+YXZ-euler all shadow JS in
+`room-snap.js`/`world-model.js`/`plane-anchor.js` — the source of a whole class of parity bugs: YXZ order,
+quat→euler, the boundary frame-flip, normals-outward) and gives module authors one language for both
+halves. But a big-bang port of the ~4000-line world server (co-location registration, the apply-gate,
+spaces/sessions/admission — subtle, working, hard-won) is high-risk for low marginal ROI. Constraints and
+the recommended path:
+
+- **"In-process + Node" is a contradiction to name up front.** CPython can't host Node in-process. The
+  choices are (a) an *embedded JS engine* (py_mini_racer/quickjs/pythonmonkey) — in-process, runs **pure**
+  JS (three.js math is pure JS ✓) but **no Node APIs** (fs/net/timers); or (b) a *real Node sidecar* —
+  full ecosystem + autonomous behavior, but a separate process, not in-process. Pure-compute server
+  modules (grab-shaped: inputs → ops) fit (a); autonomous/networked ones (music) need (b).
+- **Python anchors a port must relocate first:** SigLIP embeddings (torch/transformers) and `trimesh`
+  (GLB bounds), both in-process with the asset library. Image/caption SDKs have JS equivalents; embeddings
+  don't (cleanly) → decide their home (agent server? a Python sidecar) before porting.
+- **Incremental path (recommended):** (1) extract the shared geometry/placement math into one **pure-JS
+  module** the client uses and the server consumes (via an embedded engine or verified parity) — this is
+  where the recurring pain actually is, and it de-risks everything; (2) relocate the Python anchors;
+  (3) introduce Node **at the module seam** (server modules in JS) and prove the symmetry there;
+  (4) port the core wholesale only once it's mostly plumbing and the anchors are gone. The math-dedup
+  bonus is captured by step 1 — not as a side effect of grab.
 
 ## Practical limitations (flagged)
 

@@ -1,0 +1,12 @@
+{
+  "component": "grab",
+  "entry": "grab.js",
+  "tier": "C",
+  "anchor": "ambient",
+  "singleton": true,
+  "default_pos": [0.0, 0.0, 0.0],
+  "description": "Move, rotate, and resize placed objects with the controllers: point to highlight, GRIP to grab (free objects move/rotate in full 3D; surface-attached objects slide on their surface), GRIP a corner handle to resize. Owner-only; changes commit when you release.",
+  "config_schema": {
+    "reelSpeed": { "type": "number", "default": 1.5, "desc": "metres/sec the thumbstick reels a grabbed object in/out" }
+  }
+}

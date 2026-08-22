@@ -170,7 +170,7 @@ def test_dynamics_resolve_against_the_path(tmp_path):
 
 def test_builder_declares_its_dynamics():
     a = load_agent("builder")
-    assert a.dynamics == ["fireflies", "water"]
+    assert a.dynamics == ["fireflies", "water", "grab"]
     assert "dynamics://available" in a.context
 
 

@@ -32,6 +32,8 @@ def test_bundled_modules_load():
     assert water.anchor == "free" and water.default_pos == [0.0, 1.4, -1.2]
     fireflies = load_module("fireflies")
     assert fireflies.anchor == "volume" and fireflies.face_user is False
+    grab = load_module("grab")   # tier-C ambient singleton manipulation module
+    assert grab.tier == "C" and grab.anchor == "ambient" and grab.singleton is True
 
 
 def test_catalog_line_renders_params_with_defaults():

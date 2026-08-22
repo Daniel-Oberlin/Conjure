@@ -597,6 +597,9 @@
       if (_fresh || shapeChanged) setSurfaceLabel(el, roomState.annotations);
       return;
     }
+    // Stash the surface home id (if any) so the `grab` module can tell surface-attached content (constrain
+    // to the plane) from free content (6DOF). Meta isn't otherwise mirrored onto the DOM.
+    if (meta.on_surface) el.dataset.onSurface = meta.on_surface; else delete el.dataset.onSurface;
     if (t.position) el.setAttribute("position", v3(t.position));
     if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
     if (t.scale) el.setAttribute("scale", v3(t.scale));
@@ -1081,7 +1084,7 @@
           : msg.type === "snapshot" && msg.world ? " rev " + msg.world.rev + " ents=" + ((msg.world.entities || []).length)
           : ""));
       }
-      if (msg.type === "snapshot") { worldOwner = msg.owner || worldOwner; applySnapshot(msg.world); }
+      if (msg.type === "snapshot") { worldOwner = msg.owner || worldOwner; window.CONJURE_OWNER = worldOwner; applySnapshot(msg.world); }
       else if (msg.type === "patch") applyPatch(msg.patch);
       else if (msg.type === "info") showInfo(msg.msg);    // e.g. "'<world>' is private — ask <owner>…"
       else if (msg.type === "evicted") {                  // live session went private (§6c) → blank; a

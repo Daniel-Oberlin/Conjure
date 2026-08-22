@@ -23,7 +23,7 @@
     }
   ],
   "context": ["room://current", "world://current", "dynamics://available"],
-  "dynamics": ["fireflies", "water"],
+  "dynamics": ["fireflies", "water", "grab"],
   "world": {
     "on_create": [
       { "cmd": "show_edges", "args": { "on": true } }

@@ -592,7 +592,7 @@ _OWNER_ONLY_PATHS = {
     "/reset", "/patch", "/room", "/texture_surface", "/style_surface", "/place_asset",
     "/place_cached_asset", "/place_image", "/set_skybox", "/set_grounded_skybox",
     "/edit_image", "/outpaint_image", "/skybox_from_image",
-    "/module", "/module/dismiss",
+    "/module", "/module/dismiss", "/manipulate",
 }
 
 
@@ -3706,6 +3706,51 @@ async def dismiss_module(req: DismissModuleRequest) -> dict:
     patch = store.apply_patch([{"op": "remove", "id": i} for i in ids], origin="module")
     await _broadcast({"type": "patch", "patch": patch})
     return {"ok": True, "removed": ids}
+
+
+# --- tier-C manipulation: commit a client-side drag/rotate/resize (docs/dynamic-content-plan.md §Tier-C:
+#     grab). The `grab` dynamic module manipulates a placed object's transform LOCALLY while dragging, then
+#     posts the resting transform here on release; the world server is the authority — it applies, persists
+#     (autosave), and broadcasts to all. The mover's echo is idempotent (it already holds these values). ----
+class ManipulateRequest(BaseModel):
+    id: str
+    position: Optional[list[float]] = None
+    rotation: Optional[list[float]] = None   # A-Frame euler degrees (YXZ), like every other transform
+    scale: Optional[list[float]] = None
+
+
+@app.post("/manipulate")
+async def manipulate_entity(req: ManipulateRequest) -> dict:
+    """Commit a placed object's new resting transform after a `grab` manipulation (tier C). Owner-gated
+    like every world write. Real room surfaces are never movable. For on-surface content, recompute
+    `meta.surface_offset` from the new pose so it still rides a room recapture (mirrors place_image)."""
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+    if (ent.get("meta") or {}).get("real"):
+        return {"ok": False, "error": "real room surfaces can't be moved"}
+    sets: dict = {}
+    if req.position is not None:
+        sets["transform.position"] = req.position
+    if req.rotation is not None:
+        sets["transform.rotation"] = req.rotation
+    if req.scale is not None:
+        sets["transform.scale"] = req.scale
+    if not sets:
+        return {"ok": False, "error": "nothing to change"}
+    surf_id = (ent.get("meta") or {}).get("on_surface")
+    if surf_id and (req.position is not None or req.rotation is not None):
+        surf = next((e for e in store.doc["entities"] if e["id"] == surf_id), None)
+        spos = surf and surf.get("transform", {}).get("position")
+        if spos:
+            srot = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
+            npos = req.position or ent.get("transform", {}).get("position")
+            nrot = req.rotation if req.rotation is not None else (ent.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0])
+            if npos:
+                sets["meta.surface_offset"] = _surface_offset(spos, srot, npos, nrot)
+    patch = store.apply_patch([{"op": "update", "id": req.id, "set": sets}], origin="manipulate")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "id": req.id}
 
 
 class SetSkyboxRequest(BaseModel):

@@ -1,0 +1,271 @@
+/* global AFRAME */
+// grab — tier-C object manipulation (docs/dynamic-content-plan.md §Tier-C: grab, docs/dynamic-module-spec.md).
+// A singleton, ambient module that lets you reposition/rotate/resize OTHER placed objects with the
+// controllers. It's the first module that reads + writes scene entities beyond its own node.
+//
+// Interaction is GRIP-centric so it never collides with the TRIGGER (= content interaction, e.g. rippling a
+// water picture):
+//   • hover (no button)      → an oriented highlight box + corner handles on the pointed-at object
+//   • GRIP on the body       → grab. Free objects: full 6DOF (move + wrist-twist); thumbstick reels in/out.
+//                              Surface-attached objects (meta.on_surface): slide on the surface plane.
+//   • GRIP on a corner handle→ uniform resize (transform.scale), proportions preserved.
+//   • release                → commit.
+//
+// Sync (tier C): dragging mutates the local object3D ONLY — nothing is broadcast mid-drag. On release the
+// client POSTs the resting transform to /manipulate; the world server authorizes (owner), applies, persists,
+// recomputes surface_offset for on-surface content, and broadcasts to all. The mover's echo is idempotent
+// (it already holds these values) → no pop. Owner-only, gated here (guests get a hint, no grab) AND server-side.
+
+(function () {
+  "use strict";
+  if (!window.AFRAME) return;
+  if (AFRAME.components.grab) return;
+
+  var HILITE = 0x66ccff, HANDLE = 0xffcc33, HANDLE_R = 0.02;   // handle sphere radius (m, in target-local space)
+  var SCALE_MIN = 0.05, SCALE_MAX = 50.0;
+  var ONE = null;   // set once AFRAME.THREE exists
+
+  function urlUser() { return new URLSearchParams(location.search).get("user") || ""; }
+  // Empty user or unknown owner ⇒ treated as owner (matches the server's missing-header rule).
+  function amOwner() { var me = urlUser(), o = window.CONJURE_OWNER; return !me || !o || me === o; }
+
+  AFRAME.registerComponent("grab", {
+    schema: { reelSpeed: { type: "number", default: 1.5 } },
+
+    init: function () {
+      var THREE = AFRAME.THREE; ONE = new THREE.Vector3(1, 1, 1);
+      this._ray = new THREE.Raycaster();
+      this._ctrl = {};                       // per-controller state: { mode, target, ... }
+      this._hud = { el: null, group: null, handles: [] };
+      this._hinted = 0;
+    },
+
+    // ---- manipulable discovery -------------------------------------------------------------------
+    // Direct world entities that aren't the room, scaffold, or this module — models, images, water, etc.
+    _manipulables: function () {
+      var root = document.getElementById("world-root");
+      if (!root) return [];
+      var out = [], kids = root.children;
+      for (var i = 0; i < kids.length; i++) {
+        var el = kids[i];
+        if (!el.id || el.dataset.real || el.dataset.scaffold) continue;
+        if (el.components && el.components.grab) continue;    // never grab the grab entity itself
+        if (el.object3D) out.push(el);
+      }
+      return out;
+    },
+
+    // Nearest manipulable the ray hits → { el, point, dist } or null.
+    _pick: function (origin, dir) {
+      var best = null;
+      this._ray.set(origin, dir);
+      var els = this._manipulables();
+      for (var i = 0; i < els.length; i++) {
+        var hits = this._ray.intersectObject(els[i].object3D, true);
+        if (hits.length && (!best || hits[0].distance < best.dist)) {
+          best = { el: els[i], point: hits[0].point.clone(), dist: hits[0].distance };
+        }
+      }
+      return best;
+    },
+
+    // A corner handle of the current HUD (if it belongs to `el`) under the ray → the handle mesh, or null.
+    _pickHandle: function (origin, dir, el) {
+      if (!this._hud.el || this._hud.el !== el || !this._hud.handles.length) return null;
+      this._ray.set(origin, dir);
+      var hits = this._ray.intersectObjects(this._hud.handles, false);
+      return hits.length ? hits[0].object : null;
+    },
+
+    // ---- HUD (oriented highlight box + corner handles, parented to the target) --------------------
+    _localBox: function (obj) {
+      var THREE = AFRAME.THREE, box = new THREE.Box3(), v = new THREE.Vector3();
+      obj.updateWorldMatrix(true, true);
+      var inv = new THREE.Matrix4().copy(obj.matrixWorld).invert();
+      obj.traverse(function (n) {
+        if (!n.isMesh || !n.geometry) return;
+        n.geometry.computeBoundingBox();
+        var gb = n.geometry.boundingBox; if (!gb) return;
+        var m = new THREE.Matrix4().multiplyMatrices(inv, n.matrixWorld);
+        var xs = [gb.min.x, gb.max.x], ys = [gb.min.y, gb.max.y], zs = [gb.min.z, gb.max.z];
+        for (var a = 0; a < 2; a++) for (var b = 0; b < 2; b++) for (var c = 0; c < 2; c++)
+          box.expandByPoint(v.set(xs[a], ys[b], zs[c]).applyMatrix4(m));
+      });
+      return box.isEmpty() ? null : box;
+    },
+
+    _setHud: function (el) {
+      if (this._hud.el === el) return;
+      this._clearHud();
+      if (!el || !el.object3D) return;
+      var THREE = AFRAME.THREE, box = this._localBox(el.object3D);
+      if (!box) return;
+      var group = new THREE.Group();
+      var helper = new THREE.Box3Helper(box, HILITE);
+      if (helper.material) { helper.material.depthTest = false; helper.material.transparent = true; }
+      group.add(helper);
+      var hmat = new THREE.MeshBasicMaterial({ color: HANDLE, depthTest: false, transparent: true });
+      var handles = [];
+      var xs = [box.min.x, box.max.x], ys = [box.min.y, box.max.y], zs = [box.min.z, box.max.z];
+      for (var a = 0; a < 2; a++) for (var b = 0; b < 2; b++) for (var c = 0; c < 2; c++) {
+        var h = new THREE.Mesh(new THREE.SphereGeometry(HANDLE_R, 8, 8), hmat);
+        h.position.set(xs[a], ys[b], zs[c]);
+        h.renderOrder = 999;
+        group.add(h); handles.push(h);
+      }
+      helper.renderOrder = 999;
+      el.object3D.add(group);                 // child of the target → oriented + scaled with it
+      this._hud = { el: el, group: group, handles: handles };
+    },
+
+    _clearHud: function () {
+      var h = this._hud;
+      if (h.group) {
+        if (h.group.parent) h.group.parent.remove(h.group);
+        h.group.traverse(function (n) { if (n.geometry) n.geometry.dispose(); if (n.material) n.material.dispose(); });
+      }
+      this._hud = { el: null, group: null, handles: [] };
+    },
+
+    // ---- transform helpers -----------------------------------------------------------------------
+    // Write a target-WORLD matrix onto an object as its LOCAL transform (parent-aware).
+    _applyWorld: function (obj, worldMat) {
+      var THREE = AFRAME.THREE, local = worldMat;
+      if (obj.parent) {
+        obj.parent.updateWorldMatrix(true, false);
+        local = new THREE.Matrix4().copy(obj.parent.matrixWorld).invert().multiply(worldMat);
+      }
+      var p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      local.decompose(p, q, s);
+      obj.position.copy(p); obj.quaternion.copy(q); obj.scale.copy(s);
+    },
+
+    // ---- gesture start / update / commit ---------------------------------------------------------
+    _begin: function (st, hit, origin, cq, dir) {
+      var THREE = AFRAME.THREE, el = hit.el, obj = el.object3D;
+      st.target = el;
+      var handle = this._pickHandle(origin, dir, el);
+      if (handle) {                            // grip on a corner handle → uniform resize
+        st.mode = "scale";
+        st.startScale = obj.scale.clone();
+        obj.updateWorldMatrix(true, false);
+        st.center = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
+        st.startDist = Math.max(1e-3, origin.distanceTo(st.center));
+        return;
+      }
+      st.mode = "grab";
+      st.surface = el.dataset.onSurface ? document.getElementById(el.dataset.onSurface) : null;
+      if (st.surface && st.surface.object3D) {   // surface-constrained: slide on the plane
+        var s3 = st.surface.object3D; s3.updateWorldMatrix(true, false);
+        st.sPos = new THREE.Vector3().setFromMatrixPosition(s3.matrixWorld);
+        st.sQuat = new THREE.Quaternion().setFromRotationMatrix(s3.matrixWorld);
+        st.normal = new THREE.Vector3(0, 0, 1).applyQuaternion(st.sQuat).normalize();   // surface outward +Z
+        obj.updateWorldMatrix(true, false);
+        var oPos = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
+        st.standoff = oPos.clone().sub(st.sPos).dot(st.normal);                          // keep its stand-off
+        st.half = this._localBox(s3);                                                    // clamp bounds (local)
+      } else {                                   // free: rigid 6DOF (object attached to the controller)
+        obj.updateWorldMatrix(true, false);
+        var cInv = new THREE.Matrix4().compose(origin, cq, ONE).invert();
+        st.rel = new THREE.Matrix4().multiplyMatrices(cInv, obj.matrixWorld);   // controller⁻¹ · objectWorld
+      }
+    },
+
+    _update: function (st, origin, cq, dir, thumbY, dt) {
+      var THREE = AFRAME.THREE, obj = st.target.object3D;
+      if (st.mode === "scale") {
+        var f = origin.distanceTo(st.center) / st.startDist;
+        var s = st.startScale.clone().multiplyScalar(f);
+        s.set(Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.x)),
+              Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.y)),
+              Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.z)));
+        obj.scale.copy(s);
+        return;
+      }
+      if (st.surface) {                          // slide the object where the ray meets the surface plane
+        var denom = dir.dot(st.normal);
+        if (Math.abs(denom) < 1e-5) return;
+        var t = st.sPos.clone().sub(origin).dot(st.normal) / denom;
+        if (t <= 0) return;
+        var p = origin.clone().add(dir.clone().multiplyScalar(t));
+        if (st.half) {                           // clamp to the surface rectangle
+          var right = new THREE.Vector3(1, 0, 0).applyQuaternion(st.sQuat);
+          var up = new THREE.Vector3(0, 1, 0).applyQuaternion(st.sQuat);
+          var rel = p.clone().sub(st.sPos);
+          var du = Math.max(st.half.min.x, Math.min(st.half.max.x, rel.dot(right)));
+          var dv = Math.max(st.half.min.y, Math.min(st.half.max.y, rel.dot(up)));
+          p = st.sPos.clone().add(right.multiplyScalar(du)).add(up.multiplyScalar(dv));
+        }
+        p.add(st.normal.clone().multiplyScalar(st.standoff));   // keep its stand-off in front of the surface
+        var world = new THREE.Matrix4().compose(p, new THREE.Quaternion().setFromRotationMatrix(obj.matrixWorld), obj.scale);
+        this._applyWorld(obj, world);
+        return;
+      }
+      // free rigid: reel first (push/pull along the controller's forward), then re-attach
+      if (thumbY) st.rel.elements[14] += thumbY * this.data.reelSpeed * (dt / 1000);
+      var ctrl = new THREE.Matrix4().compose(origin, cq, ONE);
+      this._applyWorld(obj, ctrl.multiply(st.rel));
+    },
+
+    _commit: function (st) {
+      var THREE = AFRAME.THREE, obj = st.target && st.target.object3D;
+      if (!obj) return;
+      var e = new THREE.Euler().setFromQuaternion(obj.quaternion, "YXZ"), R = 180 / Math.PI;
+      var body = { id: st.target.id,
+        position: [obj.position.x, obj.position.y, obj.position.z],
+        rotation: [e.x * R, e.y * R, e.z * R],
+        scale: [obj.scale.x, obj.scale.y, obj.scale.z] };
+      fetch("/manipulate", { method: "POST",
+        headers: { "Content-Type": "application/json", "X-Conjure-User": urlUser() || "" },
+        body: JSON.stringify(body) }).catch(function () { /* local state stands; a snapshot will reconcile */ });
+    },
+
+    _hint: function () {
+      var now = (window.performance && performance.now) ? performance.now() : Date.now();
+      if (now - this._hinted < 3000) return;
+      this._hinted = now;
+      console.warn("[grab] only the owner can move objects in this world");
+    },
+
+    tick: function (time, dt) {
+      try {
+        var sc = this.el.sceneEl, xr = sc.renderer && sc.renderer.xr;
+        var frame = sc.frame, refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
+        var session = xr && xr.getSession && xr.getSession();
+        if (!session || !frame || !refSpace) { this._setHud(null); return; }
+        var THREE = AFRAME.THREE, sources = session.inputSources || [], hover = null;
+        for (var i = 0; i < sources.length; i++) {
+          var src = sources[i];
+          if (src.hand || !src.targetRaySpace || !src.gamepad) continue;
+          var pp = frame.getPose(src.targetRaySpace, refSpace);
+          if (!pp) continue;
+          var key = src.handedness || ("c" + i);
+          var o = pp.transform.position, q = pp.transform.orientation;
+          var cq = new THREE.Quaternion(q.x, q.y, q.z, q.w);
+          var origin = new THREE.Vector3(o.x, o.y, o.z);
+          var dir = new THREE.Vector3(0, 0, -1).applyQuaternion(cq).normalize();
+          var grip = src.gamepad.buttons[1];         // xr-standard mapping: button 1 = grip/squeeze
+          var pressed = !!(grip && (grip.pressed || grip.value > 0.5));
+          var thumbY = (src.gamepad.axes && src.gamepad.axes.length >= 4) ? src.gamepad.axes[3] : 0;
+          var st = this._ctrl[key] || (this._ctrl[key] = { mode: "idle", target: null });
+
+          if (st.mode === "idle") {
+            var hit = this._pick(origin, dir);
+            if (hit) hover = hit.el;
+            if (pressed && hit) {
+              if (!amOwner()) this._hint();
+              else { this._begin(st, hit, origin, cq, dir); hover = st.target; }
+            }
+          } else {
+            hover = st.target;
+            if (!pressed) { this._commit(st); st.mode = "idle"; st.target = null; }
+            else this._update(st, origin, cq, dir, thumbY, dt);
+          }
+        }
+        this._setHud(hover);
+      } catch (e) { /* never break the render loop over a manipulation */ }
+    },
+
+    remove: function () { this._clearHud(); this._ctrl = {}; }
+  });
+})();
