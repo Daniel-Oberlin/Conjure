@@ -33,7 +33,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from .config import DEFAULT_USER, USERS_DIR, Settings
 from .director import Busy
 from .llm import Turn
-from .shell import Shell
+from .shell import Shell, default_cwd
 from .world import MIGRATED_SID, SessionRepository
 
 
@@ -43,10 +43,12 @@ class Conn:
     """One connected client. Holds its per-connection state — `user` (who it acts as) and `in_shell`
     (its own command-mode toggle) — and its socket. The Director/transcript are shared, not here."""
 
-    def __init__(self, ws: WebSocket, user: str) -> None:
+    def __init__(self, ws: WebSocket, user: str, kind: str = "cli") -> None:
         self.ws = ws
         self.user = user
+        self.kind = kind                 # "cli" | "voice" — which command set applies and how output reads
         self.in_shell = False
+        self.cwd = ""                    # shell working directory; "" until the first command resolves it
         self.bumped = False              # auto-forced into shell by a private session (§8.3) — distinct from
                                          # a user who chose shell, so we only auto-restore what we bumped
 
@@ -83,7 +85,8 @@ class Hub:
                 pass
 
 
-def _context_event(shell: Shell, live: Optional[dict], user: str, in_shell: bool) -> dict:
+def _context_event(shell: Shell, live: Optional[dict], user: str, in_shell: bool,
+                   cwd: str = "") -> dict:
     """A connection's view of "what's live" — **data**, not a formatted prompt (the client formats). The
     shared bits (agent, llm, world/space/owner) plus this connection's own `user` + `in_shell`."""
     d = shell.director                                   # transiently None while a re-bind is in flight
@@ -91,7 +94,15 @@ def _context_event(shell: Shell, live: Optional[dict], user: str, in_shell: bool
           "agent": d.agent.name if (d and d.agent) else "agent",
           "llm": d.active if d else "",
           "user": user,
-          "in_shell": in_shell}
+          "in_shell": in_shell,
+          # The shell's working directory, so the client can show it in the prompt. Data, not a formatted
+          # string — the client decides how to render it (voice renders none).
+          "cwd": cwd or default_cwd(user, d.agent.name if (d and d.agent) else "")}
+    if d is not None:
+        try:                                     # turns/cap + last turn's context size, for a status bar
+            ev["stats"] = d.context_stats()
+        except Exception:                        # noqa: BLE001 — decoration; never let it cost a client its
+            pass                                 # prompt/agent/world, which is the rest of this event
     if live:
         for k in ("scope", "world", "space", "owner"):
             if k in live:
@@ -108,15 +119,16 @@ def _turn_to_event(turn) -> dict:
     return {"type": "assistant_final", "text": turn.text, "backlog": True}
 
 
-def _backlog_events(shell: Shell, live: Optional[dict], user: str, in_shell: bool) -> list[dict]:
+def _backlog_events(shell: Shell, live: Optional[dict], user: str, in_shell: bool,
+                    cwd: str = "") -> list[dict]:
     """What a newly-connected client receives before the live feed: its `context`, then the transcript
     replayed (so a late joiner has the history). Pure — unit-testable without a socket."""
     transcript = shell.director.transcript if shell.director else []   # None mid-rebind → no backlog
-    return [_context_event(shell, live, user, in_shell)] + [_turn_to_event(t) for t in list(transcript)]
+    return [_context_event(shell, live, user, in_shell, cwd)] + [_turn_to_event(t) for t in list(transcript)]
 
 
 async def _send_context(app: FastAPI, conn: Conn) -> None:
-    await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell))
+    await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd))
 
 
 def _permitted(app: FastAPI, conn: Conn) -> bool:
@@ -342,11 +354,13 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
                     _persist_new_turns(app, before)      # append this turn to the session's transcript (step 2)
             finally:
                 app.state.turn_active = False
+                await _broadcast_context(app)            # the turn moved the counts — refresh every status bar
         elif shell.is_open_shell(cmd):                   # ---- enter shell mode (this connection only)
             conn.in_shell = True
-            await conn.send({"type": "notice", "text": "Shell — deterministic commands (help, llms, agents, "
-                                                       "use <llm>, agent <name>, whoami, dir, delete). "
-                                                       "'exit' returns to the agent."})
+            await conn.send({"type": "notice", "text": "Shell — deterministic commands. Nouns act on "
+                                                       "what's live (agent, llm, session, world); dir / "
+                                                       "show / cd / delete walk the namespace. 'help' "
+                                                       "lists them, 'exit' returns to the agent."})
             await _send_context(app, conn)
         elif shell.is_leave_shell(cmd):                  # ---- leave shell mode (this connection only)
             if conn.in_shell:
@@ -360,7 +374,9 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
 
             before_llm = shell.director.active if shell.director else None
             await shell._dispatch(cmd, on_text, speaker=conn.user,   # act as the SPEAKER (own scope), not host;
-                                  permitted=_permitted(app, conn))   # gate shared-effect verbs on §6d
+                                  permitted=_permitted(app, conn),   # gate shared-effect verbs on §6d
+                                  cwd=conn.cwd, voice=(conn.kind == "voice"))
+            conn.cwd = shell.cwd                         # `cd` is per-connection, like shell mode
             if shell.director and shell.director.active != before_llm:
                 _persist_llm(app)                        # a `use <llm>` sticks to the session (step 3c)
             await _broadcast_context(app)                # an LLM/agent switch changes everyone's prompt
@@ -540,20 +556,22 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
         shell mode lives here). On connect: this client's context + the transcript backlog. Then a receive
         loop: `{type:"turn", text}` runs a line."""
         await websocket.accept()
-        conn = Conn(websocket, websocket.query_params.get("user") or DEFAULT_USER)
+        conn = Conn(websocket, websocket.query_params.get("user") or DEFAULT_USER,
+                    kind=(websocket.query_params.get("client") or "cli").lower())
         want_backlog = websocket.query_params.get("backlog", "1").lower() not in ("0", "false", "no")
         app.state.hub.add(conn)
         try:
             if not _permitted(app, conn):                # joining a PRIVATE session → shell only, no dialog (§8.3)
                 conn.bumped = conn.in_shell = True
-                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell))
+                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd))
                 await conn.send({"type": "notice", "text": "This session is private — you're in shell mode "
                                  "until its owner makes it public (or you switch sessions)."})
             elif want_backlog:                           # a text client replays history; a voice client can't
-                for event in _backlog_events(app.state.shell, app.state.live, conn.user, conn.in_shell):
+                for event in _backlog_events(app.state.shell, app.state.live, conn.user,
+                                             conn.in_shell, conn.cwd):
                     await conn.send(event)
             else:
-                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell))
+                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd))
             while True:
                 msg = await websocket.receive_json()
                 if msg.get("type") == "turn":

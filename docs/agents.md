@@ -88,27 +88,67 @@ overlay + single active pointer.
 **Extensible command registry.** Commands are `(pattern → handler)` entries in a registry — a tiny
 deterministic dispatcher, *not* MCP tools. Adding a command is registering a handler. Seed set:
 
-| Command (NL-ish grammar) | Effect |
-|---|---|
-| `open shell` / `exit` | enter / leave shell mode |
-| `talk to <name>` / `use <llm>` / `switch to <agent>` | reassign the active agent and/or LLM |
-| `agents` / `llms` / `servers` | list what's available (and in scope) |
-| `whoami` / `status` | show the active pair + its scoped servers/tools |
-| `reset` / `save <name>` / `load <name>` / `realign room` | **deterministic** world ops (today these would be LLM tool calls) |
-| `dir [path]` / `delete <path>` | inspect / purge the `user→{worlds,spaces,assets}` namespace (dev admin) |
-| `help` | list commands |
+**Two audiences, one registry.** Voice is live in the simulation with no screen; the CLI has a
+terminal. Rather than two command sets that would drift, every row carries a **`voice` flag**. Voice
+gets the modal/navigational verbs whose output is speakable; the namespace verbs are CLI-only and
+refuse politely by voice ("'dir' is a terminal command — run it from the CLI"). The client declares
+itself with `?client=voice|cli` on the WebSocket.
 
-**`dir` / `delete` (dev admin).** A filesystem-like view + purge of the whole namespace, addressed by
-path: `/`, `/<user>`, `/<user>/<cat>`, `/<user>/<cat>/<name>` where `<cat>` ∈ `worlds | spaces |
-assets`. `dir` with no path renders the full tree for every user; a path narrows it. `delete` previews
-the target, then requires a `y` confirmation before acting, and refuses to remove the **active**
-world/space/user (autosave would resurrect them). Both hit the world server's `/admin/{tree,delete}`
-endpoints, so they act on its live state, not raw files. **No auth yet** — a security/permission gate
-comes later; this is a dev-cleanup tool (e.g. `delete /testuser`, `delete /testuser/worlds/w1`).
+**Two shapes of command.** A **noun** command acts on whatever is LIVE and reads the same spoken or
+typed. A **path** command acts on anything addressable. The rule that keeps them from overlapping:
+nouns for the live thing, paths for any thing.
+
+| Noun command | Effect | Voice |
+|---|---|:--:|
+| `open shell` / `exit` | enter / leave shell mode | ✓ |
+| `help [command]` · `where` | list commands · locate yourself in one line | ✓ |
+| `agent` · `agent <name>` | list · switch (relaunches its tools; its own sessions and worlds) | ✓ |
+| `llm` · `llm <name>` | list · switch the active LLM (spoken: "talk to gemini") | ✓ |
+| `session` · `session <name>` · `session <user> <name>` · `session new [title]` · `session rename <title>` | list · switch · visit · create · retitle | ✓ |
+| `world` · `world <name>` · `world new <name>` | list · switch · create and switch | ✓ |
+| `clear` | wipe this session's chat history (keeps worlds and assets) | ✓ |
+| `spaces` · `users` · `tools` | list your captured spaces · everyone here · what the agent can call | — |
+
+| Path command | Effect | Voice |
+|---|---|:--:|
+| `dir [path]` | list **one level** of the namespace | — |
+| `show [path]` | one entry in detail | — |
+| `cd [path]` | change the working directory (bare: back to your agent) | — |
+| `public` / `private [path]` | visibility of the live session, or of a path | ✓ |
+| `rename <path> <new>` | retitle a session, relabel an asset | — |
+| `delete <path>` | remove a world, session, space, asset or user (confirms) | — |
+
+**The namespace mirrors storage.** The one non-obvious part: **worlds live per session** —
+`WorldRepository(USERS_DIR, sessions=…)` routes every per-name op to the scope's *active* session's
+`worlds/` dir, so two sessions under one agent own separate sets of worlds. The path says so; hiding
+the session level merges them into one indistinguishable list (which the pre-2026-08 `dir` did).
+
+    /<user>/spaces/<name>
+    /<user>/agents/<agent>/assets/<id>                    library rows (virtual — SQLite, not files)
+    /<user>/agents/<agent>/sessions/<sid>/worlds/<name>
+    /<user>/agents/<agent>/worlds                         shortcut → the ACTIVE session's worlds
+
+Paths are absolute, `~`-relative (your own home) or relative to the connection's `cwd`, which starts at
+your own scope so a bare `dir` shows something worth seeing. A shortcut **resolves on use**: `cd worlds`
+remembers `…/sessions/session-1/worlds`, so it can't silently point elsewhere after a session switch.
+`dir` lists one level — the old recursive form dumped every user's worlds, spaces and assets at the
+root. `delete` previews the target, requires a `y` confirmation, and refuses to remove whatever is
+**active** (autosave would resurrect it). All of these hit the world server's
+`/admin/{tree,show,delete}`, so they act on its live state, not raw files. **No auth yet** beyond
+"you can only delete your own namespace" — a fuller permission gate comes later.
+
+**Not here, deliberately.** `rename` covers sessions and assets only: both are metadata edits that move
+nothing. Renaming a **world** or **space** would strand references we can't reach — agent state docs are
+schema-free by design (`StateStore` "doesn't know a `map` from an `inventory`"), and a world's
+`environment.space` may sit inside *another user's* world, which we may not rewrite. That needs an alias
+mechanism — shelved, with the full referrer table and proposed design in
+[backlog.md](./backlog.md#renaming-worlds-and-spaces--needs-an-alias-mechanism-shelved).
+World visibility is likewise absent: `/worlds/visibility` is superseded — visibility is the
+**session's** now, and a world inherits it.
 
 **Migration — done.** LLM switching used to live in the agent as `route_turn` (the `"let me talk to
 X"` regex in `director.py`). That logic has been removed from the agent and lives only in the shell
-now (`shell._switch`); routing is no longer an agent responsibility — the agent just runs turns on the
+now (`shell._switch_llm`); routing is no longer an agent responsibility — the agent just runs turns on the
 **active** LLM. (See [agent-separation-plan.md](./agent-separation-plan.md).)
 
 **Grammar.** Keep it natural-language-friendly (good for voice) but **parsed, never modeled** — regex /
@@ -117,8 +157,7 @@ verbatim.
 
 **Status — shipped (skeleton).** `conjure/shell.py` wraps the agent (Director) and drives both
 front-ends (CLI + voice). Shell mode (`conjure open shell` → `conjure:shell>`, `exit`), the `conjure`
-wake-prefix for inline commands, and a small command registry (`open`/`exit`, `help`, `whoami`,
-`llms`, `agents`, plus `talk to/use <llm>` LLM-switching) are in. Input that isn't a recognised command
+wake-prefix for inline commands, and the command registry above are in. Input that isn't a recognised command
 is forwarded to the agent unchanged. LLM switching is now **shell-only** — `route_turn` has been
 removed from `director.handle`, so the agent no longer parses handovers out of an utterance.
 Agent-switching is now in too: **`agent <name>`** tears down the current agent's MCP server and
@@ -477,7 +516,7 @@ agent); hot-reload of defs; degraded-mode behavior when an allowed server won't 
 | Today | Becomes |
 |---|---|
 | `Director` (roster + 1 server + 1 prompt) | shell + agent runtime; `Director` → `builder` agent |
-| ~~`route_turn` (inline `"talk to X"`)~~ | ✅ done — shell command registry (`shell._switch`, §2) |
+| ~~`route_turn` (inline `"talk to X"`)~~ | ✅ done — shell command registry (`shell._switch_llm`, §2) |
 | ~~`DIRECTOR_PROMPT` (`director.py`)~~ | ✅ done — the `builder` agent's `prompt_file` (its identity/ownership text lives there too); the runtime default is a generic `_DEFAULT_PROMPT` |
 | single `mcp_server` | server **registry** entry `world` (later: split servers) |
 | single `WorldStore` (one world doc) | shared geometry **base** + `agent → world space → worlds`, one **globally-active** world, composed server-side (§3b–3c) |
