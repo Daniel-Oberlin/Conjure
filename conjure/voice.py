@@ -156,7 +156,7 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     # connection doesn't get the whole transcript spoken at us — just the current context (which voice
     # ignores; it has no prompt). We speak the shared conversation's replies (assistant text + notices).
     async def listen() -> None:
-        url = ws_url(settings.agent_url, user, backlog=False)
+        url = ws_url(settings.agent_url, user, backlog=False, client="voice")
         while not stop.is_set():
             try:
                 async with websockets.connect(url) as ws:

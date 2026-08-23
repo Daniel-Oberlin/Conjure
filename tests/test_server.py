@@ -1845,25 +1845,45 @@ def _seed_asset(srv, id, scope, **fields):
     srv.library.upsert(id, kind="model", scope=scope, public=1, **fields)
 
 
-def test_admin_tree_root_lists_all_users_with_nested_categories(srv, client):
+from conjure.world import MIGRATED_SID
+
+
+def _ls(client, path):
+    r = client.post("/admin/tree", json={"path": path}).json()
+    assert r["ok"] is True, r
+    return {c["label"] for c in r["children"]}
+
+
+def test_admin_tree_lists_one_level_at_a_time(srv, client):
+    # `dir` walks the namespace a level at a time — the old recursive dump was unusable at any real size.
     _seed_worlds(srv, "alice/agents/builder", "w1")
     _seed_space(srv, "alice", "living-room")
     _seed_asset(srv, "bob-asset", "bob/agents/builder", label="thing")
-    node = client.post("/admin/tree", json={"path": "/"}).json()["node"]
-    users = {c["label"] for c in node["children"]}
-    assert {"alice", "bob"} <= users
-    alice = next(c for c in node["children"] if c["label"] == "alice")
-    cats = {c["label"] for c in alice["children"]}
-    assert cats == {"worlds", "spaces", "assets"}
-    worlds = next(c for c in alice["children"] if c["label"] == "worlds")
-    assert {w["label"] for w in worlds["children"]} == {"w1"}
+    assert {"alice", "bob"} <= _ls(client, "/")
+    assert _ls(client, "/alice") == {"agents", "spaces"}
+    assert _ls(client, "/alice/agents") == {"builder"}
+    assert _ls(client, "/alice/spaces") == {"living-room"}
+    assert _ls(client, "/bob/agents/builder/assets") == {"bob-asset"}
 
 
-def test_admin_tree_narrows_by_path(srv, client):
+def test_admin_tree_exposes_the_agent_and_session_levels(srv, client):
+    # Worlds are stored PER SESSION (WorldRepository routes to the scope's active session), so the path
+    # says so: hiding it merges two sessions' worlds into one indistinguishable list.
     _seed_worlds(srv, "alice/agents/builder", "w1", "w2")
-    node = client.post("/admin/tree", json={"path": "/alice/worlds"}).json()["node"]
-    assert node["label"] == "worlds"
-    assert {w["label"] for w in node["children"]} == {"w1", "w2"}
+    sid = srv.sessions.get_active("alice/agents/builder") or MIGRATED_SID
+    assert _ls(client, "/alice/agents/builder") == {"sessions", "assets", "worlds"}
+    assert _ls(client, "/alice/agents/builder/sessions") == {sid}
+    assert _ls(client, f"/alice/agents/builder/sessions/{sid}") == {"worlds", "state"}
+    assert _ls(client, f"/alice/agents/builder/sessions/{sid}/worlds") == {"w1", "w2"}
+
+
+def test_worlds_shortcut_resolves_to_the_active_session(srv, client):
+    _seed_worlds(srv, "alice/agents/builder", "w1", "w2")
+    sid = srv.sessions.get_active("alice/agents/builder") or MIGRATED_SID
+    r = client.post("/admin/tree", json={"path": "/alice/agents/builder/worlds"}).json()
+    assert {c["label"] for c in r["children"]} == {"w1", "w2"}
+    # it reports the REAL path it resolved to, so a remembered cwd can never go stale
+    assert r["path"] == f"/alice/agents/builder/sessions/{sid}/worlds"
 
 
 def test_admin_tree_unknown_user_errors(srv, client):
@@ -1873,7 +1893,7 @@ def test_admin_tree_unknown_user_errors(srv, client):
 
 def test_admin_delete_single_world(srv, client):
     _seed_worlds(srv, "alice/agents/builder", "w1", "w2")
-    r = client.post("/admin/delete", json={"path": "/alice/worlds/w1"}).json()
+    r = client.post("/admin/delete", json={"path": "/alice/agents/builder/worlds/w1"}).json()
     assert r["ok"] is True
     assert srv.worlds.list("alice/agents/builder") == ["w2"]
 
@@ -1900,14 +1920,14 @@ def test_admin_delete_whole_user(srv, client):
 def test_admin_delete_single_asset_scoped(srv, client):
     _seed_asset(srv, "keep", "alice/agents/builder")
     _seed_asset(srv, "drop", "alice/agents/builder")
-    r = client.post("/admin/delete", json={"path": "/alice/assets/drop"}).json()
+    r = client.post("/admin/delete", json={"path": "/alice/agents/builder/assets/drop"}).json()
     assert r["ok"] is True
     assert srv.library.get("drop") is None and srv.library.get("keep") is not None
 
 
 def test_admin_delete_refuses_active_world(srv, client):
     _seed_worlds(srv, srv.DEFAULT_SCOPE, "default")     # the active world, now on disk
-    r = client.post("/admin/delete", json={"path": "/daniel/worlds/default"}).json()
+    r = client.post("/admin/delete", json={"path": "/daniel/agents/builder/worlds/default"}).json()
     assert r["ok"] is False and "active world" in r["error"]
     assert srv.worlds.exists(srv.DEFAULT_SCOPE, "default")
 
@@ -2114,12 +2134,12 @@ def test_admin_delete_is_ownership_gated(srv, client):
     S.worlds.save("bob/agents/builder", "keep", S.WorldStore(
         {"id": "k", "name": "keep", "rev": 0, "environment": {"space": "<void>"}, "entities": []}))
     # guest (a different user) tries to delete bob's namespace → refused, nothing deleted
-    r = client.post("/admin/delete", json={"path": "/bob/worlds/keep"},
+    r = client.post("/admin/delete", json={"path": "/bob/agents/builder/worlds/keep"},
                     headers={"X-Conjure-User": "guest"}).json()
     assert r["ok"] is False and "your own" in r["error"]
     assert S.worlds.exists("bob/agents/builder", "keep")
     # bob deleting his own is allowed
-    r = client.post("/admin/delete", json={"path": "/bob/worlds/keep"},
+    r = client.post("/admin/delete", json={"path": "/bob/agents/builder/worlds/keep"},
                     headers={"X-Conjure-User": "bob"}).json()
     assert r["ok"] is True and not S.worlds.exists("bob/agents/builder", "keep")
 

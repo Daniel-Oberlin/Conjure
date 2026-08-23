@@ -92,6 +92,20 @@ def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", 
     return StdioServerParameters(command=command, args=list(spec.args), env=env)
 
 
+def _tools_chars(tools) -> int:
+    """Serialized size of the tool schemas the model is handed each turn — name + description +
+    input_schema, the same three fields every provider adapter in `llm.py` sends. Usually the largest
+    single slice of context and the least visible one, since nothing in the conversation shows it."""
+    total = 0
+    for t in tools or []:
+        try:
+            total += len(getattr(t, "name", "") or "") + len(getattr(t, "description", "") or "")
+            total += len(json.dumps(getattr(t, "input_schema", None) or {}, separators=(",", ":")))
+        except (TypeError, ValueError):           # an unserializable schema shouldn't break a turn
+            continue
+    return total
+
+
 def _scope_tools(live, allow: list[str]):
     """Filter the live MCP tools to an agent's explicit allow-list (`ServerRef.tools`). Tool access is
     **opt-in only** — there is no wildcard: an agent gets exactly the tools it names, and an empty list
@@ -178,6 +192,32 @@ class Director:
             self._local_tools = {t.name for t in _STATE_TOOL_SPECS}
             if self._allowed_tools is not None:
                 self._allowed_tools = self._allowed_tools | self._local_tools
+        # What the LAST turn actually sent the model, in characters, split by where it came from — the
+        # numbers behind the CLI's status bar. Measured in `_handle` at the moment the turn is assembled
+        # (the only place all four parts exist together), so reporting them costs nothing extra. Chars,
+        # not tokens: every provider in the roster tokenizes differently, and the actual token count for
+        # a turn is whatever `usage` the provider reports afterwards — a char count is the one figure
+        # that means the same thing across all four. `room` is the live `{context}` injection, which is
+        # the part that grows without anyone editing anything.
+        self._ctx_chars: dict = {"prompt": 0, "room": 0, "tools": _tools_chars(self._tools), "history": 0}
+        self._last_injected: dict = {}             # injection name → chars, from the most recent `_system()`
+        self._measured = False                     # has a real turn filled `_ctx_chars` yet?
+
+    def context_stats(self) -> dict:
+        """What the model is being sent, for a front-end to display: how many transcript turns exist vs
+        the cap that trims them, and the char size of each part of the last assembled turn. Cheap (no
+        recomputation) — everything here was measured while building the turn."""
+        chars = dict(self._ctx_chars)
+        if not self._measured:
+            # No turn has run yet, so there's nothing measured to report. Fill in the two parts that are
+            # free to compute — otherwise a freshly-connected client sees "tools 100%", which is true of
+            # the numbers and false about the context. `room` stays 0: the `{context}` injection is an
+            # MCP fetch, and a status bar isn't worth one.
+            chars["prompt"] = len(self._prompt or "")
+            chars["history"] = sum(len(t.text or "") for t in self._recent_history())
+        return {"turns": len(self.transcript),
+                "cap": getattr(self._settings, "history_cap", 0) or 0,
+                "chars": chars}
 
     def _recent_history(self) -> list["Turn"]:
         """The tail of the transcript sent to the LLM, capped to `settings.history_cap` TURNS. The FULL
@@ -269,13 +309,17 @@ class Director:
         # `_fill_injection` for the `{name}` / `{#name}…{/name}` forms), and only computes a value when
         # its placeholder actually appears, so nothing agent-specific lives here.
         prompt = self._prompt
+        injected: dict = {}
         for name, provider in self._injections():
             if "{" + name + "}" not in prompt and "{#" + name + "}" not in prompt:
                 continue                          # not referenced → don't even compute it
             value = provider()
             if inspect.isawaitable(value):
                 value = await value
-            prompt = _fill_injection(prompt, name, value or "")
+            value = value or ""
+            injected[name] = len(str(value))      # size each injection so `context_stats` can attribute it
+            prompt = _fill_injection(prompt, name, value)
+        self._last_injected = injected
         return prompt
 
     async def _log(self, tag: str, msg: str) -> None:
@@ -466,9 +510,20 @@ class Director:
         # poorly with the `{user}` system-prompt hint, especially if a user types a name-like prefix).
         # Stored RAW below; the label is re-derived from `by` on replay, so history never double-labels.
         labeled = f"{speaker}: {text}" if speaker else text
+        history = self._recent_history()
+        # Size what we're about to send, split by origin (see `_ctx_chars`). `room` is the live
+        # `{context}` injection; `prompt` is the rest of the assembled system prompt, so the two always
+        # add up to it. History is the TRIMMED tail the model sees, plus this utterance — not the full
+        # transcript, which is what `turns` vs `cap` is there to show.
+        room = self._last_injected.get("context", 0)
+        self._ctx_chars = {"prompt": max(0, len(system) - room),
+                           "room": room,
+                           "tools": _tools_chars(self._tools),
+                           "history": sum(len(t.text or "") for t in history) + len(labeled)}
+        self._measured = True
         final = await llm.run_turn(
             system=system,
-            history=self._recent_history(),
+            history=history,
             user_text=labeled,
             tools=self._tools,
             execute_tool=execute,

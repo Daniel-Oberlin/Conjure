@@ -8,7 +8,21 @@ utterance.
 
 Entering: say/type `conjure open shell` → shell mode (prompt `conjure:<user>.shell>`); `exit` resumes the
 agent. While *in* an agent, only input led by the `conjure` wake word is taken as a command — so
-"put a shell on the table" still reaches the builder. The command set is a small registry, easy to grow.
+"put a shell on the table" still reaches the builder.
+
+**Two audiences, one registry.** Voice is live in the simulation with no screen; the CLI has a terminal.
+Rather than two command sets that would drift, every row carries a `voice` flag: voice-safe commands are
+the modal/navigational ones whose output is speakable ("where am I", "go to the meadow", "new session"),
+while the namespace commands — listings, paths, deletion — are CLI-only and refuse politely by voice.
+
+**Two shapes of command.** A *noun* command acts on the thing that is LIVE (`world meadow`, `session new`),
+and reads the same spoken or typed. A *path* command acts on anything addressable (`dir`, `show`, `cd`,
+`delete`, `rename`, `public`/`private`), over a namespace that mirrors storage:
+
+    /<user>/spaces/<name>
+    /<user>/agents/<agent>/assets/<id>
+    /<user>/agents/<agent>/sessions/<sid>/worlds/<name>
+    /<user>/agents/<agent>/worlds            → shortcut for the ACTIVE session's worlds
 """
 from __future__ import annotations
 
@@ -26,11 +40,57 @@ OnTool = Callable[..., Awaitable[None]]
 
 # "conjure …" inline escape (STT rarely punctuates, so the comma is optional).
 _WAKE = re.compile(r"^conjure\b[,:]?\s*(?P<rest>.*)$", re.I | re.S)
-# Explicit LLM switch in the shell: "talk to / switch to / use <name>".
-_SWITCH = re.compile(r"^(?:talk\s+to|switch\s+to|use|become|be)\s+(?P<name>[a-z0-9]+)$", re.I)
+# Spoken aliases for `llm <name>`. Voice only: in text these would claim every LLM name as a reserved
+# word, so the canonical typed form is the noun command, consistent with `agent`/`world`/`session`.
+_SPOKEN_LLM = re.compile(r"^(?:talk\s+to|switch\s+to|use|become|be)\s+(?P<name>[a-z0-9]+)$", re.I)
 # The two shell-MODE toggles (open/leave). Recognised server-side (the client never knows these phrases).
 _OPEN_SHELL = re.compile(r"^(?:open\s+)?shell$", re.I)
 _LEAVE_SHELL = re.compile(r"^(?:exit|leave|close|done)$", re.I)
+
+
+# --------------------------------------------------------------------------- paths
+#
+# Pure, so the resolution rules are testable without a server: `~` is your own home, everything else
+# resolves against the working directory the connection carries.
+
+def home_of(user: str) -> str:
+    return f"/{user}"
+
+
+def default_cwd(user: str, agent: str) -> str:
+    """Where a connection starts: its own scope, so a bare `dir` shows something worth seeing."""
+    return f"/{user}/agents/{agent}" if agent else home_of(user)
+
+
+def resolve_path(cwd: str, arg: str, user: str) -> str:
+    """`arg` (absolute, `~`-relative or cwd-relative) → a normalized absolute path."""
+    arg = (arg or "").strip()
+    if not arg:
+        base = cwd
+    elif arg == "~" or arg.startswith("~/"):
+        base = home_of(user) + arg[1:]
+    elif arg.startswith("/"):
+        base = arg
+    else:
+        base = f"{cwd.rstrip('/')}/{arg}"
+    out: list[str] = []
+    for seg in base.split("/"):
+        if not seg or seg == ".":
+            continue
+        if seg == "..":
+            if out:
+                out.pop()
+            continue
+        out.append(seg)
+    return "/" + "/".join(out)
+
+
+def display_path(path: str, user: str) -> str:
+    """`/daniel/agents/builder` → `~/agents/builder` for the prompt, when it's your own home."""
+    home = home_of(user)
+    if path == home:
+        return "~"
+    return "~" + path[len(home):] if path.startswith(home + "/") else path
 
 
 def _match_name(token: str, roster) -> Optional[str]:
@@ -54,6 +114,7 @@ class Shell:
         self._permitted = True           # is the speaker permitted in the LIVE session? gates shared-effect
                                          # verbs (switch/new/agent) so a bumped guest can't drive (§6d)
         self._errlog = None
+        self._voice = False              # is this dispatch coming from a voice client? (set per-dispatch)
         self._stack: Optional[AsyncExitStack] = None
         self.in_shell = False
         self._pending_delete: Optional[str] = None            # armed by `delete`, fired by a `y` confirmation
@@ -67,26 +128,54 @@ class Shell:
         # Director's in-memory transcript (what the LLM sees) and the persisted JSONL; a hand-built shell
         # (tests) leaves it None and clears in-memory only. `async (on_text) -> None`.
         self._clear_transcript_hook = None
-        # (matcher, handler, help). First match wins; an LLM switch and the unknown-command fallback
-        # are tried after, in _dispatch. The handler is called as handler(on_text, match). Add a row
-        # to add a command.
+        self._cwd = ""                   # this dispatch's working directory (per-connection; see _dispatch)
+        # (matcher, handler, help, voice). First match wins; the unknown-command fallback is tried after,
+        # in _dispatch. The handler is called as handler(on_text, match). Add a row to add a command.
+        #
+        # `voice=True` means: safe to invoke by voice AND its output is worth hearing. Everything else is
+        # CLI-only — a spoken directory listing helps nobody, and deletion by voice is a bad idea.
         self._table = [
-            (_OPEN_SHELL, self._open, "open shell — enter command mode"),
-            (_LEAVE_SHELL, self._exit, "exit — leave the shell, back to the agent"),
-            (re.compile(r"^(?:help|\?|commands)$", re.I), self._help, "help — list commands"),
-            (re.compile(r"^(?:whoami|status|where)$", re.I), self._status, "whoami — the active LLM + agent"),
-            (re.compile(r"^(?:llms|models)$", re.I), self._llms, "llms — list available LLMs"),
-            (re.compile(r"^agents$", re.I), self._agents, "agents — list available agents"),
+            # -- mode + orientation
+            (_OPEN_SHELL, self._open, "open shell — enter command mode", True),
+            (_LEAVE_SHELL, self._exit, "exit — leave the shell, back to the agent", True),
+            (re.compile(r"^(?:help|\?|commands)(?:\s+(?P<topic>\S+))?$", re.I), self._help,
+             "help [command] — list commands, or explain one", True),
+            (re.compile(r"^(?:where|status)$", re.I), self._where,
+             "where — user, agent, LLM, session, world and space in one line", True),
+            (re.compile(r"^tools$", re.I), self._tools, "tools — what the active agent can call", False),
+
+            # -- nouns: bare = list (current marked *), <name> = switch, verbs act on the LIVE one
+            (re.compile(r"^agents?$", re.I), self._agents, "agent — list agents", True),
             (re.compile(r"^agent\s+(?P<name>[\w./-]+)$", re.I), self._switch_agent,
-             "agent <name> — switch to another agent (relaunches its tools; starts its own context)"),
-            (re.compile(r"^sessions$", re.I), self._sessions, "sessions — list this agent's saved sessions"),
+             "agent <name> — switch agent (relaunches its tools; its own sessions and worlds)", True),
+            (re.compile(r"^(?:llms?|models?)$", re.I), self._llms, "llm — list LLMs", True),
+            (re.compile(r"^llm\s+(?P<name>[\w.-]+)$", re.I), self._switch_llm,
+             "llm <name> — switch the active LLM (spoken: 'talk to gemini')", True),
+            (re.compile(r"^sessions$", re.I), self._sessions, "sessions — list this agent's sessions", True),
             (re.compile(r"^session(?:\s+(?P<rest>\S.*))?$", re.I), self._session,
-             "session [new|rename|delete|public|private|clear] · session <name> · session <user> <name> — "
-             "list / switch / visit / clear chat history (keeps world+assets; quote names with spaces)"),
+             "session [new [title] | rename <title>] · session <name> · session <user> <name> — "
+             "list / create / switch / visit (quote names with spaces)", True),
+            (re.compile(r"^worlds$", re.I), self._worlds, "worlds — list this session's worlds", True),
+            (re.compile(r"^world(?:\s+(?P<rest>\S.*))?$", re.I), self._world,
+             "world [new] <name> — list, switch to, or create a world", True),
+            (re.compile(r"^spaces?$", re.I), self._spaces, "spaces — list your captured spaces", False),
+            (re.compile(r"^users?$", re.I), self._users, "users — everyone with a namespace here", False),
+            (re.compile(r"^clear$", re.I), self._clear,
+             "clear — wipe this session's chat history (keeps worlds and assets)", True),
+
+            # -- paths: act on anything addressable
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
-             "dir [path] — list users/spaces/worlds/assets (e.g. dir /alice/worlds)"),
+             "dir [path] — list one level of the namespace", False),
+            (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
+             "show [path] — one entry in detail", False),
+            (re.compile(r"^cd(?:\s+(?P<path>\S.*))?$", re.I), self._cd,
+             "cd [path] — change the working directory (bare: back to your agent)", False),
+            (re.compile(r"^(?P<vis>public|private)(?:\s+(?P<path>\S.*))?$", re.I), self._visibility,
+             "public | private [path] — visibility of the live session, or of a path", True),
+            (re.compile(r"^rename\s+(?P<path>\S+)\s+(?P<name>\S.*)$", re.I), self._rename,
+             "rename <path> <new> — retitle a session, relabel an asset", False),
             (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
-             "delete <path> — remove a user/space/world/asset (asks to confirm)"),
+             "delete <path> — remove a world, session, space, asset or user (asks to confirm)", False),
         ]
 
     @classmethod
@@ -176,14 +265,6 @@ class Shell:
         except Exception:
             pass
 
-    def prompt(self) -> str:
-        """The prompt the front-end shows: `conjure:<user>.shell>` in shell mode (same shape as agent
-        mode, with `shell` in the agent slot), else `conjure:<user>.<agent>.<llm>>` (who you're logged in
-        as · agent-primary — the experience is the constant, the LLM running it can vary)."""
-        if self.in_shell:
-            return f"conjure:{self._director.user}.shell> "
-        return f"conjure:{self._director.user}.{self._agent_name()}.{self._director.active.lower()}> "
-
     async def feed(self, text: str, *, speaker: Optional[str] = None, on_text: Optional[OnText] = None,
                    on_tool: Optional[OnTool] = None) -> None:
         """Route one line: a recognised command runs here (deterministic); anything else goes to the
@@ -223,26 +304,41 @@ class Shell:
         return bool(_LEAVE_SHELL.match(cmd))
 
     async def _dispatch(self, cmd: str, on_text, *, speaker: Optional[str] = None,
-                        permitted: bool = True) -> None:
+                        permitted: bool = True, cwd: str = "", voice: bool = False) -> None:
         if not cmd:
             return
         # WHO typed this command (the connection's user), so identity-scoped verbs act as the speaker, not
         # the shared shell's host user (else a guest could manage the host's sessions). Read synchronously
         # by `_scope()`/`_require_permitted` at each handler's start (before any await), so concurrent
         # dispatches don't race. `permitted` = is the speaker allowed in the live session (§6d).
+        # `cwd`/`voice` are likewise per-connection: one shell serves many clients, each with its own
+        # working directory and its own idea of whether a directory listing is any use.
         self._acting = speaker or self._user
         self._permitted = permitted
+        self._voice = voice
+        self._cwd = cwd or default_cwd(self._acting, self._agent_name())
         if self._pending_delete is not None:                  # a delete is armed — this line is the y/n answer
             await self._confirm_delete(cmd, on_text)
             return
-        for rx, handler, _ in self._table:
+        if voice:                                             # spoken aliases for `llm <name>`
+            sm = _SPOKEN_LLM.match(cmd)
+            if sm and await self._switch_llm(on_text, sm):
+                return
+        for rx, handler, _, is_voice in self._table:
             m = rx.match(cmd)
             if m:
+                if voice and not is_voice:
+                    await self._say(on_text, f"'{cmd.split()[0]}' is a terminal command — "
+                                             f"run it from the CLI.")
+                    return
                 await handler(on_text, m)
                 return
-        if await self._switch(cmd, on_text):
-            return
         await self._say(on_text, f"Unknown command: {cmd!r}. Type 'help'.")
+
+    @property
+    def cwd(self) -> str:
+        """The working directory after the last dispatch — the caller persists it per connection."""
+        return self._cwd
 
     # ----------------------------------------------------------------- commands
     async def _open(self, on_text, m=None):
@@ -257,12 +353,23 @@ class Shell:
         await self._say(on_text, f"Back to {self._director.active} ({self._agent_name()}).")
 
     async def _help(self, on_text, m=None):
-        lines = ["Commands:"] + [f"  {h}" for _, _, h in self._table]
-        lines.append("  talk to <llm> / use <llm> — switch the active LLM")
+        topic = (m.group("topic") or "").strip().lower() if m and m.groupdict().get("topic") else ""
+        if topic:                                             # `help <command>` — the row whose help starts with it
+            hit = next((h for _, _, h, _ in self._table if h.split()[0].lower() == topic), None)
+            await self._say(on_text, hit or f"No command {topic!r}. Type 'help'.")
+            return
+        rows = [(h, v) for _, _, h, v in self._table]
+        if self._voice:                                       # spoken: only what's worth hearing
+            lines = ["Commands:"] + [f"  {h}" for h, v in rows if v]
+        else:
+            lines = ["Commands  (· = also available by voice):"] + \
+                    [f"  {'·' if v else ' '} {h}" for h, v in rows]
         lines.append("(While talking to an agent, prefix a command with 'conjure', e.g. 'conjure open shell'.)")
         await self._say(on_text, "\n".join(lines))
 
-    async def _status(self, on_text, m=None):
+    async def _where(self, on_text, m=None):
+        """One line locating you: who, which agent and LLM, which session, world and space. The most
+        useful thing to be able to ask by voice — there's no status bar in a headset."""
         d = self._director
         sess = await self._session_api("GET", "/sessions", scope=self._scope())
         if not sess.get("ok"):
@@ -273,13 +380,33 @@ class Shell:
             session_str = f"{title} ({active})"
         else:
             session_str = "none"
+        w = await self._session_api("POST", "/worlds/list", scope=self._scope())
+        cur = (w.get("current") or {}) if w.get("ok") else {}
+        world = f"{cur.get('owner', '?')}/{cur.get('name', '?')}" if cur else "?"
         await self._say(on_text,
-                        f"user: {self._user} · agent: {self._agent_name()} · LLM: {d.active} · "
-                        f"session: {session_str} · {'shell' if self.in_shell else 'agent'} mode "
+                        f"user: {self._acting} · agent: {self._agent_name()} · LLM: {d.active} · "
+                        f"session: {session_str} · world: {world} · "
+                        f"{'shell' if self.in_shell else 'agent'} mode "
                         f"({len(d.roster)} LLMs, {len(d._tools)} tools)")
 
+    async def _tools(self, on_text, m=None):
+        """What the active agent can actually call. The one thing you want when it won't do something —
+        and, at 45 schemas, usually the largest slice of its context."""
+        names = sorted(t.name for t in (self._director._tools or []))
+        if not names:
+            await self._say(on_text, "No tools loaded.")
+            return
+        await self._say(on_text, f"Tools ({len(names)}) for {self._agent_name()}:\n" +
+                        "\n".join("  " + n for n in names))
+
+    async def _clear(self, on_text, m=None):
+        if not self._permitted:
+            await self._say(on_text, "You're a guest here — only someone in the session can clear its history.")
+            return
+        await self._do_clear(on_text)
+
     async def _do_clear(self, on_text):
-        # Wipe the live session's chat history (invoked by `session clear`; permission gated by the caller).
+        # Wipe the live session's chat history (permission gated by the caller).
         if self._clear_transcript_hook is not None:   # hosted (agent server): clears in-memory + persisted
             await self._clear_transcript_hook(on_text)
             return
@@ -290,6 +417,23 @@ class Shell:
     async def _llms(self, on_text, m=None):
         rows = [("* " if n == self._director.active else "  ") + n for n in self._director.roster]
         await self._say(on_text, "LLMs:\n" + "\n".join(rows))
+
+    async def _switch_llm(self, on_text, m) -> bool:
+        """`llm <name>` (typed) / "talk to <name>" (spoken). Returns True when it matched a roster name,
+        so the spoken form can fall through to the agent when it didn't."""
+        name = _match_name(m.group("name"), self._director.roster)
+        if not name:
+            if not self._voice:                               # typed: a wrong name is a mistake, say so
+                avail = ", ".join(self._director.roster) or "none"
+                await self._say(on_text, f"No LLM {m.group('name')!r}. Available: {avail}.")
+                return True
+            return False
+        if not self._permitted:                               # the active LLM is SHARED — a shared-effect
+            await self._say(on_text, "This session is private — you can't change the LLM here.")   # verb (§6d)
+            return True
+        self._director.active = name
+        await self._say(on_text, f"Now talking to {name} ({self._agent_name()}).")
+        return True
 
     def _agent_names(self) -> list[str]:
         """Available agent names across the search path (user defs shadow bundled — user-home-plan §5)."""
@@ -399,15 +543,11 @@ class Shell:
         except ValueError:                                    # unbalanced quotes → naive split
             tokens = rest.split()
         verb = tokens[0].lower() if tokens else ""
-        if verb == "clear":                                   # wipe THIS session's chat history (keeps world/assets)
-            if not self._permitted:
-                await self._say(on_text, "You're a guest here — only someone in the session can clear its history.")
-                return
-            await self._do_clear(on_text)
-            return
         scope = self._scope()
-        # switch/visit/bare `session <…>` are everything that isn't a management verb.
-        is_switch = verb not in ("new", "rename", "delete", "public", "private", "clear")
+        # switch/visit/bare `session <…>` are everything that isn't a management verb. `delete`, `clear`
+        # and visibility are no longer session sub-verbs: they're `delete <path>`, `clear` and
+        # `public|private [path]`, so there's one way to do each of them across every noun.
+        is_switch = verb not in ("new", "rename")
         # Shared-effect verbs move the GLOBAL live pointer (everyone follows) — allowed only for a speaker
         # permitted in the live session (§6d), so a bumped guest can't yank everyone out of a private one.
         if (verb == "new" or is_switch) and not self._permitted:
@@ -424,12 +564,6 @@ class Shell:
                 return
             data = await self._session_api("POST", "/session/rename", scope=scope, title=title)
             msg = f"Renamed to {title}."
-        elif verb == "delete":
-            data = await self._session_api("POST", "/session/delete", scope=scope, session=" ".join(tokens[1:]))
-            msg = f"Deleted {data.get('session')}."
-        elif verb in ("public", "private"):
-            data = await self._session_api("POST", "/session/visibility", scope=scope, public=(verb == "public"))
-            msg = f"Session is now {verb}."
         else:                                                 # switch/visit: `session [switch] <name>` OR
             args = tokens[1:] if verb == "switch" else tokens #                `session [switch] <user> <name>`
             if len(args) == 1:                                # your own session (by name, in your agent)
@@ -448,25 +582,114 @@ class Shell:
 
     # -- dir / delete: a filesystem-like view + purge of the namespace (docs/agents.md §2). Both go
     # through the world server's /admin endpoints, so they act on its live state (not raw files).
+    def _path(self, m, default: str = "") -> str:
+        """The path argument of a command, resolved against this connection's cwd."""
+        raw = (m.group("path") or "") if (m and m.groupdict().get("path")) else ""
+        return resolve_path(self._cwd, raw or default, self._acting)
+
     async def _dir(self, on_text, m):
-        path = (m.group("path") or "/").strip() if m else "/"
+        path = self._path(m)
         data = await self._admin("tree", path)
         if not data.get("ok"):
             await self._say(on_text, data.get("error", "error"))
             return
-        await self._say(on_text, self._render_tree(data["node"]))
+        await self._say(on_text, self._render_listing(data))
+
+    async def _show(self, on_text, m):
+        data = await self._admin("show", self._path(m))
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        width = max((len(k) for k, _ in data.get("fields", [])), default=0)
+        rows = "\n".join(f"  {k:<{width}}  {v}" for k, v in data.get("fields", []))
+        await self._say(on_text, f"{display_path(data['path'], self._acting)}\n{rows}")
+
+    async def _cd(self, on_text, m):
+        """Bare `cd` returns to your own agent scope — the useful default, not the root."""
+        target = self._path(m, default=default_cwd(self._acting, self._agent_name()))
+        data = await self._admin("tree", target)
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        # Adopt the path the SERVER resolved, not the one typed: `…/worlds` is a shortcut for the active
+        # session's worlds, and remembering the shortcut would silently point elsewhere after a switch.
+        self._cwd = data.get("path") or target
+        await self._say(on_text, display_path(self._cwd, self._acting))
+
+    async def _visibility(self, on_text, m):
+        """`public`/`private` — bare acts on the live session (the common case, and voice-safe); with a
+        path, on that session, space or asset."""
+        public = m.group("vis").lower() == "public"
+        raw = (m.group("path") or "").strip()
+        if not self._permitted:
+            await self._say(on_text, "This session is private — you can't change visibility here.")
+            return
+        if not raw:
+            data = await self._session_api("POST", "/session/visibility", scope=self._scope(), public=public)
+            await self._say(on_text, f"Session is now {'public' if public else 'private'}."
+                            if data.get("ok") else data.get("error", "error"))
+            return
+        path = resolve_path(self._cwd, raw, self._acting)
+        data = await self._admin("show", path)
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        kind, fields = data.get("kind"), dict(data.get("fields", []))
+        if kind == "space":
+            out = await self._session_api("POST", "/space/visibility", name=fields.get("space"), public=public)
+        elif kind == "session":
+            out = await self._session_api("POST", "/session/visibility",
+                                          scope=fields.get("scope"), public=public)
+        elif kind == "asset":
+            out = await self._session_api("POST", "/update_asset", id=fields.get("asset"),
+                                          scope=fields.get("scope"), public=public)
+        else:
+            await self._say(on_text, f"A {kind} has no visibility of its own — "
+                                     f"a world inherits its session's.")
+            return
+        await self._say(on_text, f"{display_path(path, self._acting)} is now "
+                                 f"{'public' if public else 'private'}."
+                        if out.get("ok") else out.get("error", "error"))
+
+    async def _rename(self, on_text, m):
+        """Retitle a session or relabel an asset. Worlds and spaces are deliberately absent: their names
+        are referenced from places a rename can't reach (schema-free agent state, and — for a space —
+        `environment.space` inside ANOTHER user's world, which we may not rewrite). Doing it safely needs
+        a move+alias mechanism: docs/backlog.md, "Renaming worlds and spaces"."""
+        path = resolve_path(self._cwd, m.group("path"), self._acting)
+        new = m.group("name").strip()
+        data = await self._admin("show", path)
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        kind, fields = data.get("kind"), dict(data.get("fields", []))
+        if kind == "session":
+            out = await self._session_api("POST", "/session/rename", scope=fields.get("scope"), title=new)
+        elif kind == "asset":
+            out = await self._session_api("POST", "/update_asset", id=fields.get("asset"),
+                                          scope=fields.get("scope"), label=new)
+        else:
+            await self._say(on_text, f"Can't rename a {kind} — only sessions and assets. "
+                                     f"(A world or space is referred to by name from places a rename "
+                                     f"can't reach.)")
+            return
+        await self._say(on_text, f"Renamed to {new}." if out.get("ok") else out.get("error", "error"))
 
     async def _delete(self, on_text, m):
         if not self._permitted:                               # destructive — refuse for a bumped guest (§6d)
             await self._say(on_text, "This session is private — you can't delete anything here.")
             return
-        path = m.group("path").strip()
+        path = self._path(m)
         preview = await self._admin("tree", path)             # resolve + show what's about to go
         if not preview.get("ok"):
             await self._say(on_text, preview.get("error", "error"))
             return
+        # Confirm against the path the SERVER resolved, so a `worlds` shortcut shows the real session
+        # it points at — you should see exactly what you're agreeing to remove.
+        path = preview.get("path") or path
         self._pending_delete = path
-        await self._say(on_text, f"Delete {path} ({self._summarize(preview['node'])})?  "
+        await self._say(on_text, f"Delete {display_path(path, self._acting)} "
+                                 f"({self._summarize(preview)})?  "
                                  f"Type 'y' to confirm, anything else cancels.")
 
     async def _confirm_delete(self, cmd: str, on_text) -> None:
@@ -480,17 +703,46 @@ class Shell:
         else:
             await self._say(on_text, f"Not deleted: {data.get('error', 'error')}")
 
-    async def _switch(self, cmd: str, on_text) -> bool:
-        m = _SWITCH.match(cmd)
-        name = _match_name(m.group("name") if m else cmd, self._director.roster)
-        if not name:
-            return False
-        if not self._permitted:                               # the active LLM is SHARED — a shared-effect
-            await self._say(on_text, "This session is private — you can't change the LLM here.")   # verb (§6d)
-            return True
-        self._director.active = name
-        await self._say(on_text, f"Now talking to {name} ({self._agent_name()}).")
-        return True
+    # -- nouns backed by the world server -------------------------------------------------------
+    async def _worlds(self, on_text, m=None):
+        await self._dir_at(on_text, f"/{self._acting}/agents/{self._agent_name()}/worlds")
+
+    async def _world(self, on_text, m):
+        """`world` = list · `world <name>` = switch · `world new <name>` = create and switch."""
+        rest = (m.group("rest") or "").strip() if m and m.groupdict().get("rest") else ""
+        if not rest:
+            await self._worlds(on_text)
+            return
+        try:
+            tokens = shlex.split(rest)
+        except ValueError:
+            tokens = rest.split()
+        if not self._permitted:                               # switching/creating moves everyone (§6d)
+            await self._say(on_text, "This session is private — you can't change worlds here.")
+            return
+        if tokens[0].lower() == "new":
+            name = " ".join(tokens[1:])
+            if not name:
+                await self._say(on_text, "Usage: world new <name>")
+                return
+            data = await self._session_api("POST", "/worlds/new", scope=self._scope(), name=name)
+            msg = f"Created and switched to world {name}."
+        else:
+            name = " ".join(tokens)
+            data = await self._session_api("POST", "/worlds/switch", scope=self._scope(), name=name)
+            msg = f"Switched to world {name}."
+        await self._say(on_text, msg if data.get("ok") else data.get("error", "error"))
+
+    async def _spaces(self, on_text, m=None):
+        await self._dir_at(on_text, f"/{self._acting}/spaces")
+
+    async def _users(self, on_text, m=None):
+        await self._dir_at(on_text, "/")
+
+    async def _dir_at(self, on_text, path: str) -> None:
+        data = await self._admin("tree", path)
+        await self._say(on_text, self._render_listing(data) if data.get("ok")
+                        else data.get("error", "error"))
 
     # ----------------------------------------------------------------- helpers
     def _agent_name(self) -> str:
@@ -510,32 +762,45 @@ class Shell:
         except Exception as exc:                              # network / server down / bad JSON
             return {"ok": False, "error": f"admin request failed: {exc}"}
 
-    def _render_tree(self, node: dict, depth: int = 0) -> str:
-        pad = "  " * depth
-        kind = node.get("kind", "")
-        tag = f" [{kind}]" if kind not in ("root", "note", "category") else ""
-        line = f"{pad}{node.get('label', '')}{tag}"
-        if node.get("detail"):
-            line += f"  — {node['detail']}"
-        out = [line]
-        for child in node.get("children") or []:
-            out.append(self._render_tree(child, depth + 1))
+    def _render_listing(self, data: dict) -> str:
+        """One line per entry, columns aligned. Deliberately NOT a tree: the recursive form dumped every
+        world, space and asset of every user at the root, which is unreadable at any real size."""
+        rows = data.get("children") or []
+        if self._voice:                                   # a path read aloud is noise; the rows are the answer
+            return "\n".join(f"{c['label']}" + (f" — {c['detail']}" if c.get("detail") else "")
+                              for c in rows) or "(empty)"
+        head = display_path(data.get("path", "/"), self._acting)
+        if data.get("path") != data.get("requested", data.get("path")):
+            head += f"   (→ {data['path']})"
+        if not rows:
+            return f"{head}\n  (empty)"
+        # A trailing '/' marks the things you can `cd` into, so the shape of the namespace is visible.
+        def label(c):
+            return c["label"] + ("/" if c.get("kind") in ("category", "user", "agent") else "")
+        width = max(len(label(c)) for c in rows)
+        out = [head]
+        for c in rows:
+            mark = "*" if c.get("active") else " "
+            detail = f"  {c['detail']}" if c.get("detail") else ""
+            out.append(f" {mark}{label(c):<{width}}{detail}".rstrip())
         return "\n".join(out)
 
-    def _summarize(self, node: dict) -> str:
+    def _summarize(self, data: dict) -> str:
+        """What a `delete` is about to take — shown before the confirmation. Counts the children for a
+        container; for a single entry uses the server's own row, since a session's children are just
+        `worlds/` and `state/` and counting those would report "nothing" for a real deletion."""
         counts: dict = {}
-
-        def walk(n: dict) -> None:
-            k = n.get("kind")
-            if k in ("world", "space", "asset", "user"):
+        for c in data.get("children") or []:
+            k = c.get("kind")
+            if k and k not in ("note", "category", "shortcut"):
                 counts[k] = counts.get(k, 0) + 1
-            for c in n.get("children") or []:
-                walk(c)
-
-        walk(node)
-        if not counts:
-            return "nothing"
-        return ", ".join(f"{v} {k}{'' if v == 1 else 's'}" for k, v in sorted(counts.items()))
+        me = data.get("self") or {}
+        if me and (not counts or counts == {me.get("kind"): 1}):
+            detail = f" — {me['detail']}" if me.get("detail") else ""
+            return f"{me.get('kind', 'entry')} {me.get('label', '')}{detail}".strip()
+        if counts:
+            return ", ".join(f"{v} {k}{'' if v == 1 else 's'}" for k, v in sorted(counts.items()))
+        return f"the whole {data.get('kind', 'entry')}"
 
     async def _say(self, on_text, text: str) -> None:
         if on_text:

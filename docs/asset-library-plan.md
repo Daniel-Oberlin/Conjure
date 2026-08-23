@@ -338,7 +338,7 @@ candidates before generating, many-matches auto-pick, and light reuse announceme
 
 ### Phase 4 — Eviction (deferred; unlocked by the manifest)
 `last_used` / `use_count` bumped on reuse; LRU prune under a configurable size cap via
-`conjure-cli library prune` and/or `/library/prune`. Off by default.
+`conjure-ctl library prune` and/or `/library/prune`. Off by default.
 
 ### Phase 5 — NAS seams + shared toolkit (deferred; stub only)
 - **Extract the shared toolkit** from the cache store (Asset contract, Embedder, vector+FTS search,
@@ -421,21 +421,21 @@ GLB→PNG renderer (trimesh/pyrender). Deferred.
 **Captioning (done):** embedding gives **visual-similarity vectors only** — no readable text, so bare
 backfilled images (no prompt/title) showed a blank label in `search_library` and didn't match
 keyword/FTS (semantic vector search already found them). `conjure/captioner.py` adds an **image→text**
-pass: `conjure-cli caption` / `POST /library/caption` describes assets with no label (Gemini
+pass: `conjure-ctl caption` / `POST /library/caption` describes assets with no label (Gemini
 multimodal by default — `Captioner` is swappable; skybox-vs-image prompts) and stores the caption in
 `label` (→ readable in results + FTS keyword search), marking `attributes.captioned`. Existing labels
 are left untouched; off the request path; targets only label-less visual assets. This is the same
 derived-text layer the NAS will reuse (§13). Going forward, generated assets carry their prompt as the
 label, so this won't recur.
 
-**Catalog reindex (done):** `conjure-cli reindex` / `POST /library/reindex` embeds cataloged assets
+**Catalog reindex (done):** `conjure-ctl reindex` / `POST /library/reindex` embeds cataloged assets
 that have no vector yet (visual assets, embedded from pixels) — a one-time pass so the existing library
 becomes similarity-searchable. Self-healing: also clears any non-visual (model-title) vectors that
 crept in. Runs off the request path; embed-only.
 
 **Skybox re-tag (done):** the early backfill couldn't tell a skybox `.png` from a regular image, so
 historical skyboxes were tagged `kind='image'` and a `kind='skybox'` search missed them.
-`conjure-cli retag-skyboxes` / `POST /library/retag-skyboxes` re-tags wide images (aspect ≥ 1.9 —
+`conjure-ctl retag-skyboxes` / `POST /library/retag-skyboxes` re-tags wide images (aspect ≥ 1.9 —
 equirectangular panoramas) as `skybox`, fixing the vector's `kind` metadata in place (no re-embed).
 The director is nudged to pass `kind='skybox'`/`'grounded_skybox'`/`'model'` when the user means a
 specific type. (Going forward, generated skyboxes are tagged correctly at creation.)

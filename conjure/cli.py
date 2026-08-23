@@ -1,20 +1,19 @@
-"""Conjure CLI — drive the world from the terminal for quick, quiet, discrete testing.
+"""Conjure CLI — the conversational client: talk to the agent server from the terminal, no mic.
 
-The world server must be running (`python -m conjure`). Two ways to drive it:
+    python -m conjure.cli                                    # interactive REPL (the usual way in)
+    python -m conjure.cli say "put an oak tree in front of me"   # one-shot, then exit
 
-  • Direct tool commands (deterministic):
-        conjure-cli asset "oak tree" --size 7
-        conjure-cli image "an oil painting of a red dragon"
-        conjure-cli skybox "a misty pine forest"
-        conjure-cli grounded-skybox "a meadow you can stand in"
-        conjure-cli add box --color red --pos 0 1 -3
-        conjure-cli world
+Start the servers first — the world server (`python -m conjure`) and the agent server
+(`python -m conjure.agent_server`), which holds the director, the LLM keys, and the shared transcript.
+For deterministic world edits with no LLM in the loop, use `python -m conjure.ctl` instead.
 
-  • The director, by text — no voice, no audio noise:
-        conjure-cli say "put an oak tree in front of me and hang a sunset painting on the wall"
-        conjure-cli                # no args → interactive director REPL (type instructions)
+The client is **dumb**: it opens one WebSocket, sends each line verbatim as `{type:"turn", text}`, and
+renders what comes back. It parses nothing — the wake word, shell mode, and every command live
+server-side in the shell (`conjure.shell`), so the CLI and voice can't drift apart. The one exception is
+the quit words below, which end the *program* and never reach the server.
 
-Quiet by default. Pass -v/--verbose for tool calls + library logs.
+The conversation is shared: another user typing on their own CLI, or speaking on voice, shows up here
+attributed to them, and the agent's replies are attributed to the agent by name.
 """
 
 from __future__ import annotations
@@ -23,285 +22,24 @@ import argparse
 import asyncio
 import json
 import logging
-import os
-import signal
+import re
 import sys
-import threading
-import uuid
+import time
+from pathlib import Path
 from typing import Optional
 
-import httpx
-
-from .config import DEFAULT_USER, Settings, get_settings
-
-
-# --------------------------------------------------------------------------- helpers
-
-def _server_ok(s: Settings) -> bool:
-    try:
-        httpx.get(f"{s.world_url}/world", timeout=3.0)
-        return True
-    except Exception:
-        return False
-
-
-def _post(s: Settings, path: str, body: dict) -> dict:
-    r = httpx.post(f"{s.world_url}{path}", json=body, timeout=240.0)
-    r.raise_for_status()
-    return r.json()
-
-
-def _get(s: Settings, path: str) -> dict:
-    r = httpx.get(f"{s.world_url}{path}", timeout=30.0)
-    r.raise_for_status()
-    return r.json()
-
-
-def _say(obj: dict, verbose: bool, fallback: str) -> None:
-    if verbose:
-        print(json.dumps(obj, indent=2))
-    elif obj.get("ok") is False:
-        print(f"error: {obj.get('error', 'unknown error')}")
-    else:
-        print(fallback)
-
-
-def _working(msg: str) -> None:
-    """A one-line status to stderr so a slow image generation doesn't look like a freeze."""
-    print(msg, file=sys.stderr, flush=True)
-
-
-# --------------------------------------------------------------------------- direct commands
-
-def cmd_world(s: Settings, a) -> None:
-    doc = _get(s, "/world")
-    print(f"{doc.get('name', '')} (rev {doc['rev']}), {len(doc['entities'])} entities:")
-    for e in doc["entities"]:
-        c, m = e.get("components", {}), e.get("meta", {})
-        if "gltf-model" in c:
-            d = f"model {m.get('title', '?')!r}"
-        elif c.get("material", {}).get("src"):
-            d = f"image {(m.get('prompt') or m.get('title') or '?')!r}"
-        elif "grid" in c:
-            d = "grid"
-        else:
-            d = f"{c.get('geometry', {}).get('primitive', '?')} {c.get('material', {}).get('color', '')}".strip()
-        print(f"  {e['id']}: {d} @ {e.get('transform', {}).get('position')}")
-
-
-def cmd_add(s: Settings, a) -> None:
-    eid = a.name or f"ent_{a.shape}_{uuid.uuid4().hex[:6]}"
-    entity = {
-        "id": eid,
-        "transform": {"position": a.pos or [0.0, 1.0, -3.0]},
-        "components": {"geometry": {"primitive": a.shape}, "material": {"color": a.color}},
-    }
-    r = _post(s, "/patch", {"origin": "cli", "ops": [{"op": "add", "entity": entity}]})
-    print(f"added {eid} (rev {r['rev']})") if not a.verbose else _say(r, True, "")
-
-
-def cmd_move(s: Settings, a) -> None:
-    r = _post(s, "/patch", {"origin": "cli",
-                            "ops": [{"op": "update", "id": a.id, "set": {"transform.position": a.pos}}]})
-    print(f"moved {a.id} (rev {r['rev']})")
-
-
-def cmd_remove(s: Settings, a) -> None:
-    r = _post(s, "/patch", {"origin": "cli", "ops": [{"op": "remove", "id": a.id}]})
-    print(f"removed {a.id} (rev {r['rev']})")
-
-
-def cmd_env(s: Settings, a) -> None:
-    sets: dict = {}
-    if a.sky_color:
-        sets["sky"] = {"color": a.sky_color}
-    if a.fog_color or a.fog_density is not None:
-        fog = {"type": "exponential"}
-        if a.fog_color:
-            fog["color"] = a.fog_color
-        if a.fog_density is not None:
-            fog["density"] = a.fog_density
-        sets["fog"] = fog
-    if not sets:
-        print("nothing to set")
-        return
-    r = _post(s, "/patch", {"origin": "cli", "ops": [{"op": "env", "set": sets}]})
-    print(f"environment updated (rev {r['rev']})")
-
-
-def cmd_asset(s: Settings, a) -> None:
-    body = {"query": a.query, "size_m": a.size}
-    if a.pos:
-        body["position"] = a.pos
-    _say(_post(s, "/place_asset", body), a.verbose, f"placed asset for {a.query!r}")
-
-
-def cmd_image(s: Settings, a) -> None:
-    # Procurement is decoupled from placement; the CLI runs both steps for convenience.
-    gen_body = {"prompt": a.prompt}
-    if a.transparent:
-        gen_body["transparent"] = True
-    if a.generator:
-        gen_body["generator"] = a.generator
-    _working("generating image…")
-    procured = _post(s, "/images/generate", gen_body)
-    if procured.get("ok") is False:
-        _say(procured, a.verbose, "")
-        return
-    body = {"image_id": procured["image_id"]}
-    if a.pos:
-        body["position"] = a.pos
-    if a.size is not None:
-        body["size_m"] = a.size
-    _say(_post(s, "/place_image", body), a.verbose, f"placed image ({procured.get('provider', '?')})")
-
-
-def cmd_skybox(s: Settings, a) -> None:
-    gen_body = {"prompt": a.prompt}
-    if a.generator:
-        gen_body["generator"] = a.generator
-    _working("generating skybox (high-res — this can take a minute)…")
-    procured = _post(s, "/images/skybox", gen_body)
-    if procured.get("ok") is False:
-        _say(procured, a.verbose, "")
-        return
-    _say(_post(s, "/set_skybox", {"image_id": procured["image_id"]}), a.verbose, "set skybox")
-
-
-def cmd_grounded_skybox(s: Settings, a) -> None:
-    gen_body = {"prompt": a.prompt}
-    if a.generator:
-        gen_body["generator"] = a.generator
-    _working("generating grounded skybox (high-res — this can take a minute)…")
-    procured = _post(s, "/images/grounded_skybox", gen_body)
-    if procured.get("ok") is False:
-        _say(procured, a.verbose, "")
-        return
-    set_body = {"image_id": procured["image_id"]}
-    if a.height is not None:
-        set_body["height"] = a.height
-    if a.radius is not None:
-        set_body["radius"] = a.radius
-    _say(_post(s, "/set_grounded_skybox", set_body), a.verbose, "set grounded skybox")
-
-
-def cmd_texture(s: Settings, a) -> None:
-    # generate an image, then map it onto a room surface (floor/ceiling/wall/all)
-    gen_body = {"prompt": a.prompt}
-    if a.generator:
-        gen_body["generator"] = a.generator
-    _working("generating image…")
-    procured = _post(s, "/images/generate", gen_body)
-    if procured.get("ok") is False:
-        _say(procured, a.verbose, "")
-        return
-    body = {"target": a.target, "image_id": procured["image_id"]}
-    if a.repeat is not None:
-        body["repeat"] = a.repeat
-    _say(_post(s, "/texture_surface", body), a.verbose, f"textured {a.target}")
-
-
-def cmd_style(s: Settings, a) -> None:
-    body = {"target": a.target}
-    if a.color:
-        body["color"] = a.color
-    if a.opacity is not None:
-        body["opacity"] = a.opacity
-    _say(_post(s, "/style_surface", body), a.verbose, f"styled {a.target}")
-
-
-def cmd_reindex(s: Settings, a) -> None:
-    body = {"kind": a.kind} if a.kind else {}
-    r = _post(s, "/library/reindex", body)
-    if r.get("ok") is False:
-        _say(r, a.verbose, "")
-        return
-    cleared = f", cleared {r['cleared']} stale" if r.get("cleared") else ""
-    print(f"reindex: queued {r.get('queued', 0)} asset(s) for embedding{cleared} "
-          "(runs in the background on the server)")
-
-
-def cmd_caption(s: Settings, a) -> None:
-    r = _post(s, "/library/caption", {})
-    if r.get("ok") is False:
-        _say(r, a.verbose, "")
-        return
-    print(f"caption: queued {r.get('queued', 0)} asset(s) for description "
-          "(runs in the background on the server)")
-
-
-def cmd_retag_skyboxes(s: Settings, a) -> None:
-    body = {"min_aspect": a.min_aspect} if a.min_aspect is not None else {}
-    r = _post(s, "/library/retag-skyboxes", body)
-    if r.get("ok") is False:
-        _say(r, a.verbose, "")
-        return
-    print(f"re-tagged {r.get('retagged', 0)} wide image(s) as skyboxes")
-
-
-def cmd_annotate(s: Settings, a) -> None:
-    sets = {"room.annotations": a.state != "off", "room.annotationDims": bool(a.dims)}
-    if a.color is not None:
-        sets["room.annotationColor"] = a.color
-    if a.opacity is not None:
-        sets["room.annotationOpacity"] = a.opacity
-    r = _post(s, "/patch", {"ops": [{"op": "env", "set": sets}]})
-    print(f"annotations {a.state}{' +dims' if a.dims else ''} (rev {r['rev']})")
-
-
-def cmd_edges(s: Settings, a) -> None:
-    sets = {"room.edgesVisible": a.state != "off"}
-    if a.color is not None:
-        sets["room.edgeColor"] = a.color
-    if a.opacity is not None:
-        sets["room.edgeOpacity"] = a.opacity
-    r = _post(s, "/patch", {"ops": [{"op": "env", "set": sets}]})
-    print(f"edges {a.state} (rev {r['rev']})")
-
-
-def cmd_generators(s: Settings, a) -> None:
-    out = _get(s, "/images/generators")
-    if a.verbose:
-        print(json.dumps(out, indent=2))
-        return
-    for g in out.get("generators", []):
-        c = g["capabilities"]
-        vendor = f" ({g['vendor']})" if g.get("vendor") else ""
-        print(f"{g['name']}{vendor}: ops={','.join(c['operations'])}, edit={c['edit_mode']}, "
-              f"max={c['max_resolution']}px, aspect={c['aspect']}, transparency={c['transparency']}")
-    print(f"defaults: {out.get('defaults', {})}")
-
-
-def cmd_edit(s: Settings, a) -> None:
-    _working("editing image…")
-    _say(_post(s, "/edit_image", {"id": a.id, "prompt": a.prompt}), a.verbose, f"edited {a.id}")
-
-
-def cmd_outpaint(s: Settings, a) -> None:
-    body = {"id": a.id}
-    if a.aspect:
-        body["aspect"] = a.aspect
-    _working("outpainting image…")
-    _say(_post(s, "/outpaint_image", body), a.verbose, f"outpainted {a.id}")
-
-
-def cmd_skybox_from(s: Settings, a) -> None:
-    _working("building skybox from image (high-res — this can take a minute)…")
-    _say(_post(s, "/skybox_from_image", {"id": a.id}), a.verbose, f"skybox from {a.id}")
-
-
-# --------------------------------------------------------------------------- agent-server clients
-#
-# The CLI is a THIN client (shared-session Step C/D): the Director + shell + shared transcript live in the
-# agent server (conjure.agent_server); the CLI opens one WebSocket, sends each line as {type:"turn", text},
-# and renders the conversation events. All command logic (wake word, shell mode) is server-side. The agent
-# is owned by the (separately launched) agent server, so --agent doesn't select it here — switch with the
-# `conjure agent <name>` command. Start the server first: `python -m conjure.agent_server`.
+from .agent_client import (apply_context, prompt_from_context, render_event, render_parts,
+                           status_from_context, ws_url)
+from .config import CACHE_ROOT, DEFAULT_USER, Settings, get_settings
 
 # Whole-line inputs that end the CLIENT (case-insensitive). Exact match only, so "exit the room" is
 # still passed through. These quit the program in AGENT mode; in shell mode "exit" is a server command
 # (leave shell), so it's forwarded — the only client-side special-case; ALL shell logic is server-side.
 _QUIT_WORDS = {":q", ":quit", "q", "quit", "exit", "bye", "goodbye"}
+
+# How long to wait for the first connection before telling the user the server looks down. The listener
+# keeps retrying underneath, so this is a message, not a failure.
+_CONNECT_GRACE = 2.0
 
 
 def _agent_unreachable_msg(s: Settings, err: str) -> str:
@@ -309,315 +47,461 @@ def _agent_unreachable_msg(s: Settings, err: str) -> str:
             f"Start it first:  python -m conjure.agent_server")
 
 
-async def _ainput(prompt: str) -> str:
-    """Async `input()` on a DAEMON thread. `loop.run_in_executor(input)` uses a *non-daemon* worker whose
-    atexit join blocks interpreter shutdown while it's stuck in a blocking read — which is exactly why ^C
-    used to hang the REPL and force a kill. A daemon thread never blocks exit, so ^C propagates to
-    asyncio.run and the process exits cleanly. Raises EOFError on ^D."""
-    loop = asyncio.get_event_loop()
-    fut: "asyncio.Future[str]" = loop.create_future()
-
-    def _worker() -> None:
-        try:
-            line = input(prompt)
-        except EOFError:
-            loop.call_soon_threadsafe(lambda: fut.done() or fut.set_exception(EOFError()))
-        except Exception as exc:  # noqa: BLE001
-            loop.call_soon_threadsafe(lambda e=exc: fut.done() or fut.set_exception(e))
-        else:
-            loop.call_soon_threadsafe(lambda: fut.done() or fut.set_result(line))
-
-    threading.Thread(target=_worker, daemon=True).start()
-    return await fut
+def _history_path(user: str) -> Path:
+    """Where this user's REPL history lives. In the disposable cache root: losing it costs you arrow-key
+    recall and nothing else, which doesn't earn a place in the precious data tree."""
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", user) or "anon"
+    CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    return CACHE_ROOT / f"repl-history-{safe}"
 
 
-async def _repl_client(s: Settings, verbose: bool, user: str) -> bool:
-    """Interactive REPL as a DUMB WebSocket client. A listener renders the shared conversation and folds
-    `context` DATA into the local ctx; the main loop reads a line and sends it verbatim as
-    `{type:"turn", text}`. No command parsing here — the server (shell) owns the wake word, shell mode,
-    and dispatch. The prompt is formatted client-side from context data. Returns True if exited via ^C."""
-    import websockets
+# --------------------------------------------------------------------------- the connection
+#
+# One WebSocket to the agent server, shared by both front-ends below: the REPL drives it with a live
+# prompt, `say` drives it for exactly one turn. Everything client-side that isn't rendering lives here.
 
-    from .agent_client import apply_context, prompt_from_context, render_event, ws_url
+class _Conversation:
+    """One session with the agent server. Owns the socket (reconnecting when the server restarts), folds
+    `context` events into `ctx` so the caller can render a live prompt, and counts our in-flight turns so
+    a front-end can show that something is running.
 
-    ctx = {"agent": "agent", "llm": "", "user": user, "in_shell": False}
-    stop = asyncio.Event()
-    turn_done = asyncio.Event()
-    holder: dict = {"ws": None}                            # current socket (None while (re)connecting)
+    Deliberately has no idea what any line *means* — `send` ships text, `listen` hands every event to the
+    caller. Interpretation is the server's job."""
 
-    async def listen() -> None:
-        url = ws_url(s.agent_url, user)
-        while not stop.is_set():
+    def __init__(self, s: Settings, user: str, *, backlog: bool = True):
+        self._s, self._user, self._backlog = s, user, backlog
+        self.ctx: dict = {"agent": "agent", "llm": "", "user": user, "in_shell": False}
+        self.ws = None                                  # current socket (None while (re)connecting)
+        self.connected = asyncio.Event()
+        self._stop = asyncio.Event()
+        # In-flight turns of OURS. A count, not a flag: `turn_done` is sent per-connection to the
+        # submitter (agent_server `_on_turn`), so two quick submissions owe us two of them — a bare
+        # boolean would clear on the first and under-report.
+        self._inflight = 0
+        self._since = 0.0                               # monotonic start of the oldest in-flight turn
+
+    @property
+    def working(self) -> Optional[float]:
+        """Seconds the oldest in-flight turn has been running, or None if we're idle."""
+        return (time.monotonic() - self._since) if self._inflight else None
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    async def listen(self, on_event, *, reconnect: bool = True) -> None:
+        """Read events until stopped, dispatching each to `on_event(ev)`. Reconnects with a short backoff
+        when the socket drops (the agent server restarting shouldn't kill the REPL); `reconnect=False`
+        for a one-shot, where a drop means we're done."""
+        import websockets
+
+        url = ws_url(self._s.agent_url, self._user, backlog=self._backlog)
+        first = True
+        while not self._stop.is_set():
             try:
                 async with websockets.connect(url) as ws:
-                    holder["ws"] = ws
+                    self.ws = ws
+                    self.connected.set()
+                    if not first:
+                        await on_event({"type": "notice", "text": "[reconnected]"})
+                    first = False
                     async for raw in ws:
                         ev = json.loads(raw)
                         kind = ev.get("type")
                         if kind == "context":
-                            apply_context(ctx, ev)
-                            continue
-                        if kind == "turn_done":            # release the prompt gate
-                            turn_done.set()
-                            continue
-                        out = render_event(ev, me=user, verbose=verbose)
-                        if out is not None:
-                            print(out)
-            except Exception:  # noqa: BLE001 — server down/restarting: back off and reconnect
-                holder["ws"] = None
-                if stop.is_set():
+                            apply_context(self.ctx, ev)
+                        elif kind == "turn_done":
+                            self._inflight = max(0, self._inflight - 1)
+                        await on_event(ev)
+                        if self._stop.is_set():
+                            return
+            except Exception:  # noqa: BLE001 — server down / restarting / socket dropped
+                self.ws, self._inflight = None, 0
+                self.connected.clear()
+                if self._stop.is_set() or not reconnect:
                     return
                 await asyncio.sleep(1.0)
 
-    async def _await_turn() -> None:
-        """Wait for our turn to finish before re-prompting. A heartbeat keeps long turns from looking hung
-        and from dumping us back to a prompt that would just reject the next input as busy. Caps at ~10 min
-        as a safety against a dropped socket (a lost turn_done)."""
-        waited = 0
-        while not turn_done.is_set():
-            try:
-                await asyncio.wait_for(turn_done.wait(), timeout=20.0)
-            except asyncio.TimeoutError:
-                waited += 20
-                print(f"[still working… {waited}s — some operations (e.g. image generation) can take a while]")
-                if waited >= 600:
-                    print("[the turn is still running server-side; new input may be rejected until it finishes]")
-                    return
-
-    async def submit(text: str) -> None:
-        ws = holder["ws"]
+    async def send(self, text: str) -> Optional[str]:
+        """Submit one line verbatim. Returns None on success, or a message to show the user."""
+        ws = self.ws
         if ws is None:
-            print(_agent_unreachable_msg(s, "not connected")); return
-        turn_done.clear()                                  # clear BEFORE send so we wait on THIS turn only
+            return _agent_unreachable_msg(self._s, "not connected")
+        if not self._inflight:
+            self._since = time.monotonic()
+        self._inflight += 1
         try:
             await ws.send(json.dumps({"type": "turn", "text": text}))
         except Exception as exc:  # noqa: BLE001
-            print(_agent_unreachable_msg(s, str(exc))); return
-        await _await_turn()
+            self._inflight = max(0, self._inflight - 1)
+            return _agent_unreachable_msg(self._s, str(exc))
+        return None
 
-    listen_task = asyncio.create_task(listen())
-    await asyncio.sleep(0.4)                                # let the socket connect + first context arrive
 
-    # ^C handling: cancel the main task on SIGINT so whatever we're awaiting unwinds to a clean exit (the
-    # default KeyboardInterrupt doesn't cleanly unwind asyncio.run here; the daemon input thread is
-    # abandoned harmlessly).
-    loop = asyncio.get_event_loop()
-    main = asyncio.current_task()
-    interrupted = False
+# --------------------------------------------------------------------------- rendering
+#
+# `render_parts` decides WHAT to show (shared with voice); the styling below is the terminal's business.
 
-    def _on_sigint() -> None:
-        nonlocal interrupted
-        interrupted = True
-        main.cancel()
+def _style():
+    from prompt_toolkit.styles import Style
 
-    try:
-        loop.add_signal_handler(signal.SIGINT, _on_sigint)
-    except (NotImplementedError, RuntimeError):
-        pass
+    return Style.from_dict({
+        "speaker.user":  "bold ansicyan",       # another person in the shared conversation
+        "speaker.agent": "bold ansigreen",      # the agent, attributed by name like anyone else
+        "body.interim":  "ansibrightblack",     # an intermediate message mid-turn (an ack, pre-tool narration)
+        "notice":        "ansiyellow",          # the shell / this client talking, not a participant
+        "tool":          "ansibrightblack",     # -v tool trace
+        "statusbar":     "reverse",             # the pinned top bar — reverse video tracks any terminal theme
+        "separator":     "ansibrightblack",     # the rule above the prompt
+        "prompt":        "bold",
+        "scrollmark":    "reverse",             # shown in the status bar when scrolled off the live tail
+    })
 
-    try:
-        while True:
-            try:
-                line = await _ainput(prompt_from_context(ctx))
-            except EOFError:                               # ^D — clean exit
-                print()
-                break
-            raw = line.strip()
-            if not raw:
-                continue
-            if not ctx.get("in_shell") and raw.lower() in _QUIT_WORDS:
-                break                                      # quit the client (agent mode only)
-            await submit(raw)                              # everything else → the server routes it
-    except asyncio.CancelledError:
-        if not interrupted:
-            raise
-        print()                                            # ^C → clean newline
-    finally:
+
+def _fragments(ev: dict, *, me: str, verbose: bool, ctx: dict):
+    """Style one event for the terminal, or None to print nothing."""
+    from prompt_toolkit.formatted_text import FormattedText
+
+    parts = render_parts(ev, me=me, verbose=verbose, agent=ctx.get("agent"))
+    if parts is None:
+        return None
+    speaker, text = parts
+    if speaker is None:                                 # not a participant: shell notice, tool trace, busy
+        cls = "class:tool" if ev.get("type") == "tool_call" else "class:notice"
+        return FormattedText([(cls, text)])
+    kind = ev.get("type")
+    is_agent = kind in ("assistant_delta", "assistant_final")
+    # An `assistant_delta` is a whole intermediate message, not a token chunk (llm.py emits once per LLM
+    # round-trip) — dim it so a multi-round turn reads as progress and the real answer stands out.
+    body = "class:body.interim" if kind == "assistant_delta" else ""
+    return FormattedText([("class:speaker.agent" if is_agent else "class:speaker.user", f"{speaker}: "),
+                          (body, text)])
+
+
+# --------------------------------------------------------------------------- REPL
+
+_BANNER = ("Conjure REPL — thin client of the agent server (start it: 'python -m conjure.agent_server').",
+           "Type an instruction. 'conjure open shell' for deterministic commands (LLM/agent, sessions, "
+           "status). PgUp/PgDn scrolls, End returns to the live tail. 'exit'/^C/^D leaves.")
+
+_SCROLLBACK = 2000        # lines of conversation kept in the pane; the whole list is re-read every repaint,
+                          # so this bounds repaint cost. The full transcript lives on the server regardless.
+
+
+class _Repl:
+    """The full-screen client: a status bar pinned to the top, the conversation scrolling in the middle,
+    and the prompt pinned to the bottom under a separator.
+
+    This owns the screen (rather than printing into the terminal's scrollback) because the status bar has
+    to stay put while output flows past it. The trade is that the terminal's own scrollback no longer
+    applies to the conversation, so the pane does its own scrolling — PgUp/PgDn, and it sticks to the
+    live tail until you scroll away from it."""
+
+    def __init__(self, s: Settings, verbose: bool, user: str):
+        self._s, self._verbose, self._user = s, verbose, user
+        self.conv = _Conversation(s, user)
+        self.lines: list = []                 # rendered conversation, one entry per printed line
+        self._follow = True                   # stuck to the live tail? (False once you scroll up)
+        self._view = 0                        # line to keep on screen while not following
+        self._detached_at = 0                 # len(lines) when we left the tail → how much you've missed
+        self._app = None
+
+    # -- output ------------------------------------------------------------
+    def add(self, frags) -> None:
+        """Append one message, split into RENDERED lines.
+
+        The split is load-bearing, not tidiness: agent replies are markdown and routinely carry embedded
+        newlines (bullet lists, paragraphs). `FormattedTextControl` splits on them internally, so if a
+        five-line reply were stored as one entry, `len(self.lines)` would undercount the real content and
+        the cursor `_cursor()` reports — the thing that scrolls the pane — would point somewhere in the
+        middle. The view then sticks there while new output piles up below the fold, which reads as the
+        pane silently falling behind and never catching up."""
+        from prompt_toolkit.formatted_text.utils import split_lines
+
+        for line in split_lines(list(frags)):
+            self.lines.append(list(line))
+        if len(self.lines) > _SCROLLBACK:
+            drop = len(self.lines) - _SCROLLBACK
+            del self.lines[:drop]
+            self._view = max(0, self._view - drop)
+            self._detached_at = max(0, self._detached_at - drop)
+        self.repaint()
+
+    @property
+    def unseen(self) -> int:
+        """Lines that have arrived since you scrolled away from the tail."""
+        return 0 if self._follow else max(0, len(self.lines) - self._detached_at)
+
+    def follow_tail(self) -> None:
+        self._follow = True
+        self.repaint()
+
+    def notice(self, text: str) -> None:
+        self.add([("class:notice", text)])
+
+    def repaint(self) -> None:
+        if self._app is not None and self._app.is_running:
+            self._app.invalidate()
+
+    # -- the three panes ---------------------------------------------------
+    def _output_fragments(self):
+        out: list = []
+        for i, line in enumerate(self.lines):
+            if i:
+                out.append(("", "\n"))
+            out.extend(line)
+        return out
+
+    def _cursor(self):
+        """Where the output Window should scroll to. FormattedTextControl has no real cursor, but a
+        reported position is what the Window keeps visible — so pointing at the last line pins us to the
+        tail, and pointing at `_view` holds position while scrolled back."""
+        from prompt_toolkit.data_structures import Point
+
+        last = max(0, len(self.lines) - 1)
+        return Point(x=0, y=last if self._follow else min(self._view, last))
+
+    def _status_fragments(self):
+        width = self._app.output.get_size().columns if self._app is not None else None
+        # Being scrolled away from the tail looks exactly like the app having frozen — new lines land
+        # below the viewport and nothing moves. Say so loudly, count what's been missed, and name the key
+        # that fixes it, because the usual way into this state is an accidental one-notch wheel scroll.
+        if self._follow:
+            mark = []
+        else:
+            n = self.unseen
+            mark = [("class:scrollmark", f" ↓ {n} new · End " if n else " ↑ scrolled · End ")]
+        reserve = sum(len(t) for _, t in mark) + 1
+        text = status_from_context(self.conv.ctx, working=self.conv.working,
+                                   width=(width - reserve) if width else None)
+        pad = max(0, (width or len(text) + 1) - len(text) - reserve)
+        return [("class:statusbar", " " + text + " " * pad)] + mark
+
+    # -- input -------------------------------------------------------------
+    def _submit(self, buf) -> bool:
+        text = buf.text.strip()
+        if not text:
+            return False
+        if not self.conv.ctx.get("in_shell") and text.lower() in _QUIT_WORDS:
+            self._app.exit()
+            return False
+        # Echo it attributed by name, exactly as every other speaker appears — and exactly as the server
+        # will replay this same turn in the backlog after a reconnect. (We echo locally because
+        # `render_parts` suppresses our own LIVE `user_turn`, and because a shell command gets no
+        # broadcast at all — only a notice back to us.)
+        self.add([("class:speaker.user", f"{self._user}: "), ("", text)])
+        self._follow = True                                    # submitting jumps back to the live tail
+        asyncio.create_task(self._send(text))
+        return False                                           # False → prompt_toolkit clears the buffer
+
+    async def _send(self, text: str) -> None:
+        err = await self.conv.send(text)
+        if err:
+            self.notice(err)
+        self.repaint()
+
+    def _scroll(self, delta: int) -> None:
+        last = max(0, len(self.lines) - 1)
+        start = last if self._follow else self._view
+        target = max(0, min(last, start + delta))
+        if self._follow and target < last:                     # leaving the tail — start counting misses
+            self._detached_at = len(self.lines)
+        self._follow = target >= last                          # scrolling back to the end re-attaches
+        self._view = target
+        self.repaint()
+
+    # -- assembly ----------------------------------------------------------
+    def build(self):
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.buffer import Buffer
+        from prompt_toolkit.filters import Condition
+        from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
+        from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+        from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+        from prompt_toolkit.layout.dimension import Dimension
+
+        # A single-line Buffer gives the whole line editor for free — emacs/vi keys, and Up/Down mapped to
+        # history rather than cursor movement (prompt_toolkit's `auto_up`/`auto_down`).
+        self.buffer = Buffer(history=FileHistory(str(_history_path(self._user))),
+                             accept_handler=self._submit, multiline=False)
+
+        keys = KeyBindings()
+
+        @keys.add("c-c")
+        def _(event):
+            event.app.exit()
+
+        # ^D leaves only on an EMPTY line; with text in the buffer the default binding takes it as
+        # delete-char, which is what every other line editor does.
+        @keys.add("c-d", filter=Condition(lambda: not self.buffer.text))
+        def _(event):
+            event.app.exit()
+
+        def _page(event) -> int:
+            # Half a page, not a whole one: in the alternate screen most terminals (and tmux) turn a
+            # mouse-wheel notch into PgUp/PgDn, and a full page per notch makes an accidental brush of
+            # the wheel throw the conversation far out of view.
+            return max(1, (event.app.output.get_size().rows - 4) // 2)
+
+        @keys.add("pageup")
+        def _(event):
+            self._scroll(-_page(event))
+
+        @keys.add("pagedown")
+        def _(event):
+            self._scroll(_page(event))
+
+        # Terminals that send real scroll sequences instead of paging keys.
+        @keys.add(Keys.ScrollUp)
+        def _(event):
+            self._scroll(-3)
+
+        @keys.add(Keys.ScrollDown)
+        def _(event):
+            self._scroll(3)
+
+        # Back to the live tail. `end` is the discoverable one (and the status bar names it); the buffer
+        # is a single line, so losing `end` as end-of-line costs nothing you can't do with `right`.
+        @keys.add("end")
+        @keys.add("escape", ">")
+        def _(event):
+            self.follow_tail()
+
+        prompt_window = Window(FormattedTextControl(
+            lambda: [("class:prompt", prompt_from_context(self.conv.ctx))]),
+            dont_extend_width=True, height=1)
+
+        layout = Layout(HSplit([
+            Window(FormattedTextControl(self._status_fragments), height=1, style="class:statusbar"),
+            # `Dimension(weight=1)` (preferred 0, unbounded max) is what pins the prompt to the bottom:
+            # a FormattedTextControl otherwise prefers exactly its content height, so a short conversation
+            # would let the separator and prompt ride up under it with dead space below.
+            Window(FormattedTextControl(self._output_fragments, get_cursor_position=self._cursor,
+                                        show_cursor=False),
+                   wrap_lines=True, height=Dimension(weight=1)),
+            Window(height=1, char="─", style="class:separator"),
+            VSplit([prompt_window, Window(BufferControl(self.buffer))], height=1),
+        ]), focused_element=self.buffer)
+
+        # `refresh_interval` only has to drive the status bar's elapsed-seconds clock; everything else
+        # repaints on demand via `repaint()`.
+        self._app = Application(layout=layout, key_bindings=keys, style=_style(),
+                                full_screen=True, refresh_interval=1.0)
+        return self._app
+
+    # -- run ---------------------------------------------------------------
+    async def on_event(self, ev: dict) -> None:
+        """One event from the server → a line in the pane, or just a repaint. `context`/`turn_done`
+        render to nothing but still move the status bar (turn counts, context size, the working clock),
+        so they repaint rather than falling through."""
+        frags = _fragments(ev, me=self._user, verbose=self._verbose, ctx=self.conv.ctx)
+        if frags is not None:
+            self.add(frags)
+        else:
+            self.repaint()
+
+    async def run(self) -> None:
+        on_event = self.on_event
+        for line in _BANNER:
+            self.add([("class:notice", line)])
+        listener = asyncio.create_task(self.conv.listen(on_event))
+        app = self.build()
         try:
-            loop.remove_signal_handler(signal.SIGINT)
-        except (NotImplementedError, RuntimeError, ValueError):
-            pass
-        stop.set()
-        listen_task.cancel()
-    return interrupted
+            await asyncio.wait_for(self.conv.connected.wait(), timeout=_CONNECT_GRACE)
+        except asyncio.TimeoutError:
+            self.notice(_agent_unreachable_msg(self._s, "no response"))   # the listener keeps retrying
+        try:
+            await app.run_async()
+        finally:
+            self.conv.stop()
+            listener.cancel()
 
 
-async def _say_client(s: Settings, verbose: bool, user: str, text: str) -> None:
-    """One-shot: connect, submit `text`, print only THIS turn's output, exit. Skips the backlog by waiting
-    for our own turn to begin — an utterance echoes our `user_turn`; a command replies with a `notice`."""
-    import websockets
-
-    from .agent_client import render_event, ws_url
-
-    text = text.strip()
-    started = False
-    sent = False
-    try:
-        async with websockets.connect(ws_url(s.agent_url, user)) as ws:
-            async for raw in ws:
-                ev = json.loads(raw)
-                t = ev.get("type")
-                if t == "context" and not sent:            # subscribed → submit once
-                    sent = True
-                    await ws.send(json.dumps({"type": "turn", "text": text}))
-                    continue
-                if not started:                            # skip replayed backlog until our turn begins
-                    if t == "user_turn" and ev.get("speaker") == user and ev.get("text") == text:
-                        started = True
-                    elif t in ("notice", "busy"):          # command reply / rejection → done
-                        out = render_event(ev, me=user, verbose=verbose)
-                        if out:
-                            print(out)
-                        return
-                    elif t == "turn_done":                 # a turn with no textual output → just stop
-                        return
-                    continue
-                out = render_event(ev, me=user, verbose=verbose)
-                if out is not None:
-                    print(out)
-                if t == "turn_done":                       # the definitive end (covers tool-only turns)
-                    return
-    except Exception as exc:  # noqa: BLE001
-        print(_agent_unreachable_msg(s, str(exc)))
+async def _repl(s: Settings, verbose: bool, user: str) -> None:
+    await _Repl(s, verbose, user).run()
 
 
-def cmd_say(s: Settings, a) -> None:
-    asyncio.run(_say_client(s, a.verbose, a.user, " ".join(a.text)))
+# --------------------------------------------------------------------------- one-shot
 
+async def _say(s: Settings, verbose: bool, user: str, text: str) -> None:
+    """Connect, submit `text`, print only THIS turn's output, exit. Skips the replayed backlog by waiting
+    for our own turn to begin — an utterance echoes our `user_turn`; a command replies with a `notice`.
+    Plain text, not styled: `say` is the scriptable path, and its output is usually piped."""
+    conv = _Conversation(s, user)
+    state = {"sent": False, "started": False}
 
-def cmd_repl(s: Settings, a) -> None:
-    print("Conjure REPL — thin client of the agent server (start it: 'python -m conjure.agent_server').\n"
-          "Type an instruction ('exit'/'quit'/^C to leave). 'conjure open shell' for deterministic commands "
-          "(switch LLM/agent, status, …).")
-    interrupted = False
-    try:
-        interrupted = asyncio.run(_repl_client(s, a.verbose, a.user))
-    except KeyboardInterrupt:                               # fallback if the loop signal handler wasn't installed
-        interrupted = True
-        print()
-    if interrupted:
-        # A daemon input thread may still be blocked in input(), holding the stdin lock — interpreter
-        # finalization would then abort with "_enter_buffered_busy". Skip finalization entirely.
-        sys.stdout.flush()
-        os._exit(0)
+    def emit(ev: dict) -> None:
+        out = render_event(ev, me=user, verbose=verbose, agent=conv.ctx.get("agent"))
+        if out is not None:
+            print(out)
+
+    async def on_event(ev: dict) -> None:
+        t = ev.get("type")
+        if t == "context" and not state["sent"]:            # subscribed → submit once
+            state["sent"] = True
+            err = await conv.send(text)
+            if err:
+                print(err)
+                conv.stop()
+            return
+        if not state["started"]:                            # skip replayed backlog until our turn begins
+            if t == "user_turn" and ev.get("speaker") == user and ev.get("text") == text:
+                state["started"] = True
+            elif t in ("notice", "busy"):                   # command reply / rejection → done
+                emit(ev)
+                conv.stop()
+            elif t == "turn_done":                          # a turn with no textual output → just stop
+                conv.stop()
+            return
+        emit(ev)
+        if t == "turn_done":                                # the definitive end (covers tool-only turns)
+            conv.stop()
+
+    await conv.listen(on_event, reconnect=False)
+    if not state["sent"]:
+        print(_agent_unreachable_msg(s, "no response"))
 
 
 # --------------------------------------------------------------------------- argparse
 
-def _pos(p):
-    p.add_argument("--pos", nargs=3, type=float, metavar=("X", "Y", "Z"), help="position in meters")
-
-
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="conjure-cli", description="Drive the Conjure world from the terminal.")
+    p = argparse.ArgumentParser(
+        prog="conjure-cli",
+        description="Talk to the Conjure agent server from the terminal.",
+        epilog="For direct, LLM-free world edits, see `python -m conjure.ctl`.")
     p.add_argument("-v", "--verbose", action="store_true", help="show tool calls and library logs")
-    p.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
-    p.add_argument("--agent", default=None,
-                   help="agent to load from agents/<name>/ (default: resume your last-used, else builder)")
+    p.add_argument("--user", default=DEFAULT_USER, help="who you connect as (owns spaces/worlds/assets)")
     sub = p.add_subparsers(dest="cmd")
 
-    sub.add_parser("world", help="print the current world").set_defaults(fn=cmd_world)
-
-    a = sub.add_parser("reindex", help="embed cataloged assets that have no vector yet")
-    a.set_defaults(fn=cmd_reindex)
-    a.add_argument("--kind", help="restrict to image | model | skybox | …")
-
-    a = sub.add_parser("retag-skyboxes", help="re-tag wide backfilled images as skyboxes")
-    a.set_defaults(fn=cmd_retag_skyboxes)
-    a.add_argument("--min-aspect", dest="min_aspect", type=float, help="width/height threshold (default 1.9)")
-
-    sub.add_parser("caption", help="backfill labels for assets with none (image→text via Gemini)") \
-        .set_defaults(fn=cmd_caption)
-
-    a = sub.add_parser("add", help="add a primitive shape"); a.set_defaults(fn=cmd_add)
-    a.add_argument("shape"); a.add_argument("--color", default="white"); a.add_argument("--name"); _pos(a)
-
-    a = sub.add_parser("asset", help="place a real 3D model (Poly Pizza)"); a.set_defaults(fn=cmd_asset)
-    a.add_argument("query"); a.add_argument("--size", type=float, default=1.0, help="real-world size, meters"); _pos(a)
-
-    a = sub.add_parser("image", help="generate + hang an image"); a.set_defaults(fn=cmd_image)
-    a.add_argument("prompt"); a.add_argument("--size", type=float)
-    a.add_argument("--transparent", action="store_true", help="cut-out with a transparent background")
-    a.add_argument("--generator", help="force an image generator (else best default)"); _pos(a)
-
-    a = sub.add_parser("skybox", help="generate a 360 skybox"); a.set_defaults(fn=cmd_skybox)
-    a.add_argument("prompt"); a.add_argument("--generator", help="force an image generator")
-
-    a = sub.add_parser("grounded-skybox", help="generate a 360 skybox projected onto the floor")
-    a.set_defaults(fn=cmd_grounded_skybox)
-    a.add_argument("prompt"); a.add_argument("--generator", help="force an image generator")
-    a.add_argument("--height", type=float, help="metres above the ground (default 1.6)")
-    a.add_argument("--radius", type=float, help="ground reach before the horizon (default 30)")
-
-    a = sub.add_parser("texture", help="map a generated image onto a room surface"); a.set_defaults(fn=cmd_texture)
-    a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")
-    a.add_argument("prompt"); a.add_argument("--repeat", type=float, help="tile NxN (use a seamless image)")
-    a.add_argument("--generator", help="force an image generator")
-
-    a = sub.add_parser("style", help="color / set transparency of a room surface"); a.set_defaults(fn=cmd_style)
-    a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")
-    a.add_argument("--color", help="CSS name or #hex"); a.add_argument("--opacity", type=float, help="0..1")
-
-    a = sub.add_parser("annotate", help="toggle / restyle surface metadata labels"); a.set_defaults(fn=cmd_annotate)
-    a.add_argument("state", nargs="?", default="on", choices=["on", "off"])
-    a.add_argument("--dims", action="store_true", help="also show surface dimensions")
-    a.add_argument("--color", help="label text color (CSS name or #hex)")
-    a.add_argument("--opacity", type=float, help="label opacity 0..1")
-
-    a = sub.add_parser("edges", help="show/hide / restyle surface outline wireframe"); a.set_defaults(fn=cmd_edges)
-    a.add_argument("state", nargs="?", default="on", choices=["on", "off"])
-    a.add_argument("--color", help="edge color (CSS name or #hex)")
-    a.add_argument("--opacity", type=float, help="edge opacity 0..1")
-
-    sub.add_parser("generators", help="list image generators + capabilities").set_defaults(fn=cmd_generators)
-
-    a = sub.add_parser("edit", help="edit an in-world image"); a.set_defaults(fn=cmd_edit)
-    a.add_argument("id"); a.add_argument("prompt")
-
-    a = sub.add_parser("outpaint", help="extend an in-world image wider"); a.set_defaults(fn=cmd_outpaint)
-    a.add_argument("id"); a.add_argument("--aspect")
-
-    a = sub.add_parser("skybox-from", help="turn an in-world image into the sky"); a.set_defaults(fn=cmd_skybox_from)
-    a.add_argument("id")
-
-    a = sub.add_parser("move", help="move an entity"); a.set_defaults(fn=cmd_move)
-    a.add_argument("id"); a.add_argument("pos", nargs=3, type=float, metavar=("X", "Y", "Z"))
-
-    a = sub.add_parser("remove", help="remove an entity"); a.set_defaults(fn=cmd_remove)
-    a.add_argument("id")
-
-    a = sub.add_parser("env", help="set sky/fog"); a.set_defaults(fn=cmd_env)
-    a.add_argument("--sky-color"); a.add_argument("--fog-color"); a.add_argument("--fog-density", type=float)
-
-    a = sub.add_parser("say", help="run a text instruction through the director"); a.set_defaults(fn=cmd_say)
+    a = sub.add_parser("say", help="run one text instruction through the agent, then exit")
+    a.set_defaults(fn=_say)
     a.add_argument("text", nargs="+")
 
-    sub.add_parser("repl", help="interactive director REPL").set_defaults(fn=cmd_repl)
+    sub.add_parser("repl", help="interactive REPL (the default with no subcommand)").set_defaults(fn=_repl)
     return p
 
 
 def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
+    args = build_parser().parse_args()
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
-    for name in ("httpx", "anthropic", "mcp", "google_genai"):
+    for name in ("httpx", "anthropic", "mcp", "google_genai", "websockets"):
         logging.getLogger(name).setLevel(logging.INFO if args.verbose else logging.WARNING)
 
     settings = get_settings()
-    if not _server_ok(settings):
-        print(f"World server not reachable at {settings.world_url}. Start it: python -m conjure")
-        return 1
+    fn = getattr(args, "fn", None) or _repl                 # no subcommand → the REPL
+    # The REPL prints no banner here: it takes over the screen, so its greeting is the first lines of the
+    # conversation pane instead (`_BANNER`).
+    coro = (_say(settings, args.verbose, args.user, " ".join(args.text).strip()) if fn is _say
+            else _repl(settings, args.verbose, args.user))
 
-    fn = getattr(args, "fn", None) or cmd_repl  # no subcommand → director REPL
     try:
-        fn(settings, args)
-    except KeyboardInterrupt:
+        asyncio.run(coro)
+    except KeyboardInterrupt:                               # ^C outside the prompt (e.g. during connect)
+        print()
         return 130
-    except RuntimeError as exc:  # e.g. no LLM keys for the director (say/repl)
+    except RuntimeError as exc:                             # e.g. no LLM keys for the director
         print(exc)
-        return 1
-    except httpx.HTTPError as exc:
-        print(f"request failed: {exc}")
         return 1
     return 0
 

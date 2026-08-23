@@ -119,9 +119,9 @@ The architecture already gives us clean seams to inject fakes — **use them ins
 
 ## End-to-end
 
-E2E without an LLM is cheap and worth it: **the CLI's direct commands are a deterministic driver.**
-Spin up the server, run `conjure-cli add box` / `asset` (with a fake resolver) / etc., assert
-`/world`. The full LLM path (`say "add a cube"` → `add_entity` fired) is a Tier-3 opt-in.
+E2E without an LLM is cheap and worth it: **`conjure-ctl` is a deterministic driver.**
+Spin up the server, run `conjure-ctl add box` / `asset` (with a fake resolver) / etc., assert
+`/world`. The full LLM path (`conjure-cli say "add a cube"` → `add_entity` fired) is a Tier-3 opt-in.
 
 ## What we deliberately **don't** test
 

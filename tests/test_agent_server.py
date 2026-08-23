@@ -38,6 +38,10 @@ class FakeDir:
         self.transcript.append(Turn("assistant", text))
         return text
 
+    def context_stats(self):
+        return {"turns": len(self.transcript), "cap": 40,
+                "chars": {"prompt": 100, "room": 0, "tools": 300, "history": 50}}
+
 
 class FakeShell:
     """Just what the agent server calls: the routing engine (mode as a param), command dispatch, a
@@ -63,7 +67,9 @@ class FakeShell:
     def is_leave_shell(cmd):
         return cmd.strip().lower() in ("exit", "leave", "close", "done")
 
-    async def _dispatch(self, cmd, on_text, *, speaker=None, permitted=True):
+    cwd = "/daniel/agents/builder"        # the shell reports its working directory back after a dispatch
+
+    async def _dispatch(self, cmd, on_text, *, speaker=None, permitted=True, cwd="", voice=False):
         await on_text("Now talking to Gemini (builder).", final=True, speaker=self.director.active)
 
     async def _open_agent(self, agent, *, activate_world=True):
@@ -73,9 +79,11 @@ class FakeShell:
 
 
 class FakeConn:
-    def __init__(self, user="daniel"):
+    def __init__(self, user="daniel", kind="cli"):
         self.user = user
+        self.kind = kind                 # "cli" | "voice" — selects the shell's command set
         self.in_shell = False
+        self.cwd = ""
         self.bumped = False
         self.sent: list[dict] = []
 
@@ -272,7 +280,7 @@ async def test_command_notices_the_caller_and_refreshes_everyones_context():
     shell = FakeShell()
     a, b = FakeConn("alice"), FakeConn("bob")
     app = _app(shell, [a, b])
-    await _handle_turn(app, a, "conjure use gemini")
+    await _handle_turn(app, a, "conjure llm gemini")   # typed form is the noun command now
     assert any(e["type"] == "notice" and "Gemini" in e["text"] for e in a.sent)   # output → the caller
     assert not any(e["type"] == "notice" for e in b.sent)                          # …not the others
     assert any(e["type"] == "context" for e in a.sent)                             # shared LLM change →
