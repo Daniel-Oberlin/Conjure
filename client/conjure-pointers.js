@@ -46,6 +46,7 @@
     return (gp && gp.axes && gp.axes.length > i) ? (gp.axes[i] || 0) : 0;
   }
   function bindings() { return window.CONJURE_BINDINGS || FALLBACK; }
+  function nowMs() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
 
   var COALESCE_MS = 4;         // one read per frame across modules, without trusting XRFrame identity
   var cache = { frame: null, list: [], t: 0 };
@@ -62,6 +63,7 @@
   //               reserver still defers.
   var captured = {};           // key → owner, until released
   var reserved = {};           // key → {owner, f}
+  var armedUntil = {};         // key → ms; a pointer is "in use" until then (see armed())
 
   // Diagnostics → console + temp/conjure.log, like [water]/[grab]. This layer failing silently is
   // indistinguishable from "no controllers in range", and every module downstream goes dead with it, so it
@@ -100,10 +102,18 @@
       out.push(makePointer(key, src, ctrl, new THREE.Vector3(o.x, o.y, o.z),
         new THREE.Vector3(0, 0, -1).applyQuaternion(quat).normalize(), quat, tip));
     }
+    // Refresh the arm window: a light pull of `select`, or ANY bound action engaged (so it stays lit
+    // through a grab or resize instead of dropping mid-gesture).
+    var thresh = +window.CONJURE_BEAM_TRIGGER; if (!(thresh >= 0)) thresh = 0.05;
+    var linger = +window.CONJURE_BEAM_MS; if (!(linger >= 0)) linger = 0;
+    var tNow = nowMs();
+    out.forEach(function (p) {
+      if (p.value("select") >= thresh || p.anyActive()) armedUntil[p.key] = tNow + linger;
+    });
     // Drop edge state for pointers that vanished, so a reconnect doesn't inherit a stale "held".
     var live = {};
     out.forEach(function (p) { live[p.key] = p.ctrl; });
-    for (var k in prev) if (!live[k]) { delete prev[k]; delete captured[k]; delete reserved[k]; }
+    for (var k in prev) if (!live[k]) { delete prev[k]; delete captured[k]; delete reserved[k]; delete armedUntil[k]; }
     var was = {};
     for (var k2 in prev) was[k2] = prev[k2];
     out.forEach(function (p) { p._was = was[p.key] || null; });
@@ -129,6 +139,11 @@
       },
       // Free for `owner` to act on? False while ANOTHER module holds or has reserved this pointer.
       availableTo: function (owner) { var o = ownerOf(key); return !o || o === owner; },
+      // Is this pointer IN USE — i.e. is its beam showing? Armed by a light pull of `select` or any bound
+      // action, and lingering after (config: CONJURE_BEAM_TRIGGER / CONJURE_BEAM_MS). Lives here rather
+      // than in the beam so PRESENTATION and FOCUS agree: a highlight box shouldn't appear on an object
+      // when there's no visible pointer aimed at it.
+      armed: function () { return nowMs() < (armedUntil[key] || 0); },
       // Is ANY bound action engaged? Lets presentation (the beam) follow intent without knowing which.
       anyActive: function () {
         var b = bindings();

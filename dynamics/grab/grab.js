@@ -3,13 +3,16 @@
 // A singleton, ambient module that lets you reposition/rotate/resize OTHER placed objects with the
 // controllers. It's the first module that reads + writes scene entities beyond its own node.
 //
-// Interaction is GRIP-centric so it never collides with the TRIGGER (= content interaction, e.g. rippling a
-// water picture):
-//   • hover (no button)      → an oriented highlight box + corner handles on the pointed-at object
-//   • GRIP on the body       → grab. Free objects: full 6DOF (move + wrist-twist); thumbstick reels in/out.
-//                              Surface-attached objects (meta.on_surface): slide on the surface plane.
-//   • GRIP on a corner handle→ uniform resize (transform.scale), proportions preserved.
+// Controls are ACTIONS, never buttons: this module asks ConjurePointers whether `grab` / `resize` / `reel`
+// are engaged, and the control→action map is config (window.CONJURE_BINDINGS). With the defaults:
+//   • hover (pointer visible) → an oriented highlight box + corner handles on the pointed-at object
+//   • `grab` (grip) on the body → move. Free objects: full 6DOF (move + wrist-twist), `reel` (thumbstick)
+//                              pushes/pulls. Surface-attached: slide on the surface plane. Grounded models:
+//                              slide on the floor, yaw only.
+//   • `resize` (trigger) on a corner handle → uniform resize (transform.scale), proportions preserved.
 //   • release                → commit.
+// `resize` shares the trigger with water's `select`; they coexist because we RESERVE the pointer while the
+// beam is on one of our handles, so the same control resizes there and ripples on the picture's body.
 //
 // Sync (tier C): dragging mutates the local object3D ONLY — nothing is broadcast mid-drag. On release the
 // client POSTs the resting transform to /manipulate; the world server authorizes (owner), applies, persists,
@@ -30,6 +33,7 @@
   // floor of 0.05 was 10× ABOVE that, so resize snapped the model 10× bigger the instant it engaged,
   // before the hand moved at all.
   var SCALE_REL_MIN = 0.02, SCALE_REL_MAX = 50.0;   // total size range vs. the object's original scale
+  var HANDLE_SOFT = 0.06;                      // aim slop (m) for a corner when the ray hits nothing
   var SCALE_DEAD = 0.02;                       // corner drag (m) ignored before a resize starts
   var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
   var ONE = null;   // set once AFRAME.THREE exists
@@ -106,6 +110,27 @@
     // their SIZE (HANDLE_R, in world metres) instead.
     _isHandle: function (obj, el) {
       return !!(obj && obj.userData && obj.userData.grabHud && this._hud.el === el);
+    },
+
+    // Fallback used ONLY when the ray hit nothing at all: is it near a corner handle of the object we're
+    // already focused on? A model's box corners float in empty space away from the body, so past the mesh
+    // the only target is a ~3.5 cm sphere — about 1° at arm's length — and missing it dropped focus, which
+    // deleted the very handles being aimed at. (Flat images don't suffer: their corners sit on a big
+    // picture that keeps focus alive.) Because a real hit always wins, this can't steal a body grab —
+    // which is what went wrong when proximity was checked FIRST.
+    _softHandle: function (origin, dir) {
+      var h = this._hud;
+      if (!h.el || !h.handles.length) return null;
+      var THREE = AFRAME.THREE, best = null, bestD = HANDLE_SOFT;
+      var p = new THREE.Vector3(), bestP = null;
+      this._ray.set(origin, dir);
+      for (var i = 0; i < h.handles.length; i++) {
+        h.handles[i].getWorldPosition(p);
+        if (p.clone().sub(origin).dot(dir) <= 0) continue;      // behind the controller
+        var d = this._ray.ray.distanceToPoint(p);
+        if (d < bestD) { bestD = d; best = h.handles[i]; bestP = p.clone(); }
+      }
+      return best ? { el: h.el, obj: best, point: bestP, dist: origin.distanceTo(bestP) } : null;
     },
 
     // ---- HUD (oriented highlight box + corner handles, parented to the target) --------------------
@@ -394,7 +419,10 @@
 
           if (st.mode === "idle") {
             if (!p.availableTo("grab")) continue;      // another module owns this pointer right now
-            var hit = this._pick(origin, dir);
+            // No visible pointer, no highlight: a selection box appearing with no beam aimed at it reads
+            // as the scene reacting to nothing.
+            if (!p.armed()) continue;
+            var hit = this._pick(origin, dir) || this._softHandle(origin, dir);
             if (hit) { hover = hit.el; this._once("hover", "first hover: " + hit.el.id + " at " + hit.dist.toFixed(2) + " m"); }
             // Reserve the pointer while the beam is on one of OUR corner handles, so a `resize` bound to
             // the same control as `select` goes to us here and to the content module everywhere else.

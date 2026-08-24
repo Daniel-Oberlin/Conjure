@@ -54,21 +54,14 @@
         var pointers = CP ? CP.controllers(this.el.sceneEl) : [];
         if (!pointers.length) { this._hideAll(); return; }
 
-        var now = (window.performance && performance.now) ? performance.now() : Date.now();
-        var thresh = +window.CONJURE_BEAM_TRIGGER; if (!(thresh >= 0)) thresh = 0.05;
-        var lingerMs = +window.CONJURE_BEAM_MS; if (!(lingerMs >= 0)) lingerMs = 0;   // from settings only
-
         var live = {};
         for (var i = 0; i < pointers.length; i++) {
           var p = pointers[i], key = p.key;
           live[key] = true;
-          var b = this._beams[key] || (this._beams[key] = { mesh: this._makeBeam(), activeUntil: 0 });
-          // Arm on a light pull of the SELECT action, or on ANY bound action being engaged — so the beam
-          // also stays lit while you're grabbing or resizing, instead of vanishing mid-gesture (it used to
-          // watch the trigger alone). Presentation follows intent without knowing which action it is.
-          if (p.value("select") >= thresh || p.anyActive()) b.activeUntil = now + lingerMs;
-
-          var on = now < b.activeUntil;
+          var b = this._beams[key] || (this._beams[key] = { mesh: this._makeBeam() });
+          // "In use" (arm + linger) is decided by the input layer, so the beam and anything else that keys
+          // off a visible pointer — like grab's highlight box — agree by construction.
+          var on = p.armed();
           if (on) {
             b.mesh.position.copy(p.origin);
             b.mesh.quaternion.copy(p.quat);
