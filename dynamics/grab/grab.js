@@ -21,10 +21,11 @@
   if (!window.AFRAME) return;
   if (AFRAME.components.grab) return;
 
-  var HILITE = 0x66ccff, HANDLE = 0xffcc33, HANDLE_R = 0.02;   // handle sphere radius, WORLD metres (_setHud
-  //                                                              divides out the target's scale)
+  var HILITE = 0x66ccff, HANDLE = 0xffcc33, HANDLE_R = 0.035;  // handle sphere radius, WORLD metres (_setHud
+  //                                                              divides out the target's scale). Hitting a
+  //                                                              corner is an EXACT intersection (see
+  //                                                              _isHandle), so the size is the target.
   var SCALE_MIN = 0.05, SCALE_MAX = 50.0;      // absolute clamp on the resulting transform.scale
-  var HANDLE_PICK = 0.06;                      // world metres of aim slop around a corner handle
   var SCALE_REF = 0.5;                         // hand travel (m) that doubles/halves the size
   var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
   var ONE = null;   // set once AFRAME.THREE exists
@@ -78,7 +79,9 @@
       return out;
     },
 
-    // Nearest manipulable the ray hits → { el, point, dist } or null.
+    // Nearest manipulable the ray hits → { el, point, dist, obj } or null. `obj` is the exact child that was
+    // hit — the model's mesh, or one of our HUD corner handles (they're children of the target), which is
+    // how _begin tells a RESIZE from a body grab.
     _pick: function (origin, dir) {
       var best = null;
       this._ray.set(origin, dir);
@@ -86,29 +89,19 @@
       for (var i = 0; i < els.length; i++) {
         var hits = this._ray.intersectObject(els[i].object3D, true);
         if (hits.length && (!best || hits[0].distance < best.dist)) {
-          best = { el: els[i], point: hits[0].point.clone(), dist: hits[0].distance };
+          best = { el: els[i], point: hits[0].point.clone(), dist: hits[0].distance, obj: hits[0].object };
         }
       }
       return best;
     },
 
-    // The corner handle of the current HUD nearest the ray → the handle mesh, or null. Uses ray-to-POINT
-    // distance with `HANDLE_PICK` slop rather than an exact sphere intersection: a 2 cm sphere at arm's
-    // length is a punishing target, and a miss fell through to a BODY grab — so resize felt unreachable,
-    // while the occasional lucky catch produced a wild resize. Aiming NEAR a corner is now enough.
-    _pickHandle: function (origin, dir, el) {
-      if (!this._hud.el || this._hud.el !== el || !this._hud.handles.length) return null;
-      var THREE = AFRAME.THREE;
-      this._ray.set(origin, dir);
-      var best = null, bestD = HANDLE_PICK, p = new THREE.Vector3();
-      for (var i = 0; i < this._hud.handles.length; i++) {
-        var h = this._hud.handles[i];
-        h.getWorldPosition(p);
-        if (p.clone().sub(origin).dot(dir) <= 0) continue;        // behind the controller — not aimed at
-        var d = this._ray.ray.distanceToPoint(p);
-        if (d < bestD) { bestD = d; best = h; }
-      }
-      return best;
+    // Is `obj` (the exact thing the ray hit) one of the current HUD's corner handles? Identity, not
+    // proximity: an earlier "nearest handle within 6 cm of the ray" test stole ordinary BODY grabs, because
+    // a small model's box corners sit well inside that slop when you aim at its middle — every grab became
+    // a resize. Handles are children of the target, so a hit on one is unambiguous; hittability comes from
+    // their SIZE (HANDLE_R, in world metres) instead.
+    _isHandle: function (obj, el) {
+      return !!(obj && obj.userData && obj.userData.grabHud && this._hud.el === el);
     },
 
     // ---- HUD (oriented highlight box + corner handles, parented to the target) --------------------
@@ -149,7 +142,10 @@
       var ws = new THREE.Vector3();
       el.object3D.getWorldScale(ws);
       var s = Math.max(1e-6, Math.max(ws.x, Math.max(ws.y, ws.z)));
-      var r = HANDLE_R / s;
+      // …but never let a handle swamp a SMALL object: capped at a quarter of the box's shortest side, so
+      // the corners can't grow over the body and start stealing body grabs again.
+      var size = box.getSize(new THREE.Vector3());
+      var r = Math.min(HANDLE_R / s, Math.min(size.x, Math.min(size.y, size.z)) * 0.25);
       var xs = [box.min.x, box.max.x], ys = [box.min.y, box.max.y], zs = [box.min.z, box.max.z];
       for (var a = 0; a < 2; a++) for (var b = 0; b < 2; b++) for (var c = 0; c < 2; c++) {
         var h = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 8), hmat);
@@ -189,8 +185,7 @@
     _begin: function (st, hit, origin, cq, dir) {
       var THREE = AFRAME.THREE, el = hit.el, obj = el.object3D;
       st.target = el;
-      var handle = this._pickHandle(origin, dir, el);
-      if (handle) {                            // grip on a corner handle → uniform resize
+      if (this._isHandle(hit.obj, el)) {       // gripped a corner handle itself → uniform resize
         st.mode = "scale";
         st.startScale = obj.scale.clone();
         obj.updateWorldMatrix(true, false);
