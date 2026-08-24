@@ -10,6 +10,11 @@
 //                              pushes/pulls. Surface-attached: slide on the surface plane. Grounded models:
 //                              slide on the floor, yaw only.
 //   • `resize` (trigger) on a corner handle → uniform resize (transform.scale), proportions preserved.
+//   • sticks, while holding a MODEL: `yaw` (right stick ←→) turns it about gravity-up; a FREE model also
+//     takes `pitch` (left stick ↕) and `bank` (left stick ←→), measured against the VIEWER — tip it away
+//     from you, roll it as you see it. Viewer-relative because nothing in a glTF says which way a model
+//     faces, so its own axes can't define pitch or bank. Images are excluded: turning a picture edge-on is
+//     only a way to lose it.
 //   • release                → commit.
 // `resize` shares the trigger with water's `select`; they coexist because we RESERVE the pointer while the
 // beam is on one of our handles, so the same control resizes there and ripples on the picture's body.
@@ -35,6 +40,7 @@
   var SCALE_REL_MIN = 0.02, SCALE_REL_MAX = 50.0;   // total size range vs. the object's original scale
   var BOX_TTL_MS = 500;                        // how long a cached selection box stays valid
   var HANDLE_SOFT = 0.06;                      // aim slop (m) for a corner when the ray hits nothing
+  var STICK_DEAD = 0.15;                       // stick deflection ignored (rest drift)
   var SCALE_DEAD = 0.02;                       // corner drag (m) ignored before a resize starts
   var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
   var ONE = null;   // set once AFRAME.THREE exists
@@ -54,7 +60,8 @@
   function amOwner() { var me = urlUser(), o = window.CONJURE_OWNER; return !me || !o || me === o; }
 
   AFRAME.registerComponent("grab", {
-    schema: { reelSpeed: { type: "number", default: 1.5 } },
+    schema: { reelSpeed: { type: "number", default: 1.5 },
+              rotateSpeed: { type: "number", default: 90 } },   // deg/sec at full deflection
 
     init: function () {
       var THREE = AFRAME.THREE; ONE = new THREE.Vector3(1, 1, 1);
@@ -333,7 +340,49 @@
       }
     },
 
-    _update: function (st, origin, cq, dir, thumbY, dt) {
+    // Stick-driven rotation of a held MODEL (never a flat image — turning a picture edge-on is just a way
+    // to lose it). Grounded models get YAW only, matching how they're re-solved: upright on the floor.
+    // Free models also get PITCH and BANK, measured against the VIEWER — tip away from you, roll as you see
+    // it. That's deliberate: nothing in a glTF records which way a model faces, so its own axes can't define
+    // pitch or bank, while the viewer's frame is well-defined for every model and from wherever you stand.
+    _stickRotate: function (st, p, dt) {
+      var el = st.target, obj = el.object3D;
+      if (!el.components || !el.components["gltf-model"]) return false;   // models only
+      var THREE = AFRAME.THREE, rate = (this.data.rotateSpeed || 90) * Math.PI / 180 * (dt / 1000);
+      var dz = function (v) { return Math.abs(v) < STICK_DEAD ? 0 : v; };
+      var yaw = dz(p.value("yaw")), moved = false;
+      if (yaw) {                                    // about gravity-up: unambiguous, needs no model facing
+        if (st.grounded) st.stickYaw = (st.stickYaw || 0) - yaw * rate;   // folded into its upright yaw
+        else this._spin(obj, new THREE.Vector3(0, 1, 0), -yaw * rate);    // push right → clockwise from above
+        moved = true;
+      }
+      if (st.grounded) return moved;                // grounded stays upright — yaw is the whole story
+      var cam = this.el.sceneEl && this.el.sceneEl.camera;
+      if (!cam) return moved;
+      var cq2 = cam.getWorldQuaternion(new THREE.Quaternion());
+      var pitch = dz(p.value("pitch")), bank = dz(p.value("bank"));
+      if (pitch) {                                  // about the viewer's RIGHT → tips away from / toward you
+        this._spin(obj, new THREE.Vector3(1, 0, 0).applyQuaternion(cq2).normalize(), -pitch * rate);
+        moved = true;
+      }
+      if (bank) {                                   // about the viewer's FORWARD → rolls as you see it
+        this._spin(obj, new THREE.Vector3(0, 0, -1).applyQuaternion(cq2).normalize(), -bank * rate);
+        moved = true;
+      }
+      return moved;
+    },
+
+    // Rotate `obj` about its OWN centre by `angle` around a world-space axis (position untouched).
+    _spin: function (obj, axis, angle) {
+      var THREE = AFRAME.THREE;
+      obj.updateWorldMatrix(true, false);
+      var pos = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
+      var q = obj.getWorldQuaternion(new THREE.Quaternion());
+      q.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, angle));
+      this._applyWorld(obj, new THREE.Matrix4().compose(pos, q, obj.scale.clone()));
+    },
+
+    _update: function (st, origin, cq, dir, p, dt) {
       var THREE = AFRAME.THREE, obj = st.target.object3D;
       if (st.mode === "scale") {
         // Where the ray points now, at the reach we grabbed at — i.e. where the user has dragged the corner
@@ -360,12 +409,13 @@
         return;
       }
       if (st.grounded) {                         // slide along the floor plane it rests on; yaw-only turn
+        this._stickRotate(st, p, dt);            // stick yaw folds into the upright yaw below
         if (dir.y > -1e-5) return;               // ray parallel/upward → it never meets the floor
         var tg = (st.groundY - origin.y) / dir.y;
         if (tg <= 0) return;
         var gp2 = origin.clone().add(dir.clone().multiplyScalar(tg));
         gp2.y = st.groundY;                      // stays ON the floor — never lifted or sunk
-        var yaw = new THREE.Euler().setFromQuaternion(cq, "YXZ").y + st.yawOff;
+        var yaw = new THREE.Euler().setFromQuaternion(cq, "YXZ").y + st.yawOff + (st.stickYaw || 0);
         var gq2 = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0, "YXZ"));  // upright
         this._applyWorld(obj, new THREE.Matrix4().compose(gp2, gq2, obj.scale));
         return;
@@ -390,9 +440,17 @@
         return;
       }
       // free rigid: reel first (push/pull along the controller's forward), then re-attach
-      if (thumbY) st.rel.elements[14] += thumbY * this.data.reelSpeed * (dt / 1000);
+      var reel = p.value("reel");
+      if (Math.abs(reel) > STICK_DEAD) st.rel.elements[14] += reel * this.data.reelSpeed * (dt / 1000);
       var ctrl = new THREE.Matrix4().compose(origin, cq, ONE);
       this._applyWorld(obj, ctrl.multiply(st.rel));
+      // Stick rotation applies AFTER the rigid follow, then the attachment is re-derived from the result —
+      // otherwise the next frame's follow would put the spin straight back where it was.
+      if (this._stickRotate(st, p, dt)) {
+        obj.updateWorldMatrix(true, false);
+        st.rel = new THREE.Matrix4()
+          .copy(new THREE.Matrix4().compose(origin, cq, ONE)).invert().multiply(obj.matrixWorld);
+      }
     },
 
     _commit: function (st) {
@@ -494,7 +552,7 @@
               this._commit(st); st.mode = "idle"; st.target = null;
               CP.release(p.key, "grab");                // hand the pointer back
             } else {
-              this._update(st, origin, cq, dir, p.value("reel"), dt);
+              this._update(st, origin, cq, dir, p, dt);
             }
           }
         }

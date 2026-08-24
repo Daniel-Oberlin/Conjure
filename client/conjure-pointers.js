@@ -116,24 +116,39 @@
     for (var k in prev) if (!live[k]) { delete prev[k]; delete captured[k]; delete reserved[k]; delete armedUntil[k]; }
     var was = {};
     for (var k2 in prev) was[k2] = prev[k2];
-    out.forEach(function (p) { p._was = was[p.key] || null; });
+    out.forEach(function (p) { p._was = was[p.key] || null; p._all = out; });
     prev = live;
     return out;
   }
 
   function makePointer(key, src, ctrl, origin, dir, quat, tip) {
     function ctl(action) { return bindings()[action] || action; }
-    return {
+    // Resolve a control, honouring a HAND-QUALIFIED binding like "left.stickY". A two-handed scheme —
+    // hold an object with one hand and shape it with the other hand's stick — otherwise can't be expressed
+    // in config, and would have to be hard-coded in the module, which is what this layer exists to avoid.
+    function raw(action) {
+      var c = ctl(action), dot = c.indexOf(".");
+      if (dot > 0) {
+        var hand = c.slice(0, dot), name = c.slice(dot + 1), all = self._all || [];
+        for (var i = 0; i < all.length; i++) {
+          if (all[i].handedness === hand) { var v = all[i].ctrl[name]; return v == null ? 0 : v; }
+        }
+        return 0;                                        // that hand isn't present right now
+      }
+      var own = ctrl[c];
+      return own == null ? 0 : own;
+    }
+    var self = {
       key: key, handedness: src.handedness || "", isHand: !!src.hand, source: src,
       origin: origin, dir: dir, quat: quat, fingertip: tip, ctrl: ctrl,
       // 0..1 for buttons, -1..1 for axes — resolved through the bindings, so callers name ACTIONS.
-      value: function (action) { var v = ctrl[ctl(action)]; return v == null ? 0 : v; },
+      value: function (action) { return raw(action); },
       active: function (action) { return this.value(action) >= ACTIVE_AT; },
-      started: function (action) {                       // rising edge this frame
+      started: function (action) {                       // rising edge this frame (own-hand controls)
         var c = ctl(action), now = ctrl[c] || 0, before = this._was ? (this._was[c] || 0) : 0;
         return now >= ACTIVE_AT && before < ACTIVE_AT;
       },
-      ended: function (action) {                         // falling edge this frame
+      ended: function (action) {                         // falling edge this frame (own-hand controls)
         var c = ctl(action), now = ctrl[c] || 0, before = this._was ? (this._was[c] || 0) : 0;
         return now < ACTIVE_AT && before >= ACTIVE_AT;
       },
@@ -147,10 +162,11 @@
       // Is ANY bound action engaged? Lets presentation (the beam) follow intent without knowing which.
       anyActive: function () {
         var b = bindings();
-        for (var a in b) { var v = ctrl[b[a]]; if (v != null && v >= ACTIVE_AT) return true; }
+        for (var a in b) { if (raw(a) >= ACTIVE_AT) return true; }
         return false;
       },
     };
+    return self;
   }
 
   function ownerOf(key) {

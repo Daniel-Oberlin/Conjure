@@ -7,7 +7,10 @@
   "actions": [
     "grab",
     "resize",
-    "reel"
+    "reel",
+    "yaw",
+    "pitch",
+    "bank"
   ],
   "default_pos": [
     0.0,
@@ -20,6 +23,11 @@
       "type": "number",
       "default": 1.5,
       "desc": "metres/sec the thumbstick reels a grabbed object in/out"
+    },
+    "rotateSpeed": {
+      "type": "number",
+      "default": 90,
+      "desc": "degrees/sec a held model turns at full stick deflection"
     }
   }
 }

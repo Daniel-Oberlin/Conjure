@@ -332,7 +332,12 @@ class Settings:
     #   select — primary "interact with content" (e.g. rippling a Water Picture)
     #   grab   — pick up / move an object          resize — scale it by a corner handle
     #   reel   — axis: push/pull a held object along the beam
-    bindings: str = '{"select":"trigger","grab":"grip","resize":"trigger","reel":"stickY"}'
+    #   yaw/pitch/bank — axes: turn a held MODEL. A control may name a hand ("left.stickY"),
+    #            so one hand can hold an object while the other shapes it. Pitch and bank are
+    #            VIEWER-relative (tip away from you / roll as you see it): nothing in a glTF
+    #            records which way a model faces, so its own axes can't define them.
+    bindings: str = ('{"select":"trigger","grab":"grip","resize":"trigger","reel":"stickY",'
+                     '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX"}')
 
 
 def get_settings() -> Settings:
@@ -396,5 +401,6 @@ def get_settings() -> Settings:
         beam_timeout=float(os.environ.get("CONJURE_BEAM_TIMEOUT", "10.0")),
         beam_trigger=float(os.environ.get("CONJURE_BEAM_TRIGGER", "0.05")),
         bindings=os.environ.get(
-            "CONJURE_BINDINGS", '{"select":"trigger","grab":"grip","resize":"trigger","reel":"stickY"}'),
+            "CONJURE_BINDINGS", '{"select":"trigger","grab":"grip","resize":"trigger","reel":"stickY",'
+            '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX"}'),
     )
