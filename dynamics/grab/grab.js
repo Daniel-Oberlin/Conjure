@@ -23,7 +23,10 @@
 
   var HILITE = 0x66ccff, HANDLE = 0xffcc33, HANDLE_R = 0.02;   // handle sphere radius, WORLD metres (_setHud
   //                                                              divides out the target's scale)
-  var SCALE_MIN = 0.05, SCALE_MAX = 50.0;
+  var SCALE_MIN = 0.05, SCALE_MAX = 50.0;      // absolute clamp on the resulting transform.scale
+  var HANDLE_PICK = 0.06;                      // world metres of aim slop around a corner handle
+  var SCALE_REF = 0.5;                         // hand travel (m) that doubles/halves the size
+  var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
   var ONE = null;   // set once AFRAME.THREE exists
 
   // Diagnostics → console + the world server's /client_log (same temp/conjure.log as [water]/[room]), gated
@@ -89,12 +92,23 @@
       return best;
     },
 
-    // A corner handle of the current HUD (if it belongs to `el`) under the ray → the handle mesh, or null.
+    // The corner handle of the current HUD nearest the ray → the handle mesh, or null. Uses ray-to-POINT
+    // distance with `HANDLE_PICK` slop rather than an exact sphere intersection: a 2 cm sphere at arm's
+    // length is a punishing target, and a miss fell through to a BODY grab — so resize felt unreachable,
+    // while the occasional lucky catch produced a wild resize. Aiming NEAR a corner is now enough.
     _pickHandle: function (origin, dir, el) {
       if (!this._hud.el || this._hud.el !== el || !this._hud.handles.length) return null;
+      var THREE = AFRAME.THREE;
       this._ray.set(origin, dir);
-      var hits = this._ray.intersectObjects(this._hud.handles, false);
-      return hits.length ? hits[0].object : null;
+      var best = null, bestD = HANDLE_PICK, p = new THREE.Vector3();
+      for (var i = 0; i < this._hud.handles.length; i++) {
+        var h = this._hud.handles[i];
+        h.getWorldPosition(p);
+        if (p.clone().sub(origin).dot(dir) <= 0) continue;        // behind the controller — not aimed at
+        var d = this._ray.ray.distanceToPoint(p);
+        if (d < bestD) { bestD = d; best = h; }
+      }
+      return best;
     },
 
     // ---- HUD (oriented highlight box + corner handles, parented to the target) --------------------
@@ -230,7 +244,11 @@
     _update: function (st, origin, cq, dir, thumbY, dt) {
       var THREE = AFRAME.THREE, obj = st.target.object3D;
       if (st.mode === "scale") {
-        var f = origin.distanceTo(st.center) / st.startDist;
+        // Linear in HAND TRAVEL, not a distance RATIO. The ratio form (d/d0) explodes when you grab close
+        // to an object — grabbing at 0.5 m and pulling back 1 m was a 3× jump, and a momentary accidental
+        // catch ballooned a model ~10×. Now ~SCALE_REF metres of travel doubles it, clamped per gesture.
+        var f = 1 + (origin.distanceTo(st.center) - st.startDist) / SCALE_REF;
+        f = Math.min(SCALE_F_MAX, Math.max(SCALE_F_MIN, f));
         var s = st.startScale.clone().multiplyScalar(f);
         s.set(Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.x)),
               Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.y)),
