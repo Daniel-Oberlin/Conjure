@@ -782,7 +782,16 @@
     // when its wall moved) must update the anchor SOURCE too, else _placeContent re-solves the stale pose.
     if (el._frefPose && path === "transform.position") el._frefPose.position = value;
     if (el._frefPose && path === "transform.rotation") el._frefPose.rotation = value;
-    if (path === "meta.anchor") el._anchor = value || null;    // server re-anchored (moved) content (§7c)
+    if (path === "meta.anchor") {                              // server re-anchored (moved) content (§7c)
+      el._anchor = value || null;
+      solveContentNow(el);              // land it NOW in our own frame, not at the next capture
+    }
+    // ANCHORED content's rendered pose belongs to the local anchor solve (_placeContent / solveContentNow):
+    // the server stores F_ref, we render F_track, so applying its raw transform literally teleports the
+    // object by this client's registration offset until the next capture corrects it — the "disappears for
+    // a second, then comes back" flicker after a grab. Keep the anchor SOURCE (above) and skip the render.
+    // Same principle as the GEO_PATHS gate for real surfaces: local render owns local geometry.
+    if (el._anchor && (path === "transform.position" || path === "transform.rotation")) return;
     if (path === "meta.surface_offset") el._surfaceOffset = value || null;   // §7c-B2 re-anchor
     if (path === "components.material.visible") {       // real-surface visibility → entity attribute
       el.dataset.matVisible = String(value);
@@ -969,6 +978,19 @@
   // anchor from the dragged pose against the LOCAL walls, then solve it against the SEED walls.
   // Returns null when there's no basis (no room captured yet / void world) — the frames coincide there,
   // so the caller should commit the raw pose.
+  // Re-place ONE anchored entity right now, using the plane basis cached by the last capture — instead of
+  // waiting up to a capture interval for _placeContent to come round. Used when the server sends a new
+  // meta.anchor (a grab commit, a director move) so the object lands correctly on the spot, with no
+  // intermediate wrong pose. Returns false when there's no basis yet (caller leaves the pose alone).
+  function solveContentNow(el) {
+    var PA = window.PlaneAnchor, lp = framePlanes.local;
+    if (!PA || !lp || lp.length < 2 || !el._anchor || !el.object3D) return false;
+    var sol = PA.solveAnchor(AFRAME.THREE, el._anchor, lp);
+    if (!sol || !sol.ok) return false;
+    placeContent(el, sol.position, sol.quaternion);
+    return true;
+  }
+
   window.ConjureFrames = {
     toRef: function (position, quaternion, mode) {
       var PA = window.PlaneAnchor, lp = framePlanes.local, rp = framePlanes.ref;

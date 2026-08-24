@@ -27,6 +27,7 @@
   //                                                              _isHandle), so the size is the target.
   var SCALE_MIN = 0.05, SCALE_MAX = 50.0;      // absolute clamp on the resulting transform.scale
   var SCALE_REF = 0.5;                         // hand travel (m) that doubles/halves the size
+  var SCALE_DEAD = 0.04;                       // hand travel (m) ignored before a resize starts
   var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
   var ONE = null;   // set once AFRAME.THREE exists
 
@@ -242,8 +243,12 @@
         // Linear in HAND TRAVEL, not a distance RATIO. The ratio form (d/d0) explodes when you grab close
         // to an object — grabbing at 0.5 m and pulling back 1 m was a 3× jump, and a momentary accidental
         // catch ballooned a model ~10×. Now ~SCALE_REF metres of travel doubles it, clamped per gesture.
-        var f = 1 + (origin.distanceTo(st.center) - st.startDist) / SCALE_REF;
-        f = Math.min(SCALE_F_MAX, Math.max(SCALE_F_MIN, f));
+        // Dead zone first: ignore the opening few cm so closing your hand on a corner (or ordinary hand
+        // tremor) doesn't resize on contact — the size should only move when you deliberately pull or push.
+        var travel = origin.distanceTo(st.center) - st.startDist;
+        travel = travel > SCALE_DEAD ? travel - SCALE_DEAD
+               : (travel < -SCALE_DEAD ? travel + SCALE_DEAD : 0);
+        var f = Math.min(SCALE_F_MAX, Math.max(SCALE_F_MIN, 1 + travel / SCALE_REF));
         var s = st.startScale.clone().multiplyScalar(f);
         s.set(Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.x)),
               Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.y)),
@@ -310,7 +315,8 @@
         rotation: [e.x * R, e.y * R, e.z * R],
         scale: [obj.scale.x, obj.scale.y, obj.scale.z] };
       glog("commit " + st.target.id + " frame=" + (conv ? "ref" : "local")
-        + " pos=" + pos.x.toFixed(2) + "," + pos.y.toFixed(2) + "," + pos.z.toFixed(2));
+        + " pos=" + pos.x.toFixed(2) + "," + pos.y.toFixed(2) + "," + pos.z.toFixed(2)
+        + " scale=" + obj.scale.x.toFixed(4));
       fetch("/manipulate", { method: "POST",
         headers: { "Content-Type": "application/json", "X-Conjure-User": urlUser() || "" },
         body: JSON.stringify(body) }).catch(function () { /* local state stands; a snapshot will reconcile */ });
