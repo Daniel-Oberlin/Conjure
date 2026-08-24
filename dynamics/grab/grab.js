@@ -204,8 +204,13 @@
         // scale never moving). Instead hold the reach along the ray fixed and track where it now points:
         // how far that lands from the centre, versus where the corner started, IS the size ratio.
         st.grabDist = Math.max(1e-3, hit.dist);                        // reach along the ray, held constant
-        st.cornerR0 = Math.max(1e-4,
-          hit.obj.getWorldPosition(new THREE.Vector3()).distanceTo(st.center));
+        var hp0 = hit.obj.getWorldPosition(new THREE.Vector3());
+        st.cornerR0 = Math.max(1e-4, hp0.distanceTo(st.center));
+        // The outward direction of the corner we grabbed. Progress is measured SIGNED along this axis, so
+        // dragging toward the object keeps shrinking it straight through the centre and out the far side.
+        // An unsigned distance bounced: it fell to zero at the centre and then GREW again while the hand
+        // carried on the same way — "smaller, then bigger again".
+        st.axis = hp0.clone().sub(st.center).normalize();
         // A GROUNDED model must keep its BASE on the floor while resizing — scaling about the origin would
         // otherwise sink it or leave it hovering until the next capture re-grounds it. Remember where the
         // floor is (base = origin.y + boxMin.y × worldScale) so _update can re-seat it at any new size.
@@ -258,7 +263,7 @@
         // to. Its distance from the centre vs. the corner's original distance is the size ratio, so the
         // gesture reads as "pull the corner out to grow, push it in to shrink" from any direction.
         var at = origin.clone().add(dir.clone().multiplyScalar(st.grabDist));
-        var reach = at.distanceTo(st.center) - st.cornerR0;
+        var reach = at.clone().sub(st.center).dot(st.axis) - st.cornerR0;   // SIGNED along the corner axis
         // Dead zone: ignore the opening centimetres so closing your hand on a corner (or ordinary tremor)
         // doesn't resize on contact — only a deliberate drag does.
         reach = reach > SCALE_DEAD ? reach - SCALE_DEAD
