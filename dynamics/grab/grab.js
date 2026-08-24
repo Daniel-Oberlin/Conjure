@@ -25,6 +25,16 @@
   var SCALE_MIN = 0.05, SCALE_MAX = 50.0;
   var ONE = null;   // set once AFRAME.THREE exists
 
+  // Diagnostics → console + the world server's /client_log (same temp/conjure.log as [water]/[room]), gated
+  // by CONJURE_DEBUG_LOG. XR interaction can't be unit-tested, so on-device tracing is the only way to see
+  // what this module is doing — a silent failure here is indistinguishable from "not conjured".
+  function glog(msg) {
+    if (!window.CONJURE_DEBUG_LOG) return;
+    try { console.log("[grab] " + msg); } catch (e) {}
+    try { fetch("/client_log", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag: "grab", msg: msg }) }).catch(function () {}); } catch (e) {}
+  }
+
   function urlUser() { return new URLSearchParams(location.search).get("user") || ""; }
   // Empty user or unknown owner ⇒ treated as owner (matches the server's missing-header rule).
   function amOwner() { var me = urlUser(), o = window.CONJURE_OWNER; return !me || !o || me === o; }
@@ -38,6 +48,15 @@
       this._ctrl = {};                       // per-controller state: { mode, target, ... }
       this._hud = { el: null, group: null, handles: [] };
       this._hinted = 0;
+      this._seen = {};                       // one-shot diagnostic latches (see _once)
+      glog("init — owner=" + amOwner() + " (point at an object and squeeze GRIP to move it)");
+    },
+
+    // Log `msg` the FIRST time this `key` fires — a per-frame trace would flood the log.
+    _once: function (key, msg) {
+      if (this._seen[key]) return;
+      this._seen[key] = 1;
+      glog(msg);
     },
 
     // ---- manipulable discovery -------------------------------------------------------------------
@@ -233,10 +252,12 @@
         var frame = sc.frame, refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
         var session = xr && xr.getSession && xr.getSession();
         if (!session || !frame || !refSpace) { this._setHud(null); return; }
+        this._once("xr", "XR session live — " + this._manipulables().length + " manipulable object(s) in world-root");
         var THREE = AFRAME.THREE, sources = session.inputSources || [], hover = null;
         for (var i = 0; i < sources.length; i++) {
           var src = sources[i];
           if (src.hand || !src.targetRaySpace || !src.gamepad) continue;
+          this._once("ctrl", "controller seen (" + (src.handedness || i) + ") — grip to grab");
           var pp = frame.getPose(src.targetRaySpace, refSpace);
           if (!pp) continue;
           var key = src.handedness || ("c" + i);
@@ -251,19 +272,24 @@
 
           if (st.mode === "idle") {
             var hit = this._pick(origin, dir);
-            if (hit) hover = hit.el;
+            if (hit) { hover = hit.el; this._once("hover", "first hover: " + hit.el.id + " at " + hit.dist.toFixed(2) + " m"); }
+            if (pressed) this._once("grip", "grip pressed — hit=" + (hit ? hit.el.id : "nothing"));
             if (pressed && hit) {
               if (!amOwner()) this._hint();
-              else { this._begin(st, hit, origin, cq, dir); hover = st.target; }
+              else { this._begin(st, hit, origin, cq, dir); hover = st.target; glog("grab " + hit.el.id + " mode=" + st.mode); }
             }
           } else {
             hover = st.target;
-            if (!pressed) { this._commit(st); st.mode = "idle"; st.target = null; }
+            if (!pressed) { glog("release " + st.target.id + " → commit"); this._commit(st); st.mode = "idle"; st.target = null; }
             else this._update(st, origin, cq, dir, thumbY, dt);
           }
         }
         this._setHud(hover);
-      } catch (e) { /* never break the render loop over a manipulation */ }
+      } catch (e) {
+        // Never break the render loop over a manipulation — but SAY SO once. Swallowing silently makes a
+        // broken module look identical to one that was never conjured.
+        this._once("err", "tick error: " + (e && (e.stack || e.message) ? (e.stack || e.message) : e));
+      }
     },
 
     remove: function () { this._clearHud(); this._ctrl = {}; }
