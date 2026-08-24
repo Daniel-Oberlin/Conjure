@@ -47,8 +47,21 @@
   }
   function bindings() { return window.CONJURE_BINDINGS || FALLBACK; }
 
-  var cache = { frame: null, list: [] };
+  var COALESCE_MS = 4;         // one read per frame across modules, without trusting XRFrame identity
+  var cache = { frame: null, list: [], t: 0 };
   var prev = {};               // key → last frame's control values, for rising/falling edges
+  var seen = {};               // one-shot diagnostic latches
+
+  // Diagnostics → console + temp/conjure.log, like [water]/[grab]. This layer failing silently is
+  // indistinguishable from "no controllers in range", and every module downstream goes dead with it, so it
+  // says WHY it produced nothing rather than swallowing it.
+  function plog(msg) {
+    if (!window.CONJURE_DEBUG_LOG) return;
+    try { console.log("[pointers] " + msg); } catch (e) {}
+    try { fetch("/client_log", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag: "pointers", msg: msg }) }).catch(function () {}); } catch (e) {}
+  }
+  function once(key, msg) { if (seen[key]) return; seen[key] = 1; plog(msg); }
 
   function build(frame, refSpace, session) {
     var THREE = AFRAME.THREE, out = [], sources = session.inputSources || [];
@@ -121,10 +134,30 @@
       var frame = sceneEl && sceneEl.frame;
       var refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
       var session = xr && xr.getSession && xr.getSession();
-      if (!frame || !refSpace || !session) { cache.frame = null; cache.list = []; return cache.list; }
-      if (cache.frame === frame) return cache.list;
-      cache.frame = frame;
-      try { cache.list = build(frame, refSpace, session); } catch (e) { cache.list = []; }
+      if (!frame || !refSpace || !session) {
+        // Distinct latches so the log separates "not in AR yet" (expected on the 2D page) from "in AR but
+        // still getting nothing", which would be a real fault.
+        once(session ? (frame ? "norefspace" : "noframe") : "nosession",
+          "no pointers — scene=" + !!sceneEl + " renderer=" + !!(sceneEl && sceneEl.renderer)
+          + " session=" + !!session + " frame=" + !!frame + " refSpace=" + !!refSpace);
+        cache.frame = null; cache.list = []; return cache.list;
+      }
+      // Coalesce the several modules that ask each frame into ONE read — but never assume the browser
+      // hands us a fresh XRFrame OBJECT every frame. If it reuses one, an identity-only cache never
+      // invalidates and every consumer sees the first frame's buttons forever (beam never arms, nothing
+      // grabs). So require identity AND recency: at 90 Hz frames are ~11 ms apart, so a few ms of slack
+      // coalesces within a frame while always rebuilding on the next one.
+      var t = (window.performance && performance.now) ? performance.now() : Date.now();
+      if (cache.frame === frame && (t - cache.t) < COALESCE_MS) return cache.list;
+      cache.frame = frame; cache.t = t;
+      try {
+        cache.list = build(frame, refSpace, session);
+        once("built", "live — " + (session.inputSources || []).length + " input source(s) → "
+          + cache.list.length + " pointer(s); bindings=" + JSON.stringify(bindings()));
+      } catch (e) {
+        cache.list = [];
+        once("err", "build failed: " + (e && (e.stack || e.message) ? (e.stack || e.message) : e));
+      }
       return cache.list;
     },
     /** Controllers only (skip tracked hands) — the common case for ray-driven interaction. */
