@@ -782,6 +782,10 @@
     // when its wall moved) must update the anchor SOURCE too, else _placeContent re-solves the stale pose.
     if (el._frefPose && path === "transform.position") el._frefPose.position = value;
     if (el._frefPose && path === "transform.rotation") el._frefPose.rotation = value;
+    // The server moved content whose pose we own locally → re-solve from the NEW F_ref pose right now, so
+    // it lands correctly instead of showing the raw F_ref pose until the next capture.
+    if ((path === "transform.position" || path === "transform.rotation") && contentPoseIsLocal(el)
+        && !el._onSurface) solveContentNow(el);
     if (path === "meta.anchor") {                              // server re-anchored (moved) content (§7c)
       el._anchor = value || null;
       solveContentNow(el);              // land it NOW in our own frame, not at the next capture
@@ -791,9 +795,11 @@
     // object by this client's registration offset until the next capture corrects it — the "disappears for
     // a second, then comes back" flicker after a grab. Keep the anchor SOURCE (above) and skip the render.
     // Same principle as the GEO_PATHS gate for real surfaces: local render owns local geometry.
-    // …and the same for SURFACE-ATTACHED content, whose rendered pose is host_local · surface_offset
-    // (the _onSurface branch of _placeContent). Its committed transform is likewise F_ref.
-    if ((el._anchor || el._onSurface) && (path === "transform.position" || path === "transform.rotation")) return;
+    // …which covers every kind _placeContent owns: anchored, surface-attached (host · surface_offset), AND
+    // plain free-standing content solved from its F_ref pose. Missing that last case is why a free-standing
+    // image still flashed to the wrong spot on release. When there's NO local basis (void/outdoor world)
+    // contentPoseIsLocal is false and the server transform is applied as usual.
+    if (contentPoseIsLocal(el) && (path === "transform.position" || path === "transform.rotation")) return;
     if (path === "meta.surface_offset") {                      // §7c-B2 re-anchor
       el._surfaceOffset = value || null;
       rideHostNow(el);                  // land it on the host NOW, not at the next capture
@@ -988,12 +994,35 @@
   // meta.anchor (a grab commit, a director move) so the object lands correctly on the spot, with no
   // intermediate wrong pose. Returns false when there's no basis yet (caller leaves the pose alone).
   function solveContentNow(el) {
-    var PA = window.PlaneAnchor, lp = framePlanes.local;
-    if (!PA || !lp || lp.length < 2 || !el._anchor || !el.object3D) return false;
-    var sol = PA.solveAnchor(AFRAME.THREE, el._anchor, lp);
+    var PA = window.PlaneAnchor, THREE = AFRAME.THREE;
+    var lp = framePlanes.local, rp = framePlanes.ref;
+    if (!PA || !lp || lp.length < 2 || !el.object3D) return false;
+    var sol;
+    if (el._anchor) {
+      sol = PA.solveAnchor(THREE, el._anchor, lp);
+    } else {
+      // Legacy/un-anchored content: author from its F_ref pose against the SEED walls, then solve against
+      // ours — the same fallback _placeContent uses, so we land it exactly where the next capture would.
+      var fp = el._frefPose;
+      if (!fp || !rp || rp.length < 2) return false;
+      sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, {
+        mode: el._placement || "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
+        position: new THREE.Vector3(fp.position[0] || 0, fp.position[1] || 0, fp.position[2] || 0),
+      }, rp), lp);
+    }
     if (!sol || !sol.ok) return false;
     placeContent(el, sol.position, sol.quaternion);
     return true;
+  }
+
+  // Is this element's rendered pose owned by the local solve (_placeContent) rather than by the server's
+  // raw transform? True for director-placed content once we have a basis to solve against: surface-attached
+  // content needs its host rendered; anchored/free content needs local walls. When there's no basis (a void
+  // or outdoor world, or before the first capture) the server transform IS the pose, and must be applied.
+  function contentPoseIsLocal(el) {
+    if (!el._frefPose) return false;
+    if (el._onSurface) return !!document.getElementById(el._onSurface);
+    return !!(framePlanes.local && framePlanes.local.length >= 2);
   }
 
   // Re-seat SURFACE-ATTACHED content on its host right now: content_world = host · surface_offset (the
