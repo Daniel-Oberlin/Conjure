@@ -50,37 +50,28 @@
 
     tick: function () {
       try {
-        var sc = this.el.sceneEl, xr = sc.renderer && sc.renderer.xr;
-        var frame = sc.frame, refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
-        var session = xr && xr.getSession && xr.getSession();
-        if (!session || !frame || !refSpace) { this._hideAll(); return; }
+        var CP = window.ConjurePointers;
+        var pointers = CP ? CP.controllers(this.el.sceneEl) : [];
+        if (!pointers.length) { this._hideAll(); return; }
 
         var now = (window.performance && performance.now) ? performance.now() : Date.now();
         var thresh = +window.CONJURE_BEAM_TRIGGER; if (!(thresh >= 0)) thresh = 0.05;
         var lingerMs = +window.CONJURE_BEAM_MS; if (!(lingerMs >= 0)) lingerMs = 0;   // from settings only
 
-        var sources = session.inputSources || [], live = {};
-        for (var i = 0; i < sources.length; i++) {
-          var src = sources[i];
-          if (src.hand || !src.targetRaySpace || !src.gamepad) continue;   // controllers only (skip hands)
-          var key = src.handedness || ("c" + i);
+        var live = {};
+        for (var i = 0; i < pointers.length; i++) {
+          var p = pointers[i], key = p.key;
           live[key] = true;
           var b = this._beams[key] || (this._beams[key] = { mesh: this._makeBeam(), activeUntil: 0 });
-
-          var trig = src.gamepad.buttons && src.gamepad.buttons[0];        // xr-standard: button 0 = trigger
-          var val = trig ? (trig.value != null ? trig.value : (trig.pressed ? 1 : 0)) : 0;
-          if (val >= thresh) b.activeUntil = now + lingerMs;               // (re)arm the linger on any pull
+          // Arm on a light pull of the SELECT action, or on ANY bound action being engaged — so the beam
+          // also stays lit while you're grabbing or resizing, instead of vanishing mid-gesture (it used to
+          // watch the trigger alone). Presentation follows intent without knowing which action it is.
+          if (p.value("select") >= thresh || p.anyActive()) b.activeUntil = now + lingerMs;
 
           var on = now < b.activeUntil;
           if (on) {
-            var pp = frame.getPose(src.targetRaySpace, refSpace);
-            if (pp) {
-              var p = pp.transform.position, q = pp.transform.orientation;
-              b.mesh.position.set(p.x, p.y, p.z);
-              b.mesh.quaternion.set(q.x, q.y, q.z, q.w);
-            } else {
-              on = false;                                                  // no pose this frame → don't draw stale
-            }
+            b.mesh.position.copy(p.origin);
+            b.mesh.quaternion.copy(p.quat);
           }
           b.mesh.visible = on;
         }

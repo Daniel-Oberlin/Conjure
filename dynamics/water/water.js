@@ -206,19 +206,19 @@
       return (u >= 0 && u <= 1 && vv >= 0 && vv <= 1) ? { x: u, y: vv } : null;
     },
 
-    // Both input paths: fingertip proximity (hand tracking) OR controller ray + trigger.
-    _scanInputs: function (frame, refSpace, session) {
-      var sources = session.inputSources || [];
-      for (var i = 0; i < sources.length; i++) {
-        var src = sources[i], key = (src.handedness || i) + (src.hand ? ":hand" : ":ctrl"), uv = null;
-        if (src.hand) {
-          var tip = src.hand.get && src.hand.get("index-finger-tip");
-          var jp = tip && frame.getJointPose && frame.getJointPose(tip, refSpace);
-          if (jp) uv = this._toUV(jp.transform.position, true);
-        } else if (src.targetRaySpace && src.gamepad && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed) {
-          if (!this._trigLogged) { this._trigLogged = true; wlog("controller trigger seen (" + key + ")"); }
-          var pp = frame.getPose(src.targetRaySpace, refSpace);
-          if (pp) uv = this._rayUV(pp.transform);
+    // Both input paths: fingertip proximity (hand tracking) OR a controller ray while `select` is held.
+    // Input arrives from the shared reader as ACTIONS, not buttons (client/conjure-pointers.js), so which
+    // control means "interact" is config — this module never names one.
+    _scanInputs: function () {
+      var CP = window.ConjurePointers;
+      var pointers = CP ? CP.list(this.el.sceneEl) : [];
+      for (var i = 0; i < pointers.length; i++) {
+        var p = pointers[i], key = p.key, uv = null;
+        if (p.isHand) {
+          if (p.fingertip) uv = this._toUV(p.fingertip, true);
+        } else if (p.active("select")) {
+          if (!this._trigLogged) { this._trigLogged = true; wlog("select held (" + key + ")"); }
+          uv = this._rayUV({ position: p.origin, orientation: p.quat });
         }
         if (uv) {
           if (!this._touchLogged) { this._touchLogged = true; wlog("touch " + key + " uv=" + uv.x.toFixed(2) + "," + uv.y.toFixed(2)); }
@@ -236,10 +236,7 @@
     tick: function () {
       if (this._dead) return;                                   // a prior crash disabled us — don't spam
       try {
-        var sc = this.el.sceneEl, xr = sc.renderer && sc.renderer.xr;
-        var frame = sc.frame, refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
-        var session = xr && xr.getSession && xr.getSession();
-        if (frame && refSpace && session) this._scanInputs(frame, refSpace, session);
+        this._scanInputs();   // the shared reader knows whether we're in a session (empty list if not)
 
         // Idle when the water is still: a touch (re)opens a settle window; outside it we skip ALL GPU work
         // (the field is settled/flat and the display just shows the last state). New touches wake it up.

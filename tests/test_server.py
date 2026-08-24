@@ -2661,3 +2661,18 @@ def test_manipulate_stores_a_client_anchor_on_previously_unanchored_content(srv,
     client.post("/manipulate", json={"id": "ent_free_img", "position": [0.4, 1.5, -1.6], "anchor": mine})
     e = next(x for x in _entities(client) if x["id"] == "ent_free_img")
     assert e["meta"]["anchor"] == mine
+
+
+def test_index_injects_pointer_bindings_and_the_shared_reader(srv, client):
+    import dataclasses
+    html = client.get("/").text
+    assert '<script src="/static/conjure-pointers.js?v=' in html      # the single XR input reader
+    # Control→action bindings are config, so re-binding (e.g. resize onto the trigger) needs no module edit.
+    assert '"resize":"grip"' in html and '"select":"trigger"' in html
+    rebound = '{"select":"trigger","grab":"grip","resize":"trigger","reel":"stickY"}'
+    monkey = dataclasses.replace(srv.settings, bindings=rebound)
+    srv.settings, old = monkey, srv.settings
+    try:
+        assert '"resize":"trigger"' in client.get("/").text
+    finally:
+        srv.settings = old

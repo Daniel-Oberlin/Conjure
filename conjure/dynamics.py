@@ -82,6 +82,10 @@ class DynamicModuleDef:
     default_pos: list[float] = field(default_factory=lambda: [0.0, 1.3, -1.5])
     description: str = ""                                 # one line → the director catalog
     config_schema: dict = field(default_factory=dict)    # {param: {type, default, desc}} the LLM may set
+    actions: list[str] = field(default_factory=list)     # XR actions the module consumes (select/grab/
+    #                                                      resize/reel). Declarative like config_schema:
+    #                                                      a module names ACTIONS, never buttons — the
+    #                                                      control→action map is config (Settings.bindings).
 
     def catalog_line(self) -> str:
         """One director-catalog row: `name — description; params: k(default)…` (decision 1). Params come
@@ -145,6 +149,7 @@ def load_module(name: str, *, dynamics_dir: Optional[Path] = None,
         singleton=bool(data.get("singleton", False)), face_user=bool(data.get("face_user", False)),
         default_pos=default_pos, description=data.get("description", ""),
         config_schema=dict(data.get("config_schema") or {}),
+        actions=list(data.get("actions") or []),
     )
 
 

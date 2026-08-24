@@ -1054,10 +1054,11 @@ async def index() -> HTMLResponse:
     om = int((CLIENT_DIR / "occlusion.js").stat().st_mtime)      # real-world depth occlusion (--occlusion)
     ckm = int((CLIENT_DIR / "conjure-clock.js").stat().st_mtime)  # shared clock (dynamic-content spine)
     bmm = int((CLIENT_DIR / "controller-beams.js").stat().st_mtime)  # controller pointer beams
+    ptm = int((CLIENT_DIR / "conjure-pointers.js").stat().st_mtime)  # unified XR input + action bindings
     # Dynamic modules are now discovered + scoped to the ACTIVE agent (docs/dynamic-modules-refactor-plan.md):
     # inject a <script> per module from its folder, mtime-stamped so a code change busts the cache.
     dyn_tags, dyn_mtimes = _dynamic_module_tags()
-    v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm, bmm, *dyn_mtimes)  # badge reflects the newest of the scripts
+    v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm, bmm, ptm, *dyn_mtimes)  # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
     html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
     html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
@@ -1067,6 +1068,7 @@ async def index() -> HTMLResponse:
     html = html.replace("/static/occlusion.js", f"/static/occlusion.js?v={om}")
     html = html.replace("/static/conjure-clock.js", f"/static/conjure-clock.js?v={ckm}")
     html = html.replace("/static/controller-beams.js", f"/static/controller-beams.js?v={bmm}")
+    html = html.replace("/static/conjure-pointers.js", f"/static/conjure-pointers.js?v={ptm}")
     html = html.replace("    <!-- __DYNAMIC_MODULES__", dyn_tags + "    <!-- __DYNAMIC_MODULES__")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     # Tell the client which diagnostics are on so it doesn't POST/HUD when off. debug_log gates general
@@ -1106,6 +1108,7 @@ async def index() -> HTMLResponse:
                         f"window.CONJURE_FOVEATION={settings.foveation};"
                         f"window.CONJURE_BEAM_MS={int(settings.beam_timeout * 1000)};"
                         f"window.CONJURE_BEAM_TRIGGER={settings.beam_trigger};"
+                        f"window.CONJURE_BINDINGS={settings.bindings};"
                         f'window.CONJURE_OCCLUSION="{settings.occlusion}";'
                         f'window.CONJURE_WORKER_URL="/static/room-worker.js?v={v}";</script>\n  </head>')
     return HTMLResponse(html, headers=_NO_STORE)
@@ -1158,6 +1161,12 @@ async def world_model_js() -> FileResponse:
 async def grounded_skybox_js() -> FileResponse:
     # Explicit no-store route for the grounded-skybox module (loaded before conjure-client.js).
     return FileResponse(CLIENT_DIR / "grounded-skybox.js", media_type="application/javascript", headers=_NO_STORE)
+
+
+@app.get("/static/conjure-pointers.js")
+async def conjure_pointers_js() -> FileResponse:
+    # Explicit no-store route for the unified XR input layer (loaded before every module that reads input).
+    return FileResponse(CLIENT_DIR / "conjure-pointers.js", media_type="application/javascript", headers=_NO_STORE)
 
 
 @app.get("/static/controller-beams.js")

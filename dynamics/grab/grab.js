@@ -193,7 +193,7 @@
     _begin: function (st, hit, origin, cq, dir) {
       var THREE = AFRAME.THREE, el = hit.el, obj = el.object3D;
       st.target = el;
-      if (this._isHandle(hit.obj, el)) {       // gripped a corner handle itself → uniform resize
+      if (st.action === "resize") {            // the caller already decided, from what the beam is on
         st.mode = "scale";
         st.startScale = obj.scale.clone();
         // The size it was FIRST seen at, remembered on the element — the band the relative clamp works in,
@@ -380,40 +380,45 @@
 
     tick: function (time, dt) {
       try {
-        var sc = this.el.sceneEl, xr = sc.renderer && sc.renderer.xr;
-        var frame = sc.frame, refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
-        var session = xr && xr.getSession && xr.getSession();
-        if (!session || !frame || !refSpace) { this._setHud(null); return; }
+        // Input comes from the shared reader, in ACTIONS not buttons (see client/conjure-pointers.js), so
+        // the control scheme is config (window.CONJURE_BINDINGS) rather than something baked in here.
+        var CP = window.ConjurePointers;
+        var pointers = CP ? CP.controllers(this.el.sceneEl) : [];
+        if (!pointers.length) { this._setHud(null); return; }
         this._once("xr", "XR session live — " + this._manipulables().length + " manipulable object(s) in world-root");
-        var THREE = AFRAME.THREE, sources = session.inputSources || [], hover = null;
-        for (var i = 0; i < sources.length; i++) {
-          var src = sources[i];
-          if (src.hand || !src.targetRaySpace || !src.gamepad) continue;
-          this._once("ctrl", "controller seen (" + (src.handedness || i) + ") — grip to grab");
-          var pp = frame.getPose(src.targetRaySpace, refSpace);
-          if (!pp) continue;
-          var key = src.handedness || ("c" + i);
-          var o = pp.transform.position, q = pp.transform.orientation;
-          var cq = new THREE.Quaternion(q.x, q.y, q.z, q.w);
-          var origin = new THREE.Vector3(o.x, o.y, o.z);
-          var dir = new THREE.Vector3(0, 0, -1).applyQuaternion(cq).normalize();
-          var grip = src.gamepad.buttons[1];         // xr-standard mapping: button 1 = grip/squeeze
-          var pressed = !!(grip && (grip.pressed || grip.value > 0.5));
-          var thumbY = (src.gamepad.axes && src.gamepad.axes.length >= 4) ? src.gamepad.axes[3] : 0;
-          var st = this._ctrl[key] || (this._ctrl[key] = { mode: "idle", target: null });
+        var hover = null;
+        for (var i = 0; i < pointers.length; i++) {
+          var p = pointers[i], origin = p.origin, dir = p.dir, cq = p.quat;
+          this._once("ctrl", "controller seen (" + p.key + ")");
+          var st = this._ctrl[p.key] || (this._ctrl[p.key] = { mode: "idle", target: null });
 
           if (st.mode === "idle") {
             var hit = this._pick(origin, dir);
             if (hit) { hover = hit.el; this._once("hover", "first hover: " + hit.el.id + " at " + hit.dist.toFixed(2) + " m"); }
-            if (pressed) this._once("grip", "grip pressed — hit=" + (hit ? hit.el.id : "nothing"));
-            if (pressed && hit) {
+            // The two gestures are separate ACTIONS, chosen by what the beam is on: a corner handle resizes,
+            // the body moves. Both are bound to grip today, so this reads as it always did — but pointing
+            // `resize` at the trigger later is then purely a binding change, with no edit here.
+            var wantResize = hit && this._isHandle(hit.obj, hit.el) && p.active("resize");
+            var wantGrab = hit && !wantResize && p.active("grab");
+            if (wantResize || wantGrab) {
               if (!amOwner()) this._hint();
-              else { this._begin(st, hit, origin, cq, dir); hover = st.target; glog("grab " + hit.el.id + " mode=" + st.mode); }
+              else {
+                st.action = wantResize ? "resize" : "grab";
+                this._begin(st, hit, origin, cq, dir);
+                hover = st.target;
+                glog("grab " + hit.el.id + " mode=" + st.mode + " via " + st.action);
+              }
             }
           } else {
             hover = st.target;
-            if (!pressed) { glog("release " + st.target.id + " → commit"); this._commit(st); st.mode = "idle"; st.target = null; }
-            else this._update(st, origin, cq, dir, thumbY, dt);
+            // Held for as long as the action that STARTED it is held — so a gesture can never be ended by
+            // a different control, and the two can be bound to different buttons.
+            if (!p.active(st.action || "grab")) {
+              glog("release " + st.target.id + " → commit");
+              this._commit(st); st.mode = "idle"; st.target = null;
+            } else {
+              this._update(st, origin, cq, dir, p.value("reel"), dt);
+            }
           }
         }
         // STICKY highlight: keep it on the last object when the ray leaves it, rather than clearing. The

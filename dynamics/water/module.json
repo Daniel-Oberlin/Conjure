@@ -4,19 +4,65 @@
   "tier": "B",
   "anchor": "free",
   "singleton": false,
+  "actions": [
+    "select"
+  ],
   "face_user": true,
-  "default_pos": [0.0, 1.4, -1.2],
-  "description": "A Water Picture — an image seen through a rippling water surface; touch/drag (fingertip or controller) to make waves. Pass image=<image_id> for the picture.",
+  "default_pos": [
+    0.0,
+    1.4,
+    -1.2
+  ],
+  "description": "A Water Picture \u2014 an image seen through a rippling water surface; touch/drag (fingertip or controller) to make waves. Pass image=<image_id> for the picture.",
   "config_schema": {
-    "image": { "type": "string", "desc": "image_id from generate_image — resolved to the picture src" },
-    "width": { "type": "number", "default": 1.2, "desc": "plane width (m)" },
-    "height": { "type": "number", "default": 0.9, "desc": "plane height (m)" },
-    "waveSpeed": { "type": "number", "default": 0.5, "desc": "Courant number (clamped <= 0.7)" },
-    "damping": { "type": "number", "default": 0.996, "desc": "energy loss/step (->1.0 = long-lived ripples)" },
-    "brushRadius": { "type": "number", "default": 0.05, "desc": "finger contact size (uv)" },
-    "brushStrength": { "type": "number", "default": 0.06, "desc": "dimple depth per contact" },
-    "refraction": { "type": "number", "default": 0.03, "desc": "gradient->UV distortion" },
-    "glint": { "type": "number", "default": 0.5, "desc": "specular glint strength" },
-    "tint": { "type": "color", "default": "#eaf4ff", "desc": "water tint (hex)" }
+    "image": {
+      "type": "string",
+      "desc": "image_id from generate_image \u2014 resolved to the picture src"
+    },
+    "width": {
+      "type": "number",
+      "default": 1.2,
+      "desc": "plane width (m)"
+    },
+    "height": {
+      "type": "number",
+      "default": 0.9,
+      "desc": "plane height (m)"
+    },
+    "waveSpeed": {
+      "type": "number",
+      "default": 0.5,
+      "desc": "Courant number (clamped <= 0.7)"
+    },
+    "damping": {
+      "type": "number",
+      "default": 0.996,
+      "desc": "energy loss/step (->1.0 = long-lived ripples)"
+    },
+    "brushRadius": {
+      "type": "number",
+      "default": 0.05,
+      "desc": "finger contact size (uv)"
+    },
+    "brushStrength": {
+      "type": "number",
+      "default": 0.06,
+      "desc": "dimple depth per contact"
+    },
+    "refraction": {
+      "type": "number",
+      "default": 0.03,
+      "desc": "gradient->UV distortion"
+    },
+    "glint": {
+      "type": "number",
+      "default": 0.5,
+      "desc": "specular glint strength"
+    },
+    "tint": {
+      "type": "color",
+      "default": "#eaf4ff",
+      "desc": "water tint (hex)"
+    }
   }
 }

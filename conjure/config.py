@@ -325,6 +325,14 @@ class Settings:
     # for the duration — it is never hard-coded in the client.
     beam_timeout: float = 10.0
     beam_trigger: float = 0.05
+    # Control → ACTION bindings for XR interaction (client/conjure-pointers.js). Modules declare which
+    # ACTIONS they use (module.json `actions`) and never name a button, so the control scheme lives here in
+    # one place instead of being hard-coded across modules. Controls: trigger | grip | a | b | stickPress |
+    # stickX | stickY. Injected as window.CONJURE_BINDINGS; override with CONJURE_BINDINGS as JSON.
+    #   select — primary "interact with content" (e.g. rippling a Water Picture)
+    #   grab   — pick up / move an object          resize — scale it by a corner handle
+    #   reel   — axis: push/pull a held object along the beam
+    bindings: str = '{"select":"trigger","grab":"grip","resize":"grip","reel":"stickY"}'
 
 
 def get_settings() -> Settings:
@@ -387,4 +395,6 @@ def get_settings() -> Settings:
         caption_model=os.environ.get("CONJURE_CAPTION_MODEL", "gemini-2.5-flash"),
         beam_timeout=float(os.environ.get("CONJURE_BEAM_TIMEOUT", "10.0")),
         beam_trigger=float(os.environ.get("CONJURE_BEAM_TRIGGER", "0.05")),
+        bindings=os.environ.get(
+            "CONJURE_BINDINGS", '{"select":"trigger","grab":"grip","resize":"grip","reel":"stickY"}'),
     )
