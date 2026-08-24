@@ -112,29 +112,102 @@ Kokoro TTS) runs **locally** — no keys. Full prerequisites + the doctor:
 
 ## CLI — drive it from the terminal (no voice)
 
-Quiet, fast, discrete testing without the mic. The direct tool commands hit the world server; the
-director paths (`say` / interactive REPL) are now **thin clients of the agent server** — start it first:
+Quiet, fast, discrete testing without the mic. Two separate tools, because there are two separate
+things to talk to:
+
+| | Talks to | Puts an LLM in the loop |
+|---|---|---|
+| `conjure-cli` (`python -m conjure.cli`) | the **agent** server | yes — the director |
+| `conjure-ctl` (`python -m conjure.ctl`) | the **world** server | no — plain REST calls |
 
 ```bash
 python -m conjure                          # terminal 1: world server
 conjure-agent                              # terminal 2: agent server (holds the shared director + transcript)
 
-conjure-cli asset "oak tree" --size 7      # direct, deterministic tool commands (→ world server)
-conjure-cli image "an oil painting of a red dragon"
-conjure-cli skybox "a misty pine forest"
-conjure-cli world                          # print the world
+conjure-cli                                # interactive REPL — the usual way in
+conjure-cli say "put a tree in front of me and hang a sunset painting"   # one-shot, then exit
 
-conjure-cli say "put a tree in front of me and hang a sunset painting"   # the director (→ agent server)
-conjure-cli                                # no args → interactive director REPL
+conjure-ctl                                # print the world
+conjure-ctl asset "oak tree" --size 7      # deterministic, no LLM, no API spend
+conjure-ctl image "an oil painting of a red dragon"
+conjure-ctl skybox "a misty pine forest"
+conjure-ctl reindex                        # library maintenance
 
 conjure-import ~/Photos/vr --recursive     # import files into the library (images, .glb models, …)
 conjure-import beach_SBS.jpg --stereo sbs  # import a side-by-side 3D photo (viewable in-headset per-eye)
 ```
 
-Quiet by default; add `-v` for tool calls and library logs. (`say`/REPL need the agent server running +
-`ANTHROPIC_API_KEY`.) The agent server picks its agent at launch (`conjure-agent --agent outdoor`); switch
-live from the REPL with `conjure agent <name>`. *(Voice still hosts its own director in-process — it moves
-onto the agent server in a later step.)*
+`conjure-ctl` hits the same world-server endpoints the agent reaches through MCP (`ctl asset` →
+`POST /place_asset`, exactly as `mcp_server.place_asset` does) — skipping the LLM is the point when
+you're debugging placement math or reindexing.
+
+The REPL is a full-screen client — a status bar pinned to the top, the conversation scrolling in the
+middle, and the prompt pinned to the bottom under a separator, so incoming lines never disturb what
+you're typing:
+
+```
+ builder·claude   14/40 turns   55.0k chars   prompt 10.2k (18%) · room 10.6k (19%) · tools 33.5k (61%) · hist 568 (1%)
+ daniel: how many entities are in the world?
+ builder: Based on the live context, there are 17 placed objects…
+ ────────────────────────────────────────────────────────────────────────────────────────────────────
+ conjure:daniel.builder.claude> and what colour is the floor▊
+```
+
+The status bar shows the active agent·LLM, transcript turns against the `--history-cap` trim size, and
+the size of what the last turn actually sent the model, split into the agent's **prompt**, the live
+`{context}` **room** injection, the **tool** schemas, and the **hist**ory. It's measured in characters:
+each LLM in the roster tokenizes differently, so chars are the one figure that means the same thing
+across all four. (Tool schemas are usually the biggest and least visible slice — worth knowing.) While
+one of your turns is running an elapsed clock appears at the left. Narrow terminals shorten the bar
+before dropping fields.
+
+Persistent history (arrow keys) and full line editing. PgUp/PgDn scrolls the conversation by half a
+screen and the pane sticks to the live tail until you scroll away; **End** returns to it, and while
+you're scrolled back the status bar shows how much you've missed (`↓ 12 new · End`). That indicator
+matters: in the alternate screen most terminals — and tmux — turn one mouse-wheel notch into a PgUp, so
+it's easy to detach by accident, and a detached pane otherwise looks exactly like a frozen one.
+
+The conversation is shared and attributed — other users by name, the agent by its agent name
+(`builder: …`). Quiet by default; add `-v` for tool calls and library logs. (`conjure-cli` needs the
+agent server running + `ANTHROPIC_API_KEY`.)
+
+### The shell
+
+`conjure open shell` drops into a deterministic command plane — parsed, never sent to an LLM. Two
+shapes of command: a **noun** acts on whatever is live, a **path** acts on anything addressable.
+
+```
+conjure:daniel.shell ~/agents/builder> where
+user: daniel · agent: builder · LLM: Claude · session: Session 1 · world: daniel/animal-house
+
+conjure:daniel.shell ~/agents/builder> dir
+~/agents/builder
+  sessions/
+  assets/
+  worlds     → sessions/session-1/worlds
+
+conjure:daniel.shell ~/agents/builder> cd worlds
+~/agents/builder/sessions/session-1/worlds
+
+conjure:daniel.shell ~/agents/builder/sessions/session-1/worlds> show animal-house
+  entities    24
+  by kind     grid×5, image×8, model×6, other×4, plane×1
+  space       daniel/space-1
+```
+
+Nouns — `agent`, `llm`, `session`, `world` — list when bare and switch when given a name
+(`world meadow`, `llm gemini`), with `new`, `rename`, `clear` and `public`/`private` for the live one.
+Paths — `dir`, `show`, `cd`, `delete`, `rename` — walk a namespace that mirrors storage, including the
+part that isn't obvious: **worlds live per session**, so `…/sessions/<sid>/worlds/<name>` is the real
+address and `…/agents/<agent>/worlds` is a shortcut to the active session's.
+
+Every command declares whether it's **voice-safe**: voice gets the modal verbs ("where am I", "go to
+the meadow", "new session") and is refused the ones that need a screen. Full table:
+[docs/agents.md §2](./docs/agents.md).
+
+The agent server picks its agent at launch (`conjure-agent --agent outdoor`); switch live with
+`conjure agent <name>` — a server-side command, since it moves everyone in the shared session.
+*(Voice still hosts its own director in-process — it moves onto the agent server in a later step.)*
 
 ## On the Quest 3
 
@@ -148,7 +221,8 @@ onto the agent server in a later step.)*
 
 ```
 conjure/    world server (schema · world store · FastAPI app · MCP tools + room resource) · shell ·
-            agents (loader + server registry) · builder/LLM roster · voice loop · CLI ·
+            agents (loader + server registry) · builder/LLM roster · voice loop ·
+            cli (agent-server REPL) · ctl (direct world commands) ·
             assets pipeline · image-gen registry · config · doctor
 agents/     bundled agent defs (builder/: agent.json + prompt.md) + servers.json (MCP registry);
             user-authored agents in ~/.config/conjure/agents/ shadow these (docs/user-home-plan.md)

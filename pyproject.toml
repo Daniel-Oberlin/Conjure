@@ -16,6 +16,9 @@ dependencies = [
     "pillow>=10.0",
     "sqlite-vec>=0.1.6",
     "jsonschema>=4.0",
+    # The CLI REPL's line editor: history, emacs/vi editing, and the redraw that keeps your half-typed
+    # line pinned below incoming conversation. Pure Python (only wcwidth), so it stays in the core install.
+    "prompt-toolkit>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +48,7 @@ conjure-mcp = "conjure.mcp_server:main"
 conjure-doctor = "conjure.doctor:main"
 conjure-voice = "conjure.voice:main"
 conjure-cli = "conjure.cli:main"
+conjure-ctl = "conjure.ctl:main"
 conjure-import = "conjure.importer:main"
 
 [build-system]

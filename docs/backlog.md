@@ -407,3 +407,56 @@ safe, and summarizing dropped turns is optional (narrative continuity only).
 
 **Open decision:** pure trim vs. rolling summarization of dropped turns; and whether the `quality_budget`
 is one shared cap or per-model (tuned by observation).
+
+## Renaming worlds and spaces — needs an alias mechanism (shelved)
+
+**What:** `rename <path> <new>` covers sessions and assets only. Renaming a **world** or a **space**
+is refused with an explanation (`Shell._rename`). Both would need a rename that survives the references
+already pointing at the old name.
+
+**Why shelved:** the shell-command rationalization (2026-08-23) landed everything else in one pass;
+rename is the only entry in the noun×operation matrix that needs new machinery rather than new wiring.
+Sessions and assets don't: a session rename is a metadata edit that "moves nothing" (`world.py`
+`SessionRepository`), and an asset rename is its `label` via `/update_asset` — display text, not identity.
+
+**Why a plain move is wrong.** Everything that names a world:
+
+| Referrer | Where | Rewritable? |
+|---|---|---|
+| the world file | `<scope>/sessions/<sid>/worlds/<path>.json` | move it |
+| scope active pointer | `worlds/_active.txt` | ✓ |
+| session record | `session.json` → `active_world` | ✓ |
+| global live pointer | `<data>/_session.txt` = `scope\tworld` | ✓ |
+| space back-reference | space json → `last_scope` + `last_world` (`server.py` `_save_active`) | ✓ |
+| nested children | `castle/hall` under a renamed `castle` | move the subtree |
+| in-memory | `active_world` global | ✓ |
+| **agent state docs** | `StateStore` — schema-free JSON | **✗ unknowable** |
+| transcripts | chat history text | ✗ (and shouldn't) |
+
+`StateStore` is schema-free *by design* — its docstring: it "doesn't know a `map` from an `inventory`,
+which is the whole point (no domain baked into storage)". So an agent that stashed
+`{"quest": {"return_to": "castle-quest"}}` cannot be found or fixed by any rename.
+
+**Spaces are strictly worse.** A world names its space as `environment.space = "<owner>/<name>"`, and
+per D3 that space **may belong to another user**. Rewriting would mean reaching into someone else's
+worlds — which `/admin/delete` already forbids ("you can only delete your own namespace"). For spaces,
+rewriting isn't incomplete, it's impossible in principle.
+
+**Proposed fix — move + alias:**
+1. Move the file (and, for a parent, its whole subtree).
+2. Record `old → new` in a per-scope `_aliases.json` (worlds) / per-user (spaces).
+3. Resolve through aliases in `exists`/`load`/`save`, **prefix-matched**, so one entry for `castle`
+   covers `castle/hall` too.
+4. Rewrite the referrers you own anyway (the ✓ rows above), so aliases only ever carry the unknowable.
+5. Leave other users' worlds, agent state and transcripts alone — the alias covers them.
+
+Aliasing is already an established pattern here (`/update_asset` does "set fields / kind / alias /
+reject"). Unlike `delete`, rename should be allowed on the **active** world — update the live pointers
+and re-broadcast context so clients follow.
+
+**Open decisions** (raised, not settled):
+- Rename chains must collapse, not chain: `A→B` then `B→C` leaves `A→C` *and* `B→C`.
+- Creating a world whose name is a live alias: refuse and name the target (safer — nothing silently
+  changes meaning under agent state), or let the explicit create win? `delete <alias-path>` dropping
+  just the alias is the natural way to free a name.
+- Whether spaces get the same treatment at all, given the alias is doing 100% of the work there.

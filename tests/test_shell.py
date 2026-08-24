@@ -3,6 +3,8 @@
 Commands are parsed, never sent to an LLM. The key behaviours: in agent mode only `conjure`-prefixed
 input is a command (so agent content like "put a shell on the table" passes through); in shell mode
 every line is a command and non-commands are rejected (never forwarded to the LLM)."""
+import types
+
 import pytest
 
 from conjure.shell import Shell
@@ -15,7 +17,8 @@ class FakeDirector:
         self.roster = {"Claude": object(), "Gemini": object()}
         self.active = "Claude"
         self.agent = type("A", (), {"name": "builder"})()
-        self._tools = [object(), object()]
+        self._tools = [types.SimpleNamespace(name="place_asset"),
+                       types.SimpleNamespace(name="add_entity")]
         self.user = "daniel"
         self.handled = []
 
@@ -82,9 +85,9 @@ async def test_bare_conjure_opens_the_shell():
     assert sh.in_shell is True
 
 
-async def test_conjure_use_switches_llm_inline_without_entering_shell():
+async def test_conjure_llm_switches_inline_without_entering_shell():
     sh, d, out, on_text = _shell()
-    await sh.feed("conjure use Gemini", on_text=on_text)
+    await sh.feed("conjure llm Gemini", on_text=on_text)
     assert d.active == "Gemini" and sh.in_shell is False and d.handled == []
 
 
@@ -105,14 +108,35 @@ async def test_exit_leaves_shell_mode():
     assert sh.in_shell is False and any("Back to" in t for _, t in out)
 
 
-async def test_switch_llm_in_shell_mode():
+async def test_llm_switches_in_shell_mode():
     sh, d, out, on_text = _shell()
     sh.in_shell = True
-    await sh.feed("talk to Gemini", on_text=on_text)
+    await sh.feed("llm Gemini", on_text=on_text)
     assert d.active == "Gemini" and any("Gemini" in t for _, t in out)
-    out.clear()
-    await sh.feed("gemini", on_text=on_text)                  # bare known name also switches
+
+
+async def test_typed_llm_switching_is_the_noun_command_only():
+    # Clean break: "talk to X"/"use X" and a bare LLM name used to switch in TEXT, which quietly reserved
+    # every roster name as a command word. They're spoken aliases now (see the voice test below).
+    sh, d, out, on_text = _shell()
+    sh.in_shell = True
+    for line in ("talk to Gemini", "use Gemini", "gemini"):
+        await sh.feed(line, on_text=on_text)
+        assert d.active == "Claude", f"{line!r} should not switch the LLM in text"
+    assert all("Unknown command" in t for _, t in out)
+
+
+async def test_spoken_aliases_switch_the_llm_for_a_voice_client():
+    sh, d, out, on_text = _shell()
+    await sh._dispatch("talk to Gemini", on_text, voice=True)
     assert d.active == "Gemini"
+
+
+async def test_a_voice_client_is_refused_the_terminal_commands():
+    sh, d, out, on_text = _shell()
+    await sh._dispatch("dir", on_text, voice=True)
+    assert "terminal command" in out[-1][1]
+    assert any(h.startswith("dir") for _, _, h, v in sh._table if not v)   # …and it IS marked CLI-only
 
 
 async def test_help_and_llms_list_without_touching_the_agent():
@@ -122,24 +146,24 @@ async def test_help_and_llms_list_without_touching_the_agent():
     await sh.feed("llms", on_text=on_text)
     assert d.handled == []
     text = "\n".join(t for _, t in out)
-    assert "Commands:" in text and "Claude" in text and "Gemini" in text
+    assert "Commands" in text and "Claude" in text and "Gemini" in text
 
 
 # --------------------------------------------------------------------------- prompt
 
-def test_prompt_reflects_mode():
+def test_prompt_formatting_belongs_to_the_client():
+    # `Shell.prompt()` is gone — the prompt (now including the shell's cwd) is formatted client-side from
+    # `context` data by `agent_client.prompt_from_context`, which is where it's tested.
     sh, d, out, on_text = _shell()
-    assert sh.prompt() == "conjure:daniel.builder.claude> "   # user · agent-primary; the LLM can vary
-    sh.in_shell = True
-    assert sh.prompt() == "conjure:daniel.shell> "            # same shape, `shell` in the agent slot
+    assert not hasattr(sh, "prompt")
 
 
-async def test_whoami_identifies_user_agent_llm_session():
+async def test_where_locates_you_in_one_line():
     sh, d, out, on_text = _shell()
-    await sh._status(on_text)
+    await sh._where(on_text)
     line = out[-1][1]
     assert "user: daniel" in line and "agent: builder" in line and "LLM: Claude" in line
-    assert "session:" in line and "agent mode" in line       # session is fetched from the world server
+    assert "session:" in line and "world:" in line and "agent mode" in line
 
 
 # --------------------------------------------------------------------------- dir / delete (admin)
@@ -158,19 +182,63 @@ def _admin_shell(responder):
     return sh, out, on_text, calls
 
 
-async def test_dir_lists_the_namespace_via_admin():
-    node = {"label": "/", "kind": "root", "children": [{"label": "alice", "kind": "user"}]}
-    sh, out, on_text, calls = _admin_shell(lambda a, p: {"ok": True, "node": node})
-    await sh.feed("dir", on_text=on_text)
-    assert calls == [("tree", "/")]                          # bare dir → root
-    assert any("alice" in t for _, t in out)
+def _listing(path, *children):
+    return {"ok": True, "path": path, "children": list(children)}
 
 
-async def test_dir_narrows_by_path():
+async def test_dir_starts_in_your_own_scope_not_the_root():
+    # A bare `dir` at the root used to dump every user's worlds, spaces and assets. It now lists one
+    # level, starting where you actually are.
     sh, out, on_text, calls = _admin_shell(
-        lambda a, p: {"ok": True, "node": {"label": "worlds", "kind": "category"}})
-    await sh.feed("dir /alice/worlds", on_text=on_text)
-    assert calls == [("tree", "/alice/worlds")]
+        lambda a, p: _listing(p, {"label": "sessions", "kind": "category"}))
+    await sh.feed("dir", on_text=on_text)
+    assert calls == [("tree", "/daniel/agents/builder")]
+    assert "sessions/" in out[-1][1]                         # a trailing / marks what you can cd into
+
+
+async def test_dir_takes_absolute_home_and_relative_paths():
+    sh, out, on_text, calls = _admin_shell(lambda a, p: _listing(p))
+    for arg, want in [("/alice/spaces", "/alice/spaces"),
+                      ("~/spaces", "/daniel/spaces"),
+                      ("sessions", "/daniel/agents/builder/sessions"),
+                      ("../outdoor", "/daniel/agents/outdoor"),
+                      ("..", "/daniel/agents")]:
+        calls.clear()
+        await sh.feed(f"dir {arg}", on_text=on_text)
+        assert calls == [("tree", want)], arg
+
+
+async def test_cd_remembers_the_path_the_server_resolved():
+    # `…/worlds` is a shortcut for the ACTIVE session's worlds; remembering the shortcut would silently
+    # point somewhere else after a session switch, so we adopt what the server resolved it to.
+    real = "/daniel/agents/builder/sessions/session-1/worlds"
+    sh, out, on_text, calls = _admin_shell(lambda a, p: _listing(real))
+    await sh.feed("cd worlds", on_text=on_text)
+    assert sh.cwd == real
+    assert out[-1][1] == "~/agents/builder/sessions/session-1/worlds"   # ~ for your own home
+
+
+async def test_cd_with_no_argument_returns_to_your_agent():
+    sh, out, on_text, calls = _admin_shell(lambda a, p: _listing(p))
+    await sh.feed("cd /alice", on_text=on_text)
+    assert sh.cwd == "/alice"
+    await sh.feed("cd", on_text=on_text)
+    assert sh.cwd == "/daniel/agents/builder"
+
+
+async def test_a_failed_cd_leaves_you_where_you_were():
+    sh, out, on_text, calls = _admin_shell(lambda a, p: {"ok": False, "error": "no such user 'nope'"})
+    await sh.feed("cd /nope", on_text=on_text)
+    assert sh.cwd == "/daniel/agents/builder" and "no such user" in out[-1][1]
+
+
+async def test_show_renders_the_fields_the_server_returns():
+    sh, out, on_text, calls = _admin_shell(
+        lambda a, p: {"ok": True, "path": p, "kind": "world",
+                      "fields": [["world", "meadow"], ["entities", "24"]]})
+    await sh.feed("show worlds/meadow", on_text=on_text)
+    assert calls == [("show", "/daniel/agents/builder/worlds/meadow")]
+    assert "world" in out[-1][1] and "meadow" in out[-1][1] and "24" in out[-1][1]
 
 
 async def test_dir_is_not_a_command_in_agent_mode():
@@ -254,11 +322,11 @@ async def test_session_verbs_route_to_the_right_endpoints():
     assert calls[-1][2]["owner"] == "daniel" and calls[-1][2]["session"] == "Home Base"
     await sh._dispatch("session rename Cozy Corner", on_text)
     assert calls[-1][:2] == ("POST", "/session/rename") and calls[-1][2]["title"] == "Cozy Corner"
-    await sh._dispatch("session delete session-2", on_text)
-    assert calls[-1][:2] == ("POST", "/session/delete") and calls[-1][2]["session"] == "session-2"
-    await sh._dispatch("session private", on_text)
+    # `session delete` and `session clear` are gone — one `delete <path>` and one `clear` serve every
+    # noun. Visibility moved to bare `public`/`private`, which also works spoken.
+    await sh._dispatch("private", on_text)
     assert calls[-1][:2] == ("POST", "/session/visibility") and calls[-1][2]["public"] is False
-    await sh._dispatch("session public", on_text)
+    await sh._dispatch("public", on_text)
     assert calls[-1][:2] == ("POST", "/session/visibility") and calls[-1][2]["public"] is True
 
 
@@ -282,7 +350,7 @@ async def test_session_command_acts_as_the_speaker_not_the_host():
     # A guest's session verb must target the GUEST's own scope — not the shared shell's host user — so a
     # guest can't manage the host's sessions (reported bug: guest made the owner's session private).
     sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True, "public": kw.get("public")})
-    await sh._dispatch("session private", on_text, speaker="guest")
+    await sh._dispatch("private", on_text, speaker="guest")
     assert calls[-1][:2] == ("POST", "/session/visibility")
     assert calls[-1][2]["scope"] == "guest/agents/builder"          # guest's own scope, not daniel's
 
@@ -295,18 +363,21 @@ async def test_shared_effect_verbs_refused_for_a_non_permitted_speaker():
     assert not calls and "private" in out[-1][1].lower()            # refused before any POST
     await sh._dispatch("session new", on_text, speaker="guest", permitted=False)
     assert not calls
-    await sh._dispatch("session private", on_text, speaker="guest", permitted=False)   # own-scope: allowed
-    assert calls[-1][:2] == ("POST", "/session/visibility")
+    await sh._dispatch("private", on_text, speaker="guest", permitted=False)
+    assert not calls and "private" in out[-1][1].lower()            # visibility is shared-effect too
 
 
 async def test_llm_switch_and_delete_refused_for_a_non_permitted_speaker():
     # The active LLM is SHARED, and delete is destructive — both refused for a bumped guest (§6d).
     sh, d, out, on_text = _shell()
     sh._permitted = False
-    handled = await sh._switch("use gemini", on_text)
+    import re as _re
+    m = _re.match(r"^llm\s+(?P<name>[\w.-]+)$", "llm gemini")
+    handled = await sh._switch_llm(on_text, m)
     assert handled and d.active == "Claude" and "private" in out[-1][1].lower()   # LLM unchanged, refused
     import types as _t
-    await sh._delete(on_text, _t.SimpleNamespace(group=lambda k: "/daniel/worlds/x"))
+    await sh._delete(on_text, _t.SimpleNamespace(group=lambda k: "/daniel/worlds/x",
+                                                 groupdict=lambda: {"path": "/daniel/worlds/x"}))
     assert sh._pending_delete is None and "private" in out[-1][1].lower()          # delete refused, not armed
 
 
@@ -520,10 +591,68 @@ async def test_session_switch_own_vs_visit_by_arg_count():
     assert calls[-1][2]["owner"] == "daniel" and calls[-1][2]["session"] == "blade runner"
 
 
-async def test_session_clear_wipes_the_director_transcript():
+async def test_clear_wipes_the_director_transcript():
     sh, d, out, on_text = _shell()
     d.transcript = ["u1", "a1", "u2", "a2"]            # accumulated history
     sh.in_shell = True
-    await sh.feed("session clear", on_text=on_text)    # hand-built shell → in-memory clear path
+    await sh.feed("clear", on_text=on_text)            # hand-built shell → in-memory clear path
     assert d.transcript == []
     assert any("cleared" in t.lower() for _, t in out)
+
+
+# --------------------------------------------------------------------------- path resolution (pure)
+
+def test_resolve_path_handles_absolute_home_relative_and_dotdot():
+    from conjure.shell import default_cwd, display_path, resolve_path
+    cwd = "/daniel/agents/builder"
+    assert resolve_path(cwd, "", "daniel") == cwd                      # bare → where you are
+    assert resolve_path(cwd, "sessions", "daniel") == f"{cwd}/sessions"
+    assert resolve_path(cwd, "/alice/spaces", "daniel") == "/alice/spaces"
+    assert resolve_path(cwd, "~", "daniel") == "/daniel"
+    assert resolve_path(cwd, "~/spaces", "daniel") == "/daniel/spaces"
+    assert resolve_path(cwd, "..", "daniel") == "/daniel/agents"
+    assert resolve_path(cwd, "../outdoor/sessions", "daniel") == "/daniel/agents/outdoor/sessions"
+    assert resolve_path(cwd, "./sessions/", "daniel") == f"{cwd}/sessions"
+    # `..` can't climb past the root, so a path can never escape the namespace
+    assert resolve_path("/", "../../etc", "daniel") == "/etc"
+    assert resolve_path(cwd, "../../../../..", "daniel") == "/"
+    # `~` is YOUR home — a guest resolves it to their own, never the host's
+    assert resolve_path(cwd, "~/spaces", "guest") == "/guest/spaces"
+    assert default_cwd("daniel", "builder") == "/daniel/agents/builder"
+    assert display_path("/daniel/agents/builder", "daniel") == "~/agents/builder"
+    assert display_path("/alice/spaces", "daniel") == "/alice/spaces"   # someone else's stays absolute
+
+
+# --------------------------------------------------------------------------- nouns
+
+async def test_world_lists_switches_and_creates():
+    sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True})
+    await sh._dispatch("world meadow", on_text)
+    assert calls[-1][:2] == ("POST", "/worlds/switch") and calls[-1][2]["name"] == "meadow"
+    await sh._dispatch("world new castle keep", on_text)
+    assert calls[-1][:2] == ("POST", "/worlds/new") and calls[-1][2]["name"] == "castle keep"
+
+
+async def test_world_changes_are_refused_for_a_non_permitted_speaker():
+    sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True})
+    await sh._dispatch("world meadow", on_text, speaker="guest", permitted=False)
+    assert not calls and "private" in out[-1][1].lower()
+
+
+async def test_tools_lists_what_the_agent_can_call():
+    sh, d, out, on_text = _shell()
+    await sh._dispatch("tools", on_text)
+    assert "place_asset" in out[-1][1]
+
+
+# --------------------------------------------------------------------------- the voice / CLI split
+
+def test_every_row_declares_whether_it_is_voice_safe():
+    sh, d, out, on_text = _shell()
+    voice = {h.split()[0] for _, _, h, v in sh._table if v}
+    cli = {h.split()[0] for _, _, h, v in sh._table if not v}
+    # Voice gets the modal/navigational verbs — the ones that make sense with no screen.
+    assert {"agent", "llm", "session", "world", "where", "clear"} <= voice
+    # The namespace verbs need a screen (or shouldn't be spoken at all).
+    assert {"dir", "show", "cd", "delete", "rename"} <= cli
+    assert not (voice & cli), "a command is either speakable or it isn't"

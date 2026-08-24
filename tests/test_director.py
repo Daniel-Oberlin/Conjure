@@ -8,7 +8,7 @@ import pytest
 
 from conjure.agents import AgentDef, load_agent
 from conjure.director import Director, _fill_injection, _pick_active
-from conjure.llm import Turn, _messages
+from conjure.llm import ToolSpec, Turn, _messages
 
 
 def test_pick_active_uses_the_agents_llms_list_as_priority():
@@ -437,3 +437,57 @@ def test_recent_history_caps_the_model_view_but_keeps_full_transcript():
     assert len(d.transcript) == 10                                   # full transcript untouched (persist/backlog)
     d._settings = types.SimpleNamespace(history_cap=0)               # 0 = unlimited
     assert len(d._recent_history()) == 10
+
+
+# --------------------------------------------------------------------------- context accounting (status bar)
+
+def _tool(name, description, schema):
+    return ToolSpec(name=name, description=description, input_schema=schema)
+
+
+async def test_context_stats_before_any_turn_reports_what_is_free_to_compute():
+    # On connect no turn has been assembled, so there is nothing measured. Report the parts that cost
+    # nothing (the prompt template, the tool schemas, the transcript tail) rather than a bar of zeros
+    # that would read as "tools 100%".
+    d = _director(tools=[_tool("place_asset", "Place a 3D model", {"type": "object"})])
+    stats = d.context_stats()
+    assert stats["turns"] == 0
+    assert stats["chars"]["tools"] > 0
+    assert stats["chars"]["prompt"] == len(d._prompt or "")
+    assert stats["chars"]["room"] == 0            # the {context} injection is an MCP fetch — not for a status bar
+
+
+async def test_context_stats_after_a_turn_measures_what_was_actually_sent():
+    d = _director(tools=[_tool("place_asset", "Place a 3D model", {"type": "object"})])
+    d._prompt = "You are a builder. Room: {context}"
+    d.agent = _agent(["world://room"])
+    d._session._resource_text = "SURFACE-DATA" * 20          # the live room injection
+    await d.handle("put a tree in front of me", speaker="daniel")
+
+    chars = d.context_stats()["chars"]
+    assert chars["room"] == len("SURFACE-DATA" * 20)         # attributed to the injection, not the prompt
+    assert chars["prompt"] > 0 and chars["room"] not in (0, chars["prompt"])
+    assert chars["history"] >= len("daniel: put a tree in front of me")
+    assert chars["tools"] > 0
+    # turns counts transcript ENTRIES — a user line and its reply are two, which is what `cap` trims.
+    assert d.context_stats()["turns"] == 2
+
+
+async def test_context_stats_turn_cap_comes_from_settings():
+    import dataclasses
+    from conjure.config import get_settings
+    d = _director()
+    d._settings = dataclasses.replace(get_settings(), history_cap=8)
+    assert d.context_stats()["cap"] == 8
+    d._settings = dataclasses.replace(get_settings(), history_cap=0)
+    assert d.context_stats()["cap"] == 0                     # 0 = no trimming
+
+
+def test_tools_chars_counts_name_description_and_schema():
+    from conjure.director import _tools_chars
+    assert _tools_chars([]) == 0
+    small = _tools_chars([_tool("a", "b", {})])
+    big = _tools_chars([_tool("a", "b" * 100, {"type": "object"})])
+    assert big > small > 0
+    # an unserializable schema must not break a turn — it's just skipped
+    assert _tools_chars([_tool("a", "b", {"bad": object()})]) >= 0
