@@ -30,8 +30,7 @@
   // floor of 0.05 was 10× ABOVE that, so resize snapped the model 10× bigger the instant it engaged,
   // before the hand moved at all.
   var SCALE_REL_MIN = 0.02, SCALE_REL_MAX = 50.0;   // total size range vs. the object's original scale
-  var SCALE_REF = 0.5;                         // hand travel (m) that doubles/halves the size
-  var SCALE_DEAD = 0.04;                       // hand travel (m) ignored before a resize starts
+  var SCALE_DEAD = 0.02;                       // corner drag (m) ignored before a resize starts
   var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
   var ONE = null;   // set once AFRAME.THREE exists
 
@@ -199,7 +198,14 @@
         st.origScale = el._grabOrigScale;
         obj.updateWorldMatrix(true, false);
         st.center = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
-        st.startDist = Math.max(1e-3, origin.distanceTo(st.center));
+        // Resize follows the CORNER, not the controller's distance to the object. Dragging a corner outward
+        // is mostly a LATERAL hand movement, which barely changes controller→centre distance — so a radial
+        // measure sat inside the dead zone and nothing happened (the log showed mode=scale engaging with the
+        // scale never moving). Instead hold the reach along the ray fixed and track where it now points:
+        // how far that lands from the centre, versus where the corner started, IS the size ratio.
+        st.grabDist = Math.max(1e-3, hit.dist);                        // reach along the ray, held constant
+        st.cornerR0 = Math.max(1e-4,
+          hit.obj.getWorldPosition(new THREE.Vector3()).distanceTo(st.center));
         // A GROUNDED model must keep its BASE on the floor while resizing — scaling about the origin would
         // otherwise sink it or leave it hovering until the next capture re-grounds it. Remember where the
         // floor is (base = origin.y + boxMin.y × worldScale) so _update can re-seat it at any new size.
@@ -248,15 +254,16 @@
     _update: function (st, origin, cq, dir, thumbY, dt) {
       var THREE = AFRAME.THREE, obj = st.target.object3D;
       if (st.mode === "scale") {
-        // Linear in HAND TRAVEL, not a distance RATIO. The ratio form (d/d0) explodes when you grab close
-        // to an object — grabbing at 0.5 m and pulling back 1 m was a 3× jump, and a momentary accidental
-        // catch ballooned a model ~10×. Now ~SCALE_REF metres of travel doubles it, clamped per gesture.
-        // Dead zone first: ignore the opening few cm so closing your hand on a corner (or ordinary hand
-        // tremor) doesn't resize on contact — the size should only move when you deliberately pull or push.
-        var travel = origin.distanceTo(st.center) - st.startDist;
-        travel = travel > SCALE_DEAD ? travel - SCALE_DEAD
-               : (travel < -SCALE_DEAD ? travel + SCALE_DEAD : 0);
-        var f = Math.min(SCALE_F_MAX, Math.max(SCALE_F_MIN, 1 + travel / SCALE_REF));
+        // Where the ray points now, at the reach we grabbed at — i.e. where the user has dragged the corner
+        // to. Its distance from the centre vs. the corner's original distance is the size ratio, so the
+        // gesture reads as "pull the corner out to grow, push it in to shrink" from any direction.
+        var at = origin.clone().add(dir.clone().multiplyScalar(st.grabDist));
+        var reach = at.distanceTo(st.center) - st.cornerR0;
+        // Dead zone: ignore the opening centimetres so closing your hand on a corner (or ordinary tremor)
+        // doesn't resize on contact — only a deliberate drag does.
+        reach = reach > SCALE_DEAD ? reach - SCALE_DEAD
+              : (reach < -SCALE_DEAD ? reach + SCALE_DEAD : 0);
+        var f = Math.min(SCALE_F_MAX, Math.max(SCALE_F_MIN, 1 + reach / st.cornerR0));
         // Total size stays within a band around the object's ORIGINAL scale (st.origScale), so repeated
         // gestures can't run away — and f=1 leaves the object at exactly the size you grabbed it at.
         var total = (st.origScale > 0) ? (st.startScale.x * f) / st.origScale : 1;
