@@ -4024,7 +4024,12 @@ async def manipulate_entity(req: ManipulateRequest) -> dict:
             nrot = req.rotation if req.rotation is not None else (ent.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0])
             if npos:
                 sets["meta.surface_offset"] = _surface_offset(spos, srot, npos, nrot)
-    if req.anchor and (ent.get("meta") or {}).get("anchor") is not None:
+    # Store the client's anchor for ANY non-surface content, whether or not it already had one. Content
+    # without a stored anchor isn't un-anchored in practice: the client's _placeContent already authors one
+    # on the fly from the F_ref pose every capture, so it's wall-solved either way. Keeping the exact anchor
+    # the user's drop produced just replaces a re-derived approximation with the real thing — the same
+    # accuracy models get. (Surface-attached content is host-relative; surface_offset covers it below.)
+    if req.anchor and not (ent.get("meta") or {}).get("on_surface"):
         sets["meta.anchor"] = req.anchor          # client-authored, stored as-is (see ManipulateRequest)
     applied = store.apply_patch([{"op": "update", "id": req.id, "set": sets}], origin="manipulate")
     # ANCHORED content (a grounded model) re-derives its pose from `meta.anchor` on every client capture, so a

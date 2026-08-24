@@ -784,8 +784,8 @@
     if (el._frefPose && path === "transform.rotation") el._frefPose.rotation = value;
     // The server moved content whose pose we own locally → re-solve from the NEW F_ref pose right now, so
     // it lands correctly instead of showing the raw F_ref pose until the next capture.
-    if ((path === "transform.position" || path === "transform.rotation") && contentPoseIsLocal(el)
-        && !el._onSurface) solveContentNow(el);
+    if ((path === "transform.position" || path === "transform.rotation") && contentPoseIsLocal(el))
+      solveContentNow(el);
     if (path === "meta.anchor") {                              // server re-anchored (moved) content (§7c)
       el._anchor = value || null;
       solveContentNow(el);              // land it NOW in our own frame, not at the next capture
@@ -802,7 +802,7 @@
     if (contentPoseIsLocal(el) && (path === "transform.position" || path === "transform.rotation")) return;
     if (path === "meta.surface_offset") {                      // §7c-B2 re-anchor
       el._surfaceOffset = value || null;
-      rideHostNow(el);                  // land it on the host NOW, not at the next capture
+      solveContentNow(el);              // land it on the host NOW, not at the next capture
     }
     if (path === "components.material.visible") {       // real-surface visibility → entity attribute
       el.dataset.matVisible = String(value);
@@ -993,25 +993,13 @@
   // waiting up to a capture interval for _placeContent to come round. Used when the server sends a new
   // meta.anchor (a grab commit, a director move) so the object lands correctly on the spot, with no
   // intermediate wrong pose. Returns false when there's no basis yet (caller leaves the pose alone).
+  // Re-place ONE piece of content right now with the basis the last capture cached, instead of waiting for
+  // the pump to come round. Used when a server update changes what its pose derives from, so it lands
+  // correctly on the spot with no intermediate wrong pose.
   function solveContentNow(el) {
-    var PA = window.PlaneAnchor, THREE = AFRAME.THREE;
-    var lp = framePlanes.local, rp = framePlanes.ref;
-    if (!PA || !lp || lp.length < 2 || !el.object3D) return false;
-    var sol;
-    if (el._anchor) {
-      sol = PA.solveAnchor(THREE, el._anchor, lp);
-    } else {
-      // Legacy/un-anchored content: author from its F_ref pose against the SEED walls, then solve against
-      // ours — the same fallback _placeContent uses, so we land it exactly where the next capture would.
-      var fp = el._frefPose;
-      if (!fp || !rp || rp.length < 2) return false;
-      sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, {
-        mode: el._placement || "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
-        position: new THREE.Vector3(fp.position[0] || 0, fp.position[1] || 0, fp.position[2] || 0),
-      }, rp), lp);
-    }
-    if (!sol || !sol.ok) return false;
-    placeContent(el, sol.position, sol.quaternion);
+    var r = contentPose(el, framePlanes.local, framePlanes.ref, false);
+    if (!r) return false;
+    placeContent(el, r.position, r.quaternion);
     return true;
   }
 
@@ -1021,26 +1009,56 @@
   // or outdoor world, or before the first capture) the server transform IS the pose, and must be applied.
   function contentPoseIsLocal(el) {
     if (!el._frefPose) return false;
-    if (el._onSurface) return !!document.getElementById(el._onSurface);
+    // Must match what contentPose can actually produce, or we'd suppress the server's transform and then
+    // fail to compute a replacement — freezing the content at a stale pose.
+    if (el._onSurface) return !!(el._surfaceOffset && document.getElementById(el._onSurface));
     return !!(framePlanes.local && framePlanes.local.length >= 2);
   }
 
   // Re-seat SURFACE-ATTACHED content on its host right now: content_world = host · surface_offset (the
   // same composition _placeContent's _onSurface branch does). Used when a new offset arrives so the
   // content lands on its wall immediately rather than after the next capture.
-  function rideHostNow(el) {
-    var off = el._surfaceOffset, hostEl = el._onSurface && document.getElementById(el._onSurface);
-    if (!off || !off.p || !off.q || !hostEl || !hostEl.object3D) return false;
-    var THREE = AFRAME.THREE, h = hostEl.object3D;
-    var m = new THREE.Matrix4()
-      .compose(h.position.clone(), h.quaternion.clone(), new THREE.Vector3(1, 1, 1))
-      .multiply(new THREE.Matrix4().compose(
-        new THREE.Vector3(off.p[0], off.p[1], off.p[2]),
-        new THREE.Quaternion(off.q[0], off.q[1], off.q[2], off.q[3]), new THREE.Vector3(1, 1, 1)));
-    var p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-    m.decompose(p, q, s);
-    placeContent(el, p, q);
-    return true;
+  // WHERE a piece of director-placed content belongs, in OUR frame. The single source of truth for content
+  // placement: both the capture pump (_placeContent) and the immediate re-place after a server update go
+  // through it, so the three kinds can't drift apart — which is what produced the same "flashes to the wrong
+  // spot" bug three times (anchored, surface-attached, then free-standing).
+  //   • surface-attached → host · surface_offset
+  //   • anchored         → solve meta.anchor against our local walls
+  //   • free (legacy)    → author from the F_ref pose against the seed walls, solve against ours
+  // `useHostTarget` rides the host's slew TARGET instead of its current pose — the pump wants that so art
+  // eases in lock-step with its wall; an immediate re-place wants what's on screen now.
+  // Returns {position, quaternion, kind} or null when there's no basis (caller holds the current pose).
+  function contentPose(el, localPl, refPl, useHostTarget) {
+    var PA = window.PlaneAnchor, THREE = AFRAME.THREE;
+    if (!PA || !el.object3D) return null;
+    if (el._onSurface) {
+      var hostEl = document.getElementById(el._onSurface), off = el._surfaceOffset;
+      if (!hostEl || !hostEl.object3D || !off || !off.p || !off.q) return null;
+      var slewing = useHostTarget && slewSet.has(hostEl) && hostEl._tgtPos;
+      var hp = slewing ? hostEl._tgtPos : hostEl.object3D.position;
+      var hq = slewing ? hostEl._tgtQuat : hostEl.object3D.quaternion;
+      var m = new THREE.Matrix4().compose(hp.clone(), hq.clone(), new THREE.Vector3(1, 1, 1))
+        .multiply(new THREE.Matrix4().compose(
+          new THREE.Vector3(off.p[0], off.p[1], off.p[2]),
+          new THREE.Quaternion(off.q[0], off.q[1], off.q[2], off.q[3]), new THREE.Vector3(1, 1, 1)));
+      var p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      m.decompose(p, q, s);
+      return { position: p, quaternion: q, kind: "surface" };
+    }
+    if (!localPl || localPl.length < 2) return null;      // not enough local wall basis yet
+    var sol;
+    if (el._anchor) {
+      sol = PA.solveAnchor(THREE, el._anchor, localPl);
+    } else {
+      var fp = el._frefPose;
+      if (!fp || !refPl || refPl.length < 2) return null; // the legacy path needs the seed-wall basis too
+      sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, {
+        mode: el._placement || "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
+        position: new THREE.Vector3(fp.position[0] || 0, fp.position[1] || 0, fp.position[2] || 0),
+      }, refPl), localPl);
+    }
+    if (!sol || !sol.ok) return null;                     // degenerate / missing walls → hold last pose
+    return { position: sol.position, quaternion: sol.quaternion, kind: el._anchor ? "anchored" : "legacy" };
   }
 
   window.ConjureFrames = {
@@ -1487,52 +1505,14 @@
         var ridden = 0, freed = 0, anchored = 0;
         Array.prototype.forEach.call(wr.children, function (el) {
           if (!el._frefPose || !el.object3D) return;
-          var fp = el._frefPose;
-          // ON-SURFACE content RIDES its host surface (§5a, §7c-B2): the server stored the content's pose in
-          // the host's LOCAL frame (meta.surface_offset = host⁻¹·image); we re-apply it to the host's ACTUAL
-          // rendered pose — image = host_local · offset — so it tracks exactly what's drawn (incl. the
-          // apply-gate) and never drifts within the surface. world-root is identity ⇒ the host's local
-          // object3D pose IS its world pose. No dependence on any docSurfaces copy of the host pose. If the
-          // host isn't rendered this frame (never captured/recovered) or has no offset yet, hold (skip).
-          if (el._onSurface) {
-            var hostEl = document.getElementById(el._onSurface), off = el._surfaceOffset;
-            if (!hostEl || !hostEl.object3D || !off || !off.p || !off.q) return;
-            var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
-            // Ride the host's TARGET pose while it's easing, not its mid-slew object3D (§5.5): captures land
-            // at ~0.5 Hz but the host eases at 90 Hz, so re-snapping to the host's current object3D each
-            // capture would let the art lag the wall through the transition. Composing against the host's
-            // target and giving the content its OWN target (same tau, same epoch) eases them in lock-step.
-            var slewing = slewSet.has(hostEl) && hostEl._tgtPos;
-            var hp = slewing ? hostEl._tgtPos : hostEl.object3D.position;
-            var hq = slewing ? hostEl._tgtQuat : hostEl.object3D.quaternion;
-            var hostMat = new THREE.Matrix4().compose(hp.clone(), hq.clone(), new THREE.Vector3(1, 1, 1));
-            var offMat = new THREE.Matrix4().compose(new THREE.Vector3(off.p[0], off.p[1], off.p[2]),
-              new THREE.Quaternion(off.q[0], off.q[1], off.q[2], off.q[3]), new THREE.Vector3(1, 1, 1));
-            hostMat.multiply(offMat).decompose(ip, iq, is);
-            placeContent(el, ip, iq);                                 // snap first / when off, else ease with the host
-            ridden++;
-            return;                                                   // on-surface content NEVER free-multilaterates
-          }
-          // FREE / GROUNDED content: solve a plane-relative anchor against the local walls (§5b/c). Grounded
-          // snaps Y to the local floor + keeps it upright (yaw-only); free keeps the full authored 3-D pose.
-          if (localPl.length < 2) return;                           // not enough local wall basis yet
-          // §7c: prefer the SERVER-authored anchor (meta.anchor) — authored once against the seed, so we
-          // just SOLVE it here (no per-capture re-authoring, no dependence on our docSurfaces/_ref copy of
-          // the seed). Fall back to authoring from the F_ref pose against _ref for content placed before 7c
-          // (or when the server couldn't anchor it — too few seed walls).
-          var sol;
-          if (el._anchor) {
-            sol = PA.solveAnchor(THREE, el._anchor, localPl);
-            if (sol.ok) anchored++;
-          } else {
-            if (refPl.length < 2) return;                           // legacy path needs the seed-wall basis too
-            var entity = { mode: el._placement || "free", quaternion: eulerYXZToQuat(THREE, fp.rotation),
-              position: new THREE.Vector3(fp.position[0] || 0, fp.position[1] || 0, fp.position[2] || 0) };
-            sol = PA.solveAnchor(THREE, PA.authorAnchor(THREE, entity, refPl), localPl);
-          }
-          if (!sol.ok) return;                                      // degenerate / missing walls → hold last pose
-          placeContent(el, sol.position, sol.quaternion);           // snap first / when off, else ease (§5.5)
-          freed++;
+          // ONE placement rule for all three kinds — see contentPose. `true` rides the host's slew TARGET
+          // so on-surface art eases in lock-step with its wall (§5.5) instead of lagging it through a
+          // transition. A null result means no basis yet: hold the current pose.
+          var r = contentPose(el, localPl, refPl, true);
+          if (!r) return;
+          placeContent(el, r.position, r.quaternion);   // snap first / when off, else ease (§5.5)
+          if (r.kind === "surface") ridden++;
+          else { freed++; if (r.kind === "anchored") anchored++; }
         });
         if (window.CONJURE_DEBUG_REGISTRATION && (ridden || freed))
           debugLog("content", "on-surface " + ridden + " + free " + freed + " (anchored " + anchored

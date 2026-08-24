@@ -2644,3 +2644,20 @@ def test_surface_image_without_an_offset_still_centres(srv, client):
     e = next(x for x in srv.store.doc["entities"] if x["id"] == "legacy_img")
     assert e["meta"]["surface_offset"]                      # derived for the first time
     assert e["transform"]["position"] != [0, 0, 0]          # placed onto the surface
+
+
+def test_manipulate_stores_a_client_anchor_on_previously_unanchored_content(srv, client):
+    # Free-standing content isn't really un-anchored: the client authors an anchor on the fly from its
+    # F_ref pose every capture. Keeping the exact one the drop produced replaces that re-derived
+    # approximation, so free content is as accurate as models. (The server still never INVENTS one — see
+    # test_manipulate_leaves_unanchored_content_without_an_anchor.)
+    _anchored_room(client)
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {
+        "id": "ent_free_img", "transform": {"position": [0, 1.4, -2]},
+        "components": {"geometry": {"primitive": "plane", "width": 0.5, "height": 0.4}}, "meta": {}}}]})
+    mine = {"mode": "free", "floor": {"id": "real_floor_0", "offset": 1.4},
+            "walls": [{"id": "real_wall_1", "offset": -1.0, "rel": [0, 0, 0, 1]},
+                      {"id": "real_wall_3", "offset": -2.0, "rel": [0, 0, 0, 1]}]}
+    client.post("/manipulate", json={"id": "ent_free_img", "position": [0.4, 1.5, -1.6], "anchor": mine})
+    e = next(x for x in _entities(client) if x["id"] == "ent_free_img")
+    assert e["meta"]["anchor"] == mine
