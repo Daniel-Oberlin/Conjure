@@ -332,7 +332,7 @@ class Settings:
     #   select — primary "interact with content" (e.g. rippling a Water Picture)
     #   grab   — pick up / move an object          resize — scale it by a corner handle
     #   reel   — axis: push/pull a held object along the beam
-    bindings: str = '{"select":"trigger","grab":"grip","resize":"grip","reel":"stickY"}'
+    bindings: str = '{"select":"trigger","grab":"grip","resize":"trigger","reel":"stickY"}'
 
 
 def get_settings() -> Settings:
@@ -396,5 +396,5 @@ def get_settings() -> Settings:
         beam_timeout=float(os.environ.get("CONJURE_BEAM_TIMEOUT", "10.0")),
         beam_trigger=float(os.environ.get("CONJURE_BEAM_TRIGGER", "0.05")),
         bindings=os.environ.get(
-            "CONJURE_BINDINGS", '{"select":"trigger","grab":"grip","resize":"grip","reel":"stickY"}'),
+            "CONJURE_BINDINGS", '{"select":"trigger","grab":"grip","resize":"trigger","reel":"stickY"}'),
     )

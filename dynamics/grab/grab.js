@@ -393,8 +393,12 @@
           var st = this._ctrl[p.key] || (this._ctrl[p.key] = { mode: "idle", target: null });
 
           if (st.mode === "idle") {
+            if (!p.availableTo("grab")) continue;      // another module owns this pointer right now
             var hit = this._pick(origin, dir);
             if (hit) { hover = hit.el; this._once("hover", "first hover: " + hit.el.id + " at " + hit.dist.toFixed(2) + " m"); }
+            // Reserve the pointer while the beam is on one of OUR corner handles, so a `resize` bound to
+            // the same control as `select` goes to us here and to the content module everywhere else.
+            if (hit && this._isHandle(hit.obj, hit.el)) CP.reserve(p.key, "grab");
             // The two gestures are separate ACTIONS, chosen by what the beam is on: a corner handle resizes,
             // the body moves. Both are bound to grip today, so this reads as it always did — but pointing
             // `resize` at the trigger later is then purely a binding change, with no edit here.
@@ -405,6 +409,8 @@
               else {
                 st.action = wantResize ? "resize" : "grab";
                 this._begin(st, hit, origin, cq, dir);
+                if (st.mode === "idle") continue;       // _begin refused (e.g. host surface not rendered)
+                CP.claim(p.key, "grab");                // ours for the whole gesture
                 hover = st.target;
                 glog("grab " + hit.el.id + " mode=" + st.mode + " via " + st.action);
               }
@@ -416,17 +422,17 @@
             if (!p.active(st.action || "grab")) {
               glog("release " + st.target.id + " → commit");
               this._commit(st); st.mode = "idle"; st.target = null;
+              CP.release(p.key, "grab");                // hand the pointer back
             } else {
               this._update(st, origin, cq, dir, p.value("reel"), dt);
             }
           }
         }
-        // STICKY highlight: keep it on the last object when the ray leaves it, rather than clearing. The
-        // corner handles sit OUTSIDE the mesh, so aiming at one stopped hovering the object and deleted the
-        // very handles you were reaching for — the box "disappearing" as the beam moved onto a corner. It
-        // still switches the moment you hover a DIFFERENT object, and drops if the object goes away.
-        var keep = (this._hud.el && this._hud.el.isConnected) ? this._hud.el : null;
-        this._setHud(hover || keep);
+        // Focus FOLLOWS THE BEAM: leave an object and its highlight goes. This was sticky while handles
+        // were picked by proximity — aiming at a corner un-hovered the object and deleted the very handles
+        // you were reaching for. Handles are children of the target and picked by identity now, so the beam
+        // still hits the entity when it's on a corner and focus holds where it should.
+        this._setHud(hover);
       } catch (e) {
         // Never break the render loop over a manipulation — but SAY SO once. Swallowing silently makes a
         // broken module look identical to one that was never conjured.

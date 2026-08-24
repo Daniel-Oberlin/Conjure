@@ -51,6 +51,17 @@
   var cache = { frame: null, list: [], t: 0 };
   var prev = {};               // key → last frame's control values, for rising/falling edges
   var seen = {};               // one-shot diagnostic latches
+  var frameId = 0;             // bumped per rebuild; dates reservations
+  // Sharing a pointer between modules (hit-ownership arbitration):
+  //   CAPTURE   — held for a whole gesture. While grab is dragging, that pointer is exclusively grab's, so
+  //               nothing else reacts to its buttons mid-drag.
+  //   RESERVE   — a claim on the NEXT press, renewed per frame by whoever is under the beam. Grab reserves
+  //               while you hover one of its corner handles, so a trigger there means resize while the same
+  //               trigger on the picture's body still means ripple. Needed because module tick ORDER isn't
+  //               guaranteed: a reservation is honoured for one extra frame so a module ticking before the
+  //               reserver still defers.
+  var captured = {};           // key → owner, until released
+  var reserved = {};           // key → {owner, f}
 
   // Diagnostics → console + temp/conjure.log, like [water]/[grab]. This layer failing silently is
   // indistinguishable from "no controllers in range", and every module downstream goes dead with it, so it
@@ -64,6 +75,7 @@
   function once(key, msg) { if (seen[key]) return; seen[key] = 1; plog(msg); }
 
   function build(frame, refSpace, session) {
+    frameId++;
     var THREE = AFRAME.THREE, out = [], sources = session.inputSources || [];
     for (var i = 0; i < sources.length; i++) {
       var src = sources[i];
@@ -91,7 +103,7 @@
     // Drop edge state for pointers that vanished, so a reconnect doesn't inherit a stale "held".
     var live = {};
     out.forEach(function (p) { live[p.key] = p.ctrl; });
-    for (var k in prev) if (!live[k]) delete prev[k];
+    for (var k in prev) if (!live[k]) { delete prev[k]; delete captured[k]; delete reserved[k]; }
     var was = {};
     for (var k2 in prev) was[k2] = prev[k2];
     out.forEach(function (p) { p._was = was[p.key] || null; });
@@ -115,6 +127,8 @@
         var c = ctl(action), now = ctrl[c] || 0, before = this._was ? (this._was[c] || 0) : 0;
         return now < ACTIVE_AT && before >= ACTIVE_AT;
       },
+      // Free for `owner` to act on? False while ANOTHER module holds or has reserved this pointer.
+      availableTo: function (owner) { var o = ownerOf(key); return !o || o === owner; },
       // Is ANY bound action engaged? Lets presentation (the beam) follow intent without knowing which.
       anyActive: function () {
         var b = bindings();
@@ -124,8 +138,25 @@
     };
   }
 
+  function ownerOf(key) {
+    if (captured[key]) return captured[key];
+    var r = reserved[key];
+    return (r && r.f >= frameId - 1) ? r.owner : null;   // one frame of slack — see the note above
+  }
+
   window.ConjurePointers = {
     ACTIVE_AT: ACTIVE_AT,
+    /** Take a pointer for the duration of a gesture — nothing else sees its actions until released. */
+    claim: function (key, owner) {
+      if (captured[key] && captured[key] !== owner) return false;
+      captured[key] = owner; return true;
+    },
+    release: function (key, owner) { if (captured[key] === owner) delete captured[key]; },
+    /** "I'd take the next press on this pointer" — renew each frame while under the beam. */
+    reserve: function (key, owner) { reserved[key] = { owner: owner, f: frameId }; },
+    ownerOf: ownerOf,
+    /** Free, or already ours. The one check a module needs before acting on a pointer. */
+    availableTo: function (key, owner) { var o = ownerOf(key); return !o || o === owner; },
     /** Every pointer this frame, or [] outside an XR session. Cached per XRFrame: call it from as many
      *  modules as you like and the input is still read once. */
     list: function (sceneEl) {

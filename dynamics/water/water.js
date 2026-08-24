@@ -214,6 +214,9 @@
       var pointers = CP ? CP.list(this.el.sceneEl) : [];
       for (var i = 0; i < pointers.length; i++) {
         var p = pointers[i], key = p.key, uv = null;
+        // Defer while another module owns this pointer — e.g. grab reserves it when the beam is on one of
+        // its corner handles, so the SAME control resizes there and ripples everywhere else on the picture.
+        if (!p.availableTo("water")) { this._lastUV[key] = null; continue; }
         if (p.isHand) {
           if (p.fingertip) uv = this._toUV(p.fingertip, true);
         } else if (p.active("select")) {

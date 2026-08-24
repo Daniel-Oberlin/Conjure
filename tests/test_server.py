@@ -2668,11 +2668,13 @@ def test_index_injects_pointer_bindings_and_the_shared_reader(srv, client):
     html = client.get("/").text
     assert '<script src="/static/conjure-pointers.js?v=' in html      # the single XR input reader
     # Control→action bindings are config, so re-binding (e.g. resize onto the trigger) needs no module edit.
-    assert '"resize":"grip"' in html and '"select":"trigger"' in html
-    rebound = '{"select":"trigger","grab":"grip","resize":"trigger","reel":"stickY"}'
+    # resize shares the trigger with select; arbitration (grab reserves the pointer while the beam is on
+    # one of its corner handles) is what keeps them apart — see client/conjure-pointers.js.
+    assert '"resize":"trigger"' in html and '"select":"trigger"' in html and '"grab":"grip"' in html
+    rebound = '{"select":"trigger","grab":"grip","resize":"grip","reel":"stickY"}'
     monkey = dataclasses.replace(srv.settings, bindings=rebound)
     srv.settings, old = monkey, srv.settings
     try:
-        assert '"resize":"trigger"' in client.get("/").text
+        assert '"resize":"grip"' in client.get("/").text
     finally:
         srv.settings = old
