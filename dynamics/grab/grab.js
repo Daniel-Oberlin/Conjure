@@ -21,7 +21,8 @@
   if (!window.AFRAME) return;
   if (AFRAME.components.grab) return;
 
-  var HILITE = 0x66ccff, HANDLE = 0xffcc33, HANDLE_R = 0.02;   // handle sphere radius (m, in target-local space)
+  var HILITE = 0x66ccff, HANDLE = 0xffcc33, HANDLE_R = 0.02;   // handle sphere radius, WORLD metres (_setHud
+  //                                                              divides out the target's scale)
   var SCALE_MIN = 0.05, SCALE_MAX = 50.0;
   var ONE = null;   // set once AFRAME.THREE exists
 
@@ -102,7 +103,9 @@
       obj.updateWorldMatrix(true, true);
       var inv = new THREE.Matrix4().copy(obj.matrixWorld).invert();
       obj.traverse(function (n) {
-        if (!n.isMesh || !n.geometry) return;
+        // Skip our own HUD: it's a CHILD of the target, so measuring with it attached (which _begin does
+        // on a resize grab) would inflate the box by the handle spheres and mis-seat the model.
+        if (!n.isMesh || !n.geometry || n.userData.grabHud) return;
         n.geometry.computeBoundingBox();
         var gb = n.geometry.boundingBox; if (!gb) return;
         var m = new THREE.Matrix4().multiplyMatrices(inv, n.matrixWorld);
@@ -138,6 +141,7 @@
         var h = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 8), hmat);
         h.position.set(xs[a], ys[b], zs[c]);
         h.renderOrder = 999;
+        h.userData.grabHud = true;            // never measured as part of the object (see _localBox)
         group.add(h); handles.push(h);
       }
       helper.renderOrder = 999;
@@ -178,6 +182,15 @@
         obj.updateWorldMatrix(true, false);
         st.center = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
         st.startDist = Math.max(1e-3, origin.distanceTo(st.center));
+        // A GROUNDED model must keep its BASE on the floor while resizing — scaling about the origin would
+        // otherwise sink it or leave it hovering until the next capture re-grounds it. Remember where the
+        // floor is (base = origin.y + boxMin.y × worldScale) so _update can re-seat it at any new size.
+        st.gScale = el.dataset.placement === "grounded" && !el.dataset.onSurface;
+        if (st.gScale) {
+          var sbox = this._localBox(obj);
+          st.boxMinY = sbox ? sbox.min.y : 0;
+          st.floorY = st.center.y + st.boxMinY * obj.getWorldScale(new THREE.Vector3()).y;
+        }
         return;
       }
       st.mode = "grab";
@@ -191,13 +204,17 @@
         obj.updateWorldMatrix(true, false);
         var gp = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
         st.groundY = gp.y;                                                    // its resting height on the floor
-        var gq = new THREE.Quaternion().setFromRotationMatrix(obj.matrixWorld);
+        // getWorldQuaternion, NOT setFromRotationMatrix(matrixWorld): the latter needs a PURE (unscaled)
+        // rotation matrix, and a glTF model carries its normalizing scale (~0.005) in matrixWorld. Feeding
+        // it a scaled matrix collapses the read-back angle toward zero (90° reads as ~1°), so the yaw offset
+        // was wrong and the model snapped to a canonical facing on grab — the "180° flip".
+        var gq = obj.getWorldQuaternion(new THREE.Quaternion());
         var objYaw = new THREE.Euler().setFromQuaternion(gq, "YXZ").y;
         st.yawOff = objYaw - new THREE.Euler().setFromQuaternion(cq, "YXZ").y;   // wrist twist → object yaw
       } else if (st.surface && st.surface.object3D) {   // surface-constrained: slide on the plane
         var s3 = st.surface.object3D; s3.updateWorldMatrix(true, false);
         st.sPos = new THREE.Vector3().setFromMatrixPosition(s3.matrixWorld);
-        st.sQuat = new THREE.Quaternion().setFromRotationMatrix(s3.matrixWorld);
+        st.sQuat = s3.getWorldQuaternion(new THREE.Quaternion());   // unscaled — see the grounded branch
         st.normal = new THREE.Vector3(0, 0, 1).applyQuaternion(st.sQuat).normalize();   // surface outward +Z
         obj.updateWorldMatrix(true, false);
         var oPos = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
@@ -219,6 +236,11 @@
               Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.y)),
               Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.z)));
         obj.scale.copy(s);
+        if (st.gScale) {   // re-seat the base on the floor for the new size, so it never sinks or hovers
+          var nws = obj.getWorldScale(new THREE.Vector3());
+          var targetY = st.floorY - st.boxMinY * nws.y;
+          obj.position.y += targetY - obj.getWorldPosition(new THREE.Vector3()).y;
+        }
         return;
       }
       if (st.grounded) {                         // slide along the floor plane it rests on; yaw-only turn
@@ -247,7 +269,7 @@
           p = st.sPos.clone().add(right.multiplyScalar(du)).add(up.multiplyScalar(dv));
         }
         p.add(st.normal.clone().multiplyScalar(st.standoff));   // keep its stand-off in front of the surface
-        var world = new THREE.Matrix4().compose(p, new THREE.Quaternion().setFromRotationMatrix(obj.matrixWorld), obj.scale);
+        var world = new THREE.Matrix4().compose(p, obj.getWorldQuaternion(new THREE.Quaternion()), obj.scale);
         this._applyWorld(obj, world);
         return;
       }
@@ -315,7 +337,12 @@
             else this._update(st, origin, cq, dir, thumbY, dt);
           }
         }
-        this._setHud(hover);
+        // STICKY highlight: keep it on the last object when the ray leaves it, rather than clearing. The
+        // corner handles sit OUTSIDE the mesh, so aiming at one stopped hovering the object and deleted the
+        // very handles you were reaching for — the box "disappearing" as the beam moved onto a corner. It
+        // still switches the moment you hover a DIFFERENT object, and drops if the object goes away.
+        var keep = (this._hud.el && this._hud.el.isConnected) ? this._hud.el : null;
+        this._setHud(hover || keep);
       } catch (e) {
         // Never break the render loop over a manipulation — but SAY SO once. Swallowing silently makes a
         // broken module look identical to one that was never conjured.
