@@ -300,11 +300,22 @@
     _commit: function (st) {
       var THREE = AFRAME.THREE, obj = st.target && st.target.object3D;
       if (!obj) return;
-      var e = new THREE.Euler().setFromQuaternion(obj.quaternion, "YXZ"), R = 180 / Math.PI;
+      // FRAME: what we just dragged is in the LOCAL render frame (F_track). The server persists F_ref and
+      // re-solves content from it every capture, so committing the raw local pose makes the object jump to
+      // wherever that solve lands on release. Convert with ConjureFrames.toRef (the inverse of the client's
+      // solve). With no room basis (void/outdoor world) the frames coincide → commit the local pose as-is.
+      var conv = window.ConjureFrames && window.ConjureFrames.toRef(
+        obj.getWorldPosition(new THREE.Vector3()), obj.getWorldQuaternion(new THREE.Quaternion()),
+        st.target.dataset.placement === "grounded" ? "grounded" : "free");
+      var pos = conv ? conv.position : obj.position;
+      var quat = conv ? conv.quaternion : obj.quaternion;
+      var e = new THREE.Euler().setFromQuaternion(quat, "YXZ"), R = 180 / Math.PI;
       var body = { id: st.target.id,
-        position: [obj.position.x, obj.position.y, obj.position.z],
+        position: [pos.x, pos.y, pos.z],
         rotation: [e.x * R, e.y * R, e.z * R],
         scale: [obj.scale.x, obj.scale.y, obj.scale.z] };
+      glog("commit " + st.target.id + " frame=" + (conv ? "ref" : "local")
+        + " pos=" + pos.x.toFixed(2) + "," + pos.y.toFixed(2) + "," + pos.z.toFixed(2));
       fetch("/manipulate", { method: "POST",
         headers: { "Content-Type": "application/json", "X-Conjure-User": urlUser() || "" },
         body: JSON.stringify(body) }).catch(function () { /* local state stands; a snapshot will reconcile */ });

@@ -953,11 +953,33 @@
   // #world-root's local frame so it aligns for everyone (AR: world-root is parked at the registered
   // frame; desktop: world-root is at identity, so it's just the camera pose).
   var socket = null, R_AV = 0.13, GAP_AV = 0.03, worldOwner = null, guestSpawned = false;
+  // Last capture's plane bases: local walls (F_track) + seed walls (F_ref). Cached by _placeContent so
+  // ConjureFrames.toRef can invert its solve for interaction modules.
+  var framePlanes = { local: null, ref: null };
 
   // Minimal shared-event bus for dynamic modules (docs/dynamic-content-plan.md, tier B). `emitShared`
   // relays an event to PEERS via the ws (the server fans it to the OTHER clients); on()/off() subscribe;
   // inbound `module_event` messages are dispatched to subscribers. A module acts on its OWN input
   // immediately (local); this bus carries only the shared, cross-client traffic (e.g. water touches).
+  // Frame bridge for INTERACTION modules (grab, and anything else that lets a user drag content).
+  // In a captured room #world-root is identity, so a pose you SEE is in this client's LOCAL frame
+  // (F_track) — but the server persists poses in the SEED frame (F_ref) and re-solves content from it
+  // every capture (_placeContent). Committing a dragged F_track pose raw therefore makes the object JUMP
+  // to wherever that solve lands. `toRef` is the exact inverse of that solve: author a plane-relative
+  // anchor from the dragged pose against the LOCAL walls, then solve it against the SEED walls.
+  // Returns null when there's no basis (no room captured yet / void world) — the frames coincide there,
+  // so the caller should commit the raw pose.
+  window.ConjureFrames = {
+    toRef: function (position, quaternion, mode) {
+      var PA = window.PlaneAnchor, lp = framePlanes.local, rp = framePlanes.ref;
+      if (!PA || !lp || !rp || lp.length < 2 || rp.length < 2) return null;
+      var anchor = PA.authorAnchor(AFRAME.THREE,
+        { position: position, quaternion: quaternion, mode: mode || "free" }, lp);
+      var sol = PA.solveAnchor(AFRAME.THREE, anchor, rp);
+      return (sol && sol.ok) ? { position: sol.position, quaternion: sol.quaternion } : null;
+    }
+  };
+
   window.ConjureBus = {
     _subs: {},
     on: function (event, fn) { (this._subs[event] = this._subs[event] || []).push(fn); },
@@ -1359,6 +1381,7 @@
         var PA = window.PlaneAnchor; if (!PA) return;
         var THREE = AFRAME.THREE;
         var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
+        framePlanes.local = localPl; framePlanes.ref = refPl;   // the basis ConjureFrames.toRef inverts
         var wr = document.getElementById("world-root"); if (!wr) return;
         var ridden = 0, freed = 0, anchored = 0;
         Array.prototype.forEach.call(wr.children, function (el) {

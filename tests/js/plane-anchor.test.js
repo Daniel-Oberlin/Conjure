@@ -181,3 +181,36 @@ test("golden vectors reproduce the recorded outputs (JS/Python parity contract)"
     }
   });
 });
+
+// The grab-commit contract (docs/dynamic-module-spec.md §tier-C): a user drags content in THIS client's
+// LOCAL frame (F_track), but the server persists poses in the SEED frame (F_ref) and re-solves content
+// from them every capture. So a commit must convert local→ref (ConjureFrames.toRef = author against the
+// local walls, solve against the seed walls). These two tests pin why that conversion is required.
+test("grab commit: local→ref conversion survives the server's re-author and re-solve (no jump)", () => {
+  const refPl = room();                                   // seed walls (F_ref, what the server stores)
+  const localPl = moveRoom(refPl, 25, V(0.7, 0, -0.4));   // this client's registration of the same room
+  const dropped = { position: V(0.5, 0, 1.0), quaternion: yawQ(30), mode: "grounded" };  // where the user let go
+
+  // client: convert the dragged LOCAL pose into the server's frame before committing
+  const toRef = PA.solveAnchor(THREE, PA.authorAnchor(THREE, dropped, localPl), refPl);
+  assert.ok(toRef.ok, toRef.stat);
+  // server: re-authors meta.anchor from the committed F_ref pose against the SEED walls
+  const stored = PA.authorAnchor(THREE, { position: toRef.position, quaternion: toRef.quaternion, mode: "grounded" }, refPl);
+  // client: re-solves that anchor against its LOCAL walls → must land back where the user dropped it
+  const back = PA.solveAnchor(THREE, stored, localPl);
+  assert.ok(back.ok, back.stat);
+  assert.ok(back.position.distanceTo(dropped.position) < 1e-6, "jumped to " + back.position.toArray());
+  assert.ok(back.quaternion.angleTo(dropped.quaternion) < 1e-6, "orientation changed");
+});
+
+test("grab commit: committing the RAW local pose instead makes it jump by the registration offset", () => {
+  const refPl = room();
+  const localPl = moveRoom(refPl, 25, V(0.7, 0, -0.4));
+  const dropped = { position: V(0.5, 0, 1.0), quaternion: yawQ(30), mode: "grounded" };
+  // the bug: commit the local pose as if it were already F_ref, then let the client re-solve it
+  const stored = PA.authorAnchor(THREE, dropped, refPl);
+  const back = PA.solveAnchor(THREE, stored, localPl);
+  assert.ok(back.ok, back.stat);
+  assert.ok(back.position.distanceTo(dropped.position) > 0.2,
+    "expected a visible jump, got " + back.position.distanceTo(dropped.position));
+});
