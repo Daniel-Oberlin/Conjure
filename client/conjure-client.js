@@ -735,6 +735,16 @@
       if (localRenderActive && e.meta && e.meta.real) return;
       applyEntity(e);
     });
+    // A SNAPSHOT is the COMPLETE world state, unlike an env PATCH (which merges only the fields it
+    // carries — `applyEnv` is written for that merge). So a snapshot whose environment has no `room`
+    // block means THIS world has no room at all (an outdoor/void world), and the room flags must RESET
+    // rather than inherit the previous world's. Without this, switching from a captured room to an
+    // outdoor world left `roomState.active` true, so the last room's surfaces (locally-rendered ones
+    // included — applyImmersion drives them via [data-real]) kept drawing over the outdoor world.
+    if (!(world.environment || {}).room) {
+      roomState.active = false;
+      roomState.passthrough = false;
+    }
     applyEnv(world.environment);   // after entities, so immersion can toggle them
     isVoidWorld = ((world.environment || {}).space === VOID_SPACE);
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
