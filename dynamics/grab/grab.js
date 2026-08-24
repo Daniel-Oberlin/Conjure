@@ -125,9 +125,17 @@
       group.add(helper);
       var hmat = new THREE.MeshBasicMaterial({ color: HANDLE, depthTest: false, transparent: true });
       var handles = [];
+      // The HUD is a CHILD of the target, so it inherits the target's scale — and a glTF model is usually
+      // normalized by a tiny scale (a Beagle sits at ~0.005). A fixed local radius would render the handles
+      // at 0.005×0.02 ≈ 0.1 mm: invisible, and impossible to point at (why resize looked "missing"). Size
+      // them in WORLD metres by dividing out the world scale, so they're the same real size on any object.
+      var ws = new THREE.Vector3();
+      el.object3D.getWorldScale(ws);
+      var s = Math.max(1e-6, Math.max(ws.x, Math.max(ws.y, ws.z)));
+      var r = HANDLE_R / s;
       var xs = [box.min.x, box.max.x], ys = [box.min.y, box.max.y], zs = [box.min.z, box.max.z];
       for (var a = 0; a < 2; a++) for (var b = 0; b < 2; b++) for (var c = 0; c < 2; c++) {
-        var h = new THREE.Mesh(new THREE.SphereGeometry(HANDLE_R, 8, 8), hmat);
+        var h = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 8), hmat);
         h.position.set(xs[a], ys[b], zs[c]);
         h.renderOrder = 999;
         group.add(h); handles.push(h);
@@ -174,7 +182,19 @@
       }
       st.mode = "grab";
       st.surface = el.dataset.onSurface ? document.getElementById(el.dataset.onSurface) : null;
-      if (st.surface && st.surface.object3D) {   // surface-constrained: slide on the plane
+      // GROUNDED content (a placed model, meta.placement="grounded") is re-solved onto the LOCAL floor,
+      // upright, on every client capture. Dragging it in 6DOF would therefore be undone by the next solve
+      // — so constrain it the way it will be re-derived: slide on the horizontal plane it rests on, and
+      // rotate yaw-only (twist the wrist to turn it). Free content keeps full 6DOF.
+      st.grounded = !st.surface && el.dataset.placement === "grounded";
+      if (st.grounded) {
+        obj.updateWorldMatrix(true, false);
+        var gp = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
+        st.groundY = gp.y;                                                    // its resting height on the floor
+        var gq = new THREE.Quaternion().setFromRotationMatrix(obj.matrixWorld);
+        var objYaw = new THREE.Euler().setFromQuaternion(gq, "YXZ").y;
+        st.yawOff = objYaw - new THREE.Euler().setFromQuaternion(cq, "YXZ").y;   // wrist twist → object yaw
+      } else if (st.surface && st.surface.object3D) {   // surface-constrained: slide on the plane
         var s3 = st.surface.object3D; s3.updateWorldMatrix(true, false);
         st.sPos = new THREE.Vector3().setFromMatrixPosition(s3.matrixWorld);
         st.sQuat = new THREE.Quaternion().setFromRotationMatrix(s3.matrixWorld);
@@ -199,6 +219,17 @@
               Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.y)),
               Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.z)));
         obj.scale.copy(s);
+        return;
+      }
+      if (st.grounded) {                         // slide along the floor plane it rests on; yaw-only turn
+        if (dir.y > -1e-5) return;               // ray parallel/upward → it never meets the floor
+        var tg = (st.groundY - origin.y) / dir.y;
+        if (tg <= 0) return;
+        var gp2 = origin.clone().add(dir.clone().multiplyScalar(tg));
+        gp2.y = st.groundY;                      // stays ON the floor — never lifted or sunk
+        var yaw = new THREE.Euler().setFromQuaternion(cq, "YXZ").y + st.yawOff;
+        var gq2 = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0, "YXZ"));  // upright
+        this._applyWorld(obj, new THREE.Matrix4().compose(gp2, gq2, obj.scale));
         return;
       }
       if (st.surface) {                          // slide the object where the ray meets the surface plane

@@ -3997,8 +3997,16 @@ async def manipulate_entity(req: ManipulateRequest) -> dict:
             nrot = req.rotation if req.rotation is not None else (ent.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0])
             if npos:
                 sets["meta.surface_offset"] = _surface_offset(spos, srot, npos, nrot)
-    patch = store.apply_patch([{"op": "update", "id": req.id, "set": sets}], origin="manipulate")
-    await _broadcast({"type": "patch", "patch": patch})
+    applied = store.apply_patch([{"op": "update", "id": req.id, "set": sets}], origin="manipulate")
+    # ANCHORED content (a grounded model) re-derives its pose from `meta.anchor` on every client capture, so a
+    # move that doesn't RE-AUTHOR the anchor is reverted at the next capture/reload — the "I moved it but it
+    # didn't survive" bug. Exactly what /patch does for the same reason (§7c).
+    reanchor = _reanchor_moved_content_ops(applied["ops"])
+    if reanchor:
+        extra = store.apply_patch(reanchor, origin="manipulate")
+        applied = {"rev": extra["rev"], "origin": "manipulate",
+                   "ops": applied["ops"] + extra["ops"], "inverse": extra["inverse"] + applied["inverse"]}
+    await _broadcast({"type": "patch", "patch": applied})
     return {"ok": True, "id": req.id}
 
 

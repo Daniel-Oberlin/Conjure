@@ -2013,6 +2013,45 @@ def test_move_leaves_unanchored_content_alone(srv, client):
     assert "anchor" not in (e.get("meta") or {})
 
 
+def _anchored_room(client):
+    """A seed room with a floor + 4 walls — enough for _content_anchor to author a plane-relative anchor."""
+    client.post("/room", json={"client_id": "h1", "surfaces": [
+        {"id": "real_floor_0", "semantic": "floor", "position": [0, 0, 0], "rotation": [-90, 0, 0], "extent": [4, 6]},
+        {"id": "real_wall_1", "semantic": "wall", "position": [2, 1.2, 0], "rotation": [0, 90, 0], "extent": [3, 2.4]},
+        {"id": "real_wall_2", "semantic": "wall", "position": [-2, 1.2, 0], "rotation": [0, -90, 0], "extent": [3, 2.4]},
+        {"id": "real_wall_3", "semantic": "wall", "position": [0, 1.2, 3], "rotation": [0, 0, 0], "extent": [3, 2.4]},
+        {"id": "real_wall_4", "semantic": "wall", "position": [0, 1.2, -3], "rotation": [0, 180, 0], "extent": [3, 2.4]}]})
+
+
+def test_manipulate_reauthors_anchor_so_a_grab_survives_recapture(srv, client):
+    # Regression (found on-device): grabbing a grounded model moved it, but the new position didn't survive a
+    # restart. An anchored model's pose is RE-SOLVED from meta.anchor every capture, so /manipulate must
+    # re-author the anchor from the new pose — exactly as /patch does — or the next solve reverts the grab.
+    from conjure.plane_anchor import solve_anchor
+    _anchored_room(client)
+    anchor = srv._content_anchor({"position": [0.3, 0, -0.8]}, "grounded")
+    assert anchor
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {
+        "id": "ent_dog", "transform": {"position": [0.3, 0, -0.8]}, "components": {"gltf-model": "/a"},
+        "meta": {"placement": "grounded", "anchor": anchor}}}]})
+    r = client.post("/manipulate", json={"id": "ent_dog", "position": [1.2, 0, 0.5]}).json()
+    assert r["ok"] is True
+    e = next(x for x in _entities(client) if x["id"] == "ent_dog")
+    sol = solve_anchor(e["meta"]["anchor"], srv._seed_planes())      # anchor follows the grab, not the old pose
+    assert sol["ok"] and abs(sol["position"][0] - 1.2) < 1e-6 and abs(sol["position"][2] - 0.5) < 1e-6
+
+
+def test_manipulate_leaves_unanchored_content_without_an_anchor(srv, client):
+    # A free (un-anchored) object grabbed in 6DOF must not acquire a spurious anchor — mirrors /patch.
+    _anchored_room(client)
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {
+        "id": "ent_float", "transform": {"position": [0, 1, -2]}, "components": {"gltf-model": "/a"}, "meta": {}}}]})
+    client.post("/manipulate", json={"id": "ent_float", "position": [1, 1.4, -2]})
+    e = next(x for x in _entities(client) if x["id"] == "ent_float")
+    assert "anchor" not in (e.get("meta") or {})
+    assert e["transform"]["position"] == [1, 1.4, -2]
+
+
 # ---- /scope/activate: switch the live world to a scope's world (agent switch) --------------------
 
 def test_scope_activate_is_noop_when_already_active(srv, client):

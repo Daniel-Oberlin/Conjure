@@ -598,8 +598,11 @@
       return;
     }
     // Stash the surface home id (if any) so the `grab` module can tell surface-attached content (constrain
-    // to the plane) from free content (6DOF). Meta isn't otherwise mirrored onto the DOM.
+    // to the plane) from free content (6DOF). Meta isn't otherwise mirrored onto the DOM. `placement`
+    // likewise: "grounded" content re-solves onto the LOCAL floor every capture, so grab must keep it ON
+    // the floor — a 6DOF drag of a grounded model would just be undone by the next solve.
     if (meta.on_surface) el.dataset.onSurface = meta.on_surface; else delete el.dataset.onSurface;
+    if (meta.placement) el.dataset.placement = meta.placement; else delete el.dataset.placement;
     if (t.position) el.setAttribute("position", v3(t.position));
     if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
     if (t.scale) el.setAttribute("scale", v3(t.scale));
