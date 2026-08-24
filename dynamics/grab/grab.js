@@ -25,7 +25,11 @@
   //                                                              divides out the target's scale). Hitting a
   //                                                              corner is an EXACT intersection (see
   //                                                              _isHandle), so the size is the target.
-  var SCALE_MIN = 0.05, SCALE_MAX = 50.0;      // absolute clamp on the resulting transform.scale
+  // Bounds are RELATIVE to the size the object started at — never absolute. A glTF model is normalized to
+  // fit a target size, so its transform.scale is whatever that took (a Beagle sits at ~0.0049). An absolute
+  // floor of 0.05 was 10× ABOVE that, so resize snapped the model 10× bigger the instant it engaged,
+  // before the hand moved at all.
+  var SCALE_REL_MIN = 0.02, SCALE_REL_MAX = 50.0;   // total size range vs. the object's original scale
   var SCALE_REF = 0.5;                         // hand travel (m) that doubles/halves the size
   var SCALE_DEAD = 0.04;                       // hand travel (m) ignored before a resize starts
   var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
@@ -189,6 +193,10 @@
       if (this._isHandle(hit.obj, el)) {       // gripped a corner handle itself → uniform resize
         st.mode = "scale";
         st.startScale = obj.scale.clone();
+        // The size it was FIRST seen at, remembered on the element — the band the relative clamp works in,
+        // so repeated gestures can't compound their way to absurd sizes.
+        if (!el._grabOrigScale) el._grabOrigScale = obj.scale.x || 1;
+        st.origScale = el._grabOrigScale;
         obj.updateWorldMatrix(true, false);
         st.center = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
         st.startDist = Math.max(1e-3, origin.distanceTo(st.center));
@@ -249,11 +257,12 @@
         travel = travel > SCALE_DEAD ? travel - SCALE_DEAD
                : (travel < -SCALE_DEAD ? travel + SCALE_DEAD : 0);
         var f = Math.min(SCALE_F_MAX, Math.max(SCALE_F_MIN, 1 + travel / SCALE_REF));
-        var s = st.startScale.clone().multiplyScalar(f);
-        s.set(Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.x)),
-              Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.y)),
-              Math.min(SCALE_MAX, Math.max(SCALE_MIN, s.z)));
-        obj.scale.copy(s);
+        // Total size stays within a band around the object's ORIGINAL scale (st.origScale), so repeated
+        // gestures can't run away — and f=1 leaves the object at exactly the size you grabbed it at.
+        var total = (st.origScale > 0) ? (st.startScale.x * f) / st.origScale : 1;
+        if (total < SCALE_REL_MIN) f *= SCALE_REL_MIN / total;
+        else if (total > SCALE_REL_MAX) f *= SCALE_REL_MAX / total;
+        obj.scale.copy(st.startScale.clone().multiplyScalar(f));
         if (st.gScale) {   // re-seat the base on the floor for the new size, so it never sinks or hovers
           var nws = obj.getWorldScale(new THREE.Vector3());
           var targetY = st.floorY - st.boxMinY * nws.y;
@@ -304,9 +313,16 @@
       // re-solves content from it every capture, so committing the raw local pose makes the object jump to
       // wherever that solve lands on release. Convert with ConjureFrames.toRef (the inverse of the client's
       // solve). With no room basis (void/outdoor world) the frames coincide → commit the local pose as-is.
-      var conv = window.ConjureFrames && window.ConjureFrames.toRef(
-        obj.getWorldPosition(new THREE.Vector3()), obj.getWorldQuaternion(new THREE.Quaternion()),
-        st.target.dataset.placement === "grounded" ? "grounded" : "free");
+      var wp = obj.getWorldPosition(new THREE.Vector3());
+      var wq = obj.getWorldQuaternion(new THREE.Quaternion());
+      var mode = st.target.dataset.placement === "grounded" ? "grounded" : "free";
+      var CF = window.ConjureFrames;
+      // Send the anchor we authored against OUR OWN walls, for the server to store verbatim. It's the same
+      // anchor we'll re-solve against the same walls, so the object stays exactly where it was dropped —
+      // letting the server re-author from a position instead costs two extra author/solve hops between
+      // non-rigidly-related plane sets, which is the slight settle-after-release.
+      var anchor = CF && CF.anchorFor(wp, wq, mode);
+      var conv = CF && CF.toRef(wp, wq, mode);
       var pos = conv ? conv.position : obj.position;
       var quat = conv ? conv.quaternion : obj.quaternion;
       var e = new THREE.Euler().setFromQuaternion(quat, "YXZ"), R = 180 / Math.PI;
@@ -314,7 +330,9 @@
         position: [pos.x, pos.y, pos.z],
         rotation: [e.x * R, e.y * R, e.z * R],
         scale: [obj.scale.x, obj.scale.y, obj.scale.z] };
+      if (anchor) body.anchor = anchor;
       glog("commit " + st.target.id + " frame=" + (conv ? "ref" : "local")
+        + " anchor=" + (anchor ? "own" : "server")
         + " pos=" + pos.x.toFixed(2) + "," + pos.y.toFixed(2) + "," + pos.z.toFixed(2)
         + " scale=" + obj.scale.x.toFixed(4));
       fetch("/manipulate", { method: "POST",

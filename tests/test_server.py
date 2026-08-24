@@ -2549,3 +2549,36 @@ def test_manipulate_is_owner_gated(srv, client):
     assert r.status_code == 403
     e = next(x for x in _entities(client) if x["id"] == eid)
     assert e["transform"]["position"] == [0, 1, -2]     # unchanged
+
+
+def test_manipulate_stores_a_client_authored_anchor_verbatim(srv, client):
+    # The client authors the anchor against ITS OWN walls and sends it; the server stores it as-is. Letting
+    # the server re-author from the committed position instead adds author/solve hops between plane sets
+    # that aren't rigidly related, and the residual shows up as content settling off the drop point.
+    _anchored_room(client)
+    anchor = srv._content_anchor({"position": [0.3, 0, -0.8]}, "grounded")
+    assert anchor
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {
+        "id": "ent_dog2", "transform": {"position": [0.3, 0, -0.8]}, "components": {"gltf-model": "/a"},
+        "meta": {"placement": "grounded", "anchor": anchor}}}]})
+    mine = {"mode": "grounded", "floor": {"id": "real_floor_0", "offset": 0.25},
+            "walls": [{"id": "real_wall_1", "offset": -1.0, "rel": [0, 0, 0, 1]},
+                      {"id": "real_wall_3", "offset": -2.0, "rel": [0, 0, 0, 1]}]}
+    r = client.post("/manipulate", json={"id": "ent_dog2", "position": [1.2, 0, 0.5], "anchor": mine}).json()
+    assert r["ok"] is True
+    e = next(x for x in _entities(client) if x["id"] == "ent_dog2")
+    assert e["meta"]["anchor"] == mine          # stored verbatim, NOT re-authored from the position
+
+
+def test_manipulate_still_reauthors_when_no_anchor_is_sent(srv, client):
+    # No client anchor (no room basis on that client) ⇒ the server re-authors, as before.
+    from conjure.plane_anchor import solve_anchor
+    _anchored_room(client)
+    anchor = srv._content_anchor({"position": [0.3, 0, -0.8]}, "grounded")
+    client.post("/patch", json={"ops": [{"op": "add", "entity": {
+        "id": "ent_dog3", "transform": {"position": [0.3, 0, -0.8]}, "components": {"gltf-model": "/a"},
+        "meta": {"placement": "grounded", "anchor": anchor}}}]})
+    client.post("/manipulate", json={"id": "ent_dog3", "position": [1.2, 0, 0.5]})
+    e = next(x for x in _entities(client) if x["id"] == "ent_dog3")
+    sol = solve_anchor(e["meta"]["anchor"], srv._seed_planes())
+    assert sol["ok"] and abs(sol["position"][0] - 1.2) < 1e-6

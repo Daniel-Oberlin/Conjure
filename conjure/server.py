@@ -3966,6 +3966,12 @@ class ManipulateRequest(BaseModel):
     position: Optional[list[float]] = None
     rotation: Optional[list[float]] = None   # A-Frame euler degrees (YXZ), like every other transform
     scale: Optional[list[float]] = None
+    # The plane-relative anchor the CLIENT authored against its own walls, stored verbatim. Anchors are
+    # plane-relative (shared surface ids + offsets), so one authored against any client's walls solves
+    # correctly on every other client. Preferring it avoids re-authoring here from the committed position:
+    # that adds author/solve hops between plane sets that aren't rigidly related, and the residual shows up
+    # as content settling slightly off where the user dropped it. Omitted (no room basis) ⇒ we re-author.
+    anchor: Optional[dict] = None
 
 
 @app.post("/manipulate")
@@ -3997,11 +4003,14 @@ async def manipulate_entity(req: ManipulateRequest) -> dict:
             nrot = req.rotation if req.rotation is not None else (ent.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0])
             if npos:
                 sets["meta.surface_offset"] = _surface_offset(spos, srot, npos, nrot)
+    if req.anchor and (ent.get("meta") or {}).get("anchor") is not None:
+        sets["meta.anchor"] = req.anchor          # client-authored, stored as-is (see ManipulateRequest)
     applied = store.apply_patch([{"op": "update", "id": req.id, "set": sets}], origin="manipulate")
     # ANCHORED content (a grounded model) re-derives its pose from `meta.anchor` on every client capture, so a
     # move that doesn't RE-AUTHOR the anchor is reverted at the next capture/reload — the "I moved it but it
-    # didn't survive" bug. Exactly what /patch does for the same reason (§7c).
-    reanchor = _reanchor_moved_content_ops(applied["ops"])
+    # didn't survive" bug. Exactly what /patch does for the same reason (§7c). Skipped when the client sent
+    # its own anchor above — re-authoring would throw away the exact one and reintroduce the drift.
+    reanchor = [] if "meta.anchor" in sets else _reanchor_moved_content_ops(applied["ops"])
     if reanchor:
         extra = store.apply_patch(reanchor, origin="manipulate")
         applied = {"rev": extra["rev"], "origin": "manipulate",

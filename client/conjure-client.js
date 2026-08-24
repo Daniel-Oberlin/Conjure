@@ -992,6 +992,19 @@
   }
 
   window.ConjureFrames = {
+    // The plane-relative anchor for a pose in OUR frame, authored against the LOCAL walls. Anchors are
+    // plane-relative (shared surface ids + offsets), so this is directly solvable by any client against
+    // its own walls — send it to the server to store verbatim. Doing that beats committing a position and
+    // letting the server re-author: local→ref→seed→local is four author/solve hops between plane sets that
+    // are NOT rigidly related (that's the point of local-first geometry), and each hop leaves a little
+    // residual — the object settling slightly off where it was dropped. Authoring here means the client
+    // re-solves the SAME anchor against the SAME walls, which is exact.
+    anchorFor: function (position, quaternion, mode) {
+      var PA = window.PlaneAnchor, lp = framePlanes.local;
+      if (!PA || !lp || lp.length < 2) return null;
+      return PA.authorAnchor(AFRAME.THREE,
+        { position: position, quaternion: quaternion, mode: mode || "free" }, lp);
+    },
     toRef: function (position, quaternion, mode) {
       var PA = window.PlaneAnchor, lp = framePlanes.local, rp = framePlanes.ref;
       if (!PA || !lp || !rp || lp.length < 2 || rp.length < 2) return null;
