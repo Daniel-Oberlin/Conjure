@@ -3557,11 +3557,27 @@ def _on_surface_set(spos: list[float], srot: list[float], extent, e: dict) -> di
     keeping the content's current aspect, and carry the host-local offset (§7c-B2) so the client can ride
     it without its own copy of the host seed pose. A horizontal surface reuses the placing viewer's facing
     from `meta.content_up` (surface-local), so a re-capture keeps the bottom edge toward where it was placed."""
-    fr = _face_room(srot, (e.get("meta") or {}).get("content_up"))
-    f = fr["forward"]
-    pos = [spos[i] + get_settings().on_surface_standoff * f[i] for i in range(3)]
-    out: dict = {"transform.position": pos, "transform.rotation": fr["rotation"],
-                 "meta.surface_offset": _surface_offset(spos, srot, pos, fr["rotation"])}
+    off = (e.get("meta") or {}).get("surface_offset")
+    if off and off.get("p") and off.get("q"):
+        # RIDE the stored host-local offset: content = host · offset — the same composition the client
+        # renders with. Re-deriving from scratch instead (below) re-centres the content on its surface and
+        # rewrites the offset to match, which silently threw away any repositioning the user did within the
+        # frame: a moved image snapped back to the middle on the next re-anchor while its SIZE survived
+        # (scale isn't touched here), which is exactly how that bug presented.
+        qh = _euler_yxz_quat(srot)
+        qi = _quat_mul(qh, list(off["q"]))
+        pos = [spos[i] + _quat_rot(qh, list(off["p"]))[i] for i in range(3)]
+        rot = _basis_yxz(_quat_rot(qi, [1.0, 0.0, 0.0]), _quat_rot(qi, [0.0, 1.0, 0.0]),
+                         _quat_rot(qi, [0.0, 0.0, 1.0]))
+        out: dict = {"transform.position": [round(c, 5) for c in pos],
+                     "transform.rotation": [round(c, 4) for c in rot]}
+    else:
+        # No offset yet (first placement / legacy content): centre it on the surface, facing the room.
+        fr = _face_room(srot, (e.get("meta") or {}).get("content_up"))
+        f = fr["forward"]
+        pos = [spos[i] + get_settings().on_surface_standoff * f[i] for i in range(3)]
+        out = {"transform.position": pos, "transform.rotation": fr["rotation"],
+               "meta.surface_offset": _surface_offset(spos, srot, pos, fr["rotation"])}
     dc = _dims_component(e)                       # geometry (image) or the module's own component (water)
     if extent and dc:
         comp = e["components"][dc]

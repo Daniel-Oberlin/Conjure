@@ -2605,3 +2605,42 @@ def test_manipulate_derives_surface_offset_when_client_sends_none(srv, client):
     client.post("/manipulate", json={"id": r["id"], "position": [0.85, 1.85, -1.12]})
     e = next(x for x in _entities(client) if x["id"] == r["id"])
     assert e["meta"]["surface_offset"] != before
+
+
+def test_moved_surface_image_keeps_its_spot_across_a_recapture(srv, client):
+    # Regression (found on-device): a wall image moved WITHIN its frame snapped back to the middle on the
+    # next re-anchor, while its size survived. _on_surface_set re-derived the pose from scratch (surface
+    # centre + standoff) and overwrote the offset; it must RIDE the stored offset instead.
+    import math
+    _wall_art(client, extent=(1.2, 1.0))
+    image_id = _procure(client)
+    r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 18"}).json()
+    placed = next(x for x in _entities(client) if x["id"] == r["id"])
+    surf = next(x for x in _entities(client) if x["id"] == "real_wall_art_18")
+    spos, srot = surf["transform"]["position"], surf["transform"]["rotation"]
+    # Move it off-centre within the frame, exactly as a grab does: a pose plus the matching host-local
+    # offset (the client computes the pair from the same drop, so they agree).
+    rot = placed["transform"]["rotation"]
+    moved = [placed["transform"]["position"][0] + 0.25, placed["transform"]["position"][1] - 0.15,
+             placed["transform"]["position"][2]]
+    off = srv._surface_offset(spos, srot, moved, rot)
+    client.post("/manipulate", json={"id": r["id"], "position": moved, "rotation": rot,
+                                     "surface_offset": off})
+    # world LOAD re-pins every on-surface image (what happens on a restart): it must stay where it was put
+    srv._reanchor_surface_images(srv.store.doc)
+    after = next(x for x in srv.store.doc["entities"] if x["id"] == r["id"])
+    assert after["meta"]["surface_offset"] == off          # offset preserved, not rewritten
+    assert math.dist(after["transform"]["position"], moved) < 1e-3
+
+
+def test_surface_image_without_an_offset_still_centres(srv, client):
+    # Legacy/first placement (no stored offset) keeps the old behaviour: centred on the surface.
+    _wall_art(client)
+    srv.store.doc["entities"].append({
+        "id": "legacy_img", "transform": {"position": [0, 0, 0], "rotation": [0, 0, 0]},
+        "components": {"geometry": {"width": 0.2, "height": 0.2}},
+        "meta": {"on_surface": "real_wall_art_18"}})
+    srv._reanchor_surface_images(srv.store.doc)
+    e = next(x for x in srv.store.doc["entities"] if x["id"] == "legacy_img")
+    assert e["meta"]["surface_offset"]                      # derived for the first time
+    assert e["transform"]["position"] != [0, 0, 0]          # placed onto the surface
