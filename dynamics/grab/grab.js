@@ -33,6 +33,7 @@
   // floor of 0.05 was 10× ABOVE that, so resize snapped the model 10× bigger the instant it engaged,
   // before the hand moved at all.
   var SCALE_REL_MIN = 0.02, SCALE_REL_MAX = 50.0;   // total size range vs. the object's original scale
+  var BOX_TTL_MS = 500;                        // how long a cached selection box stays valid
   var HANDLE_SOFT = 0.06;                      // aim slop (m) for a corner when the ray hits nothing
   var SCALE_DEAD = 0.02;                       // corner drag (m) ignored before a resize starts
   var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
@@ -103,6 +104,44 @@
       return best;
     },
 
+    // The object's local box, cached on the element (the traverse + bounding-box work is wasted per frame).
+    // Only a real box is cached, so a glTF that hasn't finished loading is retried rather than pinned null.
+    _boxFor: function (el) {
+      var t = (window.performance && performance.now) ? performance.now() : Date.now();
+      // Short TTL rather than a permanent cache: an image's geometry changes when it's resized or re-fitted
+      // to its surface, and a glTF's box only exists once the model has loaded. Recomputing a few boxes
+      // twice a second is nothing, and it can never disagree for long with the box we DRAW.
+      if (!el._grabLocalBox || (t - (el._grabBoxAt || 0)) > BOX_TTL_MS) {
+        var b = this._localBox(el.object3D);
+        if (b) { el._grabLocalBox = b; el._grabBoxAt = t; }
+      }
+      return el._grabLocalBox;
+    },
+
+    // FOCUS hit-test: does the ray pass through an object's SELECTION BOX? Used when the ray misses the
+    // mesh. A model's corners stand off in empty space, so between the silhouette and a corner the ray hits
+    // nothing — focus dropped, the HUD was destroyed, and the handles vanished before you could reach them
+    // (worse for big models and oblique angles). The visible box is the affordance, so it should be the
+    // focus region: track along it to a corner and focus never breaks. Mesh/handle hits still win, so what
+    // you GRAB stays exact. Tested in the object's own space, so the box is oriented, not axis-aligned.
+    _boxPick: function (origin, dir) {
+      var THREE = AFRAME.THREE, els = this._manipulables(), best = null;
+      var ray = new THREE.Ray(origin, dir), inv = new THREE.Matrix4();
+      var local = new THREE.Ray(), at = new THREE.Vector3();
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i], box = this._boxFor(el);
+        if (!box) continue;
+        el.object3D.updateWorldMatrix(true, false);
+        inv.copy(el.object3D.matrixWorld).invert();
+        local.copy(ray).applyMatrix4(inv);
+        if (!local.intersectBox(box, at)) continue;
+        var world = at.clone().applyMatrix4(el.object3D.matrixWorld);
+        var d = origin.distanceTo(world);
+        if (!best || d < best.dist) best = { el: el, obj: null, point: world, dist: d };
+      }
+      return best;
+    },
+
     // Is `obj` (the exact thing the ray hit) one of the current HUD's corner handles? Identity, not
     // proximity: an earlier "nearest handle within 6 cm of the ray" test stole ordinary BODY grabs, because
     // a small model's box corners sit well inside that slop when you aim at its middle — every grab became
@@ -156,7 +195,7 @@
       if (this._hud.el === el) return;
       this._clearHud();
       if (!el || !el.object3D) return;
-      var THREE = AFRAME.THREE, box = this._localBox(el.object3D);
+      var THREE = AFRAME.THREE, box = this._boxFor(el);   // same box focus is tested against
       if (!box) return;
       var group = new THREE.Group();
       var helper = new THREE.Box3Helper(box, HILITE);
@@ -422,7 +461,10 @@
             // No visible pointer, no highlight: a selection box appearing with no beam aimed at it reads
             // as the scene reacting to nothing.
             if (!p.armed()) continue;
-            var hit = this._pick(origin, dir) || this._softHandle(origin, dir);
+            // Exact hit (mesh or handle) → what you grab. Else the selection BOX keeps focus across the gap
+            // between silhouette and corner. Else a near-miss right at a corner, which only works because
+            // the box kept the HUD alive long enough to get there.
+            var hit = this._pick(origin, dir) || this._boxPick(origin, dir) || this._softHandle(origin, dir);
             if (hit) { hover = hit.el; this._once("hover", "first hover: " + hit.el.id + " at " + hit.dist.toFixed(2) + " m"); }
             // Reserve the pointer while the beam is on one of OUR corner handles, so a `resize` bound to
             // the same control as `select` goes to us here and to the content module everywhere else.
