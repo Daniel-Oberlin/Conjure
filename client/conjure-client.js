@@ -791,8 +791,13 @@
     // object by this client's registration offset until the next capture corrects it — the "disappears for
     // a second, then comes back" flicker after a grab. Keep the anchor SOURCE (above) and skip the render.
     // Same principle as the GEO_PATHS gate for real surfaces: local render owns local geometry.
-    if (el._anchor && (path === "transform.position" || path === "transform.rotation")) return;
-    if (path === "meta.surface_offset") el._surfaceOffset = value || null;   // §7c-B2 re-anchor
+    // …and the same for SURFACE-ATTACHED content, whose rendered pose is host_local · surface_offset
+    // (the _onSurface branch of _placeContent). Its committed transform is likewise F_ref.
+    if ((el._anchor || el._onSurface) && (path === "transform.position" || path === "transform.rotation")) return;
+    if (path === "meta.surface_offset") {                      // §7c-B2 re-anchor
+      el._surfaceOffset = value || null;
+      rideHostNow(el);                  // land it on the host NOW, not at the next capture
+    }
     if (path === "components.material.visible") {       // real-surface visibility → entity attribute
       el.dataset.matVisible = String(value);
       applyRealVisibility(el);
@@ -991,7 +996,39 @@
     return true;
   }
 
+  // Re-seat SURFACE-ATTACHED content on its host right now: content_world = host · surface_offset (the
+  // same composition _placeContent's _onSurface branch does). Used when a new offset arrives so the
+  // content lands on its wall immediately rather than after the next capture.
+  function rideHostNow(el) {
+    var off = el._surfaceOffset, hostEl = el._onSurface && document.getElementById(el._onSurface);
+    if (!off || !off.p || !off.q || !hostEl || !hostEl.object3D) return false;
+    var THREE = AFRAME.THREE, h = hostEl.object3D;
+    var m = new THREE.Matrix4()
+      .compose(h.position.clone(), h.quaternion.clone(), new THREE.Vector3(1, 1, 1))
+      .multiply(new THREE.Matrix4().compose(
+        new THREE.Vector3(off.p[0], off.p[1], off.p[2]),
+        new THREE.Quaternion(off.q[0], off.q[1], off.q[2], off.q[3]), new THREE.Vector3(1, 1, 1)));
+    var p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    m.decompose(p, q, s);
+    placeContent(el, p, q);
+    return true;
+  }
+
   window.ConjureFrames = {
+    // The host-local offset (host⁻¹ · content) for surface-attached content, from poses in OUR frame.
+    // Host-relative and therefore frame-independent: the server stores it verbatim and every client
+    // re-applies it to its OWN rendered host pose. Computing it here (rather than letting the server derive
+    // it from a committed F_ref position) keeps the drop exact — no wall-anchor round trip in between.
+    surfaceOffset: function (hostObj, position, quaternion) {
+      var THREE = AFRAME.THREE;
+      hostObj.updateWorldMatrix(true, false);
+      var inv = new THREE.Matrix4()
+        .compose(hostObj.position.clone(), hostObj.quaternion.clone(), new THREE.Vector3(1, 1, 1)).invert();
+      var m = inv.multiply(new THREE.Matrix4().compose(position, quaternion, new THREE.Vector3(1, 1, 1)));
+      var p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      m.decompose(p, q, s);
+      return { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] };
+    },
     // The plane-relative anchor for a pose in OUR frame, authored against the LOCAL walls. Anchors are
     // plane-relative (shared surface ids + offsets), so this is directly solvable by any client against
     // its own walls — send it to the server to store verbatim. Doing that beats committing a position and

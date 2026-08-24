@@ -2582,3 +2582,26 @@ def test_manipulate_still_reauthors_when_no_anchor_is_sent(srv, client):
     e = next(x for x in _entities(client) if x["id"] == "ent_dog3")
     sol = solve_anchor(e["meta"]["anchor"], srv._seed_planes())
     assert sol["ok"] and abs(sol["position"][0] - 1.2) < 1e-6
+
+
+def test_manipulate_stores_a_client_surface_offset_verbatim(srv, client):
+    # Surface-attached content is positioned host-relative; the client computes the offset against its own
+    # rendered host and the server keeps it as-is (same reasoning as the client-authored anchor).
+    _wall_art(client)
+    image_id = _procure(client)
+    r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 18"}).json()
+    mine = {"p": [0.11, -0.02, -0.02], "q": [0.0, 1.0, 0.0, 0.0]}
+    client.post("/manipulate", json={"id": r["id"], "position": [0.8, 1.8, -1.1], "surface_offset": mine})
+    e = next(x for x in _entities(client) if x["id"] == r["id"])
+    assert e["meta"]["surface_offset"] == mine
+
+
+def test_manipulate_derives_surface_offset_when_client_sends_none(srv, client):
+    # No client offset (host not rendered there) ⇒ the server still derives one from the committed pose.
+    _wall_art(client)
+    image_id = _procure(client)
+    r = client.post("/place_image", json={"image_id": image_id, "on_surface": "wall art 18"}).json()
+    before = next(x for x in _entities(client) if x["id"] == r["id"])["meta"]["surface_offset"]
+    client.post("/manipulate", json={"id": r["id"], "position": [0.85, 1.85, -1.12]})
+    e = next(x for x in _entities(client) if x["id"] == r["id"])
+    assert e["meta"]["surface_offset"] != before

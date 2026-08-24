@@ -3972,6 +3972,9 @@ class ManipulateRequest(BaseModel):
     # that adds author/solve hops between plane sets that aren't rigidly related, and the residual shows up
     # as content settling slightly off where the user dropped it. Omitted (no room basis) ⇒ we re-author.
     anchor: Optional[dict] = None
+    # Likewise for SURFACE-ATTACHED content: the host-local offset (host⁻¹·content) the client computed
+    # against its own rendered host. Host-relative ⇒ frame-independent ⇒ stored verbatim.
+    surface_offset: Optional[dict] = None
 
 
 @app.post("/manipulate")
@@ -3994,7 +3997,9 @@ async def manipulate_entity(req: ManipulateRequest) -> dict:
     if not sets:
         return {"ok": False, "error": "nothing to change"}
     surf_id = (ent.get("meta") or {}).get("on_surface")
-    if surf_id and (req.position is not None or req.rotation is not None):
+    if surf_id and req.surface_offset:
+        sets["meta.surface_offset"] = req.surface_offset   # client-computed against its own rendered host
+    elif surf_id and (req.position is not None or req.rotation is not None):
         surf = next((e for e in store.doc["entities"] if e["id"] == surf_id), None)
         spos = surf and surf.get("transform", {}).get("position")
         if spos:

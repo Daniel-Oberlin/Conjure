@@ -146,10 +146,14 @@
       var ws = new THREE.Vector3();
       el.object3D.getWorldScale(ws);
       var s = Math.max(1e-6, Math.max(ws.x, Math.max(ws.y, ws.z)));
-      // …but never let a handle swamp a SMALL object: capped at a quarter of the box's shortest side, so
-      // the corners can't grow over the body and start stealing body grabs again.
+      // …but never let a handle swamp a SMALL object (they'd grow over the body and steal body grabs).
+      // Capped at a quarter of the box's shortest side — measuring only NON-DEGENERATE axes: an image is a
+      // flat plane, so its box has zero depth, and taking the plain min collapsed the radius to 0 — which is
+      // why images had no grabbable corners at all.
       var size = box.getSize(new THREE.Vector3());
-      var r = Math.min(HANDLE_R / s, Math.min(size.x, Math.min(size.y, size.z)) * 0.25);
+      var dims = [size.x, size.y, size.z].filter(function (d) { return d > 1e-6; });
+      var cap = dims.length ? Math.min.apply(null, dims) * 0.25 : Infinity;
+      var r = Math.min(HANDLE_R / s, cap);
       var xs = [box.min.x, box.max.x], ys = [box.min.y, box.max.y], zs = [box.min.z, box.max.z];
       for (var a = 0; a < 2; a++) for (var b = 0; b < 2; b++) for (var c = 0; c < 2; c++) {
         var h = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 8), hmat);
@@ -224,6 +228,15 @@
       }
       st.mode = "grab";
       st.surface = el.dataset.onSurface ? document.getElementById(el.dataset.onSurface) : null;
+      // Content that BELONGS to a surface must never fall through to free 6DOF just because its host isn't
+      // rendered right now (not captured this session) — that's how wall art ended up floating off its wall.
+      // Refuse the grab instead; it becomes movable again as soon as the surface is captured.
+      if (el.dataset.onSurface && !(st.surface && st.surface.object3D)) {
+        st.mode = "idle"; st.target = null;
+        this._once("nohost", "refusing to move " + el.id + " — its surface "
+          + el.dataset.onSurface + " isn't rendered yet");
+        return;
+      }
       // GROUNDED content (a placed model, meta.placement="grounded") is re-solved onto the LOCAL floor,
       // upright, on every client capture. Dragging it in 6DOF would therefore be undone by the next solve
       // — so constrain it the way it will be re-derived: slide on the horizontal plane it rests on, and
@@ -335,6 +348,11 @@
       // non-rigidly-related plane sets, which is the slight settle-after-release.
       var anchor = CF && CF.anchorFor(wp, wq, mode);
       var conv = CF && CF.toRef(wp, wq, mode);
+      // Surface-attached content is positioned host-relative, not against the walls: send the host-local
+      // offset we can compute exactly here, so the server stores it verbatim and the art stays where it
+      // was put (deriving it server-side from a committed position adds the same drift models had).
+      var hostEl = st.target.dataset.onSurface && document.getElementById(st.target.dataset.onSurface);
+      var soff = (CF && hostEl && hostEl.object3D) ? CF.surfaceOffset(hostEl.object3D, wp, wq) : null;
       var pos = conv ? conv.position : obj.position;
       var quat = conv ? conv.quaternion : obj.quaternion;
       var e = new THREE.Euler().setFromQuaternion(quat, "YXZ"), R = 180 / Math.PI;
@@ -343,8 +361,9 @@
         rotation: [e.x * R, e.y * R, e.z * R],
         scale: [obj.scale.x, obj.scale.y, obj.scale.z] };
       if (anchor) body.anchor = anchor;
+      if (soff) body.surface_offset = soff;
       glog("commit " + st.target.id + " frame=" + (conv ? "ref" : "local")
-        + " anchor=" + (anchor ? "own" : "server")
+        + " anchor=" + (anchor ? "own" : "server") + (soff ? " surf=own" : "")
         + " pos=" + pos.x.toFixed(2) + "," + pos.y.toFixed(2) + "," + pos.z.toFixed(2)
         + " scale=" + obj.scale.x.toFixed(4));
       fetch("/manipulate", { method: "POST",
