@@ -616,6 +616,87 @@ async def test_last_agent_falls_back_to_builder_without_server():
     assert await sh._last_agent() == "builder"                # no world_url → safe default
 
 
+async def test_a_resumed_agent_is_never_asserted_at_the_world_server(monkeypatch):
+    """At boot the world server is the source of truth — it has already restored the live scope. A
+    RESUMED agent is at best what we just read back from it, at worst `_last_agent`'s fallback after the
+    world server didn't answer; asserting either can only no-op or overwrite the truth with a guess.
+    An EXPLICIT --agent is a real instruction, so it still asserts."""
+    from conjure import shell as shell_mod
+    asserted = []
+
+    async def fake_open(self, agent, *, activate_world=True):
+        if activate_world:
+            asserted.append(agent)
+
+    monkeypatch.setattr(shell_mod.Shell, "_open_agent", fake_open)
+    monkeypatch.setattr(shell_mod.Shell, "_last_agent", lambda self: _immediately("outdoor"))
+
+    async with shell_mod.Shell.session(settings=None, agent=None, user="daniel"):
+        pass
+    assert asserted == []                                     # resumed → stays quiet
+    async with shell_mod.Shell.session(settings=None, agent="scratch", user="daniel"):
+        pass
+    assert asserted == ["scratch"]                            # explicit → asserted
+
+
+async def _immediately(value):
+    return value
+
+
+async def test_last_agent_waits_for_a_world_server_that_is_still_booting(monkeypatch):
+    """The two servers race at startup — the world server runs migrations before it binds — and this
+    answer picks which agent's MCP server gets spawned. Guessing past it boots the wrong agent, spawns
+    and tears down an MCP subprocess, and fires a spurious 'now in the … agent' when the follower
+    corrects us. So poll until it answers."""
+    from conjure import shell as shell_mod
+    monkeypatch.setattr(shell_mod, "_LAST_AGENT_POLL", 0.001)
+    monkeypatch.setattr(shell_mod, "LAST_AGENT_WAIT", 5.0)
+    tries = []
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *e):
+            return False
+
+        async def get(self, url, params=None):
+            tries.append(url)
+            if len(tries) < 4:
+                raise OSError("connection refused")           # still running migrations, port not bound
+            return type("R", (), {"json": staticmethod(lambda: {"ok": True, "agent": "outdoor"})})()
+
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: _Client())
+    sh = Shell(None, settings=types.SimpleNamespace(world_url="http://x"))
+    sh._user = "daniel"
+    assert await sh._last_agent() == "outdoor"                # waited it out instead of guessing 'builder'
+    assert len(tries) == 4
+
+
+async def test_last_agent_gives_up_rather_than_hanging_forever(monkeypatch):
+    # The world server may never come. Bounded wait, then the safe default — which session() won't assert.
+    from conjure import shell as shell_mod
+    monkeypatch.setattr(shell_mod, "_LAST_AGENT_POLL", 0.001)
+    monkeypatch.setattr(shell_mod, "LAST_AGENT_WAIT", 0.02)
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *e):
+            return False
+
+        async def get(self, url, params=None):
+            raise OSError("connection refused")
+
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: _Client())
+    sh = Shell(None, settings=types.SimpleNamespace(world_url="http://x"))
+    sh._user = "daniel"
+    assert await sh._last_agent() == "builder"
+
+
 async def test_session_switch_own_vs_visit_by_arg_count():
     """`session <name>` switches your own; `session <user> <name>` visits — the arg count decides, and
     quoting keeps a spaced name as one token (no paths)."""

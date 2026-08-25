@@ -173,6 +173,13 @@ G2/G3 govern *whose turn is allowed* (per-speaker, P9).
   pointer to X, subject to gates/pinning). Launched bare, it **resumes** — aligns read-only to whatever the
   world server reports; no assert, so it never stomps a headset-driven state.
 
+  > Enforced in `Shell.session` (`activate_world=agent is not None`). It previously asserted either way,
+  > which was harmless when the read succeeded (`/scope/activate` answers `unchanged`) and destructive when
+  > it didn't: `_last_agent` answered `builder` for an unreachable world server and the bare launch then
+  > wrote that guess over the restored session. `_last_agent` now **waits** for the world server
+  > (`LAST_AGENT_WAIT`, 5 s) instead of guessing past it — the two race at startup, since the world server
+  > runs migrations before it binds — and a guess that does get made is no longer asserted.
+
 ---
 
 ## 6. Multi-user & permissions — the worked cases

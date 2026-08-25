@@ -26,14 +26,23 @@ and reads the same spoken or typed. A *path* command acts on anything addressabl
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import shlex
+import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Awaitable, Callable, Optional
 
 from .agents import agent_names, list_agents
 from .config import DEFAULT_USER, Settings, scope_for
 from .director import Director
+
+# How long `_last_agent` waits for the world server before falling back to `builder`. A front-end can do
+# almost nothing without the world server, so waiting beats guessing: the answer decides which agent's
+# MCP server we spawn, and getting it wrong costs a subprocess spawned and torn down plus a spurious
+# "now in the … agent" the moment the follower corrects us.
+LAST_AGENT_WAIT = 5.0
+_LAST_AGENT_POLL = 0.25
 
 OnText = Callable[..., Awaitable[None]]
 OnTool = Callable[..., Awaitable[None]]
@@ -203,11 +212,18 @@ class Shell:
         """Own an agent's lifecycle for a front-end. Opens `agent` (spawning its MCP server) and yields
         a Shell driving it; `agent <name>` can then switch agents in place. Closes the active agent's
         MCP server on exit. `agent=None` resumes the user's last-used agent (server-persisted). Front-ends
-        use this instead of `Director.connect` directly."""
+        use this instead of `Director.connect` directly.
+
+        An EXPLICIT `agent` is an instruction, so it's asserted at the world server. A RESUMED one never
+        is. At boot the world server is the source of truth — it has already restored the live scope from
+        the session pointer — so asserting what we just read back at it is either a no-op
+        (`/scope/activate` answers `unchanged`) or, when `_last_agent` had to fall back, a guess
+        overwriting that truth and losing the session you were in. Staying quiet costs nothing: the follow
+        loop adopts the live agent on the first snapshot."""
         shell = cls(None, settings)
         shell._user = user
         shell._errlog = errlog
-        await shell._open_agent(agent or await shell._last_agent())
+        await shell._open_agent(agent or await shell._last_agent(), activate_world=agent is not None)
         try:
             yield shell
         finally:
@@ -215,19 +231,34 @@ class Shell:
                 await shell._stack.aclose()
 
     async def _last_agent(self) -> str:
-        """The user's last-used agent (server-persisted), so a launch without --agent resumes it. Falls
-        back to `builder` when there's no record or the server is unreachable."""
+        """The user's last-used agent (server-persisted), so a launch without --agent resumes it.
+
+        **Waits** for the world server rather than guessing past it (up to `LAST_AGENT_WAIT`). The two
+        servers race at startup — the world server runs migrations before it binds — and this answer
+        picks which agent's MCP server we spawn. Falls back to `builder` with no `world_url`, when the
+        world server answers with nothing, or when the wait runs out; `Shell.session` makes sure that
+        fallback is never asserted back at the world server (a guess must not overwrite a fact)."""
         url = getattr(self._settings, "world_url", None) if self._settings else None
         if not url:
             return "builder"
-        try:
-            import httpx
+        import httpx
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(f"{url}/agent/last", params={"user": self._user})
+        deadline = time.monotonic() + LAST_AGENT_WAIT
+        said = False
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    r = await client.get(f"{url}/agent/last", params={"user": self._user})
                 return r.json().get("agent") or "builder"
-        except Exception:
-            return "builder"
+            except Exception:  # noqa: BLE001 — not up yet (or not up at all); both are just "no answer"
+                if time.monotonic() >= deadline:
+                    print(f"[conjure] no answer from the world server at {url} — opening 'builder'; "
+                          f"the live agent is adopted as soon as it comes up")
+                    return "builder"
+                if not said:
+                    said = True
+                    print(f"[conjure] waiting for the world server at {url} to say which agent is live…")
+                await asyncio.sleep(_LAST_AGENT_POLL)
 
     @property
     def director(self) -> Director:
