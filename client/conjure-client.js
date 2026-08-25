@@ -720,7 +720,9 @@
       awaitingSpace = false;             // applyImmersion (below) sets the world up instead of hiding it
       hideHeadsetMessage(); hideInfo();
     }
-    var key = worldOwner + "/" + (world && world.name);
+    // Key on the world's permanent ID, not its name: renaming a world would otherwise look like a world
+    // SWITCH and needlessly reset the room capture frame.
+    var key = worldOwner + "/" + (world && (world.id || world.name));
     if (key !== lastWorldKey) {          // WORLD SWITCH → drop the previous room's capture frame so the next
       lastWorldKey = key;                // capture seeds/establishes for THIS world, not the last one
       var sc = document.querySelector("a-scene");

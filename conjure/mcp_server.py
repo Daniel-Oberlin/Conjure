@@ -656,18 +656,22 @@ async def list_worlds() -> str:
     """List the worlds in your CURRENT SESSION (and which is active). Call this before switching so you
     match the user's description ('the dining hall') to a real world. You only know the worlds in your own
     session — other sessions, agents, and other users' worlds aren't yours to list or switch; a person
-    reaches those from the shell, not you."""
+    reaches those from the shell, not you.
+
+    Each world has a permanent **id** and a **name** the user can change. If you record a world anywhere
+    that outlives this turn — notably `state_set` — store the **id**: the name may be different next
+    time, the id never is."""
     out = await _post("/worlds/list", _body(scope=_scope()))
-    names = out.get("worlds", [])
-    active = out.get("active")        # the caller's OWN live world, or None when the live world is someone else's
-    current = out.get("current")      # the true live (shared) world {owner, name}
+    entries = out.get("worlds", [])
+    active = out.get("active")        # the caller's OWN live world (an id), or None when the live world is theirs
+    current = out.get("current")      # the true live (shared) world {owner, id, name}
     caller = _scope().split("/", 1)[0]
     lines = []
-    if names:
-        lines.append("Your worlds:")
-        lines += [f"  {'* ' if n == active else '  '}{n}" for n in names]
-        if active in names:
-            lines.append("(* = currently active)")
+    if entries:
+        lines.append("Your worlds (id — name):")
+        lines += [f"  {'* ' if e['id'] == active else '  '}{e['id']} — {e['name']}" for e in entries]
+        if any(e["id"] == active for e in entries):
+            lines.append("(* = currently active. Store the id, not the name, if you need to remember one.)")
     else:
         lines.append("You have no saved worlds yet.")
     if current and current.get("owner") != caller:    # a person visited another user's session → you're a guest
@@ -721,7 +725,8 @@ async def set_space_visibility(public: bool, name: Optional[str] = None) -> str:
 
 @mcp.tool()
 async def switch_world(name: str) -> str:
-    """Switch to one of YOUR worlds in this session (saving the current one first), bringing everyone
+    """Switch to one of YOUR worlds in this session — by **id** (preferred, it never changes) or by its
+    current name. Saves the current world first, bringing everyone
     present along. Match `name` to a real world from list_worlds; formatting/case needn't be exact.
     (Visiting another user's world is a person's action at the shell — not something you do here.)"""
     out = await _post("/worlds/switch", _body(name=name, scope=_scope()))

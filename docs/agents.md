@@ -137,13 +137,12 @@ root. `delete` previews the target, requires a `y` confirmation, and refuses to 
 `/admin/{tree,show,delete}`, so they act on its live state, not raw files. **No auth yet** beyond
 "you can only delete your own namespace" — a fuller permission gate comes later.
 
-**Not here, deliberately.** `rename` covers sessions and assets only: both are metadata edits that move
-nothing. Renaming a **world** or **space** would strand references we can't reach — agent state docs are
-schema-free by design (`StateStore` "doesn't know a `map` from an `inventory`"), and a world's
-`environment.space` may sit inside *another user's* world, which we may not rewrite. That needs an alias
-mechanism — shelved, with the full referrer table and proposed design in
-[backlog.md](./backlog.md#renaming-worlds-and-spaces--needs-an-alias-mechanism-shelved).
-World visibility is likewise absent: `/worlds/visibility` is superseded — visibility is the
+**Rename is safe now.** `rename` covers worlds, spaces, sessions and assets. Identity is a permanent id
+(`wld_…` for a world; `space-1` for a space) and the name is display text — so a rename moves no file and
+strands nothing: not the active pointers, not `session.json`'s `active_world`, not a space's `last_world`,
+not another user's `environment.space`, and not whatever a schema-free agent state doc stashed. See
+[decisions.md §15](./decisions.md). Names are unique within a session, which keeps "the meadow" resolvable.
+World *visibility*, though, is genuinely absent: `/worlds/visibility` is superseded — visibility is the
 **session's** now, and a world inherits it.
 
 **Migration — done.** LLM switching used to live in the agent as `route_turn` (the `"let me talk to

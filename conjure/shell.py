@@ -21,7 +21,7 @@ and reads the same spoken or typed. A *path* command acts on anything addressabl
 
     /<user>/spaces/<name>
     /<user>/agents/<agent>/assets/<id>
-    /<user>/agents/<agent>/sessions/<sid>/worlds/<name>
+    /<user>/agents/<agent>/sessions/<sid>/worlds/<name>   (name or id — a world's identity is its id)
     /<user>/agents/<agent>/worlds            → shortcut for the ACTIVE session's worlds
 """
 from __future__ import annotations
@@ -83,6 +83,23 @@ def resolve_path(cwd: str, arg: str, user: str) -> str:
             continue
         out.append(seg)
     return "/" + "/".join(out)
+
+
+def unquote_arg(arg: str) -> str:
+    """A path argument, quote-aware. Display names contain spaces now, so both `cd "a b/c"` and the
+    unquoted `cd a b/c` have to mean the same thing — quoting is optional, not required."""
+    arg = (arg or "").strip()
+    if arg[:1] in ("'", '"'):
+        try:
+            return (shlex.split(arg) or [""])[0]
+        except ValueError:
+            return arg.strip("'\"")
+    return arg
+
+
+def loc_name(path: str) -> str:
+    """The last segment of a path — the entry's own name."""
+    return (path or "").rstrip("/").rsplit("/", 1)[-1]
 
 
 def display_path(path: str, user: str) -> str:
@@ -172,8 +189,9 @@ class Shell:
              "cd [path] — change the working directory (bare: back to your agent)", False),
             (re.compile(r"^(?P<vis>public|private)(?:\s+(?P<path>\S.*))?$", re.I), self._visibility,
              "public | private [path] — visibility of the live session, or of a path", True),
-            (re.compile(r"^rename\s+(?P<path>\S+)\s+(?P<name>\S.*)$", re.I), self._rename,
-             "rename <path> <new> — retitle a session, relabel an asset", False),
+            (re.compile(r"^rename\s+(?P<rest>\S.*)$", re.I), self._rename,
+             "rename <path> <new name> — retitle a world, space or session; relabel an asset "
+             "(quote a path containing spaces)", False),
             (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
              "delete <path> — remove a world, session, space, asset or user (asks to confirm)", False),
         ]
@@ -585,7 +603,7 @@ class Shell:
     def _path(self, m, default: str = "") -> str:
         """The path argument of a command, resolved against this connection's cwd."""
         raw = (m.group("path") or "") if (m and m.groupdict().get("path")) else ""
-        return resolve_path(self._cwd, raw or default, self._acting)
+        return resolve_path(self._cwd, unquote_arg(raw) or default, self._acting)
 
     async def _dir(self, on_text, m):
         path = self._path(m)
@@ -629,7 +647,7 @@ class Shell:
             await self._say(on_text, f"Session is now {'public' if public else 'private'}."
                             if data.get("ok") else data.get("error", "error"))
             return
-        path = resolve_path(self._cwd, raw, self._acting)
+        path = resolve_path(self._cwd, unquote_arg(raw), self._acting)
         data = await self._admin("show", path)
         if not data.get("ok"):
             await self._say(on_text, data.get("error", "error"))
@@ -652,12 +670,23 @@ class Shell:
                         if out.get("ok") else out.get("error", "error"))
 
     async def _rename(self, on_text, m):
-        """Retitle a session or relabel an asset. Worlds and spaces are deliberately absent: their names
-        are referenced from places a rename can't reach (schema-free agent state, and — for a space —
-        `environment.space` inside ANOTHER user's world, which we may not rewrite). Doing it safely needs
-        a move+alias mechanism: docs/backlog.md, "Renaming worlds and spaces"."""
-        path = resolve_path(self._cwd, m.group("path"), self._acting)
-        new = m.group("name").strip()
+        """Retitle anything with a display name: a world, a space, a session, or an asset's label.
+
+        Worlds and spaces are safe to rename because their identity is a permanent id, not their name —
+        so a rename moves no file and strands nothing, not the active pointers, not a space's
+        `last_world`, not another user's `environment.space`, and not whatever a schema-free agent state
+        doc stashed. (That's what the shelved alias scheme was for; ids removed the need.)"""
+        # Names routinely contain spaces now, so the PATH may too — take it quote-aware rather than
+        # assuming the first whitespace ends it.
+        try:
+            tokens = shlex.split(m.group("rest"))
+        except ValueError:
+            tokens = m.group("rest").split()
+        if len(tokens) < 2:
+            await self._say(on_text, 'Usage: rename <path> <new name>   (quote a path with spaces)')
+            return
+        path = resolve_path(self._cwd, tokens[0], self._acting)   # shlex already unquoted it
+        new = " ".join(tokens[1:]).strip()
         data = await self._admin("show", path)
         if not data.get("ok"):
             await self._say(on_text, data.get("error", "error"))
@@ -668,10 +697,15 @@ class Shell:
         elif kind == "asset":
             out = await self._session_api("POST", "/update_asset", id=fields.get("asset"),
                                           scope=fields.get("scope"), label=new)
+        elif kind == "world":
+            out = await self._session_api("POST", "/worlds/rename", scope=fields.get("scope"),
+                                          name=fields.get("id") or loc_name(path), new_name=new)
+        elif kind == "space":
+            out = await self._session_api("POST", "/space/rename", owner=fields.get("owner"),
+                                          name=fields.get("space"), new_name=new)
         else:
-            await self._say(on_text, f"Can't rename a {kind} — only sessions and assets. "
-                                     f"(A world or space is referred to by name from places a rename "
-                                     f"can't reach.)")
+            await self._say(on_text, f"Can't rename a {kind} — worlds, spaces, sessions and assets have "
+                                     f"names; the rest are containers.")
             return
         await self._say(on_text, f"Renamed to {new}." if out.get("ok") else out.get("error", "error"))
 

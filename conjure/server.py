@@ -46,7 +46,8 @@ from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from .world import (MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
-                    _set_path, migrate_cache_to_users, migrate_project_cache_to_home, slug, world_path)
+                    _set_path, migrate_cache_to_users, migrate_project_cache_to_home, migrate_worlds_to_ids,
+                    new_world_id)
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
@@ -280,7 +281,7 @@ def _ensure_session(scope: str, sid: str | None = None, *, active_world: str | N
         user = scope.split("/", 1)[0]
         sessions.save_meta(scope, sid, {
             "id": sid, "owner": user, "agent": agent_of(scope), "title": "Session 1",
-            "public": True, "active_world": active_world or worlds.get_active(scope) or "default",
+            "public": True, "active_world": active_world or worlds.get_active(scope) or "",
             "llm": ""})
     sessions.set_active(scope, sid)
     return sid
@@ -309,11 +310,11 @@ def _boot_world() -> tuple[str, str, WorldStore]:
             print(f"[conjure] active world {active!r} unreadable ({exc}); creating a fresh default")
     s = _new_world_store(scope)
     _reset_room_authority(s)
-    worlds.save(scope, "default", s)
-    worlds.set_active(scope, "default")
-    _ensure_session(scope, sid, active_world="default")
+    wid = worlds.save(scope, "default", s)      # upsert by name → mints the permanent id
+    worlds.set_active(scope, wid)
+    _ensure_session(scope, sid, active_world=wid)
     _write_session_ptr(scope, sid)
-    return scope, "default", s
+    return scope, wid, s
 
 
 settings = get_settings()  # loads .env
@@ -370,6 +371,9 @@ def _init_state() -> None:
     # legacy worlds tree, then the whole worlds/spaces tree → the user-first session tree.
     _migrate_world_dirs(WORLDS_DIR)                  # pre-user layout → <user>/agents/<agent> (one-time)
     migrate_cache_to_users(CACHE)                    # worlds/spaces → <data>/users/…/sessions/session-1 (one-time)
+    n = migrate_worlds_to_ids(USERS_DIR)             # worlds re-keyed name → `wld_…` id (one-time, idempotent)
+    if n:
+        print(f"[conjure] migrated {n} world(s) to permanent ids")
     sessions = SessionRepository(USERS_DIR)
     worlds = WorldRepository(USERS_DIR, sessions=sessions)   # per-name ops route to the scope's active session
     spaces = SpaceStore(USERS_DIR)
@@ -1226,31 +1230,41 @@ async def reset_world() -> dict:
 
 
 # ---- world management (scoped; scope is injected server-side, never an LLM argument) ----------------
-async def _switch_to(scope: str, name: str, store_override: WorldStore | None = None,
-                     *, sid: Optional[str] = None) -> dict:
+async def _switch_to(scope: str, ref: str, store_override: WorldStore | None = None,
+                     *, sid: Optional[str] = None, wid: Optional[str] = None) -> dict:
     """Make (scope, name) the live world: persist the outgoing one, set the incoming as `store`, record
     it as active, and broadcast a snapshot so the headset reloads. `store_override` installs a freshly
     built world (new_world) instead of loading from disk. `sid` names the target SESSION (default: the
     scope's active session) — resolved AFTER `_save_active` so the outgoing world is written to the
     session it actually belongs to, not the incoming one."""
     global store, active_scope, active_world, active_space, active_space_owner, active_sid
-    name = world_path(name)                   # canonical path, so `active` matches list() + the pointer
     _save_active()                            # split + persist the outgoing world (+ its space) FIRST,
                                               # while the OLD live session is still set on the facade
     sid = _ensure_session(scope, sid)        # flip to the target session (create if fresh) — and point the
     worlds.set_live(scope, sid)              # facade at it BEFORE the load/save, so the incoming world is
                                              # read from the NEW session, not the old one (session-switch bug)
-    raw = store_override if store_override is not None else worlds.load(scope, name)
+    # Resolve AFTER `set_live`: a name only means something inside the target session, and `active_world`
+    # is an ID — the whole point being that renaming the world doesn't move this pointer.
+    if wid is None:
+        wid = worlds.resolve(scope, ref)
     if store_override is not None:
-        worlds.save(scope, name, raw)         # a freshly-built world isn't on disk yet — persist it here
-                                              # (activate is read-only now; creating owns persistence — step 0)
-    active_scope, active_world, active_sid = scope, name, sid
-    active_space_owner, active_space, store = _activate(scope, name, raw)   # resolve space (owner+name) + compose
-    worlds.set_active(scope, name)                # per-session memory: which world to resume in this session
+        # A freshly-built world isn't on disk yet; the upsert persists it and mints an id when `ref` is a
+        # new name (activate is read-only now — creating owns persistence, step 0).
+        raw = store_override
+        wid = worlds.save(scope, wid or ref, raw)
+    else:
+        if wid is None:
+            raise ValueError(f"no world {ref!r}")
+        raw = worlds.load(scope, wid)
+    name = worlds.name_of(scope, wid)
+    active_scope, active_world, active_sid = scope, wid, sid
+    active_space_owner, active_space, store = _activate(scope, wid, raw)   # resolve space (owner+name) + compose
+    worlds.set_active(scope, wid)                 # per-session memory: which world to resume in this session
     _write_session_ptr(scope, sid)               # global pointer: which SESSION is live across the server
-    _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} (space {active_space_owner}/{active_space})")
+    _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} [{wid}] "
+                   f"(space {active_space_owner}/{active_space})")
     await _propagate_visibility()                 # snapshot + bump/re-admit per the new session's visibility
-    return {"ok": True, "world": name, "rev": store.doc["rev"]}
+    return {"ok": True, "world": name, "id": wid, "rev": store.doc["rev"]}
 
 
 async def _activate_scope(scope: str) -> dict:
@@ -1261,7 +1275,8 @@ async def _activate_scope(scope: str) -> dict:
     # The live agent is derived from the global session pointer (set by _switch_to below) — no separate
     # last-agent to record here (shared-session-plan §2).
     if scope == active_scope:
-        return {"ok": True, "world": active_world, "scope": scope, "unchanged": True}
+        return {"ok": True, "world": worlds.name_of(scope, active_world), "id": active_world,
+                "scope": scope, "unchanged": True}
     active = worlds.get_active(scope)
     if active and worlds.exists(scope, active):
         return await _switch_to(scope, active)                 # resume the scope's last-active world
@@ -1743,15 +1758,18 @@ async def worlds_list(req: ScopeRef) -> dict:
     `current` is always the true live world `{owner, name}` so the agent knows when it's inhabiting
     another user's shared world (it can be there, but can't edit it)."""
     in_own = req.scope == active_scope
-    current = {"owner": active_scope.split("/", 1)[0], "name": active_world}
-    return {"ok": True, "worlds": worlds.list(req.scope),
+    current = {"owner": active_scope.split("/", 1)[0], "id": active_world,
+               "name": worlds.name_of(active_scope, active_world)}
+    # `{id, name}` pairs, not bare names: the id is what survives a rename, so it's what an agent should
+    # store in its state and hand back to `switch_world`.
+    return {"ok": True, "worlds": worlds.entries(req.scope),
             "active": active_world if in_own else None, "current": current}
 
 
 @app.post("/worlds/new")
 async def worlds_new(req: WorldRef) -> dict:
-    """Create a new (optionally nested) world from the agent's constructor and switch to it. Refuses to
-    clobber an existing world of the same canonical name."""
+    """Create a new world from the agent's constructor and switch to it. The world gets a permanent
+    `wld_…` id; `name` is just its (unique-within-the-session) display name."""
     try:
         if worlds.exists(req.scope, req.name):
             return {"ok": False, "error": f"world {req.name!r} already exists — switch to it instead"}
@@ -1770,7 +1788,10 @@ async def worlds_new(req: WorldRef) -> dict:
         # it", even someone else's (D3). No active space yet (unclaimed server) or an explicit outdoor world
         # → VOID, the honest "no room yet" (replaces the old anonymous-'home' Path B fallback).
         env["space"] = VOID if (req.outdoor or active_space == VOID) else _space_ref(active_space_owner, active_space)
-        return await _switch_to(req.scope, req.name, store_override=fresh)
+        # Mint the id here so the switch addresses the world by identity from the very first moment.
+        wid = new_world_id()
+        fresh.doc["id"], fresh.doc["name"] = wid, req.name
+        return await _switch_to(req.scope, req.name, store_override=fresh, wid=wid)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1783,7 +1804,7 @@ async def worlds_switch(req: WorldRef) -> dict:
     try:
         if not worlds.exists(req.scope, req.name):
             return {"ok": False, "error": f"no world {req.name!r} (create it with new_world)"}
-        return await _switch_to(req.scope, req.name)
+        return await _switch_to(req.scope, req.name)   # accepts an id or a name
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1791,11 +1812,57 @@ async def worlds_switch(req: WorldRef) -> dict:
 @app.post("/worlds/delete")
 async def worlds_delete(req: WorldRef) -> dict:
     try:
-        if req.scope == active_scope and world_path(req.name) == active_world:
+        if req.scope == active_scope and worlds.resolve(req.scope, req.name) == active_world:
             return {"ok": False, "error": "can't delete the active world — switch away first"}
         return {"ok": worlds.delete(req.scope, req.name), "world": req.name}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+class WorldRenameRequest(BaseModel):
+    name: str                         # the world to rename — its id, or its current display name
+    new_name: str
+    scope: str = DEFAULT_SCOPE
+
+
+class SpaceRenameRequest(BaseModel):
+    name: Optional[str] = None        # the space to rename — its id (`space-1`) or name; default: current
+    new_name: str = ""
+    owner: Optional[str] = None       # default: the active space's owner (you)
+
+
+@app.post("/worlds/rename")
+async def worlds_rename(req: WorldRenameRequest) -> dict:
+    """Retitle a world. A metadata edit that moves nothing: every reference — the active pointers, the
+    session's `active_world`, a space's `last_world`, another user's `environment.space`, and whatever a
+    schema-free agent state doc stashed — holds the permanent id, not the name."""
+    try:
+        wid = worlds.rename(req.scope, req.name, req.new_name)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if wid == active_world and req.scope == active_scope:
+        # The LIVE world is held in memory and autosaved back to disk, so the rename has to land there
+        # too — otherwise the next `_save_active()` writes the old name straight over it.
+        store.doc["name"] = req.new_name
+        await _broadcast({"type": "world_renamed", "id": wid, "name": req.new_name})
+    _slog("world", f"rename {wid} → {req.new_name!r}")
+    return {"ok": True, "id": wid, "name": req.new_name}
+
+
+@app.post("/space/rename")
+async def space_rename(req: SpaceRenameRequest) -> dict:
+    """Give one of YOUR spaces a human name. The file key (`space-1`) is its permanent id and never
+    changes, so worlds pointing at it — including other users' worlds, which we may not rewrite — are
+    untouched."""
+    if spaces is None:
+        return {"ok": False, "error": "no space store"}
+    owner = req.owner or active_space_owner
+    try:
+        sid = spaces.rename(owner, req.name or active_space, req.new_name)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    _slog("space", f"rename {owner}/{sid} → {req.new_name!r}")
+    return {"ok": True, "id": sid, "name": req.new_name}
 
 
 class WorldVisibilityRequest(BaseModel):
@@ -1885,7 +1952,9 @@ async def space_visibility(req: SpaceVisibilityRequest) -> dict:
 # `dir` lists ONE level (the old recursive dump was unusable at any real size); `show` returns one entry
 # in depth. Deletes refuse whatever is ACTIVE — autosave would resurrect it and leave the in-memory store
 # inconsistent.
-_ADMIN_PART = re.compile(r"[A-Za-z0-9._-]+")
+# Display names may contain spaces now ("Living Room"), so a path segment allows them. `/` is still the
+# separator and `.`/`..` are rejected outright, so a segment can't traverse.
+_ADMIN_PART = re.compile(r"[A-Za-z0-9._\- ]+")
 _VOID_SPACE = VOID
 
 
@@ -1946,9 +2015,9 @@ def _admin_resolve(path: str):
     """`path` → a `_Loc`, or an error string. The `worlds` shortcut at agent level resolves here, so
     everything downstream only ever sees real, unambiguous locations."""
     segs = _admin_split(path)
-    for s in segs:
-        if not _ADMIN_PART.fullmatch(s):
-            return f"bad path segment {s!r}"
+    for seg in segs:
+        if seg in (".", "..") or not _ADMIN_PART.fullmatch(seg):
+            return f"bad path segment {seg!r}"
     if not segs:
         return _Loc("root")
     user = segs[0]
@@ -2001,7 +2070,12 @@ def _admin_resolve(path: str):
         return f"unknown category {segs[5]!r} (worlds)"
     if len(segs) == 6:
         return _Loc("worlds", user, agent, sid)
-    return _Loc("world", user, agent, sid, "/".join(segs[6:]))
+    # Verify it: without this, any trailing segments resolve to a `world` Loc and `cd`/`show` succeed on
+    # a world that doesn't exist (worlds are flat now, so a name never spans segments).
+    name = "/".join(segs[6:])
+    if _session_worlds(f"{user}/agents/{agent}", sid).resolve(name) is None:
+        return f"no world {name!r} in {sid}"
+    return _Loc("world", user, agent, sid, name)
 
 
 def _loc_path(loc: _Loc) -> str:
@@ -2032,9 +2106,11 @@ def _node(label: str, kind: str, detail: str = "", *, active: bool = False) -> d
 
 
 def _world_row(scope: str, sid: str, name: str) -> dict:
-    live = scope == active_scope and sid == active_sid and world_path(name) == active_world
+    wdir = _session_worlds(scope, sid)
+    wid = wdir.resolve(name)
+    live = scope == active_scope and sid == active_sid and wid == active_world
     try:
-        doc = _session_worlds(scope, sid).load(name).doc
+        doc = wdir.load(name).doc
     except (OSError, ValueError):
         doc = {}
     env = doc.get("environment") or {}
@@ -2058,12 +2134,25 @@ def _session_row(scope: str, sid: str) -> dict:
     return _node(sid, "session", f"{title} · {nw} worlds · {vis}", active=live)
 
 
-def _space_row(user: str, name: str) -> dict:
+def _last_world_label(sp: dict) -> str:
+    """A space's back-reference is a world ID; show the name a person would recognise."""
+    ls, lw = sp.get("last_scope"), sp.get("last_world")
+    if not ls or not lw:
+        return "—"
     try:
-        sp = spaces.load(user, name)
+        return f"{ls} / {worlds.name_of(ls, lw)}"
+    except (OSError, ValueError):
+        return f"{ls} / {lw}"
+
+
+def _space_row(user: str, ref: str) -> dict:
+    sid = spaces.resolve(user, ref) or ref
+    try:
+        sp = spaces.load(user, sid)
     except (OSError, ValueError):
         sp = {}
-    live = user == active_space_owner and name == active_space
+    name = (sp.get("name") or "").strip() or sid          # label by NAME; the id shows in `show`
+    live = user == active_space_owner and sid == active_space
     geo = "geo✓" if sp.get("geolocation") else "geo✗"
     vis = "public" if sp.get("public", True) else "private"
     return _node(name, "space", f"{len(sp.get('surfaces') or [])} surfaces · {geo} · {vis}", active=live)
@@ -2160,14 +2249,15 @@ def _fields(loc: _Loc) -> list[list]:
                  else "grid" if "grid" in c else (c.get("geometry") or {}).get("primitive") or "other")
             kinds[k] = kinds.get(k, 0) + 1
         meta = _session_meta(loc.scope, loc.sid)
-        return [["world", loc.name], ["session", loc.sid], ["scope", loc.scope],
+        wid = _session_worlds(loc.scope, loc.sid).resolve(loc.name)
+        return [["world", loc.name], ["id", wid or "?"], ["session", loc.sid], ["scope", loc.scope],
                 ["entities", str(len(ents))],
                 ["by kind", ", ".join(f"{k}×{v}" for k, v in sorted(kinds.items())) or "—"],
                 ["space", env.get("space") or "?"], ["sky", (env.get("sky") or {}).get("color") or "—"],
                 ["rev", str(doc.get("rev", "?"))],
                 ["visibility", "public" if meta.get("public", True) else "private (session)"],
                 ["active", "yes" if (loc.scope == active_scope and loc.sid == active_sid
-                                     and world_path(loc.name) == active_world) else "no"]]
+                                     and wid == active_world) else "no"]]
     if loc.kind == "session":
         meta = _session_meta(loc.scope, loc.sid)
         wl = _session_worlds(loc.scope, loc.sid).list()
@@ -2179,17 +2269,18 @@ def _fields(loc: _Loc) -> list[list]:
                 ["visibility", "public" if meta.get("public", True) else "private"],
                 ["active", "yes" if (loc.scope == active_scope and loc.sid == active_sid) else "no"]]
     if loc.kind == "space":
+        sid = spaces.resolve(loc.user, loc.name) or loc.name
         try:
-            sp = spaces.load(loc.user, loc.name)
+            sp = spaces.load(loc.user, sid)
         except (OSError, ValueError) as exc:
             return [["error", str(exc)]]
-        return [["space", loc.name], ["owner", loc.user],
+        return [["space", (sp.get("name") or "").strip() or sid], ["id", sid], ["owner", loc.user],
                 ["surfaces", str(len(sp.get("surfaces") or []))],
                 ["geolocation", "yes" if sp.get("geolocation") else "no"],
                 ["boundary", "yes" if sp.get("boundary") else "no"],
                 ["visibility", "public" if sp.get("public", True) else "private"],
-                ["last world", f"{sp.get('last_scope') or '?'} / {sp.get('last_world') or '?'}"],
-                ["active", "yes" if (loc.user == active_space_owner and loc.name == active_space) else "no"]]
+                ["last world", _last_world_label(sp)],
+                ["active", "yes" if (loc.user == active_space_owner and sid == active_space) else "no"]]
     if loc.kind == "asset":
         r = library.get(loc.name)
         if not r:
@@ -2256,7 +2347,8 @@ def _admin_do_delete(loc: _Loc) -> dict:
         return {"ok": True, "deleted": f"user {loc.user!r}: {nw} worlds, {ns} spaces, {na} assets"}
 
     if loc.kind == "world":
-        if loc.scope == active_scope and loc.sid == active_sid and world_path(loc.name) == active_world:
+        if loc.scope == active_scope and loc.sid == active_sid \
+                and _session_worlds(loc.scope, loc.sid).resolve(loc.name) == active_world:
             return {"ok": False, "error": "can't delete the active world — switch away first"}
         ok = _session_worlds(loc.scope, loc.sid).delete(loc.name)
         return {"ok": ok, "deleted": f"world {loc.name!r}"} if ok else \
@@ -2284,11 +2376,12 @@ def _admin_do_delete(loc: _Loc) -> dict:
         return {"ok": True, "deleted": f"{len(sids)} sessions in {loc.agent}"}
 
     if loc.kind == "space":
-        if loc.user == active_space_owner and slug(loc.name) == active_space != _VOID_SPACE:
-            return {"ok": False, "error": "can't delete the active space — switch away first"}
-        if not spaces.exists(loc.user, loc.name):
+        sid = spaces.resolve(loc.user, loc.name)
+        if sid is None:
             return {"ok": False, "error": f"no space {loc.name!r} for {loc.user!r}"}
-        spaces.delete(loc.user, loc.name)
+        if loc.user == active_space_owner and sid == active_space != _VOID_SPACE:
+            return {"ok": False, "error": "can't delete the active space — switch away first"}
+        spaces.delete(loc.user, sid)
         return {"ok": True, "deleted": f"space {loc.name!r}"}
     if loc.kind == "spaces":
         if loc.user == active_space_owner and active_space != _VOID_SPACE \
@@ -4304,7 +4397,10 @@ def _live_state() -> dict:
         "agent": agent_of(active_scope),
         "session": active_sid,          # the live SESSION within the scope (docs/sessions-plan.md §3); the
                                         # agent server keys its transcript on (scope, session)
-        "world": active_world,
+        # `world` is the display NAME (what a person reads); `world_id` is the permanent identity a
+        # client should key state on, so a rename doesn't read as a world switch.
+        "world": worlds.name_of(active_scope, active_world) if worlds else active_world,
+        "world_id": active_world,
         "owner": active_scope.split("/", 1)[0],
         "public": _active_public(),     # the live session's visibility (§8.2) — the agent server gates on it
         "space": VOID if active_space == VOID else _space_ref(active_space_owner, active_space),

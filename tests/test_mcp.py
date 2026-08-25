@@ -387,9 +387,14 @@ async def test_list_worlds_tool_marks_active(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     monkeypatch.setattr(m, "_CALLER", {"user": "private", "scope": "private/builder"})
     respx.post("http://world/worlds/list").mock(return_value=httpx.Response(200, json={
-        "ok": True, "worlds": ["blade-runner-1", "default"], "active": "blade-runner-1"}))
+        "ok": True, "active": "wld_1111111111",
+        "worlds": [{"id": "wld_1111111111", "name": "Blade Runner 1"},
+                   {"id": "wld_2222222222", "name": "default"}]}))
     out = await _tool("list_worlds")()
-    assert "blade-runner-1" in out and "default" in out and "*" in out   # active marked
+    assert "Blade Runner 1" in out and "default" in out and "*" in out    # active marked
+    # The agent is shown the permanent id alongside the name, and told to store THAT — a name it stashes
+    # in `state_set` would be stale the moment a person renames the world.
+    assert "wld_1111111111" in out and "Store the id" in out
 
 
 @respx.mock

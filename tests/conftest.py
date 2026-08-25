@@ -9,6 +9,10 @@ from PIL import Image
 
 from conjure.assets import AssetRecord
 from conjure.library import AssetLibrary
+
+# The default world the `srv` fixture boots into. A fixed id so tests can assert against it; its display
+# name is "default", so `switch_world("default")` and `dir …/worlds/default` resolve to it.
+TEST_WORLD_ID = "wld_0000000001"
 from conjure.llm import ImageCapabilities, ImageResult
 
 
@@ -119,15 +123,22 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "SESSION_PTR", tmp_path / "_session.txt")
     monkeypatch.setattr(server, "active_scope", server.DEFAULT_SCOPE)
     monkeypatch.setattr(server, "active_sid", server.MIGRATED_SID)
-    monkeypatch.setattr(server, "active_world", "default")
+    # `active_world` is a world ID now (a rename must not move this pointer), so the fixture pins a
+    # known id AND puts that world on disk — otherwise name→id resolution has nothing to resolve.
+    monkeypatch.setattr(server, "active_world", TEST_WORLD_ID)
     monkeypatch.setattr(server, "active_space", "home")
     monkeypatch.setattr(server, "active_space_owner", "daniel")   # owner of the active space (D3-aware)
     monkeypatch.setattr(server, "_selected_cids", set())  # fresh session: every AR client re-selects (step 4/7)
     monkeypatch.setattr(server, "_space_holders", set())  # nobody holds the space yet (unclaimed / provisional)
     monkeypatch.setattr(
         server, "store",
-        WorldStore({"id": "test", "name": "Test", "rev": 0, "environment": {"sky": {"color": "#000"}}, "entities": []}),
+        WorldStore({"id": TEST_WORLD_ID, "name": "default", "rev": 0,
+                    "environment": {"sky": {"color": "#000"}}, "entities": []}),
     )
+    server.worlds.save(server.DEFAULT_SCOPE, TEST_WORLD_ID, WorldStore(
+        {"id": TEST_WORLD_ID, "name": "default", "rev": 0,
+         "environment": {"sky": {"color": "#000"}}, "entities": []}))
+    server.worlds.set_active(server.DEFAULT_SCOPE, TEST_WORLD_ID)   # keep the on-disk pointer in step
     monkeypatch.setattr(server, "image_generators", {"Gemini": FakeImageGenerator()})
     monkeypatch.setattr(server, "IMAGES", {})  # clean image store per test
     monkeypatch.setattr(server, "resolver", None)

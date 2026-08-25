@@ -148,7 +148,8 @@ def test_repository_active_pointer_roundtrips_and_clears_on_delete(tmp_path):
     repo.save("private/builder", "home", WorldStore(_doc()))
     assert repo.get_active("private/builder") is None
     repo.set_active("private/builder", "home")
-    assert repo.get_active("private/builder") == "home"
+    wid = repo.resolve("private/builder", "home")
+    assert repo.get_active("private/builder") == wid       # the pointer holds the ID, not the name
     repo.delete("private/builder", "home")
     assert repo.get_active("private/builder") is None          # pointer cleared with its target
     assert repo.list("private/builder") == []                 # _active.txt not listed as a world
@@ -162,8 +163,8 @@ def test_repository_session_pointer_roundtrips_globally(tmp_path):
     assert repo.get_session() is None                          # unset on a fresh cache
     repo.set_session("daniel/agents/outdoor", "beach")
     assert repo.get_session() == ("daniel/agents/outdoor", "beach")
-    repo.set_session("daniel/agents/builder", "Castle Quest/Dining Hall")
-    assert repo.get_session() == ("daniel/agents/builder", "castle-quest/dining-hall")  # world normalized
+    repo.set_session("daniel/agents/builder", "wld_00000000ab")
+    assert repo.get_session() == ("daniel/agents/builder", "wld_00000000ab")   # an ID, stored verbatim
     assert repo.list_users() == []                             # _session.txt is a root file, not a user
 
 
@@ -175,34 +176,32 @@ def test_repository_recall_is_normalized(tmp_path):
     for variant in ("blade runner 1", "BLADE_RUNNER_1", "blade-runner-1", "Blade-Runner 1"):
         assert repo.exists("private/builder", variant)
         assert repo.load("private/builder", variant) is not None
-    assert repo.list("private/builder") == ["blade-runner-1"]   # one canonical slug, no dupes
+    # The NAME is kept as the person typed it; only *matching* is slug-insensitive.
+    assert repo.list("private/builder") == ["Blade Runner 1"]
 
 
-def test_repository_supports_nested_world_paths(tmp_path):
-    from conjure.world import WorldRepository
+def test_worlds_are_flat_and_stored_under_their_id(tmp_path):
+    # Hierarchical world names are retired: sessions are the grouping now, and "is this subdirectory also
+    # a world?" never had a good answer. Files are `<id>.json` in one flat directory.
+    from conjure.world import WorldRepository, is_world_id
     repo = WorldRepository(tmp_path)
-    repo.save("private/dm", "Castle Quest/Dining Hall", WorldStore(_doc()))
-    repo.save("private/dm", "castle quest/throne room", WorldStore(_doc()))
-    repo.save("private/dm", "default", WorldStore(_doc()))
-    assert repo.list("private/dm") == ["castle-quest/dining-hall", "castle-quest/throne-room", "default"]
-    # nested recall is normalized per segment, just like flat names
-    assert repo.exists("private/dm", "Castle_Quest / Dining-Hall")
-    assert (tmp_path / "private" / "dm" / "castle-quest" / "dining-hall.json").exists()
-    # a node can be both a leaf world and a parent of others
-    repo.save("private/dm", "castle-quest", WorldStore(_doc()))
-    assert "castle-quest" in repo.list("private/dm")
-    repo.delete("private/dm", "castle-quest/throne-room")
-    assert "castle-quest/dining-hall" in repo.list("private/dm")   # sibling untouched
+    wid = repo.save("private/dm", "Dining Hall", WorldStore(_doc()))
+    assert is_world_id(wid)
+    assert (tmp_path / "private" / "dm" / f"{wid}.json").exists()
+    assert not (tmp_path / "private" / "dm" / "dining-hall.json").exists()
+    assert repo.list("private/dm") == ["Dining Hall"]
+    assert repo.entries("private/dm") == [{"id": wid, "name": "Dining Hall"}]
 
 
 def test_repository_neutralizes_punctuation_but_rejects_traversal(tmp_path):
     from conjure.world import WorldRepository
     repo = WorldRepository(tmp_path)
-    # stray punctuation in a flat name is stripped to a safe slug
-    repo.save("private/builder", "My World!", WorldStore(_doc()))
-    assert (tmp_path / "private" / "builder" / "my-world.json").exists()
-    # explicit traversal segments / empties are rejected — a world can't escape its scope
-    for bad in ("../evil", "castle/../secret", ".", "", "  ", "/"):
+    # A name is never a path now (the file is `<id>.json`), so traversal can't escape by construction —
+    # but a name that slugs to nothing is still rejected rather than silently accepted.
+    wid = repo.save("private/builder", "My World!", WorldStore(_doc()))
+    assert (tmp_path / "private" / "builder" / f"{wid}.json").exists()
+    assert repo.list("private/builder") == ["My World!"]
+    for bad in (".", "", "  ", "/", "!!!"):
         with pytest.raises(ValueError):
             repo.save("private/builder", bad, WorldStore(_doc()))
     assert not (tmp_path / "evil.json").exists() and not (tmp_path / "private" / "secret.json").exists()
@@ -334,20 +333,18 @@ def test_sessionrepo_paths_and_rejects_traversal(tmp_path):
 
 # -- WorldDir (the name-addressed layer WorldRepository + SessionRepository both reuse) -----------
 
-def test_worlddir_roundtrip_active_nested_and_prune(tmp_path):
+def test_worlddir_roundtrip_and_active_pointer(tmp_path):
     from conjure.world import WorldDir
     wd = WorldDir(tmp_path / "worlds")
     assert wd.list() == [] and wd.get_active() is None
-    wd.save("home", WorldStore(_doc("Home")))
-    wd.save("Castle Quest/Throne Room", WorldStore(_doc()))
-    assert wd.list() == ["castle-quest/throne-room", "home"]          # slugged + nested, recursive
-    assert wd.exists("HOME") and wd.load("home").doc["name"] == "Home"
+    home = wd.save("home", WorldStore(_doc("Home")))
+    throne = wd.save("Throne Room", WorldStore(_doc()))
+    assert wd.list() == ["home", "Throne Room"]                       # name-sorted, verbatim
+    assert wd.exists("HOME") and wd.load("home").doc["name"] == "home"
     wd.set_active("home")
-    assert wd.get_active() == "home"
+    assert wd.get_active() == home                                    # the pointer holds the ID
     assert wd.delete("home") is True and wd.get_active() is None      # pointer cleared with its target
-    assert (tmp_path / "worlds" / "castle-quest" / "throne-room.json").exists()
-    wd.delete("castle-quest/throne-room")
-    assert not (tmp_path / "worlds" / "castle-quest").exists()        # now-empty parent pruned
+    assert (tmp_path / "worlds" / f"{throne}.json").exists()          # flat, id-keyed
 
 
 def test_worldrepo_set_live_drives_the_live_scope_but_not_others(tmp_path):
@@ -377,10 +374,10 @@ def test_sessionrepo_worlds_is_a_worlddir_under_the_session(tmp_path):
     repo.save_meta(scope, "session-1", _meta())
     wd = repo.worlds(scope, "session-1")
     assert isinstance(wd, WorldDir)
-    wd.save("home", WorldStore(_doc("Home")))
+    wid = wd.save("home", WorldStore(_doc("Home")))
     assert wd.list() == ["home"]
     assert (tmp_path / "daniel" / "agents" / "builder" / "sessions" / "session-1"
-            / "worlds" / "home.json").exists()
+            / "worlds" / f"{wid}.json").exists()
     repo.delete(scope, "session-1")                                   # deleting the session takes worlds
     assert repo.worlds(scope, "session-1").list() == []
 
@@ -457,7 +454,16 @@ def test_migrate_cache_to_users(tmp_path):
     assert not (cache / "worlds").exists() and not (cache / "spaces").exists()   # old trees gone
     repo = SessionRepository(cache / "users")                                # reachable via the repo
     assert repo.list("daniel/agents/builder") == ["session-1"]
-    assert repo.worlds("daniel/agents/builder", "session-1").list() == ["castle-quest/throne", "home"]
+    # Still NAME-keyed at this point: re-keying to permanent ids is the separate pass that runs next at
+    # boot. Chain it, as `_init_state` does, and the same worlds come back addressed by id.
+    from conjure.world import migrate_worlds_to_ids
+    assert migrate_worlds_to_ids(cache / "users") == 2
+    wd = repo.worlds("daniel/agents/builder", "session-1")
+    assert sorted(wd.list()) == ["castle-quest-throne", "home"]     # hierarchy flattened into the name
+    assert all(e["id"].startswith("wld_") for e in wd.entries())
+    assert wd.get_active() == wd.resolve("home")                    # pointer re-pointed at the id
+    assert json.loads((base / "session.json").read_text())["active_world"] == wd.resolve("home")
+    assert migrate_worlds_to_ids(cache / "users") == 0              # idempotent — safe on every boot
 
 
 def test_migrate_active_world_falls_back_when_no_pointer(tmp_path):

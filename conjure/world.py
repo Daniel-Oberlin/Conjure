@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -30,15 +31,18 @@ def slug(name: str) -> str:
     return s
 
 
-def world_path(name: str) -> str:
-    """Canonical, **hierarchical** key for a world: '/'-separated segments, each slugified — so an agent
-    can organize worlds in a tree ('castle-quest/dining-hall'). Each segment normalizes independently
-    (case/spaces/underscores/hyphens), and traversal ('..') or empty segments are rejected, so a world
-    can never escape its scope dir. Returns a posix relative path (no leading slash, no extension)."""
-    segs = [slug(s) for s in (name or "").split("/") if s.strip()]
-    if not segs:
-        raise ValueError(f"bad world name {name!r}")
-    return "/".join(segs)
+WORLD_ID = re.compile(r"^wld_[0-9a-f]{10}$")
+
+
+def new_world_id() -> str:
+    """A world's permanent identity. Minted once and never changed, so the human name above it is free to
+    change without stranding anything that stored a reference — the same split `SessionRepository` already
+    uses (stable id + mutable title)."""
+    return "wld_" + uuid.uuid4().hex[:10]
+
+
+def is_world_id(ref: str) -> bool:
+    return bool(WORLD_ID.match(ref or ""))
 
 _MISSING = object()
 
@@ -178,59 +182,162 @@ class WorldStore:
 
 
 class WorldDir:
-    """Named, hierarchical world documents inside ONE directory: ``<dir>/<name>.json`` (a name may nest,
-    e.g. ``castle-quest/dining-hall``, each segment slug-normalized). A per-dir ``_active.txt`` records
-    the live world.
+    """**Id-addressed** world documents in ONE flat directory — ``<dir>/<id>.json`` — plus a per-dir
+    ``_active.txt`` holding the live world's id.
 
-    This is the **name-addressed** layer that both `WorldRepository` (which roots one per capability
-    scope, ``<root>/<scope>/``) and `SessionRepository` (which roots one per session's ``worlds/``) reuse
-    — the only difference between them is *which directory* the worlds live in (docs/sessions-plan.md §3,
-    Option 1). Keeping this separate is what lets `scope` stay the pure capability namespace while worlds
-    move under a session.
+    Identity is a minted ``wld_…`` id that never changes; the human ``name`` lives in the doc and is free
+    to change. A rename therefore moves no files and strands no references: session records, active
+    pointers, a space's `last_world`, another user's `environment.space` and schema-free agent state all
+    hold the id. This is the split `SessionRepository` already uses ("the session id is a stable, safe
+    segment; the mutable human title lives in the meta doc, so a rename is a metadata edit that moves
+    nothing") — worlds and spaces just weren't consistent with it.
+
+    Worlds are **flat**. Hierarchical names (``castle/dining-hall``) are retired: sessions are the
+    grouping now, and a subdirectory that might-or-might-not itself be a world had no good answer.
+
+    Names are unique within a directory (compared slug-wise, so 'Blade Runner' and 'blade-runner' clash).
+    That keeps name→id resolution total, which is what lets a person or an agent keep saying "the meadow".
+
+    This is the layer both `WorldRepository` (rooted per capability scope) and `SessionRepository` (rooted
+    per session's ``worlds/``) reuse — the only difference is which directory (docs/sessions-plan.md §3).
     """
 
     def __init__(self, dir: str | Path):
         self.dir = Path(dir)
 
-    def _path(self, name: str) -> Path:
-        return self.dir / f"{world_path(name)}.json"
+    def _path(self, wid: str) -> Path:
+        if not is_world_id(wid):
+            raise ValueError(f"not a world id: {wid!r}")
+        return self.dir / f"{wid}.json"
 
-    def list(self) -> list[str]:
-        """Every world as a canonical hierarchical path, recursively. ``_active.txt`` is a .txt, so it's
-        never matched and never listed."""
+    # -- identity ------------------------------------------------------------------------------
+    def ids(self) -> list[str]:
         if not self.dir.is_dir():
             return []
-        return sorted(p.relative_to(self.dir).as_posix()[: -len(".json")] for p in self.dir.rglob("*.json"))
+        return sorted(p.stem for p in self.dir.glob("wld_*.json"))
 
-    def exists(self, name: str) -> bool:
-        return self._path(name).exists()
+    def name_of(self, wid: str) -> str:
+        """The display name, falling back to the id for a doc that somehow has none."""
+        try:
+            return (json.loads(self._path(wid).read_text()).get("name") or "").strip() or wid
+        except (OSError, ValueError):
+            return wid
 
-    def load(self, name: str) -> "WorldStore":
-        return WorldStore.load(self._path(name))
+    def entries(self) -> list[dict]:
+        """`[{id, name}]`, name-sorted — what a person or an agent should be shown. Reads each doc; fine
+        at this scale, and the one place to add an index if a session ever holds hundreds of worlds."""
+        return sorted(({"id": i, "name": self.name_of(i)} for i in self.ids()),
+                      key=lambda e: e["name"].lower())
 
-    def save(self, name: str, store: "WorldStore") -> None:
-        store.save(self._path(name))
+    def list(self) -> list[str]:
+        """Display names (the human-facing listing). `ids()` is the addressing one."""
+        return [e["name"] for e in self.entries()]
 
-    def delete(self, name: str) -> bool:
-        p = self._path(name)
-        if not p.exists():
+    def resolve(self, ref: str) -> str | None:
+        """An id or a name → the id, or None. Ids win over names, so an id is never shadowed."""
+        ref = (ref or "").strip()
+        if not ref:
+            return None
+        if is_world_id(ref) and self._path(ref).exists():
+            return ref
+        try:
+            want = slug(ref)
+        except ValueError:
+            return None
+        for e in self.entries():
+            try:
+                if slug(e["name"]) == want:
+                    return e["id"]
+            except ValueError:
+                continue
+        return None
+
+    def name_taken(self, name: str, *, other_than: str = "") -> bool:
+        try:
+            want = slug(name)
+        except ValueError:
             return False
-        p.unlink()
-        if self.get_active() == world_path(name):
+        return any(e["id"] != other_than and _slug_or_none(e["name"]) == want for e in self.entries())
+
+    # -- CRUD ----------------------------------------------------------------------------------
+    def create(self, name: str, store: "WorldStore") -> str:
+        """Mint an id for a NEW world. `save` upserts; this refuses to touch an existing one."""
+        if self.name_taken(name):
+            raise ValueError(f"a world called {name!r} already exists here")
+        return self.save(name, store)
+
+    def rename(self, ref: str, new_name: str) -> str:
+        """Retitle in place. No file moves and no references break — that's the whole point of the id."""
+        wid = self.resolve(ref)
+        if wid is None:
+            raise ValueError(f"no world {ref!r}")
+        slug(new_name)
+        if self.name_taken(new_name, other_than=wid):
+            raise ValueError(f"a world called {new_name!r} already exists here")
+        store = self.load(wid)
+        store.doc["name"] = new_name
+        self.save(wid, store)
+        return wid
+
+    def exists(self, ref: str) -> bool:
+        return self.resolve(ref) is not None
+
+    def load(self, ref: str) -> "WorldStore":
+        wid = self.resolve(ref)
+        if wid is None:
+            raise ValueError(f"no world {ref!r}")
+        return WorldStore.load(self._path(wid))
+
+    def save(self, ref: str, store: "WorldStore") -> str:
+        """Upsert by REFERENCE — an id, or a name. A name that resolves to nothing is a new world, so an
+        id is minted and the name recorded; that keeps `save(scope, "home", …)` meaning what it always
+        did while making identity explicit underneath. Returns the id."""
+        wid = self.resolve(ref)
+        by_name = not is_world_id(ref)
+        if wid is None:
+            if by_name:
+                slug(ref)                                      # reject an unusable name
+                wid = new_world_id()
+            else:
+                wid = ref                                      # caller minted it (new_world) — honour it
+        if by_name:
+            # Saving BY NAME asserts the name: `save(scope, "default", doc)` means "this is the world
+            # called default", whatever the incoming doc happens to say. Without this, a doc built from a
+            # seed template (name "Holodeck") would silently rename the world it was written into.
+            store.doc["name"] = ref
+        store.doc["id"] = wid
+        if not str(store.doc.get("name") or "").strip():
+            store.doc["name"] = wid
+        store.save(self._path(wid))
+        return wid
+
+    def delete(self, ref: str) -> bool:
+        wid = self.resolve(ref)
+        if wid is None:
+            return False
+        self._path(wid).unlink(missing_ok=True)
+        if self.get_active() == wid:
             (self.dir / "_active.txt").unlink(missing_ok=True)
-        d = p.parent                                       # prune now-empty parent folders in the tree
-        while d != self.dir and d.is_dir() and not any(d.iterdir()):
-            d.rmdir()
-            d = d.parent
         return True
 
+    # -- the live pointer ----------------------------------------------------------------------
     def get_active(self) -> str | None:
         p = self.dir / "_active.txt"
         return (p.read_text().strip() or None) if p.exists() else None
 
-    def set_active(self, name: str) -> None:
+    def set_active(self, ref: str) -> None:
+        wid = self.resolve(ref)
+        if wid is None:
+            raise ValueError(f"no world {ref!r}")
         self.dir.mkdir(parents=True, exist_ok=True)
-        (self.dir / "_active.txt").write_text(world_path(name))
+        (self.dir / "_active.txt").write_text(wid)
+
+
+def _slug_or_none(name: str):
+    try:
+        return slug(name)
+    except ValueError:
+        return None
 
 
 class WorldRepository:
@@ -281,9 +388,31 @@ class WorldRepository:
         return WorldDir(self._scope_dir(scope))
 
     def list(self, scope: str) -> list[str]:
-        """All worlds in the scope, as canonical hierarchical paths ('castle-quest/dining-hall'),
-        recursively. The per-scope '_active.txt' pointer isn't a world, so it's never listed."""
+        """Display names of the scope's worlds. `entries` gives `{id, name}` pairs — prefer it anywhere
+        the result is stored or handed to an agent, since only the id survives a rename."""
         return self._dir(scope).list()
+
+    def entries(self, scope: str) -> list[dict]:
+        return self._dir(scope).entries()
+
+    def ids(self, scope: str) -> list[str]:
+        return self._dir(scope).ids()
+
+    def resolve(self, scope: str, ref: str) -> str | None:
+        """An id or a name → the world's id, or None."""
+        return self._dir(scope).resolve(ref)
+
+    def name_of(self, scope: str, wid: str) -> str:
+        return self._dir(scope).name_of(wid)
+
+    def create(self, scope: str, name: str, store: "WorldStore") -> str:
+        return self._dir(scope).create(name, store)
+
+    def id_of(self, scope: str, ref: str) -> str | None:
+        return self._dir(scope).resolve(ref)
+
+    def rename(self, scope: str, ref: str, new_name: str) -> str:
+        return self._dir(scope).rename(ref, new_name)
 
     def list_public(self, *, exclude_scope: str | None = None) -> list[dict]:
         """Every PUBLIC world across *all* scopes — the cross-user 'worlds available to me' discovery
@@ -312,10 +441,8 @@ class WorldRepository:
                     meta = {}                                    # no/unreadable meta → treat as public (default)
                 if not meta.get("public", True):                 # explicitly private session → skip its worlds
                     continue
-                wdir = sess_dir / "worlds"
-                for p in sorted(wdir.rglob("*.json")):
-                    name = p.relative_to(wdir).as_posix()[: -len(".json")]
-                    out.append({"scope": scope, "owner": owner, "name": name,
+                for e in WorldDir(sess_dir / "worlds").entries():
+                    out.append({"scope": scope, "owner": owner, "id": e["id"], "name": e["name"],
                                 "session": sess_dir.name, "public": True})
         return out
 
@@ -366,8 +493,8 @@ class WorldRepository:
     def load(self, scope: str, name: str) -> "WorldStore":
         return self._dir(scope).load(name)
 
-    def save(self, scope: str, name: str, store: "WorldStore") -> None:
-        self._dir(scope).save(name, store)
+    def save(self, scope: str, ref: str, store: "WorldStore") -> str:
+        return self._dir(scope).save(ref, store)
 
     def delete(self, scope: str, name: str) -> bool:
         return self._dir(scope).delete(name)
@@ -404,9 +531,10 @@ class WorldRepository:
         scope, _, name = p.read_text().strip().partition("\t")
         return (scope, name) if scope and name else None
 
-    def set_session(self, scope: str, name: str) -> None:
+    def set_session(self, scope: str, wid: str) -> None:
+        """The global live pointer stores the world's ID, so a rename never strands the boot path."""
         self.root.mkdir(parents=True, exist_ok=True)
-        (self.root / "_session.txt").write_text(f"{scope}\t{world_path(name)}")
+        (self.root / "_session.txt").write_text(f"{scope}\t{wid}")
 
     # -- admin (shell dir/delete; docs/agents.md §2) ---------------------------------------------
     def list_users(self) -> list[str]:
@@ -696,6 +824,44 @@ class SpaceStore:
         (d / "_active.txt").write_text(slug(name))
 
     # -- admin (shell dir/delete) ----------------------------------------------------------------
+    def name_of(self, user: str, sid: str) -> str:
+        """A space's display name. The FILE key (`space-1`) is its permanent id — auto-minted, never a
+        user's choice — so nothing is re-keyed here; a space simply gains a name it never had. Falls back
+        to the id, which is what every space shows until somebody names it."""
+        try:
+            return (self.load(user, sid).get("name") or "").strip() or sid
+        except (OSError, ValueError):
+            return sid
+
+    def entries(self, user: str) -> list[dict]:
+        return [{"id": i, "name": self.name_of(user, i)} for i in self.list(user)]
+
+    def resolve(self, user: str, ref: str) -> str | None:
+        """An id (`space-1`) or a display name → the id. Ids win, so one can't be shadowed by a name."""
+        ref = (ref or "").strip()
+        if not ref:
+            return None
+        if self.exists(user, ref):
+            return slug(ref)
+        want = _slug_or_none(ref)
+        return next((e["id"] for e in self.entries(user) if _slug_or_none(e["name"]) == want), None) \
+            if want else None
+
+    def rename(self, user: str, ref: str, new_name: str) -> str:
+        """Retitle in place. `environment.space` in every world — including OTHER users' worlds, which we
+        may not rewrite — points at the id, so this strands nothing."""
+        sid = self.resolve(user, ref)
+        if sid is None:
+            raise ValueError(f"no space {ref!r}")
+        slug(new_name)
+        want = slug(new_name)
+        if any(e["id"] != sid and _slug_or_none(e["name"]) == want for e in self.entries(user)):
+            raise ValueError(f"a space called {new_name!r} already exists")
+        sp = self.load(user, sid)
+        sp["name"] = new_name
+        self.save(user, sid, sp)
+        return sid
+
     def list_users(self) -> list[str]:
         """Users with a presence under the root (its immediate subdirs). Under the shared ``users/`` root
         this includes users who have agents but no spaces yet — harmless for the callers, which union it
@@ -714,6 +880,80 @@ class SpaceStore:
 
 
 MIGRATED_SID = "session-1"
+
+
+def migrate_worlds_to_ids(users_root: str | Path) -> int:
+    """One-time: re-key every world from its NAME to a minted `wld_…` id (2026-08-25).
+
+    Worlds used to be addressed by a slugged filename, which made the name their identity — so renaming
+    one stranded every reference to it (session records, active pointers, a space's `last_world`, another
+    user's `environment.space`, and schema-free agent state we can't even inspect). After this the file is
+    `<id>.json`, the name lives in the doc, and a rename touches nothing else.
+
+    Rewrites, in each session: the world files, the `worlds/_active.txt` pointer, and `session.json`'s
+    `active_world`. Also rewrites each space's `last_world` back-reference. Idempotent — a directory whose
+    worlds are already id-keyed is skipped, so it's safe to run on every boot. Returns how many worlds
+    moved."""
+    root = Path(users_root)
+    if not root.is_dir():
+        return 0
+    moved, renamed = 0, {}                       # renamed: (worlds_dir, old_key) → new id
+    for wdir in sorted(root.glob("*/agents/*/sessions/*/worlds")):
+        if not wdir.is_dir():
+            continue
+        mapping: dict[str, str] = {}
+        for old in sorted(wdir.rglob("*.json")):
+            key = old.relative_to(wdir).as_posix()[: -len(".json")]
+            if is_world_id(key):
+                continue                         # already migrated
+            try:
+                doc = json.loads(old.read_text())
+            except (OSError, ValueError):
+                continue
+            wid = new_world_id()
+            # The old KEY is the name people know it by — not the doc's `name`, which every world on disk
+            # copied verbatim from the seed template ("Holodeck") and nothing ever updated.
+            doc["id"], doc["name"] = wid, key.replace("/", "-")     # hierarchy is retired; flatten the name
+            (wdir / f"{wid}.json").write_text(json.dumps(doc))
+            old.unlink()
+            mapping[key] = wid
+            moved += 1
+        if not mapping:
+            continue
+        for d in sorted(wdir.rglob("*"), reverse=True):             # prune the old nested dirs
+            if d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+        ptr = wdir / "_active.txt"
+        if ptr.exists():
+            ptr.write_text(mapping.get(ptr.read_text().strip(), "") or "")
+        meta_p = wdir.parent / "session.json"
+        if meta_p.exists():
+            try:
+                meta = json.loads(meta_p.read_text())
+            except (OSError, ValueError):
+                meta = None
+            aw = (meta or {}).get("active_world")
+            if meta is not None and aw and not is_world_id(aw):
+                # A dangling `active_world` predates this migration (it names a world that isn't in the
+                # session at all — seen in real data). Re-point it at the WorldDir pointer, which IS
+                # right, rather than carrying a broken reference across.
+                meta["active_world"] = mapping.get(aw) or (ptr.read_text().strip() if ptr.exists() else "")
+                meta_p.write_text(json.dumps(meta))
+        renamed.update({(str(wdir), k): v for k, v in mapping.items()})
+    # A space points back at the world last live in it; that reference is an id now too.
+    for sp_p in sorted(root.glob("*/spaces/*.json")):
+        try:
+            sp = json.loads(sp_p.read_text())
+        except (OSError, ValueError):
+            continue
+        lw, ls = sp.get("last_world"), sp.get("last_scope")
+        if not lw or is_world_id(lw) or not ls:
+            continue
+        hit = next((v for (d, k), v in renamed.items() if k == lw and f"/{ls}/" in d.replace("\\", "/")), None)
+        if hit:
+            sp["last_world"] = hit
+            sp_p.write_text(json.dumps(sp))
+    return moved
 
 
 def migrate_cache_to_users(cache: str | Path) -> bool:

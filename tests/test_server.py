@@ -963,12 +963,17 @@ async def test_patch_is_broadcast_to_clients(srv):
 def test_world_new_switch_list_isolate_state(srv, client):
     client.post("/patch", json={"ops": [{"op": "add", "entity": {"id": "in_default", "components": {}}}]})
     r = client.post("/worlds/new", json={"name": "Blade Runner 1"}).json()
-    assert r["ok"] and r["world"] == "blade-runner-1"            # name normalized to a slug
+    assert r["ok"] and r["world"] == "Blade Runner 1"    # the NAME is kept verbatim now; only *matching*
+                                                         # is slug-insensitive, so "blade-runner-1" still
+                                                         # resolves to it
     assert "in_default" not in {e["id"] for e in _entities(client)}   # new world starts clean
     client.post("/patch", json={"ops": [{"op": "add", "entity": {"id": "in_blade", "components": {}}}]})
 
     lst = client.post("/worlds/list", json={}).json()
-    assert set(lst["worlds"]) == {"default", "blade-runner-1"} and lst["active"] == "blade-runner-1"
+    # `worlds` is {id, name} pairs now — the id is what survives a rename, so it's what an agent stores.
+    assert {w["name"] for w in lst["worlds"]} == {"default", "Blade Runner 1"}
+    assert all(w["id"].startswith("wld_") for w in lst["worlds"])
+    assert lst["active"] == next(w["id"] for w in lst["worlds"] if w["name"] == "Blade Runner 1")
 
     client.post("/worlds/switch", json={"name": "default"})      # outgoing world saved, default restored
     ids = {e["id"] for e in _entities(client)}
@@ -998,10 +1003,34 @@ def test_world_constructor_runs_on_create(srv, client):
     assert env.get("room", {}).get("edgesVisible") is True
 
 
-def test_world_supports_nested_names(srv, client):
-    r = client.post("/worlds/new", json={"name": "Castle Quest/Dining Hall"}).json()
-    assert r["world"] == "castle-quest/dining-hall"
-    assert "castle-quest/dining-hall" in client.post("/worlds/list", json={}).json()["worlds"]
+def test_a_world_rename_moves_nothing_and_strands_nothing():
+    """Renaming is a metadata edit: the id is unchanged, so the active pointer, the session record and
+    anything else holding a reference keep working. This is the whole reason for the id."""
+    from conjure.world import WorldDir, WorldStore
+    import tempfile, pathlib as _pl
+    d = WorldDir(_pl.Path(tempfile.mkdtemp()))
+    wid = d.save("meadow", WorldStore({"rev": 0, "environment": {}, "entities": []}))
+    d.set_active(wid)
+
+    d.rename("meadow", "The Meadow")
+    assert d.resolve("The Meadow") == wid
+    assert d.get_active() == wid                       # the live pointer never moved
+    assert d.name_of(wid) == "The Meadow"
+    assert d.resolve("meadow") is None                 # the old name is genuinely gone (no aliases)
+    assert [e["name"] for e in d.entries()] == ["The Meadow"]
+
+
+def test_world_names_are_unique_within_a_session():
+    # Uniqueness is what keeps name→id resolution total, so a person or an agent can keep saying "meadow".
+    from conjure.world import WorldDir, WorldStore
+    import tempfile, pathlib as _pl, pytest as _pt
+    d = WorldDir(_pl.Path(tempfile.mkdtemp()))
+    d.save("meadow", WorldStore({"rev": 0, "environment": {}, "entities": []}))
+    second = d.save("beach", WorldStore({"rev": 0, "environment": {}, "entities": []}))
+    with _pt.raises(ValueError, match="already exists"):
+        d.rename(second, "Meadow")                     # slug-insensitive clash
+    with _pt.raises(ValueError, match="already exists"):
+        d.create("MEADOW", WorldStore({"rev": 0, "environment": {}, "entities": []}))
 
 
 def test_reset_room_authority_clears_stale_id(srv):
@@ -1223,7 +1252,7 @@ def test_space_select_matched_joins_last_world(srv, client):
         {"id": "o", "name": "office-world", "rev": 1, "environment": {"space": "daniel/office"}, "entities": []}))
     r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office"}).json()
     assert r["ok"] and r["joined"] == "daniel/office"
-    assert srv.active_world == "office-world" and srv.active_space == "office"
+    assert _wname(srv) == "office-world" and srv.active_space == "office"
     assert srv.active_space_owner == "daniel"
 
 
@@ -1828,6 +1857,11 @@ def test_guest_may_create_and_switch_worlds_everyone_comes_along(srv, client):
 
 
 # ---- admin: dir / delete over the user→{worlds,spaces,assets} namespace (shell `dir`/`delete`) ------
+def _wname(srv, scope=None, wid=None):
+    """The display name of a world id — `active_world` is an ID now, so tests compare names through this."""
+    return srv.worlds.name_of(scope or srv.active_scope, wid or srv.active_world)
+
+
 def _seed_worlds(srv, scope, *names):
     from conjure.world import WorldStore
     for n in names:
@@ -2164,7 +2198,7 @@ def test_switching_sessions_loads_the_target_sessions_world(srv, client):
     client.post("/session/new", json={"scope": scope})           # session-2 ('home'), now active
     r = client.post("/session/switch", json={"scope": scope, "session": "session-1"}).json()
     assert r["ok"] and r["world"] == "alpha"                     # loaded from session-1, not session-2
-    assert srv.active_sid == "session-1" and srv.active_world == "alpha"
+    assert srv.active_sid == "session-1" and _wname(srv) == "alpha"
 
 
 def test_admin_delete_is_ownership_gated(srv, client):
@@ -2235,7 +2269,7 @@ def test_session_new_builds_the_first_world_from_the_constructor(srv, client):
     scope = srv.DEFAULT_SCOPE
     srv._ensure_session(scope)
     client.post("/session/new", json={"scope": scope})
-    assert srv.active_world == "home"                                     # default first-world name
+    assert _wname(srv) == "home"                                          # default first-world name
     assert srv.worlds.list(scope) == ["home"]                            # built in the new session
     assert srv.store.doc["environment"]["room"]["edgesVisible"] is True   # builder's world.on_create ran
 
@@ -2289,8 +2323,8 @@ def test_boot_world_restores_the_global_session_pointer(srv):
         {"id": "b", "name": "beach", "rev": 0, "environment": {"space": "<void>"}, "entities": []}))
     S.worlds.set_active(outdoor, "beach")                             # active world within that session
     S._write_session_ptr(outdoor, S.MIGRATED_SID)                    # the live SESSION
-    scope, name, _ = S._boot_world()
-    assert scope == outdoor and name == "beach"
+    scope, wid, _ = S._boot_world()
+    assert scope == outdoor and S.worlds.name_of(scope, wid) == "beach"
 
 
 def test_boot_world_writes_the_pointer_for_future_boots(srv):
@@ -2298,16 +2332,16 @@ def test_boot_world_writes_the_pointer_for_future_boots(srv):
     # boot resumes it. (The pre-session on-disk cache is handled earlier by migrate_cache_to_users.)
     import conjure.server as S
     assert S._read_session_ptr() is None                             # fresh
-    scope, name, _ = S._boot_world()
-    assert (scope, name) == (S.DEFAULT_SCOPE, "default")
+    scope, wid, _ = S._boot_world()
+    assert (scope, S.worlds.name_of(scope, wid)) == (S.DEFAULT_SCOPE, "default")
     assert S._read_session_ptr() == (S.DEFAULT_SCOPE, S.MIGRATED_SID)  # pointer written for next boot
     assert S.sessions.exists(S.DEFAULT_SCOPE, S.MIGRATED_SID)          # and the session materialized
 
 
 def test_boot_world_defaults_to_builder_without_a_pointer(srv):
     import conjure.server as S
-    scope, name, _ = S._boot_world()
-    assert scope == S.DEFAULT_SCOPE and name == "default"     # no record → builder's default
+    scope, wid, _ = S._boot_world()
+    assert scope == S.DEFAULT_SCOPE and S.worlds.name_of(scope, wid) == "default"   # builder's default
 
 
 # ── dynamic modules: discovered registry, scoping, serving, injection ────────────────────────────
@@ -2678,3 +2712,62 @@ def test_index_injects_pointer_bindings_and_the_shared_reader(srv, client):
         assert '"resize":"grip"' in client.get("/").text
     finally:
         srv.settings = old
+
+
+# ---- rename: identity is the id, so a name change moves nothing --------------------------------------
+
+def test_renaming_a_world_keeps_its_id_and_every_pointer(srv, client):
+    scope = srv.DEFAULT_SCOPE
+    wid = client.get("/state").json()["world_id"]
+    r = client.post("/worlds/rename", json={"scope": scope, "name": "default", "new_name": "The Meadow"}).json()
+    assert r["ok"] and r["id"] == wid                       # same world, new label
+    st = client.get("/state").json()
+    assert st["world"] == "The Meadow" and st["world_id"] == wid
+    assert srv.active_world == wid                          # the live pointer never moved
+    assert srv.worlds.get_active(scope) == wid              # nor the per-session one
+    assert client.post("/worlds/switch", json={"scope": scope, "name": wid}).json()["ok"]   # id still works
+    # no aliases: the old name is genuinely gone, and says so rather than silently resolving elsewhere
+    assert client.post("/worlds/switch", json={"scope": scope, "name": "default"}).json()["ok"] is False
+
+
+def test_renaming_the_live_world_survives_the_autosave_round_trip(srv, client):
+    """Regression: the live world is held in memory and written back by `_save_active`, so a rename that
+    only touched disk was silently reverted by the next switch."""
+    scope = srv.DEFAULT_SCOPE
+    client.post("/worlds/new", json={"name": "elsewhere"})
+    client.post("/worlds/switch", json={"scope": scope, "name": "default"})
+    wid = client.get("/state").json()["world_id"]
+
+    client.post("/worlds/rename", json={"scope": scope, "name": wid, "new_name": "Renamed Live"})
+    client.post("/worlds/switch", json={"scope": scope, "name": "elsewhere"})   # forces a save of the outgoing
+    client.post("/worlds/switch", json={"scope": scope, "name": wid})
+    assert client.get("/state").json()["world"] == "Renamed Live"
+
+
+def test_renaming_a_world_rejects_a_name_another_world_already_has(srv, client):
+    scope = srv.DEFAULT_SCOPE
+    client.post("/worlds/new", json={"name": "beach"})
+    r = client.post("/worlds/rename", json={"scope": scope, "name": "beach", "new_name": "DEFAULT"}).json()
+    assert r["ok"] is False and "already exists" in r["error"]      # slug-insensitive clash
+
+
+def test_renaming_a_space_keeps_its_file_key_so_worlds_still_point_at_it(srv, client):
+    # `environment.space` is `<owner>/<id>` and may live in ANOTHER user's world, which we may not
+    # rewrite — so the id has to be the thing that never changes.
+    _seed_space(srv, "daniel", "space-1")
+    before = client.get("/world").json()["environment"].get("space")
+    r = client.post("/space/rename", json={"owner": "daniel", "name": "space-1",
+                                           "new_name": "Living Room"}).json()
+    assert r["ok"] and r["id"] == "space-1"                         # the key is untouched
+    assert srv.spaces.load("daniel", "space-1")["name"] == "Living Room"
+    assert srv.spaces.resolve("daniel", "Living Room") == "space-1"
+    assert client.get("/world").json()["environment"].get("space") == before
+
+
+def test_cd_and_show_reject_a_world_that_does_not_exist(srv, client):
+    # Regression: any trailing path segments used to resolve to a `world` location unchecked, so `cd`
+    # onto a nonexistent world quietly succeeded and left you somewhere that isn't there.
+    ok = client.post("/admin/tree", json={"path": "/daniel/agents/builder/worlds/default"}).json()
+    assert ok["ok"] is True
+    bad = client.post("/admin/tree", json={"path": "/daniel/agents/builder/worlds/nope"}).json()
+    assert bad["ok"] is False and "no world" in bad["error"]

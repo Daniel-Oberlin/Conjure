@@ -19,6 +19,7 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 12 | Vehicle motion: full physics engine vs parametric/arcade models | OPEN | — |
 | 13 | Image procurement decoupled from scene use; capability-aware generators | ✅ RESOLVED | Procure→reference by id; generators mediated by capability |
 | 14 | Per-agent persistence scoping; asset store vs world/document store | 🔶 DESIGNED | private/public namespaces; scope = capability; worlds in a separate store |
+| 15 | World/space identity: is the NAME the identity, or is there a permanent id? | ✅ RESOLVED | Permanent minted id + a mutable display name (no aliases) |
 
 ---
 
@@ -325,3 +326,45 @@ only on change; and **time-slice** the mesh re-triangulation across frames under
   but **element creation** (first lay) and **`matchRef`** still grow with room size on the main thread — the
   next levers if large rooms hitch. Element creation would need its own slicing; `matchRef` would migrate
   behind the same worker message boundary.
+
+
+### 15. World & space identity — ✅ RESOLVED
+**Choice:** A world's identity is a permanent minted `wld_…` **id**; its **name** is display text a
+person can change freely. A space's id is its existing auto-minted key (`space-1`) and it gains a name it
+never had. Renaming is a metadata edit; there is **no alias/redirect table**.
+
+**Why:** the name was the identity — it was the filename, the active pointer, the session's
+`active_world`, a space's `last_world`, and `environment.space` in other users' worlds. Renaming
+therefore stranded references, including two we can't reach at all: schema-free agent state (`StateStore`
+"doesn't know a `map` from an `inventory`, which is the whole point") and `environment.space` inside
+**another user's** world, which we may not rewrite.
+
+The first design was a move+alias scheme: keep names as identity, patch the breakage with a redirect
+table. It was rejected because every question it raised — chain collapsing, name reuse, alias expiry,
+what `delete` on an alias means — existed *only because aliases existed*, the table grows forever, and it
+still couldn't fix a client-side bug (`conjure-client.js` keyed the room-capture frame on the world
+*name*, so a rename read as a world switch and reset the frame). An id removes the cause instead of
+patching the symptom, and is correct on the second rename as well as the first.
+
+Decisive evidence: **sessions already worked this way** — `SessionRepository`: "the session id is a
+stable, safe segment; the mutable human title lives in the meta doc, so a rename is a metadata edit that
+moves nothing." Worlds and spaces were simply inconsistent with it. World docs also already carried `id`
+and `name` fields — every world on disk said `id='world_holodeck', name='Holodeck'`, copied from the seed
+template, never updated, and read by nothing.
+
+**Implications:**
+- Files are `<id>.json`, flat. **Hierarchical world names are retired** — sessions are the grouping now,
+  and "is this subdirectory also a world?" had no good answer. Nesting was unused in real data.
+- Display names are **unique within a session** (slug-compared), which keeps name→id resolution total, so
+  a person or an agent can keep saying "the meadow". Uniqueness ≠ immutability; the id is what's stable.
+- Everything that stores a reference stores the **id**; everything a human reads shows the **name**.
+  Shell paths address by name (nothing persists a shell path). `/state` reports both.
+- The agent is handed `{id, name}` pairs and told to store the id; tools accept either. We can't *force*
+  a schema-free state doc to hold ids — but a lazy agent is no worse off than before, and a correct one
+  is now bulletproof.
+- **Accepted trade:** a stale *human* reference now fails loudly (`switch_world("old-name")` → "no world")
+  instead of silently resolving. That's the right side of the trade: ids protect the machine references
+  that corrupt state quietly; a person's stale name is recoverable.
+- One-time migration `migrate_worlds_to_ids` (idempotent, runs at boot) re-keys worlds and rewrites the
+  active pointers, `session.json`'s `active_world`, and each space's `last_world`. It also heals
+  `active_world` values that were already dangling in real data.
