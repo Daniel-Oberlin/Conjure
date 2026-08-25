@@ -2059,11 +2059,18 @@ def _admin_resolve(path: str):
     if len(segs) == 4:
         return _Loc("sessions", user, agent)
 
-    sid = segs[4]
-    # Dir-based, not `sessions.exists()`: a session can hold worlds before anything writes its
+    # By id OR by display title, like every other addressable thing in a path (a world resolves either
+    # way below, and so does a space). `dir` prints the title right there in the row, so refusing it here
+    # made the listing a liar: `rename "Session 1" Home` came back "no session 'Session 1'".
+    # `_resolve_sid` is the same resolver the /session/* endpoints use, so the shell and the API agree on
+    # what a reference means. It stays dir-based — a session can hold worlds before anything writes its
     # `session.json`, and such a session is still a real, listable, deletable place.
-    if sid not in sessions.list(scope):
-        return f"no session {sid!r} for {scope}"
+    sid = _resolve_sid(scope, segs[4])
+    # The Loc carries the resolved ID, not the reference: `loc.sid` is used directly as a directory name
+    # downstream. (The world branch stores the name instead and re-resolves per use — worlds are addressed
+    # by name throughout, sessions by id.)
+    if sid is None:
+        return f"no session {segs[4]!r} for {scope}"
     if len(segs) == 5:
         return _Loc("session", user, agent, sid)
     if segs[5] != "worlds":

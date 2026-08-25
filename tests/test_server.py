@@ -1920,6 +1920,29 @@ def test_worlds_shortcut_resolves_to_the_active_session(srv, client):
     assert r["path"] == f"/alice/agents/builder/sessions/{sid}/worlds"
 
 
+def test_admin_path_addresses_a_session_by_its_title(srv, client):
+    # `dir` prints the title in every session row, so a path has to accept it — otherwise the listing is
+    # a liar and `rename "Session 1" Home` comes back "no session 'Session 1'". Same resolver the
+    # /session/* endpoints use, so the shell and the API agree on what a reference means.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    meta = srv.sessions.load_meta(scope, sid) if srv.sessions.exists(scope, sid) else {"id": sid}
+    meta["title"] = "Session 1"
+    srv.sessions.save_meta(scope, sid, meta)
+
+    assert _ls(client, f"/{scope}/sessions/{sid}") == {"worlds", "state"}          # by id, as before
+    assert _ls(client, f"/{scope}/sessions/Session 1") == {"worlds", "state"}      # by exact title
+    assert _ls(client, f"/{scope}/sessions/session 1") == {"worlds", "state"}      # loose: case
+    assert _ls(client, f"/{scope}/sessions/Session-1") == {"worlds", "state"}      # loose: separators
+    # …and it still resolves to the canonical ID path, so a remembered cwd can't go stale.
+    r = client.post("/admin/tree", json={"path": f"/{scope}/sessions/Session 1/worlds"}).json()
+    assert r["ok"] is True and r["path"] == f"/{scope}/sessions/{sid}/worlds"
+
+    bad = client.post("/admin/tree", json={"path": f"/{scope}/sessions/Session 9"}).json()
+    assert bad["ok"] is False and "Session 9" in bad["error"]
+
+
 def test_admin_tree_unknown_user_errors(srv, client):
     r = client.post("/admin/tree", json={"path": "/nobody"}).json()
     assert r["ok"] is False and "nobody" in r["error"]
