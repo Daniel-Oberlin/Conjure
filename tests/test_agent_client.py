@@ -83,51 +83,57 @@ def test_apply_context_folds_only_known_keys():
 
 
 def test_render_event_formats_each_type():
-    # our own LIVE turn isn't echoed; another speaker's is (one shared conversation)
-    assert render_event({"type": "user_turn", "speaker": "alice", "text": "hi"}, me="alice", verbose=False) is None
-    assert render_event({"type": "user_turn", "speaker": "bob", "text": "hi"}, me="alice", verbose=False) == "bob: hi"
-    # but a BACKLOG turn IS shown even when it's ours — reviewing history we weren't here to type it
+    # The turn THIS connection submitted comes back marked `mine` — the client printed it on submit, so
+    # the server's copy would double it. Everything else shows: one shared conversation.
+    assert render_event({"type": "user_turn", "speaker": "alice", "text": "hi", "mine": True},
+                        verbose=False) is None
+    assert render_event({"type": "user_turn", "speaker": "bob", "text": "hi"}, verbose=False) == "bob: hi"
+    # An unmarked turn from OUR OWN name is another client of ours (the voice client alongside this CLI) —
+    # show it. Filtering on the speaker's name instead is what made spoken turns vanish from the CLI.
+    assert render_event({"type": "user_turn", "speaker": "alice", "text": "hi"},
+                        verbose=False) == "alice: hi"
+    # a BACKLOG turn is never `mine`, so history always shows in full, our own lines included
     assert render_event({"type": "user_turn", "speaker": "alice", "text": "hi", "backlog": True},
-                        me="alice", verbose=False) == "alice: hi"
-    assert render_event({"type": "busy"}, me="alice", verbose=False).startswith("[busy")
-    assert render_event({"type": "context", "agent": "builder"}, me="alice", verbose=False) is None
-    assert render_event({"type": "turn_done"}, me="alice", verbose=False) is None   # control
+                        verbose=False) == "alice: hi"
+    assert render_event({"type": "busy"}, verbose=False).startswith("[busy")
+    assert render_event({"type": "context", "agent": "builder"}, verbose=False) is None
+    assert render_event({"type": "turn_done"}, verbose=False) is None   # control
 
 
 def test_agent_replies_are_attributed_by_agent_name_like_any_other_speaker():
     for kind in ("assistant_delta", "assistant_final"):
-        assert render_event({"type": kind, "text": "on it"}, me="alice", verbose=False,
+        assert render_event({"type": kind, "text": "on it"}, verbose=False,
                             agent="builder") == "builder: on it"
     # no agent known yet (before the first context event) → a neutral label, never a bare line
-    assert render_event({"type": "assistant_final", "text": "done"}, me="alice", verbose=False) == "agent: done"
-    assert render_event({"type": "assistant_final", "text": "done"}, me="alice", verbose=False,
+    assert render_event({"type": "assistant_final", "text": "done"}, verbose=False) == "agent: done"
+    assert render_event({"type": "assistant_final", "text": "done"}, verbose=False,
                         agent="") == "agent: done"
     # an empty reply prints nothing rather than a lone "builder:"
-    assert render_event({"type": "assistant_final", "text": ""}, me="alice", verbose=False,
+    assert render_event({"type": "assistant_final", "text": ""}, verbose=False,
                         agent="builder") is None
 
 
 def test_notices_and_tool_traces_are_not_attributed_to_the_agent():
     # A notice is the SHELL (the deterministic plane) talking — labelling it 'builder:' would claim the
     # agent said something it didn't.
-    assert render_parts({"type": "notice", "text": "Now on Gemini"}, me="alice", verbose=False,
+    assert render_parts({"type": "notice", "text": "Now on Gemini"}, verbose=False,
                         agent="builder") == (None, "Now on Gemini")
-    assert render_event({"type": "notice", "text": "Now on Gemini"}, me="alice", verbose=False,
+    assert render_event({"type": "notice", "text": "Now on Gemini"}, verbose=False,
                         agent="builder") == "Now on Gemini"
-    assert render_parts({"type": "busy"}, me="alice", verbose=False, agent="builder")[0] is None
+    assert render_parts({"type": "busy"}, verbose=False, agent="builder")[0] is None
 
 
 def test_render_parts_splits_speaker_from_text_so_a_front_end_can_style_them():
     assert render_parts({"type": "user_turn", "speaker": "bob", "text": "hi"},
-                        me="alice", verbose=False) == ("bob", "hi")
+                        verbose=False) == ("bob", "hi")
     assert render_parts({"type": "assistant_final", "text": "done"},
-                        me="alice", verbose=False, agent="builder") == ("builder", "done")
-    assert render_parts({"type": "user_turn", "speaker": "alice", "text": "hi"},
-                        me="alice", verbose=False) is None
+                        verbose=False, agent="builder") == ("builder", "done")
+    assert render_parts({"type": "user_turn", "speaker": "alice", "text": "hi", "mine": True},
+                        verbose=False) is None
 
 
 def test_render_tool_call_is_verbose_only():
     ev = {"type": "tool_call", "name": "place_asset", "args": {"query": "tree"}}
-    assert render_event(ev, me="alice", verbose=False) is None
-    assert render_event(ev, me="alice", verbose=True) == '  · place_asset({"query": "tree"})'
-    assert render_parts(ev, me="alice", verbose=True)[0] is None       # a trace, not a speaker
+    assert render_event(ev, verbose=False) is None
+    assert render_event(ev, verbose=True) == '  · place_asset({"query": "tree"})'
+    assert render_parts(ev, verbose=True)[0] is None       # a trace, not a speaker

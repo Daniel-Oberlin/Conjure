@@ -118,26 +118,29 @@ def status_from_context(ctx: dict, *, working: Optional[float] = None, width: Op
     return line if len(line) <= width else line[:max(0, width)]
 
 
-def render_parts(ev: dict, *, me: str, verbose: bool, agent: str = "agent") -> Optional[tuple]:
+def render_parts(ev: dict, *, verbose: bool, agent: str = "agent") -> Optional[tuple]:
     """`(speaker, text)` for a conversation event, or None to print nothing — the structured form, so a
     front-end can style the attribution apart from the line (the CLI bolds it). `speaker` is None for
     output that isn't somebody *talking*: shell notices, tool traces, the busy marker.
 
-    `me` is the local user, so we don't echo our own submitted turns (but we DO show other speakers —
-    one shared conversation). `agent` attributes the agent's replies by name ('builder: …'), matching how
-    user turns read; it comes from the caller's live `context`, so a REPLAYED backlog turn is labelled
-    with the agent that's active *now* (the event carries no agent of its own — agent_server.py `_replay`).
+    `agent` attributes the agent's replies by name ('builder: …'), matching how user turns read; it comes
+    from the caller's live `context`, so a REPLAYED backlog turn is labelled with the agent that's active
+    *now* (the event carries no agent of its own — agent_server.py `_replay`).
 
     `context`/`turn_done` are control events → None (the caller folds context into ctx / releases the
     prompt gate)."""
     t = ev.get("type")
     if t == "user_turn":
         spk = ev.get("speaker")
-        # Live: suppress our own turn (we already typed it). Backlog: show it — reviewing history, we
-        # weren't here to type it, so a transcript missing our own prompts reads as gaps.
-        if spk and (spk != me or ev.get("backlog")):
-            return spk, ev.get("text", "")
-        return None
+        # `mine` is set by the server on the copy it sends back to the connection that SUBMITTED the turn
+        # — that client printed it on submit, so the server's copy would double it. Everyone else shows it:
+        # one shared conversation. Deciding this per CONNECTION is the whole point; the old test compared
+        # the speaker's NAME to the local user, so the same person on a CLI and the voice client had each
+        # client discard the other's turns as its own echo. A replayed backlog turn is never `mine`, so
+        # history always shows in full, including our own lines.
+        if not spk or ev.get("mine"):
+            return None
+        return spk, ev.get("text", "")
     if t in ("assistant_delta", "assistant_final"):
         # NOT a token stream despite the name: `emit` fires once per LLM round-trip (llm.py), so a
         # `delta` is a whole intermediate message — an ack, or narration before a tool call.
@@ -153,9 +156,9 @@ def render_parts(ev: dict, *, me: str, verbose: bool, agent: str = "agent") -> O
     return None                                   # context / turn_done / non-verbose tool_call / unknown
 
 
-def render_event(ev: dict, *, me: str, verbose: bool, agent: str = "agent") -> Optional[str]:
+def render_event(ev: dict, *, verbose: bool, agent: str = "agent") -> Optional[str]:
     """`render_parts` flattened to one printable line — for a front-end with no styling (voice, tests)."""
-    parts = render_parts(ev, me=me, verbose=verbose, agent=agent)
+    parts = render_parts(ev, verbose=verbose, agent=agent)
     if parts is None:
         return None
     speaker, text = parts

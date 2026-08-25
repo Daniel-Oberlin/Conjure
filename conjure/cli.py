@@ -157,11 +157,11 @@ def _style():
     })
 
 
-def _fragments(ev: dict, *, me: str, verbose: bool, ctx: dict):
+def _fragments(ev: dict, *, verbose: bool, ctx: dict):
     """Style one event for the terminal, or None to print nothing."""
     from prompt_toolkit.formatted_text import FormattedText
 
-    parts = render_parts(ev, me=me, verbose=verbose, agent=ctx.get("agent"))
+    parts = render_parts(ev, verbose=verbose, agent=ctx.get("agent"))
     if parts is None:
         return None
     speaker, text = parts
@@ -285,9 +285,11 @@ class _Repl:
             self._app.exit()
             return False
         # Echo it attributed by name, exactly as every other speaker appears — and exactly as the server
-        # will replay this same turn in the backlog after a reconnect. (We echo locally because
-        # `render_parts` suppresses our own LIVE `user_turn`, and because a shell command gets no
-        # broadcast at all — only a notice back to us.)
+        # will replay this same turn in the backlog after a reconnect. We echo locally so the line lands
+        # without waiting for the round trip, and because a shell command gets no broadcast at all — only
+        # a notice back to us. The server marks its copy of THIS turn `mine`, so `render_parts` drops that
+        # one and nothing doubles; a turn from any other connection (including our own voice client) has
+        # no marker and prints normally.
         self.add([("class:speaker.user", f"{self._user}: "), ("", text)])
         self._follow = True                                    # submitting jumps back to the live tail
         asyncio.create_task(self._send(text))
@@ -395,7 +397,7 @@ class _Repl:
         """One event from the server → a line in the pane, or just a repaint. `context`/`turn_done`
         render to nothing but still move the status bar (turn counts, context size, the working clock),
         so they repaint rather than falling through."""
-        frags = _fragments(ev, me=self._user, verbose=self._verbose, ctx=self.conv.ctx)
+        frags = _fragments(ev, verbose=self._verbose, ctx=self.conv.ctx)
         if frags is not None:
             self.add(frags)
         else:
@@ -432,7 +434,7 @@ async def _say(s: Settings, verbose: bool, user: str, text: str) -> None:
     state = {"sent": False, "started": False}
 
     def emit(ev: dict) -> None:
-        out = render_event(ev, me=user, verbose=verbose, agent=conv.ctx.get("agent"))
+        out = render_event(ev, verbose=verbose, agent=conv.ctx.get("agent"))
         if out is not None:
             print(out)
 

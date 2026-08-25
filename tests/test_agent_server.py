@@ -10,6 +10,7 @@ import types
 
 from conjure.agent_server import (Hub, _backlog_events, _context_event, _handle_turn, _reconcile_state,
                                    _sync_transcript, build_app)
+from conjure.agent_client import render_event
 from conjure.config import get_settings
 from conjure.llm import Turn
 from conjure.world import SessionRepository
@@ -115,8 +116,27 @@ async def test_utterance_broadcasts_conversation_and_ends_with_turn_done():
     assert "user_turn" in k and "assistant_delta" in k and "tool_call" in k and "assistant_final" in k
     assert k[-1] == "turn_done"                                   # the prompt gate always closes the line
     ut = next(e for e in conn.sent if e["type"] == "user_turn")
-    assert ut == {"type": "user_turn", "speaker": "alice", "text": "put a tree here"}
+    # `mine` on the SUBMITTER's copy only — that client printed the line on submit, so it drops this one.
+    assert ut == {"type": "user_turn", "speaker": "alice", "text": "put a tree here", "mine": True}
     assert app.state.turn_active is False                         # floor released
+
+
+async def test_a_second_client_of_the_same_user_still_sees_the_turn():
+    # The CLI and the voice client are both "alice". Marking the echo per-USER made each discard the
+    # other's turns as its own: speak into the voice client and the CLI showed the agent's reply with
+    # nothing it was replying to. The marker is per-CONNECTION, so only the submitter drops it.
+    shell = FakeShell()
+    voice, cli = FakeConn("alice"), FakeConn("alice")
+    app = _app(shell, [voice, cli])
+    await _handle_turn(app, voice, "put a tree here")
+
+    spoken = next(e for e in voice.sent if e["type"] == "user_turn")
+    heard = next(e for e in cli.sent if e["type"] == "user_turn")
+    assert spoken["mine"] is True                                  # the voice client submitted it
+    assert "mine" not in heard                                     # …the CLI did not, so the CLI prints it
+    assert heard == {"type": "user_turn", "speaker": "alice", "text": "put a tree here"}
+    assert render_event(heard, verbose=False) == "alice: put a tree here"
+    assert render_event(spoken, verbose=False) is None
 
 
 # --------------------------------------------------------------------------- transcript persistence (step 2)

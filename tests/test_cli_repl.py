@@ -442,5 +442,12 @@ def test_your_own_echo_matches_how_the_backlog_will_replay_it(fake_ws):
     # what the server sends back for the same turn on reconnect (agent_server `_turn_to_event`)
     replayed = cli._fragments({"type": "user_turn", "speaker": "daniel",
                                "text": "put an oak tree in front of me", "backlog": True},
-                              me="daniel", verbose=False, ctx=r.conv.ctx)
+                              verbose=False, ctx=r.conv.ctx)
     assert live_echo == _text(replayed) == "daniel: put an oak tree in front of me"
+
+    # …and the same line spoken into OUR OWN voice client, arriving live from the other connection, reads
+    # identically — it's unmarked, so nothing mistakes it for this client's echo and drops it.
+    spoken = cli._fragments({"type": "user_turn", "speaker": "daniel",
+                             "text": "put an oak tree in front of me"},
+                            verbose=False, ctx=r.conv.ctx)
+    assert _text(spoken) == "daniel: put an oak tree in front of me"

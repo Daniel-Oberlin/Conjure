@@ -138,13 +138,23 @@ def _permitted(app: FastAPI, conn: Conn) -> bool:
     return (not live) or live.get("public", True) or (conn.user == live.get("owner"))
 
 
-async def _conv_broadcast(app: FastAPI, event: dict) -> None:
+async def _conv_broadcast(app: FastAPI, event: dict, *, origin: Optional[Conn] = None) -> None:
     """Fan a CONVERSATION event out to PERMITTED clients only — a private session's dialog is never sent to
-    a non-owner guest (§8.3). (Control events like context/turn_done go per-connection, not through here.)"""
+    a non-owner guest (§8.3). (Control events like context/turn_done go per-connection, not through here.)
+
+    `origin` is the connection that CAUSED the event, if any: it receives the event stamped `mine: True`,
+    everyone else gets it plain. That lets the submitter suppress the server's copy of a line it already
+    echoed locally, WITHOUT the stream going asymmetric — every client still sees every event, so the live
+    stream and a replayed backlog stay the same shape.
+
+    The marker has to be per-connection, not per-user. One person is routinely on two clients at once
+    (a CLI and the voice client), and a client that filtered on the speaker's NAME threw away the other
+    client's turns as if it had typed them itself — speak into the voice client and the CLI showed the
+    agent's reply with nothing it was replying to."""
     for c in app.state.hub.conns:
         if _permitted(app, c):
             try:
-                await c.send(event)
+                await c.send({**event, "mine": True} if c is origin else event)
             except Exception:  # noqa: BLE001 — a dead socket must not break the fan-out
                 pass
 
@@ -337,7 +347,8 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
                 return
             app.state.turn_active = True
             try:
-                await _conv_broadcast(app, {"type": "user_turn", "speaker": conn.user, "text": text.strip()})
+                await _conv_broadcast(app, {"type": "user_turn", "speaker": conn.user, "text": text.strip()},
+                                      origin=conn)   # `mine: True` back to the submitter only
 
                 async def on_text(t, *, final, speaker):     # `speaker` = the LLM display name
                     if t and t.strip():
