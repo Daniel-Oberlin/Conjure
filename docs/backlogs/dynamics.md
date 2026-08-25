@@ -148,22 +148,24 @@ the agent's load. Optional entries were deliberately deferred.
 
 ## Known problems
 
-Code-reading observations, not reproduced on device. Treat them as leads rather than findings — unlike
-the selection-box hit-volume bug (`grab.js` `_setHud` / `_nearest`), which was confirmed against a
-harness before being fixed.
+None of these has been reproduced on device, but they are not all the same strength, so each says which
+it is. **Certain** = the code plainly does this, with a line to check. **Unproven trigger** = the
+mechanism is certain but nobody has shown the condition that fires it actually arises.
 
-- **`grab` focuses one object across both controllers.** `hover` is a single variable in the tick loop, so
+- **`grab` focuses one object across both controllers.** *Certain* — `hover` is one variable
+  (`grab.js:545`), reassigned per pointer, and `_setHud(hover)` runs once after the loop (`:597`), so
   two controllers cannot highlight two different objects — the last pointer in the list wins. Harmless
   today, wrong as soon as two-handed manipulation matters.
-- **A stale selection box survives a geometry change.** `_setHud` early-returns when the focused element is
-  unchanged, so the HUD is not rebuilt if the underlying geometry changes without a scale change (an image
-  re-fitted to its surface). The box tracks scale correctly because it is parented to the target; it is
-  only non-uniform geometry changes that go stale, until focus leaves and returns.
-- **The guest hint is console-only.** The design calls for a guest to see the highlight plus an
-  "ask the owner" hint; `grab._hint()` writes `console.warn`, which is invisible in a headset. A guest
-  currently sees the highlight and nothing happening.
-- **`water` self-disables permanently on first error.** `this._dead = true` is never cleared, so a
-  transient GPU hiccup silently kills ripples until the module is re-conjured.
+- **A stale selection box survives a geometry change.** *Unproven trigger.* The mechanism is certain —
+  `_setHud` early-returns when the focused element is unchanged, so the HUD is never rebuilt while focus
+  is held. The box still tracks *scale*, being parented to the target; only a geometry change (an image
+  re-fitted to its surface) would go stale, and nobody has shown that happens while focus is held.
+- **The guest hint is console-only.** *Certain* (`grab.js:534`). The design calls for a guest to see the
+  highlight plus an "ask the owner" hint; `_hint()` writes `console.warn`, invisible in a headset, so a
+  guest sees the highlight and nothing happening.
+- **`water` self-disables permanently on first error.** *Certain* — `this._dead = true` (`water.js:264`)
+  is checked at `:240` and appears nowhere else, so one transient GPU hiccup silently kills ripples until
+  the module is re-conjured.
 
 ## Record / replay
 
