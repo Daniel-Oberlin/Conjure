@@ -459,3 +459,31 @@ sharply by `hands`, so full's marginal value is only *moving real things* — pe
 depth-only occluders — sharp, stable, no depth sensor, but static only. Pairs well with `hands`. A better
 next step than `full` if static-furniture occlusion is the goal. See
 [`docs/backlogs/occlusion.md`](./backlogs/occlusion.md).
+
+### 20. Co-location may change the live agent — ✅ RESOLVED (kept, made audible)
+**Choice:** A space match keeps its authority to move the live scope across the agent boundary. It now
+announces itself instead of happening in silence.
+
+**The behaviour.** A world belongs to a session, a session to an agent, and a space remembers the last
+world opened in it (`last_scope`/`last_world`). So when an AR client votes its capture and matches a
+room, `/space/select` joins that room's last world — and `_switch_to` writes the global session pointer,
+which the agent server follows by re-binding its Director. Put the headset on in a room whose space was
+last used by `builder`, and you are now talking to `builder`, whatever you were talking to before.
+
+**Observed:** mid-session in the `outdoor` agent, a restart plus a headset reload landed in `builder`
+and `animal-house` twelve seconds after page load, with nothing said about it. Two rejected fixes:
+refuse to cross the agent boundary on a match, and skip selection entirely while the active world is
+VOID. Both break the thing the design is for — *your room, your world* — to avoid a surprise that is
+really a reporting failure. The room genuinely is the more authoritative signal about where a person is;
+it just has to say so.
+
+**So:** `_reconcile_state` broadcasts `[now in the <agent> agent — <world> · <space>]` on any agent
+change it did not itself initiate (a client's own `agent <name>` already narrates, and sets
+`expect_agent` to claim the echo). `notice` is spoken by the voice client and shown in the CLI, so the
+switch is audible on the same channel the person is already using. Naming the world and the space is
+what makes a room match recognisable *as* a room match, since the state carries no reason field.
+
+**Related, and separate:** this is also what exposed the dynamic-module loading bug — the page had been
+served under `outdoor`, which declares no `dynamics`, so it carried no module scripts and rendered
+`animal-house`'s `grab`/`water` entities as inert attributes. Module `<script>`s are no longer scoped to
+the active agent; see [`docs/specs/dynamics.md`](./specs/dynamics.md) §9.

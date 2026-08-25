@@ -38,7 +38,7 @@ from .assets import AssetResolver
 from .captioner import build_captioner
 from . import dynamics as dynamics_loader
 from .agents import load_agent, resolve_agent_dir
-from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, agent_of,
+from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
 from .library import AssetLibrary
@@ -344,9 +344,6 @@ active_space: str = "home"          # bare NAME of the space the active world co
 active_space_owner: str = DEFAULT_USER  # who OWNS that space — may differ from the active WORLD's owner
                                     # (D3: your world can live in someone else's shared space). Together
                                     # (active_space_owner, active_space) identify the live space's file.
-VOID = "<void>"                     # sentinel space for an OUTDOOR/void world — not tied to a captured room;
-                                    # it shows a skybox + placed objects, and the client derives its frame
-                                    # on the fly from live walls (RoomSnap.canonicalFrame) instead of a space
 # The embedder is None unless the optional torch/transformers are installed — then vector write-through
 # is simply skipped and the catalog runs on FTS/exact only. Lazy: no model loads until first embed.
 embedder = build_embedder(settings)
@@ -4011,17 +4008,25 @@ def _active_agent_dynamics() -> list[str]:
 
 
 def _dynamic_module_tags() -> tuple[str, list[int]]:
-    """The `<script>` tags for the ACTIVE agent's scoped modules, injected into index.html (decision 3),
-    each `src="/dynamics/<name>/<entry>?v=<mtime>"` so a code change busts the Quest's stubborn cache.
-    Returns (html, [mtimes]) — the mtimes feed the client-version badge. Re-evaluated per page load, so
-    switching agents swaps the available components. Unknown/broken modules are skipped."""
+    """The `<script>` tags for EVERY discovered module, injected into index.html, each
+    `src="/dynamics/<name>/<entry>?v=<mtime>"` so a code change busts the Quest's stubborn cache.
+    Returns (html, [mtimes]) — the mtimes feed the client-version badge. Unknown/broken modules are
+    skipped.
+
+    Deliberately NOT scoped to the active agent (docs/specs/dynamics.md §9). A page's scripts are fixed
+    the moment it loads, but the live agent is not: space selection joins the matched room's world in
+    whatever scope owns it (`/space/select`), `agent <name>` moves the pointer, a session switch moves
+    it again. Any of those can hand a headset a world full of components its page never registered —
+    and an unregistered component is SILENT (`el.setAttribute("grab", …)` on an unknown name is just a
+    DOM attribute), so the module renders nothing and logs nothing until someone reloads the page.
+    Registering a component is inert until an entity carries it, so serving all of them costs a few KB
+    and removes the whole class of ordering bugs. Scoping still bites where it decides anything:
+    `/module` refuses an out-of-scope conjure, and the director's catalog only lists the agent's own."""
     registry = _dynamics_registry()
     tags: list[str] = []
     mtimes: list[int] = []
-    for name in _active_agent_dynamics():
-        spec = registry.get(name)
-        if not spec:
-            continue
+    for name in sorted(registry):
+        spec = registry[name]
         for fname in spec.entry:
             try:
                 mt = int((spec.dir / fname).stat().st_mtime)

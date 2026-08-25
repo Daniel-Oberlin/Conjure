@@ -2548,13 +2548,31 @@ def test_dynamics_file_traversal_is_blocked(srv, client):
     assert r2.status_code == 404
 
 
-def test_index_injects_active_agent_module_scripts(srv, client):
+def test_index_injects_every_discovered_module_script(srv, client):
     html = client.get("/").text
     assert 'src="/dynamics/fireflies/fireflies.js?v=' in html
     assert 'src="/dynamics/water/water.js?v=' in html
     assert 'src="/dynamics/grab/grab.js?v=' in html          # the tier-C manipulation module
     # the deleted flat client files are no longer referenced
     assert "/static/dynamic-modules.js" not in html and "/static/water.js" not in html
+
+
+def test_a_page_carries_every_module_script_whatever_agent_is_live(srv, client, monkeypatch):
+    """A page's scripts are frozen at load; the live agent is not. `outdoor` declares no `dynamics`, so
+    scoping the <script> tags to it served a headset ZERO module code — and then `/space/select` could
+    match the room and join a builder world full of `grab`/`water` entities. An unregistered A-Frame
+    component is silent (a plain DOM attribute), so the modules rendered nothing, logged nothing, and
+    only a manual page reload fixed it. Loading is now agent-independent; only CONJURING is scoped."""
+    import conjure.server as S
+    monkeypatch.setattr(S, "active_scope", S.scope_for(S.DEFAULT_USER, "outdoor"))
+    assert S._active_agent_dynamics() == []                  # outdoor may conjure nothing…
+    html = client.get("/").text
+    for src in ('src="/dynamics/fireflies/fireflies.js?v=',  # …but the components are still REGISTERED,
+                'src="/dynamics/water/water.js?v=',          # so a world it's handed mid-session renders
+                'src="/dynamics/grab/grab.js?v='):
+        assert src in html
+    # …and the hard gate is untouched: registered client-side ≠ conjurable by this agent.
+    assert client.post("/module", json={"module": "grab"}).json()["ok"] is False
 
 
 # ── water picture (image module) aspect-ratio handling (mirror place_image) ──────────────────────

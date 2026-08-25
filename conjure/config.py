@@ -174,6 +174,13 @@ CACHE_DIR = DATA_DIR
 USERS_DIR = DATA_DIR / "users"
 SESSION_PTR = DATA_DIR / "_session.txt"
 
+VOID = "<void>"      # sentinel space for an OUTDOOR/void world — not tied to a captured room; it shows a
+                     # skybox + placed objects, and the client derives its frame on the fly from live walls
+                     # (RoomSnap.canonicalFrame) instead of a space. Lives HERE, not in server.py, because
+                     # it travels in `/state` (`_live_state`) and so is read by peripherals that must not
+                     # import the world server.
+
+
 def scope_for(user: str, agent: str) -> str:
     """The capability scope a (user, agent) pair operates under: `<user>/agents/<agent>`
     (docs/spaces-and-users-plan.md §3). Injected by the runtime, never an LLM argument."""

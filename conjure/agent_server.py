@@ -30,7 +30,7 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from .config import DEFAULT_USER, USERS_DIR, Settings
+from .config import DEFAULT_USER, USERS_DIR, VOID, Settings
 from .director import Busy
 from .llm import Turn
 from .shell import Shell, default_cwd
@@ -402,6 +402,19 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
 
 # --------------------------------------------------------------------------- world-state follow (C2)
 
+def _agent_change_notice(state: dict) -> str:
+    """What to say when the live agent moved WITHOUT this server being asked to move it.
+
+    The most common cause is co-location: an AR client votes its capture against the geo candidates, the
+    world server matches a space, and joins that space's last-active world — in whatever scope owns it
+    (`/space/select`). Your room, in other words, can hand you a different agent. That's the intended
+    design (the space owns the world owns the scope), but it used to happen in total silence: you kept
+    talking, and something else answered. `state` carries no reason, so name the destination — world and
+    space are exactly the evidence that makes a room match recognisable as one."""
+    where = " · ".join(x for x in (state.get("world"), state.get("space")) if x and x != VOID)
+    return f"[now in the {state.get('agent')} agent{' — ' + where if where else ''}]"
+
+
 async def _reconcile_state(app: FastAPI, state: dict) -> None:
     """Reconcile to the world server's live `state`: on an agent change, re-bind the Director in the
     owning task (a fresh Director = fresh transcript); either way refresh every client's context. Not
@@ -409,6 +422,13 @@ async def _reconcile_state(app: FastAPI, state: dict) -> None:
     shell: Shell = app.state.shell
     hub: Hub = app.state.hub
     new_agent = state.get("agent")
+    # A client's own `agent <name>` already narrates, and its /scope/activate comes straight back here as
+    # a change — `expect_agent` is the hook's claim on that echo. Consume it only when the switch it named
+    # actually LANDS: snapshots arrive for all sorts of reasons, and clearing on an unrelated one would
+    # drop the claim before the real change showed up, announcing it on top of the hook's narration.
+    expected = getattr(app.state, "expect_agent", None)
+    if new_agent and expected == new_agent:
+        app.state.expect_agent = None
     current = shell.director.agent.name if (shell.director and shell.director.agent) else None
     if new_agent and new_agent != current:
         async with app.state.floor_lock:                 # serialize against in-flight turns
@@ -419,6 +439,8 @@ async def _reconcile_state(app: FastAPI, state: dict) -> None:
                 except Exception as exc:  # noqa: BLE001 — a bad follow must not kill the follower
                     await hub.broadcast({"type": "notice", "text": f"[couldn't follow to agent {new_agent}: {exc}]"})
                     return
+                if expected != new_agent:                # nobody here asked for this — say so
+                    await hub.broadcast({"type": "notice", "text": _agent_change_notice(state)})
     app.state.live = state
     _sync_transcript(app)                                # (re)load the live session's saved dialog (step 2)
     _maybe_seed(app)                                     # seed a new session's agent-state once (step 5b)
@@ -475,12 +497,17 @@ def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
 
     async def _switch(agent_name: str, on_text) -> None:
         scope = scope_for(app.state.user, agent_name)
+        # Claim this one before asking, so the follower recognises the change it's about to see as OURS
+        # and stays quiet — the narration below is the announcement. Set it FIRST: the /ws broadcast can
+        # land while the POST is still returning.
+        app.state.expect_agent = agent_name
         try:
             import httpx
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(f"{settings.world_url}/scope/activate", json={"scope": scope})
         except Exception as exc:  # noqa: BLE001
+            app.state.expect_agent = None                 # nothing moved — don't muffle a later real change
             if on_text:
                 await on_text(f"Couldn't switch to {agent_name}: {exc}", final=True, speaker=shell.director.active)
             return
@@ -489,11 +516,17 @@ def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
         # Wait for the follower (owning task) to re-bind before returning, so the client's next context
         # reflects the new agent instead of lagging. We hold no floor here, so the follower can take it.
         # `shell.director` is transiently None mid-rebind, so guard it. ~10s cap.
-        for _ in range(200):
-            d = shell.director
-            if d is not None and d.agent is not None and d.agent.name == agent_name:
-                break
-            await asyncio.sleep(0.05)
+        try:
+            for _ in range(200):
+                d = shell.director
+                if d is not None and d.agent is not None and d.agent.name == agent_name:
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            # Drop the claim once this switch is done either way. The follower normally consumes it, but
+            # an already-active scope answers `unchanged` and broadcasts nothing — an uncleared claim
+            # would then muffle a genuine, unasked switch to the same agent later on.
+            app.state.expect_agent = None
 
     return _switch
 
@@ -531,6 +564,8 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
         app.state.sessions = SessionRepository(USERS_DIR)  # transcript store; tests may repoint at a tmp
         app.state.loaded_session = None                  # (scope, sid) whose transcript is loaded (step 2)
         app.state.floor_lock = asyncio.Lock()            # serializes turns against a follower re-bind (C2)
+        app.state.expect_agent = None                    # an agent switch THIS server asked for → don't
+        #                                                  announce it twice (see _reconcile_state)
         app.state.stop_follow = asyncio.Event()
         app.state.shell_ready = asyncio.Event()
         app.state.worker_task = None

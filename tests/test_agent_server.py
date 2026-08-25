@@ -345,6 +345,76 @@ async def test_reconcile_rebinds_on_agent_change_and_refreshes_all_connections()
         assert ctx["agent"] == "outdoor" and ctx["world"] == "default"
 
 
+async def test_an_agent_change_nobody_here_asked_for_is_announced():
+    """Co-location can move the agent under you: an AR client matches a space, the world server joins
+    that space's last-active world, and the live scope becomes whatever agent owns it. That's intended
+    — the space owns the world owns the scope — but it used to happen in silence, so you kept talking
+    and a different agent answered. Name the destination; world + space is what makes a room match
+    recognisable as one."""
+    shell = FakeShell()
+    shell.director.agent.name = "outdoor"                        # mid-session in an outdoor world…
+    a, b = FakeConn("alice"), FakeConn("bob")
+    app = _app(shell, [a, b])
+    await _reconcile_state(app, {"agent": "builder", "scope": "daniel/agents/builder",
+                                 "world": "animal-house", "space": "daniel/whipple", "owner": "daniel"})
+    for c in (a, b):                                             # everyone present, not just the owner
+        assert [e["text"] for e in c.sent if e["type"] == "notice"] == [
+            "[now in the builder agent — animal-house · daniel/whipple]"]
+
+
+async def test_a_switch_this_server_asked_for_is_not_announced_twice():
+    # `agent <name>` already narrates ("Switching to agent outdoor…") and reaches the world server, whose
+    # /ws broadcast comes straight back here. Without the claim the follower would echo it.
+    shell = FakeShell()
+    conn = FakeConn("alice")
+    app = _app(shell, [conn])
+    app.state.expect_agent = "outdoor"                           # what _make_agent_switch_hook sets
+    await _reconcile_state(app, {"agent": "outdoor", "scope": "daniel/agents/outdoor",
+                                 "world": "default", "space": "<void>", "owner": "daniel"})
+    assert shell.director.agent.name == "outdoor"                # still followed…
+    assert not [e for e in conn.sent if e["type"] == "notice"]   # …just not narrated a second time
+    assert app.state.expect_agent is None                        # one switch, one claim
+
+
+async def test_an_unrelated_snapshot_does_not_burn_the_claim():
+    """Snapshots arrive for all sorts of reasons (a room capture, a world switch). One landing between
+    `agent <name>` and the switch it asked for must not consume the claim, or the switch that follows
+    gets announced on top of the narration the hook already gave."""
+    shell = FakeShell()
+    conn = FakeConn("alice")
+    app = _app(shell, [conn])
+    app.state.expect_agent = "outdoor"
+    await _reconcile_state(app, {"agent": "builder", "scope": "daniel/agents/builder",   # no agent change
+                                 "world": "animal-house", "space": "daniel/whipple", "owner": "daniel"})
+    assert app.state.expect_agent == "outdoor"                   # still claimed
+    await _reconcile_state(app, {"agent": "outdoor", "scope": "daniel/agents/outdoor",   # the asked-for one
+                                 "world": "alien", "space": "<void>", "owner": "daniel"})
+    assert not [e for e in conn.sent if e["type"] == "notice"]
+
+
+async def test_the_claim_does_not_muffle_the_next_unasked_switch():
+    shell = FakeShell()
+    conn = FakeConn("alice")
+    app = _app(shell, [conn])
+    app.state.expect_agent = "outdoor"
+    await _reconcile_state(app, {"agent": "outdoor", "scope": "daniel/agents/outdoor",
+                                 "world": "default", "space": "<void>", "owner": "daniel"})
+    await _reconcile_state(app, {"agent": "builder", "scope": "daniel/agents/builder",
+                                 "world": "animal-house", "space": "daniel/whipple", "owner": "daniel"})
+    assert [e["text"] for e in conn.sent if e["type"] == "notice"] == [
+        "[now in the builder agent — animal-house · daniel/whipple]"]
+
+
+async def test_a_void_world_is_not_named_as_a_space():
+    # VOID is a sentinel, not a place — printing '<void>' at someone is noise.
+    shell = FakeShell()
+    conn = FakeConn("alice")
+    app = _app(shell, [conn])
+    await _reconcile_state(app, {"agent": "outdoor", "scope": "daniel/agents/outdoor",
+                                 "world": "alien", "space": "<void>", "owner": "daniel"})
+    assert [e["text"] for e in conn.sent if e["type"] == "notice"] == ["[now in the outdoor agent — alien]"]
+
+
 # --------------------------------------------------------------------------- /ws endpoint
 
 def test_ws_sends_context_on_connect_and_roundtrips_a_turn():

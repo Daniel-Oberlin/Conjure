@@ -468,7 +468,7 @@ Modules are **scoped to an agent**. An agent declares what it may conjure in `ag
 
 Every listed name is **required**: the agent fails to load if one is not found on the search path.
 
-Scoping is enforced in three places at once:
+Scoping governs **conjuring**, in two places at once:
 
 - **Soft (discovery).** `GET /dynamics/available` builds the catalog from the *active agent's* scoped
   modules — one `name — description; params: …` line each — surfaced as the `dynamics://available` MCP
@@ -476,10 +476,20 @@ Scoping is enforced in three places at once:
   discovery ritual and no dynamic tool schema; `conjure_module` stays one generic tool.
 - **Hard (enforcement).** `/module` validates the requested module against the active agent's `dynamics`
   and refuses an out-of-scope name, even if the module exists on the server.
-- **Client loading.** The server injects `<script src="/dynamics/<name>/<entry>?v=<mtime>">` for the active
-  agent's modules into `index.html` at the `__DYNAMIC_MODULES__` marker, re-evaluated per page load so an
-  agent switch swaps the available components. "Not scoped → not available" holds client-side too. The
-  `?v=<mtime>` stamp is what busts the Quest's stubborn cache when a module's code changes.
+
+**Client loading is deliberately NOT scoped.** The server injects
+`<script src="/dynamics/<name>/<entry>?v=<mtime>">` for **every discovered module** into `index.html` at
+the `__DYNAMIC_MODULES__` marker (`_dynamic_module_tags`). The `?v=<mtime>` stamp busts the Quest's
+stubborn cache when a module's code changes.
+
+Scoping the tags to the active agent was a bug, because a page's scripts are fixed the moment it loads
+and the live agent is not. Space selection joins the matched room's world in whatever scope owns it
+(`/space/select`), `agent <name>` moves the pointer, a session switch moves it again — any of which can
+hand a headset a world full of components its page never registered. The failure is silent:
+`el.setAttribute("grab", {…})` on an unregistered A-Frame component is just a DOM attribute, so the
+module renders nothing, logs nothing, and only a manual page reload recovers. Registering a component
+is inert until an entity carries it, so serving all of them costs a few KB and makes the whole class of
+ordering bugs impossible. Registered client-side ≠ conjurable by this agent.
 
 The director conjures with one generic tool:
 
