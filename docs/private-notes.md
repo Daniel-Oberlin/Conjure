@@ -1,35 +1,28 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
-# CLI refactor
-- Sytax
-  - new (private) session (name)
-  - change/switch agent/session/llm to (something)
-  - rename (current session/world) or session "name" to "new name"
-  - list/ls agents/sessions/llms/spaces
-- dir paths /user/agent/worlds/..., /user/spaces...
-- Up/down arrows for history (goes in CLI tool only?)
-
-# Other
-  - Global settings /system/globalsettings (default info color)
-  - space visibility (public access, public create worlds)
-
-# Dynamic content
-- Fireflies
-- Point clouds
-- Model animations via glTF/VRM
-- Dynamic code should be deterministic and anchored to a precise timestamp for consistency across multiple headsets
-- Keep store of created content, version controlled?
-- Milkdrop style animations on ceiling, in stereo, planetarium style or in front of you
-- Solar system animation
-- Live webcam video
-- Terminal shell with voice
-- X11 window
-- Album covers and art
+# CLI and Shell
+- Set variables with shell
+  - General rework of variable scoping
+    - Settable via command-line, env, shell
+    - Scope: user, session, world?
 
 # Graphics
   - Lighting
   - Water reflection lighting
   - Panoramic photo
+
+# Dynamic content
+- Swarm
+- Model animations via glTF/VRM
+- Milkdrop style animations on ceiling, in stereo, planetarium style or in front of you
+- Album covers and art
+- Solar system animation
+- Further out:
+- Live webcam video
+  - Terminal shell with voice
+  - X11 window
+  - Point clouds
+  - Keep store of created content, version controlled?
 
 # Audio
   - Quest streaming
@@ -60,12 +53,6 @@
 - Fixed Camera
 - Vehicle
 - etc.
-
-# Front end bugs
-- Pops you out of VR when starting cold (headset restart, new domain name?)
-- Test for new domain name trigger (retstart tunnel and see if it happens)
-- Related to permissions?  Ask permissions at the beginning?
-- Can we catch errors in JS, post them to server for logging, then exit (for visiblity)?
 
 # 3D Models
 - Smithsonian and other sources
