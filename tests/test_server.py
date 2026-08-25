@@ -1973,6 +1973,40 @@ def test_renaming_a_world_targets_the_named_session_not_the_live_one(srv, client
     assert bad["ok"] is False and "session-404" in bad["error"]
 
 
+def test_session_titles_are_cleaned_on_write_like_world_and_space_names(srv, client):
+    # A title carrying its own quotes can never be typed back — shlex eats them on the way in. Worlds and
+    # spaces always survived this because they match through `slug`, which drops punctuation; sessions
+    # matched on a key that kept it, so a quoted title was unreachable by any form of itself.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    _seed_session(srv, scope, "session-9", title="Nine")
+
+    r = client.post("/session/rename", json={"scope": scope, "session": "session-9",
+                                             "title": '"Session 1" "alien"'}).json()
+    assert r["ok"] is True and r["title"] == "Session 1 alien"
+    assert srv.sessions.load_meta(scope, "session-9")["title"] == "Session 1 alien"
+    # …and it round-trips: the cleaned title addresses its own session
+    assert client.post("/session/rename", json={"scope": scope, "session": "Session 1 alien",
+                                                "title": "Nine"}).json()["session"] == "session-9"
+    # a title with nothing usable in it is refused rather than stored
+    bad = client.post("/session/rename", json={"scope": scope, "session": "session-9",
+                                               "title": '""'}).json()
+    assert bad["ok"] is False
+    assert srv.sessions.load_meta(scope, "session-9")["title"] == "Nine"   # unchanged
+
+
+def test_a_session_titled_with_quotes_ALREADY_on_disk_is_still_reachable(srv, client):
+    # Cleaning stops new ones; matching punctuation-insensitively (like slug, which worlds and spaces have
+    # always used) is what reaches the ones already written — so they can be renamed without a migration.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    _seed_session(srv, scope, "session-9", title='"Session 1" "alien"')   # written by the old parser
+    r = client.post("/session/rename", json={"scope": scope, "session": "Session 1 alien",
+                                             "title": "recovered"}).json()
+    assert r["ok"] is True and r["session"] == "session-9"
+    assert srv.sessions.load_meta(scope, "session-9")["title"] == "recovered"
+
+
 def test_admin_path_addresses_a_session_by_its_title(srv, client):
     # `dir` prints the title in every session row, so a path has to accept it — otherwise the listing is
     # a liar and `rename "Session 1" Home` comes back "no session 'Session 1'". Same resolver the

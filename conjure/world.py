@@ -31,6 +31,30 @@ def slug(name: str) -> str:
     return s
 
 
+_QUOTES = "\"'“”‘’"          # ASCII pair + the typographic ones a phone/dictation emits
+
+
+def clean_name(name: str, *, what: str = "name") -> str:
+    """Normalise a user-supplied DISPLAY name before storing it: drop quote characters, collapse
+    whitespace, trim. Raises if nothing usable is left.
+
+    The quotes are the load-bearing part. Every shell path is tokenised with `shlex`, which CONSUMES
+    quotes, so a stored name containing its own can never be typed back — `session rename "Session 1"
+    "alien"` (under a parser that took the raw remainder) stored the title `"Session 1" "alien"`, and no
+    natural form of itself matched it again. Cleaning on write kills the class at the source instead of
+    teaching every lookup to forgive it.
+
+    Removing them beats stripping a surrounding pair: `"a" "b"` opens and closes with a quote without
+    being quoted, so a strip-the-ends rule mangles it to `a" "b`. Dropping every quote yields `a b` —
+    which is exactly what today's `shlex`-based parser produces for the same input, so the stored name
+    matches what a person typing it would get. An apostrophe goes too (`Bob's` → `Bobs`): `'` is a shlex
+    quote as much as `"` is, so a name carrying one is no more typeable than one carrying the other."""
+    s = " ".join("".join(c for c in (name or "") if c not in _QUOTES).split())
+    if not s:
+        raise ValueError(f"bad {what} {name!r}")
+    return s
+
+
 WORLD_ID = re.compile(r"^wld_[0-9a-f]{10}$")
 
 
@@ -262,6 +286,7 @@ class WorldDir:
     # -- CRUD ----------------------------------------------------------------------------------
     def create(self, name: str, store: "WorldStore") -> str:
         """Mint an id for a NEW world. `save` upserts; this refuses to touch an existing one."""
+        name = clean_name(name, what="world name")
         if self.name_taken(name):
             raise ValueError(f"a world called {name!r} already exists here")
         return self.save(name, store)
@@ -271,7 +296,8 @@ class WorldDir:
         wid = self.resolve(ref)
         if wid is None:
             raise ValueError(f"no world {ref!r}")
-        slug(new_name)
+        new_name = clean_name(new_name, what="world name")
+        slug(new_name)                                     # …and reject one with nothing sluggable in it
         if self.name_taken(new_name, other_than=wid):
             raise ValueError(f"a world called {new_name!r} already exists here")
         store = self.load(wid)
@@ -853,7 +879,7 @@ class SpaceStore:
         sid = self.resolve(user, ref)
         if sid is None:
             raise ValueError(f"no space {ref!r}")
-        slug(new_name)
+        new_name = clean_name(new_name, what="space name")
         want = slug(new_name)
         if any(e["id"] != sid and _slug_or_none(e["name"]) == want for e in self.entries(user)):
             raise ValueError(f"a space called {new_name!r} already exists")

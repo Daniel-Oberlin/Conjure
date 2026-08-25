@@ -572,3 +572,44 @@ def test_clear_transcript_removes_saved_dialog(tmp_path):
     repo.clear_transcript(scope, sid)
     assert repo.read_transcript(scope, sid) == []      # wiped
     repo.clear_transcript(scope, sid)                  # idempotent — missing file is fine
+
+
+# --------------------------------------------------------------------------- display-name hygiene
+
+def test_clean_name_drops_quotes_so_a_stored_name_can_always_be_typed_back():
+    from conjure.world import clean_name
+    # The bug: a parser that took the raw remainder stored the quotes, and no natural form of the name
+    # matched it again. Dropping every quote — rather than stripping a surrounding pair — is what makes
+    # the two-token case work: `"a" "b"` opens and closes with a quote without being quoted, so an
+    # ends-only rule would mangle it to `a" "b`.
+    assert clean_name('"Session 1" "alien"') == "Session 1 alien"
+    assert clean_name('"alien"') == "alien"
+    assert clean_name("“smart quotes”") == "smart quotes"
+    assert clean_name("Bob's room") == "Bobs room"       # `'` is a shlex quote too
+    # …and the result is exactly what the shell's own tokeniser produces for the same input
+    import shlex
+    assert clean_name('"Session 1" "alien"') == " ".join(shlex.split('"Session 1" "alien"'))
+    # whitespace is collapsed and trimmed
+    assert clean_name("  a   b  ") == "a b"
+    # nothing usable left → refuse rather than store something unaddressable
+    for bad in ('""', "   ", "", None):
+        try:
+            clean_name(bad)
+            assert False, f"expected {bad!r} to be refused"
+        except ValueError:
+            pass
+
+
+def test_world_and_space_names_are_cleaned_on_write(tmp_path):
+    from conjure.world import SpaceStore, WorldDir
+    wd = WorldDir(tmp_path / "worlds")
+    wid = wd.create('"alien"', WorldStore({"id": "w", "name": "x", "rev": 0,
+                                           "environment": {}, "entities": []}))
+    assert wd.name_of(wid) == "alien"                    # stored clean, not '"alien"'
+    wd.rename(wid, '  "the   moon"  ')
+    assert wd.name_of(wid) == "the moon"
+
+    sp = SpaceStore(tmp_path / "spaces")
+    sp.save("alice", "space-1", {"owner": "alice", "name": "", "surfaces": [], "boundary": {}})
+    sp.rename("alice", "space-1", '"living room"')
+    assert sp.name_of("alice", "space-1") == "living room"

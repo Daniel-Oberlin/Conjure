@@ -46,8 +46,8 @@ from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from .world import (MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
-                    _set_path, migrate_cache_to_users, migrate_project_cache_to_home, migrate_worlds_to_ids,
-                    new_world_id)
+                    _set_path, clean_name, migrate_cache_to_users, migrate_project_cache_to_home,
+                    migrate_worlds_to_ids, new_world_id)
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
@@ -1311,8 +1311,17 @@ def _next_sid(scope: str) -> str:
 
 def _loose(s: Optional[str]) -> str:
     """Voice-friendly match key: case-insensitive with spaces/underscores/hyphens treated as equal
-    ('Test 7' == 'test-7' == 'test_7'). Lookup ONLY — never changes a stored name."""
-    return re.sub(r"[\s_-]+", " ", (s or "").strip().lower())
+    ('Test 7' == 'test-7' == 'test_7'), and other punctuation dropped. Lookup ONLY — never changes a
+    stored name.
+
+    Dropping punctuation mirrors `world.slug`, which is how worlds and spaces have always matched. That
+    difference was invisible until a name arrived carrying quotes: a WORLD called '"alien"' still answered
+    to `alien` because slug threw the quotes away, while a SESSION titled the same did not, because this
+    key kept them — so the session became unreachable by any form of its own name. `clean_name` now stops
+    such a name being stored at all; matching the two keys up is what lets the ones already on disk be
+    reached (and renamed) without a migration."""
+    s = re.sub(r"[\s_-]+", " ", (s or "").strip().lower())
+    return re.sub(r"[^a-z0-9 ]", "", s).strip()
 
 
 def _resolve_sid(scope: str, ref: Optional[str]) -> Optional[str]:
@@ -1414,7 +1423,8 @@ async def session_new(req: SessionRef) -> dict:
     user = req.scope.split("/", 1)[0]
     sessions.save_meta(req.scope, sid, {
         "id": sid, "owner": user, "agent": agent_of(req.scope),
-        "title": req.title or f"Session {sid.split('-')[-1]}", "public": True,
+        "title": clean_name(req.title, what="session title") if req.title
+                 else f"Session {sid.split('-')[-1]}", "public": True,
         "active_world": wname, "llm": "", "greeted": False, "seeded": False})
     wdir = sessions.worlds(req.scope, sid)               # explicit target (no active-pointer flip — that's
     raw = _new_world_store(req.scope, extra_on_create=fw_on_create)   # world ⊕ first_world constructor chain
@@ -1462,10 +1472,14 @@ async def session_rename(req: SessionRef) -> dict:
         return {"ok": False, "error": f"no session {req.session!r} in {req.scope}"}
     if not req.title:
         return {"ok": False, "error": "a new title is required"}
+    try:                                            # same cleaning a world or space name gets, so a title
+        title = clean_name(req.title, what="session title")   # can always be typed back (world.clean_name)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     meta = sessions.load_meta(req.scope, sid)
-    meta["title"] = req.title                       # retitle only — the id is stable, nothing moves
+    meta["title"] = title                           # retitle only — the id is stable, nothing moves
     sessions.save_meta(req.scope, sid, meta)
-    return {"ok": True, "session": sid, "title": req.title}
+    return {"ok": True, "session": sid, "title": title}
 
 
 @app.post("/session/delete")
