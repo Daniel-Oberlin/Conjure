@@ -115,7 +115,7 @@ nouns for the live thing, paths for any thing.
 | `show [path]` | one entry in detail | — |
 | `cd [path]` | change the working directory (bare: back to your agent) | — |
 | `public` / `private [path]` | visibility of the live session, or of a path | ✓ |
-| `rename <path> <new>` | retitle a session, relabel an asset | — |
+| `rename <path> <new>` | retitle a world, space or session; relabel an asset | — |
 | `delete <path>` | remove a world, session, space, asset or user (confirms) | — |
 
 **The namespace mirrors storage.** The one non-obvious part: **worlds live per session** —
@@ -142,6 +142,22 @@ root. `delete` previews the target, requires a `y` confirmation, and refuses to 
 strands nothing: not the active pointers, not `session.json`'s `active_world`, not a space's `last_world`,
 not another user's `environment.space`, and not whatever a schema-free agent state doc stashed. See
 [decisions.md §15](./decisions.md). Names are unique within a session, which keeps "the meadow" resolvable.
+
+**What a name may be.** A display name is also how you *address* the thing, so `world.clean_name` holds
+both ends to one rule (`world.NAME_CHARS`, which `_ADMIN_PART` is built from — they can't drift):
+
+- Quote characters are **dropped** — `shlex` eats them tokenising a path, so a name carrying its own could
+  never be typed back. `rename x '"a" "b"'` stores `a b`, which is what typing it yields anyway. The
+  apostrophe goes with them (`Bob's` → `Bobs`); `'` is a shlex quote too.
+- Whitespace is collapsed and trimmed.
+- Anything outside letters, digits, space and `. _ -` is **refused**, naming the offending character.
+  Stripping it instead would silently turn `Café` into `Caf`; refusing lets the caller retry.
+- Names are **unique** within their container, compared the way lookup compares them (case-, separator-
+  and punctuation-insensitive) — so `Home` and `home` collide, and the error says which one it hit rather
+  than reporting the ambiguous match as "not found".
+
+A `dir` row leads with what you address it as: a world by name, a session by **title**, with the session
+id kept in the detail as its stable handle.
 World *visibility*, though, is genuinely absent: `/worlds/visibility` is superseded — visibility is the
 **session's** now, and a world inherits it.
 

@@ -46,8 +46,8 @@ from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from .world import (MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
-                    _set_path, clean_name, migrate_cache_to_users, migrate_project_cache_to_home,
-                    migrate_worlds_to_ids, new_world_id)
+                    NAME_CHARS, _set_path, clean_name, migrate_cache_to_users,
+                    migrate_project_cache_to_home, migrate_worlds_to_ids, new_world_id)
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
@@ -1324,6 +1324,33 @@ def _loose(s: Optional[str]) -> str:
     return re.sub(r"[^a-z0-9 ]", "", s).strip()
 
 
+def _session_title_taken(scope: str, title: str, *, other_than: str = "") -> Optional[str]:
+    """The id of another session in `scope` that `title` would collide with, or None.
+
+    Collision is measured with `_loose` — the key `_resolve_sid` matches on — because that is what makes
+    a title ambiguous in practice, not string equality. Worlds and spaces have refused a duplicate name
+    all along (`WorldDir.name_taken`); sessions didn't, so two could both be 'Home' and `_resolve_sid`
+    would return None for the ambiguous match, reporting "no session 'Home'" — doesn't-exist when it
+    meant matches-two.
+
+    Ids count as well as titles: titling one session 'Session 1' while a *different* session-1 exists
+    doesn't strictly collide (an exact id wins first), but it makes the same words mean two things
+    depending on spelling, which is the confusion the guard is for."""
+    want = _loose(title)
+    if not want:
+        return None
+    for sid in sessions.list(scope):
+        if sid == other_than:
+            continue
+        try:
+            other = sessions.load_meta(scope, sid).get("title") or ""
+        except (OSError, ValueError):
+            other = ""
+        if want in (_loose(sid), _loose(other)):
+            return sid
+    return None
+
+
 def _resolve_sid(scope: str, ref: Optional[str]) -> Optional[str]:
     """Resolve a session reference to a session id: exact id, else exact title, else a UNIQUE loose
     (case + separators) match on id or title. Ambiguous loose matches return None (caller reports
@@ -1410,6 +1437,16 @@ async def session_new(req: SessionRef) -> dict:
     (docs/sessions-plan.md §6): named by the agent's `session.first_world` (default ``home``), set up by
     `world.on_create` ⊕ the first-world-only `on_create` chain. The greeting is appended by the agent
     server; generative first-world steps (skybox) are a later pass."""
+    # Clean + uniqueness-check the title FIRST: the constructor below can generate a skybox (tens of
+    # seconds), and a title we were always going to refuse shouldn't cost that before it's refused.
+    try:
+        title = clean_name(req.title, what="session title") if req.title else None
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if title:
+        clash = _session_title_taken(req.scope, title)
+        if clash:
+            return {"ok": False, "error": f"a session called {title!r} already exists here ({clash})"}
     wname, fw_on_create = _first_world_spec(req.scope)
     # Generative first-world steps (skybox-from-description) run FIRST, into patch ops — so a failure aborts
     # here with nothing created/switched (fail-hard + rollback, §8.13). Slow (image gen); the client's
@@ -1423,8 +1460,7 @@ async def session_new(req: SessionRef) -> dict:
     user = req.scope.split("/", 1)[0]
     sessions.save_meta(req.scope, sid, {
         "id": sid, "owner": user, "agent": agent_of(req.scope),
-        "title": clean_name(req.title, what="session title") if req.title
-                 else f"Session {sid.split('-')[-1]}", "public": True,
+        "title": title or f"Session {sid.split('-')[-1]}", "public": True,
         "active_world": wname, "llm": "", "greeted": False, "seeded": False})
     wdir = sessions.worlds(req.scope, sid)               # explicit target (no active-pointer flip — that's
     raw = _new_world_store(req.scope, extra_on_create=fw_on_create)   # world ⊕ first_world constructor chain
@@ -1476,6 +1512,9 @@ async def session_rename(req: SessionRef) -> dict:
         title = clean_name(req.title, what="session title")   # can always be typed back (world.clean_name)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
+    clash = _session_title_taken(req.scope, title, other_than=sid)
+    if clash:                                       # …and the same uniqueness worlds and spaces enforce
+        return {"ok": False, "error": f"a session called {title!r} already exists here ({clash})"}
     meta = sessions.load_meta(req.scope, sid)
     meta["title"] = title                           # retitle only — the id is stable, nothing moves
     sessions.save_meta(req.scope, sid, meta)
@@ -1981,7 +2020,9 @@ async def space_visibility(req: SpaceVisibilityRequest) -> dict:
 # inconsistent.
 # Display names may contain spaces now ("Living Room"), so a path segment allows them. `/` is still the
 # separator and `.`/`..` are rejected outright, so a segment can't traverse.
-_ADMIN_PART = re.compile(r"[A-Za-z0-9._\- ]+")
+# Exactly what a display NAME may contain (world.NAME_CHARS) — one definition, so a name can never be
+# stored that this then refuses to address. `clean_name` enforces the same set on write.
+_ADMIN_PART = re.compile(f"[{NAME_CHARS}]+")
 _VOID_SPACE = VOID
 
 
@@ -2160,12 +2201,17 @@ def _session_meta(scope: str, sid: str) -> dict:
 
 
 def _session_row(scope: str, sid: str) -> dict:
+    """Led by the TITLE, like a world row is led by its name — that's what you address it as, and titles
+    are renameable and unique now. The id stays in the description: unlike a world's `wld_…` it's short
+    and meaningful (`session-1`), it's the stable handle when a title is in flux, and it's what a
+    just-created session answers to before anyone names it."""
     meta = _session_meta(scope, sid)
     live = scope == active_scope and sid == active_sid
     nw = len(_session_worlds(scope, sid).list())
     vis = "public" if meta.get("public", True) else "private"
     title = meta.get("title") or sid
-    return _node(sid, "session", f"{title} · {nw} worlds · {vis}", active=live)
+    desc = f"{nw} worlds · {vis}" if title == sid else f"{sid} · {nw} worlds · {vis}"
+    return _node(title, "session", desc, active=live)
 
 
 def _last_world_label(sp: dict) -> str:

@@ -600,6 +600,48 @@ def test_clean_name_drops_quotes_so_a_stored_name_can_always_be_typed_back():
             pass
 
 
+def test_clean_name_refuses_anything_a_path_could_not_address():
+    """Everything outside NAME_CHARS is REFUSED, not stripped.
+
+    `_admin_resolve` rejects a path segment containing anything else before resolution even runs, so a
+    name with a comma or an accent could be stored and then reached only by id — the same trap the quotes
+    were. Refusing beats stripping: silently turning 'Café' into 'Caf' is a worse surprise than a no.
+    """
+    from conjure.world import clean_name
+    for bad, offender in [("Bob, Jr", ","), ("Café", "é"), ("a/b", "/"), ("50% off", "%"),
+                          ("sun & moon", "&"), ("Session (old)", "(")]:
+        try:
+            clean_name(bad)
+            assert False, f"expected {bad!r} to be refused"
+        except ValueError as exc:
+            assert offender in str(exc), f"{exc} should name the offending {offender!r}"
+    # …while everything the charset allows still passes through untouched
+    for ok in ("meadow", "Kitchen Table", "my-world.v2", "test_7", "Session 1"):
+        assert clean_name(ok) == ok
+
+
+def test_every_name_clean_name_accepts_is_a_legal_path_segment():
+    """The invariant the two definitions exist to keep: write and address can't drift apart.
+
+    A name is how you address the thing in the shell, so a name that `clean_name` blesses but
+    `_admin_resolve` rejects is unreachable by path — which is exactly how a session ended up titled
+    something no one could type. Both now read `world.NAME_CHARS`; this asserts they agree.
+    """
+    from conjure.server import _ADMIN_PART
+    from conjure.world import clean_name
+    candidates = ["meadow", "Kitchen Table", '"alien"', "  a   b  ", "my-world.v2", "Bob's room",
+                  "test_7", "Session 1", "a.b-c_d e", "“smart”"]
+    accepted = 0
+    for c in candidates:
+        try:
+            cleaned = clean_name(c)
+        except ValueError:
+            continue                                    # refused on write → never stored → not our problem
+        accepted += 1
+        assert _ADMIN_PART.fullmatch(cleaned), f"{c!r} → {cleaned!r} is storable but not addressable"
+    assert accepted >= 8, "the sample should mostly be accepted, or it proves nothing"
+
+
 def test_world_and_space_names_are_cleaned_on_write(tmp_path):
     from conjure.world import SpaceStore, WorldDir
     wd = WorldDir(tmp_path / "worlds")

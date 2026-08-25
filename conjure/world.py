@@ -33,10 +33,16 @@ def slug(name: str) -> str:
 
 _QUOTES = "\"'“”‘’"          # ASCII pair + the typographic ones a phone/dictation emits
 
+# What a display name may contain — and therefore what a PATH SEGMENT may contain, because a name is how
+# you address the thing in the shell (`cd meadow`, `rename "my world" x`). One definition, imported by
+# server.py's `_ADMIN_PART`, so the two can't drift into a name you can store but never type.
+NAME_CHARS = r"A-Za-z0-9._\- "
+_NAME_OK = re.compile(f"[{NAME_CHARS}]+")
+
 
 def clean_name(name: str, *, what: str = "name") -> str:
     """Normalise a user-supplied DISPLAY name before storing it: drop quote characters, collapse
-    whitespace, trim. Raises if nothing usable is left.
+    whitespace, trim, and require what's left to be addressable. Raises if it isn't.
 
     The quotes are the load-bearing part. Every shell path is tokenised with `shlex`, which CONSUMES
     quotes, so a stored name containing its own can never be typed back — `session rename "Session 1"
@@ -48,10 +54,20 @@ def clean_name(name: str, *, what: str = "name") -> str:
     being quoted, so a strip-the-ends rule mangles it to `a" "b`. Dropping every quote yields `a b` —
     which is exactly what today's `shlex`-based parser produces for the same input, so the stored name
     matches what a person typing it would get. An apostrophe goes too (`Bob's` → `Bobs`): `'` is a shlex
-    quote as much as `"` is, so a name carrying one is no more typeable than one carrying the other."""
+    quote as much as `"` is, so a name carrying one is no more typeable than one carrying the other.
+
+    Everything outside `NAME_CHARS` is then REFUSED rather than stripped. `_admin_resolve` rejects a path
+    segment containing anything else before resolution even runs, so a name with a comma or an accent
+    could be stored and then addressed only by id — the same quiet trap the quotes were, one level down.
+    Refusing beats stripping because silently turning `Café` into `Caf` is a worse surprise than being
+    told no; the error names the characters so the caller (a person or the director) can retry."""
     s = " ".join("".join(c for c in (name or "") if c not in _QUOTES).split())
     if not s:
         raise ValueError(f"bad {what} {name!r}")
+    if not _NAME_OK.fullmatch(s):
+        bad = "".join(sorted({c for c in s if not _NAME_OK.fullmatch(c)}))
+        raise ValueError(f"bad {what} {name!r}: {bad!r} can't be used in a name "
+                         f"(letters, digits, spaces, and . _ - only)")
     return s
 
 

@@ -1973,6 +1973,51 @@ def test_renaming_a_world_targets_the_named_session_not_the_live_one(srv, client
     assert bad["ok"] is False and "session-404" in bad["error"]
 
 
+def test_a_session_lists_under_its_TITLE_and_that_label_is_addressable(srv, client):
+    # A row is led by what you address it as — a world row leads with its name, so a session row leads
+    # with its title. The invariant that matters is the round trip: whatever `dir` prints must resolve.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, sid, title="Kitchen Table")
+
+    rows = client.post("/admin/tree", json={"path": f"/{scope}/sessions"}).json()["children"]
+    row = next(r for r in rows if r["label"] == "Kitchen Table")
+    assert sid in row["detail"]                                 # the id stays visible, as the stable handle
+    assert _ls(client, f"/{scope}/sessions/Kitchen Table") == {"worlds", "state"}
+
+    # an unnamed session still leads with its id, and doesn't print it twice
+    _seed_session(srv, scope, "session-9")
+    bare = next(r for r in client.post("/admin/tree", json={"path": f"/{scope}/sessions"}).json()["children"]
+                if r["label"] == "session-9")
+    assert "session-9" not in bare.get("detail", "")
+
+
+def test_session_titles_must_be_unique_like_world_and_space_names(srv, client):
+    # Worlds and spaces have always refused a duplicate name. Sessions didn't, so two could both be
+    # 'Home' — and `_resolve_sid` returns None on an ambiguous match, so the error read "no session
+    # 'Home'": doesn't-exist when it meant matches-two.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    _seed_session(srv, scope, "session-8", title="Home")
+    _seed_session(srv, scope, "session-9", title="Away")
+
+    dup = client.post("/session/rename", json={"scope": scope, "session": "session-9",
+                                               "title": "home"}).json()      # collides loosely
+    assert dup["ok"] is False and "session-8" in dup["error"]
+    assert srv.sessions.load_meta(scope, "session-9")["title"] == "Away"     # unchanged
+
+    # renaming a session to what it is already called is not a collision with itself
+    same = client.post("/session/rename", json={"scope": scope, "session": "session-9",
+                                                "title": "Away"}).json()
+    assert same["ok"] is True
+
+    # a title that would shadow ANOTHER session's id is refused too
+    shadow = client.post("/session/rename", json={"scope": scope, "session": "session-9",
+                                                  "title": "Session 8"}).json()
+    assert shadow["ok"] is False and "session-8" in shadow["error"]
+
+
 def test_session_titles_are_cleaned_on_write_like_world_and_space_names(srv, client):
     # A title carrying its own quotes can never be typed back — shlex eats them on the way in. Worlds and
     # spaces always survived this because they match through `slug`, which drops punctuation; sessions
