@@ -264,6 +264,11 @@
     _begin: function (st, hit, origin, cq, dir) {
       var THREE = AFRAME.THREE, el = hit.el, obj = el.object3D;
       st.target = el;
+      // `st` is per-CONTROLLER and outlives a gesture, so every accumulator has to be cleared here. A
+      // leftover stickYaw snapped a grounded model by the previous grab's rotation the instant you
+      // re-gripped it.
+      st.stickYaw = 0;
+      st.gScale = false;
       if (st.action === "resize") {            // the caller already decided, from what the beam is on
         st.mode = "scale";
         st.startScale = obj.scale.clone();
@@ -362,11 +367,11 @@
       var cq2 = cam.getWorldQuaternion(new THREE.Quaternion());
       var pitch = dz(p.value("pitch")), bank = dz(p.value("bank"));
       if (pitch) {                                  // about the viewer's RIGHT → tips away from / toward you
-        this._spin(obj, new THREE.Vector3(1, 0, 0).applyQuaternion(cq2).normalize(), -pitch * rate);
+        this._spin(obj, new THREE.Vector3(1, 0, 0).applyQuaternion(cq2).normalize(), pitch * rate);
         moved = true;
       }
       if (bank) {                                   // about the viewer's FORWARD → rolls as you see it
-        this._spin(obj, new THREE.Vector3(0, 0, -1).applyQuaternion(cq2).normalize(), -bank * rate);
+        this._spin(obj, new THREE.Vector3(0, 0, -1).applyQuaternion(cq2).normalize(), bank * rate);
         moved = true;
       }
       return moved;
