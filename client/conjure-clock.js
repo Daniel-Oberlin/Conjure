@@ -1,5 +1,5 @@
 /* global window, document, fetch */
-// Shared clock (docs/dynamic-content-plan.md §Prerequisite — the shared clock). A tiny Cristian/NTP-
+// Shared clock (docs/specs/dynamics.md §6). A tiny Cristian/NTP-
 // style sync to the SERVER clock so every client agrees on one time base — the foundation for tier-A
 // dynamic modules (solar system, fireflies, spirographs, …) that compute state as
 // f(sharedClock, seed, config) and therefore stay identical across headsets with ZERO per-frame sync.

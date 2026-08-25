@@ -1059,7 +1059,7 @@ async def index() -> HTMLResponse:
     ckm = int((CLIENT_DIR / "conjure-clock.js").stat().st_mtime)  # shared clock (dynamic-content spine)
     bmm = int((CLIENT_DIR / "controller-beams.js").stat().st_mtime)  # controller pointer beams
     ptm = int((CLIENT_DIR / "conjure-pointers.js").stat().st_mtime)  # unified XR input + action bindings
-    # Dynamic modules are now discovered + scoped to the ACTIVE agent (docs/dynamic-modules-refactor-plan.md):
+    # Dynamic modules are now discovered + scoped to the ACTIVE agent (docs/specs/dynamics.md §9):
     # inject a <script> per module from its folder, mtime-stamped so a code change busts the cache.
     dyn_tags, dyn_mtimes = _dynamic_module_tags()
     v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm, bmm, ptm, *dyn_mtimes)  # badge reflects the newest of the scripts
@@ -1121,7 +1121,7 @@ async def index() -> HTMLResponse:
 @app.get("/time")
 async def server_time() -> dict:
     """Server wall-clock in epoch milliseconds — the shared time base for dynamic modules
-    (docs/dynamic-content-plan.md §the shared clock). Clients estimate their offset to this with a
+    (docs/specs/dynamics.md §6). Clients estimate their offset to this with a
     Cristian-style round-trip (client/conjure-clock.js) so every headset computes tier-A procedural
     state — f(sharedClock, seed, config) — identically, with zero per-frame sync."""
     return {"t": time.time() * 1000.0}
@@ -1181,7 +1181,7 @@ async def controller_beams_js() -> FileResponse:
 
 @app.get("/dynamics/available")
 async def dynamics_available() -> dict:
-    """The ACTIVE agent's scoped dynamic-module catalog (docs/dynamic-modules-refactor-plan.md decision 1).
+    """The ACTIVE agent's scoped dynamic-module catalog (docs/specs/dynamics.md §9).
     Rendered as `name — description; params: k(default)…` per module and injected into the director's
     prompt via the `dynamics://available` MCP resource — so the director discovers its modules without a
     ritual. Text under `catalog`; the raw name list under `modules`."""
@@ -3897,9 +3897,9 @@ async def place_image(req: PlaceImageRequest, request: Request) -> dict:
     return _with_notice({"ok": True, "id": eid, "image_id": rec.id}, _ensure_referenced_public(rec.id))
 
 
-# --- dynamic content modules (docs/dynamic-content-plan.md, docs/dynamic-modules-refactor-plan.md) ---
+# --- dynamic content modules (docs/specs/dynamics.md) ------------------------------------------
 # A module is an A-Frame component the client renders from an entity's `components` (see
-# docs/dynamic-module-spec.md); placing one is just adding that entity, so it's config-in-snapshot,
+# docs/specs/dynamics.md §5); placing one is just adding that entity, so it's config-in-snapshot,
 # shared, and persisted on the existing path. Modules are now FIRST-CLASS + extensible — discovered from
 # `dynamics/<name>/module.json` on a user-first search path (mirror of agents), not a hardcoded dict.
 # The world server serves + places ALL discovered modules; per-request it scopes to the ACTIVE agent's
@@ -3962,7 +3962,7 @@ class PlaceModuleRequest(BaseModel):
 
 @app.post("/module")
 async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
-    """Conjure a dynamic module (docs/dynamic-content-plan.md): add an entity carrying the module's
+    """Conjure a dynamic module (docs/specs/dynamics.md §1): add an entity carrying the module's
     component, so every client renders the same effect (shared, deterministic from the shared clock).
     `name` reuses/reconfigures an existing instance; a singleton module reuses its one instance.
     Scoped to the ACTIVE agent's `dynamics` allow-list (the hard half of the plan's soft+hard scoping)."""
@@ -4075,8 +4075,8 @@ async def dismiss_module(req: DismissModuleRequest) -> dict:
     return {"ok": True, "removed": ids}
 
 
-# --- tier-C manipulation: commit a client-side drag/rotate/resize (docs/dynamic-content-plan.md §Tier-C:
-#     grab). The `grab` dynamic module manipulates a placed object's transform LOCALLY while dragging, then
+# --- tier-C manipulation: commit a client-side drag/rotate/resize (docs/specs/dynamics.md §8).
+#     The `grab` dynamic module manipulates a placed object's transform LOCALLY while dragging, then
 #     posts the resting transform here on release; the world server is the authority — it applies, persists
 #     (autosave), and broadcasts to all. The mover's echo is idempotent (it already holds these values). ----
 class ManipulateRequest(BaseModel):

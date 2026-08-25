@@ -1,5 +1,5 @@
 /* global AFRAME, THREE */
-// Real-world depth occlusion for AR passthrough (docs/dynamic-content-plan.md §Real-world occlusion).
+// Real-world depth occlusion for AR passthrough (docs/specs/occlusion.md).
 //
 // THE PROBLEM: in passthrough the compositor draws the real world, then our opaque virtual layer on top
 // with NO knowledge of real-world depth — so a virtual wall covers your real hand. The fix is a DEPTH
@@ -17,8 +17,8 @@
 //   hands-solid — the SAME hand mesh, but drawn as opaque white polygons (a white-glove avatar) instead
 //           of an invisible occluder. Still occludes (opaque, writes depth); just also visible.
 //
-// `full` (environment depth via WebXR depth-sensing) is SHELVED — see docs/dynamic-content-plan.md
-// (Real-world occlusion → Shelved) for the learnings and what implementing it would take.
+// `full` (environment depth via WebXR depth-sensing) is SHELVED — see docs/decisions.md §19 for why,
+// and docs/backlogs/occlusion.md for what implementing it would take.
 //
 // Joints come straight from the XR frame (frame.getJointPose), not three's getHand — that never
 // populated joints under A-Frame. The scene root is pinned to the XR reference space, so a joint pose

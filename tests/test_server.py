@@ -2345,7 +2345,7 @@ def test_boot_world_defaults_to_builder_without_a_pointer(srv):
 
 
 # ── dynamic modules: discovered registry, scoping, serving, injection ────────────────────────────
-# (docs/dynamic-modules-refactor-plan.md — first-class, extensible; scoped to the active agent.)
+# (docs/specs/dynamics.md §§3-4, 9 — first-class, extensible; scoped to the active agent.)
 def test_conjure_module_places_a_scoped_module(srv, client):
     # builder is the active agent (DEFAULT_SCOPE) and lists 'fireflies' → allowed; the entity carries the
     # module's component, so it's config-in-snapshot/shared/persisted on the existing path.
@@ -2522,7 +2522,7 @@ def test_on_surface_horizontal_facing_survives_recapture(srv, client):
 
 
 # ── tier-C manipulation: /manipulate commit (grab) ───────────────────────────────────────────────
-# (docs/dynamic-content-plan.md §Tier-C: grab — client drags locally, commits the resting transform.)
+# (docs/specs/dynamics.md §8 — client drags locally, commits the resting transform.)
 def _place_box(client, eid="box1"):
     client.post("/patch", json={"ops": [{"op": "add", "entity": {
         "id": eid, "transform": {"position": [0, 1, -2]},

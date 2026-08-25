@@ -110,13 +110,13 @@ def main() -> None:
                            "moire on fine edges; 0 (default) = full-res everywhere. Try ~0.3 if frames drop; "
                            "A/B against 0 with --debug-jitter (watch the PACE 'drop' count).")
     gate.add_argument("--occlusion", choices=["off", "hands", "hands-solid"], default="off",
-                      help="real-world depth occlusion (docs/dynamic-content-plan.md): hide virtual content where a "
+                      help="real-world depth occlusion (docs/specs/occlusion.md): hide virtual content where a "
                            "nearer real surface is, so your hand covers a virtual wall instead of vice-versa. "
                            "off (default) = virtual always over passthrough (today); hands = tracked-hand occluders "
                            "only (sharp, cheap; your real hand shows through); hands-solid = same hand mesh drawn as "
                            "opaque white polygons (a white-glove avatar that also occludes). Per-client override: "
                            "?occlusion=off|hands|hands-solid in the URL. (Environment-depth 'full' is shelved — see "
-                           "docs/dynamic-content-plan.md.)")
+                           "docs/backlogs/occlusion.md.)")
     gate.add_argument("--pose-tau", type=float, default=0.0, metavar="SECONDS",
                       help="pose-smoothing time constant (s): ease each surface (and its content) toward its "
                            "newly-captured pose over ~3x this instead of snapping, so a drift correction reads "

@@ -269,7 +269,7 @@ async def world_resource() -> str:
 async def dynamics_resource() -> str:
     """The dynamic modules the active agent may conjure, as a one-line-per-module catalog
     (`name — description; params: k(default)…`). Injected each turn into agents that list
-    `dynamics://available` in their context (docs/dynamic-modules-refactor-plan.md decision 1), so the
+    `dynamics://available` in their context (docs/specs/dynamics.md §9), so the
     director discovers its scoped modules with no ritual and knows the params each accepts for
     conjure_module. The world server scopes the catalog to the active agent + enforces it on /module."""
     out = await _get("/dynamics/available")

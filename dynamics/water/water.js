@@ -1,5 +1,5 @@
 /* global AFRAME, THREE */
-// Water Picture — a tier-B interactive dynamic module (docs/dynamic-content-plan.md). An image seen
+// Water Picture — a tier-B interactive dynamic module (docs/specs/dynamics.md §10). An image seen
 // THROUGH a rippling clear-water surface: a GPU wave-equation sim (ping-pong height field, reflecting
 // boundaries) refracts the picture and adds specular glints; touch/drag it (fingertip OR controller) to
 // make waves. Per docs, tier-B broadcasts the CAUSE (touch events) and each headset evolves its OWN sim

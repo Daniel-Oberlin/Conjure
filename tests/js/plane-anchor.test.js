@@ -182,7 +182,7 @@ test("golden vectors reproduce the recorded outputs (JS/Python parity contract)"
   });
 });
 
-// The grab-commit contract (docs/dynamic-module-spec.md §tier-C): a user drags content in THIS client's
+// The grab-commit contract (docs/specs/dynamics.md §8): a user drags content in THIS client's
 // LOCAL frame (F_track), but the server persists poses in the SEED frame (F_ref) and re-solves content
 // from them every capture. So a commit must convert local→ref (ConjureFrames.toRef = author against the
 // local walls, solve against the seed walls). These two tests pin why that conversion is required.

@@ -20,6 +20,14 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 13 | Image procurement decoupled from scene use; capability-aware generators | ✅ RESOLVED | Procure→reference by id; generators mediated by capability |
 | 14 | Per-agent persistence scoping; asset store vs world/document store | 🔶 DESIGNED | private/public namespaces; scope = capability; worlds in a separate store |
 | 15 | World/space identity: is the NAME the identity, or is there a permanent id? | ✅ RESOLVED | Permanent minted id + a mutable display name (no aliases) |
+| 17 | Per-module SERVER logic — does `grab` motivate a "server module"? | ✅ RESOLVED | No. grab's server side is generic → a plain endpoint; server modules wait for an emitting module |
+| 18 | World server: stay Python, or port to Node for one runtime? | 🔶 DIRECTION | Endorsed but incremental — extract shared JS math first; never a big-bang port |
+| 19 | `full` environment-depth occlusion | ✅ RESOLVED | Shelved — three won't consume the Quest's depth format, and `hands` already covers the sharp case |
+
+> Numbering note: §15 appears twice (an older "Users, spaces, and a user-first namespace" section
+> predates the table row for world/space identity), and §16 has a section but no table row. External
+> docs reference both, so nothing has been renumbered; new entries continue from 17. Worth reconciling
+> when this file gets its own pass.
 
 ---
 
@@ -368,3 +376,86 @@ template, never updated, and read by nothing.
 - One-time migration `migrate_worlds_to_ids` (idempotent, runs at boot) re-keys worlds and rewrites the
   active pointers, `session.json`'s `active_world`, and each space's `last_world`. It also heals
   `active_world` values that were already dangling in real data.
+
+
+### 17. Per-module server logic — does `grab` motivate a "server module"? — ✅ RESOLVED
+**Choice:** No. `grab`'s server side is 100% generic — authorize (owner), apply, recompute
+`meta.surface_offset`, persist, broadcast — so it lives as a plain world-server endpoint (`POST
+/manipulate`), not module code. Per-module server logic stays a deliberate future track, to be designed
+*by* the module that actually needs it.
+
+**Why:** the reciprocal idea (a module having a server half) is real and in the plan's DNA — the music
+transport, the rule engine, semantic-cue emitters. But nothing in grab is grab-specific on the server, so
+building the framework around it would mean generalizing from a case that exercises none of the hard
+parts. The genuine driver is an **autonomous/emitting** module (music, rules, a shared-selection
+arbiter), which needs bidirectional bus access and a server-side tick — neither of which grab wants.
+Retrofitting that onto grab later is worse than designing it with its real first client.
+
+Alignments already made, so the eventual design starts from them:
+- **The world server stays the single authority and store.** A server module is *behavior operating on
+  the world store through a constrained capability object* — the server mirror of the client capability
+  (`apply_patch`, `broadcast`, `clock`, `store` reads, `on_event`/`emit` on the ws bus, an optional
+  `tick`) — **not** a parallel database.
+- **Runtime-agnostic contract.** `input → ops/events`, so the same manifest (`module.json` gains an
+  optional `server` entry plus `runtime`) can be hosted by Python now and JS later.
+- **Two channels, by purpose.** Authoritative tier-C commits go over **HTTP** (owner-gated, persisted,
+  request/response — what grab uses). Reactive/autonomous behavior goes over the **ws bus**, which today
+  only relays to peers; a server module would make it bidirectional.
+
+**Also deliberately not server-side: snapping and clamping.** They are live-feedback concerns — you must
+see it snap *as you drag*. A server-commit snap would hop after release.
+
+### 18. World server: stay Python, or port to Node? — 🔶 DIRECTION
+**Choice:** The direction is endorsed but strictly **incremental**, and the first step does not involve
+Node at all. Never a big-bang port.
+
+**Why the prize is real:** one runtime kills the server↔client geometry-math duplication.
+`_face_room` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler all shadow JS in
+`room-snap.js` / `world-model.js` / `plane-anchor.js`, and that duplication is the source of a whole class
+of parity bugs — YXZ order, quat→euler, the boundary frame-flip, normals-outward. It would also give
+module authors one language for both halves.
+
+**Why not a big-bang port:** the ~4000-line world server holds co-location registration, the apply-gate,
+and spaces/sessions/admission — subtle, working, hard-won code. Porting it wholesale is high risk for low
+marginal return.
+
+**Two constraints that shape any plan:**
+- **"In-process + Node" is a contradiction.** CPython cannot host Node in-process. The choices are (a) an
+  *embedded JS engine* (py_mini_racer / quickjs / pythonmonkey) — in-process, runs **pure** JS (three.js
+  math is pure JS ✓) but has **no Node APIs** (fs/net/timers); or (b) a *real Node sidecar* — full
+  ecosystem and autonomous behavior, but a separate process. Pure-compute server modules (grab-shaped:
+  inputs → ops) fit (a); autonomous/networked ones (music) need (b).
+- **Python anchors must relocate first:** SigLIP embeddings (torch/transformers) and `trimesh` (GLB
+  bounds), both in-process with the asset library. Image/caption SDKs have JS equivalents; embeddings do
+  not, cleanly — decide their home (agent server? a Python sidecar?) before porting anything.
+
+**The path:** (1) extract the shared geometry/placement math into one **pure-JS module** the client uses
+and the server consumes — this is where the recurring pain actually is, and it de-risks everything;
+(2) relocate the Python anchors; (3) introduce Node **at the module seam** (server modules in JS) and
+prove the symmetry there; (4) port the core wholesale only once it is mostly plumbing and the anchors are
+gone. The math-dedup prize is captured by step 1 alone.
+
+### 19. `full` environment-depth occlusion — ✅ RESOLVED (shelved)
+**Choice:** Ship `off` / `hands` / `hands-solid`. Shelve `full` (occluding all real geometry via the Quest
+depth sensor).
+
+**Why:** three findings from on-device investigation, then a value judgement.
+- **The Quest does provide the data.** Requesting WebXR depth-sensing yields `depthUsage=gpu-optimized`,
+  `depthDataFormat=unsigned-short`. It is genuinely possible on the hardware.
+- **three's built-in occlusion does not consume it.** `renderer.xr.hasDepthSensing()` stayed `false` —
+  three's depth mesh expects a `luminance-alpha` `sampler2DArray`, and the Quest's `unsigned-short`
+  per-view delivery is not accepted, so three never builds the texture or renders the mesh. We cannot ride
+  three's built-in path here.
+- **Ordering would break it anyway.** three renders its depth mesh *before* A-Frame's scene render, which
+  clears depth (`autoClearDepth = true`) — so even with a valid texture it would be wiped without further
+  intervention. (The hand mesh sidesteps this by living in the scene graph.)
+
+Given that, `full` means writing device-specific WebGL ourselves, and: (1) it cannot be unit-tested —
+every pass needs a headset round trip; (2) environment depth is low-res and roughly one frame laggy, so
+edges are inherently blocky and shimmering, unlike the sharp hand mesh; (3) hands are already covered
+sharply by `hands`, so full's marginal value is only *moving real things* — people, pets, held objects.
+
+**Cheaper alternative recorded:** render the `mesh-detection` captured room mesh (walls + furniture) as
+depth-only occluders — sharp, stable, no depth sensor, but static only. Pairs well with `hands`. A better
+next step than `full` if static-furniture occlusion is the goal. See
+[`docs/backlogs/occlusion.md`](./backlogs/occlusion.md).

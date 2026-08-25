@@ -1,6 +1,6 @@
 """Dynamic-module definitions loader (conjure.dynamics) — the first-class, extensible structure behind
 conjurable effects, a mirror of conjure.agents. Pure file loading + validation; no network, no A-Frame,
-no world server. (docs/dynamic-modules-refactor-plan.md, docs/dynamic-module-spec.md)"""
+no world server. (docs/specs/dynamics.md §§3-4)"""
 import json
 
 import pytest

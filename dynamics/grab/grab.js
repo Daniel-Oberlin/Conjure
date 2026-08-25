@@ -1,5 +1,5 @@
 /* global AFRAME */
-// grab — tier-C object manipulation (docs/dynamic-content-plan.md §Tier-C: grab, docs/dynamic-module-spec.md).
+// grab — tier-C object manipulation (docs/specs/dynamics.md §8).
 // A singleton, ambient module that lets you reposition/rotate/resize OTHER placed objects with the
 // controllers. It's the first module that reads + writes scene entities beyond its own node.
 //

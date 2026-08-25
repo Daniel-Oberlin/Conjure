@@ -150,7 +150,7 @@ def test_server_ref_tools_default_to_none_opt_in(tmp_path):
 
 def test_dynamics_are_a_required_allow_list(tmp_path):
     # An agent's `dynamics` are REQUIRED: a listed module that isn't on the dynamics path fails the load
-    # (docs/dynamic-modules-refactor-plan.md §agent scoping) — like an unknown MCP server.
+    # (docs/specs/dynamics.md §9) — like an unknown MCP server.
     _write_agent(tmp_path, "d", {"prompt": "hi", "dynamics": ["ghostmod"]})
     with pytest.raises(ValueError, match="unknown dynamic module 'ghostmod'"):
         load_agent("d", agents_dir=tmp_path, dynamics_path=[tmp_path])

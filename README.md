@@ -233,6 +233,8 @@ scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
 tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`); a
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
 docs/       vision · spec · architecture · agents · room-model · decisions · providers · roadmap · setup · testing/https guides
+  specs/    per-area LIVING specs — what is built and how it behaves today (dynamics, occlusion)
+  backlogs/ the matching per-area backlogs — unfinished work, future directions, known problems
 ```
 
 **Where your data lives.** Runtime state is stored in your user home, not the repo (docs/user-home-plan.md):

@@ -124,7 +124,7 @@ def resolve_agents_path(env: Mapping[str, str], settings: Mapping, config_dir: P
 
 def resolve_dynamics_path(env: Mapping[str, str], settings: Mapping, config_dir: Path) -> list[Path]:
     """The ordered dynamic-module search path — mirrors `resolve_agents_path` (docs/user-home-plan.md §5,
-    docs/dynamic-modules-refactor-plan.md): env `CONJURE_DYNAMICS_PATH` (os-sep-separated) >
+    docs/specs/dynamics.md §3): env `CONJURE_DYNAMICS_PATH` (os-sep-separated) >
     settings["dynamics_path"] > [<config>/dynamics, bundled]. User entries come first so a user module
     shadows a bundled one of the same name."""
     explicit = env.get("CONJURE_DYNAMICS_PATH", "").strip()
@@ -269,7 +269,7 @@ class Settings:
     #                                                  degrades tool use well before the window fills. 0 =
     #                                                  unlimited. Agent-server side; --history-cap / CONJURE_HISTORY_CAP.
     occlusion: str = "off"                           # real-world depth occlusion: "off" | "hands" | "hands-solid"
-    #                                                  (docs/dynamic-content-plan.md §occlusion). A depth pre-pass
+    #                                                  (docs/specs/occlusion.md). A depth pre-pass
     #                                                  writes real-world depth (color-write off) so virtual content is
     #                                                  hidden where a nearer real surface is — e.g. your hand covers a
     #                                                  virtual wall. off = today (virtual always over passthrough);
@@ -316,7 +316,7 @@ class Settings:
     # default; "none"/"fake" to disable/test.
     caption_provider: str = "gemini"
     caption_model: str = "gemini-2.5-flash"
-    # Controller pointer beams (see docs/dynamic-module-spec.md interaction): a laser from each controller,
+    # Controller pointer beams (see docs/specs/dynamics.md §6): a laser from each controller,
     # shown while you're pointing/interacting (e.g. rippling a Water Picture) and hidden otherwise. The beam
     # arms when the trigger is pulled past `beam_trigger` (analog 0..1) and LINGERS for `beam_timeout`
     # seconds after the most recent pull, so a momentary release mid-interaction doesn't flicker it off.

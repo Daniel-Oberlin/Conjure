@@ -979,7 +979,7 @@
   // ConjureFrames.toRef can invert its solve for interaction modules.
   var framePlanes = { local: null, ref: null };
 
-  // Minimal shared-event bus for dynamic modules (docs/dynamic-content-plan.md, tier B). `emitShared`
+  // Minimal shared-event bus for dynamic modules (docs/specs/dynamics.md §6, tier B). `emitShared`
   // relays an event to PEERS via the ws (the server fans it to the OTHER clients); on()/off() subscribe;
   // inbound `module_event` messages are dispatched to subscribers. A module acts on its OWN input
   // immediately (local); this bus carries only the shared, cross-client traffic (e.g. water touches).

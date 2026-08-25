@@ -1,5 +1,5 @@
 /* global AFRAME, THREE */
-// Dynamic content modules (docs/dynamic-content-plan.md). A module is just an A-Frame COMPONENT: the
+// Dynamic content modules (docs/specs/dynamics.md). A module is just an A-Frame COMPONENT: the
 // world server delivers an entity carrying it (conjure-client applies arbitrary components via
 // setAttribute), so a module is config-in-snapshot, shared across clients, and persisted — for free,
 // on the existing entity/patch/snapshot path. No bespoke loader.

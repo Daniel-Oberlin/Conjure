@@ -46,10 +46,10 @@
 
     <script src="/static/conjure-clock.js"></script>
     <!-- The single XR input reader + action bindings. Must load BEFORE any module that reads input
-         (dynamic modules below, controller-beams) — see docs/dynamic-module-spec.md. -->
+         (dynamic modules below, controller-beams) — see docs/specs/dynamics.md §6. -->
     <script src="/static/conjure-pointers.js"></script>
     <!-- __DYNAMIC_MODULES__ : the server injects a <script> per module scoped to the ACTIVE agent
-         (docs/dynamic-modules-refactor-plan.md decision 3), re-injected on agent switch. -->
+         (docs/specs/dynamics.md §9), re-injected on agent switch. -->
     <script src="/static/world-model.js"></script>
     <script src="/static/occlusion.js"></script>
     <script src="/static/room-snap.js"></script>

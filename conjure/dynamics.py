@@ -1,12 +1,12 @@
 """Dynamic-module definitions — the declarative layer behind conjurable, animated effects.
 
 A *dynamic module* is a live, shared A-Frame component the world delivers as config-in-snapshot (see
-docs/dynamic-content-plan.md, docs/dynamic-module-spec.md): the world server adds an entity carrying
+docs/specs/dynamics.md): the world server adds an entity carrying
 the module's component, so every headset renders the same effect (deterministic from the shared clock),
 and it persists on the existing entity/patch/snapshot path — no bespoke loader.
 
 This module is the **first-class, extensible** structure for those effects, a direct mirror of
-`conjure.agents` (docs/dynamic-modules-refactor-plan.md): each module is a self-contained directory —
+`conjure.agents` (docs/specs/dynamics.md §3): each module is a self-contained directory —
 `dynamics/<name>/module.json` plus its client script(s) and any assets. The directory name *is* the
 module's identity. User modules resolve on a search path (user shadows bundled), exactly like agents.
 This module just **loads and validates** those defs; the runtime wiring (serving the JS, placing an
@@ -75,7 +75,7 @@ class DynamicModuleDef:
     dir: Path
     component: str                                        # the A-Frame component the entry registers
     entry: list[str] = field(default_factory=list)       # client script(s) to load, in order
-    tier: str = "A"                                       # A|B|C (informational; docs/dynamic-content-plan.md)
+    tier: str = "A"                                       # A|B|C (informational; docs/specs/dynamics.md §2)
     anchor: str = "free"                                  # free | surface | volume | ambient
     singleton: bool = False                               # one live instance reused across conjures
     face_user: bool = False                               # free-standing flat content faces the viewer at creation

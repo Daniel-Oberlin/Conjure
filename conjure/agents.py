@@ -95,7 +95,7 @@ class AgentDef:
     servers: list[ServerRef] = field(default_factory=list)
     context: list[str] = field(default_factory=list)    # MCP resources to inject (later slice)
     dynamics: list[str] = field(default_factory=list)   # dynamic modules this agent may conjure — a
-    #                                                     required allow-list (docs/dynamic-modules-refactor-plan.md):
+    #                                                     required allow-list (docs/specs/dynamics.md §9):
     #                                                     scopes conjure_module + drives the director catalog.
     personas: list[str] = field(default_factory=list)   # persona refs (later slice)
     session: dict = field(default_factory=dict)         # session constructor block (greeting, first_world,
@@ -170,7 +170,7 @@ def load_agent(name: str, *, agents_dir: Optional[Path] = None,
                     f"agent {name!r}: references unknown MCP server {ref.server!r} "
                     f"(not in the registry: {sorted(registry)})")
 
-    # Dynamic modules the agent may conjure — a REQUIRED allow-list (docs/dynamic-modules-refactor-plan.md
+    # Dynamic modules the agent may conjure — a REQUIRED allow-list (docs/specs/dynamics.md §9
     # §agent scoping): every listed module MUST resolve on the dynamics search path, or the agent fails to
     # load (fail loud on a dangling reference, like an unknown MCP server). Imported lazily so the agents
     # loader stays usable without the dynamics package present.

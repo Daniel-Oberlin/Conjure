@@ -17,7 +17,21 @@ dynamic behavior, and the ability to pull in generated or pre-existing web conte
 9. **[https-setup.md](./https-setup.md)** — go wireless: serve over HTTPS (cloudflared / Caddy / Tailscale).
 10. **[testing.md](./testing.md)** — automated testing strategy (proposal, for review).
 
-**Focused designs** (deep dives on a single area):
+## Specs and backlogs
+
+Going forward, each area gets a **pure living spec** in [`specs/`](./specs/) — what is built and how it
+behaves today, kept accurate against the code — and a matching **backlog** in
+[`backlogs/`](./backlogs/) for unfinished work, future directions, and known problems. Rejected
+alternatives and the reasoning behind consequential forks stay in [decisions.md](./decisions.md). The
+split exists so a spec can be trusted: nothing in it is a plan, an intention, or a maybe.
+
+- **[specs/dynamics.md](./specs/dynamics.md)** — dynamic modules: the manifest, the client contract, the
+  shared clock/bus/pointer runtime, XR actions and pointer arbitration, placement, and the tier-C commit
+  path. ([backlog](./backlogs/dynamics.md))
+- **[specs/occlusion.md](./specs/occlusion.md)** — real-world depth occlusion: the global depth pre-pass
+  and the `off`/`hands`/`hands-solid` modes. ([backlog](./backlogs/occlusion.md))
+
+**Focused designs** (deep dives on a single area — older plan-shaped docs, migrating to the above):
 - **[room-model.md](./room-model.md)** — the **next phase** (roadmap Phase 5): bringing the real room
   (AR / scene understanding — passthrough, semantic surfaces, mountable real walls/furniture,
   progressive mesh refinement) out of the Quest and into the world model.
