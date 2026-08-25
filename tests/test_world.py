@@ -585,7 +585,9 @@ def test_clean_name_drops_quotes_so_a_stored_name_can_always_be_typed_back():
     assert clean_name('"Session 1" "alien"') == "Session 1 alien"
     assert clean_name('"alien"') == "alien"
     assert clean_name("“smart quotes”") == "smart quotes"
-    assert clean_name("Bob's room") == "Bobs room"       # `'` is a shlex quote too
+    # …but an apostrophe STAYS: shlex parses `rename "Bob's room" x` fine, because a name with a space
+    # has to be double-quoted anyway. Stripping it bought nothing.
+    assert clean_name("Bob's room") == "Bob's room"
     # …and the result is exactly what the shell's own tokeniser produces for the same input
     import shlex
     assert clean_name('"Session 1" "alien"') == " ".join(shlex.split('"Session 1" "alien"'))
@@ -600,23 +602,27 @@ def test_clean_name_drops_quotes_so_a_stored_name_can_always_be_typed_back():
             pass
 
 
-def test_clean_name_refuses_anything_a_path_could_not_address():
-    """Everything outside NAME_CHARS is REFUSED, not stripped.
+def test_clean_name_refuses_only_what_a_path_genuinely_cannot_carry():
+    """A denylist, not an allowlist — only the path separators and control characters.
 
-    `_admin_resolve` rejects a path segment containing anything else before resolution even runs, so a
-    name with a comma or an accent could be stored and then reached only by id — the same trap the quotes
-    were. Refusing beats stripping: silently turning 'Café' into 'Caf' is a worse surprise than a no.
+    An earlier pass restricted names to ASCII letters/digits/`. _ -`, reasoning that `_admin_resolve`
+    would refuse anything else. It would have, but that was OUR allowlist, chosen conservatively, not a
+    real constraint: shlex tokenises `"Café Noir"` and `"Bob's room"` correctly, the charset is
+    defence-in-depth behind per-segment existence checks, and since identity became an id a name never
+    reaches the filesystem. Refusing them cost real usability — these names arrive by voice and from an
+    LLM — and bought nothing.
     """
     from conjure.world import clean_name
-    for bad, offender in [("Bob, Jr", ","), ("Café", "é"), ("a/b", "/"), ("50% off", "%"),
-                          ("sun & moon", "&"), ("Session (old)", "(")]:
+    for bad, offender in [("a/b", "/"), ("a\\b", "\\"), ("bell\x07", "\x07")]:
         try:
             clean_name(bad)
             assert False, f"expected {bad!r} to be refused"
         except ValueError as exc:
-            assert offender in str(exc), f"{exc} should name the offending {offender!r}"
-    # …while everything the charset allows still passes through untouched
-    for ok in ("meadow", "Kitchen Table", "my-world.v2", "test_7", "Session 1"):
+            # the message reprs the offender, so a control character reads as '\x07' rather than vanishing
+            assert repr(offender) in str(exc), f"{exc} should name the offending {offender!r}"
+    # …and everything else passes through untouched, punctuation and accents included
+    for ok in ("meadow", "Kitchen Table", "my-world.v2", "test_7", "Session 1",
+               "Café Noir", "Bob's Diner", "Session (old)", "50% off", "sun & moon"):
         assert clean_name(ok) == ok
 
 
@@ -630,7 +636,8 @@ def test_every_name_clean_name_accepts_is_a_legal_path_segment():
     from conjure.server import _ADMIN_PART
     from conjure.world import clean_name
     candidates = ["meadow", "Kitchen Table", '"alien"', "  a   b  ", "my-world.v2", "Bob's room",
-                  "test_7", "Session 1", "a.b-c_d e", "“smart”"]
+                  "test_7", "Session 1", "a.b-c_d e", "“smart”", "Café Noir", "Session (old)",
+                  "50% off", "sun & moon"]
     accepted = 0
     for c in candidates:
         try:
@@ -655,3 +662,21 @@ def test_world_and_space_names_are_cleaned_on_write(tmp_path):
     sp.save("alice", "space-1", {"owner": "alice", "name": "", "surfaces": [], "boundary": {}})
     sp.rename("alice", "space-1", '"living room"')
     assert sp.name_of("alice", "space-1") == "living room"
+
+
+def test_an_accented_name_is_found_by_its_unaccented_spelling():
+    """Allowing accents without folding them would be half a change.
+
+    The lookup keys strip anything that isn't a-z0-9, so an accented letter would VANISH rather than
+    fold: 'Café Noir' keyed as 'caf noir', and typing 'Cafe Noir' missed it. Since these names arrive by
+    dictation — which is inconsistent about accents — the two spellings have to converge.
+    """
+    from conjure.server import _loose
+    from conjure.world import fold_accents, slug
+    assert fold_accents("Café") == "Cafe"
+    for typed in ("Cafe Noir", "cafe-noir", "CAFE_NOIR"):
+        assert _loose("Café Noir") == _loose(typed), typed
+        assert slug("Café Noir") == slug(typed), typed
+    # the accent survives in what's STORED — only the match key folds
+    from conjure.world import clean_name
+    assert clean_name("Café Noir") == "Café Noir"

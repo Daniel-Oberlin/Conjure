@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any
@@ -20,54 +21,79 @@ from .schema import Entity, World
 _SCOPE_PART = re.compile(r"[\w.-]+")
 
 
+def fold_accents(s: str) -> str:
+    """`Café` → `Cafe`. Decompose, then drop the combining marks.
+
+    Lookup keys strip anything that isn't a-z0-9, so without this an accented letter would VANISH rather
+    than fold — 'Café Noir' would key as 'caf noir' and typing 'Cafe Noir' would miss it. Since names may
+    carry accents (see `clean_name`) and arrive by dictation, which is inconsistent about them, the two
+    spellings have to converge.
+
+    Latin-ish only: a script with no ASCII decomposition (CJK) folds to nothing, so such a name is exact-
+    match only, and `slug` refuses it outright. That's a pre-existing limit of these keys, not a new one."""
+    return "".join(c for c in unicodedata.normalize("NFKD", s or "") if not unicodedata.combining(c))
+
+
 def slug(name: str) -> str:
     """Canonical key for a single world-name segment. Case-insensitive; spaces, underscores and hyphens
-    are interchangeable; other punctuation is dropped — so 'Blade Runner', 'blade_runner' and
-    'BLADE-RUNNER' all resolve to the same segment. Raises if nothing usable remains."""
-    s = re.sub(r"[\s_-]+", "-", (name or "").strip().lower())
+    are interchangeable; accents fold to their base letter; other punctuation is dropped — so 'Blade
+    Runner', 'blade_runner' and 'BLADE-RUNNER' all resolve to the same segment. Raises if nothing usable
+    remains."""
+    s = re.sub(r"[\s_-]+", "-", fold_accents(name).strip().lower())
     s = re.sub(r"[^a-z0-9-]", "", s).strip("-")
     if not s:
         raise ValueError(f"bad world name segment {name!r}")
     return s
 
 
-_QUOTES = "\"'“”‘’"          # ASCII pair + the typographic ones a phone/dictation emits
+# Double quotes only. A name containing one can't be wrapped in the quotes a shell path needs, so it
+# can't be typed back. The APOSTROPHE is deliberately not here: `shlex` handles "Bob's room" perfectly
+# once the name is double-quoted, which it must be anyway the moment it has a space.
+_QUOTES = "\"“”"
 
-# What a display name may contain — and therefore what a PATH SEGMENT may contain, because a name is how
-# you address the thing in the shell (`cd meadow`, `rename "my world" x`). One definition, imported by
-# server.py's `_ADMIN_PART`, so the two can't drift into a name you can store but never type.
-NAME_CHARS = r"A-Za-z0-9._\- "
-_NAME_OK = re.compile(f"[{NAME_CHARS}]+")
+# What a display name may NOT contain — and therefore what a PATH SEGMENT may not, because a name is how
+# you address the thing in the shell (`cd meadow`, `rename "my world" x`). A denylist, not an allowlist:
+# the only characters that genuinely can't survive the round trip are the path separators and control
+# characters. Everything else — accents, apostrophes, commas, parentheses — tokenises fine and is nobody's
+# business to refuse, especially in a product where the names arrive by voice.
+#
+# This is safe because it is NOT the traversal gate: `_admin_resolve` rejects "."/".." outright and then
+# checks every segment against an enumerated real set (users, agents, sessions, worlds), so a segment can
+# never name something that doesn't exist. And since identity became an id, a name never reaches the
+# filesystem at all — worlds are `wld_*.json`, sessions `session-N`, spaces `space-N` — so there's no
+# encoding argument for ASCII either.
+_NAME_BAD = re.compile(r"[/\\\x00-\x1f\x7f]")
+# The path-segment charset server.py's `_ADMIN_PART` is built from — the same rule stated as a match, so
+# the two can't drift into a name you can store but never type.
+NAME_SEGMENT = r"[^/\\\x00-\x1f\x7f]+"
 
 
 def clean_name(name: str, *, what: str = "name") -> str:
-    """Normalise a user-supplied DISPLAY name before storing it: drop quote characters, collapse
-    whitespace, trim, and require what's left to be addressable. Raises if it isn't.
+    """Normalise a user-supplied DISPLAY name before storing it: drop double quotes, collapse whitespace,
+    trim, and refuse a path separator. Raises if nothing usable is left.
 
-    The quotes are the load-bearing part. Every shell path is tokenised with `shlex`, which CONSUMES
-    quotes, so a stored name containing its own can never be typed back — `session rename "Session 1"
-    "alien"` (under a parser that took the raw remainder) stored the title `"Session 1" "alien"`, and no
-    natural form of itself matched it again. Cleaning on write kills the class at the source instead of
-    teaching every lookup to forgive it.
+    The double quotes are the load-bearing part. A shell path is tokenised with `shlex`, which CONSUMES
+    them, so a name carrying its own can never be typed back — `session rename "Session 1" "alien"` (under
+    a parser that took the raw remainder) stored the title `"Session 1" "alien"`, and no natural form of
+    itself matched it again. Cleaning on write kills the class at the source instead of teaching every
+    lookup to forgive it.
 
-    Removing them beats stripping a surrounding pair: `"a" "b"` opens and closes with a quote without
-    being quoted, so a strip-the-ends rule mangles it to `a" "b`. Dropping every quote yields `a b` —
-    which is exactly what today's `shlex`-based parser produces for the same input, so the stored name
-    matches what a person typing it would get. An apostrophe goes too (`Bob's` → `Bobs`): `'` is a shlex
-    quote as much as `"` is, so a name carrying one is no more typeable than one carrying the other.
+    Dropping every quote beats stripping a surrounding pair: `"a" "b"` opens and closes with a quote
+    without being quoted, so a strip-the-ends rule mangles it to `a" "b`. Removing them yields `a b` —
+    exactly what `shlex` produces for the same input, so the stored name matches what a person typing it
+    would get.
 
-    Everything outside `NAME_CHARS` is then REFUSED rather than stripped. `_admin_resolve` rejects a path
-    segment containing anything else before resolution even runs, so a name with a comma or an accent
-    could be stored and then addressed only by id — the same quiet trap the quotes were, one level down.
-    Refusing beats stripping because silently turning `Café` into `Caf` is a worse surprise than being
-    told no; the error names the characters so the caller (a person or the director) can retry."""
+    An apostrophe is NOT a quote for this purpose, and neither is an accent. `shlex` parses
+    `rename "Bob's room" x` and `rename "Café Noir" x` correctly, because a name with a space has to be
+    double-quoted anyway. Refusing them bought nothing and cost a lot: the names here arrive by voice and
+    from an LLM, neither of which will ration its punctuation to suit us."""
     s = " ".join("".join(c for c in (name or "") if c not in _QUOTES).split())
     if not s:
         raise ValueError(f"bad {what} {name!r}")
-    if not _NAME_OK.fullmatch(s):
-        bad = "".join(sorted({c for c in s if not _NAME_OK.fullmatch(c)}))
-        raise ValueError(f"bad {what} {name!r}: {bad!r} can't be used in a name "
-                         f"(letters, digits, spaces, and . _ - only)")
+    if _NAME_BAD.search(s):
+        bad = "".join(sorted({c for c in s if _NAME_BAD.match(c)}))
+        raise ValueError(f"bad {what} {name!r}: {bad!r} can't be used in a name — it would break the path "
+                         f"that addresses it")
     return s
 
 

@@ -144,14 +144,18 @@ not another user's `environment.space`, and not whatever a schema-free agent sta
 [decisions.md §15](./decisions.md). Names are unique within a session, which keeps "the meadow" resolvable.
 
 **What a name may be.** A display name is also how you *address* the thing, so `world.clean_name` holds
-both ends to one rule (`world.NAME_CHARS`, which `_ADMIN_PART` is built from — they can't drift):
+both ends to one rule (`world.NAME_SEGMENT`, which `_ADMIN_PART` is built from — they can't drift):
 
-- Quote characters are **dropped** — `shlex` eats them tokenising a path, so a name carrying its own could
-  never be typed back. `rename x '"a" "b"'` stores `a b`, which is what typing it yields anyway. The
-  apostrophe goes with them (`Bob's` → `Bobs`); `'` is a shlex quote too.
+- **Double quotes are dropped** — `shlex` eats them tokenising a path, so a name carrying its own could
+  never be typed back. `rename x '"a" "b"'` stores `a b`, which is what typing it yields anyway.
+- **Apostrophes and accents are kept.** `rename "Bob's room" x` and `rename "Café Noir" x` both tokenise
+  correctly, because a name with a space has to be double-quoted regardless. These names arrive by voice
+  and from an LLM; rationing their punctuation buys nothing.
 - Whitespace is collapsed and trimmed.
-- Anything outside letters, digits, space and `. _ -` is **refused**, naming the offending character.
-  Stripping it instead would silently turn `Café` into `Caf`; refusing lets the caller retry.
+- Only a **path separator or control character** is refused, naming the offender. The charset is
+  defence-in-depth, not the traversal gate — `_admin_resolve` rejects `.`/`..` and then checks every
+  segment against an enumerated real set. And since identity became an id, a name never reaches the
+  filesystem (`wld_*.json`, `session-N`, `space-N`), so there's no encoding argument for ASCII either.
 - Names are **unique** within their container, compared the way lookup compares them (case-, separator-
   and punctuation-insensitive) — so `Home` and `home` collide, and the error says which one it hit rather
   than reporting the ambiguous match as "not found".

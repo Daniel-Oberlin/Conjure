@@ -46,7 +46,7 @@ from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from .world import (MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
-                    NAME_CHARS, _set_path, clean_name, migrate_cache_to_users,
+                    NAME_SEGMENT, _set_path, clean_name, fold_accents, migrate_cache_to_users,
                     migrate_project_cache_to_home, migrate_worlds_to_ids, new_world_id)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1320,7 +1320,7 @@ def _loose(s: Optional[str]) -> str:
     key kept them — so the session became unreachable by any form of its own name. `clean_name` now stops
     such a name being stored at all; matching the two keys up is what lets the ones already on disk be
     reached (and renamed) without a migration."""
-    s = re.sub(r"[\s_-]+", " ", (s or "").strip().lower())
+    s = re.sub(r"[\s_-]+", " ", fold_accents(s).strip().lower())
     return re.sub(r"[^a-z0-9 ]", "", s).strip()
 
 
@@ -2020,9 +2020,11 @@ async def space_visibility(req: SpaceVisibilityRequest) -> dict:
 # inconsistent.
 # Display names may contain spaces now ("Living Room"), so a path segment allows them. `/` is still the
 # separator and `.`/`..` are rejected outright, so a segment can't traverse.
-# Exactly what a display NAME may contain (world.NAME_CHARS) — one definition, so a name can never be
-# stored that this then refuses to address. `clean_name` enforces the same set on write.
-_ADMIN_PART = re.compile(f"[{NAME_CHARS}]+")
+# Exactly what a display NAME may contain (world.NAME_SEGMENT) — one definition, so a name can never be
+# stored that this then refuses to address. `clean_name` enforces the same rule on write. Everything but
+# a path separator or a control character is allowed: this is defence-in-depth, not the traversal gate —
+# "."/".." are rejected above and every segment is checked against an enumerated real set below.
+_ADMIN_PART = re.compile(NAME_SEGMENT)
 _VOID_SPACE = VOID
 
 
