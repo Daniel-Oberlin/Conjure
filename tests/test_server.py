@@ -1920,6 +1920,59 @@ def test_worlds_shortcut_resolves_to_the_active_session(srv, client):
     assert r["path"] == f"/alice/agents/builder/sessions/{sid}/worlds"
 
 
+def _seed_session(srv, scope, sid, **meta):
+    """A second session under `scope`, with worlds of its own — the setup the path verbs got wrong."""
+    srv.sessions.save_meta(scope, sid, {"id": sid, "owner": scope.split("/")[0],
+                                        "agent": scope.rsplit("/", 1)[-1], "public": True, **meta})
+
+
+def test_renaming_a_session_by_path_renames_THAT_session_not_the_active_one(srv, client):
+    # `rename session-1 <title>` retitled the ACTIVE session instead: the shell resolved the path, got the
+    # right sid back in `fields`, then posted /session/rename with only `scope` — and the endpoint
+    # defaults a missing `session` to the active one. The path was decoration.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    live = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, "session-9", title="Nine")
+    _seed_session(srv, scope, live, title="Live")   # worlds can exist before any session.json does
+
+    r = client.post("/session/rename", json={"scope": scope, "session": "session-9",
+                                             "title": "renamed"}).json()
+    assert r["ok"] is True and r["session"] == "session-9"
+    assert srv.sessions.load_meta(scope, "session-9")["title"] == "renamed"
+    assert srv.sessions.load_meta(scope, live)["title"] == "Live"      # the active one is untouched
+
+    # visibility took the same shortcut
+    v = client.post("/session/visibility", json={"scope": scope, "session": "session-9",
+                                                 "public": False}).json()
+    assert v["ok"] is True
+    assert srv.sessions.load_meta(scope, "session-9")["public"] is False
+    assert srv.sessions.load_meta(scope, live).get("public", True) is True
+
+
+def test_renaming_a_world_targets_the_named_session_not_the_live_one(srv, client):
+    # Worlds are stored PER SESSION, so a bare scope means "the live session" — and with a same-named
+    # world in both, renaming one in a non-live session silently renamed the live session's copy.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "shared")                                 # in the LIVE session
+    _seed_session(srv, scope, "session-9", title="Nine")
+    other = srv.sessions.worlds(scope, "session-9")
+    from conjure.world import WorldStore
+    other.save("shared", WorldStore({"id": "shared", "name": "shared", "rev": 0,
+                                     "environment": {}, "entities": []}))
+    live = srv.sessions.get_active(scope) or MIGRATED_SID
+
+    r = client.post("/worlds/rename", json={"scope": scope, "session": "session-9",
+                                            "name": "shared", "new_name": "moved"}).json()
+    assert r["ok"] is True
+    assert other.list() == ["moved"]                                   # the one we named
+    assert srv.sessions.worlds(scope, live).list() == ["shared"]       # the live one is untouched
+
+    bad = client.post("/worlds/rename", json={"scope": scope, "session": "session-404",
+                                              "name": "shared", "new_name": "x"}).json()
+    assert bad["ok"] is False and "session-404" in bad["error"]
+
+
 def test_admin_path_addresses_a_session_by_its_title(srv, client):
     # `dir` prints the title in every session row, so a path has to accept it — otherwise the listing is
     # a liar and `rename "Session 1" Home` comes back "no session 'Session 1'". Same resolver the

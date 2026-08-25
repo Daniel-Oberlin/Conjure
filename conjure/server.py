@@ -1823,6 +1823,9 @@ class WorldRenameRequest(BaseModel):
     name: str                         # the world to rename — its id, or its current display name
     new_name: str
     scope: str = DEFAULT_SCOPE
+    session: Optional[str] = None     # id or title; default = the scope's live/active session. Worlds are
+    #                                   stored PER SESSION, so a bare scope silently means "the live one" —
+    #                                   which renamed the wrong world when the path named another session.
 
 
 class SpaceRenameRequest(BaseModel):
@@ -1835,12 +1838,22 @@ class SpaceRenameRequest(BaseModel):
 async def worlds_rename(req: WorldRenameRequest) -> dict:
     """Retitle a world. A metadata edit that moves nothing: every reference — the active pointers, the
     session's `active_world`, a space's `last_world`, another user's `environment.space`, and whatever a
-    schema-free agent state doc stashed — holds the permanent id, not the name."""
+    schema-free agent state doc stashed — holds the permanent id, not the name.
+
+    `session` names WHICH session's worlds to look in. Without it we fall through to `worlds.rename`,
+    which routes to the scope's live/active session — right for the live case, wrong (silently, on a
+    same-named world) the moment a caller means a world in some other session."""
+    sid = _resolve_sid(req.scope, req.session) if req.session else None
+    if req.session and not sid:
+        return {"ok": False, "error": f"no session {req.session!r} in {req.scope}"}
     try:
-        wid = worlds.rename(req.scope, req.name, req.new_name)
+        if sid:
+            wid = _session_worlds(req.scope, sid).rename(req.name, req.new_name)
+        else:
+            wid = worlds.rename(req.scope, req.name, req.new_name)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
-    if wid == active_world and req.scope == active_scope:
+    if wid == active_world and req.scope == active_scope and sid in (None, active_sid):
         # The LIVE world is held in memory and autosaved back to disk, so the rename has to land there
         # too — otherwise the next `_save_active()` writes the old name straight over it.
         store.doc["name"] = req.new_name

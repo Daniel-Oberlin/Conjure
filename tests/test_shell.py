@@ -297,6 +297,43 @@ def _session_shell(responder):
     return sh, out, on_text, calls
 
 
+async def test_path_verbs_carry_the_TARGET_session_not_just_its_scope():
+    """`rename session-1 <title>` retitled whatever session was ACTIVE.
+
+    The path was resolved, `show` handed back the right sid in `fields`, and then the POST went out with
+    `scope` only — and /session/rename, /session/visibility and /worlds/rename all default a missing
+    `session` to the live one. So every path verb silently retargeted itself, and the more precise you
+    were about which session you meant, the more wrong the result.
+    """
+    sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True})
+
+    async def fake_admin(action, path):
+        # what /admin/show returns for a non-active session and a world inside it
+        if path.endswith("/worlds/alien"):
+            return {"ok": True, "kind": "world",
+                    "fields": [["world", "alien"], ["id", "wld_123"], ["session", "session-1"],
+                               ["scope", "daniel/agents/outdoor"]]}
+        return {"ok": True, "kind": "session",
+                "fields": [["session", "session-1"], ["title", "Session 1"],
+                           ["scope", "daniel/agents/outdoor"]]}
+    sh._admin = fake_admin
+    sh._cwd = "/daniel/agents/outdoor/sessions"
+
+    await sh._dispatch("rename session-1 session-alpha", on_text)
+    assert calls[-1][:2] == ("POST", "/session/rename")
+    assert calls[-1][2]["session"] == "session-1"                  # …not None, which means "the active one"
+    assert calls[-1][2]["title"] == "session-alpha"
+
+    await sh._dispatch("private session-1", on_text)
+    assert calls[-1][:2] == ("POST", "/session/visibility")
+    assert calls[-1][2]["session"] == "session-1"
+
+    # Worlds are stored per session, so a world path has to carry one too.
+    await sh._dispatch("rename session-1/worlds/alien tundra", on_text)
+    assert calls[-1][:2] == ("POST", "/worlds/rename")
+    assert calls[-1][2]["session"] == "session-1" and calls[-1][2]["name"] == "wld_123"
+
+
 async def test_sessions_lists_via_the_world_server():
     sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True, "active": "session-1", "sessions": [
         {"id": "session-1", "title": "Home Base", "active_world": "home", "llm": "Claude", "active": True},

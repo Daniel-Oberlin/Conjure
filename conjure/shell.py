@@ -656,8 +656,8 @@ class Shell:
         if kind == "space":
             out = await self._session_api("POST", "/space/visibility", name=fields.get("space"), public=public)
         elif kind == "session":
-            out = await self._session_api("POST", "/session/visibility",
-                                          scope=fields.get("scope"), public=public)
+            out = await self._session_api("POST", "/session/visibility", scope=fields.get("scope"),
+                                          session=fields.get("session"), public=public)
         elif kind == "asset":
             out = await self._session_api("POST", "/update_asset", id=fields.get("asset"),
                                           scope=fields.get("scope"), public=public)
@@ -693,12 +693,14 @@ class Shell:
             return
         kind, fields = data.get("kind"), dict(data.get("fields", []))
         if kind == "session":
-            out = await self._session_api("POST", "/session/rename", scope=fields.get("scope"), title=new)
+            out = await self._session_api("POST", "/session/rename", scope=fields.get("scope"),
+                                          session=fields.get("session"), title=new)
         elif kind == "asset":
             out = await self._session_api("POST", "/update_asset", id=fields.get("asset"),
                                           scope=fields.get("scope"), label=new)
         elif kind == "world":
             out = await self._session_api("POST", "/worlds/rename", scope=fields.get("scope"),
+                                          session=fields.get("session"),
                                           name=fields.get("id") or loc_name(path), new_name=new)
         elif kind == "space":
             out = await self._session_api("POST", "/space/rename", owner=fields.get("owner"),
