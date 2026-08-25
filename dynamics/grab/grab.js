@@ -103,10 +103,27 @@
       this._ray.set(origin, dir);
       var els = this._manipulables();
       for (var i = 0; i < els.length; i++) {
-        var hits = this._ray.intersectObject(els[i].object3D, true);
-        if (hits.length && (!best || hits[0].distance < best.dist)) {
-          best = { el: els[i], point: hits[0].point.clone(), dist: hits[0].distance, obj: hits[0].object };
+        var h = this._nearest(this._ray.intersectObject(els[i].object3D, true));
+        if (h && (!best || h.distance < best.dist)) {
+          best = { el: els[i], point: h.point.clone(), dist: h.distance, obj: h.object };
         }
+      }
+      return best;
+    },
+
+    // The nearest hit with a USABLE distance. Two reasons this isn't just `hits[0]`. three sorts each
+    // element's intersects with (a.distance - b.distance), and that comparator returns NaN — ordering
+    // NOTHING — as soon as one entry is non-finite, so hits[0] stops meaning "nearest" for the whole array.
+    // And a non-finite distance must never reach an accumulator: NaN loses every `<` comparison, so once
+    // it lands in `best` nothing can displace it, which pins focus to that object from any aim direction
+    // and feeds NaN into every reach derived from it (st.grabDist, and the whole resize gesture with it).
+    // Dropping the entry is right rather than clamping it: a hit we can't measure is a hit we can't honour.
+    _nearest: function (hits) {
+      var best = null;
+      for (var i = 0; i < hits.length; i++) {
+        var d = hits[i].distance;
+        if (!isFinite(d)) continue;
+        if (!best || d < best.distance) best = hits[i];
       }
       return best;
     },
@@ -144,6 +161,9 @@
         if (!local.intersectBox(box, at)) continue;
         var world = at.clone().applyMatrix4(el.object3D.matrixWorld);
         var d = origin.distanceTo(world);
+        if (!isFinite(d)) continue;        // same accumulator hazard as _pick — an image's box is FLAT, and
+        //                                    a ray along its zero-depth axis takes intersectBox through
+        //                                    0 × Infinity. Never let that reach `best`.
         if (!best || d < best.dist) best = { el: el, obj: null, point: world, dist: d };
       }
       return best;
@@ -207,6 +227,15 @@
       var group = new THREE.Group();
       var helper = new THREE.Box3Helper(box, HILITE);
       if (helper.material) { helper.material.depthTest = false; helper.material.transparent = true; }
+      // The box is DECORATION — never a pick target. three raycasts LineSegments with a fat slop
+      // (Raycaster.params.Line.threshold, default 1 unit), so the wireframe acts as a hit VOLUME several
+      // times the object's own size and swallows the picks meant for the corner handles inside it. On a
+      // FLAT object it's worse: an image's box has zero depth, so Box3Helper sets its scale.z to 0, its
+      // world matrix is singular, and the inverse three takes to put the ray in local space is the zero
+      // matrix — every hit comes back distance:NaN. NaN loses every `<`, so _pick's accumulator could never
+      // replace it: focus pinned to the first flat object from any aim direction, and _isHandle never saw a
+      // handle, so resize was unreachable while grip-move still worked.
+      helper.raycast = function () {};
       group.add(helper);
       var hmat = new THREE.MeshBasicMaterial({ color: HANDLE, depthTest: false, transparent: true });
       var handles = [];
