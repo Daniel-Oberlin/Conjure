@@ -19,7 +19,7 @@ LOG="$(mktemp -t conjure-tunnel)"
 mkdir -p "$CACHE_DIR"
 
 if ! command -v cloudflared >/dev/null 2>&1; then
-  echo "cloudflared not found. Install it ('brew install cloudflared') — see docs/https-setup.md." >&2
+  echo "cloudflared not found. Install it ('brew install cloudflared') — see docs/running.md." >&2
   exit 1
 fi
 
@@ -71,7 +71,7 @@ if [ -z "$URL" ]; then
   echo "!! Could not establish a cloudflared tunnel after 3 tries." >&2
   echo "   That timeout ('context deadline exceeded') is a connectivity issue reaching Cloudflare —" >&2
   echo "   not this script. Try again in a moment, check your internet/VPN/DNS, or use another" >&2
-  echo "   option in docs/https-setup.md (Tailscale, Caddy, or USB adb-reverse to localhost)." >&2
+  echo "   option in docs/running.md (Tailscale, Caddy, or USB adb-reverse to localhost)." >&2
   exit 1
 fi
 

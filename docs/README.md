@@ -12,10 +12,9 @@ dynamic behavior, and the ability to pull in generated or pre-existing web conte
 3. **[roadmap.md](./roadmap.md)** — phased path from prototype to full system.
 4. **[decisions.md](./decisions.md)** — log of consequential forks and what we chose & why.
 5. **[providers.md](./providers.md)** — provider & module registry: chosen defaults + future options per swappable slot.
-6. **[setup.md](./setup.md)** — prerequisites & onboarding: what installs automatically vs. by hand, the doctor check.
-7. **[testing-on-quest.md](./testing-on-quest.md)** — exact steps to run it in the Quest 3 headset (USB).
-8. **[https-setup.md](./https-setup.md)** — go wireless: serve over HTTPS (cloudflared / Caddy / Tailscale).
-9. **[testing.md](./testing.md)** — automated testing strategy (proposal, for review).
+6. **[running.md](./running.md)** — the runbook, in the order you hit it: install → run → into the
+   headset over USB → untethered over HTTPS.
+7. **[testing.md](./testing.md)** — automated testing strategy (proposal, for review).
 
 **Four tiers, four names.** `vision.md` is intent; `architecture.md` is the cross-cutting design and
 how much of it is real; [`specs/`](./specs/) is what is built; [`backlogs/`](./backlogs/) is what is

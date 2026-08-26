@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Conjure setup: install system deps + Python env + .env, then run the preflight doctor.
-# Automates the common path; see docs/setup.md for per-platform details.
+# Automates the common path; see docs/running.md for per-platform details.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,7 +24,7 @@ install_system_deps() {
       sudo apt-get install -y portaudio19-dev espeak-ng
       ;;
     *)
-      echo "!! Unsupported OS '$OS' — install portaudio + espeak-ng manually (see docs/setup.md)." >&2
+      echo "!! Unsupported OS '$OS' — install portaudio + espeak-ng manually (see docs/running.md)." >&2
       ;;
   esac
 }
@@ -66,4 +66,4 @@ echo
 echo "==> Setup complete. Next:"
 echo "    1) Edit .env and set ANTHROPIC_API_KEY (https://console.anthropic.com)"
 echo "    2) Re-run: python -m conjure.doctor   (until all required checks pass)"
-echo "    See docs/setup.md for details."
+echo "    See docs/running.md for details."

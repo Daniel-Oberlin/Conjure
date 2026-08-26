@@ -12,7 +12,7 @@ voice shares one conversation with the CLI (and any other client). No LLM/Direct
 
 Audio runs on the host (decision #5's shared-room-device default) — no audio is piped through Quest.
 
-Prerequisites (see docs/setup.md): `pip install -e ".[voice]"`, system libs (portaudio/espeak-ng).
+Prerequisites (see docs/running.md): `pip install -e ".[voice]"`, system libs (portaudio/espeak-ng).
 Keys live with the agent server, not here.
 
 Usage (three terminals):
@@ -265,7 +265,7 @@ def main() -> int:
         print("\nStopped.")
     except ImportError as exc:
         print(f"Voice dependencies are missing ({exc}).\n"
-              f"Install them with `./scripts/setup.sh` (see docs/setup.md), then re-run.")
+              f"Install them with `./scripts/setup.sh` (see docs/running.md), then re-run.")
         return 1
     return 0
 

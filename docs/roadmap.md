@@ -8,7 +8,7 @@ with something you can actually experience on the Quest.
 - Stand up the repo skeleton: Python backend, WebXR client, shared scene-graph schema.
 - Solve **HTTPS-to-headset** so the Quest can load a page from the server. *Milestone:
   a static WebXR scene renders on the Quest 3.* — **achieved** (adb-reverse path,
-  [testing-on-quest.md](./testing-on-quest.md)).
+  [running.md §3](./running.md)).
 
 ## Phase 1 — Live editing loop (no voice yet) ✅ DONE
 - World server holds scene state; WebSocket pushes **patches** to the client.

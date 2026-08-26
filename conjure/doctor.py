@@ -62,7 +62,7 @@ def main() -> int:
                      "Kokoro TTS (model downloads on first run)",
                      "" if present else "comes with pipecat-ai[kokoro]"))
     elif s.tts == "piper":
-        rows.append((WARN, "Piper TTS — run a local Piper server + voice model", "see docs/setup.md"))
+        rows.append((WARN, "Piper TTS — run a local Piper server + voice model", "see docs/running.md"))
     else:
         rows.append((WARN, f"TTS='{s.tts}' (non-local) — ensure its key/deps are set", ""))
 

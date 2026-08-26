@@ -118,7 +118,7 @@ At least one of `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` / `XAI
 for the director (set more to grow the roster; `GOOGLE`/`OPENAI`/`XAI` also enable image generators).
 Speech (Whisper STT,
 Kokoro TTS) runs **locally** — no keys. Full prerequisites + the doctor:
-[docs/setup.md](./docs/setup.md). Provider options: [docs/providers.md](./docs/providers.md).
+[docs/running.md](./docs/running.md). Provider options: [docs/providers.md](./docs/providers.md).
 
 > **Audio note:** use **earbuds**. On an open room mic+speaker the director's own TTS feeds back
 > into the mic; room-speaker support (push-to-talk / echo cancellation) is a tracked follow-up.
@@ -229,8 +229,8 @@ Unfinished work and known problems: [docs/backlogs/agents.md](./docs/backlogs/ag
 ## On the Quest 3
 
 - **USB (quickest):** `adb reverse tcp:8080 tcp:8080`, then open `http://localhost:8080` in the
-  Quest browser and enter VR. Full step-by-step: [docs/testing-on-quest.md](./docs/testing-on-quest.md).
-- **Wireless (HTTPS):** [docs/https-setup.md](./docs/https-setup.md) — cloudflared (fastest), Caddy
+  Quest browser and enter VR. Full step-by-step: [docs/running.md §3](./docs/running.md).
+- **Wireless (HTTPS):** [docs/running.md §4](./docs/running.md) — cloudflared (fastest), Caddy
   + Let's Encrypt, or Tailscale. Tip: `./scripts/tunnel.sh` runs cloudflared and lets you open a
   fixed `http://<mac-ip>:8080/tunnel` on the Quest that redirects to the current tunnel URL.
 
