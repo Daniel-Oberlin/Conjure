@@ -126,6 +126,7 @@ conjure-agent                              # terminal 2: agent server (holds the
 
 conjure-cli                                # interactive REPL — the usual way in
 conjure-cli say "put a tree in front of me and hang a sunset painting"   # one-shot, then exit
+conjure-cli --open-shell                   # skip the agent, open straight in the shell
 
 conjure-ctl                                # print the world
 conjure-ctl asset "oak tree" --size 7      # deterministic, no LLM, no API spend
@@ -173,8 +174,10 @@ agent server running + `ANTHROPIC_API_KEY`.)
 
 ### The shell
 
-`conjure open shell` drops into a deterministic command plane — parsed, never sent to an LLM. Two
-shapes of command: a **noun** acts on whatever is live, a **path** acts on anything addressable.
+`conjure open shell` drops into a deterministic command plane — parsed, never sent to an LLM (or launch
+straight into it with `conjure-cli --open-shell`, which also drops the wake word from the one-shot form:
+`conjure-cli --open-shell say "delete ~/spaces/old"`). Two shapes of command: a **noun** acts on
+whatever is live, a **path** acts on anything addressable.
 
 ```
 conjure:daniel.shell ~/agents/builder> where

@@ -65,7 +65,12 @@ that's the whole point. It owns session control: switching agents/LLMs, entering
 operation that must be reliable (reset, save/load, realign room, god-mode confirmations).
 
 **Entering & leaving.** `conjure open shell` (said or typed) drops you into shell mode →
-`conjure:shell>`. `exit` leaves it and resumes the underlying active agent.
+`conjure:shell>`. `exit` leaves it and resumes the underlying active agent. A CLI can also *start*
+there — `conjure-cli --open-shell` — which is connection state (`/ws?shell=1`), not a synthetic
+"open shell" turn: nothing lands in the shared transcript, the first `context` event already says
+`in_shell`, and a reconnect after the agent server restarts comes back in the mode you launched in.
+It applies to the one-shot form too, where it removes the need for the wake word:
+`conjure-cli --open-shell say "delete /daniel/spaces/old"`.
 
 **Two ways a command is recognized** — this is the key UX decision (and the reason for the `conjure`
 wake word):
@@ -116,7 +121,7 @@ nouns for the live thing, paths for any thing.
 | `cd [path]` | change the working directory (bare: back to your agent) | — |
 | `public` / `private [path]` | visibility of the live session, or of a path | ✓ |
 | `rename <path> <new>` | retitle a world, space or session; relabel an asset | — |
-| `delete <path>` | remove a world, session, space, asset or user (confirms) | — |
+| `delete <path>` | remove a world, session, space, asset or user (immediate) | — |
 
 **The namespace mirrors storage.** The one non-obvious part: **worlds live per session** —
 `WorldRepository(USERS_DIR, sessions=…)` routes every per-name op to the scope's *active* session's
@@ -132,8 +137,13 @@ Paths are absolute, `~`-relative (your own home) or relative to the connection's
 your own scope so a bare `dir` shows something worth seeing. A shortcut **resolves on use**: `cd worlds`
 remembers `…/sessions/session-1/worlds`, so it can't silently point elsewhere after a session switch.
 `dir` lists one level — the old recursive form dumped every user's worlds, spaces and assets at the
-root. `delete` previews the target, requires a `y` confirmation, and refuses to remove whatever is
-**active** (autosave would resurrect it). All of these hit the world server's
+root. `delete` acts on the one line — **no confirmation** — and refuses to remove whatever is
+**active** (autosave would resurrect it). The confirmation was dropped 2026-08-25: a `y` has to come
+back on the same connection, which made `delete` the one command with no one-shot form
+(`cli say "conjure delete …"` stopped at the question and exited), and it guarded a verb you cannot
+reach by accident — typed only, refused by voice, explicit path required. What you get instead is a
+report *after*: the path the server resolved (so a `worlds` shortcut names the real session) and what
+was in it. All of these hit the world server's
 `/admin/{tree,show,delete}`, so they act on its live state, not raw files. **No auth yet** beyond
 "you can only delete your own namespace" — a fuller permission gate comes later.
 

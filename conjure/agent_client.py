@@ -18,13 +18,18 @@ import json
 from typing import Optional
 
 
-def ws_url(agent_url: str, user: str, *, backlog: bool = True, client: str = "cli") -> str:
+def ws_url(agent_url: str, user: str, *, backlog: bool = True, client: str = "cli",
+           shell: bool = False) -> str:
     """The agent server's per-connection WebSocket URL. `user` is who this client acts as (the connection
     is the session). `backlog=False` suppresses the transcript replay on connect — a voice client can't
     *speak* the history, so it wants only the current context. `client` tells the shell which command set
-    applies: a spoken directory listing helps nobody, so voice gets the modal/navigational subset."""
+    applies: a spoken directory listing helps nobody, so voice gets the modal/navigational subset.
+    `shell=True` opens the connection already in shell mode (`cli --open-shell`) — carried in the URL, so
+    a reconnect after the server restarts comes back in the mode the client was launched in."""
     base = agent_url.replace("https://", "wss://").replace("http://", "ws://").rstrip("/")
     url = f"{base}/ws?user={user}&client={client}"
+    if shell:
+        url += "&shell=1"
     return url if backlog else f"{url}&backlog=0"
 
 

@@ -43,11 +43,11 @@ class Conn:
     """One connected client. Holds its per-connection state — `user` (who it acts as) and `in_shell`
     (its own command-mode toggle) — and its socket. The Director/transcript are shared, not here."""
 
-    def __init__(self, ws: WebSocket, user: str, kind: str = "cli") -> None:
+    def __init__(self, ws: WebSocket, user: str, kind: str = "cli", in_shell: bool = False) -> None:
         self.ws = ws
         self.user = user
         self.kind = kind                 # "cli" | "voice" — which command set applies and how output reads
-        self.in_shell = False
+        self.in_shell = in_shell         # a client can ASK to start here (`?shell=1`, i.e. `cli --open-shell`)
         self.cwd = ""                    # shell working directory; "" until the first command resolves it
         self.bumped = False              # auto-forced into shell by a private session (§8.3) — distinct from
                                          # a user who chose shell, so we only auto-restore what we bumped
@@ -165,7 +165,7 @@ async def _apply_bumps(app: FastAPI) -> None:
     user-chosen shell, so we never yank someone out of a shell they opened themselves."""
     for c in app.state.hub.conns:
         if not _permitted(app, c):
-            if not c.bumped:
+            if not c.bumped and not c.in_shell:               # already in a shell of their own → nothing to bump
                 c.bumped = c.in_shell = True
                 try:
                     await c.send({"type": "notice", "text": "This session is private — you're in shell mode "
@@ -599,16 +599,20 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
         """One client connection. `?user=<name>` is who it acts as; the connection IS the session (its
-        shell mode lives here). On connect: this client's context + the transcript backlog. Then a receive
-        loop: `{type:"turn", text}` runs a line."""
+        shell mode lives here). `?shell=1` opens it already in shell mode — the state, not a synthetic
+        "conjure open shell" turn, so the first context event is already right and a reconnect restores
+        the mode the client was launched in. On connect: this client's context + the transcript backlog.
+        Then a receive loop: `{type:"turn", text}` runs a line."""
         await websocket.accept()
         conn = Conn(websocket, websocket.query_params.get("user") or DEFAULT_USER,
-                    kind=(websocket.query_params.get("client") or "cli").lower())
+                    kind=(websocket.query_params.get("client") or "cli").lower(),
+                    in_shell=websocket.query_params.get("shell", "0").lower() in ("1", "true", "yes"))
         want_backlog = websocket.query_params.get("backlog", "1").lower() not in ("0", "false", "no")
         app.state.hub.add(conn)
         try:
             if not _permitted(app, conn):                # joining a PRIVATE session → shell only, no dialog (§8.3)
-                conn.bumped = conn.in_shell = True
+                conn.bumped = not conn.in_shell          # `--open-shell` asked for this — don't claim it as OUR
+                conn.in_shell = True                     # bump, or going public would yank them back out
                 await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd))
                 await conn.send({"type": "notice", "text": "This session is private — you're in shell mode "
                                  "until its owner makes it public (or you switch sessions)."})

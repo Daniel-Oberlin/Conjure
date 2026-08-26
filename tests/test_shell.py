@@ -247,37 +247,41 @@ async def test_dir_is_not_a_command_in_agent_mode():
     assert d.handled == [("daniel", "dir")]                              # forwarded to the agent, not run as a command
 
 
-async def test_delete_asks_before_acting_then_confirms():
+async def test_delete_acts_on_the_one_line_no_confirmation():
     def responder(action, path):
         if action == "tree":
-            return {"ok": True, "node": {"label": "alice", "kind": "user",
-                                         "children": [{"label": "w1", "kind": "world"}]}}
+            return {"ok": True, "path": path, "children": [{"label": "w1", "kind": "world"}]}
         return {"ok": True, "deleted": "user 'alice'"}
 
     sh, out, on_text, calls = _admin_shell(responder)
     await sh.feed("delete /alice", on_text=on_text)
-    assert calls == [("tree", "/alice")]                     # previewed, NOT yet deleted
-    assert sh._pending_delete == "/alice"
-    assert any("confirm" in t.lower() for _, t in out)
-    await sh.feed("y", on_text=on_text)
-    assert ("delete", "/alice") in calls and sh._pending_delete is None
-    assert any("Deleted" in t for _, t in out)
+    assert calls == [("tree", "/alice"), ("delete", "/alice")]   # resolved, then gone — one round trip each
+    assert not any("confirm" in t.lower() for _, t in out)
+    assert "Deleted" in out[-1][1] and "1 world" in out[-1][1]   # says what it took, after the fact
 
 
-async def test_delete_cancels_on_anything_but_yes():
+async def test_a_second_line_is_not_swallowed_as_an_answer():
+    """The old y/n prompt made the NEXT line an answer, which is what broke the one-shot path. Nothing
+    should be armed after a delete — the following command must run as itself."""
     sh, out, on_text, calls = _admin_shell(
-        lambda a, p: {"ok": True, "node": {"label": "alice", "kind": "user"}})
+        lambda a, p: {"ok": True, "path": p} if a == "tree" else {"ok": True, "deleted": p})
     await sh.feed("delete /alice", on_text=on_text)
-    await sh.feed("no", on_text=on_text)
-    assert sh._pending_delete is None
-    assert all(a != "delete" for a, _ in calls)              # never fired
-    assert any("Cancelled" in t for _, t in out)
+    await sh.feed("dir /", on_text=on_text)
+    assert [a for a, _ in calls] == ["tree", "delete", "tree"]   # `dir` listed, not read as a y/n
 
 
-async def test_delete_preview_error_does_not_arm():
+async def test_delete_reports_the_path_the_server_resolved():
+    sh, out, on_text, calls = _admin_shell(
+        lambda a, p: {"ok": True, "path": "/daniel/agents/builder/sessions/s1/worlds",
+                      "children": [{"label": "meadow", "kind": "world"}]})
+    await sh.feed("delete worlds", on_text=on_text)
+    assert ("delete", "/daniel/agents/builder/sessions/s1/worlds") in calls   # the shortcut's real target
+    assert "sessions/s1/worlds" in out[-1][1]                 # and you're told, so a wrong target is visible
+
+
+async def test_a_delete_that_cannot_be_resolved_never_fires():
     sh, out, on_text, calls = _admin_shell(lambda a, p: {"ok": False, "error": "no such user 'ghost'"})
     await sh.feed("delete /ghost", on_text=on_text)
-    assert sh._pending_delete is None                        # bad target → nothing armed
     assert all(a != "delete" for a, _ in calls)
     assert any("ghost" in t for _, t in out)
 
@@ -415,7 +419,7 @@ async def test_llm_switch_and_delete_refused_for_a_non_permitted_speaker():
     import types as _t
     await sh._delete(on_text, _t.SimpleNamespace(group=lambda k: "/daniel/worlds/x",
                                                  groupdict=lambda: {"path": "/daniel/worlds/x"}))
-    assert sh._pending_delete is None and "private" in out[-1][1].lower()          # delete refused, not armed
+    assert "private" in out[-1][1].lower()                    # delete refused before it reaches the server
 
 
 async def test_session_error_is_surfaced_to_the_client():

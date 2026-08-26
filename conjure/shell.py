@@ -143,7 +143,6 @@ class Shell:
         self._voice = False              # is this dispatch coming from a voice client? (set per-dispatch)
         self._stack: Optional[AsyncExitStack] = None
         self.in_shell = False
-        self._pending_delete: Optional[str] = None            # armed by `delete`, fired by a `y` confirmation
         # Host override for `agent <name>`: when set, the switch is delegated instead of running the
         # in-process `_open_agent` teardown. The agent server sets this so a client switch routes through
         # the world server (assert scope → its /ws follower re-binds the Director in the OWNING task) —
@@ -202,7 +201,8 @@ class Shell:
              "rename <path> <new name> — retitle a world, space or session; relabel an asset "
              "(quote a path containing spaces)", False),
             (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
-             "delete <path> — remove a world, session, space, asset or user (asks to confirm)", False),
+             "delete <path> — remove a world, session, space, asset or user (immediate, no confirmation)",
+             False),
         ]
 
     @classmethod
@@ -366,9 +366,6 @@ class Shell:
         self._permitted = permitted
         self._voice = voice
         self._cwd = cwd or default_cwd(self._acting, self._agent_name())
-        if self._pending_delete is not None:                  # a delete is armed — this line is the y/n answer
-            await self._confirm_delete(cmd, on_text)
-            return
         if voice:                                             # spoken aliases for `llm <name>`
             sm = _SPOKEN_LLM.match(cmd)
             if sm and await self._switch_llm(on_text, sm):
@@ -743,30 +740,28 @@ class Shell:
         await self._say(on_text, f"Renamed to {new}." if out.get("ok") else out.get("error", "error"))
 
     async def _delete(self, on_text, m):
+        """`delete <path>` — resolve, remove, report what went. Deliberately NOT confirmed.
+
+        A y/n prompt needs a SECOND line back on the same connection, which makes `delete` the one
+        command that can't be run in one shot: `conjure.cli say "conjure delete <path>"` stops at the
+        first notice (the question) and exits before it can answer. That cost is real and the safety it
+        bought is not — `delete` is typed, refuses by voice, and takes an explicit path, so there's no
+        way to land on it by accident. The report below is the safety net instead: it names the path the
+        SERVER resolved (a `worlds` shortcut points at the live session) and what was in it, so a wrong
+        target is visible immediately rather than agreed to in advance."""
         if not self._permitted:                               # destructive — refuse for a bumped guest (§6d)
             await self._say(on_text, "This session is private — you can't delete anything here.")
             return
         path = self._path(m)
-        preview = await self._admin("tree", path)             # resolve + show what's about to go
+        preview = await self._admin("tree", path)             # resolve + describe before it's gone
         if not preview.get("ok"):
             await self._say(on_text, preview.get("error", "error"))
             return
-        # Confirm against the path the SERVER resolved, so a `worlds` shortcut shows the real session
-        # it points at — you should see exactly what you're agreeing to remove.
         path = preview.get("path") or path
-        self._pending_delete = path
-        await self._say(on_text, f"Delete {display_path(path, self._acting)} "
-                                 f"({self._summarize(preview)})?  "
-                                 f"Type 'y' to confirm, anything else cancels.")
-
-    async def _confirm_delete(self, cmd: str, on_text) -> None:
-        path, self._pending_delete = self._pending_delete, None
-        if cmd.strip().lower() not in ("y", "yes", "confirm"):
-            await self._say(on_text, "Cancelled.")
-            return
+        took = self._summarize(preview)
         data = await self._admin("delete", path)
         if data.get("ok"):
-            await self._say(on_text, f"Deleted {data.get('deleted', path)}.")
+            await self._say(on_text, f"Deleted {display_path(path, self._acting)} ({took}).")
         else:
             await self._say(on_text, f"Not deleted: {data.get('error', 'error')}")
 
@@ -853,7 +848,7 @@ class Shell:
         return "\n".join(out)
 
     def _summarize(self, data: dict) -> str:
-        """What a `delete` is about to take — shown before the confirmation. Counts the children for a
+        """What a `delete` took — read off the pre-delete tree, reported after. Counts the children for a
         container; for a single entry uses the server's own row, since a session's children are just
         `worlds/` and `state/` and counting those would report "nothing" for a real deletion."""
         counts: dict = {}

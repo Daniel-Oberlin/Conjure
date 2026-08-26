@@ -2,6 +2,8 @@
 
     python -m conjure.cli                                    # interactive REPL (the usual way in)
     python -m conjure.cli say "put an oak tree in front of me"   # one-shot, then exit
+    python -m conjure.cli --open-shell                       # open straight into shell mode
+    python -m conjure.cli --open-shell say "delete /daniel/spaces/old"   # one-shot command
 
 Start the servers first — the world server (`python -m conjure`) and the agent server
 (`python -m conjure.agent_server`), which holds the director, the LLM keys, and the shared transcript.
@@ -68,9 +70,9 @@ class _Conversation:
     Deliberately has no idea what any line *means* — `send` ships text, `listen` hands every event to the
     caller. Interpretation is the server's job."""
 
-    def __init__(self, s: Settings, user: str, *, backlog: bool = True):
-        self._s, self._user, self._backlog = s, user, backlog
-        self.ctx: dict = {"agent": "agent", "llm": "", "user": user, "in_shell": False}
+    def __init__(self, s: Settings, user: str, *, backlog: bool = True, shell: bool = False):
+        self._s, self._user, self._backlog, self._shell = s, user, backlog, shell
+        self.ctx: dict = {"agent": "agent", "llm": "", "user": user, "in_shell": shell}
         self.ws = None                                  # current socket (None while (re)connecting)
         self.connected = asyncio.Event()
         self._stop = asyncio.Event()
@@ -94,7 +96,7 @@ class _Conversation:
         for a one-shot, where a drop means we're done."""
         import websockets
 
-        url = ws_url(self._s.agent_url, self._user, backlog=self._backlog)
+        url = ws_url(self._s.agent_url, self._user, backlog=self._backlog, shell=self._shell)
         first = True
         while not self._stop.is_set():
             try:
@@ -183,6 +185,13 @@ _BANNER = ("Conjure REPL — thin client of the agent server (start it: 'python 
            "Type an instruction. 'conjure open shell' for deterministic commands (LLM/agent, sessions, "
            "status). PgUp/PgDn scrolls, End returns to the live tail. 'exit'/^C/^D leaves.")
 
+# `--open-shell`: same client, opened in command mode. Different first lines because the two modes take
+# different input — an instruction for the agent vs. a command — and 'exit' means different things.
+_SHELL_BANNER = ("Conjure shell — thin client of the agent server "
+                 "(start it: 'python -m conjure.agent_server').",
+                 "Deterministic commands only: 'help' lists them, 'exit' drops to the agent. "
+                 "PgUp/PgDn scrolls, End returns to the live tail. ^C/^D leaves.")
+
 _SCROLLBACK = 2000        # lines of conversation kept in the pane; the whole list is re-read every repaint,
                           # so this bounds repaint cost. The full transcript lives on the server regardless.
 
@@ -196,9 +205,10 @@ class _Repl:
     applies to the conversation, so the pane does its own scrolling — PgUp/PgDn, and it sticks to the
     live tail until you scroll away from it."""
 
-    def __init__(self, s: Settings, verbose: bool, user: str):
+    def __init__(self, s: Settings, verbose: bool, user: str, shell: bool = False):
         self._s, self._verbose, self._user = s, verbose, user
-        self.conv = _Conversation(s, user)
+        self.conv = _Conversation(s, user, shell=shell)
+        self._shell = shell
         self.lines: list = []                 # rendered conversation, one entry per printed line
         self._follow = True                   # stuck to the live tail? (False once you scroll up)
         self._view = 0                        # line to keep on screen while not following
@@ -405,7 +415,7 @@ class _Repl:
 
     async def run(self) -> None:
         on_event = self.on_event
-        for line in _BANNER:
+        for line in (_SHELL_BANNER if self._shell else _BANNER):
             self.add([("class:notice", line)])
         listener = asyncio.create_task(self.conv.listen(on_event))
         app = self.build()
@@ -420,17 +430,20 @@ class _Repl:
             listener.cancel()
 
 
-async def _repl(s: Settings, verbose: bool, user: str) -> None:
-    await _Repl(s, verbose, user).run()
+async def _repl(s: Settings, verbose: bool, user: str, shell: bool = False) -> None:
+    await _Repl(s, verbose, user, shell).run()
 
 
 # --------------------------------------------------------------------------- one-shot
 
-async def _say(s: Settings, verbose: bool, user: str, text: str) -> None:
+async def _say(s: Settings, verbose: bool, user: str, text: str, shell: bool = False) -> None:
     """Connect, submit `text`, print only THIS turn's output, exit. Skips the replayed backlog by waiting
     for our own turn to begin — an utterance echoes our `user_turn`; a command replies with a `notice`.
-    Plain text, not styled: `say` is the scriptable path, and its output is usually piped."""
-    conv = _Conversation(s, user)
+    Plain text, not styled: `say` is the scriptable path, and its output is usually piped.
+
+    With `--open-shell` the line is a bare shell command (no `conjure` wake word needed), which is what
+    makes a one-shot admin call scriptable: `cli --open-shell say "delete /me/spaces/old"`."""
+    conv = _Conversation(s, user, shell=shell)
     state = {"sent": False, "started": False}
 
     def emit(ev: dict) -> None:
@@ -474,6 +487,9 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="For direct, LLM-free world edits, see `python -m conjure.ctl`.")
     p.add_argument("-v", "--verbose", action="store_true", help="show tool calls and library logs")
     p.add_argument("--user", default=DEFAULT_USER, help="who you connect as (owns spaces/worlds/assets)")
+    p.add_argument("--open-shell", action="store_true",
+                   help="start in shell mode (deterministic commands) instead of talking to the agent; "
+                        "combine with --user, which still says who you act as")
     sub = p.add_subparsers(dest="cmd")
 
     a = sub.add_parser("say", help="run one text instruction through the agent, then exit")
@@ -494,8 +510,8 @@ def main() -> int:
     fn = getattr(args, "fn", None) or _repl                 # no subcommand → the REPL
     # The REPL prints no banner here: it takes over the screen, so its greeting is the first lines of the
     # conversation pane instead (`_BANNER`).
-    coro = (_say(settings, args.verbose, args.user, " ".join(args.text).strip()) if fn is _say
-            else _repl(settings, args.verbose, args.user))
+    coro = (_say(settings, args.verbose, args.user, " ".join(args.text).strip(), args.open_shell)
+            if fn is _say else _repl(settings, args.verbose, args.user, args.open_shell))
 
     try:
         asyncio.run(coro)

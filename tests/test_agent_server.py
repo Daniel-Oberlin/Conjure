@@ -196,6 +196,32 @@ async def test_apply_bumps_shells_non_owner_guests_and_restores():
     assert not guest.in_shell and not guest.bumped                   # OUR bump is undone
 
 
+async def test_a_guest_who_chose_the_shell_is_not_yanked_out_of_it():
+    """A `--open-shell` client (or anyone who typed `open shell`) is ALREADY where the private-session
+    bump would put them. Claiming that as our bump means the session going public drags them back to the
+    agent — out of the mode they asked for."""
+    from conjure.agent_server import _apply_bumps
+    guest = FakeConn("bob")
+    guest.in_shell = True                                            # launched with --open-shell
+    app = _app(FakeShell(), [guest])
+    app.state.live = {"public": False, "owner": "daniel"}
+    await _apply_bumps(app)
+    assert guest.in_shell and not guest.bumped                       # nothing to bump — not ours to undo
+    app.state.live = {"public": True, "owner": "daniel"}
+    await _apply_bumps(app)
+    assert guest.in_shell                                            # still in the shell they chose
+
+
+def test_open_shell_into_a_private_session_survives_it_going_public():
+    from fastapi.testclient import TestClient
+    app = build_app(get_settings(), shell=FakeShell())
+    with TestClient(app) as client:
+        app.state.live = {"public": False, "owner": "daniel"}
+        with client.websocket_connect("/ws?user=bob&shell=1"):
+            conn = next(c for c in app.state.hub.conns if c.user == "bob")
+            assert conn.in_shell and not conn.bumped                 # theirs, not ours
+
+
 def _greet_app(tmp_path, greeting, conns=()):
     sessions = SessionRepository(tmp_path)
     scope = "daniel/agents/builder"
@@ -431,3 +457,29 @@ def test_ws_sends_context_on_connect_and_roundtrips_a_turn():
                 if ev["type"] == "turn_done":
                     break
     assert "user_turn" in kinds and "assistant_final" in kinds and kinds[-1] == "turn_done"
+
+
+def test_shell_1_opens_the_connection_already_in_command_mode():
+    """`cli --open-shell`. The FIRST context event must already say so — the mode is connection state, not
+    a synthetic 'conjure open shell' turn, so nothing lands in the shared transcript and the client's
+    prompt is right before it can render a wrong one."""
+    from fastapi.testclient import TestClient
+    with TestClient(build_app(get_settings(), shell=FakeShell())) as client:
+        with client.websocket_connect("/ws?user=alice&shell=1") as ws:
+            first = ws.receive_json()
+            assert first["type"] == "context" and first["in_shell"] is True
+            ws.send_json({"type": "turn", "text": "help"})    # a BARE command — no wake word needed
+            events = []
+            for _ in range(20):
+                ev = ws.receive_json()
+                events.append(ev)
+                if ev["type"] == "turn_done":
+                    break
+    assert all(e["type"] != "user_turn" for e in events)      # ran as a command, not said to the agent
+    assert any(e["type"] == "notice" for e in events)
+
+
+def test_the_open_shell_flag_is_in_the_url_so_a_reconnect_restores_it():
+    from conjure.agent_client import ws_url
+    assert "shell=1" in ws_url("http://h:1", "alice", shell=True)
+    assert "shell=1" not in ws_url("http://h:1", "alice")
