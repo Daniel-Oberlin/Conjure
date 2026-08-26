@@ -11,8 +11,13 @@
   server, and every headset agree on it.
 - **All change is a validated patch.** Nothing — not an agent, not behaviors — mutates the
   world directly; everything emits patches the trusted server validates and broadcasts.
-- **Capability boundaries, not trust.** LLM-authored code and modules get narrow, declared
-  capabilities and no ambient authority (decision #7).
+- **Capability boundaries, not trust.** LLM-authored code and third-party modules get narrow, declared
+  capabilities and no ambient authority (decision #7). Agent tool scoping realizes this today; the
+  sandbox for generated code does not yet exist — §13 says exactly where the line sits.
+- **Sync causes, never effects.** Broadcast the touch, not the ripple field it produced; the transport
+  ("track X, play from shared-clock t₀"), not the audio analysis. Every client then derives the same
+  state locally from a shared clock, a seed, and the config in the snapshot — consistency without
+  per-frame sync (§6, [specs/dynamics.md §1](./specs/dynamics.md)).
 - **Vendor-neutral baseline + extensions** (decision #11). Device features light up when present.
 - **Network-decoupled components** so compute can move (Pi / Mac / home GPU box, decision #1).
 
@@ -25,11 +30,12 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 | 1 | **Voice / CLI clients** | host | Thin front-ends. Voice is a PipeCat pipeline (STT → WebSocket → TTS) plus a wake gate; the CLI is a terminal REPL. Neither holds state, keys, or command logic |
 | 2 | **Agent server** | host | The long-lived host of the deterministic **shell** (switch agent/LLM/session, navigate the namespace — no LLM) above the active **agent** — an experience loaded from `agents/<name>/` ([specs/agents.md](./specs/agents.md)): an orchestrating LLM, MCP **client** of its scoped servers, with a **roster of named LLMs** (one active) sharing a single transcript (§7). One shared conversation for every client; follows the world server's live state |
 | 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app; MCP **server** of world-editing tools; broadcasts state |
-| 4 | **Behavior runtime** | host **and** client | QuickJS-WASM sandbox executing behaviors + geometry code (decision #7) |
+| 4 | **Dynamic modules** | host (served) + client (run) | Live, animated, interactive effects the agent can **conjure** into a world — fireflies, a rippling Water Picture, object manipulation. Each is a folder + manifest whose entry script registers one A-Frame component; the server serves it and delivers its **config in the world snapshot**, so presence and state are shared for free. Built; specified in [specs/dynamics.md](./specs/dynamics.md) |
+| 4b | **Behavior runtime** 🔴 | host **and** client | QuickJS-WASM sandbox for **LLM-authored** behaviors + geometry code (decision #7). Designed, not built — §9. Distinct from row 4: modules are curated, first-party, trusted code |
 | 5 | **Asset pipeline** | host (+ remote model APIs) | Resolve / generate / convert / optimize / cache content |
 | 6 | **Memory** | host | World store, asset store, vector index, connection graph, sessions, anchors |
-| 7 | **Modules** | anywhere | Pluggable MCP servers: content sources, engines, capability extensions, input providers |
-| 8 | **Input layer** | host **and** client | Normalize + merge input devices into abstract actions/axes |
+| 7 | **MCP modules** | anywhere | Pluggable MCP **servers**: content sources, engines, capability extensions, input providers. *Not* row 4 — see the naming note in §11a |
+| 8 | **Input layer** | host **and** client | Normalize + merge input devices into abstract actions/axes. The client half is built (`ConjurePointers`, §11b) |
 | 9 | **Model services** | cloud / local / home box | STT, LLM, TTS, image-gen, 3D-gen behind a provider abstraction (decision #1); per-slot defaults/options in [providers.md](./providers.md) |
 | 10 | **WebXR client** | Quest / any WebXR device | Render + interact; VR/AR/flat; applies patches; capability detection |
 | 11 | **Audio engine** | client (+ host gen) | Extensible, plugin-based: spatialized playback, programmatic/procedural synthesis (Web Audio / AudioWorklet), generated/streamed sources (§7 spec) |
@@ -60,7 +66,7 @@ agent server can load without the world server but only serves turns once connec
 
 ## 3. Channels & protocols  🟢 / 🟡 transport choices
 
-Five planes, deliberately separated by reliability and rate:
+Six planes, deliberately separated by reliability and rate:
 
 0. **Conversation channel — WebSocket** 🟢. One per-connection socket from each thin client to the
    agent server (`ws://…/ws?user=&client=`). Client → server: `{type:"turn", text}`, one line, verbatim.
@@ -82,8 +88,15 @@ Five planes, deliberately separated by reliability and rate:
    optimization. Never persisted into world state.
 4. **Voice transport** 🟢. PipeCat WebRTC/WebSocket between the audio device (shared room mic or
    per-headset, decision #5) and the voice agent.
+5. **Module event bus** 🟢. A `module_event` message on the *same* `/ws` as the state channel, relayed
+   to the **other** clients only (the sender never receives its own). It carries a **cause**, not an
+   effect — a water touch, not the resulting distortion field — so each client runs its own simulation
+   from it. Cheap, lossy-tolerant, and deliberately not converged
+   ([specs/dynamics.md §2, §6](./specs/dynamics.md)).
 
-Plus **asset delivery** (HTTPS, content-addressed blobs from the world server / content store) and
+Plus **asset delivery** (HTTPS, content-addressed blobs from the world server / content store),
+**module scripts + the shared clock** (`GET /dynamics/<module>/<file>` with an mtime cache-buster, and
+`GET /time` for the Cristian-style clock sync every deterministic module derives its state from), and
 **module streams** (future: out-of-band WebRTC/URL negotiated via the module manifest, §11).
 
 Suggested host web stack 🟡: async Python (FastAPI/Starlette + uvicorn) for HTTP + WebSocket;
@@ -132,7 +145,8 @@ server, memory, and client share one representation.
     "sound":     { "asset": "sha256:…", "positional": true },
     "collider":  { "shape": "box" },
     "occupiable":{ "seats": [{ "id":"pilot", "transform":{…} }],
-                   "motionModel": "hot-air-balloon", "controlScheme": "balloon-default" }
+                   "motionModel": "hot-air-balloon", "controlScheme": "balloon-default" },
+    "water":     { "damping": 0.996, "src": "…" }       // a DYNAMIC MODULE: config-in-snapshot (§2 row 4)
   },
   "behaviors": [ /* BehaviorRef[] — see §9 */ ],
   "meta": { "license": "CC-BY", "attribution": "…", "source": "polypizza", "generated": false }
@@ -141,6 +155,19 @@ server, memory, and client share one representation.
 
 Invariants: fully serializable & restorable; every entity has a stable id; component set is
 open/extensible; `parent` may target an anchor to keep persistent-AR reachable.
+
+**The open component set is what makes dynamic modules free.** A module *is* an A-Frame component: the
+server adds an entity carrying `components.<component> = <config>` and the client applies it with
+`setAttribute`. Because that is an ordinary entity, a module is shared across clients, persisted, and
+replayed on the existing entity/patch/snapshot path — there is no bespoke per-module loader, storage
+model, or authority model. A procedural module persists by storing `(seed, config)`, so a reload
+restores it exactly. ([specs/dynamics.md §1](./specs/dynamics.md).)
+
+Two things stay deliberately **outside** that mechanism, and the boundary is what keeps it small:
+**environment is world-level, not a module** — a world sets the backdrop (sky, fog, immersion) and
+modules are the live performers on top of it, additive in passthrough and VR alike; and **occlusion is
+global** — real-world depth is one pre-pass for the whole scene
+([specs/occlusion.md](./specs/occlusion.md)), so no module ever samples depth or opts in.
 
 ## 5. Patch protocol  🟡
 
@@ -178,6 +205,22 @@ Every change is a patch — the unit of live sync **and** undo/redo.
   authors world state directly — it sends **intents** (from local behaviors / input) that the
   server validates into patches.
 - **Presence:** relayed, not authoritative — poses are advisory and ephemeral.
+- **Live effects: three sync tiers, declared per module** ([specs/dynamics.md §2](./specs/dynamics.md)).
+  Determinism is a *capability a module opts into*, not a mandate, and the tier decides what crosses the
+  wire at all:
+
+  | Tier | What syncs | Cost | Shipped |
+  |---|---|---|---|
+  | **A** autonomous-procedural | `(clock, seed, config)` in the snapshot; **nothing at runtime** | ~free | `fireflies` |
+  | **B** input-reactive | the input **event** (bus, §3 plane 5); each client sims locally from it | cheap | `water` |
+  | **C** shared-authoritative | the **resting** state, committed on gesture end | expensive, self-rate-limiting | `grab` |
+
+  The invariant underneath: *presence and simulation state are shared by everyone; presentation need
+  not be pixel-identical.* That is not a loophole but how absoluteness is bought cheaply — foveation,
+  billboard yaw and interpolation stay local, while state keyed off the shared clock stays common. Tier
+  B is deliberately **not** converged (short-lived, cosmetic; convergence would cost more than it's
+  worth), and tier C broadcasts nothing mid-gesture — peers see the object arrive at its resting pose on
+  release, committed through the same owner-gated, validated, autosaved patch path as any other edit.
 - **Vehicle motion:** the occupant with **motion authority** computes pose from the motion model
   and streams it on the high-rate channel; the server validates collisions/occupancy transitions
   and is authoritative for those. For tight loops with host-side input devices, the motion model
@@ -258,7 +301,14 @@ Grouped; signatures indicative. These are the director's action vocabulary (spec
   declare `ImageCapabilities`; the world server mediates which one runs (best default per op, an
   optional explicit `generator`, transparency→OpenAI), backed by an in-memory image store over the
   content-addressed cache. Built in `conjure/llm.py` (the provider abstraction) + `conjure/server.py`.
-- **Behavior & geometry:** `attach_behavior(entity, spec)`, `remove_behavior`,
+- **Dynamic modules (built):** one generic tool each way —
+  `conjure_module(module, config?, position?, on_surface?, billboard?, stretch?, name?)` and
+  `dismiss_module(name=<entity id> | module=<kind>)`. No per-module tool and no discovery ritual: the
+  agent's scoped catalog arrives in its prompt as the `dynamics://available` **resource**, one
+  `name — description; params: k(default)…` line per module, so `conjure_module` stays generic while the
+  vocabulary stays live. `POST /manipulate` commits a tier-C resting transform
+  ([specs/dynamics.md §9](./specs/dynamics.md)).
+- **Behavior & geometry (designed, §9):** `attach_behavior(entity, spec)`, `remove_behavior`,
   `generate_mesh(spec)` (runs in sandbox, decision #10)
 - **Embodiment:** `spawn_vehicle(type, location)`, `set_avatar(spec)`, `occupy(entity, seat?)`,
   `exit()`, `set_motion_model`, `set_control_scheme`, `bind_input(scheme, mapping)`
@@ -267,7 +317,20 @@ Grouped; signatures indicative. These are the director's action vocabulary (spec
 
 Each tool returns the resulting `rev` and a summary so the director stays in sync.
 
-## 9. Behavior & geometry runtime  🟢 boundary / 🟡 SDK surface
+## 9. Behavior & geometry runtime  🔴 not built / 🟢 boundary / 🟡 SDK surface
+
+> **Read this against §2 row 4.** Live, animated, interactive behaviour ships today as **dynamic
+> modules** — curated, first-party A-Frame components, delivered as config-in-snapshot and loaded
+> straight into the page ([specs/dynamics.md](./specs/dynamics.md)). They are *trusted* code and get
+> the full page: no sandbox, no capability declaration, no instruction cap. That is deliberate, and it
+> is why the sandbox below is still unbuilt — nothing has yet needed to run code we didn't write.
+>
+> This section is the design for the case that changes it: **LLM- and user-generated** behaviour. The
+> trust boundary is real even under "identity only, no security" — arbitrary JS or shader source can
+> hang the render loop or crash a mobile GPU. The intent that shapes the module manifest *now* is that
+> when generation lands, **real code stays in a curated registry and the generator emits only config +
+> wiring** against a constrained surface; `config_schema` is the first slice of that boundary. See
+> [backlogs/dynamics.md](./backlogs/dynamics.md) and decision #7.
 
 **Engine:** QuickJS-WASM on both sides (decision #7) — `quickjs-emscripten` in the browser; QuickJS
 embedded in the Python host (binding, or `quickjs.wasm` under `wasmtime-py` for double isolation).
@@ -327,9 +390,18 @@ Flow: **resolve → (fetch | generate) → convert → optimize → cache → de
 Media types are first-class (stereo/360, spec §5); `kind:"stream"` is the forward-compat hook for
 live video / remote-screen surfaces (§12).
 
-## 11. Modules, input & capability extensions
+## 11. MCP modules, input & capability extensions
 
-### 11a. Modules  🟡
+### 11a. MCP modules  🟡
+
+> **Two things are called "module".** An **MCP module** (this section) is a *server* an agent clients
+> into — it extends the agent's **tool surface**. A **dynamic module** (§2 row 4,
+> [specs/dynamics.md](./specs/dynamics.md)) is a *client-side A-Frame component* the agent conjures into
+> a world — it extends the **scene**. They share no machinery: an MCP module is declared in
+> `agents/servers.json` and referenced by an agent's `mcp_servers`; a dynamic module is a folder on the
+> dynamics search path referenced by an agent's `dynamics`. Both are allow-listed per agent, and that is
+> the whole of the resemblance.
+
 MCP servers an agent also clients into — each agent declares which (via the registry,
 [specs/agents.md §3](./specs/agents.md)).
 **Module manifest** (Conjure metadata atop MCP):
@@ -366,6 +438,27 @@ these, never raw devices.
 - **Hotplug + capability:** schemes adapt to present devices; gaze/voice always available.
 - **Latency/placement:** host devices add a hop → tight loops may run the motion model host-side.
 
+**Built today — the client half, for XR controllers and hands** (`client/conjure-pointers.js`,
+[specs/dynamics.md §6](./specs/dynamics.md)). It is the abstraction above proved out on the source that
+exists now; host devices, drivers and hotplug remain designed.
+
+- **One reader per frame.** `ConjurePointers` is the *only* consumer of `session.inputSources`. It
+  publishes a normalized snapshot per pointer, cached on the XRFrame with a recency window, so N
+  consumers cost one read. Before it, four places walked the frame themselves and hard-coded button
+  indices.
+- **Modules ask for actions, never buttons.** A binding table maps control → action and lives in config
+  (`Settings.bindings`, injected as `window.CONJURE_BINDINGS`), so re-binding is a settings change, not
+  an edit in every module. A control may be **hand-qualified** (`"left.stickY"`), so one hand can hold
+  an object while the other shapes it. Defaults: `select`/`resize` → trigger, `grab` → grip,
+  `reel`/`yaw` → right stick, `pitch`/`bank` → left stick.
+- **Sharing is explicit.** Tick order isn't guaranteed and two modules can want the same control, so
+  arbitration lives in the input layer: a **capture** (`claim`/`release`) holds a pointer for a whole
+  gesture; a **reservation**, renewed every frame, says "I'd take the next press here". A reservation
+  made this frame *or last* still counts, which is what makes it order-independent.
+- **One definition of "in use".** `armed()` — the pointer is engaged, or was within a timeout. Both the
+  visible beam and a module's highlight key off it, so presentation and focus agree by construction
+  rather than by convention.
+
 ### 11c. Capability tiers  🟢
 At session start the client builds a **capability descriptor** (immersive-vr/ar support,
 shared-spaces, hand-tracking, depth/hit-test, gamepad/WebHID, …). Extensions activate per
@@ -374,7 +467,9 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
 
 ## 12. Memory subsystem  🟡
 
-- **World store** — world documents + version history (snapshots + inverse patches for undo/recall).
+- **World store** — world documents + version history (snapshots + inverse patches for undo/recall). A
+  live **dynamic module** needs no store of its own: it is an entity carrying its component config, so
+  it persists and reloads on this path like anything else (§4).
 - **Asset store** — content-addressed blobs + descriptors (§10).
 - **Vector index** — embeddings of world name/description/tags for semantic recall ("the beach world").
 - **Connection graph** — portals between worlds.
@@ -389,10 +484,10 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
 Storage choices 🔴 (open, low-stakes): SQLite + a vector extension and a filesystem blob store is a
 fine Pi-friendly default; swappable later.
 
-## 13. Security & trust model  🟢
+## 13. Security & trust model  🟢 intent / 🔴 sandbox unbuilt
 
 Two zones. **Trusted core:** world server, validator, memory, asset pipeline. **Untrusted:**
-LLM-authored behavior/geometry code, and modules. The boundary between them:
+LLM-authored behavior/geometry code, and third-party MCP modules. The boundary between them:
 
 - **Capability SDK only** — no ambient authority in either sandbox (host or browser).
 - **Every effect is a validated patch intent** — even a sandbox escape can only produce
@@ -401,6 +496,22 @@ LLM-authored behavior/geometry code, and modules. The boundary between them:
 - **Module permission scoping** — least privilege; sensitive grants surfaced to the user.
 - **Content & licensing** — moderation on generated assets; license/attribution captured per asset.
 - **Transport** — TLS to every client (decision #3); modules authenticated.
+
+**Where the line actually sits today.** Two of these are enforced and the rest are intent:
+
+- **Enforced.** Agent **tool scoping** is real and two-layer: the director offers only the agent's
+  allow-listed tools, and the MCP server — a separate process from the LLM — refuses a disallowed or
+  (under `access: "read"`) mutating call before it reaches the world server. Conjuring is likewise
+  gated: `/module` refuses a module outside the active agent's `dynamics` list, and every world-mutating
+  route is owner-only ([specs/agents.md §4, §9.4](./specs/agents.md)).
+- **Not enforced.** **Dynamic modules are trusted first-party code**, loaded into the page with every
+  global available; `capabilities` and `claims` in the manifest are designed and unread, so a module
+  cannot yet be told what it may touch or made to declare an exclusive resource. Nothing verifies GPU
+  disposal on unload, nothing bounds the number of active modules, and there is no lint gate — because
+  no path yet loads code we didn't write. The QuickJS sandbox (§9) is the answer for when one does.
+- **The rest of the posture is identity-only:** usernames are trusted and unauthenticated. Deliberate
+  for a friendly, co-located deployment; the consequences are enumerated in
+  [backlogs/agents.md](./backlogs/agents.md).
 
 ## 14. Deployment topologies (decision #1)  🟢
 
@@ -425,8 +536,19 @@ The provider abstraction (one interface per model role) makes A/B/C the same cod
 ## 16. Open decisions & build order
 
 Open forks (none blocking the architecture): #4 asset sources/providers · #6 default behavior split
-· #8 desktop preview · #10 mesh-gen first mode · #12 vehicle motion (physics vs parametric). See
-[decisions.md](./decisions.md); sequencing in [roadmap.md](./roadmap.md).
+· #8 desktop preview · #10 mesh-gen first mode · #12 vehicle motion (physics vs parametric). Settled
+since, and load-bearing here: **#17** per-module *server* logic — deferred until a module that actually
+needs it (an emitting one: a music transport, a rule engine, a shared-selection arbiter); `grab` does
+not motivate it, because its server side is entirely generic and lives as a plain world-server
+endpoint. **#18** whether the world server stays Python. See [decisions.md](./decisions.md);
+sequencing in [roadmap.md](./roadmap.md).
+
+**The missing middle tier of reactivity.** Three tiers exist in the design and only the outer two are
+built: the **module loop** (frame rate — the module *is* the realtime agent, §2 row 4) and the **LLM**
+(seconds, semantic — the choreographer, not the dancer: it sets mood, parameters and goals). Between
+them belongs a lightweight declarative **rule engine** (`when beat.kick → emit flash`), which is what
+would let ~80% of reactivity need neither custom code nor an LLM round-trip. Unbuilt
+([backlogs/dynamics.md](./backlogs/dynamics.md)).
 
 **First contracts to lock in Phase 0** (everything else builds on them): the **world document
 schema** (§4), the **patch protocol** (§5), and the **state channel** (§3). Get a static A-Frame
