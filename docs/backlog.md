@@ -73,7 +73,7 @@ and whether "looking at" should prefer the nearest hit or the smallest angular o
 **Idea:** today the room geometry has a single writer — the authority (space owner) captures + posts; a
 guest **localizes against a frozen copy** of that geometry and never contributes (register-only — see
 `specs/worlds-surfaces.md` §8b). That's correct for co-location: the shared `_ref` constellation *defines* the shared
-frame, so a guest mutating it locally would only desync (its `/room` posts are 403'd, so the change never
+frame, so a guest mutating it locally would only desync (its `/space/capture` posts are 403'd, so the change never
 reaches the authority) and feed a drift loop. But a guest is *also* observing the same real room, so its
 observations could legitimately **improve** the one model (better extents, corrected drift, "the room
 changed since capture").
@@ -85,8 +85,9 @@ headsets re-seed `_ref` from the updated geometry. Local mutation isn't a cheap 
 silent divergence + feedback drift (the exact bug register-only fixes).
 
 **Sketch:** a guest posts its registered observations to a NON-authoritative endpoint (e.g.
-`/room/observe`, not `/room`); the server fuses (weighted update of surface poses/extents, conservative
-mint of genuinely-new surfaces) into the authoritative doc and broadcasts. Needs: confidence weighting,
+`/space/observe`, not `/space/capture`); the server fuses (weighted update of surface poses/extents,
+conservative mint of genuinely-new surfaces) into the authoritative doc and broadcasts. Needs:
+confidence weighting,
 guard against a mis-registered guest corrupting the model, and the authority's right to override.
 
 **Open decisions:** trust model (does a guest need the owner's consent to refine?); fuse continuously vs.

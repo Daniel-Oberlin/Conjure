@@ -372,7 +372,7 @@ and **never broadcast** — clients render locally. Only what clients actually c
 room-activation env, boundary, and on-surface image re-anchors.
 
 **Client post-gating:** the owner keeps an authoritative known-set seeded from the persisted seed on
-entry and POSTs only on a structural change, so **a settled space sends no `/room` traffic at all**.
+entry and POSTs only on a structural change, so **a settled space sends no `/space/capture` traffic at all**.
 Removal confidence lives on the client (a 3-capture debounce), so a surface missing from a post is
 genuinely gone and the server prunes it at once — no server-side absence counter.
 
@@ -383,7 +383,7 @@ There is **no time-based establish-then-freeze**. An earlier design held a ~20 s
 then froze static surfaces; it is gone, along with `_ESTABLISH_SECS`, `_STATIC_SEMANTICS` and
 `_static_frozen`. Clients render locally, so there is nothing shared to stabilise.
 
-**Authority** is the space owner; `/room` is owner-only. An idle authority is taken over after
+**Authority** is the space owner; `/space/capture` is owner-only. An idle authority is taken over after
 `_AUTH_TTL` so a reconnecting owner is not locked out.
 
 ---

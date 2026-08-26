@@ -1366,7 +1366,7 @@
         // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
         this._onReset = function () { self.lastPost = 0; };
       },
-      // Force an immediate re-capture (manual realign — see the /room/realign signal below).
+      // Force an immediate re-capture (manual realign — see the /space/realign signal below).
       recapture: function () { this.lastPost = 0; },
       // Drop the current room REFERENCE FRAME. Called on a WORLD SWITCH (applySnapshot) so the next capture
       // re-seeds from the NEW world's geometry — or establishes fresh in an empty/void world — instead of
@@ -2354,7 +2354,7 @@
           extent: s.extent, holes: (s.holes || []).length, semantic: s.semantic }; });
         if (bstr) self2._postedBoundary = bstr;
         if (window.CONJURE_DEBUG_REGISTRATION) debugLog("post", payload.length + " surfaces (" + reason + ")", true);
-        fetch("/room", {
+        fetch("/space/capture", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Conjure-User": currentUser() || "" },
           body: JSON.stringify({ client_id: this.clientId, surfaces: payload, boundary: boundary, replace: true }),

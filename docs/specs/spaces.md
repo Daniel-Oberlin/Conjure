@@ -259,7 +259,7 @@ Only AR clients hold. Desktop, voice and CLI never do.
 
 Two different gates, often confused:
 
-**Geometry authority — the space owner.** `/room` is owner-only. A guest's capture is rejected; guests
+**Geometry authority — the space owner.** `/space/capture` is owner-only. A guest's capture is rejected; guests
 *register against* the stored geometry and never re-author it (§8). Within one owner, an
 `environment.captureAuthority` records which headset is live, and an idle authority is taken over after `_AUTH_TTL`
 so a reconnecting owner is not locked out (`server.py:2889`).
@@ -340,7 +340,7 @@ still needs a second headset.
 | `POST /space/visibility` | toggle a space's `public` flag |
 | `POST /space/rename` | rename, fixing up back-references |
 | `POST /room` | owner-only geometry ingest → updates the seed |
-| `POST /room/realign` | re-capture at the current tracking origin |
+| `POST /space/realign` | re-capture at the current tracking origin |
 | `POST /worlds/new` \| `/worlds/switch` | open to all; stamps the active space ref or `<void>` |
 
 **MCP tools:** `set_space_visibility`, `realign_room`, `query_room`, `set_world_visibility`,

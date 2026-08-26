@@ -54,7 +54,7 @@ def _post(path: str, body: dict) -> str:
 
 
 def main() -> int:
-    print(_post("/room", ROOM))
+    print(_post("/space/capture", ROOM))
     _post("/patch", VISIBLE)   # show the surfaces (virtual_room mode)
     print("Posted a synthetic room around you (virtual_room mode). Try:")
     print('  conjure-cli say "make the walls glass and the ceiling a galaxy"')

@@ -79,7 +79,7 @@ def test_place_image_billboard_adds_a_yaw_only_component(srv, client):
 
 def test_place_image_billboard_rejects_on_surface(srv, client):
     # A wall-hung image stays flush to its wall — it can't also chase the viewer. Clean error, no silent drop.
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
          "rotation": [0.0, -41.0, 0.0], "extent": [0.5, 0.4]}]})
     r = client.post("/place_image", json={
@@ -89,7 +89,7 @@ def test_place_image_billboard_rejects_on_surface(srv, client):
 
 def test_place_image_on_surface_aligns_and_fits_the_frame(srv, client):
     # A wall-art frame at a known (upright) orientation and size.
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
          "rotation": [0.0, -41.0, 0.0], "extent": [0.5, 0.4]}]})
     image_id = _procure(client)
@@ -112,7 +112,7 @@ def test_place_image_on_surface_aligns_and_fits_the_frame(srv, client):
 
 def test_on_surface_image_re_anchors_when_the_surface_moves(srv, client):
     import math
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
          "rotation": [0.0, -41.0, 0.0], "extent": [0.5, 0.4]}]})
     r = client.post("/place_image", json={"image_id": _procure(client), "on_surface": "wall art 18"}).json()
@@ -121,7 +121,7 @@ def test_on_surface_image_re_anchors_when_the_surface_moves(srv, client):
     assert img["meta"]["on_surface"] == "real_wall_art_18"            # home surface recorded
     p0 = img["transform"]["position"]
     # re-capture: the surface moved ~0.7 m (a re-registration). The image must FOLLOW, not strand.
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_art_18", "semantic": "wall art", "position": [1.2, 1.6, -0.5],
          "rotation": [0.0, -41.0, 0.0], "extent": [0.5, 0.4]}]})
     img2 = next(e for e in _entities(client) if e["id"] == eid)
@@ -235,7 +235,7 @@ def test_place_image_billboard_and_stereo_compose(srv, client):
     assert img["components"]["billboard"] == {"yaw": True}
     assert img["components"]["stereo"] == {"layout": "sbs"}
     # billboard is still free-standing only, even for a stereo image.
-    bad = client.post("/room", json={"client_id": "h1", "surfaces": [
+    bad = client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_art_1", "semantic": "wall art", "position": [0, 1.5, -1],
          "rotation": [0, 0, 0], "extent": [0.5, 0.4]}]})
     assert bad.status_code == 200
@@ -672,7 +672,7 @@ def test_expected_routes_exist(srv):
               "/delete_asset", "/library/reindex", "/library/retag-skyboxes", "/library/caption",
               "/skybox_from_image", "/assets/{filename}", "/ws",
               "/images/generators", "/images/generate", "/images/skybox", "/images/grounded_skybox",
-              "/images/edit", "/images/outpaint", "/images/skybox_from", "/room", "/room/realign", "/reset",
+              "/images/edit", "/images/outpaint", "/images/skybox_from", "/space/capture", "/space/realign", "/reset",
               "/texture_surface", "/style_surface", "/tunnel"):
         assert p in paths, f"missing route {p}"
 
@@ -685,15 +685,15 @@ def test_room_unchanged_capture_is_not_rebroadcast(srv, client):
     body = {"client_id": "h1", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4],
          "rotation": [0, 0, 0]}]}
-    client.post("/room", json=body)                          # first capture → adds the surface
+    client.post("/space/capture", json=body)                          # first capture → adds the surface
     rev = client.get("/world").json()["rev"]
-    client.post("/room", json=body)                          # identical → within tolerance
+    client.post("/space/capture", json=body)                          # identical → within tolerance
     assert client.get("/world").json()["rev"] == rev         # no new patch broadcast
     body["surfaces"][0]["position"] = [0, 1, -2.1]           # 10 cm = sub-threshold drift (< 0.5 m)
-    client.post("/room", json=body)
+    client.post("/space/capture", json=body)
     assert client.get("/world").json()["rev"] == rev         # drift ignored — seed doesn't churn (§7.4)
     body["surfaces"][0]["position"] = [0, 1, -2.7]           # 70 cm = a real relocation (> 0.5 m)
-    client.post("/room", json=body)
+    client.post("/space/capture", json=body)
     assert client.get("/world").json()["rev"] > rev          # a real move DOES update
 
 
@@ -701,12 +701,12 @@ def test_room_authority_taken_over_only_when_stale(srv, client, monkeypatch):
     import conjure.server as S
     body = lambda cid: {"client_id": cid, "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}]}
-    assert client.post("/room", json=body("h1")).json()["ok"] is True     # h1 claims authority
-    r = client.post("/room", json=body("h2")).json()                      # h2 while h1 is live → refused
+    assert client.post("/space/capture", json=body("h1")).json()["ok"] is True     # h1 claims authority
+    r = client.post("/space/capture", json=body("h2")).json()                      # h2 while h1 is live → refused
     assert r["ok"] is False and "authority" in r["error"]
     assert client.get("/world").json()["environment"]["captureAuthority"] == "h1"
     monkeypatch.setattr(S, "_authority_ts", S._authority_ts - S._AUTH_TTL - 1)   # h1 goes idle
-    assert client.post("/room", json=body("h2")).json()["ok"] is True     # h2 takes over the stale authority
+    assert client.post("/space/capture", json=body("h2")).json()["ok"] is True     # h2 takes over the stale authority
     assert client.get("/world").json()["environment"]["captureAuthority"] == "h2"
 
 
@@ -715,7 +715,7 @@ def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
             "surfaces": [{"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2],
                           "extent": [3, 2.4]}],
             "boundary": {"floorPolygon": [[0, 0], [3, 0], [3, 3], [0, 3]], "height": 2.6}}
-    assert client.post("/room", json=body).json()["ok"] is True
+    assert client.post("/space/capture", json=body).json()["ok"] is True
     e = next(e for e in _entities(client) if e["id"] == "real_wall_1")
     assert e["meta"]["real"] is True and e["meta"]["semantic"] == "wall"
     assert e["meta"]["friendly_id"] == 1                  # short id for annotations/voice reference
@@ -726,7 +726,7 @@ def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
 
 
 def test_door_surface_defaults_to_translucent(srv, client):
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]},
         {"id": "real_door_1", "semantic": "door", "position": [0.5, 1.0, -2], "extent": [0.9, 2.0]}]})
     ents = {e["id"]: e for e in _entities(client)}
@@ -739,7 +739,7 @@ def test_door_surface_defaults_to_translucent(srv, client):
 def test_wall_holes_stored_and_window_defaults_to_glass(srv, client):
     # Doors/windows are cut OUT of their wall: snapInsets records the openings on the wall (wall-local
     # 2D), and they ride through the model so the renderer can punch them out and you see through.
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4],
          "holes": [{"x": 0.5, "y": -0.2, "w": 0.9, "h": 2.0}]},
         {"id": "real_window_1", "semantic": "window", "position": [-0.8, 1.4, -2], "extent": [0.8, 0.9]}]})
@@ -752,7 +752,7 @@ def test_wall_holes_stored_and_window_defaults_to_glass(srv, client):
 def test_inset_structural_anchor_round_trips_into_meta(srv, client):
     # §5.3: an inset's corner-relative anchor (along-wall corner distances + floor/ceiling edge distances)
     # is persisted under meta, so any client can reconstruct its spot from shared structure, not the centroid.
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [4, 2.4]},
         {"id": "real_door_1", "semantic": "door", "position": [0.5, 1.0, -2], "extent": [0.9, 2.0],
          "hostWall": "real_wall_1",
@@ -770,13 +770,13 @@ def test_wall_holes_update_only_on_opening_count_change(srv, client):
     def wall(holes):
         return {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4], "holes": holes}
     one, moved = [{"x": 0.5, "y": 0, "w": 0.9, "h": 2.0}], [{"x": -0.7, "y": 0, "w": 0.8, "h": 1.9}]
-    client.post("/room", json={"client_id": "h1", "surfaces": [wall(one)]})
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [wall(one)]})
 
     def holes():
         return next(e for e in _entities(client) if e["id"] == "real_wall_1")["components"]["surface"]["holes"]
-    client.post("/room", json={"client_id": "h1", "surfaces": [wall(moved)]})   # same count → sub-structural
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [wall(moved)]})   # same count → sub-structural
     assert holes() == one                                            # unchanged (seed doesn't churn on drift)
-    client.post("/room", json={"client_id": "h1", "surfaces": [wall(one + moved)]})  # 1 → 2 openings
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [wall(one + moved)]})  # 1 → 2 openings
     assert holes() == one + moved                                    # opening ADDED → seed updated
 
 
@@ -787,11 +787,11 @@ def test_friendly_id_stable_after_remove_readd(srv, client):
     def fid():
         return next(e for e in _entities(client) if e["id"] == "real_couch_1")["meta"]["friendly_id"]
     couch = {"id": "real_couch_1", "semantic": "couch", "position": [0, 0.4, -2], "extent": [2, 0.8]}
-    client.post("/room", json={"client_id": "h1", "surfaces": [couch]})
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [couch]})
     first = fid()
-    client.post("/room", json={"client_id": "h1", "surfaces": []})           # confirmed-absent (replace) → pruned
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": []})           # confirmed-absent (replace) → pruned
     assert not any(e["id"] == "real_couch_1" for e in _entities(client))
-    client.post("/room", json={"client_id": "h1", "surfaces": [couch]})      # and returns
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [couch]})      # and returns
     assert fid() == first                                                    # same number, not higher
 
 
@@ -799,20 +799,20 @@ def test_anchored_surface_protected_from_pruning_others_still_prune(srv, client)
     # bug B: a surface with a photo pinned to it (meta.on_surface) keeps its id even when confirmed-absent
     # so the photo never orphans; a surface with NO content pinned prunes normally (so stray duplicate
     # surfaces don't accumulate).
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_art_1", "semantic": "wall art", "position": [0, 1.5, -2], "extent": [0.5, 0.5]},
         {"id": "real_wall_art_2", "semantic": "wall art", "position": [2, 1.5, -2], "extent": [0.5, 0.5]}]})
     srv.store.apply_patch([{"op": "add", "entity": {                        # hang a photo on art_1
         "id": "ent_photo", "meta": {"on_surface": "real_wall_art_1"},
         "components": {"geometry": {"primitive": "plane"}}}}])
-    client.post("/room", json={"client_id": "h1", "surfaces": []})          # both confirmed-absent (replace)
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": []})          # both confirmed-absent (replace)
     ids = {e["id"] for e in _entities(client)}
     assert "real_wall_art_1" in ids                                        # anchored → kept (no orphaning)
     assert "real_wall_art_2" not in ids                                    # unanchored → pruned
 
 
 def test_texture_surface_resolves_by_friendly_id(srv, client):
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_floor_3", "semantic": "floor", "position": [0, 0, 0], "extent": [3, 3]}]})
     fid = next(e for e in _entities(client) if e["id"] == "real_floor_3")["meta"]["friendly_id"]
     image_id = _procure(client)
@@ -871,19 +871,19 @@ def test_tunnel_404_when_none_running(srv, client, tmp_path, monkeypatch):
 
 
 def test_room_authority_rejects_other_headset(srv, client):
-    client.post("/room", json={"client_id": "h1", "surfaces": []})
-    r = client.post("/room", json={"client_id": "h2", "surfaces": []})
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": []})
+    r = client.post("/space/capture", json={"client_id": "h2", "surfaces": []})
     assert r.json()["ok"] is False and "authority" in r.json()["error"]
 
 
 def test_room_recapture_updates_pose_but_keeps_director_style(srv, client):
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2]}]})
     # director colors + shows the wall
     client.post("/patch", json={"ops": [{"op": "update", "id": "real_wall_1", "set": {
         "components.material.color": "#0000ff", "components.material.visible": True}}]})
     # re-capture with a STRUCTURAL relocation (> 0.5 m — a sub-threshold refine would be ignored, §7.4)
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2.7]}]})
     e = next(e for e in _entities(client) if e["id"] == "real_wall_1")
     assert e["transform"]["position"] == [0, 1, -2.7]              # geometry updated
@@ -892,7 +892,7 @@ def test_room_recapture_updates_pose_but_keeps_director_style(srv, client):
 
 
 def test_texture_surface_maps_image_onto_surfaces(srv, client):
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_ceiling", "semantic": "ceiling", "position": [0, 2.6, 0], "extent": [4, 4]},
         {"id": "real_floor", "semantic": "floor", "position": [0, 0, 0], "extent": [4, 4]}]})
     image_id = _procure(client, "a starfield")
@@ -914,7 +914,7 @@ def test_texture_surface_unknown_target_errors(srv, client):
 
 
 def test_style_surface_sets_color_and_opacity(srv, client):
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}]})
     r = client.post("/style_surface", json={"target": "wall", "color": "blue", "opacity": 0.4})
     assert r.json()["ok"] is True and r.json()["count"] == 1
@@ -924,7 +924,7 @@ def test_style_surface_sets_color_and_opacity(srv, client):
 
 
 def test_style_surface_needs_color_or_opacity(srv, client):
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2]}]})
     assert client.post("/style_surface", json={"target": "wall"}).json()["ok"] is False
 
@@ -932,11 +932,11 @@ def test_style_surface_needs_color_or_opacity(srv, client):
 def test_room_replace_prunes_missing_surface_on_first_absence(srv, client):
     # A `replace` post (the default) is the client's CONFIRMED set — it owns the absence debounce (docs §7),
     # so a surface missing from it is genuinely gone and the server prunes it at once (no server-side counter).
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "a", "semantic": "couch", "position": [0, 1, -2]},
         {"id": "b", "semantic": "couch", "position": [1, 1, -2]}]})
     assert {"a", "b"} <= {e["id"] for e in _entities(client)}         # both present
-    client.post("/room", json={"client_id": "h1", "surfaces": [       # b omitted → confirmed absent
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [       # b omitted → confirmed absent
         {"id": "a", "semantic": "couch", "position": [0, 1, -2]}]})
     ids = {e["id"] for e in _entities(client)}
     assert "a" in ids and "b" not in ids                             # b pruned on first absence, a stays
@@ -1053,7 +1053,7 @@ def test_switching_into_a_world_drops_its_stale_authority(srv, client):
     assert client.post("/worlds/switch", json={"name": "old-room"}).json()["ok"]
     assert client.get("/world").json()["environment"]["captureAuthority"] is None
     # a NEW headset id can now capture (before the fix this was rejected forever)
-    r = client.post("/room", json={"client_id": "hs_new", "surfaces": [
+    r = client.post("/space/capture", json={"client_id": "hs_new", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]}]}).json()
     assert r["ok"] is True
     assert client.get("/world").json()["environment"]["captureAuthority"] == "hs_new"
@@ -1132,7 +1132,7 @@ def test_decompose_extracts_only_real_overrides_and_round_trips(srv):
 
 def test_room_geometry_is_shared_across_worlds_styling_is_per_world(srv, client):
     # capture a room and style the couch in the current ('default') world
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_couch_1", "semantic": "couch", "position": [1, 0.5, 0], "extent": [2, 0.8]},
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}]})
     client.post("/style_surface", json={"target": "couch", "color": "green"})
@@ -1207,7 +1207,7 @@ def test_world_can_live_in_another_users_space(srv, client):
     assert srv.active_space_owner == "daniel" and srv.active_space == "home"     # resolved owner+name
     assert any(e["id"] == "real_wall_9" for e in _entities(client))             # daniel's geometry composed in
     # bob (now the active world's owner) captures another wall → it lands in DANIEL's space
-    client.post("/room", json={"client_id": "h", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h", "surfaces": [
         {"id": "real_wall_9", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]},
         {"id": "real_wall_10", "semantic": "wall", "position": [2, 1, 0], "extent": [3, 2.4]}]},
         headers={"X-Conjure-User": "bob"})
@@ -2177,7 +2177,7 @@ def test_move_reauthors_anchor_so_edit_persists(srv, client):
     # Regression: after §7c a model's pose is driven by meta.anchor (re-solved each capture). A move/rotate
     # that updates only transform gets reverted ("flash then snap back") — /patch must re-author the anchor.
     from conjure.plane_anchor import solve_anchor
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_floor_0", "semantic": "floor", "position": [0, 0, 0], "rotation": [-90, 0, 0], "extent": [4, 6]},
         {"id": "real_wall_1", "semantic": "wall", "position": [2, 1.2, 0], "rotation": [0, 90, 0], "extent": [3, 2.4]},
         {"id": "real_wall_2", "semantic": "wall", "position": [-2, 1.2, 0], "rotation": [0, -90, 0], "extent": [3, 2.4]},
@@ -2205,7 +2205,7 @@ def test_move_leaves_unanchored_content_alone(srv, client):
 
 def _anchored_room(client):
     """A seed room with a floor + 4 walls — enough for _content_anchor to author a plane-relative anchor."""
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_floor_0", "semantic": "floor", "position": [0, 0, 0], "rotation": [-90, 0, 0], "extent": [4, 6]},
         {"id": "real_wall_1", "semantic": "wall", "position": [2, 1.2, 0], "rotation": [0, 90, 0], "extent": [3, 2.4]},
         {"id": "real_wall_2", "semantic": "wall", "position": [-2, 1.2, 0], "rotation": [0, -90, 0], "extent": [3, 2.4]},
@@ -2579,7 +2579,7 @@ def test_a_page_carries_every_module_script_whatever_agent_is_live(srv, client, 
 # ── water picture (image module) aspect-ratio handling (mirror place_image) ──────────────────────
 def _wall_art(client, extent=(0.5, 0.4)):
     """A wall-art surface at a known upright orientation + size (a 0.5×0.4 frame by default)."""
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
          "rotation": [0.0, -41.0, 0.0], "extent": list(extent)}]})
 
@@ -2652,7 +2652,7 @@ def test_water_on_surface_re_fits_size_when_the_surface_resizes(srv, client):
                                  "config": {"image": image_id}})
     assert _water(client)["width"] == pytest.approx(0.4) and _water(client)["height"] == pytest.approx(0.4)
     # re-capture: same wall art, a genuinely-resized frame → the water plane re-fits inside it.
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_art_18", "semantic": "wall art", "position": [0.7, 1.72, -1.04],
          "rotation": [0.0, -41.0, 0.0], "extent": [1.2, 1.0]}]})
     assert _water(client)["width"] == pytest.approx(1.0) and _water(client)["height"] == pytest.approx(1.0)
@@ -2663,7 +2663,7 @@ def test_on_surface_image_snaps_square_facing_the_viewer_on_a_horizontal_surface
     # edge away, BOTTOM nearest) AND snap SQUARE to the surface rectangle — even from an OBLIQUE angle it
     # picks the nearest rectangle axis, not the exact askew viewer direction.
     srv.gaze["daniel"] = {"origin": [0.3, 1.6, 0.0]}          # viewer offset in +x (oblique to the table)
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_table_2", "semantic": "table", "position": [0.0, 0.7, -1.0],
          "rotation": [90.0, 0.0, 0.0], "extent": [1.0, 0.6]}]})
     r = client.post("/place_image", json={"image_id": _procure(client), "on_surface": "table 2"}).json()
@@ -2680,7 +2680,7 @@ def test_on_surface_horizontal_facing_survives_recapture(srv, client):
     # The viewer-derived facing is stored surface-local, so re-capturing the table keeps the same facing
     # (doesn't revert to an arbitrary rectangle axis) — consistent with how pose/size ride a recapture.
     srv.gaze["daniel"] = {"origin": [0.0, 1.6, 0.0]}
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_table_2", "semantic": "table", "position": [0.0, 0.7, -1.0],
          "rotation": [90.0, 0.0, 0.0], "extent": [1.0, 0.6]}]})
     r = client.post("/place_image", json={"image_id": _procure(client), "on_surface": "table 2"}).json()
@@ -2688,7 +2688,7 @@ def test_on_surface_horizontal_facing_survives_recapture(srv, client):
     up0 = _plane_basis(next(e for e in _entities(client) if e["id"] == r["id"])["transform"]["rotation"])[2]
     # re-capture the same table, shifted past the move threshold (no gaze needed — facing comes from meta).
     srv.gaze.clear()
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_table_2", "semantic": "table", "position": [0.9, 0.7, -1.0],
          "rotation": [90.0, 0.0, 0.0], "extent": [1.0, 0.6]}]})
     up1 = _plane_basis(next(e for e in _entities(client) if e["id"] == r["id"])["transform"]["rotation"])[2]
@@ -2737,7 +2737,7 @@ def test_manipulate_recomputes_surface_offset_for_on_surface_content(srv, client
 
 
 def test_manipulate_refuses_real_surfaces(srv, client):
-    client.post("/room", json={"client_id": "h1", "surfaces": [
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_9", "semantic": "wall", "position": [0, 1.5, -2],
          "rotation": [0, 0, 0], "extent": [2, 2.5]}]})
     r = client.post("/manipulate", json={"id": "real_wall_9", "position": [1, 1, -1]}).json()

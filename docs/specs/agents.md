@@ -877,7 +877,7 @@ is told the new state and re-gates its own clients from it.
 | **privacy** | everyone | the live **session**'s `public` flag: the `/ws` join gate, `_regate_clients`, and the agent server's `_permitted` |
 | **edit-ownership** | everyone | `_owner_only_writes` — only the active world's owner may mutate it |
 
-`_OWNER_ONLY_PATHS` gates the mutating routes: `/reset`, `/patch`, `/room`, `/texture_surface`,
+`_OWNER_ONLY_PATHS` gates the mutating routes: `/reset`, `/patch`, `/space/capture`, `/texture_surface`,
 `/style_surface`, `/place_asset`, `/place_cached_asset`, `/place_image`, `/set_skybox`,
 `/set_grounded_skybox`, `/edit_image`, `/outpaint_image`, `/skybox_from_image`, `/module`,
 `/module/dismiss`, `/manipulate`. A missing `X-Conjure-User` header is treated as the owner (interim

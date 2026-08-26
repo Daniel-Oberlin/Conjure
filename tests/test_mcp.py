@@ -311,7 +311,7 @@ async def test_reset_world_tool(monkeypatch):
 @respx.mock
 async def test_realign_room_tool(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    route = respx.post("http://world/room/realign").mock(return_value=httpx.Response(200, json={"ok": True}))
+    route = respx.post("http://world/space/realign").mock(return_value=httpx.Response(200, json={"ok": True}))
     await _tool("realign_room")()
     assert route.called and json.loads(route.calls.last.request.content) == {}
 

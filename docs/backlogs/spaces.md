@@ -117,7 +117,7 @@ The presence relay is written for N and has only ever run with one guest.
 
 ### Who owns a space captured by a guest?
 
-A guest is admitted to the owner's active world and captures geometry. Today `/room` is owner-only, so
+A guest is admitted to the owner's active world and captures geometry. Today `/space/capture` is owner-only, so
 the question does not arise — the capture is rejected. But if guest-proposes-surface ever lands, the
 space's `owner` is the *first capturer*, and it is unclear whether a guest's contribution makes them a
 co-owner, leaves ownership with the space owner, or mints something new. Likely "the capturer keeps
