@@ -1,5 +1,12 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
+# Bugs
+
+
+# Surfaces
+- Still see occasional disappearance of some surfaces
+- The bedroom floor is occasionally elevated for periods of time
+
 # CLI and Shell
 - Set variables with shell
   - General rework of variable scoping
@@ -10,6 +17,7 @@
   - Lighting
   - Water reflection lighting
   - Panoramic photo
+  - What does "mesh detection" look like? (see occlusion backlog)
 
 # Dynamic content
 - Swarm
