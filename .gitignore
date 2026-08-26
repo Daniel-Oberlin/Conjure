@@ -25,5 +25,5 @@ node_modules/
 # Tool configs
 mprocs.yaml
 
-# Convenience soft-link to  ~/.config/conjure (if desired)
-config-conjure/
+# Convenience soft-link to ~/.config/conjure (if desired)
+config-conjure
