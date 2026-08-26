@@ -24,15 +24,57 @@ if (c.sem === "floor" && (!floor || c.ext[0] * c.ext[1] > floor._area)) {
 Two distinct defects:
 
 1. **Multi-room spaces are under-represented.** A space routinely spans several rooms (the golden
-   capture is two). Every room but the largest is absent from `boundary`, so any consumer that treats
-   the boundary as "the extent of the space" is wrong wherever the user actually is. Consumers today are
-   in-room placement and the director's `query_room` summary.
+   capture is two). Every room but the largest is absent from `boundary`, so stand in the smaller room
+   and the director is handed the *other* room's footprint.
 2. **`height` is the constant `2.6`,** never measured — even though ceilings are captured as surfaces
    and `sealWalls` already finds the covering ceiling per wall. The schema in the old room-model doc
    presented this as measured; it never was.
 
-Fix shape: a list of per-room boundaries (floor polygon + its own covering ceiling height), keyed by the
-floor surface id. The consumers then ask "which boundary am I in?" rather than assuming one.
+**First establish how much this matters — every consumer, traced.** Almost all of `boundary`'s
+footprint is plumbing (build it, POST it, store it, compose in, strip out, persist to the space).
+Strip that away and there are exactly two readers:
+
+| Consumer | What it does with it |
+|---|---|
+| `mcp_server.py:258` `_room_summary` | prints one line of text: `boundary: height 2.6m, floor polygon [[x,z],…]` |
+| `server.py:2363` shell `status` | a yes/no presence indicator in an inspection table |
+
+So the boundary today is **a hint to the LLM, delivered as raw coordinates, that nothing verifies.**
+
+**There is no in-bounds clamp.** The design promised models would land inside the boundary and never
+through a wall; no such check exists on any placement path, and `floorPolygon` is read in exactly one
+place — the text formatter above. `query_room`'s own docstring still promises the enforcement ("Read
+this before placing things (so models land INSIDE the room, not through a wall)"), and the builder
+prompt names the boundary in its Live-context bullet, so the raw polygon reaches the model every turn.
+Both are advice, not a guarantee.
+
+That reframes the severity rather than dismissing it: nothing breaks *geometrically*, because nothing
+consumes it geometrically — but the director is told something false, and silently-wrong is worse than
+absent when nothing checks.
+
+Worth noting the codebase already solves this correctly elsewhere. `sealWalls` faces the identical
+question — which floor/ceiling belongs to this wall? — and answers it per-wall with a footprint
+`covers()` test plus a margin, so a wall on a shared boundary counts under both adjoining rooms
+(`room-snap.js:539`). The multi-room-correct machinery exists a few hundred lines from the global
+`if (area > best)`.
+
+**Three options, in increasing cost. They are not alternatives — 3 depends on 1.**
+
+1. **Make it honest.** Per-room boundaries: floor polygon plus its own covering ceiling height, keyed by
+   the floor surface id; the summary reports the one the user is standing in. Small, and it makes the
+   existing hint correct rather than misleading.
+2. **Make it useful.** A raw polygon (`[[1.2,-0.3],[4.5,-0.3],…]`) is a poor input for an LLM deciding
+   where to put a dragon. *"You're in a room roughly 4 × 5 m; you are near the north wall"* is something
+   it can act on. Pure summary-formatting — no schema change — and arguably higher value than (1) alone.
+3. **Make it enforced.** A real server-side in-bounds clamp on placement, which is what the design
+   promised. Biggest change, and it **needs (1) first**: clamping to the wrong room's polygon is worse
+   than not clamping at all.
+
+**Recommendation: do 1 and 2 together; leave 3 until something actually places through a wall.** If
+only one, do 2 — the director's behaviour is the only thing downstream of this today.
+
+Fixing (1) also unblocks director-authored replacement geometry, which needs a safe footprint to
+extrude — see [`backlogs/worlds-surfaces.md`](./worlds-surfaces.md).
 
 ### Void worlds cannot be re-homed
 

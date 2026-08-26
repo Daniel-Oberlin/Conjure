@@ -74,7 +74,12 @@ single space routinely holds several rooms joined by doors — the reference cap
   `surfaceStyles` (§6).
 - **`boundary` is one polygon and one height** for the whole space, regardless of how many rooms it
   contains. It is derived from the largest captured floor (`conjure-client.js:2195`, by `_area`), so in
-  a multi-room space the smaller rooms are not represented in it.
+  a multi-room space the smaller rooms are not represented in it. The height is the constant `2.6`, not
+  measured.
+- **It has exactly one consumer: the room summary**, which prints it as a line of text for the director
+  (`mcp_server.py:258`). Nothing clamps placement against it and nothing renders it — despite
+  `query_room`'s docstring saying models land inside the room, that is advice to the model, not an
+  enforced invariant. See [`backlogs/spaces.md`](../backlogs/spaces.md).
 - **`last_scope` / `last_world`** are the return-visit pointer: match this space again and you land back
   in the world you left. Rewritten by world renames (`world.py:1015`).
 
