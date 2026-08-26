@@ -200,9 +200,12 @@ running interpreter, so the subprocess inherits the venv.
   (a test asserts the list equals every `@mcp.tool` in `mcp_server.py`, minus the control tool
   `set_caller`, so a new tool can't go silently un-granted). Context: `room://current`,
   `world://current`, `dynamics://available`. Dynamics: `fireflies`, `water`, `grab`.
-- **`outdoor`** — skybox-only: nine tools, no `context` at all (so it pays **zero** per-turn context
+- **`outdoor`** — skybox-only: twelve tools, no `context` at all (so it pays **zero** per-turn context
   cost — the live contrast with builder), no dynamics. Its `session.first_world.on_create` runs a
-  generative constructor (§7.5).
+  generative constructor (§7.5). It holds the **read** half of the library (`search_library`,
+  `query_assets`) but none of the mutating half — every sky it generates is catalogued, so without
+  reads it would write to a store it can never read, and the agent wall (§2) means nothing else could
+  read it either.
 - **`scratch`** — the agent-state demo: one tool (`query_world`), a seeded + schema-validated `quest`
   doc injected as `{quest}`.
 

@@ -7,6 +7,7 @@
       "tools": [
         "query_world",
         "list_worlds", "new_world", "switch_world", "delete_world",
+        "search_library", "query_assets",
         "generate_skybox_image", "set_skybox",
         "generate_grounded_skybox_image", "set_grounded_skybox",
         "list_image_generators"

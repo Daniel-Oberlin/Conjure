@@ -126,9 +126,18 @@ def test_outdoor_agent_is_scoped_to_skybox_tools():
     # it can make both kinds of sky + manage its own worlds…
     assert {"generate_skybox_image", "set_skybox",
             "generate_grounded_skybox_image", "set_grounded_skybox"} <= tools
-    # …and NOTHING builder-only (no surface/entity/asset-CRUD tools leak in)
+    # …and it can FIND a sky it already made. Every sky it generates is catalogued, so without these it
+    # writes to a store it can never read: the assets are invisible to it AND (by the hard agent wall)
+    # to builder, so a "take me back to the desert" silently regenerates a different desert.
+    assert {"search_library", "query_assets"} <= tools
+    # …but NOTHING builder-only: no surface/entity editing, and no asset MUTATION. The line is
+    # read-vs-write, not library-vs-not — so assert it against the real read-only set rather than a
+    # hand-maintained list that drifts.
+    from conjure.mcp_server import _READONLY_TOOLS
     assert not (tools & {"style_surface", "texture_surface", "add_entity", "update_entity",
-                         "place_asset", "update_asset", "query_assets"})
+                         "place_asset", "update_asset", "delete_asset"})
+    for t in ("search_library", "query_assets"):
+        assert t in _READONLY_TOOLS, f"{t} granted to outdoor but is not read-only"
     # every listed tool is real, so it won't fail at launch on a typo (director._scope_tools)
     src = (pathlib.Path(conjure.__file__).parent / "mcp_server.py").read_text()
     server_tools = set(re.findall(r"@mcp\.tool\([^)]*\)\s*\nasync def (\w+)", src))
