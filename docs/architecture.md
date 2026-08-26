@@ -120,10 +120,13 @@ server, memory, and client share one representation.
     "public": true,                                         // visibility is a FLAG, never a path segment
     "space":  "daniel/space-1",                             // WHICH space this world is tied to, or "<void>"
     "sky":    { "type": "hdri", "asset": "sha256:…" },      // how this world presents the sky
-    "room":   { "active": true, "passthrough": false,       // how this world presents the SPACE
-                "defaultSurfaceVisible": false,
-                "surfaceStyles": { "real_wall_3": {…} },    // per-surface material DELTAS vs the space's base
-                "edgesVisible": true, "annotations": false }
+    "passthrough": false,                                   // AR camera on/off — immersion axis 1
+    "boundary": { … },                                      // active space's floor polygon — LIVE only
+    "captureAuthority": "hs_a1b2",                          // headset allowed to report geometry — LIVE only
+    "spacePresentation": {                                  // how this world presents the SPACE
+      "active": true, "defaultSurfaceVisible": false,
+      "surfaceStyles": { "real_wall_3": {…} },              // per-surface material DELTAS vs the space's base
+      "edgesVisible": true, "annotations": false }
     // 🔴 not built: lighting presets, fog, per-world gravity, ambientAudio
   },
   "entities": [ /* Entity[] */ ],

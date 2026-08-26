@@ -957,8 +957,13 @@ def migrate_env_room_to_space_presentation(users_root: str | Path) -> int:
     WHICH space. Renaming it to `space` would have collided with that ref, so the presentation half took
     the longer name.
 
-    Only the world documents carry it — the space files never did. Idempotent: a doc already carrying
-    `spacePresentation` (or carrying neither key) is skipped. Returns how many worlds were rewritten."""
+    Also drops two members that were never presentation and are never persisted by design — `boundary`
+    (geometry on loan from the space, now `environment.boundary`) and `authorityClientId` (per-session
+    coordination, now `environment.captureAuthority`). A stale copy of either can still be sitting in a
+    file saved before they moved.
+
+    Only the world documents carry any of this — the space files never did. Idempotent: a doc already
+    converted and carrying no stale member is skipped. Returns how many worlds were rewritten."""
     root = Path(users_root)
     if not root.exists():
         return 0
@@ -969,8 +974,19 @@ def migrate_env_room_to_space_presentation(users_root: str | Path) -> int:
         except (json.JSONDecodeError, OSError):
             continue
         env = doc.get("environment")
-        if not isinstance(env, dict) or "room" not in env or "spacePresentation" in env:
+        if not isinstance(env, dict):
             continue
+        old = env.get("room") if "spacePresentation" not in env else None
+        pres = old if isinstance(old, dict) else env.get("spacePresentation")
+        stale = isinstance(pres, dict) and ({"boundary", "authorityClientId"} & set(pres))
+        if old is None and not stale:
+            continue
+        if isinstance(pres, dict):
+            # Both are LIVE-only — boundary is on loan from the space, authority is per-session — so a
+            # persisted copy is dead weight that contradicts the new home (environment.boundary /
+            # environment.captureAuthority). Drop rather than move.
+            pres.pop("boundary", None)
+            pres.pop("authorityClientId", None)
         # Rebuild in order so the renamed key keeps its slot in the file (readable diffs).
         doc["environment"] = {("spacePresentation" if k == "room" else k): v for k, v in env.items()}
         wf.write_text(json.dumps(doc, indent=2))

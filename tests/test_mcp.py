@@ -404,7 +404,7 @@ async def test_query_room_summarizes(monkeypatch):
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
         "entities": [{"id": "real_floor", "meta": {"real": True, "semantic": "floor", "friendly_id": 7},
                       "components": {"material": {}}, "transform": {"position": [0, 0, 0]}}],
-        "environment": {"passthrough": True, "spacePresentation": {"active": True, "boundary": {"height": 2.6}}}}))
+        "environment": {"passthrough": True, "boundary": {"height": 2.6}, "spacePresentation": {"active": True}}}))
     out = await _tool("query_room")()
     assert "floor" in out and "2.6" in out and "#7" in out      # friendly id surfaced
 

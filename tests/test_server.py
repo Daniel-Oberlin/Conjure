@@ -704,10 +704,10 @@ def test_room_authority_taken_over_only_when_stale(srv, client, monkeypatch):
     assert client.post("/room", json=body("h1")).json()["ok"] is True     # h1 claims authority
     r = client.post("/room", json=body("h2")).json()                      # h2 while h1 is live → refused
     assert r["ok"] is False and "authority" in r["error"]
-    assert client.get("/world").json()["environment"]["spacePresentation"]["authorityClientId"] == "h1"
+    assert client.get("/world").json()["environment"]["captureAuthority"] == "h1"
     monkeypatch.setattr(S, "_authority_ts", S._authority_ts - S._AUTH_TTL - 1)   # h1 goes idle
     assert client.post("/room", json=body("h2")).json()["ok"] is True     # h2 takes over the stale authority
-    assert client.get("/world").json()["environment"]["spacePresentation"]["authorityClientId"] == "h2"
+    assert client.get("/world").json()["environment"]["captureAuthority"] == "h2"
 
 
 def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
@@ -719,9 +719,10 @@ def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
     e = next(e for e in _entities(client) if e["id"] == "real_wall_1")
     assert e["meta"]["real"] is True and e["meta"]["semantic"] == "wall"
     assert e["meta"]["friendly_id"] == 1                  # short id for annotations/voice reference
-    pres = client.get("/world").json()["environment"]["spacePresentation"]
-    assert pres["active"] is True and pres["authorityClientId"] == "h1"
-    assert pres["boundary"]["height"] == 2.6
+    env = client.get("/world").json()["environment"]
+    assert env["spacePresentation"]["active"] is True
+    assert env["captureAuthority"] == "h1"       # coordination + geometry sit BESIDE the presentation,
+    assert env["boundary"]["height"] == 2.6      # not inside it — neither is a presentation choice
 
 
 def test_door_surface_defaults_to_translucent(srv, client):
@@ -1036,9 +1037,9 @@ def test_world_names_are_unique_within_a_session():
 def test_reset_room_authority_clears_stale_id(srv):
     from conjure.world import WorldStore
     s = WorldStore({"id": "x", "name": "x", "rev": 0, "entities": [],
-                    "environment": {"spacePresentation": {"authorityClientId": "hs_dead"}}})
+                    "environment": {"captureAuthority": "hs_dead"}})
     srv._reset_room_authority(s)
-    assert s.doc["environment"]["spacePresentation"]["authorityClientId"] is None
+    assert s.doc["environment"]["captureAuthority"] is None
     srv._reset_room_authority(WorldStore({"id": "y", "name": "y", "rev": 0, "entities": [],
                                           "environment": {}}))   # no room/env → must not raise
 
@@ -1048,14 +1049,14 @@ def test_switching_into_a_world_drops_its_stale_authority(srv, client):
     # a world saved by a PAST session, pinned to a now-dead headset id
     srv.worlds.save(srv.DEFAULT_SCOPE, "old-room", WorldStore(
         {"id": "o", "name": "o", "rev": 1, "entities": [],
-         "environment": {"spacePresentation": {"active": True, "authorityClientId": "hs_dead"}}}))
+         "environment": {"captureAuthority": "hs_dead", "spacePresentation": {"active": True}}}))
     assert client.post("/worlds/switch", json={"name": "old-room"}).json()["ok"]
-    assert client.get("/world").json()["environment"]["spacePresentation"]["authorityClientId"] is None
+    assert client.get("/world").json()["environment"]["captureAuthority"] is None
     # a NEW headset id can now capture (before the fix this was rejected forever)
     r = client.post("/room", json={"client_id": "hs_new", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]}]}).json()
     assert r["ok"] is True
-    assert client.get("/world").json()["environment"]["spacePresentation"]["authorityClientId"] == "hs_new"
+    assert client.get("/world").json()["environment"]["captureAuthority"] == "hs_new"
 
 
 def test_migrate_world_dirs_moves_pre_user_layout(srv, tmp_path):
@@ -1108,7 +1109,7 @@ def test_compose_merges_space_geometry_with_world_overrides(srv):
     assert couch["components"]["material"]["color"] == "green"        # world override applied
     wall = next(e for e in doc["entities"] if e["id"] == "real_wall_0")
     assert wall["components"]["material"]["color"] == "#888"          # no override → space base
-    assert doc["environment"]["spacePresentation"]["boundary"]["height"] == 2.6    # boundary from space
+    assert doc["environment"]["boundary"]["height"] == 2.6                        # boundary from space
     assert "surfaceStyles" not in doc["environment"]["spacePresentation"]          # overlay not broadcast
     assert "space" not in doc                                         # ref not broadcast
 
@@ -1124,7 +1125,7 @@ def test_decompose_extracts_only_real_overrides_and_round_trips(srv):
     styles = back["environment"]["spacePresentation"]["surfaceStyles"]
     assert set(styles) == {"real_couch_41"}                          # only the OVERRIDDEN surface recorded
     assert styles["real_couch_41"]["color"] == "green" and styles["real_couch_41"]["visible"] is True
-    assert "boundary" not in back["environment"]["spacePresentation"]             # boundary belongs to the space
+    assert "boundary" not in back["environment"]                                  # boundary belongs to the space
     # round-trip: re-composing reproduces the same rendered surfaces (materials + geometry)
     assert srv._compose(back, space)["entities"] == composed["entities"]
 
@@ -1156,7 +1157,7 @@ def test_activate_no_longer_migrates_embedded_geometry(srv, client):
     space ref now composes as VOID (step 5 removed the anonymous-'home' Path B fallback)."""
     from conjure.world import WorldStore
     embedded = {
-        "id": "l", "name": "legacy", "rev": 3, "environment": {"spacePresentation": {"boundary": {"height": 2.6}}},
+        "id": "l", "name": "legacy", "rev": 3, "environment": {"boundary": {"height": 2.6}},
         "entities": [
             {"id": "ent_box", "meta": {"generated": True}, "components": {}},
             {"id": "real_table_2", "meta": {"real": True, "semantic": "table"},

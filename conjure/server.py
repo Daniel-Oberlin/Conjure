@@ -229,9 +229,9 @@ def _reset_room_authority(s: WorldStore) -> None:
     Each client mints a fresh id per page load, so a *persisted* authority from a past session names a
     dead headset — and ingest_room would reject the live headset's captures forever (it can't match the
     stale id). Clear it whenever a world becomes active so the live headset reclaims it on next capture."""
-    pres = (s.doc.get("environment") or {}).get("spacePresentation")
-    if isinstance(pres, dict) and pres.get("authorityClientId"):
-        pres["authorityClientId"] = None
+    env = s.doc.get("environment") or {}
+    if env.get("captureAuthority"):
+        env["captureAuthority"] = None
 
 
 def _migrate_world_dirs(root: Path) -> None:
@@ -2649,7 +2649,7 @@ def _compose(world_doc: dict, space: dict) -> dict:
         reals.append(e)
     doc["entities"] = placed + reals
     if space.get("boundary") is not None:
-        pres["boundary"] = space["boundary"]
+        env["boundary"] = space["boundary"]        # geometry on loan from the space, live-only
     # A world INHERITING a non-empty space's geometry (created new / switched-to / reset) genuinely has a
     # room, even with no live headset ingest this session — so mark it active for the director's query_room
     # (which gates on spacePresentation.active). Only default it: an explicit False (a director immersion mode like
@@ -2675,8 +2675,9 @@ def _decompose(composed: dict, space: dict) -> dict:
         else:
             placed.append(e)
     doc["entities"] = placed
-    pres = doc.setdefault("environment", {}).setdefault("spacePresentation", {})
-    pres.pop("boundary", None)
+    env = doc.setdefault("environment", {})
+    env.pop("boundary", None)                      # the space owns the boundary; never persisted per-world
+    pres = env.setdefault("spacePresentation", {})
     if overrides:
         pres["surfaceStyles"] = overrides
     else:
@@ -2697,7 +2698,7 @@ def _space_from_world_doc(user: str, name: str, doc: dict) -> dict:
             s.setdefault("components", {})["material"] = _default_surface_material(
                 s.get("meta", {}).get("semantic", "surface"))
             surfaces.append(s)
-    boundary = (doc.get("environment", {}).get("spacePresentation", {}) or {}).get("boundary")
+    boundary = doc.get("environment", {}).get("boundary")
     return {"owner": user, "name": name, "public": True, "geolocation": None,
             "surfaces": surfaces, "boundary": boundary}
 
@@ -2890,8 +2891,9 @@ async def ingest_room(req: RoomUpdate) -> dict:
     clients actually consume is broadcast: room-activation env + on-surface image re-anchors. An idle
     authority is taken over after `_AUTH_TTL` (a reconnecting owner isn't locked out)."""
     global _authority_ts
-    pres = store.doc["environment"].get("spacePresentation", {})
-    authority = pres.get("authorityClientId")
+    env = store.doc["environment"]
+    pres = env.get("spacePresentation", {})
+    authority = env.get("captureAuthority")
     now = time.time()
     if authority and authority != req.client_id:
         if (now - _authority_ts) < _AUTH_TTL:                 # another headset is live → refuse
@@ -2933,10 +2935,10 @@ async def ingest_room(req: RoomUpdate) -> dict:
     env_set: dict = {}
     if not pres.get("active"):
         env_set["spacePresentation.active"] = True
-    if pres.get("authorityClientId") != req.client_id:
-        env_set["spacePresentation.authorityClientId"] = req.client_id
-    if req.boundary is not None and req.boundary != pres.get("boundary"):
-        env_set["spacePresentation.boundary"] = req.boundary
+    if env.get("captureAuthority") != req.client_id:
+        env_set["captureAuthority"] = req.client_id
+    if req.boundary is not None and req.boundary != env.get("boundary"):
+        env_set["boundary"] = req.boundary
     if "defaultSurfaceVisible" not in pres:
         env_set["spacePresentation.defaultSurfaceVisible"] = False         # default: invisible references (AR-style)
     wire_ops: list[dict] = []

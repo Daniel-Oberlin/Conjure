@@ -478,6 +478,8 @@ def test_migrate_env_room_to_space_presentation(tmp_path):
     styled = {"id": "wld_a", "name": "green", "environment": {
         "space": "daniel/space-1", "sky": {"color": "#001"},
         "room": {"active": True, "edgesVisible": False,
+                 "boundary": {"height": 2.6},          # live-only strays that got persisted anyway
+                 "authorityClientId": "hs_dead",
                  "surfaceStyles": {"real_wall_3": {"color": "darkgreen"}}}}}
     (wd / "wld_a.json").write_text(json.dumps(styled))
     (wd / "wld_b.json").write_text(json.dumps({"id": "wld_b", "environment": {"sky": {}}}))   # no key
@@ -489,8 +491,28 @@ def test_migrate_env_room_to_space_presentation(tmp_path):
     assert env["spacePresentation"]["edgesVisible"] is False
     assert env["space"] == "daniel/space-1" and env["sky"] == {"color": "#001"}   # siblings untouched
     assert list(env) == ["space", "sky", "spacePresentation"]           # keeps its slot: readable diffs
+    # Neither was ever presentation, and neither is persisted by design — a stale copy would contradict
+    # the new homes (environment.boundary / environment.captureAuthority), so it's dropped, not moved.
+    assert "boundary" not in env["spacePresentation"]
+    assert "authorityClientId" not in env["spacePresentation"]
 
     assert migrate_env_room_to_space_presentation(tmp_path) == 0        # idempotent — safe every boot
+
+
+def test_migrate_drops_stale_members_from_an_already_renamed_world(tmp_path):
+    """The two dropped members can outlive the rename — a world saved between the two changes carries
+    `spacePresentation.authorityClientId` with no `room` key to trigger the pass."""
+    from conjure.world import migrate_env_room_to_space_presentation
+    wd = tmp_path / "daniel/agents/builder/sessions/session-1/worlds"
+    wd.mkdir(parents=True)
+    (wd / "wld_c.json").write_text(json.dumps({"id": "wld_c", "environment": {
+        "spacePresentation": {"active": True, "authorityClientId": "hs_dead",
+                              "boundary": {"height": 2.6}}}}))
+
+    assert migrate_env_room_to_space_presentation(tmp_path) == 1
+    pres = json.loads((wd / "wld_c.json").read_text())["environment"]["spacePresentation"]
+    assert pres == {"active": True}
+    assert migrate_env_room_to_space_presentation(tmp_path) == 0
 
 
 def test_migrate_active_world_falls_back_when_no_pointer(tmp_path):

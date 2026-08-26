@@ -255,7 +255,7 @@ async def _room_summary() -> str:
         return "No room model yet — the headset hasn't shared one (capture the room, or work in VR)."
     lines = [f"Room: {len(reals)} surfaces · passthrough={env.get('passthrough', False)} · "
              f"surfaces-visible-by-default={pres.get('defaultSurfaceVisible', False)}"]
-    b = pres.get("boundary")
+    b = env.get("boundary")
     if b:
         lines.append(f"boundary: height {b.get('height')}m, floor polygon {b.get('floorPolygon')}")
     for e in reals:

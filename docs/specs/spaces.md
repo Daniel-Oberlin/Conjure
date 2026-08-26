@@ -133,10 +133,11 @@ The live in-memory document is always **fully composed**; only persistence split
 1. Drop the persistence-only `space` ref and the `surfaceStyles` map from the live doc.
 2. Take the space's surfaces as the real entities; overlay each one's
    `environment.spacePresentation.surfaceStyles[<id>]` onto its `material`.
-3. Copy the space's `boundary` into `environment.spacePresentation.boundary`.
-4. If the world inherited a non-empty space's geometry, default `spacePresentation.active = true` — a world that has
-   real surfaces genuinely has something to work with, even with no live capture this session. An
-   explicit `false` (an immersion mode) is respected.
+3. Copy the space's `boundary` into `environment.boundary` (live only — `_decompose` strips it, since
+   the space owns it).
+4. If the world inherited a non-empty space's geometry, default `spacePresentation.active = true` — a
+   world that has real surfaces genuinely has something to work with, even with no live capture this
+   session. An explicit `false` (an immersion mode) is respected.
 5. Re-pin on-surface images to their (possibly moved) hosts.
 
 **`_decompose(composed, space)`** (`server.py:2659`) — on save, the exact inverse: placed entities plus
@@ -255,7 +256,7 @@ Two different gates, often confused:
 
 **Geometry authority — the space owner.** `/room` is owner-only. A guest's capture is rejected; guests
 *register against* the stored geometry and never re-author it (§8). Within one owner, an
-`authorityClientId` records which headset is live, and an idle authority is taken over after `_AUTH_TTL`
+`environment.captureAuthority` records which headset is live, and an idle authority is taken over after `_AUTH_TTL`
 so a reconnecting owner is not locked out (`server.py:2889`).
 
 **Scene edit rights — the world owner.** Every scene-mutating endpoint requires the caller to be the

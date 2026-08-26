@@ -62,31 +62,35 @@ reference all agree on it deliberately (`server.py:538`).
 "environment": {
   "public": true,
   "space":  "daniel/space-1",     // WHICH space (a ref) — specs/spaces.md §4
-  "passthrough": false,           // AR camera on/off — immersion axis 1 (top-level, NOT below)
+  "passthrough": false,           // AR camera on/off — immersion axis 1
+  "boundary": { … },              // the active space's floor polygon — LIVE ONLY, on loan
+  "captureAuthority": "hs_a1b2",  // which headset may report geometry — LIVE ONLY
   "sky":    { … },                // how this world presents the sky
   "spacePresentation": { … }      // how this world presents the space  ← this spec
 }
 ```
 
-`environment.spacePresentation` is the world's view of the space. Split by what survives to disk:
+`environment.spacePresentation` holds **only** presentation, and every member of it is persisted:
 
-| Member | Persisted | Meaning |
-|---|---|---|
-| `active` | yes | is there a space in effect at all |
-| `defaultSurfaceVisible` | yes | global default for captured surfaces — immersion axis 2 |
-| `surfaceStyles` | yes | **per-surface material overrides, keyed by id** — the real user data here |
-| `annotations`, `annotationDims`, `annotationColor`, `annotationOpacity` | yes | the label overlay |
-| `edgesVisible`, `edgeColor`, `edgeOpacity` | yes | the wireframe outline |
-| `boundary` | **no** — dropped by `_decompose` | copied in from the space each load |
-| `authorityClientId` | **no** — nulled on load (`server.py:232`) | which headset is capturing |
+| Member | Meaning |
+|---|---|
+| `active` | is there a space in effect at all |
+| `defaultSurfaceVisible` | global default for captured surfaces — immersion axis 2 |
+| `surfaceStyles` | **per-surface material overrides, keyed by id** — the real user data here |
+| `annotations`, `annotationDims`, `annotationColor`, `annotationOpacity` | the label overlay |
+| `edgesVisible`, `edgeColor`, `edgeOpacity` | the wireframe outline |
 
-Everything persisted is presentation. The two exceptions are ephemeral: `boundary` is geometry on loan
-from the space, `authorityClientId` is coordination state.
+That "only, and every" is the point of the name: the key means one thing, so persistence and meaning
+line up instead of needing a per-member caveat. Three things that look like they belong are siblings
+instead, because none is a presentation choice:
 
-**`passthrough` is a sibling, not a member.** It lives at `environment.passthrough`, one level up —
-read there by the client (`conjure-client.js:653`) and by the room summary, and written bare by
-`_IMMERSION`. It is an axis of immersion but not a property of the space's presentation, since it is
-equally meaningful in a void world with no space at all.
+- **`passthrough`** — an immersion axis, but equally meaningful in a void world with no space at all.
+  Written bare by `_IMMERSION`, read at `conjure-client.js:653`.
+- **`boundary`** — geometry, copied in from the space by `_compose` and stripped by `_decompose`. The
+  space owns it; a world never persists its own.
+- **`captureAuthority`** — which headset may report geometry. Per-session coordination, nulled whenever
+  a world becomes active (`server.py:231`), because a persisted authority names a dead headset and would
+  lock the live one out forever.
 
 ### 2.1 Base plus override
 
