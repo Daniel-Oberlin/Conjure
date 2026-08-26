@@ -877,11 +877,17 @@ is told the new state and re-gates its own clients from it.
 | **privacy** | everyone | the live **session**'s `public` flag: the `/ws` join gate, `_regate_clients`, and the agent server's `_permitted` |
 | **edit-ownership** | everyone | `_owner_only_writes` — only the active world's owner may mutate it |
 
-`_OWNER_ONLY_PATHS` gates the mutating routes: `/reset`, `/patch`, `/space/capture`, `/texture_surface`,
+`_OWNER_ONLY_PATHS` gates the mutating routes: `/reset`, `/patch`, `/space/capture`,
+`/space/realign`, `/texture_surface`,
 `/style_surface`, `/place_asset`, `/place_cached_asset`, `/place_image`, `/set_skybox`,
 `/set_grounded_skybox`, `/edit_image`, `/outpaint_image`, `/skybox_from_image`, `/module`,
 `/module/dismiss`, `/manipulate`. A missing `X-Conjure-User` header is treated as the owner (interim
 convenience for the direct dev CLI).
+
+Membership is an **exact string match** on the request path, so renaming a route without updating the
+set silently *ungates* it rather than 404ing — a route-inventory test would not notice. A test pins
+membership for exactly that reason (`test_every_geometry_and_scene_write_is_gated`), and also asserts
+every gated path is a real route, so a typo can't gate nothing.
 
 **Navigation is deliberately not gated.** Anyone may create or switch worlds and everyone comes along —
 but a created or switched-into world is in the caller's **own** scope, so the caller becomes its owner

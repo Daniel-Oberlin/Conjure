@@ -1665,6 +1665,26 @@ def test_owner_only_writes_enforced(srv, client):
     assert client.post("/patch", json=box).status_code == 200
 
 
+def test_realign_is_owner_gated(srv, client):
+    """A guest could force everyone to re-capture. Low blast radius — realign only broadcasts a
+    `recapture` nudge, and the ingest that follows is itself owner-gated — but it is a write-shaped
+    action on the owner's space, so it belongs behind the same gate as the capture it triggers."""
+    assert client.post("/space/realign", json={}, headers={"X-Conjure-User": "bob"}).status_code == 403
+    assert client.post("/space/realign", json={}, headers={"X-Conjure-User": "daniel"}).status_code == 200
+
+
+def test_every_geometry_and_scene_write_is_gated(srv, client):
+    """Pins gate MEMBERSHIP, not just route existence. `_OWNER_ONLY_PATHS` is matched with `in` —
+    exact strings — so renaming a route without updating the set silently ungates it instead of
+    404ing. The route-inventory test above would not notice; this does."""
+    for p in ("/patch", "/reset", "/space/capture", "/space/realign", "/style_surface",
+              "/texture_surface", "/place_asset", "/place_image", "/set_skybox", "/manipulate"):
+        assert p in srv._OWNER_ONLY_PATHS, f"{p} is a write but is not owner-gated"
+    # every gated path must actually be a registered route — a typo would gate nothing
+    routes = {r.path for r in srv.app.routes}
+    assert srv._OWNER_ONLY_PATHS <= routes, f"gated but unrouted: {srv._OWNER_ONLY_PATHS - routes}"
+
+
 def test_guest_cannot_edit_the_world_but_reads_are_open(srv, client):
     # the reported bug: a guest styling a surface in the owner's world → still 403 (edit-rights follow ownership)
     assert client.post("/style_surface", json={"target": "door", "color": "blue"},

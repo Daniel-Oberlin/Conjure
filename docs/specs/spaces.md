@@ -339,8 +339,8 @@ still needs a second headset.
 | `POST /space/select` | commit the surface vote; establish or admit/refuse |
 | `POST /space/visibility` | toggle a space's `public` flag |
 | `POST /space/rename` | rename, fixing up back-references |
-| `POST /room` | owner-only geometry ingest → updates the seed |
-| `POST /space/realign` | re-capture at the current tracking origin |
+| `POST /space/capture` | owner-only geometry ingest → updates the seed |
+| `POST /space/realign` | owner-only; ask headsets to re-capture at the current tracking origin |
 | `POST /worlds/new` \| `/worlds/switch` | open to all; stamps the active space ref or `<void>` |
 
 **MCP tools:** `set_space_visibility`, `realign_room`, `query_room`, `set_world_visibility`,

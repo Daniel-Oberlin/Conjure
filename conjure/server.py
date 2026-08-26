@@ -594,8 +594,8 @@ def _slog(tag: str, msg: str) -> None:
 # build their own worlds with everyone present, while another user's curated world stays protected. (A
 # consent/permission model to relax further — co-edit someone else's world — is a later tightening.)
 _OWNER_ONLY_PATHS = {
-    "/reset", "/patch", "/space/capture", "/texture_surface", "/style_surface", "/place_asset",
-    "/place_cached_asset", "/place_image", "/set_skybox", "/set_grounded_skybox",
+    "/reset", "/patch", "/space/capture", "/space/realign", "/texture_surface", "/style_surface",
+    "/place_asset", "/place_cached_asset", "/place_image", "/set_skybox", "/set_grounded_skybox",
     "/edit_image", "/outpaint_image", "/skybox_from_image",
     "/module", "/module/dismiss", "/manipulate",
 }

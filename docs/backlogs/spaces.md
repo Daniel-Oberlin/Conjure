@@ -90,6 +90,36 @@ The owner-gate middleware (`server.py:600`) reads `X-Conjure-User` and 403s a no
 means the gate is not deny-by-default: anything that reaches the HTTP surface without the header has
 full edit rights. Tighten to require the header once the dev CLI attaches one.
 
+### An empty capture wipes a space's geometry, with no floor under it
+
+`RoomUpdate.replace` defaults to **`True`** (`server.py:2570`), and under `replace` the server prunes
+every stored surface absent from the post. So a single `POST /space/capture` carrying
+`surfaces: []` deletes the whole seed — 59 surfaces down to the handful that happen to be `anchored`
+(photo-pinned, and protected only for that reason).
+
+**This is not hypothetical: it happened during this work.** A throwaway smoke-test POST with an empty
+surface list against the live server took `space-1` from 59 surfaces to 4. Recovered from
+`users.bak1`, but only because a day-old copy existed — the styling survived independently, since
+`surfaceStyles` lives in the world docs rather than the space.
+
+The design reasoning is sound as far as it goes: the *client* owns removal confidence (a 3-capture
+debounce), so a surface missing from a post is genuinely gone and the server can prune at once with no
+server-side absence counter. But that trusts the client completely, and nothing distinguishes "I
+carefully confirmed this room is empty" from "I sent you a malformed or empty frame".
+
+Cheap guards, roughly in order of value:
+
+- **Refuse a wholesale prune.** Reject (or downgrade to merge) a `replace` post that would remove more
+  than some fraction of the stored set — say >50% — unless it carries an explicit
+  `confirm_empty`/`force` flag. A real room does not lose 90% of its surfaces in one capture.
+- **Never prune to empty.** A `replace` post with zero surfaces is far more likely a bug than a fact;
+  treat it as a no-op and log loudly.
+- **Snapshot before a destructive ingest**, so recovery does not depend on an unrelated backup being
+  lucky.
+
+Worth weighing against the current property that a settled room sends no traffic at all — a guard must
+not reintroduce per-capture churn.
+
 ### Cross-user candidate search is a filesystem walk
 
 `_geo_candidates` walks every user's spaces on each `/geolocation`. Fine at present scale; the same
