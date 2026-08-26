@@ -235,11 +235,11 @@ async def query_world() -> str:
 # --- Room model (AR / scene understanding) — see docs/specs/worlds-surfaces.md -----------------------------
 
 _IMMERSION = {
-    "virtual_room": {"passthrough": False, "room.active": True, "room.defaultSurfaceVisible": True},
-    "ar":           {"passthrough": True,  "room.active": True, "room.defaultSurfaceVisible": False},
-    "mixed":        {"passthrough": True,  "room.active": True},
-    "authored":     {"passthrough": False, "room.active": True, "room.defaultSurfaceVisible": False},
-    "vr_unbounded": {"passthrough": False, "room.active": False, "room.defaultSurfaceVisible": False},
+    "virtual_room": {"passthrough": False, "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": True},
+    "ar":           {"passthrough": True,  "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": False},
+    "mixed":        {"passthrough": True,  "spacePresentation.active": True},
+    "authored":     {"passthrough": False, "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": False},
+    "vr_unbounded": {"passthrough": False, "spacePresentation.active": False, "spacePresentation.defaultSurfaceVisible": False},
 }
 
 
@@ -249,19 +249,19 @@ async def _room_summary() -> str:
     so they needn't call query_room just to see surfaces)."""
     doc = await _get("/world")
     env = doc.get("environment", {})
-    room = env.get("room", {})
+    pres = env.get("spacePresentation", {})
     reals = [e for e in doc["entities"] if e.get("meta", {}).get("real")]
-    if not room.get("active") or not reals:
+    if not pres.get("active") or not reals:
         return "No room model yet — the headset hasn't shared one (capture the room, or work in VR)."
     lines = [f"Room: {len(reals)} surfaces · passthrough={env.get('passthrough', False)} · "
-             f"surfaces-visible-by-default={room.get('defaultSurfaceVisible', False)}"]
-    b = room.get("boundary")
+             f"surfaces-visible-by-default={pres.get('defaultSurfaceVisible', False)}"]
+    b = pres.get("boundary")
     if b:
         lines.append(f"boundary: height {b.get('height')}m, floor polygon {b.get('floorPolygon')}")
     for e in reals:
         m = e.get("meta", {})
         mat = e.get("components", {}).get("material", {})
-        vis = mat.get("visible", room.get("defaultSurfaceVisible", False))
+        vis = mat.get("visible", pres.get("defaultSurfaceVisible", False))
         lines.append(f"  - {m.get('semantic', 'surface')} #{m.get('friendly_id', '?')} ({e['id']}) at "
                      f"{e.get('transform', {}).get('position')} (visible={vis}, color={mat.get('color')})")
     return "\n".join(lines)
@@ -409,7 +409,7 @@ async def show_annotations(on: bool = True, dimensions: bool = False) -> str:
     'window (12)'), which the user can reference (e.g. 'make 12 blue'). Turn on when the user wants to
     inspect/identify surfaces. dimensions: also show each surface's size (default off; turn on only if
     the user asks for sizes)."""
-    await _post_patch([{"op": "env", "set": {"room.annotations": on, "room.annotationDims": dimensions}}])
+    await _post_patch([{"op": "env", "set": {"spacePresentation.annotations": on, "spacePresentation.annotationDims": dimensions}}])
     return f"Surface annotations {'on' if on else 'off'}{' with dimensions' if (on and dimensions) else ''}."
 
 
@@ -420,9 +420,9 @@ async def style_annotations(color: Optional[str] = None, opacity: Optional[float
     Affects all labels at once; use show_annotations to turn them on/off."""
     sets = {}
     if color is not None:
-        sets["room.annotationColor"] = color
+        sets["spacePresentation.annotationColor"] = color
     if opacity is not None:
-        sets["room.annotationOpacity"] = opacity
+        sets["spacePresentation.annotationOpacity"] = opacity
     if not sets:
         return "Nothing to change — pass a color and/or opacity."
     await _post_patch([{"op": "env", "set": sets}])
@@ -433,7 +433,7 @@ async def style_annotations(color: Optional[str] = None, opacity: Optional[float
 async def show_edges(on: bool = True) -> str:
     """Show or hide the polygon outline drawn around every room surface (the bright wireframe of the
     real room). Edges are ON by default; turn them off for a cleaner passthrough view."""
-    await _post_patch([{"op": "env", "set": {"room.edgesVisible": on}}])
+    await _post_patch([{"op": "env", "set": {"spacePresentation.edgesVisible": on}}])
     return f"Surface edges {'on' if on else 'off'}."
 
 
@@ -444,9 +444,9 @@ async def style_edges(color: Optional[str] = None, opacity: Optional[float] = No
     use show_edges to turn the outline on/off."""
     sets = {}
     if color is not None:
-        sets["room.edgeColor"] = color
+        sets["spacePresentation.edgeColor"] = color
     if opacity is not None:
-        sets["room.edgeOpacity"] = opacity
+        sets["spacePresentation.edgeOpacity"] = opacity
     if not sets:
         return "Nothing to change — pass a color and/or opacity."
     await _post_patch([{"op": "env", "set": sets}])

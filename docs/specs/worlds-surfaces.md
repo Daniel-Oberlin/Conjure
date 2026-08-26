@@ -62,17 +62,17 @@ reference all agree on it deliberately (`server.py:538`).
 "environment": {
   "public": true,
   "space":  "daniel/space-1",     // WHICH space (a ref) — specs/spaces.md §4
+  "passthrough": false,           // AR camera on/off — immersion axis 1 (top-level, NOT below)
   "sky":    { … },                // how this world presents the sky
-  "room":   { … }                 // how this world presents the space  ← this spec
+  "spacePresentation": { … }      // how this world presents the space  ← this spec
 }
 ```
 
-`environment.room` is the world's view of the space. Split by what survives to disk:
+`environment.spacePresentation` is the world's view of the space. Split by what survives to disk:
 
 | Member | Persisted | Meaning |
 |---|---|---|
 | `active` | yes | is there a space in effect at all |
-| `passthrough` | yes | AR camera on/off — immersion axis 1 |
 | `defaultSurfaceVisible` | yes | global default for captured surfaces — immersion axis 2 |
 | `surfaceStyles` | yes | **per-surface material overrides, keyed by id** — the real user data here |
 | `annotations`, `annotationDims`, `annotationColor`, `annotationOpacity` | yes | the label overlay |
@@ -82,6 +82,11 @@ reference all agree on it deliberately (`server.py:538`).
 
 Everything persisted is presentation. The two exceptions are ephemeral: `boundary` is geometry on loan
 from the space, `authorityClientId` is coordination state.
+
+**`passthrough` is a sibling, not a member.** It lives at `environment.passthrough`, one level up —
+read there by the client (`conjure-client.js:653`) and by the room summary, and written bare by
+`_IMMERSION`. It is an axis of immersion but not a property of the space's presentation, since it is
+equally meaningful in a void world with no space at all.
 
 ### 2.1 Base plus override
 
@@ -95,7 +100,7 @@ small override maps, and switching worlds restyles the room without recapturing 
 
 ### 2.2 The client mirror
 
-The client keeps `roomState` (`conjure-client.js:255`) as its local mirror of `environment.room`, plus
+The client keeps `presentation` (`conjure-client.js:255`) as its local mirror of `environment.spacePresentation`, plus
 two members the server does not store — `skybox` and `grounded`, which say whether a sky is standing in
 as the environment. It gates the holodeck scaffold on them: the grid shows only in a bare void world,
 never over a captured space or under a skybox.
@@ -106,13 +111,14 @@ never over a captured space or under a skybox.
 
 The whole real/virtual spectrum is two independent axes:
 
-- **Axis 1 — passthrough** (`environment.room.passthrough`): is the real room visible through the camera?
-- **Axis 2 — surface visibility** (per-surface material, defaulted by `room.defaultSurfaceVisible`): are
-  the virtual surfaces drawn, and how are they styled?
+- **Axis 1 — passthrough** (`environment.passthrough`, top-level): is the real room visible through the
+  camera?
+- **Axis 2 — surface visibility** (per-surface material, defaulted by
+  `spacePresentation.defaultSurfaceVisible`): are the virtual surfaces drawn, and how are they styled?
 
 `set_immersion(mode)` sets both at once (`_IMMERSION`, `mcp_server.py:237`):
 
-| Mode | passthrough | `room.active` | `defaultSurfaceVisible` | What you get |
+| Mode | passthrough | `spacePresentation.active` | `defaultSurfaceVisible` | What you get |
 |---|---|---|---|---|
 | `virtual_room` | off | true | **true** | a virtual reconstruction of the space, recolourable |
 | `ar` | on | true | false | the real space; surfaces invisible but used for mounting and bounds |
@@ -131,7 +137,7 @@ holodeck.
 
 ## 4. The presentation tools
 
-All of these write `environment.room` or a surface's material, and all accept the same **target**
+All of these write `environment.spacePresentation` or a surface's material, and all accept the same **target**
 vocabulary: a surface id (`real_wall_3`), a semantic label (`wall`, `floor`, `ceiling`, …), a friendly
 id, or `all`.
 
@@ -235,7 +241,7 @@ server-side (`specs/spaces.md §7`); and pruning protection keeps a surface with
 | per-semantic base material | `conjure/server.py:2610` `_default_surface_material` |
 | compose / decompose | `conjure/server.py:2627` / `:2659` |
 | interior-facing orientation | `conjure/server.py:3650` `_face_room` |
-| client presentation mirror | `client/conjure-client.js:255` `roomState` |
+| client presentation mirror | `client/conjure-client.js:255` `presentation` |
 | inset snapping + hole cutting | `client/room-snap.js` `snapInsets` |
 | holed-wall geometry | `client/conjure-client.js` `applySurfaceGeometry` |
 

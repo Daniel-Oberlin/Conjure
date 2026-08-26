@@ -10,31 +10,6 @@ Items are grouped by what they block, roughly most-actionable first.
 
 ## Known problems — verified against the code
 
-### `environment.room` is the wrong name for what it holds
-
-The key holds this world's **presentation of a space** — visibility, passthrough, per-surface style
-overrides, label and outline prefs. Calling it `room` is misleading twice over: the thing it presents is
-a *space* (which routinely contains several rooms), and it sits directly beside
-`environment.space`, which is a completely different thing (a ref string naming *which* space).
-`server.py:2633` has the two adjacent:
-
-```python
-env.pop("space", None)              # which space this world attaches to
-room = env.setdefault("room", {})   # how this world renders it
-```
-
-Proposed: rename to **`environment.spacePresentation`** (camelCase, matching `surfaceStyles` /
-`defaultSurfaceVisible` / `floorPolygon`). Not `environment.space` — that would collide with the ref and
-give one key a string in old documents and a dict in new ones, the worst migration shape.
-
-Cost: ~67 dotted paths across 11 sub-keys, the client's `roomState` mirror, and 4 world files on disk (2
-carrying `surfaceStyles`). The dotted paths are **patch-op keys** (`env_set["room.authorityClientId"]`,
-`server.py:2933`), so client and server must ship together or read both names for one release.
-
-Worth folding into the same change: move `boundary` and `authorityClientId` out from under it. Boundary
-belongs with the space geometry it is copied from; `authorityClientId` is coordination state sitting in
-a presentation bag. That is what makes the new name true rather than merely better.
-
 ### The `authored` immersion mode has nothing to author with
 
 `set_immersion("authored")` sets passthrough off and hides the captured surfaces — the correct axes for
@@ -52,7 +27,7 @@ The design has three independently-toggleable edge layers. One is built:
 
 | Layer | What | State |
 |---|---|---|
-| **outline** | a semantic surface's border | ✅ built, on by default (`room.edgesVisible`) |
+| **outline** | a semantic surface's border | ✅ built, on by default (`spacePresentation.edgesVisible`) |
 | **feature** | door/window opening outlines | not built |
 | **tessellation** | wall-subdivision seams / mesh wireframe | not built |
 
@@ -99,7 +74,7 @@ Real-world depth occlusion is tracked separately and is partly built — see
 
 ## Not built — the shared frame schema
 
-`environment.room.worldAnchor` has **zero occurrences**. The design published the world frame into the
+`environment.spacePresentation.worldAnchor` has **zero occurrences**. The design published the world frame into the
 model so a secondary headset (or a returning session) could localise to it, with `method:
 spatial-anchor | registration | manual`.
 

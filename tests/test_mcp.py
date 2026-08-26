@@ -69,7 +69,7 @@ def _room_doc(n_walls=3, n_floors=2):
     ents += [{"id": f"real_floor_{i}", "meta": {"real": True, "semantic": "floor", "friendly_id": 90 + i},
               "components": {"material": {"color": "darkgreen", "visible": True}},
               "transform": {"position": [i, 0, 0]}} for i in range(n_floors)]
-    return {"name": "Beta", "rev": 7, "entities": ents, "environment": {"room": {"active": True}}}
+    return {"name": "Beta", "rev": 7, "entities": ents, "environment": {"spacePresentation": {"active": True}}}
 
 
 @respx.mock
@@ -277,7 +277,7 @@ async def test_set_immersion_tool_payload(monkeypatch):
     await _tool("set_immersion")(mode="ar")
     body = json.loads(route.calls.last.request.content)
     assert body["ops"][0] == {"op": "env", "set": {
-        "passthrough": True, "room.active": True, "room.defaultSurfaceVisible": False}}
+        "passthrough": True, "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": False}}
 
 
 async def test_set_immersion_rejects_unknown_mode(monkeypatch):
@@ -341,7 +341,7 @@ async def test_show_annotations_tool_payload(monkeypatch):
     route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
     await _tool("show_annotations")(on=True)
     assert json.loads(route.calls.last.request.content)["ops"][0] == {
-        "op": "env", "set": {"room.annotations": True, "room.annotationDims": False}}
+        "op": "env", "set": {"spacePresentation.annotations": True, "spacePresentation.annotationDims": False}}
 
 
 @respx.mock
@@ -350,7 +350,7 @@ async def test_show_annotations_with_dimensions(monkeypatch):
     route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
     await _tool("show_annotations")(on=True, dimensions=True)
     assert json.loads(route.calls.last.request.content)["ops"][0] == {
-        "op": "env", "set": {"room.annotations": True, "room.annotationDims": True}}
+        "op": "env", "set": {"spacePresentation.annotations": True, "spacePresentation.annotationDims": True}}
 
 
 @respx.mock
@@ -359,7 +359,7 @@ async def test_show_edges_tool_payload(monkeypatch):
     route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
     await _tool("show_edges")(on=False)
     assert json.loads(route.calls.last.request.content)["ops"][0] == {
-        "op": "env", "set": {"room.edgesVisible": False}}
+        "op": "env", "set": {"spacePresentation.edgesVisible": False}}
 
 
 @respx.mock
@@ -368,7 +368,7 @@ async def test_style_edges_tool_payload(monkeypatch):
     route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
     await _tool("style_edges")(color="lime", opacity=0.5)
     assert json.loads(route.calls.last.request.content)["ops"][0] == {
-        "op": "env", "set": {"room.edgeColor": "lime", "room.edgeOpacity": 0.5}}
+        "op": "env", "set": {"spacePresentation.edgeColor": "lime", "spacePresentation.edgeOpacity": 0.5}}
 
 
 @respx.mock
@@ -377,7 +377,7 @@ async def test_style_annotations_tool_payload(monkeypatch):
     route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
     await _tool("style_annotations")(color="yellow")
     assert json.loads(route.calls.last.request.content)["ops"][0] == {
-        "op": "env", "set": {"room.annotationColor": "yellow"}}
+        "op": "env", "set": {"spacePresentation.annotationColor": "yellow"}}
 
 
 async def test_style_edges_noop_without_args(monkeypatch):
@@ -404,7 +404,7 @@ async def test_query_room_summarizes(monkeypatch):
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
         "entities": [{"id": "real_floor", "meta": {"real": True, "semantic": "floor", "friendly_id": 7},
                       "components": {"material": {}}, "transform": {"position": [0, 0, 0]}}],
-        "environment": {"passthrough": True, "room": {"active": True, "boundary": {"height": 2.6}}}}))
+        "environment": {"passthrough": True, "spacePresentation": {"active": True, "boundary": {"height": 2.6}}}}))
     out = await _tool("query_room")()
     assert "floor" in out and "2.6" in out and "#7" in out      # friendly id surfaced
 

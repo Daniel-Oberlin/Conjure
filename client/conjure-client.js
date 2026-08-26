@@ -252,11 +252,11 @@
 
   // ----------------------------------------------------------------- immersion / room state
   // Two axes (docs/specs/worlds-surfaces.md §3): passthrough (real room visible) × surface visibility.
-  var roomState = { active: false, passthrough: false, defaultVisible: false,
-                    annotations: false, annotationDims: false,
-                    edgesVisible: true, edgeColor: INFO_COLOR, edgeOpacity: 1,
-                    annotationColor: INFO_COLOR, annotationOpacity: 1,
-                    skybox: false, grounded: false };
+  var presentation = { active: false, passthrough: false, defaultVisible: false,
+                       annotations: false, annotationDims: false,
+                       edgesVisible: true, edgeColor: INFO_COLOR, edgeOpacity: 1,
+                       annotationColor: INFO_COLOR, annotationOpacity: 1,
+                       skybox: false, grounded: false };
 
   // A floating, camera-facing label on a surface: "<semantic> (<friendly id>)", with dimensions only
   // when room.annotationDims is on. Toggled by environment.room.annotations so you can read each
@@ -266,8 +266,8 @@
     if (!on) { if (lbl) el.removeChild(lbl); return; }
     var num = (el.dataset.fid || el.id || "").match(/(\d+)$/);   // trailing number of the friendly/real id
     var text = "[" + (el.dataset.semantic || "surface") + (num ? " " + num[1] : "") + "]"
-      + (roomState.annotationDims && el.dataset.ext ? "\n" + el.dataset.ext : "");
-    var style = { value: text, color: roomState.annotationColor, opacity: roomState.annotationOpacity };
+      + (presentation.annotationDims && el.dataset.ext ? "\n" + el.dataset.ext : "");
+    var style = { value: text, color: presentation.annotationColor, opacity: presentation.annotationOpacity };
     if (lbl) { lbl.setAttribute("text", style); return; }
     // Just the text — camera-facing, double-sided, drawn on top (no background plate).
     lbl = document.createElement("a-entity");
@@ -286,15 +286,15 @@
     // and edge outline (children) can render even in AR where the fill is hidden; only unbounded-VR
     // hides it entirely.
     var explicit = el.dataset.matVisible;
-    var fill = roomState.active && (explicit != null ? explicit === "true" : roomState.defaultVisible);
-    el.setAttribute("visible", roomState.active);
+    var fill = presentation.active && (explicit != null ? explicit === "true" : presentation.defaultVisible);
+    el.setAttribute("visible", presentation.active);
     el.setAttribute("fill-visible", fill);
   }
 
   // The surface outline's color/alpha/visibility — global room display state, independent of the fill.
   function applyEdgeStyle(el) {
-    el.setAttribute("surface-edges", { color: roomState.edgeColor,
-      opacity: roomState.edgeOpacity, visible: roomState.edgesVisible });
+    el.setAttribute("surface-edges", { color: presentation.edgeColor,
+      opacity: presentation.edgeOpacity, visible: presentation.edgesVisible });
   }
 
   function applyImmersion() {
@@ -308,8 +308,8 @@
     // VR" (room inactive AND no chosen skybox). Hide them whenever the room is active — AR passthrough or
     // a virtual room — OR a skybox IS the environment (an outdoor/void world), so the grid never competes
     // with the room or the sky. (In AR the void a-sky would also occlude passthrough, so it's hidden too.)
-    var inRoom = roomState.active;
-    var showScaffold = !inRoom && !roomState.skybox && !roomState.grounded;   // holodeck only in a bare void
+    var inRoom = presentation.active;
+    var showScaffold = !inRoom && !presentation.skybox && !presentation.grounded;   // holodeck only in a bare void
     document.querySelectorAll("[data-scaffold]").forEach(function (el) {
       el.setAttribute("visible", showScaffold);
     });
@@ -319,17 +319,17 @@
     // replaces the plain sphere with a ground-projected dome, so when it's active hide the sphere and
     // show the grounded mesh instead (it likewise wraps the scene whenever the room is active).
     var sky = document.getElementById("sky");
-    if (sky) sky.setAttribute("visible", !roomState.grounded && (roomState.skybox || !inRoom));
+    if (sky) sky.setAttribute("visible", !presentation.grounded && (presentation.skybox || !inRoom));
     var grounded = document.getElementById("grounded-sky");
-    if (grounded) grounded.setAttribute("visible", roomState.grounded);
+    if (grounded) grounded.setAttribute("visible", presentation.grounded);
     var reals = document.querySelectorAll("[data-real]");
     reals.forEach(function (el) {
       applyRealVisibility(el);
       applyEdgeStyle(el);
-      setSurfaceLabel(el, roomState.annotations);
+      setSurfaceLabel(el, presentation.annotations);
     });
-    console.log("[conjure] immersion: active=" + roomState.active + " annotations=" +
-      roomState.annotations + " surfaces=" + reals.length);
+    console.log("[conjure] immersion: active=" + presentation.active + " annotations=" +
+      presentation.annotations + " surfaces=" + reals.length);
   }
 
   // ----------------------------------------------------------------- entity / env rendering
@@ -426,7 +426,7 @@
       if (el && el.isConnected && comps) {
         var st = JITg ? performance.now() : 0;
         applySurfaceGeometry(el, comps); geoRebuilds++;  // the expensive holed-wall re-triangulation (counted for PACE)
-        setSurfaceLabel(el, roomState.annotations);      // refresh dims: label reads dataset.ext, just set above
+        setSurfaceLabel(el, presentation.annotations);      // refresh dims: label reads dataset.ext, just set above
         // The pump caps cost BETWEEN surfaces, but the do..while always finishes the CURRENT one — so a single
         // heavy rebuild (a holed wall / wall art) can overshoot the whole slice in one frame. Log which surface
         // and how long when it exceeds the budget, so a "pop on wall art" can be pinned to a specific rebuild.
@@ -594,7 +594,7 @@
       var matSig = JSON.stringify(comps.material || null);
       if (_fresh || el._matSig !== matSig) { applySurfaceMaterial(el, comps); el._matSig = matSig; }
       if (_fresh) { applyRealVisibility(el); applyEdgeStyle(el); }
-      if (_fresh || shapeChanged) setSurfaceLabel(el, roomState.annotations);
+      if (_fresh || shapeChanged) setSurfaceLabel(el, presentation.annotations);
       return;
     }
     // Stash the surface home id (if any) so the `grab` module can tell surface-attached content (constrain
@@ -630,37 +630,37 @@
           height: env.sky.height || 1.6,
           radius: env.sky.radius || 30,
         });
-        roomState.skybox = true;
-        roomState.grounded = true;
+        presentation.skybox = true;
+        presentation.grounded = true;
       } else if (env.sky && env.sky.src) {
         // 360 equirectangular image: set the full material so the texture isn't tinted and renders
         // on the inside of the sky sphere. Mark a custom skybox so immersion keeps it visible (it
         // wraps the scene even when the room is active — see applyImmersion).
         sky.setAttribute("material", { shader: "flat", side: "back", color: "#FFFFFF", src: env.sky.src });
         if (groundedSky) groundedSky.setAttribute("grounded-sky", { src: "" });   // tear down any grounded dome
-        roomState.skybox = true;
-        roomState.grounded = false;
+        presentation.skybox = true;
+        presentation.grounded = false;
       } else {
         var color = (env.sky && env.sky.color) || env.background;
         if (color) sky.setAttribute("material", { shader: "flat", side: "back", color: color, src: "" });
         if (groundedSky) groundedSky.setAttribute("grounded-sky", { src: "" });
-        roomState.skybox = false;   // back to the void color sky → only shows in unbounded VR
-        roomState.grounded = false;
+        presentation.skybox = false;   // back to the void color sky → only shows in unbounded VR
+        presentation.grounded = false;
       }
     }
     if (env.fog) document.querySelector("a-scene").setAttribute("fog", env.fog);
     // room / immersion (merge — patches may carry only one field)
-    if ("passthrough" in env) roomState.passthrough = !!env.passthrough;
-    if (env.room) {
-      if ("active" in env.room) roomState.active = !!env.room.active;
-      if ("defaultSurfaceVisible" in env.room) roomState.defaultVisible = !!env.room.defaultSurfaceVisible;
-      if ("annotations" in env.room) roomState.annotations = !!env.room.annotations;
-      if ("annotationDims" in env.room) roomState.annotationDims = !!env.room.annotationDims;
-      if ("annotationColor" in env.room) roomState.annotationColor = env.room.annotationColor;
-      if ("annotationOpacity" in env.room) roomState.annotationOpacity = +env.room.annotationOpacity;
-      if ("edgesVisible" in env.room) roomState.edgesVisible = !!env.room.edgesVisible;
-      if ("edgeColor" in env.room) roomState.edgeColor = env.room.edgeColor;
-      if ("edgeOpacity" in env.room) roomState.edgeOpacity = +env.room.edgeOpacity;
+    if ("passthrough" in env) presentation.passthrough = !!env.passthrough;
+    if (env.spacePresentation) {
+      if ("active" in env.spacePresentation) presentation.active = !!env.spacePresentation.active;
+      if ("defaultSurfaceVisible" in env.spacePresentation) presentation.defaultVisible = !!env.spacePresentation.defaultSurfaceVisible;
+      if ("annotations" in env.spacePresentation) presentation.annotations = !!env.spacePresentation.annotations;
+      if ("annotationDims" in env.spacePresentation) presentation.annotationDims = !!env.spacePresentation.annotationDims;
+      if ("annotationColor" in env.spacePresentation) presentation.annotationColor = env.spacePresentation.annotationColor;
+      if ("annotationOpacity" in env.spacePresentation) presentation.annotationOpacity = +env.spacePresentation.annotationOpacity;
+      if ("edgesVisible" in env.spacePresentation) presentation.edgesVisible = !!env.spacePresentation.edgesVisible;
+      if ("edgeColor" in env.spacePresentation) presentation.edgeColor = env.spacePresentation.edgeColor;
+      if ("edgeOpacity" in env.spacePresentation) presentation.edgeOpacity = +env.spacePresentation.edgeOpacity;
     }
     applyImmersion();
   }
@@ -744,11 +744,11 @@
     // carries — `applyEnv` is written for that merge). So a snapshot whose environment has no `room`
     // block means THIS world has no room at all (an outdoor/void world), and the room flags must RESET
     // rather than inherit the previous world's. Without this, switching from a captured room to an
-    // outdoor world left `roomState.active` true, so the last room's surfaces (locally-rendered ones
+    // outdoor world left `presentation.active` true, so the last room's surfaces (locally-rendered ones
     // included — applyImmersion drives them via [data-real]) kept drawing over the outdoor world.
-    if (!(world.environment || {}).room) {
-      roomState.active = false;
-      roomState.passthrough = false;
+    if (!(world.environment || {}).spacePresentation) {
+      presentation.active = false;
+      presentation.passthrough = false;
     }
     applyEnv(world.environment);   // after entities, so immersion can toggle them
     isVoidWorld = ((world.environment || {}).space === VOID_SPACE);
@@ -929,7 +929,7 @@
   // selection and on an admission-gate refusal; `applyImmersion` hides everything given refused||awaitingSpace.
   function blankToPassthrough() {
     root().innerHTML = "";
-    roomState.skybox = false; roomState.grounded = false; roomState.active = false;
+    presentation.skybox = false; presentation.grounded = false; presentation.active = false;
     var gs = document.getElementById("grounded-sky");
     if (gs) gs.setAttribute("grounded-sky", { src: "" });   // tear down any grounded dome
     applyImmersion();

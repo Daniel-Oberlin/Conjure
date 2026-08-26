@@ -26,7 +26,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  // A patch `env` op arrives as a FLAT map of dotted paths ({"room.active": true, "sky.color": "#000"}).
+  // A patch `env` op arrives as a FLAT map of dotted paths ({"spacePresentation.active": true, "sky.color": "#000"}).
   // Rebuild the nested object the renderer applies ({room:{active:true}, sky:{color:"#000"}}). Intermediate
   // objects are created on the way down; the leaf takes the value.
   /**

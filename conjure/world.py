@@ -948,6 +948,36 @@ class SpaceStore:
 MIGRATED_SID = "session-1"
 
 
+def migrate_env_room_to_space_presentation(users_root: str | Path) -> int:
+    """One-time: rename each world's `environment.room` → `environment.spacePresentation` (2026-08-26).
+
+    The key holds how a world PRESENTS its space — surface visibility, per-surface style overrides,
+    label and outline prefs. `room` named the wrong thing twice: what it presents is a *space* (which
+    routinely spans several rooms), and it sat directly beside `environment.space`, a ref string naming
+    WHICH space. Renaming it to `space` would have collided with that ref, so the presentation half took
+    the longer name.
+
+    Only the world documents carry it — the space files never did. Idempotent: a doc already carrying
+    `spacePresentation` (or carrying neither key) is skipped. Returns how many worlds were rewritten."""
+    root = Path(users_root)
+    if not root.exists():
+        return 0
+    n = 0
+    for wf in root.glob("*/agents/*/sessions/*/worlds/*.json"):
+        try:
+            doc = json.loads(wf.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        env = doc.get("environment")
+        if not isinstance(env, dict) or "room" not in env or "spacePresentation" in env:
+            continue
+        # Rebuild in order so the renamed key keeps its slot in the file (readable diffs).
+        doc["environment"] = {("spacePresentation" if k == "room" else k): v for k, v in env.items()}
+        wf.write_text(json.dumps(doc, indent=2))
+        n += 1
+    return n
+
+
 def migrate_worlds_to_ids(users_root: str | Path) -> int:
     """One-time: re-key every world from its NAME to a minted `wld_…` id (2026-08-25).
 

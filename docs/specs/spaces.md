@@ -111,8 +111,8 @@ A world points at its space through `environment.space`:
 "environment": {
   "space": "daniel/space-1",   // "<owner>/<name>" — fully qualified, so ANY user's world can use it
   "public": true,
-  "sky":  { … },               // how this world presents the sky
-  "room": { … }                // how this world presents the space  → worlds-surfaces.md
+  "sky":   { … },              // how this world presents the sky
+  "spacePresentation": { … }   // how this world presents the space  → worlds-surfaces.md
 }
 ```
 
@@ -132,9 +132,9 @@ The live in-memory document is always **fully composed**; only persistence split
 
 1. Drop the persistence-only `space` ref and the `surfaceStyles` map from the live doc.
 2. Take the space's surfaces as the real entities; overlay each one's
-   `environment.room.surfaceStyles[<id>]` onto its `material`.
-3. Copy the space's `boundary` into `environment.room.boundary`.
-4. If the world inherited a non-empty space's geometry, default `room.active = true` — a world that has
+   `environment.spacePresentation.surfaceStyles[<id>]` onto its `material`.
+3. Copy the space's `boundary` into `environment.spacePresentation.boundary`.
+4. If the world inherited a non-empty space's geometry, default `spacePresentation.active = true` — a world that has
    real surfaces genuinely has something to work with, even with no live capture this session. An
    explicit `false` (an immersion mode) is respected.
 5. Re-pin on-surface images to their (possibly moved) hosts.

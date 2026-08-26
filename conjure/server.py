@@ -47,6 +47,7 @@ from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from .world import (MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
                     NAME_SEGMENT, _set_path, clean_name, fold_accents, migrate_cache_to_users,
+                    migrate_env_room_to_space_presentation,
                     migrate_project_cache_to_home, migrate_worlds_to_ids, new_world_id)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -91,8 +92,8 @@ def _has_alpha(im) -> bool:
 # produce; the set grows as constructors need more. The builder shows real-room edges by default; the
 # future dungeonmaster turns them off — same mechanism, different agent.json.
 _WORLD_COMMANDS = {
-    "show_edges": lambda a: [{"op": "env", "set": {"room.edgesVisible": bool(a.get("on", True))}}],
-    "show_annotations": lambda a: [{"op": "env", "set": {"room.annotations": bool(a.get("on", False))}}],
+    "show_edges": lambda a: [{"op": "env", "set": {"spacePresentation.edgesVisible": bool(a.get("on", True))}}],
+    "show_annotations": lambda a: [{"op": "env", "set": {"spacePresentation.annotations": bool(a.get("on", False))}}],
     "set_sky_color": lambda a: [{"op": "env", "set": {"sky": {"color": a.get("color", "#000000")}}}],
 }
 
@@ -228,9 +229,9 @@ def _reset_room_authority(s: WorldStore) -> None:
     Each client mints a fresh id per page load, so a *persisted* authority from a past session names a
     dead headset — and ingest_room would reject the live headset's captures forever (it can't match the
     stale id). Clear it whenever a world becomes active so the live headset reclaims it on next capture."""
-    room = (s.doc.get("environment") or {}).get("room")
-    if isinstance(room, dict) and room.get("authorityClientId"):
-        room["authorityClientId"] = None
+    pres = (s.doc.get("environment") or {}).get("spacePresentation")
+    if isinstance(pres, dict) and pres.get("authorityClientId"):
+        pres["authorityClientId"] = None
 
 
 def _migrate_world_dirs(root: Path) -> None:
@@ -371,6 +372,9 @@ def _init_state() -> None:
     n = migrate_worlds_to_ids(USERS_DIR)             # worlds re-keyed name → `wld_…` id (one-time, idempotent)
     if n:
         print(f"[conjure] migrated {n} world(s) to permanent ids")
+    n = migrate_env_room_to_space_presentation(USERS_DIR)   # environment.room → .spacePresentation (one-time)
+    if n:
+        print(f"[conjure] renamed environment.room → environment.spacePresentation in {n} world(s)")
     sessions = SessionRepository(USERS_DIR)
     worlds = WorldRepository(USERS_DIR, sessions=sessions)   # per-name ops route to the scope's active session
     spaces = SpaceStore(USERS_DIR)
@@ -2568,7 +2572,7 @@ class RoomUpdate(BaseModel):
 
 def _surface_entity(s: RoomSurface) -> dict:
     """A fresh `real` surface entity. Visibility/style are left to the renderer default
-    (environment.room.defaultSurfaceVisible) + later director edits, so re-capture never clobbers
+    (environment.spacePresentation.defaultSurfaceVisible) + later director edits, so re-capture never clobbers
     a director's color/visibility (those go through update, below)."""
     transform: dict = {"position": s.position}
     if s.rotation is not None:
@@ -2620,20 +2624,20 @@ def _default_surface_material(semantic: str) -> dict:
 # ---- space ↔ world composition (docs/specs/spaces.md §2/§4) -------------------------------
 # A SPACE owns the real-surface geometry (+ a base material) and the boundary, shared across a user's
 # worlds. A WORLD owns placed objects, display prefs, and per-surface style OVERRIDES (material that
-# differs from the space's base), keyed by surface id in environment.room.surfaceStyles. The live
+# differs from the space's base), keyed by surface id in environment.spacePresentation.surfaceStyles. The live
 # store.doc stays the COMPOSED shape below (so client/patch/director are unchanged); only persistence
 # splits — _compose on load, _decompose on save.
 
 def _compose(world_doc: dict, space: dict) -> dict:
     """Live doc: the world's placed entities + prefs, merged with the space's real-surface geometry —
-    each surface's material = the space's base, overridden by world.environment.room.surfaceStyles[id].
+    each surface's material = the space's base, overridden by world.environment.spacePresentation.surfaceStyles[id].
     Boundary comes from the space. The surfaceStyles map and `space` ref are persistence-only (dropped)."""
     doc = copy.deepcopy(world_doc)
     env = doc.setdefault("environment", {})
     env.pop("space", None)
     doc.pop("space", None)
-    room = env.setdefault("room", {})
-    styles = room.pop("surfaceStyles", {}) or {}
+    pres = env.setdefault("spacePresentation", {})
+    styles = pres.pop("surfaceStyles", {}) or {}
     placed = [e for e in doc.get("entities", []) if not e.get("meta", {}).get("real")]
     reals = []
     for s in space.get("surfaces", []):
@@ -2645,13 +2649,13 @@ def _compose(world_doc: dict, space: dict) -> dict:
         reals.append(e)
     doc["entities"] = placed + reals
     if space.get("boundary") is not None:
-        room["boundary"] = space["boundary"]
+        pres["boundary"] = space["boundary"]
     # A world INHERITING a non-empty space's geometry (created new / switched-to / reset) genuinely has a
     # room, even with no live headset ingest this session — so mark it active for the director's query_room
-    # (which gates on room.active). Only default it: an explicit False (a director immersion mode like
-    # vr_unbounded, mcp_server.py) is respected. room.active only ever meant "a room exists to work with".
-    if reals and "active" not in room:
-        room["active"] = True
+    # (which gates on spacePresentation.active). Only default it: an explicit False (a director immersion mode like
+    # vr_unbounded, mcp_server.py) is respected. spacePresentation.active only ever meant "a room exists to work with".
+    if reals and "active" not in pres:
+        pres["active"] = True
     _reanchor_surface_images(doc)              # re-pin on-surface images to the (possibly moved) surfaces
     return doc
 
@@ -2671,12 +2675,12 @@ def _decompose(composed: dict, space: dict) -> dict:
         else:
             placed.append(e)
     doc["entities"] = placed
-    room = doc.setdefault("environment", {}).setdefault("room", {})
-    room.pop("boundary", None)
+    pres = doc.setdefault("environment", {}).setdefault("spacePresentation", {})
+    pres.pop("boundary", None)
     if overrides:
-        room["surfaceStyles"] = overrides
+        pres["surfaceStyles"] = overrides
     else:
-        room.pop("surfaceStyles", None)
+        pres.pop("surfaceStyles", None)
     return doc
 
 
@@ -2693,7 +2697,7 @@ def _space_from_world_doc(user: str, name: str, doc: dict) -> dict:
             s.setdefault("components", {})["material"] = _default_surface_material(
                 s.get("meta", {}).get("semantic", "surface"))
             surfaces.append(s)
-    boundary = (doc.get("environment", {}).get("room", {}) or {}).get("boundary")
+    boundary = (doc.get("environment", {}).get("spacePresentation", {}) or {}).get("boundary")
     return {"owner": user, "name": name, "public": True, "geolocation": None,
             "surfaces": surfaces, "boundary": boundary}
 
@@ -2886,8 +2890,8 @@ async def ingest_room(req: RoomUpdate) -> dict:
     clients actually consume is broadcast: room-activation env + on-surface image re-anchors. An idle
     authority is taken over after `_AUTH_TTL` (a reconnecting owner isn't locked out)."""
     global _authority_ts
-    room = store.doc["environment"].get("room", {})
-    authority = room.get("authorityClientId")
+    pres = store.doc["environment"].get("spacePresentation", {})
+    authority = pres.get("authorityClientId")
     now = time.time()
     if authority and authority != req.client_id:
         if (now - _authority_ts) < _AUTH_TTL:                 # another headset is live → refuse
@@ -2927,14 +2931,14 @@ async def ingest_room(req: RoomUpdate) -> dict:
     # Only these reach clients: room-activation/boundary env + on-surface image re-anchors (content, which
     # clients DO render). Geometry is theirs to render locally.
     env_set: dict = {}
-    if not room.get("active"):
-        env_set["room.active"] = True
-    if room.get("authorityClientId") != req.client_id:
-        env_set["room.authorityClientId"] = req.client_id
-    if req.boundary is not None and req.boundary != room.get("boundary"):
-        env_set["room.boundary"] = req.boundary
-    if "defaultSurfaceVisible" not in room:
-        env_set["room.defaultSurfaceVisible"] = False         # default: invisible references (AR-style)
+    if not pres.get("active"):
+        env_set["spacePresentation.active"] = True
+    if pres.get("authorityClientId") != req.client_id:
+        env_set["spacePresentation.authorityClientId"] = req.client_id
+    if req.boundary is not None and req.boundary != pres.get("boundary"):
+        env_set["spacePresentation.boundary"] = req.boundary
+    if "defaultSurfaceVisible" not in pres:
+        env_set["spacePresentation.defaultSurfaceVisible"] = False         # default: invisible references (AR-style)
     wire_ops: list[dict] = []
     if env_set:
         wire_ops.append({"op": "env", "set": env_set})

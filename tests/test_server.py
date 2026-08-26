@@ -704,10 +704,10 @@ def test_room_authority_taken_over_only_when_stale(srv, client, monkeypatch):
     assert client.post("/room", json=body("h1")).json()["ok"] is True     # h1 claims authority
     r = client.post("/room", json=body("h2")).json()                      # h2 while h1 is live → refused
     assert r["ok"] is False and "authority" in r["error"]
-    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] == "h1"
+    assert client.get("/world").json()["environment"]["spacePresentation"]["authorityClientId"] == "h1"
     monkeypatch.setattr(S, "_authority_ts", S._authority_ts - S._AUTH_TTL - 1)   # h1 goes idle
     assert client.post("/room", json=body("h2")).json()["ok"] is True     # h2 takes over the stale authority
-    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] == "h2"
+    assert client.get("/world").json()["environment"]["spacePresentation"]["authorityClientId"] == "h2"
 
 
 def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
@@ -719,9 +719,9 @@ def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
     e = next(e for e in _entities(client) if e["id"] == "real_wall_1")
     assert e["meta"]["real"] is True and e["meta"]["semantic"] == "wall"
     assert e["meta"]["friendly_id"] == 1                  # short id for annotations/voice reference
-    room = client.get("/world").json()["environment"]["room"]
-    assert room["active"] is True and room["authorityClientId"] == "h1"
-    assert room["boundary"]["height"] == 2.6
+    pres = client.get("/world").json()["environment"]["spacePresentation"]
+    assert pres["active"] is True and pres["authorityClientId"] == "h1"
+    assert pres["boundary"]["height"] == 2.6
 
 
 def test_door_surface_defaults_to_translucent(srv, client):
@@ -1000,7 +1000,7 @@ def test_world_constructor_runs_on_create(srv, client):
     # builder's agent.json on_create turns real-room edges on; a fresh world bakes that into its doc
     client.post("/worlds/new", json={"name": "fresh"})
     env = client.get("/world").json()["environment"]
-    assert env.get("room", {}).get("edgesVisible") is True
+    assert env.get("spacePresentation", {}).get("edgesVisible") is True
 
 
 def test_a_world_rename_moves_nothing_and_strands_nothing():
@@ -1036,9 +1036,9 @@ def test_world_names_are_unique_within_a_session():
 def test_reset_room_authority_clears_stale_id(srv):
     from conjure.world import WorldStore
     s = WorldStore({"id": "x", "name": "x", "rev": 0, "entities": [],
-                    "environment": {"room": {"authorityClientId": "hs_dead"}}})
+                    "environment": {"spacePresentation": {"authorityClientId": "hs_dead"}}})
     srv._reset_room_authority(s)
-    assert s.doc["environment"]["room"]["authorityClientId"] is None
+    assert s.doc["environment"]["spacePresentation"]["authorityClientId"] is None
     srv._reset_room_authority(WorldStore({"id": "y", "name": "y", "rev": 0, "entities": [],
                                           "environment": {}}))   # no room/env → must not raise
 
@@ -1048,14 +1048,14 @@ def test_switching_into_a_world_drops_its_stale_authority(srv, client):
     # a world saved by a PAST session, pinned to a now-dead headset id
     srv.worlds.save(srv.DEFAULT_SCOPE, "old-room", WorldStore(
         {"id": "o", "name": "o", "rev": 1, "entities": [],
-         "environment": {"room": {"active": True, "authorityClientId": "hs_dead"}}}))
+         "environment": {"spacePresentation": {"active": True, "authorityClientId": "hs_dead"}}}))
     assert client.post("/worlds/switch", json={"name": "old-room"}).json()["ok"]
-    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] is None
+    assert client.get("/world").json()["environment"]["spacePresentation"]["authorityClientId"] is None
     # a NEW headset id can now capture (before the fix this was rejected forever)
     r = client.post("/room", json={"client_id": "hs_new", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]}]}).json()
     assert r["ok"] is True
-    assert client.get("/world").json()["environment"]["room"]["authorityClientId"] == "hs_new"
+    assert client.get("/world").json()["environment"]["spacePresentation"]["authorityClientId"] == "hs_new"
 
 
 def test_migrate_world_dirs_moves_pre_user_layout(srv, tmp_path):
@@ -1098,7 +1098,7 @@ def _space_doc():
 def test_compose_merges_space_geometry_with_world_overrides(srv):
     space = _space_doc()
     world = {"rev": 5, "entities": [{"id": "ent_dragon", "meta": {"generated": True}, "components": {}}],
-             "environment": {"sky": {"color": "#001"}, "room": {"edgesVisible": True,
+             "environment": {"sky": {"color": "#001"}, "spacePresentation": {"edgesVisible": True,
                              "surfaceStyles": {"real_couch_41": {"color": "green", "visible": True}}}},
              "space": "daniel/spaces/home"}
     doc = srv._compose(world, space)
@@ -1108,23 +1108,23 @@ def test_compose_merges_space_geometry_with_world_overrides(srv):
     assert couch["components"]["material"]["color"] == "green"        # world override applied
     wall = next(e for e in doc["entities"] if e["id"] == "real_wall_0")
     assert wall["components"]["material"]["color"] == "#888"          # no override → space base
-    assert doc["environment"]["room"]["boundary"]["height"] == 2.6    # boundary from space
-    assert "surfaceStyles" not in doc["environment"]["room"]          # overlay not broadcast
+    assert doc["environment"]["spacePresentation"]["boundary"]["height"] == 2.6    # boundary from space
+    assert "surfaceStyles" not in doc["environment"]["spacePresentation"]          # overlay not broadcast
     assert "space" not in doc                                         # ref not broadcast
 
 
 def test_decompose_extracts_only_real_overrides_and_round_trips(srv):
     space = _space_doc()
     world = {"rev": 5, "entities": [{"id": "ent_dragon", "meta": {"generated": True}, "components": {}}],
-             "environment": {"room": {"edgesVisible": True,
+             "environment": {"spacePresentation": {"edgesVisible": True,
                              "surfaceStyles": {"real_couch_41": {"color": "green", "visible": True}}}}}
     composed = srv._compose(world, space)
     back = srv._decompose(composed, space)
     assert [e["id"] for e in back["entities"]] == ["ent_dragon"]      # geometry stripped, placed kept
-    styles = back["environment"]["room"]["surfaceStyles"]
+    styles = back["environment"]["spacePresentation"]["surfaceStyles"]
     assert set(styles) == {"real_couch_41"}                          # only the OVERRIDDEN surface recorded
     assert styles["real_couch_41"]["color"] == "green" and styles["real_couch_41"]["visible"] is True
-    assert "boundary" not in back["environment"]["room"]             # boundary belongs to the space
+    assert "boundary" not in back["environment"]["spacePresentation"]             # boundary belongs to the space
     # round-trip: re-composing reproduces the same rendered surfaces (materials + geometry)
     assert srv._compose(back, space)["entities"] == composed["entities"]
 
@@ -1156,7 +1156,7 @@ def test_activate_no_longer_migrates_embedded_geometry(srv, client):
     space ref now composes as VOID (step 5 removed the anonymous-'home' Path B fallback)."""
     from conjure.world import WorldStore
     embedded = {
-        "id": "l", "name": "legacy", "rev": 3, "environment": {"room": {"boundary": {"height": 2.6}}},
+        "id": "l", "name": "legacy", "rev": 3, "environment": {"spacePresentation": {"boundary": {"height": 2.6}}},
         "entities": [
             {"id": "ent_box", "meta": {"generated": True}, "components": {}},
             {"id": "real_table_2", "meta": {"real": True, "semantic": "table"},
@@ -2139,10 +2139,10 @@ def test_admin_delete_empty_path_refused(srv, client):
     assert r["ok"] is False and "everything" in r["error"]
 
 
-# --- a world inheriting a non-empty space's geometry is room.active (director can see it) --------------
-# Regression: creating/switching to a world that inherits an existing space's surfaces left room.active
+# --- a world inheriting a non-empty space's geometry is spacePresentation.active (director can see it) --------------
+# Regression: creating/switching to a world that inherits an existing space's surfaces left spacePresentation.active
 # unset (only ingest_room set it), so the CLI/voice director's query_room reported "no room" though the
-# geometry was merged. _compose now defaults room.active True when reals are merged (respecting an
+# geometry was merged. _compose now defaults spacePresentation.active True when reals are merged (respecting an
 # explicit False from an immersion mode like vr_unbounded).
 def _space_with_walls():
     return {"surfaces": [
@@ -2155,21 +2155,21 @@ def _space_with_walls():
 
 def test_compose_marks_room_active_when_inheriting_space_geometry():
     from conjure import server
-    doc = server._compose({"environment": {"room": {"edgesVisible": True}}, "entities": []}, _space_with_walls())
-    assert doc["environment"]["room"].get("active") is True
+    doc = server._compose({"environment": {"spacePresentation": {"edgesVisible": True}}, "entities": []}, _space_with_walls())
+    assert doc["environment"]["spacePresentation"].get("active") is True
     assert sum(1 for e in doc["entities"] if (e.get("meta") or {}).get("real")) == 2
 
 
 def test_compose_respects_explicit_room_active_false():
     from conjure import server  # a director immersion mode (vr_unbounded) hides the room — must not be flipped
-    doc = server._compose({"environment": {"room": {"active": False}}, "entities": []}, _space_with_walls())
-    assert doc["environment"]["room"].get("active") is False
+    doc = server._compose({"environment": {"spacePresentation": {"active": False}}, "entities": []}, _space_with_walls())
+    assert doc["environment"]["spacePresentation"].get("active") is False
 
 
 def test_compose_leaves_room_inactive_without_reals():
     from conjure import server
-    doc = server._compose({"environment": {"room": {}}, "entities": []}, {"surfaces": [], "boundary": None})
-    assert not doc["environment"]["room"].get("active")
+    doc = server._compose({"environment": {"spacePresentation": {}}, "entities": []}, {"surfaces": [], "boundary": None})
+    assert not doc["environment"]["spacePresentation"].get("active")
 
 
 def test_move_reauthors_anchor_so_edit_persists(srv, client):
@@ -2407,7 +2407,7 @@ def test_first_world_spec_and_constructor_command_forms(srv):
     # a constructor step names its command as `cmd` OR `tool` — both resolve
     ops = S._run_world_commands([{"cmd": "show_edges", "args": {"on": True}},
                                  {"tool": "set_sky_color", "args": {"color": "#123456"}}])
-    assert {"op": "env", "set": {"room.edgesVisible": True}} in ops
+    assert {"op": "env", "set": {"spacePresentation.edgesVisible": True}} in ops
     assert {"op": "env", "set": {"sky": {"color": "#123456"}}} in ops
 
 
@@ -2417,7 +2417,7 @@ def test_new_world_store_runs_world_then_first_world_chain(srv):
     import conjure.server as S
     s = S._new_world_store("daniel/agents/builder",
                            extra_on_create=[{"tool": "show_edges", "args": {"on": False}}])
-    assert s.doc["environment"]["room"]["edgesVisible"] is False
+    assert s.doc["environment"]["spacePresentation"]["edgesVisible"] is False
 
 
 def test_session_new_builds_the_first_world_from_the_constructor(srv, client):
@@ -2426,7 +2426,7 @@ def test_session_new_builds_the_first_world_from_the_constructor(srv, client):
     client.post("/session/new", json={"scope": scope})
     assert _wname(srv) == "home"                                          # default first-world name
     assert srv.worlds.list(scope) == ["home"]                            # built in the new session
-    assert srv.store.doc["environment"]["room"]["edgesVisible"] is True   # builder's world.on_create ran
+    assert srv.store.doc["environment"]["spacePresentation"]["edgesVisible"] is True   # builder's world.on_create ran
 
 
 async def test_build_generative_ops_binds_and_references_step_output(srv):

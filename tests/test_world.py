@@ -74,13 +74,13 @@ def test_update_unknown_entity_raises():
 def test_save_load_roundtrips_the_doc(tmp_path):
     s = store()
     s.apply_patch([{"op": "add", "entity": {"id": "box", "components": {"geometry": {"primitive": "box"}}}}])
-    s.apply_patch([{"op": "env", "set": {"room.edgesVisible": False}}])
+    s.apply_patch([{"op": "env", "set": {"spacePresentation.edgesVisible": False}}])
     path = tmp_path / "world.json"
     s.save(path)
     loaded = WorldStore.load(path)
     assert loaded.doc["rev"] == s.doc["rev"]
     assert any(e["id"] == "box" for e in loaded.doc["entities"])
-    assert loaded.doc["environment"]["room"]["edgesVisible"] is False
+    assert loaded.doc["environment"]["spacePresentation"]["edgesVisible"] is False
 
 
 def test_save_is_atomic_no_partial_file_on_reopen(tmp_path):
@@ -464,6 +464,33 @@ def test_migrate_cache_to_users(tmp_path):
     assert wd.get_active() == wd.resolve("home")                    # pointer re-pointed at the id
     assert json.loads((base / "session.json").read_text())["active_world"] == wd.resolve("home")
     assert migrate_worlds_to_ids(cache / "users") == 0              # idempotent — safe on every boot
+
+
+def test_migrate_env_room_to_space_presentation(tmp_path):
+    """`environment.room` → `environment.spacePresentation`, carrying the per-world style overrides.
+
+    The rename is lossy if it misses a world: `surfaceStyles` is the only place a world's own colours
+    live (the space holds the base material), so a dropped key silently reverts a styled room to grey.
+    """
+    from conjure.world import migrate_env_room_to_space_presentation
+    wd = tmp_path / "daniel/agents/builder/sessions/session-1/worlds"
+    wd.mkdir(parents=True)
+    styled = {"id": "wld_a", "name": "green", "environment": {
+        "space": "daniel/space-1", "sky": {"color": "#001"},
+        "room": {"active": True, "edgesVisible": False,
+                 "surfaceStyles": {"real_wall_3": {"color": "darkgreen"}}}}}
+    (wd / "wld_a.json").write_text(json.dumps(styled))
+    (wd / "wld_b.json").write_text(json.dumps({"id": "wld_b", "environment": {"sky": {}}}))   # no key
+
+    assert migrate_env_room_to_space_presentation(tmp_path) == 1        # only the one carrying it
+    env = json.loads((wd / "wld_a.json").read_text())["environment"]
+    assert "room" not in env
+    assert env["spacePresentation"]["surfaceStyles"] == {"real_wall_3": {"color": "darkgreen"}}
+    assert env["spacePresentation"]["edgesVisible"] is False
+    assert env["space"] == "daniel/space-1" and env["sky"] == {"color": "#001"}   # siblings untouched
+    assert list(env) == ["space", "sky", "spacePresentation"]           # keeps its slot: readable diffs
+
+    assert migrate_env_room_to_space_presentation(tmp_path) == 0        # idempotent — safe every boot
 
 
 def test_migrate_active_world_falls_back_when_no_pointer(tmp_path):

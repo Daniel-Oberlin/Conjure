@@ -241,21 +241,21 @@ def cmd_generators(s: Settings, a) -> None:
 # --------------------------------------------------------------------------- room chrome
 
 def cmd_annotate(s: Settings, a) -> None:
-    sets = {"room.annotations": a.state != "off", "room.annotationDims": bool(a.dims)}
+    sets = {"spacePresentation.annotations": a.state != "off", "spacePresentation.annotationDims": bool(a.dims)}
     if a.color is not None:
-        sets["room.annotationColor"] = a.color
+        sets["spacePresentation.annotationColor"] = a.color
     if a.opacity is not None:
-        sets["room.annotationOpacity"] = a.opacity
+        sets["spacePresentation.annotationOpacity"] = a.opacity
     r = _post(s, "/patch", {"ops": [{"op": "env", "set": sets}]})
     print(f"annotations {a.state}{' +dims' if a.dims else ''} (rev {r['rev']})")
 
 
 def cmd_edges(s: Settings, a) -> None:
-    sets = {"room.edgesVisible": a.state != "off"}
+    sets = {"spacePresentation.edgesVisible": a.state != "off"}
     if a.color is not None:
-        sets["room.edgeColor"] = a.color
+        sets["spacePresentation.edgeColor"] = a.color
     if a.opacity is not None:
-        sets["room.edgeOpacity"] = a.opacity
+        sets["spacePresentation.edgeOpacity"] = a.opacity
     r = _post(s, "/patch", {"ops": [{"op": "env", "set": sets}]})
     print(f"edges {a.state} (rev {r['rev']})")
 
