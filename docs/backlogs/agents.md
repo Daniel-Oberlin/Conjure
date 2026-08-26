@@ -14,14 +14,14 @@ Each says how strong it is. **Certain** = the code plainly does this, with a lin
 **Unproven trigger** = the mechanism is certain but nobody has shown the condition that fires it arises.
 
 - **A failed agent-follow silently empties the transcript.** *Certain.* In `_reconcile_state`
-  (`agent_server.py:437`), a `shell._open_agent` failure broadcasts a notice and **returns** — before
+  (`agent_server.py:446`), a `shell._open_agent` failure broadcasts a notice and **returns** — before
   `app.state.live = state` and `_sync_transcript`. `Shell._open_agent`'s own handler has already
   reopened the *previous* agent, which means a **fresh Director with an empty transcript**. Because
   `loaded_session` is unchanged, nothing refills it: the conversation is gone until the session next
   changes. The fix is to re-sync on the restore path too.
 - **A client's `agent <name>` switches into the HOST's scope, not the speaker's.**
   *Certain* — `_make_agent_switch_hook` uses `scope_for(app.state.user, agent_name)`
-  (`agent_server.py:499`), and the in-process path uses `self._user` (`shell._activate_world`). Every
+  (`agent_server.py:508`), and the in-process path uses `self._user` (`shell._activate_world`). Every
   other identity-scoped verb uses `Shell._scope()`, i.e. the **speaker**. So a guest who is permitted to
   drive the session lands everyone in *daniel's* outdoor scope — a scope the guest doesn't own and
   therefore can't edit. Decide which is right (probably the speaker, matching the session verbs) and

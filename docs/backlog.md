@@ -188,7 +188,7 @@ shared-room layer in the multi-world code. Worth watching.
 but rotated every figure 180° so they faced *away*. Consistent 180° (not random per-model) ⇒ a single
 convention error, not noise.
 
-**Cause:** `place_asset`/`place_cached_asset` take an LLM-computed `rotation` (server.py:464), so the
+**Cause:** `place_asset`/`place_cached_asset` take an LLM-computed `rotation` (server.py:473), so the
 director freehand-computes the yaw to face center — and the forward axis is inverted. The prompt says
 "session forward is −Z," but a GLB character at rotation [0,0,0] faces +Z, so "rotate to face center"
 flips sign and everyone turns their back. Images never hit this: `place_image` has **no rotation
@@ -286,7 +286,7 @@ inverted** where she was (head down at original head height). Grounding gives th
 **Symptom:** `place_image(on_surface=<window>)` hangs the image **upside down**; on a wall-art surface
 it's correct and quick.
 
-**Cause:** `place_image` (`server.py:1060`) **adopts the captured surface's `rotation` verbatim** for
+**Cause:** `place_image` (`server.py:1069`) **adopts the captured surface's `rotation` verbatim** for
 the image plane. Wall-art planes are captured upright/inward-facing; **window** planes come back with
 a flipped orientation (the headset's plane detection inverts their up/normal), so the image inherits
 the flip. Capture-side quirk, not the placement math per se.

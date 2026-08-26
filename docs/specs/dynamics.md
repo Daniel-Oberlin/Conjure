@@ -32,7 +32,7 @@ sync, while per-client cosmetics (foveation, billboard yaw, interpolation) stay 
 Consequences that hold throughout:
 
 - **Load/unload is world state.** It flows through the existing snapshot/patch path and is owner-gated
-  (`/module`, `/module/dismiss`, `/manipulate` ∈ `_OWNER_ONLY_PATHS`, `server.py:595`). No new authority
+  (`/module`, `/module/dismiss`, `/manipulate` ∈ `_OWNER_ONLY_PATHS`, `server.py:604`). No new authority
   model — conjuring is another kind of scene mutation.
 - **Modules are entities.** A procedural module persists by storing `(seed, config)`; reload restores it
   exactly. No new storage model.
@@ -232,7 +232,7 @@ This is the **only** time input for deterministic state. Derive per-instance var
 For interactive modules where each headset runs its **own** simulation but must react to everyone's input.
 
 - `ConjureBus.emitShared(event, payload)` — relay to the OTHER clients. Sends a ws `module_event`; the
-  server fans it out with `_broadcast_others` (`server.py:4317`), so the sender never receives its own.
+  server fans it out with `_broadcast_others` (`server.py:4349`), so the sender never receives its own.
 - `ConjureBus.on(event, fn)` / `off(event, fn)` — subscribe / unsubscribe. `fn` receives `{event, payload}`.
 
 A module acts on its **own** input immediately and locally, and uses the bus only for cross-client

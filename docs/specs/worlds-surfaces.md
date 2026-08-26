@@ -41,7 +41,7 @@ director's material edits unchanged:
 move or remove it. The renderer draws it only when its material says visible; otherwise it is an
 invisible reference used for mounting and bounds.
 
-**Per-semantic base material** (`_default_surface_material`, `server.py:2610`) — flat `#888`,
+**Per-semantic base material** (`_default_surface_material`, `server.py:2619`) — flat `#888`,
 double-sided, opaque, except that a **door** seeds translucent (`opacity 0.25`) and a **window** seeds
 faint glass (`#cfe6ff`, `opacity 0.18`). See-through is a material property, not an open/closed state,
 so the director adjusts it like any other.
@@ -50,7 +50,7 @@ so the director adjusts it like any other.
 
 Each surface carries a small sequential `meta.friendly_id` assigned at ingest. It is what the user reads
 off a label and speaks back — "make 12 blue". The label, `query_room`, the entity id and the user's
-reference all agree on it deliberately (`server.py:538`).
+reference all agree on it deliberately (`server.py:547`).
 
 ---
 
@@ -89,7 +89,7 @@ instead, because none is a presentation choice:
 - **`boundary`** — geometry, copied in from the space by `_compose` and stripped by `_decompose`. The
   space owns it; a world never persists its own.
 - **`captureAuthority`** — which headset may report geometry. Per-session coordination, nulled whenever
-  a world becomes active (`server.py:231`), because a persisted authority names a dead headset and would
+  a world becomes active (`server.py:240`), because a persisted authority names a dead headset and would
   lock the live one out forever.
 
 ### 2.1 Base plus override
@@ -120,7 +120,7 @@ The whole real/virtual spectrum is two independent axes:
 - **Axis 2 — surface visibility** (per-surface material, defaulted by
   `spacePresentation.defaultSurfaceVisible`): are the virtual surfaces drawn, and how are they styled?
 
-`set_immersion(mode)` sets both at once (`_IMMERSION`, `mcp_server.py:237`):
+`set_immersion(mode)` sets both at once (`_IMMERSION`, `mcp_server.py:246`):
 
 | Mode | passthrough | `spacePresentation.active` | `defaultSurfaceVisible` | What you get |
 |---|---|---|---|---|
@@ -169,7 +169,7 @@ to the surface and fitted to its frame automatically, so no caller computes a po
 `stretch=true` fills the entire surface. Use `texture_surface` instead when the image should *cover* a
 surface as a mural rather than hang as a framed picture.
 
-Orientation is handled by `_face_room(srot, up_local)` (`server.py:3650`), which turns content to face
+Orientation is handled by `_face_room(srot, up_local)` (`server.py:3682`), which turns content to face
 the space's interior (along `−normal`) and keeps it upright against gravity rather than trusting the
 surface's own roll. Captured normals point **outward** from the space, so interior-facing is `−normal` —
 except wall-art, whose normal may arrive inward. That asymmetry is a live source of bugs; see
@@ -239,12 +239,12 @@ server-side (`specs/spaces.md §7`); and pruning protection keeps a surface with
 
 | Concern | Where |
 |---|---|
-| immersion mode table | `conjure/mcp_server.py:237` `_IMMERSION` |
-| the room summary | `conjure/mcp_server.py:246` `_room_summary` |
+| immersion mode table | `conjure/mcp_server.py:246` `_IMMERSION` |
+| the room summary | `conjure/mcp_server.py:255` `_room_summary` |
 | `query_world` collapse | `conjure/mcp_server.py` `_real_surfaces_line` |
-| per-semantic base material | `conjure/server.py:2610` `_default_surface_material` |
-| compose / decompose | `conjure/server.py:2627` / `:2659` |
-| interior-facing orientation | `conjure/server.py:3650` `_face_room` |
+| per-semantic base material | `conjure/server.py:2619` `_default_surface_material` |
+| compose / decompose | `conjure/server.py:2636` / `:2659` |
+| interior-facing orientation | `conjure/server.py:3682` `_face_room` |
 | client presentation mirror | `client/conjure-client.js:255` `presentation` |
 | inset snapping + hole cutting | `client/room-snap.js` `snapInsets` |
 | holed-wall geometry | `client/conjure-client.js` `applySurfaceGeometry` |

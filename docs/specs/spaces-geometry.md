@@ -388,7 +388,7 @@ round-trips.
 **large move** beyond ~0.5 m or 20° (real furniture moved or a re-scan, not drift) — which prints and
 logs, because it is rare and attention-worthy; a styling or content edit; a boundary change.
 
-**Server side** (`_surface_structural_change`, `server.py:2852`): a surface is added when new, updated
+**Server side** (`_surface_structural_change`, `server.py:2884`): a surface is added when new, updated
 only on a structural change, and pruned when absent. Those geometry ops are applied to the stored seed
 and **never broadcast** — clients render locally. Only what clients actually consume goes out:
 room-activation env, boundary, and on-surface image re-anchors.
@@ -573,11 +573,11 @@ with a golden test like `plane_anchor`'s.
 
 | Concern | Where |
 |---|---|
-| structural-change gate | `conjure/server.py:2852` `_surface_structural_change` |
-| ingest (seed-only, no broadcast) | `conjure/server.py:2877` `ingest_room` |
+| structural-change gate | `conjure/server.py:2884` `_surface_structural_change` |
+| ingest (seed-only, no broadcast) | `conjure/server.py:2909` `ingest_room` |
 | seed planes for server solves | `conjure/server.py` `_seed_planes` |
 | server-side anchor authoring | `conjure/server.py` `_content_anchor` |
-| pose-relative queries | `conjure/server.py:3866` `/view_relative` |
+| pose-relative queries | `conjure/server.py:3898` `/view_relative` |
 | local render + world-root identity | `client/conjure-client.js:1396` |
 | content placement | `client/conjure-client.js` `_placeContent` |
 | recovery | `client/conjure-client.js` `_recoverMissing` |

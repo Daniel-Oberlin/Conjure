@@ -36,8 +36,8 @@ Strip that away and there are exactly two readers:
 
 | Consumer | What it does with it |
 |---|---|
-| `mcp_server.py:258` `_room_summary` | prints one line of text: `boundary: height 2.6m, floor polygon [[x,z],…]` |
-| `server.py:2363` shell `status` | a yes/no presence indicator in an inspection table |
+| `mcp_server.py:267` `_room_summary` | prints one line of text: `boundary: height 2.6m, floor polygon [[x,z],…]` |
+| `server.py:2372` shell `status` | a yes/no presence indicator in an inspection table |
 
 So the boundary today is **a hint to the LLM, delivered as raw coordinates, that nothing verifies.**
 
@@ -85,14 +85,14 @@ and anything they built in the void world does not follow.
 
 ### A missing caller header is treated as the owner
 
-The owner-gate middleware (`server.py:600`) reads `X-Conjure-User` and 403s a non-owner, but a
+The owner-gate middleware (`server.py:609`) reads `X-Conjure-User` and 403s a non-owner, but a
 **missing** header is admitted as the owner. That was deliberate convenience for the direct dev CLI. It
 means the gate is not deny-by-default: anything that reaches the HTTP surface without the header has
 full edit rights. Tighten to require the header once the dev CLI attaches one.
 
 ### An empty capture wipes a space's geometry, with no floor under it
 
-`RoomUpdate.replace` defaults to **`True`** (`server.py:2570`), and under `replace` the server prunes
+`RoomUpdate.replace` defaults to **`True`** (`server.py:2579`), and under `replace` the server prunes
 every stored surface absent from the post. So a single `POST /space/capture` carrying
 `surfaces: []` deletes the whole seed — 59 surfaces down to the handful that happen to be `anchored`
 (photo-pinned, and protected only for that reason).

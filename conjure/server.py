@@ -137,13 +137,22 @@ def _run_world_commands(cmds: list[dict]) -> list[dict]:
     return ops
 
 
-def _new_world_store(scope: str, *, extra_on_create: list[dict] = ()) -> WorldStore:
+def _new_world_store(scope: str, *, extra_on_create: list[dict] = (),
+                     adopt_space: bool = True, outdoor: bool = False) -> WorldStore:
     """A fresh world: the blank starter + the owning agent's `world.on_create` constructor. `extra_on_create`
     appends the first-world-only chain (§6) when minting a session's first world — generic steps first,
     then the specific ones. Only the SYNC (`_WORLD_COMMANDS`) steps are applied here; generative steps
-    (skybox-from-description) are compiled separately by `_build_generative_ops` (async)."""
+    (skybox-from-description) are compiled separately by `_build_generative_ops` (async).
+
+    The world ADOPTS the live space (`_space_for_new_world`, D5/step 5) — this is the one chokepoint every
+    mint path shares, so a world born while you're standing in your room has your room in it no matter
+    which path minted it. `adopt_space=False` is for the ONE caller that runs before a space is resolved
+    (`_boot_world`); `outdoor` forces VOID for an explicitly room-less world."""
     s = WorldStore.load(SAMPLE_WORLD)
-    s.doc.setdefault("environment", {})["public"] = True          # worlds are public by default (§4)
+    env = s.doc.setdefault("environment", {})
+    env["public"] = True                                          # worlds are public by default (§4)
+    if adopt_space:
+        env["space"] = _space_for_new_world(scope, outdoor=outdoor)
     ops = _run_world_commands(_agent_world_config(scope).get("on_create", []))
     ops += _run_world_commands(list(extra_on_create))
     if ops:
@@ -309,8 +318,8 @@ def _boot_world() -> tuple[str, str, WorldStore]:
             return scope, active, s
         except Exception as exc:  # noqa: BLE001
             print(f"[conjure] active world {active!r} unreadable ({exc}); creating a fresh default")
-    s = _new_world_store(scope)
-    _reset_room_authority(s)
+    s = _new_world_store(scope, adopt_space=False)   # boot: no space resolved yet (the globals still hold
+    _reset_room_authority(s)                         # their module defaults) — nothing honest to adopt
     wid = worlds.save(scope, "default", s)      # upsert by name → mints the permanent id
     worlds.set_active(scope, wid)
     _ensure_session(scope, sid, active_world=wid)
@@ -1272,7 +1281,8 @@ async def _activate_scope(scope: str) -> dict:
     """Make a world in `scope` live: resume that scope's last-active world, or create its `default` if
     the scope has none — the `_boot_world` logic generalized to any scope. A no-op when `scope` is
     already active. Used on agent switch so the live world belongs to the NEW agent's scope, not the
-    previous agent's (a fresh world with no captured space resolves to VOID — skybox/objects only)."""
+    previous agent's. A `default` minted here ADOPTS the live space like any other new world
+    (`_space_for_new_world`), so switching agents while standing in your room keeps the room."""
     # The live agent is derived from the global session pointer (set by _switch_to below) — no separate
     # last-agent to record here (docs/specs/agents.md §9.1).
     if scope == active_scope:
@@ -1387,8 +1397,9 @@ def _resolve_user(spoken: str, agent: str) -> Optional[str]:
 
 
 async def _switch_session(scope: str, sid: str) -> dict:
-    """Make session `sid` live: route worlds to it, resume its active world (or mint a blank ``home`` if
-    it has none yet — the constructor that seeds a richer first world is a later step), and switch — which
+    """Make session `sid` live: route worlds to it, resume its active world (or mint a blank ``home`` in
+    the live space if it has none yet — the constructor that seeds a richer first world is a later step),
+    and switch — which
     writes the global pointer ``(scope, sid)`` and broadcasts. The agent server follows the pointer and
     swaps the transcript (step 2). We DON'T flip the scope's active session here — `_switch_to(sid=…)`
     does it after saving the outgoing world, so it lands in the right session."""
@@ -1834,14 +1845,12 @@ async def worlds_new(req: WorldRef) -> dict:
                 creator, active_space_owner, active_space):
             return {"ok": False, "error": f"{active_space_owner}'s space is private — "
                                           f"only {active_space_owner} can build worlds here."}
-        fresh = _new_world_store(req.scope)
-        env = fresh.doc.setdefault("environment", {})
         # Visibility is the SESSION's now (§8.2): a new world inherits it — no per-world public flag. `req.public`
         # is vestigial for worlds; use `session public|private` to change the session's visibility.
-        # D5/step 5: a new world ADOPTS the active, geo+surface-selected space — "build your own world in
-        # it", even someone else's (D3). No active space yet (unclaimed server) or an explicit outdoor world
-        # → VOID, the honest "no room yet" (replaces the old anonymous-'home' Path B fallback).
-        env["space"] = VOID if (req.outdoor or active_space == VOID) else _space_ref(active_space_owner, active_space)
+        # D5/step 5: the world ADOPTS the active, geo+surface-selected space — "build your own world in it",
+        # even someone else's (D3) — or VOID when outdoor / nothing is live. That stamp is `_new_world_store`'s
+        # job now, shared with every other mint path (agent switch, session mint) so none can forget it.
+        fresh = _new_world_store(req.scope, outdoor=req.outdoor)
         # Mint the id here so the switch addresses the world by identity from the very first moment.
         wid = new_world_id()
         fresh.doc["id"], fresh.doc["name"] = wid, req.name
@@ -2734,6 +2743,29 @@ def _may_create_world_in(user: str, owner: str, name: str) -> bool:
     """D8: `user` may create a world tied to space `owner/name` iff they OWN the space or it is PUBLIC.
     (Joining/viewing an existing world is governed separately by co-location + the WORLD's visibility.)"""
     return user == owner or _space_is_public(owner, name)
+
+
+def _space_for_new_world(scope: str, *, outdoor: bool = False) -> str:
+    """The `environment.space` a freshly-minted world adopts (D5/step 5): the LIVE, geo+surface-selected
+    space, so a world created while a headset is standing in a room composes THAT room. VOID — the honest
+    "no room here" — in three cases:
+
+      - `outdoor`: an explicitly room-less world (skybox only);
+      - no space is live (`active_space == VOID`) — an unclaimed server, or a void/outdoor world;
+      - the creator may not build in the live space (`_may_create_world_in` — someone else's PRIVATE
+        space). `/worlds/new` REFUSES that outright because the user asked for it explicitly; the
+        implicit mint paths (agent switch, session mint) must not fail a navigation, so they degrade to
+        VOID rather than silently adopting a space the creator has no right to build in.
+
+    Deliberately NOT gated on the space existing on disk: a live space is persisted lazily (`_save_active`
+    /autosave), so it is routinely real-but-unflushed at mint time. The one caller that runs before any
+    space is resolved passes `adopt_space=False` instead.
+    """
+    if outdoor or active_space == VOID:
+        return VOID
+    if not _may_create_world_in(scope.split("/", 1)[0], active_space_owner, active_space):
+        return VOID
+    return _space_ref(active_space_owner, active_space)
 
 
 def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, WorldStore]:

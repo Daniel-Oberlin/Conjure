@@ -1812,6 +1812,61 @@ def test_outdoor_void_world_has_no_space(srv, client):
     assert S.active_space == "<void>"
 
 
+def test_agent_switch_keeps_the_live_space(srv, client):
+    """Switching agents mints a `default` world in the NEW scope — and it must adopt the live space, or
+    you walk out of your own room. Reported from the headset: builder was in a fully-composed room, an
+    agent switch landed in a void world, and the new agent correctly reported 'no room surfaces yet'."""
+    from conjure import server as S
+    srv.store.doc["entities"].append({"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
+        "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]}}})
+    r = client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"}).json()
+    assert r["ok"] and not r.get("unchanged")
+    assert S.active_scope == "daniel/agents/outdoor"
+    assert S.active_space == "home" and S.active_space_owner == "daniel"     # still in the same room
+    assert any(e["id"] == "real_wall_9" for e in _entities(client))          # composes the room's geometry
+    assert srv.worlds.load("daniel/agents/outdoor", r["id"]).doc["environment"]["space"] == "daniel/home"
+
+
+def test_a_new_session_first_world_keeps_the_live_space(srv, client):
+    """The same hole in the OTHER implicit mint path: `session new` builds the session's first world."""
+    from conjure import server as S
+    srv.store.doc["entities"].append({"id": "real_floor_3", "meta": {"real": True, "semantic": "floor"},
+        "transform": {"position": [0, 0, 0]}, "components": {"surface": {"extent": [4, 4]}}})
+    assert client.post("/session/new", json={"scope": S.DEFAULT_SCOPE, "title": "Second"}).json()["ok"]
+    assert S.active_space == "home" and S.active_space_owner == "daniel"
+    assert any(e["id"] == "real_floor_3" for e in _entities(client))
+    assert srv.worlds.load(S.DEFAULT_SCOPE, S.active_world).doc["environment"]["space"] == "daniel/home"
+
+
+def test_implicit_mint_degrades_to_void_in_someone_elses_private_space(srv, client):
+    """`/worlds/new` REFUSES to build in another user's private space (an explicit ask deserves an error).
+    An agent switch is navigation and must not hard-fail, so it degrades to VOID instead — never silently
+    adopting a space the creator has no right to build in."""
+    from conjure import server as S
+    _geo_space(srv, "carol", "loft", 1.0, 2.0, public=False)
+    monkey = (S.active_space_owner, S.active_space)
+    S.active_space_owner, S.active_space = "carol", "loft"
+    try:
+        assert client.post("/worlds/new", json={"name": "trespass"}).json()["ok"] is False   # explicit → error
+        r = client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"}).json()   # implicit → VOID
+        assert r["ok"]
+        assert srv.worlds.load("daniel/agents/outdoor", r["id"]).doc["environment"]["space"] == "<void>"
+    finally:
+        S.active_space_owner, S.active_space = monkey
+
+
+def test_space_for_new_world_is_the_one_stamp_every_mint_path_shares(srv):
+    """The unit behind the three tests above — plus the boot opt-out, the one caller that legitimately
+    runs before any space is resolved."""
+    from conjure import server as S
+    assert S._space_for_new_world(S.DEFAULT_SCOPE) == "daniel/home"          # live space, not yet on disk
+    assert S._space_for_new_world(S.DEFAULT_SCOPE, outdoor=True) == "<void>"
+    S.active_space = S.VOID
+    assert S._space_for_new_world(S.DEFAULT_SCOPE) == "<void>"               # nothing live to adopt
+    # `adopt_space=False` leaves the ref off entirely, so `_activate` reads it as "no space chosen yet"
+    assert "space" not in S._new_world_store(S.DEFAULT_SCOPE, adopt_space=False).doc["environment"]
+
+
 # ---- step 6: space visibility (D8) — public space = anyone builds; private = owner-only creation --------
 def test_set_space_visibility_defaults_to_active_and_is_scope_bound(srv, client):
     _geo_space(srv, "daniel", "home", 37.77, -122.42)            # active space daniel/home (public)

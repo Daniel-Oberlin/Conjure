@@ -56,7 +56,7 @@ assets/catalog move to `data/` (precious); only genuinely regenerable artifacts 
 
 ### 3.1 Current `<project>/.cache` inventory → new home
 
-Everything on disk today, classified explicitly. **`library.db` is DATA, not cache** — server.py:349:
+Everything on disk today, classified explicitly. **`library.db` is DATA, not cache** — server.py:358:
 "a lost catalog is NOT rebuilt from the cache files" (labels, captions, public flags, embeddings are
 curation). It's an index but a *precious* one.
 
