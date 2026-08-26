@@ -149,12 +149,15 @@ async def _get(path: str, timeout: float = 10.0) -> dict:
 
 
 def _entity_line(e: dict) -> str:
-    """'<id>: <what it is> at <pos>' — shared by query_world and the world://current resource."""
+    """'<id>: <what it is> at <pos>' — shared by query_world and the world://current resource.
+
+    Neither caller passes a REAL room surface: `world://current` filters them out and `query_world`
+    collapses them (`_real_surfaces_line`). The guard below only keeps a stray third caller honest."""
     comps = e.get("components", {})
     meta = e.get("meta", {})
     pos = e.get("transform", {}).get("position")
     if meta.get("real"):
-        desc = f"REAL {meta.get('semantic', 'surface')} (room surface — restyle/hide/mount, don't move)"
+        desc = f"REAL {meta.get('semantic', 'surface')} (room surface — see the room summary)"
     elif "gltf-model" in comps:
         aid = meta.get("asset_id") or comps["gltf-model"].rsplit("/", 1)[-1]
         desc = f"model {meta.get('title', '?')!r} [asset {aid}]"
@@ -184,13 +187,47 @@ def _env_line(env: dict) -> str:
     return ("Environment: " + "; ".join(bits)) if bits else ""
 
 
+def _real_surfaces_line(reals: list[dict]) -> str:
+    """The single line every REAL room surface collapses to in a world dump.
+
+    A dump used to spend one line each on these, which in a captured room is most of it — measured at
+    59 of 73 entities and **87% of the characters**, for lines carrying a semantic label, a position,
+    and nothing else. The cost wasn't the worst of it: those lines READ as complete. Every entity in
+    the dump has the same `id: description at pos` shape, so "this floor has no colour" and "this line
+    doesn't show colour" are indistinguishable — and an agent that wants a colour concludes the world
+    doesn't store one. It does: `room://current` carries every surface's id, position, colour and
+    visibility, and it's already in the prompt of any agent that cares (observed 2026-08-26 — the
+    director read this dump, saw no colours, and reported that surface colours aren't stored, with the
+    real answer sitting in its own context).
+
+    So: a count, the per-kind tally the room summary can't give without counting 59 lines, and a
+    pointer to where the detail lives. One line can't be mistaken for a full description."""
+    kinds: dict[str, int] = {}
+    for e in reals:
+        k = (e.get("meta") or {}).get("semantic") or "surface"
+        kinds[k] = kinds.get(k, 0) + 1
+    tally = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0])))
+    return (f"{len(reals)} REAL room surfaces ({tally}) — NOT listed here. Each one's id, position, "
+            f"colour and visibility are in the room summary, already in your context. Restyle/hide/"
+            f"mount them; don't move or remove them.")
+
+
 @mcp.tool()
 async def query_world() -> str:
-    """Full world dump (every entity + environment). RARELY needed — your placed objects are already in
-    the Live context each turn; use this only for detail the summary omits, or a very large scene."""
+    """Full dump of the PLACED scene (every non-room entity + the environment). RARELY needed — your
+    placed objects are already in the Live context each turn; use this only for detail the summary
+    omits, or a very large scene.
+
+    Real room surfaces are **summarised in one line, not listed** — their per-surface detail (colour,
+    visibility, position) is in the room summary, which is richer than anything this dump ever showed
+    for them."""
     doc = await _get("/world")
-    lines = [f"World {doc.get('name', '')!r} (rev {doc['rev']}), {len(doc['entities'])} entities:"]
-    lines += [f"  - {_entity_line(e)}" for e in doc["entities"]]
+    ents = doc["entities"]
+    reals = [e for e in ents if (e.get("meta") or {}).get("real")]
+    lines = [f"World {doc.get('name', '')!r} (rev {doc['rev']}), {len(ents)} entities:"]
+    lines += [f"  - {_entity_line(e)}" for e in ents if not (e.get("meta") or {}).get("real")]
+    if reals:
+        lines.append(f"  - {_real_surfaces_line(reals)}")
     lines.append(f"environment: {doc.get('environment', {})}")
     return "\n".join(lines)
 

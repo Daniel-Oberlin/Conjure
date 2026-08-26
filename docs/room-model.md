@@ -415,8 +415,11 @@ generalizes per-device); the only missing piece is frame-promotion + a way for s
 
 ## 9. MCP / director surface 🟡
 
-Coarse/intent-level tools (architecture §8). Real surfaces also appear in `query_world` as
-`real`-tagged entities, so the director's existing `update`/material edits already apply to them.
+Coarse/intent-level tools (architecture §8). Real surfaces are `real`-tagged entities, so the
+director's existing `update`/material edits already apply to them. They are **described** by the
+`room://current` summary (per surface: semantic, id, position, colour, visibility), not by
+`query_world` — which collapses them to a single counted line, since listing 59 label-and-position
+rows was 79% of that dump and showed less than the summary already had.
 
 - `set_immersion(mode)` — `virtual_room | ar | mixed | authored | vr_unbounded` (sets the two axes, §5).
 - `enter_ar()` / `enter_vr()` — passthrough toggle (a thin alias over `set_immersion`).
@@ -481,8 +484,9 @@ Each slice is independently demoable in-headset:
   or only to native SDKs? Gates strategy (a) vs the (b) registration fallback — spike before committing.
 - **Mesh volume / throttling & segmentation**: simplification + delta strategy; mapping mesh segments to
   stable semantic surface ids so uniform editing (§7) holds.
-- **Schema fit**: `real` stylable entities vs a dedicated `room` block — lean entities for reuse; ensure
-  `query_world` doesn't bloat the director's turns (summary vs full geometry).
+- **Schema fit**: `real` stylable entities vs a dedicated `room` block — lean entities for reuse.
+  *(Settled: `query_world` collapses real surfaces to one line, so the full geometry never bloats a
+  turn; the per-surface view is `room://current`.)*
 - **Authority handoff** semantics when the owning headset drops mid-session.
 - **Authored-room safety**: always constrain to the real boundary so users don't walk into real walls.
 

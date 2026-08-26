@@ -278,7 +278,11 @@ A failed or missing context resource is skipped, never fatal. The world server e
 | `world://current` | placed objects (excluding scaffold and real surfaces) + the environment line |
 | `dynamics://available` | the **active agent's** conjurable module catalog (specs/dynamics.md §9) |
 
-`query_world` stays a *tool* for anything a prefetched snapshot would make stale.
+`query_world` stays a *tool* for anything a prefetched snapshot would make stale. It dumps the
+**placed** scene: real room surfaces collapse to one counted line that names what it withheld and
+points at `room://current`, because a per-surface listing was most of the dump and carried strictly
+less than the summary — an identical-looking line per surface reads as complete, and a reader that
+wants a colour concludes none is stored.
 
 ### 5.4 The transcript and the model's view
 
