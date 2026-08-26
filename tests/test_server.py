@@ -1855,6 +1855,34 @@ def test_implicit_mint_degrades_to_void_in_someone_elses_private_space(srv, clie
         S.active_space_owner, S.active_space = monkey
 
 
+def test_agent_switch_mints_a_session_marked_fresh(srv, client):
+    """A session born of an agent switch must carry `greeted`/`seeded` = False, like one from
+    `/session/new`. The agent server's constructor hooks gate on `is not False` (an ABSENT flag means a
+    legacy session it must not retro-greet), so omitting them here meant a switched-to agent NEVER seeded
+    its state or spoke its greeting. Reported as 'why no state file at all?'."""
+    assert client.post("/scope/activate", json={"scope": "daniel/agents/scratch"}).json()["ok"]
+    meta = srv.sessions.load_meta("daniel/agents/scratch", "session-1")
+    assert meta["greeted"] is False and meta["seeded"] is False
+    # and the explicit path still agrees — one shape of fresh-session meta, not two
+    assert client.post("/session/new", json={"scope": "daniel/agents/scratch"}).json()["ok"]
+    fresh = srv.sessions.load_meta("daniel/agents/scratch", "session-2")
+    assert fresh["greeted"] is False and fresh["seeded"] is False
+
+
+def test_ensure_session_does_not_reset_an_existing_sessions_flags(srv):
+    """Only a NEWLY created session is marked fresh — re-ensuring a session that has already greeted must
+    not make it greet again."""
+    from conjure import server as S
+    scope = "daniel/agents/outdoor"
+    S._ensure_session(scope, "session-1")
+    meta = srv.sessions.load_meta(scope, "session-1")
+    meta.update(greeted=True, seeded=True)
+    srv.sessions.save_meta(scope, "session-1", meta)
+    S._ensure_session(scope, "session-1")                       # again — must be a no-op on the flags
+    again = srv.sessions.load_meta(scope, "session-1")
+    assert again["greeted"] is True and again["seeded"] is True
+
+
 def test_space_for_new_world_is_the_one_stamp_every_mint_path_shares(srv):
     """The unit behind the three tests above — plus the boot opt-out, the one caller that legitimately
     runs before any space is resolved."""

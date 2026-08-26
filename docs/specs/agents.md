@@ -683,6 +683,18 @@ Order at mint: title cleaned and uniqueness-checked → generative steps → ses
    lock. The result is appended to the transcript, persisted, and broadcast. `greeted` flips to `true`
    even when the greeting is empty or failed, so reconnects and re-syncs never repeat it.
 
+**Both hooks gate on the flag being exactly `False`**, so an *absent* flag means "a legacy session — do
+not retro-greet it". That makes writing the flags an obligation of **every** path that mints a session,
+not just `/session/new`: `_ensure_session` (`server.py:283`) marks one fresh too, because it is what an
+**agent switch** and the boot fallback mint through. Omitting them there meant a session born of an agent
+switch skipped its constructor permanently — no state seeded, no greeting, with no error anywhere.
+
+**A session minted implicitly still does not run `session.first_world`.** `_first_world_spec` has exactly
+one caller (`/session/new`), so an agent switch into a scope with no session mints a world called
+`default` from `world.on_create` alone — not the declared first-world name, and none of its generative
+steps. Switch to `outdoor` for the first time and you get a bare `default` instead of `home` with its
+sky. Tracked in [`backlogs/agents.md`](../backlogs/agents.md).
+
 The `world.on_exit` block is declared and read by nothing.
 
 ---

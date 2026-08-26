@@ -252,6 +252,35 @@ async def test_new_session_state_is_seeded_once(tmp_path):
     assert sessions.state(scope, "session-1").get("map", "start") == "cave"
 
 
+async def test_a_session_meta_without_the_flags_is_never_constructed(tmp_path):
+    """The other half of the agent-switch bug: both hooks gate on `is not False`, so a meta with the flag
+    ABSENT (rather than False) is skipped forever — no seed, no greeting. That guard is deliberate (a
+    legacy session must not be retro-greeted), which is why the fix is for every mint path to WRITE the
+    flags (`server._ensure_session`) rather than to loosen the check here."""
+    from conjure.agent_server import _maybe_greet, _maybe_seed
+    sessions = SessionRepository(tmp_path)
+    scope = "daniel/agents/dm"
+    sessions.save_meta(scope, "session-1", {"id": "session-1", "owner": "daniel", "agent": "dm",
+        "title": "S", "public": True, "active_world": "home", "llm": ""})      # NO greeted/seeded
+    shell = FakeShell()
+    shell.director.agent = types.SimpleNamespace(name="dm", session={"greeting": "Hello there"},
+                                                 state={"map": {"seed_data": {"start": "home"}}})
+    app = _app(shell, [], sessions=sessions)
+    app.state.live = {"scope": scope, "session": "session-1", "agent": "dm"}
+    _maybe_seed(app)
+    await _maybe_greet(app)
+    assert sessions.state(scope, "session-1").list() == []      # no state file written at all
+    assert shell.director.transcript == []                      # and no greeting spoken
+    # write the flags the way a freshly-minted session now does, and both hooks fire
+    meta = sessions.load_meta(scope, "session-1")
+    meta.update(greeted=False, seeded=False)
+    sessions.save_meta(scope, "session-1", meta)
+    _maybe_seed(app)
+    await _maybe_greet(app)
+    assert sessions.state(scope, "session-1").read("map") == {"start": "home"}
+    assert [t.text for t in shell.director.transcript] == ["Hello there"]
+
+
 async def test_new_session_speaks_a_literal_greeting_once(tmp_path):
     from conjure.agent_server import _maybe_greet
     conn = FakeConn("alice")

@@ -283,7 +283,12 @@ def _write_session_ptr(scope: str, sid: str) -> None:
 def _ensure_session(scope: str, sid: str | None = None, *, active_world: str | None = None) -> str:
     """Guarantee a session exists and is the scope's active one; return its id. Creates a default
     `session-1` (meta + active pointer) for a scope that has none yet (a fresh agent, or the fallback
-    boot path). Step 1: exactly one session per scope — switching/rename/new is step 3."""
+    boot path). Step 1: exactly one session per scope — switching/rename/new is step 3.
+
+    A session minted here is marked **fresh** (`greeted`/`seeded` = False) exactly as `/session/new` marks
+    one, because the agent server's constructor hooks gate on `is not False` (§7.5): an ABSENT flag means
+    "a legacy session, don't retro-greet it", so omitting it here permanently skipped the constructor for
+    every session born of an agent switch — no state seeded, no greeting."""
     if sessions is None:                               # unit-test paths without a session store: no-op
         return sid or MIGRATED_SID
     sid = sid or sessions.get_active(scope) or MIGRATED_SID
@@ -292,7 +297,7 @@ def _ensure_session(scope: str, sid: str | None = None, *, active_world: str | N
         sessions.save_meta(scope, sid, {
             "id": sid, "owner": user, "agent": agent_of(scope), "title": "Session 1",
             "public": True, "active_world": active_world or worlds.get_active(scope) or "",
-            "llm": ""})
+            "llm": "", "greeted": False, "seeded": False})
     sessions.set_active(scope, sid)
     return sid
 
