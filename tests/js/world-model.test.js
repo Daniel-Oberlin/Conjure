@@ -290,3 +290,51 @@ test("isCaptureAuthority: once the owner is known, the owner and the dev user au
 test("isCaptureAuthority: a named guest never authors", () => {
   assert.equal(WM.isCaptureAuthority("guest", "daniel"), false);
 });
+
+// --- relocStep: the lost-lock hint has to track the failure, not lag it ---------------------------
+// Reported: "exiting the guardian usually shows no message" and "sometimes the room orientation is
+// wrong after picking the headset up". Both come from the same place — a capture that can't register
+// HOLDS the last good frame and skips the render, so the room is stale from that very capture, while
+// the hint that explains it waited on a timer a single lucky capture could reset.
+const R = (st, evs, t0 = 0, step = 2000) =>
+  evs.reduce((s, ev, i) => WM.relocStep(s, ev, t0 + i * step), st);
+
+test("relocStep: a FLICKERING lock does not flap the hint off and on", () => {
+  // fail, fail, ONE lucky capture, fail — the shape of a post-sleep relocalization. Assert the state
+  // THROUGH the lucky capture, not just at the end: under the old single-success rule the hint drops
+  // the moment one capture lands, so the user sees it blink out while the room is still stale.
+  let s = WM.relocStep(WM.relocInit(), "ok", 0);            // locked once → the room is known-stale later
+  s = R(s, ["lost", "lost"], 2000);
+  assert.equal(s.showing, true, "two failures past the stale grace → hint up");
+  s = WM.relocStep(s, "ok", 6000);                          // the lucky capture
+  assert.equal(s.showing, true, "a lone good capture must not take the hint down");
+  assert.notEqual(s.lostSince, null, "…nor reset the lost timer");
+  s = WM.relocStep(s, "lost", 8000);
+  assert.equal(s.showing, true, "still lost, still explained");
+});
+
+test("relocStep: recovery needs consecutive good captures, not one", () => {
+  let s = WM.relocStep(WM.relocInit(), "ok", 0);
+  s = R(s, ["lost", "lost"], 2000);
+  assert.equal(s.showing, true);
+  s = WM.relocStep(s, "ok", 8000);
+  assert.equal(s.showing, true, "one good capture is not yet recovery");
+  s = WM.relocStep(s, "ok", 10000);
+  assert.equal(s.showing, false, "two consecutive good captures restore the world");
+  assert.equal(s.lostSince, null);
+});
+
+test("relocStep: once a lock has been held, the hint comes fast — the room is already wrong", () => {
+  let s = WM.relocStep(WM.relocInit(), "ok", 0);            // hadLock
+  s = WM.relocStep(s, "lost", 1000);
+  assert.equal(s.showing, false, "not on the very first failure — a single transient miss is normal");
+  s = WM.relocStep(s, "lost", 3000);                        // 2 s lost, past the stale grace
+  assert.equal(s.showing, true);
+});
+
+test("relocStep: a COLD start keeps the long grace — don't nag someone still walking in", () => {
+  let s = R(WM.relocInit(), ["lost", "lost"], 0);           // never locked; 2 s elapsed
+  assert.equal(s.showing, false, "still acquiring at 2 s");
+  s = WM.relocStep(s, "lost", 4000);
+  assert.equal(s.showing, true, "…but 3 s of never locking still explains itself");
+});

@@ -1306,8 +1306,7 @@
         this._ref = [];             // [{id, sem, ext:[w,h], pos:Vector3, nyaw, orient}] in the reference frame
         this._Tmat = null;          // Matrix4: refSpace → reference frame (authoritative once _haveT)
         this._haveT = false;
-        this._lostSince = 0;        // when registration last lost its lock (0 = locked)
-        this._reloc = false;        // showing the passthrough "re-localizing" fallback?
+        this._rl = WM.relocInit();  // lost-lock tracking → the passthrough "re-localizing" fallback
         this._lastDiag = null;      // last capture's frame (yaw/px/pz) — for the per-capture drift delta
         this._regRes = null;        // last register()'s per-wall residuals (--debug-registration probe)
         this._refSeq = 0;           // counter for minting brand-new surface ids
@@ -1398,7 +1397,7 @@
       // room renders registered to the owner's room → a stable positional offset (specs/spaces).
       resetFrame: function () {
         this._ref = []; this._Tmat = null; this._haveT = false;
-        this._anchorInv = null; this._refSeq = 0; this._lostSince = 0; this.lastPost = 0;
+        this._anchorInv = null; this._refSeq = 0; this._rl = WM.relocInit(); this.lastPost = 0;
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;   // fresh post model
         this._recovered = {};
       },
@@ -1668,12 +1667,16 @@
       // (hide the virtual world + sky) with a headset-locked hint so you can safely step out of the play
       // boundary and back in — which forces the Quest to re-localize and lets registration re-lock.
       // Auto-restores the moment a confident lock returns.
-      _markLost: function (time) {
-        if (!this._lostSince) this._lostSince = time;
-        if (!this._reloc && time - this._lostSince > 3000) this._relocalize(true);
+      _markLost:   function (time) { this._rlStep("lost", time); },
+      _markLocked: function (time) { this._rlStep("ok", time); },
+      // One place decides; WM.relocStep holds the rule (and its reasoning), this drives the DOM off a
+      // showing/hiding TRANSITION so a repeated verdict is idempotent.
+      _rlStep: function (ev, time) {
+        var next = WM.relocStep(this._rl, ev, time);
+        if (next.showing !== this._rl.showing) this._relocalize(next.showing);
+        this._rl = next;
       },
       _relocalize: function (on) {
-        this._reloc = on;
         // A low-frequency, useful signal: tracking lost its lock (passthrough fallback shown) / recovered.
         debugLog("track", on ? "lost lock — showing passthrough + hint" : "re-locked — restoring world");
         var root = document.getElementById("world-root"), sky = document.getElementById("sky");
@@ -2158,7 +2161,7 @@
           this._regRes = null;   // canonicalFrame doesn't register against a reference → no residuals
           if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, cf.Tmat);
           if (!cf.Tmat) { this._markLost(time); this.lastPost = time - RETRY_MS; return; }   // too few walls → hold
-          if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }
+          this._markLocked(time);
           this._Tmat = cf.Tmat; this._haveT = true; this._anchorInv = cf.Tmat;
           this.lastPost = time;
           return;
@@ -2176,7 +2179,7 @@
         if (JIT) { this._jCapT0 = performance.now(); this._jMarks = [{ l: "applyStart", t: this._jCapT0 }]; }  // on-main render cost (solve is off-thread)
         if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, reg);   // opt-in: one line + HUD/capture
         if (!reg && !canEstablish) { this._markLost(time); this.lastPost = time - RETRY_MS; return; }   // not locked → hold
-        if (this._lostSince) { this._lostSince = 0; if (this._reloc) this._relocalize(false); }   // re-locked → restore
+        this._markLocked(time);                       // N consecutive good captures → restore the world
         var registered = !!reg, Tmat;
         if (reg) { Tmat = this._Tmat = reg; this._haveT = true; }
         else { Tmat = this._anchorInv || new THREE.Matrix4(); this._Tmat = Tmat; this._haveT = true; }  // establish fresh

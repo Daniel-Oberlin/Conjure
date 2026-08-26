@@ -141,6 +141,53 @@
     return !me || me === owner;        // dev/default user, or a name match
   }
 
+  // --- Lost-lock tracking: when to reveal passthrough + the "step out and back in" hint ---------------
+  // A capture that can't register HOLDS the last good frame and skips the render, so from that very
+  // capture the room on screen is stale — after a relocalization (sleep, boundary trip) it is visibly
+  // rotated. The hint is what explains that, so its timing has to track the failure, not lag it.
+  //
+  // Two things used to stop it appearing at all:
+  //   • ONE lucky capture zeroed the elapsed timer, so a FLICKERING lock — the normal shape after a
+  //     sleep — never accumulated the grace period. Recovery now needs OK_STREAK consecutive good
+  //     captures, so a flicker keeps counting as lost.
+  //   • The grace was a flat 3 s whether or not we had ever been locked. Once a lock HAS been held the
+  //     room is known-stale, so the grace is short; while still acquiring it stays long, so a cold
+  //     start doesn't flash a hint at someone who is simply walking in.
+  var RELOC_STALE_MS = 1200;    // had a lock, lost it → the room is wrong NOW
+  var RELOC_ACQUIRE_MS = 3000;  // never locked yet → still acquiring, don't nag
+  var RELOC_OK_STREAK = 2;      // consecutive good captures required to declare recovery
+
+  /**
+   * @typedef {Object} RelocState
+   * @property {number|null} lostSince   time of the first consecutive failure (null = locked)
+   * @property {number} okStreak    consecutive successful captures
+   * @property {boolean} hadLock    have we ever held a lock? (grace is shorter once we have)
+   * @property {boolean} showing    is the passthrough fallback + hint up?
+   */
+  /** @returns {RelocState} */
+  function relocInit() { return { lostSince: null, okStreak: 0, hadLock: false, showing: false }; }
+
+  /**
+   * @param {RelocState} st
+   * @param {"lost"|"ok"} ev
+   * @param {number} time   ms, monotonic (A-Frame tick time)
+   * @returns {RelocState}
+   */
+  function relocStep(st, ev, time) {
+    var s = { lostSince: st.lostSince, okStreak: st.okStreak, hadLock: st.hadLock, showing: st.showing };
+    if (ev === "lost") {
+      s.okStreak = 0;
+      if (s.lostSince === null) s.lostSince = time;   // NOT `!s.lostSince`: tick time starts at ~0,
+                                                      // and 0 is a real timestamp, not "still locked"
+      if (!s.showing && time - s.lostSince >= (s.hadLock ? RELOC_STALE_MS : RELOC_ACQUIRE_MS)) s.showing = true;
+      return s;
+    }
+    s.hadLock = true;
+    s.okStreak += 1;
+    if (s.okStreak >= RELOC_OK_STREAK) { s.lostSince = null; s.showing = false; }
+    return s;
+  }
+
   // Capture a real surface's geometry-defining fields (transform + shape) as a SurfaceSig, for the render
   // apply-gate (surfaceMoved). Snapshots position, rotation, extent, and openings — nothing about styling.
   /**
@@ -281,6 +328,7 @@
 
   return { nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,
+           relocInit: relocInit, relocStep: relocStep,
            surfaceSig: surfaceSig, surfaceMoved: surfaceMoved,
            surfacePoseMoved: surfacePoseMoved, surfaceShapeChanged: surfaceShapeChanged,
            advanceSig: advanceSig, slewAlpha: slewAlpha, slewSettled: slewSettled };

@@ -159,6 +159,28 @@ prior pairing — a ~180° flip is just another θ. Validated against real befor
 surfaces keep their id across the flip**, against 1/47 before. A WebXR anchor is now only the
 **bootstrap** frame for the very first capture.
 
+### 4.1.1 While it can't lock
+
+A capture that fails to register **holds the last good frame and skips the render** — deliberately, so a
+tilted or wrong-frame snapshot is never shown, posted, or allowed to pollute the reference. The cost is
+that the held frame is in the *old* F_track, so after a relocalization the room on screen is visibly
+rotated until a lock returns.
+
+Because the room is wrong from that first held capture, the fallback that explains it has to track the
+failure rather than lag it. After a short grace the client reveals passthrough — hiding `#world-root`,
+the sky and the scaffold — and shows a headset-locked hint to step out of the play area and back in,
+which forces the Quest to re-localize. It restores on recovery.
+
+Two rules make that trigger reliable (`WM.relocStep`):
+
+- **Recovery needs consecutive good captures**, not one. A single lucky capture between failures used to
+  reset the timer, so a *flickering* lock — the normal shape after a sleep or a boundary trip — never
+  accumulated the grace, and the hint either never appeared or blinked out while the room was still
+  stale.
+- **The grace depends on whether a lock was ever held.** Once it has, the displayed room is known-stale
+  and the hint comes quickly; while still acquiring it stays long, so a cold start doesn't nag someone
+  who is simply walking in.
+
 ### 4.2 Multi-user: one space, different Quest data
 
 Two headsets scanning one physical space produce **different plane sets** — missing surfaces, extra
