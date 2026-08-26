@@ -6,7 +6,7 @@ placing objects, summoning real 3D models, generating and editing art, and wrapp
 generated environments.
 
 > **Design docs live in [`docs/`](./docs/).** Start with [vision](./docs/vision.md), then
-> [spec](./docs/spec.md), [architecture](./docs/architecture.md), and the [roadmap](./docs/roadmap.md).
+> [vision](./docs/vision.md), [architecture](./docs/architecture.md), and the [roadmap](./docs/roadmap.md).
 
 ## What works today
 

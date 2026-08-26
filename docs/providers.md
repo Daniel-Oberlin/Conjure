@@ -1,7 +1,7 @@
 # Provider & module registry
 
 Conjure is built on a **provider abstraction** (every model role is swappable, decision #1) and a
-**module system** (capabilities plug in as MCP servers, spec §13). This is the catalog of each
+**module system** (capabilities plug in as MCP servers, vision §13). This is the catalog of each
 swappable slot: the **chosen v1 default**, plus **alternatives and future possibilities**.
 
 Defaults are selected by config (`.env` / provider factory) and can be changed without code
@@ -26,7 +26,7 @@ cost, strong tool-calling where it matters, one API key (Anthropic). Maps onto t
 | 💡 NVIDIA Parakeet (`parakeet.cpp`) | local | Very fast, runs on Apple Silicon via Metal. Needs custom wiring. |
 | 💡 Deepgram / AssemblyAI | cloud | True low-latency streaming; snappiest feel. Per-minute cost + keys. |
 
-### Director LLM (roster — spec §3, arch §7a)
+### Director LLM (roster — vision §3, arch §7a)
 Multiple named LLMs may be active in one session; this is the **default director** + likely roster
 members. The roster + switching are **built** (`conjure/llm.py`, `conjure/director.py`): one shared
 director serves both voice and CLI; add a provider by registering it in `build_roster` and it's
@@ -94,20 +94,20 @@ one explicitly (clear error if it can't do the job), or omit it for the hard-cod
 LLM should omit the generator unless the user asked for a specific one or needs a capability the
 default lacks.
 
-### Image processing — up-res & outpainting (spec §5)
+### Image processing — up-res & outpainting (vision §5)
 | Option | Hosting | Notes |
 |---|---|---|
 | ✅/💡 Gemini "Nano Banana" (editing) | cloud | Best-in-class **layout-aware outpainting** → photo to skybox/panorama; image-in→image-out path already wired (generate_content). |
 | 💡 Super-resolution (e.g. Real-ESRGAN-class) | local/cloud | Up-res images/textures. |
 
-### 3D generation (spec §5, #10)
+### 3D generation (vision §5, #10)
 | Option | Hosting | Notes |
 |---|---|---|
 | 💡 Meshy / Luma / Tripo | cloud | text/image → 3D. |
 | 💡 Hunyuan3D / Trellis | both | Strong; some self-hostable on a GPU box. |
 | ✅ Procedural mesh-gen (in-sandbox code) | local | Always-available; runs in the QuickJS sandbox (#7, #10). |
 
-### Audio sources (extensible audio engine, spec §7)
+### Audio sources (extensible audio engine, vision §7)
 | Option | Hosting | Notes |
 |---|---|---|
 | ✅ File playback | client | Positional / ambient audio assets. |
@@ -118,7 +118,7 @@ default lacks.
 
 ## Content sources & inputs
 
-### Free / CC asset libraries (spec §5)
+### Free / CC asset libraries (vision §5)
 Poly Pizza · Quaternius · Kenney · Sketchfab (CC filter) · Objaverse · Smithsonian 3D · Poly Haven
 (HDRIs/textures/models). Each tracked with **license + attribution**. New sources plug in as
 content-source modules (§13).
@@ -131,7 +131,7 @@ content-source modules (§13).
 | 💡 Interactive-fiction (Z-machine) | Director renders IF state as VR/AR scenes. |
 | 💡 Remote-session (streaming) | Remote screen onto a surface (forward-compat). |
 
-### Input drivers (spec §11b)
+### Input drivers (vision §7, arch §11b)
 | Source | Hosting | Notes |
 |---|---|---|
 | ✅ WebXR controllers / hands | client | Baseline. |

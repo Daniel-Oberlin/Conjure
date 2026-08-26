@@ -87,7 +87,7 @@ with something you can actually experience on the Quest.
 - Specs: **[specs/spaces.md](./specs/spaces.md)** (the record) ·
   **[specs/spaces-geometry.md](./specs/spaces-geometry.md)** (where a surface is) ·
   **[specs/worlds-surfaces.md](./specs/worlds-surfaces.md)** (how a world styles it).
-- Realizes the VR+AR / passthrough threads in spec §3 + vision; a textbook capability-tier extension
+- Realizes the VR+AR / passthrough threads in vision §3 and §7; a textbook capability-tier extension
   (decision #11) — Quest becomes space-aware while other devices fall back to the synthetic holodeck.
   **Co-location needs no platform shared-anchor:** a guest registers its own planes against the space's
   stored geometry, so multi-headset sharing is not gated on Quest "Shared Spaces". **Persistent
@@ -131,7 +131,7 @@ with something you can actually experience on the Quest.
 - **Input abstraction** (lands with vehicles): normalize client + host devices into actions/axes,
   pluggable drivers, voice-configurable bindings. *Milestone: fly the plane with a USB yoke +
   rudder pedals plugged into the Mac.*
-- Multi-user occupancy: driver has motion authority; passengers ride along (spec §12).
+- Multi-user occupancy: driver has motion authority; passengers ride along (vision §12).
 
 ## Later / optional
 - Desktop preview polish, richer comfort/locomotion, performance autotuning, more modules.

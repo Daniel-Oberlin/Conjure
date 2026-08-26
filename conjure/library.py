@@ -13,7 +13,9 @@ Two design choices worth holding onto:
   transparent for images, bpm/key for audio) live in a JSON `attributes` bag, so a new kind adds no
   columns and no null sprawl.
 
-Vector search (sqlite-vec) + embeddings arrive in Phase 1; this module is metadata + FTS5 only.
+Search is metadata + FTS5 (`assets_fts`) blended with vector similarity: `sqlite-vec` is loaded when
+available and `assets_vec` is created lazily at the live embedder's dimension. Both are over **assets**
+— there is no world-level embedding, so there is no semantic recall of worlds by description.
 """
 
 from __future__ import annotations

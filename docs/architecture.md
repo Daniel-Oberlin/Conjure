@@ -1,9 +1,14 @@
 # Architecture (v1 design)
 
 > Status: **real design, v1 draft.** This defines the concrete contracts and runtime shape that
-> implement [spec.md](./spec.md) under the decisions in [decisions.md](./decisions.md). Schemas
+> implement [vision.md](./vision.md) under the decisions in [decisions.md](./decisions.md). Schemas
 > are illustrative (JSON-ish) and meant to be firmed up into typed definitions during Phase 0.
 > Firmness is flagged per section: 🟢 firm · 🟡 shape-firm, details open · 🔴 sketch.
+>
+> **This is the only document that spans subsystems and marks built vs. unbuilt.** Where a subsystem
+> now has a living spec in [`specs/`](./specs/), that spec is authoritative for behaviour and this one
+> keeps only the cross-cutting shape and a link. A 🔴 here means *designed and absent* — checked
+> against the code, not assumed.
 
 ## 1. Principles that drive the structure
 
@@ -130,7 +135,7 @@ server, memory, and client share one representation.
     // 🔴 not built: lighting presets, fog, per-world gravity, ambientAudio
   },
   "entities": [ /* Entity[] */ ],
-  "connections": [ { "portal": "ent_door1", "target": "world_cabin" } ]
+  "connections": [ { "portal": "ent_door1", "target": "world_cabin" } ]   // 🔴 schema only — no consumer
 }
 ```
 
@@ -203,21 +208,30 @@ Every change is a patch — the unit of live sync **and** undo/redo.
     { "op": "add",    "entity": { … } },
     { "op": "update", "id": "ent_campfire_1", "set": { "components.light.intensity": 3.0 } },
     { "op": "remove", "id": "ent_x" },
-    { "op": "env",    "set": { "environment.fog.density": 0.05 } },
-    { "op": "occupy", "user": "u1", "entity": "ent_balloon", "seat": "pilot" },
-    { "op": "exit",   "user": "u1" }
+    { "op": "env",    "set": { "environment.fog.density": 0.05 } }
   ],
-  "inverse": [ … ]                   // server-computed inverse ops for undo (or snapshot ref)
+  "inverse": [ … ]                   // server-computed inverse ops (see undo/redo below)
 }
 ```
 
+**Four ops exist** — `add`, `remove`, `update`, `env` (`world.py:194`); anything else raises
+`unknown op`. The `occupy` / `exit` ops that embodiment (vision §7) implies are **not built** and are
+not reserved anywhere.
+
 - **Authority & ordering:** the **world server** is the only writer. It assigns `rev`, computes the
-  `inverse`, applies, then broadcasts. Conflicts resolve by server order (last-writer-by-rev).
-- **Validation gate** (every patch, regardless of origin): schema-valid, within performance
-  **budget** (§ world doc), permitted for the origin's capabilities, references resolvable assets.
-  Rejected patches are dropped with a reason logged; the originator is notified.
-- **Undo/redo:** apply the stored `inverse` (or revert to a snapshot). Operates on server state,
-  re-broadcast as a normal patch.
+  `inverse`, applies, then broadcasts. Conflicts resolve by server order (last-writer-by-rev). 🟢
+- **Validation gate** 🔴 **not built.** The design is: every patch, regardless of origin, checked
+  schema-valid, within performance **budget** (§4), permitted for the origin's capabilities, with
+  resolvable asset references; rejects dropped with a logged reason and the originator notified. The
+  real `WorldStore._validate` (`world.py:239`) says *"Placeholder"* in its own docstring and checks
+  only that each op carries an `"op"` key. Nothing enforces the budget anywhere. This is the single
+  largest gap between this document and the code, and it is load-bearing for §13: "every effect is a
+  validated patch intent" is the whole containment story for a future sandbox.
+- **Undo/redo** 🔴 **machinery without a consumer.** The `inverse` genuinely is computed per patch and
+  `WorldStore.history` accumulates in memory — but nothing reads either. There is no undo tool, no
+  endpoint, no shell verb, and history is not persisted, so it does not survive a restart. Snapshots
+  and `revert_to` do not exist. Treat the patch as the unit of live sync today, and of undo only in
+  design.
 - **Progressive construction:** `place_asset` emits an `add` with a `placeholder` immediately, then
   a follow-up `update` swapping in the resolved asset when the pipeline finishes.
 
@@ -317,19 +331,31 @@ An agent is run by a **roster** of LLMs, not a single model (scoped to the agent
 - Open design points: whether a switch should ever be surfaced *to the model* (today it is not);
   per-LLM system-prompt/persona.
 
-## 8. MCP tool surface (world server)  🟡
+## 8. MCP tool surface (world server)  🟢 built · 🔴 designed
 
-Grouped; signatures indicative. These are the director's action vocabulary (spec §4).
+The director's action vocabulary (vision §4). **The authoritative list is not here** — it is
+`agents/builder/agent.json`, which a test pins equal to every `@mcp.tool` in `mcp_server.py` minus the
+control tool `set_caller`, so a new tool cannot go silently un-granted ([specs/agents.md
+§3](./specs/agents.md)). What follows is the shape, not the roster; check the file for names.
 
-- **Lifecycle:** `create_world(description)`, `load_world(id_or_query)`, `save_world()`,
-  `query_world(filter?)`
-- **Entities:** `add_entity`, `update_entity`, `remove_entity`, `move/rotate/scale_entity`
-- **Environment:** `set_environment(sky|light|fog|time_of_day|ambient)`
-- **Assets:** `place_asset(query_or_ref, location)`, `generate_asset(kind, prompt)`
+**Built — 45 tools**, in these groups:
+
+- **World & session navigation:** `query_world`, `query_room`, `view_relative`, `list_worlds`,
+  `new_world`, `switch_world`, `delete_world`, `reset_world`, `set_world_visibility`,
+  `set_space_visibility`
+- **Entities:** `add_entity`, `update_entity`, `move_entity`, `remove_entity`, `set_environment`
+- **Real surfaces** (a captured room is ordinary entities, §4): `show_surface`, `texture_surface`,
+  `style_surface`, `show_edges`, `style_edges`, `show_annotations`, `style_annotations`,
+  `set_immersion`, `realign_room`
+- **Library:** `place_asset`, `place_cached_asset`, `search_library`, `query_assets`, `update_asset`,
+  `delete_asset`
 - **Images — procurement decoupled from scene use (decision #13):** *procure* (return an opaque
-  image id) `generate_image`, `generate_skybox_image`, `edit_image(image_id)`,
-  `outpaint_image(image_id)`, `skybox_from_image(image_id)`, `list_image_generators`; *use in scene*
-  `place_image(image_id)`, `set_skybox(image_id)`; *one-shot in-scene edits* (entity-keyed, procure
+  image id) `generate_image`, `generate_skybox_image`, `generate_grounded_skybox_image`,
+  `edit_image(image_id)`, `outpaint_image(image_id)`, `skybox_from_image(image_id)`,
+  `list_image_generators`; *use in scene*
+  `place_image(image_id)`, `set_skybox(image_id)`, `set_grounded_skybox(image_id)` (projects the
+  ground at the viewer's feet so they stand *in* the scene rather than under it);
+  *one-shot in-scene edits* (entity-keyed, procure
   +apply server-side) `edit_scene_image`, `widen_scene_image`, `skybox_from_scene_image`. Generators
   declare `ImageCapabilities`; the world server mediates which one runs (best default per op, an
   optional explicit `generator`, transparency→OpenAI), backed by an in-memory image store over the
@@ -341,14 +367,22 @@ Grouped; signatures indicative. These are the director's action vocabulary (spec
   `name — description; params: k(default)…` line per module, so `conjure_module` stays generic while the
   vocabulary stays live. `POST /manipulate` commits a tier-C resting transform
   ([specs/dynamics.md §9](./specs/dynamics.md)).
-- **Behavior & geometry (designed, §9):** `attach_behavior(entity, spec)`, `remove_behavior`,
-  `generate_mesh(spec)` (runs in sandbox, decision #10)
-- **Embodiment:** `spawn_vehicle(type, location)`, `set_avatar(spec)`, `occupy(entity, seat?)`,
-  `exit()`, `set_motion_model`, `set_control_scheme`, `bind_input(scheme, mapping)`
-- **Connections:** `create_portal(target_world)`
-- **History:** `undo`, `redo`, `snapshot`, `revert_to(snapshot)`
-
 Each tool returns the resulting `rev` and a summary so the director stays in sync.
+
+**Designed, not built** 🔴 — no stub, no name reserved, nothing to call:
+
+| Group | Tools | Blocked on |
+|---|---|---|
+| Behavior & geometry | `attach_behavior`, `remove_behavior`, `generate_mesh` | the sandbox (§9, decision #10) |
+| Embodiment | `spawn_vehicle`, `set_avatar`, `occupy`, `exit`, `set_motion_model`, `set_control_scheme`, `bind_input` | motion models + the `occupy`/`exit` patch ops (§5) |
+| Connections | `create_portal` | `connections` is a schema field with no consumer (§4) |
+| History | `undo`, `redo`, `snapshot`, `revert_to` | nothing reads the computed `inverse` (§5) |
+
+> Note the naming that did *not* survive contact. There is no `create_world` / `load_world` /
+> `save_world`: worlds are `new_world` / `switch_world` and **autosave** — an explicit save verb never
+> made sense once the live doc became the source of truth. There is no `generate_asset` either;
+> procurement split by medium (decision #13). Earlier revisions of this section listed the wished-for
+> names as though they existed.
 
 ## 9. Behavior & geometry runtime  🔴 not built / 🟢 boundary / 🟡 SDK surface
 
@@ -403,13 +437,24 @@ use the same sandbox and return geometry via the SDK with no I/O (decision #10).
 
 Flow: **resolve → (fetch | generate) → convert → optimize → cache → describe → place**.
 
-- **Resolve:** cache hit by content hash? else pick a source (CC library / module / generator).
-- **Convert:** anything → **glTF/GLB** (Blender headless / assimp / gltf-transform).
-- **Process (pluggable ops):** image **up-res / super-resolution** and **outpainting/extrapolation**
-  (photo → seamless skybox / 360 / cylindrical panorama), behind the provider abstraction or as
-  processing modules (spec §5, §13). These produce derived assets with their own descriptor.
-- **Optimize to budget:** Draco/meshopt, texture downscale, LOD; must fit the world's perf budget.
-- **Cache:** content-addressed blob store; dedup across worlds.
+- **Resolve** 🟢 — cache hit by content hash, else fetch. **Poly Pizza is the one wired source**
+  (`AssetResolver`, `conjure/assets.py:48` — "searches Poly Pizza, downloads the best low-poly GLB");
+  the rest of vision §5's list is unwired, and generators are a separate path (images, §8).
+- **Convert** 🔴 **not built.** Nothing converts anything. `ModelImporter` accepts **`.glb` only**,
+  confirmed by the `glTF` magic bytes, and rejects everything else — so OBJ/FBX/USD/STL never enter the
+  pipeline at all. Blender, assimp and gltf-transform are design names with no call site; the one
+  "Blender" string in the tree is a docstring aside meaning *a `.glb` you may have exported from it*.
+  `trimesh` is loaded lazily in two places (`importer.py:131`, `assets.py:37`) purely to **read**
+  bbox/tris for the catalog — never to export.
+- **Process (pluggable ops)** 🟡 — **outpainting/extrapolation is built** (`outpaint_image`,
+  `widen_scene_image`, `skybox_from_image` — photo → seamless skybox / 360 / panorama), as are
+  arbitrary prompt edits (`edit_image`). **Up-res / super-resolution is not built** — no upscaling path
+  exists. Derived images get their own descriptor and content hash.
+- **Optimize to budget** 🔴 **not built** — Draco/meshopt compression, texture downscale and LOD are
+  all absent, and there is no budget to fit to (§5, the validation gate). Assets are cached and served
+  exactly as fetched or generated, which is why "download the best **low-poly** GLB" is doing the work
+  a whole optimize stage was meant to.
+- **Cache** 🟢 — content-addressed blob store; dedup across worlds.
 
 **Asset descriptor** (in memory; referenced by hash from entities):
 
@@ -420,7 +465,7 @@ Flow: **resolve → (fetch | generate) → convert → optimize → cache → de
   "optimized": { "draco": true, "lod": [0,1,2], "texMB": 4 }, "tris": 1200 }
 ```
 
-Media types are first-class (stereo/360, spec §5); `kind:"stream"` is the forward-compat hook for
+Media types are first-class (stereo/360, vision §5); `kind:"stream"` is the forward-compat hook for
 live video / remote-screen surfaces (§12).
 
 ## 11. MCP modules, input & capability extensions
@@ -437,7 +482,19 @@ live video / remote-screen surfaces (§12).
 
 MCP servers an agent also clients into — each agent declares which (via the registry,
 [specs/agents.md §3](./specs/agents.md)).
-**Module manifest** (Conjure metadata atop MCP):
+
+**What exists** 🟢 — `agents/servers.json`, and it is only a launch table:
+
+```jsonc
+{ "world": { "command": "python", "args": ["-m", "conjure.mcp_server"],
+             "env": { "CONJURE_URL": "${world_url}" } } }
+```
+
+**One entry, and v1 launches exactly one server per agent** (`Director.connect` raises otherwise). All
+the scoping that exists is on the *agent* side — `access` plus an opt-in `tools` allow-list, enforced
+twice (§13) — not declared by the module.
+
+**Module manifest** 🔴 **designed, unread.** None of these fields is parsed by `load_server_registry`:
 
 ```jsonc
 { "name": "nas-photos", "kind": "content-source|experience|capability|input-provider",
@@ -447,9 +504,10 @@ MCP servers an agent also clients into — each agent declares which (via the re
 }
 ```
 
-Trust: a module's permissions are scoped (decision #7); content/engine modules can't write world
-state or run code unless granted. Example future *experience* module: a remote-desktop streamer
-(streams: webrtc + input) rendering onto a `kind:"stream"` surface.
+Intended trust: a module's permissions are scoped (decision #7); content/engine modules can't write
+world state or run code unless granted. Example future *experience* module: a remote-desktop streamer
+(streams: webrtc + input) rendering onto a `kind:"stream"` surface. Until a second module exists there
+is nothing for the manifest to discriminate, which is why it stays unbuilt.
 
 ### 11b. Input architecture  🟡
 Abstract **actions** (discrete) + **axes** (continuous); control schemes and behaviors bind to
@@ -510,8 +568,12 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
   the server's own solver geometry: pose-relative queries ("the wall I'm looking at") run against the
   seed. See [specs/spaces.md](./specs/spaces.md).
 - **Asset store** — content-addressed blobs + descriptors (§10).
-- **Vector index** — embeddings of world name/description/tags for semantic recall ("the beach world").
-- **Connection graph** — portals between worlds.
+- **Vector index** — **over assets, not worlds.** `library.py` loads the `sqlite-vec` extension and
+  creates `assets_vec` lazily at the live embedder's dimension, beside an `assets_fts` FTS5 table; a
+  search blends both. There is **no** world-level embedding, so semantic world recall ("the beach
+  world", vision §9) does not exist — `list_worlds` matches names loosely and that is all.
+- **Connection graph** 🔴 — `connections` is a field in the world document with **zero consumers**:
+  nothing writes it, reads it, or renders a portal. Schema only.
 - **Session store** — a **session** is an instance of an agent: its **shared transcript** (append-only
   `transcript.jsonl`, plain `user`/`assistant` turns with a human speaker, no per-LLM attribution, §7a),
   the worlds created in it, and its agent state (`state/`, a bag of named JSON docs behind the generic

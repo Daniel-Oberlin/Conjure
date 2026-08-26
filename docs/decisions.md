@@ -63,7 +63,7 @@ HTML-like custom elements over Three.js).
 save format; maps cleanly to entity/component edits and patches. Three.js power is still
 available underneath when we need it.
 
-**Implications:** The A-Frame scene graph *is* the world model (spec §2). Patches are
+**Implications:** The A-Frame scene graph *is* the world model (vision §2). Patches are
 add/update/remove of entities and component attributes. Keep an eye on not leaking A-Frame
 specifics into the MCP tool/behavior contracts where avoidable, so a future engine swap stays
 possible — but we are not paying portability tax for it in v1.
@@ -113,7 +113,7 @@ mediated by capability (decision #13). Gemini chosen as default for best-in-clas
 - The architecture treats capture as **configurable** and must not assume either. (Earlier draft
   wrongly assumed per-headset mics "for free" — superseded.)
 
-Final activation form still OPEN, but the space is narrow. See spec §3 and §12.
+Final activation form still OPEN, but the space is narrow. See vision §3 and §12.
 
 ### 6. Behavior execution split — 🔶 EASED by #7
 What runs client-side (low-latency interaction) vs server-side (authoritative/persistent). The
@@ -166,7 +166,7 @@ distinguish **"someone is addressing Conjure" vs. "people in the room talking to
 single-user state/authority model is a rewrite; the addressing requirement also reshapes the
 voice design, so it can't be deferred.
 
-**Implications (baked into spec §12):**
+**Implications (baked into vision §12):**
 - **Server-authoritative shared world state**, multiple connected clients; world patches
   broadcast to all headsets (reliable, persistent channel).
 - **Presence sync** — each user's head/hand poses + voice streamed as transient per-user state
@@ -218,10 +218,10 @@ marker/QR or manual calibration.
 - Both **`immersive-vr` and `immersive-ar`** session modes are baseline; a **flat** mode covers
   non-XR browsers (desktop preview, #8).
 - Module/tool schemas stay engine-agnostic where practical so the world layer never hard-depends
-  on a device feature (see spec §13 Extensibility).
+  on a device feature (see vision §13 Extensibility).
 
 ### 12. Vehicle motion: full physics vs parametric/arcade models — ❓ OPEN
-**Context:** Embodiment-by-occupancy (spec §7) lets the user occupy vehicles with distinct motion:
+**Context:** Embodiment-by-occupancy (vision §7) lets the user occupy vehicles with distinct motion:
 car, tank, plane, hot-air balloon, boat. Each needs a motion model + control scheme.
 
 **Options:**
@@ -233,7 +233,7 @@ car, tank, plane, hot-air balloon, boat. Each needs a motion model + control sch
 
 **Coupled sub-questions:** built-in motion-model registry vs LLM-authored models in the QuickJS
 sandbox (#7); **diegetic vs abstract controls** (grab-the-yoke vs thumbstick); motion authority &
-sync in multi-user (spec §12). Lean: start with **parametric models + a registry**, add physics
+sync in multi-user (vision §12). Lean: start with **parametric models + a registry**, add physics
 where it earns its keep; custom models ride the sandbox. Decide at the vehicles phase.
 
 ### 13. Image procurement decoupled from scene use; capability-aware generators — ✅ RESOLVED
