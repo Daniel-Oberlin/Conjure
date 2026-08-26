@@ -268,3 +268,25 @@ test("shouldSpawnGuest: the owner never spawns beside themselves, and it happens
 test("shouldSpawnGuest: no owner pose yet ⇒ nothing to spawn relative to", () => {
   assert.equal(WM.shouldSpawnGuest({ ...GUEST, hasOwnerPose: false }), false);
 });
+
+// --- isCaptureAuthority: unknown owner must not read as "me" ---------------------------------------
+// A guest that briefly believes it is the authority skips the wholesale re-seed from the authority
+// (`if (!amOwner) self._ref = []`) and can ESTABLISH its own frame (`canEstablish = amOwner && !_ref`).
+// It then registers against its own reference forever after, and the room renders wrong. `worldOwner`
+// is null until the first snapshot, so this window opens on every entry — observed in the log as a
+// guest POSTing geometry and taking a 403.
+test("isCaptureAuthority: unknown owner is NOT me — even for the dev/default user", () => {
+  assert.equal(WM.isCaptureAuthority("guest", null), false);
+  assert.equal(WM.isCaptureAuthority("", null), false);          // dev user, but owner still unknown
+  assert.equal(WM.isCaptureAuthority(null, undefined), false);
+});
+
+test("isCaptureAuthority: once the owner is known, the owner and the dev user author", () => {
+  assert.equal(WM.isCaptureAuthority("daniel", "daniel"), true);
+  assert.equal(WM.isCaptureAuthority("", "daniel"), true);       // empty user = dev/default = owner
+  assert.equal(WM.isCaptureAuthority(null, "daniel"), true);
+});
+
+test("isCaptureAuthority: a named guest never authors", () => {
+  assert.equal(WM.isCaptureAuthority("guest", "daniel"), false);
+});

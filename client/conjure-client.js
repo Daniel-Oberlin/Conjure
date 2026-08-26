@@ -2073,10 +2073,9 @@
         if (JIT) this._jMark("dbg");                        // --debug-registration-only probes (NOT in prod)
 
         // Am I the room AUTHORITY? The active world's owner authors the geometry; everyone else is a
-        // register-only GUEST (specs/spaces-geometry.md §4.2). An empty currentUser() is the dev/default user = owner
-        // (matches the server treating a missing X-Conjure-User as the owner); unknown worldOwner (no
-        // snapshot yet) also defaults to owner so authoring is never briefly locked out.
-        var me = currentUser(), amOwner = !me || !worldOwner || me === worldOwner;
+        // register-only GUEST (specs/spaces-geometry.md §4.2). Unknown-owner means "not yet", NOT "me" —
+        // see WM.isCaptureAuthority for why that distinction is load-bearing.
+        var me = currentUser(), amOwner = WM.isCaptureAuthority(me, worldOwner);
 
         // Seed the reference constellation from the persisted/broadcast surfaces. The AUTHORITY seeds ONCE,
         // then owns and slowly evolves it (Pass B). A GUEST re-seeds EVERY capture straight from the

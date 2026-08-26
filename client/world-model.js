@@ -123,6 +123,24 @@
     return true;
   }
 
+  // Am I the capture authority — the client allowed to AUTHOR this space's geometry? Everyone else is a
+  // register-only guest: it re-seeds its reference wholesale from the authority each capture and never
+  // establishes a frame of its own.
+  //
+  // `owner` is null until the first snapshot lands. That used to read as "yes" so authoring was never
+  // briefly locked out — but the same answer let a GUEST, capturing in that window, skip the re-seed and
+  // establish its OWN frame. It then keeps registering against its own reference instead of the shared
+  // one, and the room renders at the wrong orientation. Unknown must mean "not yet", not "yes": the
+  // lockout it avoids is one snapshot long, and nothing should be authored into a world you can't name.
+  //
+  // An empty `me` IS the dev/default single user (matching the server treating a missing X-Conjure-User
+  // as the owner) — but still only once the owner is known.
+  /** @param {string|null|undefined} me  @param {string|null|undefined} owner  @returns {boolean} */
+  function isCaptureAuthority(me, owner) {
+    if (!owner) return false;          // no snapshot yet ⇒ we don't know; never assume it's us
+    return !me || me === owner;        // dev/default user, or a name match
+  }
+
   // Capture a real surface's geometry-defining fields (transform + shape) as a SurfaceSig, for the render
   // apply-gate (surfaceMoved). Snapshots position, rotation, extent, and openings — nothing about styling.
   /**
@@ -262,7 +280,7 @@
   }
 
   return { nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
-           shouldSpawnGuest: shouldSpawnGuest,
+           shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,
            surfaceSig: surfaceSig, surfaceMoved: surfaceMoved,
            surfacePoseMoved: surfacePoseMoved, surfaceShapeChanged: surfaceShapeChanged,
            advanceSig: advanceSig, slewAlpha: slewAlpha, slewSettled: slewSettled };
