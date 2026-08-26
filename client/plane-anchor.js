@@ -1,5 +1,5 @@
 // @ts-check
-// Pure plane-relative anchor math (docs/local-first-geometry.md §4-5). An anchor pins an entity to the
+// Pure plane-relative anchor math (docs/specs/spaces-geometry.md §5). An anchor pins an entity to the
 // room's stable planes — the FLOOR and its nearest WALLS — by storing, at authoring time, the entity's
 // signed distance to each plane plus its orientation relative to each wall. Any client (or the server,
 // against the seed) later RE-SOLVES that anchor against ITS OWN local planes, by shared surface id, and
@@ -14,7 +14,7 @@
 //   • "grounded" (default) — XZ from the walls; Y snapped to the local floor; orientation yaw-only (a thing
 //     on the floor cannot lean, so pitch≡roll≡0 by definition — pinned, not measured).
 //   • "free"               — full 3-D position (floor + walls); orientation a full quaternion (heading +
-//     pitch + roll), gimbal-safe (no yaw extraction — cf. the A-Frame YXZ euler-order trap, docs/room-model).
+//     pitch + roll), gimbal-safe (no yaw extraction — cf. the A-Frame YXZ euler-order trap, docs/specs/worlds-surfaces.md).
 //
 // Pure like room-snap.js: THREE is the first arg (browser passes AFRAME.THREE, node passes require('three')),
 // no state/DOM/globals. Golden vectors in tests/js/fixtures/plane-anchor-golden.json pin the numeric

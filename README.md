@@ -33,12 +33,19 @@ Implemented phases (see [roadmap](./docs/roadmap.md)): **0** world doc + patch p
 client · **1** world-editing MCP tools · **2** voice loop · **3** assets · **4** image generation +
 editing + skybox.
 
-**In progress — Phase 5: room model (AR).** Bring your real room into the world as editable geometry:
-see your room, restyle/texture its walls, mount content on real surfaces by semantic label, slide along
-a passthrough↔virtual immersion spectrum (or hide the room for full VR), keep models inside the real
-bounds, and refine the room mesh progressively. Shipped so far: room capture + stable surface ids, wall
-squaring + corner-joining, real door/window cutouts, and upright mounted art. Design:
-[docs/room-model.md](./docs/room-model.md).
+**In progress — Phase 5: your real space (AR).** Bring the real world in as editable geometry: see your
+space, restyle and texture its walls, mount content on real surfaces by semantic label, slide along a
+passthrough↔virtual immersion spectrum (or hide it for full VR), and keep models inside the real bounds.
+
+Shipped: space capture with stable surface ids, corner-joining and wall sealing, real door/window
+cutouts, upright mounted art, per-world surface styling over one shared space record, geolocation +
+surface-match space selection with an admission gate, presence avatars, and a local-first render that
+keeps the capture off the frame budget. Not built: the progressive mesh tier and director-authored
+replacement geometry.
+
+Specs: [spaces](./docs/specs/spaces.md) (the record) ·
+[spaces-geometry](./docs/specs/spaces-geometry.md) (where a surface is) ·
+[worlds-surfaces](./docs/specs/worlds-surfaces.md) (how a world styles it).
 
 ## How it fits together
 
@@ -242,9 +249,11 @@ scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
             send_room.py (synthetic room), mcp_smoke.py, mic_check.py, vad_check.py
 tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`); a
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
-docs/       vision · spec · architecture · room-model · decisions · providers · roadmap · setup · testing/https guides
-  specs/    per-area LIVING specs — what is built and how it behaves today (agents, dynamics, occlusion)
+docs/       vision · spec · architecture · decisions · providers · roadmap · setup · testing/https guides
+  specs/    per-area LIVING specs — what is built and how it behaves today (agents, dynamics,
+            spaces, spaces-geometry, worlds-surfaces, occlusion)
   backlogs/ the matching per-area backlogs — unfinished work, future directions, known problems
+  investigations/  debugging campaigns: what was measured, and what was tried and REJECTED
 ```
 
 **Where your data lives.** Runtime state is stored in your user home, not the repo (docs/user-home-plan.md):

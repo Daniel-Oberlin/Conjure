@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECT_CACHE = ROOT / ".cache"
 
 # The default logged-in user when none is specified (--user / the /tunnel/<user> route).
-# No security — users are identity only (docs/spaces-and-users-plan.md).
+# No security — users are identity only (docs/specs/spaces.md).
 DEFAULT_USER = "daniel"
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ VOID = "<void>"      # sentinel space for an OUTDOOR/void world — not tied to 
 
 def scope_for(user: str, agent: str) -> str:
     """The capability scope a (user, agent) pair operates under: `<user>/agents/<agent>`
-    (docs/spaces-and-users-plan.md §3). Injected by the runtime, never an LLM argument."""
+    (docs/specs/spaces.md §3). Injected by the runtime, never an LLM argument."""
     return f"{user}/agents/{agent}"
 
 
@@ -246,7 +246,7 @@ class Settings:
     reg_inlier_m: float = 0.4                        # max distance (m) a plane may sit from a same-kind reference
     reg_yaw_peaks: int = 5                           # candidate room rotations tried when solving orientation
     capture_interval: float = 2.0                    # seconds between recaptures/re-registrations
-    # Render apply-gate (docs/local-first-geometry.md §4-6): a locally-rendered surface is only re-laid when
+    # Render apply-gate (docs/specs/spaces-geometry.md §9.1): a locally-rendered surface is only re-laid when
     # it moves past ONE of these tolerances — otherwise sub-tolerance re-derivation is skipped so the mesh
     # doesn't rebuild (the "pop"). Bigger = calmer (fewer updates, more lag to real change); smaller = snappier.
     apply_tol_pos: float = 0.02                      # metres a surface must move to re-lay it
@@ -283,17 +283,17 @@ class Settings:
     #                                                  hands = tracked-hand occluders only (sharp, cheap); full =
     #                                                  environment depth (walls/furniture/people, coarse). Injected as
     #                                                  window.CONJURE_OCCLUSION.
-    pose_tau: float = 0.0                            # s: pose-smoothing time constant (docs/pose-smoothing-plan.md).
+    pose_tau: float = 0.0                            # s: pose-smoothing time constant (docs/specs/spaces-geometry.md §9.2).
     #                                                  Per-surface SLEW eases each surface toward its newly-captured
     #                                                  pose over ~3·tau instead of snapping, turning the ~2 s drift
     #                                                  STEP into a short settle. 0 (default) disables → snap as today.
     #                                                  Injected as window.CONJURE_POSE_TAU; A/B like --geo-slice-ms.
     geo_slice_ms: float = 3.0                        # per-frame budget (ms) for the time-sliced mesh-rebuild
-    #                                                  pump (docs/local-first-geometry.md §14): a whole-room
+    #                                                  pump (docs/specs/spaces-geometry.md §9): a whole-room
     #                                                  re-triangulation is spread across frames so it never
     #                                                  drops one. Injected as window.CONJURE_GEO_SLICE_MS;
     #                                                  <=0 disables slicing (rebuild all inline each frame).
-    # Wall identity by plane (docs/local-first-geometry.md §5.3/§10) — how tolerantly matchWall calls two
+    # Wall identity by plane (docs/specs/spaces-geometry.md §4.2/§4.3) — how tolerantly matchWall calls two
     # captures the SAME wall. Injected as window.CONJURE_WALL. Loosen for two headsets that scan a wall
     # differently; tighten to demand a stronger match (a wrong wall merge puts content on the wrong wall).
     wall_perp_tol: float = 0.15                      # max plane-offset gap (m) to call two walls one plane
@@ -309,7 +309,7 @@ class Settings:
     force_geo: str | None = None
     # TEST override (--drop-surface): the client pretends it DIDN'T capture surfaces matching this
     # semantic ("wall art") or id substring — kept in the posted seed, omitted from the local render — so
-    # the missing-surface recovery (docs/local-first-geometry.md §5.2) can be exercised with one headset.
+    # the missing-surface recovery (docs/specs/spaces-geometry.md §6) can be exercised with one headset.
     drop_surface: str | None = None
     # TEST override for space occupancy (--force-occupied): treat the active space as already CLAIMED by a
     # phantom AR holder, so the admission gate engages for a SINGLE headset (match the active space ⇒

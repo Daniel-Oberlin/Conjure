@@ -1,7 +1,7 @@
 // Conjure WebXR client.
 // Connects to the world server's state channel, renders the snapshot, and applies patches live by
 // mapping the declarative world model onto A-Frame entities/components.
-// See docs/architecture.md §3 (channels), §4 (world model), §5 (patch protocol); docs/room-model.md
+// See docs/architecture.md §3 (channels), §4 (world model), §5 (patch protocol); docs/specs/worlds-surfaces.md
 // for the room/AR pieces (real surfaces, immersion, capture).
 (function () {
   "use strict";
@@ -251,7 +251,7 @@
   }
 
   // ----------------------------------------------------------------- immersion / room state
-  // Two axes (docs/room-model.md §5): passthrough (real room visible) × surface visibility.
+  // Two axes (docs/specs/worlds-surfaces.md §3): passthrough (real room visible) × surface visibility.
   var roomState = { active: false, passthrough: false, defaultVisible: false,
                     annotations: false, annotationDims: false,
                     edgesVisible: true, edgeColor: INFO_COLOR, edgeOpacity: 1,
@@ -381,7 +381,7 @@
   var geoQueue = [];        // ids awaiting a mesh rebuild (FIFO order of first enqueue)
   var geoPending = {};      // id -> latest comps to rebuild with (coalesced; a re-enqueue just refreshes this)
   var surfDumped = false;   // [surf] diagnostic (--debug-registration): dumped once per room entry (see _renderLocal)
-  // Pose-smoothing slew (docs/pose-smoothing-plan.md): entities currently EASING their transform toward a
+  // Pose-smoothing slew (docs/specs/spaces-geometry.md §9.2): entities currently EASING their transform toward a
   // captured target pose (surfaces AND the content glued to them), so slewPoses walks only what's moving —
   // an idle room adopts no targets and the set stays empty (zero steady-state cost). Cleared on world switch.
   var slewSet = new Set();
@@ -397,7 +397,7 @@
   }
   // Drain the mesh-rebuild queue a few per frame under a per-frame time budget, so a whole-room
   // re-triangulation (first lay of N surfaces, or many shapes crossing tolerance at once) spreads across
-  // frames instead of overrunning one and dropping it (docs/local-first-geometry.md §14). Called every frame
+  // frames instead of overrunning one and dropping it (docs/specs/spaces-geometry.md §9). Called every frame
   // from tick.
   //   budget  = window.CONJURE_GEO_SLICE_MS (server --geo-slice-ms; default 3 ms). <=0 ⇒ Infinity: drain the
   //             whole queue each frame — slicing OFF (the pre-slice / A-B-baseline behaviour).
@@ -439,7 +439,7 @@
     } while (geoQueue.length && (performance.now() - t0) < budget);
   }
 
-  // Pose-smoothing (docs/pose-smoothing-plan.md §3): ADOPT a captured pose as an entity's target and enqueue
+  // Pose-smoothing (docs/specs/spaces-geometry.md §9.2): ADOPT a captured pose as an entity's target and enqueue
   // it to ease there over frames (slewPoses), instead of snapping. `pos`/`quat` are THREE Vector3/Quaternion
   // (cloned in, since callers reuse scratch). Called only when smoothing is on and the entity isn't fresh —
   // the fresh/disabled paths snap at the call site so nothing eases in from the origin.
@@ -455,7 +455,7 @@
   // lock-step with the surface it's glued to. Content anchoring still solves against the surfaces' TARGET
   // (capture) poses upstream — this only governs HOW the solved pose is written to object3D, snap vs ease.
   function placeContent(el, pos, quat) {
-    // Content apply-gate — the SAME deadband the walls use (docs/local-first-geometry.md §4-6). _placeContent
+    // Content apply-gate — the SAME deadband the walls use (docs/specs/spaces-geometry.md §9.1). _placeContent
     // re-solves every capture against the RAW, ungated, sensor-noisy plane basis, so with no gate the solved
     // pose wanders a few mm each capture and content shimmers while the gated walls sit dead-still (measured:
     // the sampled content's world pos drifted in a ~5-6 mm envelope while the wall's was frozen to 4 dp).
@@ -475,7 +475,7 @@
     el._contentPlaced = true;
   }
 
-  // The pose-follow clock (docs/pose-smoothing-plan.md §4/§5.4): every frame, ease each unsettled entity's
+  // The pose-follow clock (docs/specs/spaces-geometry.md §9.2): every frame, ease each unsettled entity's
   // object3D toward its adopted target by the frame-rate-independent fraction a = 1 - exp(-dt/tau), and drop
   // it the instant it arrives (epsilon snap) so steady-state cost returns to zero. `dt` is seconds. Writes
   // object3D directly (NOT setAttribute) — a 90 Hz setAttribute would re-parse strings + fire change events
@@ -509,7 +509,7 @@
   }
 
   // The room's stable planes (floor + walls) as PlaneAnchor.Plane[], for placing content via plane-relative
-  // anchors (docs/local-first-geometry.md §5). Two sources, keyed by the SAME shared surface ids:
+  // anchors (docs/specs/spaces-geometry.md §5.3). Two sources, keyed by the SAME shared surface ids:
   //   refToPlanes   — the seed/reference constellation in F_ref (this._ref) — where content is authored.
   //   localToPlanes — this client's live capture in F_track (localSurfaces) — where content is rendered.
   // Solving an F_ref-authored anchor against the local planes maps content room→room without a rigid frame.
@@ -547,7 +547,7 @@
       el.dataset.real = "1";
       if (meta.semantic) el.dataset.semantic = meta.semantic;
       if (meta.friendly_id != null) el.dataset.fid = meta.friendly_id;
-      // Render apply-gate (docs/local-first-geometry.md §4-6), POSE/SHAPE-split: sub-tolerance re-derivation
+      // Render apply-gate (docs/specs/spaces-geometry.md §9.1), POSE/SHAPE-split: sub-tolerance re-derivation
       // still doesn't touch the entity (the "pop"), but above tolerance we now separate a cheap POSE re-lay
       // (setAttribute position/rotation — a drifted surface, same shape) from the expensive SHAPE rebuild
       // (applySurfaceGeometry re-triangulates the holed wall — only when extent/openings change). Pose drift
@@ -562,7 +562,7 @@
       // center and its joinCorners width materialize at the SAME epoch → junctions close exactly (part B).
       var shapeChanged = _fresh || el._forceGeoRelay || WM.surfaceShapeChanged(el._geoSig, sig, _tol);
       if (poseMoved) {
-        // Pose-smoothing (docs/pose-smoothing-plan.md §3, §5.3): split ADOPT from MOVE. When smoothing is on
+        // Pose-smoothing (docs/specs/spaces-geometry.md §9.2, §5.3): split ADOPT from MOVE. When smoothing is on
         // (CONJURE_POSE_TAU>0) and this isn't the surface's first lay, store the captured pose as a TARGET and
         // let slewPoses ease the transform there over frames — the ~2 s drift STEP becomes a short settle.
         // FRESH surfaces (and the tau=0 default) snap immediately: a brand-new entity has no sensible pose to
@@ -684,7 +684,7 @@
   // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
   // instead of registering against stored geometry. Set from each snapshot.
   var VOID_SPACE = "<void>", isVoidWorld = false;
-  // Two-stage space selection (new-space-flow §3). On entering AR we report our coarse location and get
+  // Two-stage space selection (specs/spaces.md §6). On entering AR we report our coarse location and get
   // back the geo-near candidate spaces; room-capture then votes its live geometry against them
   // (RoomSnap.selectSpace) and commits the verdict via /space/select. `pendingSelect` holds the candidates
   // while that vote is in flight (null when there's nothing to decide); `lastGeo` remembers the reported
@@ -697,7 +697,7 @@
   // GEO_MAX_TRIES while staying blanked to passthrough — rather than dumping the user into the (possibly
   // void) active world mid-acquisition. geoTries resets on each AR entry and on a successful fix.
   var geoStatus = "idle", geoTries = 0, GEO_MAX_TRIES = 3;
-  // Admission gate + occupancy (new-space-flow steps 4/7). `clientId` identifies this page-load to the
+  // Admission gate + occupancy (specs/spaces.md §6.2/§6.3). `clientId` identifies this page-load to the
   // server so its select commits once (GPS jitter can't re-vote). `amHolding` = we passed the co-location
   // gate and are HOLDING the active space; we tell the server (`hold` over /ws) so it counts us as
   // occupying it — and re-tell it after a ws reconnect. On refusal we hide content and stay in passthrough.
@@ -758,7 +758,7 @@
     // Seed material for the room frame on reload (see the capture at ~L794). CLEAR it when a snapshot
     // carries no real surfaces — otherwise switching into an empty/void world (or a DIFFERENT room)
     // would leave the PREVIOUS room's surfaces here, and the next capture could register into the wrong
-    // frame (new-space-flow §3 gap #5: the Harold's-house cross-room seeding). Empty ⇒ nothing to seed.
+    // frame (specs/spaces.md §6: the Harold's-house cross-room seeding). Empty ⇒ nothing to seed.
     docSurfaces = reals.length ? reals : null;
     lastWorld = world;                   // remember for endAwaitingSpace (restore after a no-switch resolve)
     console.log("[conjure] snapshot rev", world.rev, "(" + (world.entities || []).length + " entities)"
@@ -1262,7 +1262,7 @@
   }
 
   // ----------------------------------------------------------------- WebXR room capture
-  // ⚠ HEADSET-ONLY / NEEDS IN-HEADSET VERIFICATION (docs/room-model.md §13). Reads the Quest's
+  // ⚠ HEADSET-ONLY / NEEDS IN-HEADSET VERIFICATION (docs/backlogs/worlds-surfaces.md). Reads the Quest's
   // detected planes (+ semantic labels) in an immersive session and POSTs them to /room as this
   // headset's room model. No-ops gracefully when the features aren't available (desktop / VR-only),
   // so it never breaks the normal path. Mesh detection + anchors are later slices.
@@ -1274,7 +1274,7 @@
         this._resetSpace = null;
         this._anchorInv = null;     // last-good registration frame, reused when establishing (= _Tmat once registered)
         // Geometry-registered world frame. The Quest's tracking origin (and any WebXR anchor) can flip
-        // ~180° + several metres when you leave the room boundary and return (docs/room-model.md §8a), so
+        // ~180° + several metres when you leave the room boundary and return (docs/specs/spaces-geometry.md §4.1), so
         // we don't trust it for identity. Instead we keep a REFERENCE constellation of the room's own
         // surfaces and, each capture, solve the single yaw+translation transform that aligns the newly
         // detected planes onto it (_register). That transform (_Tmat: refSpace → reference frame) IS the
@@ -1372,7 +1372,7 @@
       // re-seeds from the NEW world's geometry — or establishes fresh in an empty/void world — instead of
       // registering the new room against the PREVIOUS world's constellation. Without this, a guest who was
       // briefly in the owner's world keeps the owner's `_ref` after minting their own world, so their real
-      // room renders registered to the owner's room → a stable positional offset (new-space-flow).
+      // room renders registered to the owner's room → a stable positional offset (specs/spaces).
       resetFrame: function () {
         this._ref = []; this._Tmat = null; this._haveT = false;
         this._anchorInv = null; this._refSeq = 0; this._lostSince = 0; this.lastPost = 0;
@@ -1393,7 +1393,7 @@
         return eulerYXZToQuat(THREE, p.rotation || [0, 0, 0]).angleTo(eulerYXZToQuat(THREE, k.rotation || [0, 0, 0]))
           > 20 * Math.PI / 180;
       },
-      // Position #world-root. LOCAL-FIRST (docs/local-first-geometry.md §2): a captured room renders its
+      // Position #world-root. LOCAL-FIRST (docs/specs/spaces-geometry.md §2): a captured room renders its
       // real surfaces at their OWN detected (refSpace/F_track) poses via _renderLocal, so content is
       // F_track-native and #world-root stays at IDENTITY. Registration still runs — but only to assign
       // STABLE IDS; it no longer drives a render transform, because one rigid frame can't reconcile the
@@ -1418,7 +1418,7 @@
       },
       // Render THIS client's own captured surfaces (local-first). Each is drawn at its raw F_track pose via
       // the shared applyEntity — which runs the render apply-gate, so an unchanged surface isn't re-laid and
-      // nothing "pops" (docs/local-first-geometry.md §5-6). Then debounce-prune any real surface that's been
+      // nothing "pops" (docs/specs/spaces-geometry.md §9.1). Then debounce-prune any real surface that's been
       // absent a few captures, so a single missed capture doesn't flicker a wall away. world-root is
       // identity, so a surface at its captured pose renders at the real-world spot.
       _renderLocal: function (surfaces) {
@@ -1493,7 +1493,7 @@
         });
       },
       // Place director-authored content (models, props — anything with a remembered F_ref pose) via
-      // plane-relative anchors (docs/local-first-geometry.md §5). Since #world-root is identity in a captured
+      // plane-relative anchors (docs/specs/spaces-geometry.md §5.3). Since #world-root is identity in a captured
       // room, we can't render content at its raw F_ref pose; instead, for each content entity, author an
       // anchor from its F_ref pose against the SEED walls (F_ref) and re-solve it against THIS client's LOCAL
       // walls (F_track) — so it lands at the right spot in the room, riding the same non-rigid geometry the
@@ -2050,7 +2050,7 @@
         if (JIT) this._jMark("dbg");                        // --debug-registration-only probes (NOT in prod)
 
         // Am I the room AUTHORITY? The active world's owner authors the geometry; everyone else is a
-        // register-only GUEST (room-model §8b). An empty currentUser() is the dev/default user = owner
+        // register-only GUEST (specs/spaces-geometry.md §4.2). An empty currentUser() is the dev/default user = owner
         // (matches the server treating a missing X-Conjure-User as the owner); unknown worldOwner (no
         // snapshot yet) also defaults to owner so authoring is never briefly locked out.
         var me = currentUser(), amOwner = !me || !worldOwner || me === worldOwner;
@@ -2105,7 +2105,7 @@
           this.lastPost = time - RETRY_MS; return;
         }
 
-        // Space selection, stage 2 (new-space-flow §3): while candidates are pending, vote THIS capture
+        // Space selection, stage 2 (specs/spaces.md §6): while candidates are pending, vote THIS capture
         // against each one. A confident registration ⇒ we're in that space → join it (/space/select
         // matched). Once the capture is rich enough that a real match WOULD have locked (≥6 walls, a few
         // tries) but none did, we're somewhere new → commit "no match" so the server stamps/mints a space
@@ -2164,7 +2164,7 @@
         // (its raw F_track pose — what we RENDER, matching THIS headset's passthrough) and `surfaces` (the
         // reference-frame pose the OWNER posts to persist the shared model/seed). Both carry the same id.
         // Runs for owner AND guest now (unified): everyone renders their own capture; only the owner authors.
-        // See docs/local-first-geometry.md §5-6.
+        // See docs/specs/spaces-geometry.md §9.1.
         var surfaces = [], localSurfaces = [], floor = null, claimed = new Set();
         var RS = window.RoomSnap, INSET_SEMS = { "door": 1, "window": 1, "wall art": 1 };
         // TEST (--drop-surface): a comma-separated list of semantics/ids to pretend we didn't capture.
@@ -2302,7 +2302,7 @@
         // the wall's scan-artifact centroid. Done here — walls settled by joinCorners, hostWall set by
         // snapInsets — and BEFORE _lp/_lq are dropped. Attached to the posted surface (→ persisted in the seed)
         // AND stamped onto the inset's `_ref` entry, so NEXT capture's identity match reconstructs against it
-        // from _ref (immediate) rather than the lagging seed (docs/local-first-geometry.md §5.3).
+        // from _ref (immediate) rather than the lagging seed (docs/specs/spaces-geometry.md §6.1).
         var authorCorners = window.RoomSnap.wallCorners(THREE, surfaces);
         var authorFloorY = null, authorCeilY = null, authorWallById = {}, refById = {};
         surfaces.forEach(function (s) {

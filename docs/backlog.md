@@ -72,7 +72,7 @@ and whether "looking at" should prefer the nearest hit or the smallest angular o
 
 **Idea:** today the room geometry has a single writer — the authority (space owner) captures + posts; a
 guest **localizes against a frozen copy** of that geometry and never contributes (register-only — see
-`room-model.md` §8b). That's correct for co-location: the shared `_ref` constellation *defines* the shared
+`specs/worlds-surfaces.md` §8b). That's correct for co-location: the shared `_ref` constellation *defines* the shared
 frame, so a guest mutating it locally would only desync (its `/room` posts are 403'd, so the change never
 reaches the authority) and feed a drift loop. But a guest is *also* observing the same real room, so its
 observations could legitimately **improve** the one model (better extents, corrected drift, "the room
@@ -300,7 +300,7 @@ device/capture-dependent; can't confirm blind).
 
 ## "Private space" gates world-creation, not joining — revisit the semantics
 
-**Status:** shelved (design question) · raised 2026-07-07 · from new-space-flow step 6 (D8)
+**Status:** shelved (design question) · raised 2026-07-07 · from specs/spaces step 6 (D8)
 
 **The concern:** `space.public` currently gates only **world-creation-in-the-space** (a private space =
 only the owner may anchor new worlds there). "Private" colloquially means "keep others out," so the label

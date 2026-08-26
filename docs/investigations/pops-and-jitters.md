@@ -1,11 +1,11 @@
-# Pops & Jitters — investigation journey, fixes, instrumentation, and open theories
+# Pops & jitters — visible motion that shouldn't be there
 
 **Branch:** `fix/pops-and-jitters` — **fully merged into `main`** (final merge `789f2bb`; the branch is done).
 **Status:** all fixes and instrumentation shipped and merged; the final "walking micro-stutter" **diagnosed**
 as a platform-level WebXR/Quest characteristic (dropped-frame positional reprojection during translation),
 **not our code**. This document is the durable record so the investigation doesn't have to be re-run.
 
-The render model this all sits on is **local-first geometry** (`docs/local-first-geometry.md`): `#world-root`
+The render model this all sits on is **local-first geometry** ([`docs/specs/spaces-geometry.md`](../specs/spaces-geometry.md)): `#world-root`
 is held at identity, every surface renders at its own raw `F_track` pose, and a per-surface **apply-gate**
 skips re-laying anything that hasn't moved past tolerance. "Pops/jitters" are visible motion that shouldn't
 be there.
@@ -58,7 +58,7 @@ in §7).
   per-frame pump eases each surface's `object3D` toward its captured target with a frame-rate-independent
   `a = 1 - exp(-dt/τ)` and an epsilon snap, then drops it from the working set (zero steady-state cost).
   Content glued to a surface eases in lock-step (composes with the content gate below). Design:
-  `docs/pose-smoothing-plan.md`. Math (`slewAlpha`/`slewSettled`) is pure + unit-tested.
+  [`docs/specs/spaces-geometry.md §9.2`](../specs/spaces-geometry.md). Math (`slewAlpha`/`slewSettled`) is pure + unit-tested.
 - **Knob:** `--pose-tau` (`CONJURE_POSE_TAU`, **default 0 = off/snap**). A/B like `--geo-slice-ms`.
 - **What it does / doesn't:** smooths a genuine correction *step* into a short ease. It does **not** reduce
   the *rate* of corrections and cannot fix a **noisy target** — if the target itself jitters, slew just turns

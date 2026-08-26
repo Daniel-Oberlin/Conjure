@@ -1150,7 +1150,7 @@ def test_room_geometry_is_shared_across_worlds_styling_is_per_world(srv, client)
 
 
 def test_activate_no_longer_migrates_embedded_geometry(srv, client):
-    """new-space-flow step 0 + step 5: the legacy geometry-embedded migration is gone. A pre-space world
+    """specs/spaces.md §6.1: the legacy geometry-embedded migration is gone. A pre-space world
     doc is no longer rewritten on load, and its INLINE real surfaces are NOT resurrected — real geometry
     lives only in the space now (fed by capture via _save_active). Objects still compose; a world with no
     space ref now composes as VOID (step 5 removed the anonymous-'home' Path B fallback)."""

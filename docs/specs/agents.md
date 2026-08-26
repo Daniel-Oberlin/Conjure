@@ -68,6 +68,51 @@ ever reaches assets whose scope has the same agent segment, regardless of public
 never sees `outdoor`'s assets ([decisions.md §14](../decisions.md)). `DEFAULT_SCOPE` is
 `<DEFAULT_USER>/agents/builder`.
 
+**Why injected and not a parameter** — this is the security crux, not a style choice. If any tool took
+`scope=…`, the model could pass another agent's scope and read it, and so could a prompt injection
+hidden in some asset's label or notes. Instead the trusted runtime holds the scope and hands the store a
+*scoped handle* with the visibility predicate already baked in, so an agent **physically cannot widen its
+own view**. Reads are its own scope ∪ granted public; writes are its own scope only.
+
+Scope is a property of the **catalog entry** — the searchable row and its embedding — not of the bytes.
+Content-addressed bytes still dedupe globally on disk, while visibility, search and curation are
+per-scope, so two agents never see each other's catalog even for byte-identical content. In SQL the
+predicate is `scope = ? OR (public = 1 AND scope GLOB '*/agents/<agent>')` (`library.py:495`).
+
+### 2.1 Visibility is a flag, not a path segment
+
+`public: bool` lives on the item. Publishing is a metadata flip that relocates nothing and breaks no
+reference, content-addressed assets keep their hash, and access is a predicate rather than path
+arithmetic. Path-encoded visibility was considered and rejected for exactly those reasons. The same flag
+and the same read/write rule (`owner == caller OR public` / `owner == caller`) apply to sessions,
+worlds, assets and spaces alike — see [`specs/spaces.md §5`](./spaces.md).
+
+### 2.2 Two stores, one scope
+
+A world and an asset are different *kinds* of thing, so they live in different stores that share the
+scoping layer:
+
+| | **Asset store** (`library.py`) | **World / document store** (`world.py`) |
+|---|---|---|
+| Identity | **content hash** — immutable | **permanent id** (`wld_…`); the name is display text |
+| Mutability | write-once blobs | edited over time (patches, snapshots) |
+| Versioning | new bytes ⇒ new asset | inverse log per patch (§ undo, backlog) |
+| Query | similarity / semantic + intent | by-id lookup, list, metadata filter |
+| Embeddings | central — the whole point | not applicable |
+| Role | **leaf content**, referenced | a **document that references** many assets |
+
+So a world is a named, mutable document that *points at* assets by id; it does not live in the
+content-addressed media catalog. It is simpler than the asset catalog — no embeddings, no similarity
+search — precisely because it is a document rather than searchable media. A third **state** store
+(§7.4) rides the same scheme, per session.
+
+**Public assets are referenced in place**, never copied into the caller's scope. That is safe because
+assets are content-addressed: the bytes behind a hash are immutable by construction, so "changing" a
+public asset means producing a *new* hash and a reference cannot be silently mutated underneath you. The
+two genuine risks are the entry being unpublished and its curation drifting (label, notes, tags) — the
+guard against both is copy-to-private, which is not built (see
+[`backlogs/agents.md`](../backlogs/agents.md)).
+
 ---
 
 ## 3. The agent definition

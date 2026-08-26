@@ -3,7 +3,7 @@
 **Status:** BUILT (design agreed + implemented 2026-08-17; see §8). Moves runtime state and agent definitions
 out of the project directory into a user-owned home, adds a user settings file, and makes agent
 definitions a **search path** (user + bundled) instead of a single project dir. No security — users
-are identity only. Extends `spaces-and-users-plan.md` (namespace) and
+are identity only. Extends `specs/spaces.md` (namespace) and
 [`specs/agents.md §7.1`](./specs/agents.md) (the `users/<user>/…` tree that this doc relocates).
 
 ## 1. Why
@@ -176,7 +176,7 @@ Resolved: **build the local model now, don't preclude the server one.**
    faces an empty home. (Landed as one commit; steps 3 and 5 were merged for this reason.)
 4. ✅ Agent search path — `load_agent`/`resolve_agent_dir`/`list_agents` iterate `AGENTS_PATH`; user
    shadows bundled; `shell agents` tags user defs.
-6. ✅ Docs: README (data-location note), specs/agents.md §7.1, spaces-and-users-plan §3 (superseded-root
+6. ✅ Docs: README (data-location note), specs/agents.md §7.1, specs/spaces.md §3 (superseded-root
    banners).
 
 Each step tested (pytest + `node --test`) and committed; env/monkeypatch overrides keep tests on tmpdirs.

@@ -267,7 +267,7 @@ test("register declines (returns null) when the reference is too small", () => {
   assert.strictEqual(stat, "ref<3");
 });
 
-// --- Multi-user co-location robustness (room-model §8): a GUEST registers its own planes onto the
+// --- Multi-user co-location robustness (specs/spaces.md §7): a GUEST registers its own planes onto the
 // authority's reference from a different vantage, so it sees a PARTIAL/EXTRA plane set. ---
 const rectRoom = () => {                          // room with 4 ALL-DISTINCT-width walls (breaks the 180°
   // rotational ambiguity a symmetric rectangle has from one vantage) + floor + ceiling. Opposite widths
@@ -395,7 +395,7 @@ test("register reports per-wall residuals; a clean capture fits tightly (non-rig
     "a truly-rigid capture fits within ~cm everywhere — the baseline that on-device non-rigidity breaks");
 });
 
-// --- selectSpace: the FINE stage of two-stage space selection (new-space-flow §3, D2/D7). Geolocation
+// --- selectSpace: the FINE stage of two-stage space selection (specs/spaces.md §6, D2/D7). Geolocation
 // hands the client a few geo-near candidate spaces in stored a-plane form; selectSpace picks which one the
 // headset is physically in via the register() coverage vote, or null ("somewhere new"). It's the geometric
 // vote — not a surface-count guess — that decides, so it's immune to the sparse-capture bug. ---

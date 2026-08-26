@@ -46,7 +46,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY,
   kind TEXT,                       -- image | model | skybox | grounded_skybox | audio | photo | …
-  scope TEXT,                      -- capability namespace <user>/agents/<agent> (spaces-and-users-plan.md);
+  scope TEXT,                      -- capability namespace <user>/agents/<agent> (specs/spaces.md);
                                    --   a data seam now — enforcement arrives with the second agent
   public INTEGER DEFAULT 1,        -- visibility flag (NOT a path segment): 1 = world-readable, 0 = private
   source TEXT,                     -- cache://<id> | nas://<path> | https://…
@@ -296,7 +296,7 @@ class AssetLibrary:
         order) and `match="vector"`. Empty list if vectors aren't available/populated. The reuse-tier
         layer (Phase 2) maps distance → strong/weak/none. If `scope` is given, results are limited to
         the caller's own scope ∪ `public=1` (visibility lives on the row, not the vector index, so we
-        over-fetch KNN and filter — co-location-plan.md §8a)."""
+        over-fetch KNN and filter — specs/agents.md §2.2)."""
         if not self._vec or not query_vec:
             return []
         k = limit if scope is None else limit * 4       # over-fetch so private rows don't crowd out visible ones
@@ -474,7 +474,7 @@ class AssetLibrary:
     def query(self, sql: str, *, scope: str, limit: int = 200) -> list[dict]:
         """Read-only SQL over the catalog, **scoped to `scope` ∪ `public=1`**: runs on a fresh read-only
         connection where `assets` is a temp view of the caller's own rows plus every world-readable row
-        (a friend on the same server discovers your public assets — co-location-plan §8a), with
+        (a friend on the same server discovers your public assets — specs/agents.md §2.2), with
         SELECT/PRAGMA-only + single-statement validation. Raises ValueError on a disallowed query."""
         s = sql.strip().rstrip(";").strip()
         low = s.lower()
@@ -514,7 +514,7 @@ class AssetLibrary:
         keyword match (label/prompt/query/notes/tags); recency-ordered. (The confidence-tier + vector
         stages layer on top in Phases 1–2.) Each result carries a `match` label of how it was found.
         If `scope` is given, results are limited to the caller's own scope ∪ `public=1` rows (a friend
-        on the same server discovers your public assets, not your private ones — co-location-plan §8a)."""
+        on the same server discovers your public assets, not your private ones — specs/agents.md §2.2)."""
         results: list[dict] = []
         seen: set[str] = set()
         # Hard agent wall: only assets whose scope has the SAME agent segment, and within that, own

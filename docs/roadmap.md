@@ -67,26 +67,32 @@ with something you can actually experience on the Quest.
   (2) editing the skybox itself; (3) non-square aspect ratios for `place_image`; (4) **text→3D
   generation** (Meshy/Tripo/…) as another `place_*` path; (5) generated audio.
 
-## Phase 5 — Room model (AR / scene understanding) ⬅ NEXT
-- Bring the **real room** out of the Quest into the world model via WebXR (`plane-detection`,
-  `mesh-detection`, semantic labels, passthrough, anchors), as **first-class editable geometry**.
-  Captured surfaces (`wall`/`floor`/`ceiling`/`table`/…) become **stylable entities** the director can
-  **show/hide, recolor, and texture** (e.g. "make the ceiling a galaxy"), available for **display**
-  (text labels) and **interaction** (mount images/objects, anchored). A full **immersion spectrum**
-  from two axes (passthrough × surface-visibility): **virtual room** ↔ **AR** ↔ **mixed** ↔ **hide the
-  room for the original unbounded VR**. The director is **room-aware** — new models land **inside the
-  boundary** — and can **author its own room** fit to the real footprint ("turn my room into a
-  cathedral"). **Progressive mesh refinement** runs in the **background on request**; the refined mesh
-  is edited the **same way** (by semantic surface) as the coarse boundaries. Adds the
-  **client→server reverse channel** (the WS is server→client only today). With multiple headsets,
-  **one is the room authority** (others share it). Full design: **[room-model.md](./room-model.md)**.
+## Phase 5 — Your real space (AR / scene understanding) ⬅ IN PROGRESS
+- Bring the **real world** out of the Quest into the world model via WebXR (`plane-detection`, semantic
+  labels, passthrough), as **first-class editable geometry**. Captured surfaces
+  (`wall`/`floor`/`ceiling`/`table`/…) are **stylable entities** the director can **show/hide, recolor,
+  and texture** ("make the ceiling a galaxy"), with **labels** for reference and **mounting** for images
+  and objects. A full **immersion spectrum** from two axes (passthrough × surface-visibility):
+  **virtual room** ↔ **AR** ↔ **mixed** ↔ **hide it for the original unbounded VR**.
   *Milestone: "hang that dragon on my real wall," "make my walls glass and the ceiling a galaxy,"
   "drop into full VR."*
-- Realizes the VR+AR / passthrough / anchor-relative threads in spec §3 + vision; a textbook
-  capability-tier extension (decision #11) — Quest gets room-aware while other devices fall back to
-  the synthetic holodeck. Multi-headset room sharing depends on **co-location** (spec §12) and
-  **persistent anchoring** (worlds fixed to a physical room across sessions) is designed-for here and
-  built out with Phase 6 memory.
+- **Shipped:** the **client→server reverse channel**; capture with stable surface ids; corner-joining and
+  wall sealing; real door/window cutouts; upright mounted art; the space as a **shared, user-owned
+  record** with per-world style overrides; geolocation + surface-match **space selection** with an
+  admission gate and occupancy claim; presence avatars; and a **local-first** render that keeps the
+  capture off the frame budget.
+- **Not built:** the **progressive mesh tier** (`mesh-detection` — refine on request, edited the same way
+  by semantic surface), **director-authored** replacement geometry fit to the real footprint ("turn my
+  room into a cathedral"), and **cross-session persistent anchors**.
+- Specs: **[specs/spaces.md](./specs/spaces.md)** (the record) ·
+  **[specs/spaces-geometry.md](./specs/spaces-geometry.md)** (where a surface is) ·
+  **[specs/worlds-surfaces.md](./specs/worlds-surfaces.md)** (how a world styles it).
+- Realizes the VR+AR / passthrough threads in spec §3 + vision; a textbook capability-tier extension
+  (decision #11) — Quest becomes space-aware while other devices fall back to the synthetic holodeck.
+  **Co-location needs no platform shared-anchor:** a guest registers its own planes against the space's
+  stored geometry, so multi-headset sharing is not gated on Quest "Shared Spaces". **Persistent
+  anchoring** (a world fixed to a physical place across sessions) is the remaining anchor use and lands
+  with Phase 6 memory.
 
 ## Phase 6 — Memory & connections
 - Persist worlds + versions; semantic recall ("the beach world"); portals between worlds.
@@ -103,7 +109,7 @@ with something you can actually experience on the Quest.
   patches) — cheap if done now, a rewrite if retrofitted.
 - **Phase 2:** addressing gate (wake word + PTT) + audio capture (shared room device with
   diarization, or per-headset mics) so the director only acts on agent-directed speech.
-- **Dedicated milestone — users + spaces + co-location (`spaces-and-users-plan.md`).** Primitive users
+- **Dedicated milestone — users + spaces + co-location (`specs/spaces.md`).** Primitive users
   own first-class **spaces** (the shared room layer); a second user joins a public world and co-locates
   via shared-geometry registration (**no** Quest "Shared Spaces" dependency) + presence avatars —
   *two people in one room see the same campfire in the same physical spot.*

@@ -432,7 +432,7 @@ resting transform to `POST /manipulate`, and the **world server is the authority
 echo is idempotent — `applyPatch` re-sets values it already holds — so there is no pop.
 
 What the client sends alongside the transform, and why, is a consequence of local-first geometry
-([`docs/local-first-geometry.md`](../local-first-geometry.md)): the dragged pose is in the **local** render
+([`docs/specs/spaces-geometry.md`](../specs/spaces-geometry.md)): the dragged pose is in the **local** render
 frame, while the server persists the reference frame and re-solves content from it every capture.
 
 - `anchor` — the plane-relative anchor authored against **our own** walls (`ConjureFrames.anchorFor`),

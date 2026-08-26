@@ -220,6 +220,35 @@ notice and then goes quiet for tens of seconds. Per-step progress to agent clien
 LLM-derived from the first turn); an **LLM pin** (determinism for a game); entry rules (single/multi
 player, guests).
 
+## Persistence
+
+**Undo/redo rides inverses we already compute.** `apply_patch` records an inverse for every op
+(`world.py`), so undo is a cursor over that history plus a tool — not a new subsystem. The real work is
+the two things around it:
+
+- **Action grouping** — one director turn is one undoable unit, not N patches. Without this, "undo that"
+  walks back a fragment of a turn.
+- **Origin filtering** — never undo an automatic room re-capture, a re-anchor, or an embedding
+  write-through. Patches already carry an `origin` (`"room"`, etc.), so the filter has something to key
+  on.
+
+MVP shape: session-level, in-memory, voice-accessible. This is also what unblocks state undo (see
+*Agent state* above) and surface-styling undo (see
+[`backlogs/worlds-surfaces.md`](./worlds-surfaces.md)) — one mechanism, three consumers.
+
+**Durable versioning is a different shape.** Cross-restart history, named checkpoints and branching are
+*snapshots*, not an inverse log, and are a separate later feature. Worth not conflating with undo: the
+inverse log is cheap because it already exists; snapshots are a storage design.
+
+**Copy-to-private is not built.** Public assets are referenced in place, which is safe against silent
+mutation because the bytes are content-addressed ([`specs/agents.md §2.2`](../specs/agents.md)). It is
+*not* safe against the entry being unpublished, or its curation drifting. Copy-to-private is the opt-in
+guard: copy the (already immutable) bytes' catalog entry into your own scope to pin a stable,
+self-curated version. Nothing implements it.
+
+**Cross-machine federation.** The `public` share works on one machine because bytes are
+content-addressed and global on that disk. Sharing across machines needs a transport, not a predicate.
+
 ## Sharing and identity
 
 **A world belongs to exactly one session.** Sharing a world across sessions — a library world

@@ -7,7 +7,7 @@
 //   • mode — grounded pins Y to the floor and zeroes pitch/roll; free recovers a real tilt;
 //   • degeneracy — near-parallel walls are rejected (ok:false) rather than solved into a bogus pose.
 // A golden-vector fixture (fixtures/plane-anchor-golden.json) pins the exact numbers so the future Python
-// server port (docs/local-first-geometry.md §13.1) can be checked against identical cases.
+// server port (docs/specs/spaces-geometry.md §11) can be checked against identical cases.
 const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");

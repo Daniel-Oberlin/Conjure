@@ -1,4 +1,4 @@
-# Shelved issue: wall-art image lands *behind* its wall (the "wall-art 45 flip")
+# Wall-art lands *behind* its wall
 
 **Status:** partial fix (A) landed; the root fix is NOT fully solved. The on-device symptom is intermittent,
 so this note preserves the full context — including a fix (B) we tried and **rejected** — for when it recurs.
@@ -12,7 +12,7 @@ so this note preserves the full context — including a fix (B) we tried and **r
 - **Intermittent.** Seen once, during a `--drop-surface "door,window,wall art"` session (so 45 was
   *recovered*, not live-captured); then NOT reproduced in two later runs (with and without `--drop-surface`).
 
-## The surfaces (from `.cache/spaces/daniel/space-1.json` — 59 surfaces, two rooms)
+## The surfaces (from `a captured space record` — 59 surfaces, two rooms)
 
 | surface | role | perp to 45 | normal (x,z) | note |
 |---|---|---|---|---|

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Post a SYNTHETIC room to a running Conjure server — exercise the room model without a headset.
 
-Simulates what the Quest's WebXR capture would send (docs/room-model.md): four walls, a floor, a
+Simulates what the Quest's WebXR capture would send (docs/specs/worlds-surfaces.md): four walls, a floor, a
 ceiling, and a table, plus the room boundary — **centered on the user** so it surrounds you (a real
 capture arrives relative to where you stand). Also flips to `virtual_room` immersion so the surfaces
 are visible on desktop. Then drive the director (`set_immersion` / `show_surface`).

@@ -484,7 +484,7 @@ class WorldRepository:
 
     def list_public(self, *, exclude_scope: str | None = None) -> list[dict]:
         """Every PUBLIC world across *all* scopes — the cross-user 'worlds available to me' discovery
-        (co-location-plan §3). Returns `{scope, owner, name, public}` per world whose doc is public
+        (specs/spaces.md §5). Returns `{scope, owner, name, public}` per world whose doc is public
         (default true when the flag is absent). A filesystem walk that reads each doc — fine at small
         scale; a derived world-index replaces it when discovery needs to scale (backlog). Visibility is the
         **session's** now (§8.2): we enumerate `<root>/*/agents/*/sessions/<id>` and, for each session
@@ -836,7 +836,7 @@ class StateStore:
 
 class SpaceStore:
     """Named, **USER-owned** physical spaces on disk: ``<root>/<user>/spaces/<name>.json`` (docs/
-    spaces-and-users-plan.md §5; docs/specs/agents.md §7.1). A *space* is the captured real geometry —
+    specs/spaces.md §2; docs/specs/agents.md §7.1). A *space* is the captured real geometry —
     `surfaces` (geometry + default materials) + `boundary` + meta (`owner`, `public`, `geolocation`) —
     shared across all of a user's worlds, *not* a full WorldStore doc and *not* per-agent. The owner's
     headset is its capture authority. Stored as a plain JSON dict; a per-user ``_active.txt`` records the

@@ -33,7 +33,7 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 | 4 | **Dynamic modules** | host (served) + client (run) | Live, animated, interactive effects the agent can **conjure** into a world — fireflies, a rippling Water Picture, object manipulation. Each is a folder + manifest whose entry script registers one A-Frame component; the server serves it and delivers its **config in the world snapshot**, so presence and state are shared for free. Built; specified in [specs/dynamics.md](./specs/dynamics.md) |
 | 4b | **Behavior runtime** 🔴 | host **and** client | QuickJS-WASM sandbox for **LLM-authored** behaviors + geometry code (decision #7). Designed, not built — §9. Distinct from row 4: modules are curated, first-party, trusted code |
 | 5 | **Asset pipeline** | host (+ remote model APIs) | Resolve / generate / convert / optimize / cache content |
-| 6 | **Memory** | host | World store, asset store, vector index, connection graph, sessions, anchors |
+| 6 | **Memory** | host | World store, **space store**, asset store, vector index, connection graph, sessions. A **space** is the persistent record of a real physical environment — surfaces, boundary, geolocation, owner — shared across a user's worlds rather than copied into each ([specs/spaces.md](./specs/spaces.md)) |
 | 7 | **MCP modules** | anywhere | Pluggable MCP **servers**: content sources, engines, capability extensions, input providers. *Not* row 4 — see the naming note in §11a |
 | 8 | **Input layer** | host **and** client | Normalize + merge input devices into abstract actions/axes. The client half is built (`ConjurePointers`, §11b) |
 | 9 | **Model services** | cloud / local / home box | STT, LLM, TTS, image-gen, 3D-gen behind a provider abstraction (decision #1); per-slot defaults/options in [providers.md](./providers.md) |
@@ -117,15 +117,15 @@ server, memory, and client share one representation.
   "created": "2026-06-04T…", "updated": "2026-06-04T…",
   "budget": { "maxTris": 500000, "maxDrawCalls": 200, "texMemMB": 256, "targetHz": 90 },
   "environment": {
-    "sky":     { "type": "hdri", "asset": "sha256:…" },
-    "lighting":{ "preset": "sunset", "directional": {…} },
-    "fog":     { "color": "#f80", "density": 0.02 },
-    "gravity": [0, -9.81, 0],
-    "ambientAudio": "sha256:…"
+    "public": true,                                         // visibility is a FLAG, never a path segment
+    "space":  "daniel/space-1",                             // WHICH space this world is tied to, or "<void>"
+    "sky":    { "type": "hdri", "asset": "sha256:…" },      // how this world presents the sky
+    "room":   { "active": true, "passthrough": false,       // how this world presents the SPACE
+                "defaultSurfaceVisible": false,
+                "surfaceStyles": { "real_wall_3": {…} },    // per-surface material DELTAS vs the space's base
+                "edgesVisible": true, "annotations": false }
+    // 🔴 not built: lighting presets, fog, per-world gravity, ambientAudio
   },
-  "anchors": [                                              // forward-compat: persistent AR (#11)
-    { "id": "anchor_wall1", "kind": "persistent-real-world", "fallback": "world-origin" }
-  ],
   "entities": [ /* Entity[] */ ],
   "connections": [ { "portal": "ent_door1", "target": "world_cabin" } ]
 }
@@ -136,7 +136,7 @@ server, memory, and client share one representation.
 ```jsonc
 {
   "id": "ent_campfire_1",
-  "parent": null,                       // entity id, or an anchor id (anchor-relative placement)
+  "parent": null,                       // entity id; placement vs the real world is meta.placement, below
   "transform": { "position": [2,0,-3], "rotation": [0,45,0], "scale": [1,1,1] },
   "components": {
     "model":     { "asset": "sha256:…", "placeholder": "primitive:cone" },   // progressive build
@@ -149,12 +149,31 @@ server, memory, and client share one representation.
     "water":     { "damping": 0.996, "src": "…" }       // a DYNAMIC MODULE: config-in-snapshot (§2 row 4)
   },
   "behaviors": [ /* BehaviorRef[] — see §9 */ ],
-  "meta": { "license": "CC-BY", "attribution": "…", "source": "polypizza", "generated": false }
+  "meta": { "license": "CC-BY", "attribution": "…", "source": "polypizza", "generated": false,
+            "placement": "grounded",                // grounded | free | on-surface | skybox
+            "anchor": { /* plane-relative: ids + signed offsets + per-wall quaternion votes */ } }
 }
 ```
 
+`meta.placement` fixes **both** how an entity's position and its orientation are solved, as one
+consistent choice — a grounded model is floor-seated and upright, a free one keeps its full quaternion.
+`meta.anchor` is the plane-relative anchor each client re-solves against its own walls
+([specs/spaces-geometry.md §5](./specs/spaces-geometry.md)).
+
 Invariants: fully serializable & restorable; every entity has a stable id; component set is
-open/extensible; `parent` may target an anchor to keep persistent-AR reachable.
+open/extensible; nothing is stored in absolute real-world coordinates — every placed entity is
+on-surface, grounded, free, or skybox.
+
+**A real room surface is an ordinary entity**, tagged `meta.real`. There is no separate room-rendering
+path: a captured wall carries a `surface` component (polygon, extent, holes) and a `material`, so it
+flows through patches, broadcast and the director's material edits like anything else. `meta.real` is
+the contract — restyle, hide, texture and mount onto it; never move or remove it
+([specs/worlds-surfaces.md](./specs/worlds-surfaces.md)).
+
+**The world document is composed, not stored, where the space is concerned.** Geometry lives once in the
+space; a world stores only its per-surface material *deltas*. The live in-memory doc is always fully
+composed so client, patch and director paths are unchanged; only persistence splits
+([specs/spaces.md §4.1](./specs/spaces.md)).
 
 **The open component set is what makes dynamic modules free.** A module *is* an A-Frame component: the
 server adds an entity carrying `components.<component> = <config>` and the client applies it with
@@ -225,9 +244,20 @@ Every change is a patch — the unit of live sync **and** undo/redo.
   and streams it on the high-rate channel; the server validates collisions/occupancy transitions
   and is authoritative for those. For tight loops with host-side input devices, the motion model
   may run server-side near the input (decision #6/#12, §11 input).
-- **Co-location** (multi-user, decision #9): preferred path = Quest "Shared Spaces" shared origin
-  (extension); neutral fallback = marker/QR or manual calibration. Presence + world render in that
-  shared frame so objects land in the same physical spot.
+- **Real geometry: local-first, and never broadcast.** The Quest's map of a multi-room space is
+  **locally non-rigid** — measured up to ~9 cm of regional disagreement between sessions, which no single
+  rigid transform reconciles. So the server holds the *semantic* model (ids, semantics, styling) plus a
+  **seed** constellation, and **every client renders its own live capture**. Geometry ops update the seed
+  and are deliberately not broadcast; only what clients consume goes out (env, boundary, on-surface
+  re-anchors). `#world-root` is held at **identity** for a captured space
+  ([specs/spaces-geometry.md](./specs/spaces-geometry.md)).
+- **Co-location** (multi-user, decision #9): **no platform shared-anchor** — there is no Quest "Shared
+  Spaces" dependency and no shared render frame. A guest registers its own detected planes against the
+  space's stored constellation; registration's useful output is **id correspondence**, not a coordinate
+  transform. Free content, skybox and avatars are placed by **plane-relative anchors** re-solved against
+  each client's own walls. So content lands on the same *physical* wall for everyone while the coordinate
+  numbers differ by centimetres — physical consistency is preserved, coordinate agreement is neither
+  achieved nor needed.
 
 ## 7. The agent (director) + shell  🟡
 
@@ -470,6 +500,12 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
 - **World store** — world documents + version history (snapshots + inverse patches for undo/recall). A
   live **dynamic module** needs no store of its own: it is an entity carrying its component config, so
   it persists and reloads on this path like anything else (§4).
+- **Space store** — one record per real physical environment: surfaces, boundary, geolocation, owner,
+  visibility, and a return-visit pointer to the last world used in it. **User-owned and
+  agent-agnostic** — the room belongs to the person who captured it, not to an agent — and shared across
+  all their worlds, so re-styling a wall in one world never touches the geometry or another world. Also
+  the server's own solver geometry: pose-relative queries ("the wall I'm looking at") run against the
+  seed. See [specs/spaces.md](./specs/spaces.md).
 - **Asset store** — content-addressed blobs + descriptors (§10).
 - **Vector index** — embeddings of world name/description/tags for semantic recall ("the beach world").
 - **Connection graph** — portals between worlds.
@@ -479,7 +515,9 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
   `state_*` tools). Named, owned, persisted, switchable; visibility lives here and a world inherits it.
   One global pointer records which session is live. See
   [specs/agents.md §7](./specs/agents.md).
-- **Anchor registry** (forward-compat) — persistent real-world anchor id ↔ pose, keyed to a place.
+- **Anchor registry** (forward-compat, §15) — a persistent WebXR anchor handle per space, for reloading
+  a world fixed to the same physical place across sessions. Not needed for placement or co-location,
+  both of which are plane-relative today.
 
 Storage choices 🔴 (open, low-stakes): SQLite + a vector extension and a filesystem blob store is a
 fine Pi-friendly default; swappable later.
@@ -528,8 +566,12 @@ The provider abstraction (one interface per model role) makes A/B/C the same cod
 
 - **Source-agnostic media surfaces** — materials bind to a source that may be a live stream
   (`kind:"stream"`), enabling live video on portals + remote-screen surfaces.
-- **Anchor-relative placement** — entities may parent to a persistent real-world anchor, enabling
-  persistent AR in the home as a capability extension.
+- **Cross-session persistent anchors** — a WebXR persistent-anchor handle, stored and restored, would
+  let a world reload fixed to the same physical place. Note what this is *not* for: co-location needs no
+  shared anchor, since a guest registers against the space's geometry instead
+  ([specs/spaces-geometry.md](./specs/spaces-geometry.md)). Placement *within* a session is already
+  solved differently — by **plane-relative anchors** re-solved against each client's own walls — so this
+  is a persistence feature, not a placement one.
 - **Streaming & bidirectional modules** — the module manifest can carry stream/handshake metadata
   and an input-forwarding path, enabling remote-desktop and other live feeds.
 

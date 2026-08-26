@@ -32,16 +32,36 @@ split exists so a spec can be trusted: nothing in it is a plan, an intention, or
 - **[specs/dynamics.md](./specs/dynamics.md)** — dynamic modules: the manifest, the client contract, the
   shared clock/bus/pointer runtime, XR actions and pointer arbitration, placement, and the tier-C commit
   path. ([backlog](./backlogs/dynamics.md))
+- **[specs/spaces.md](./specs/spaces.md)** — the **space**: the persistent record of a real physical
+  environment (surfaces, boundary, geolocation, owner), how a headset decides which space it is standing
+  in, admission tiers, the occupancy claim, authority vs. edit rights, and co-location.
+  ([backlog](./backlogs/spaces.md))
+- **[specs/spaces-geometry.md](./specs/spaces-geometry.md)** — where a surface **is** and **which** it is:
+  the non-rigid map and why geometry is never shared, frames and normal conventions, consensus
+  registration, plane-relative anchors and placement modes, shell geometry, and keeping the capture off
+  the frame budget. ([backlog](./backlogs/spaces-geometry.md))
+- **[specs/worlds-surfaces.md](./specs/worlds-surfaces.md)** — how a **world presents** a space: real
+  surfaces as ordinary entities, the base-plus-override styling split, the two immersion axes, the
+  director's surface tools, and openings and edges. ([backlog](./backlogs/worlds-surfaces.md))
 - **[specs/occlusion.md](./specs/occlusion.md)** — real-world depth occlusion: the global depth pre-pass
   and the `off`/`hands`/`hands-solid` modes. ([backlog](./backlogs/occlusion.md))
 
-**Focused designs** (deep dives on a single area — older plan-shaped docs, migrating to the above):
-- **[room-model.md](./room-model.md)** — the **next phase** (roadmap Phase 5): bringing the real room
-  (AR / scene understanding — passthrough, semantic surfaces, mountable real walls/furniture,
-  progressive mesh refinement) out of the Quest and into the world model.
-*(`agents.md`, `agent-separation-plan.md`, `agent-server-plan.md`, `sessions-plan.md`,
-`session-scoping-plan.md` and `shared-session-plan.md` were consolidated into
-[specs/agents.md](./specs/agents.md) + [backlogs/agents.md](./backlogs/agents.md) on 2026-08-25.)*
+The three space specs form a stack, and the prefixes say which layer you are in: `spaces` is the
+*record*, `spaces-geometry` treats a surface as *geometry to locate*, `worlds-surfaces` treats it as
+*content to style*.
+
+## Investigations
+
+[`investigations/`](./investigations/) holds the durable record of a debugging campaign — the symptom,
+the experiments, what each proved, and above all what was **tried and rejected**. A spec deliberately
+drops that and a backlog won't hold it, but it is the knowledge that stops a dead end being re-proposed.
+
+*(Consolidated: `agents.md`, `agent-separation-plan.md`, `agent-server-plan.md`, `sessions-plan.md`,
+`session-scoping-plan.md`, `shared-session-plan.md` → [specs/agents.md](./specs/agents.md) on
+2026-08-25. `room-model.md`, `space-model.md`, `spaces-and-users-plan.md`, `new-space-flow.md`,
+`local-first-geometry.md`, `co-location-plan.md`, `pose-smoothing-plan.md` and `persistence-model.md` →
+the three space specs above, with `pops-and-jitters-journey.md` and `wall-art-45-flip.md` moving to
+`investigations/`, on 2026-08-26.)*
 
 > For current project status / what works today, see the top-level [README](../README.md) — it's
 > the single source of truth for status, so these docs don't drift.

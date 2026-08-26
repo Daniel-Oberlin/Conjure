@@ -122,7 +122,7 @@
     return new THREE.Quaternion().setFromEuler(new THREE.Euler(d(r[0] || 0), d(r[1] || 0), d(r[2] || 0), "YXZ"));
   }
 
-  // The render apply-gate (docs/local-first-geometry.md §4-6): has a real surface changed ENOUGH to warrant
+  // The render apply-gate (docs/specs/spaces-geometry.md §9.1): has a real surface changed ENOUGH to warrant
   // re-laying its mesh + transform? Returns true if position, orientation, extent, or any opening moved past
   // tolerance — the caller then re-applies the WHOLE surface; false ⇒ skip it entirely, so sub-tolerance
   // capture jitter never rebuilds the geometry (the "pop"). Orientation is compared as a true angular
@@ -204,7 +204,7 @@
     return prev;                                                    // nothing re-laid → baseline unchanged
   }
 
-  // Pose-smoothing slew (docs/pose-smoothing-plan.md §4): the per-frame easing FRACTION for one step, from a
+  // Pose-smoothing slew (docs/specs/spaces-geometry.md §9.2): the per-frame easing FRACTION for one step, from a
   // smoothing TIME CONSTANT `tau` (seconds) and this frame's `dt` (seconds). `a = 1 - exp(-dt/tau)` is one
   // exponential-moving-average step whose wall-clock settle time depends only on tau — NOT on frame rate or
   // frame-time jitter (two 8 ms steps close the same gap fraction as one 16 ms step). tau<=0 ⇒ a=1 (snap):

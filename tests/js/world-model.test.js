@@ -176,7 +176,7 @@ test("pose/shape split: surfaceMoved === shapeChanged OR poseMoved (equivalence 
   }
 });
 
-// --- Pose-smoothing slew math (docs/pose-smoothing-plan.md §4, §11) --------------------------------------
+// --- Pose-smoothing slew math (docs/specs/spaces-geometry.md §9.2, §11) --------------------------------------
 // The two pure, DOM-free pieces of the per-surface slew: the frame-rate-independent easing fraction and the
 // arrival predicate. (The object3D lerp/slerp themselves live in the client and are exercised on-headset.)
 

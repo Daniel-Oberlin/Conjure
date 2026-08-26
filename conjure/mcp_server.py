@@ -232,7 +232,7 @@ async def query_world() -> str:
     return "\n".join(lines)
 
 
-# --- Room model (AR / scene understanding) — see docs/room-model.md -----------------------------
+# --- Room model (AR / scene understanding) — see docs/specs/worlds-surfaces.md -----------------------------
 
 _IMMERSION = {
     "virtual_room": {"passthrough": False, "room.active": True, "room.defaultSurfaceVisible": True},

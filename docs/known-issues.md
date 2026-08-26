@@ -18,7 +18,7 @@ establish is gated on an **empty** `_ref` (`conjure-client.js`, the `canEstablis
 already adopted such a seed is stranded in permanent `relocalizing`, with no path to rebuild the reference.
 
 **How it happened (the once).** Before corner-relative inset identity was resolved against `_ref` (see
-`docs/local-first-geometry.md` §5.3), an inset-identity churn re-minted ids every capture; over a session the
+`docs/specs/spaces-geometry.md` §5.3), an inset-identity churn re-minted ids every capture; over a session the
 churn pruned the architectural surfaces out of the seed until it decayed to *furniture-only* → wall-less →
 deadlock. The churn fix removed that mechanism, so the decay — and thus the deadlock — no longer occurs on a
 healthy seed. That's why this is shelved rather than merged: it guards a route that's currently unreachable.

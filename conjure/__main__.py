@@ -85,7 +85,7 @@ def main() -> None:
         "Each headset renders its OWN captured surfaces and re-lays a surface only when it moves past one of\n"
         "these tolerances, so sub-tolerance re-derivation doesn't rebuild the mesh (the 'pop'). Bigger =\n"
         "calmer (fewer redraws, more lag before a real change shows); smaller = snappier (tracks tighter,\n"
-        "redraws more). Applies to every client's local render (docs/local-first-geometry.md §4-6).")
+        "redraws more). Applies to every client's local render (docs/specs/spaces-geometry.md §9.1).")
     gate.add_argument("--apply-tol-pos", type=float, default=0.02, metavar="METERS",
                       help="how far (m) a surface must move before it's redrawn (default: 0.02 = 2 cm).")
     gate.add_argument("--apply-tol-rot", type=float, default=1.0, metavar="DEGREES",
@@ -120,7 +120,7 @@ def main() -> None:
     gate.add_argument("--pose-tau", type=float, default=0.0, metavar="SECONDS",
                       help="pose-smoothing time constant (s): ease each surface (and its content) toward its "
                            "newly-captured pose over ~3x this instead of snapping, so a drift correction reads "
-                           "as a short settle not a ~2 s step (docs/pose-smoothing-plan.md). 0 (default) "
+                           "as a short settle not a ~2 s step (docs/specs/spaces-geometry.md §9.2). 0 (default) "
                            "disables = snap as before; A/B like --geo-slice-ms. ~0.1 is a good starting value; "
                            "too large trails the real wall in passthrough (§10).")
     gate.add_argument("--surface-weld", type=float, default=0.002, metavar="METERS",

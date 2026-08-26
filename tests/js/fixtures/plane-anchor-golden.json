@@ -1,5 +1,5 @@
 {
-  "note": "Golden vectors for plane-anchor solveAnchor: inputs (planes+anchor) + reference outputs. The Python server port (docs/local-first-geometry.md §13.1) must reproduce these within tolerance. Full precision on purpose (quaternion angle error scales as sqrt of component error). Regenerate only on an intentional algorithm change.",
+  "note": "Golden vectors for plane-anchor solveAnchor: inputs (planes+anchor) + reference outputs. The Python server port (docs/specs/spaces-geometry.md §11) must reproduce these within tolerance. Full precision on purpose (quaternion angle error scales as sqrt of component error). Regenerate only on an intentional algorithm change.",
   "cases": [
     {
       "name": "grounded_same",

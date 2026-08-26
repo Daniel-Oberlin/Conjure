@@ -1,4 +1,4 @@
-"""JS/Python parity for the plane-relative anchor solver (docs/local-first-geometry.md §13.1).
+"""JS/Python parity for the plane-relative anchor solver (docs/specs/spaces-geometry.md §11).
 
 The server's conjure/plane_anchor.py is a 1:1 port of client/plane-anchor.js. Both are pinned to the SAME
 golden vectors (tests/js/fixtures/plane-anchor-golden.json) — this file checks the Python side against them,

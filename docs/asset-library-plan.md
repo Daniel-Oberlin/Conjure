@@ -162,7 +162,7 @@ record. This belongs to the NAS subsystem (stubbed), but the schema anticipates 
   toolkit when the photo store lands (Phase 5)**, generalizing from two real implementations rather
   than one imagined one.
 - **Per-agent scoping is a cross-cutting layer over this and the world store** — see
-  `persistence-model.md` and `spaces-and-users-plan.md`. Scope is a capability injected by the runtime
+  `specs/agents.md` and `specs/spaces.md`. Scope is a capability injected by the runtime
   (never an LLM tool param), now **`<user>/agents/<agent>`** with a per-item **`public` flag** (was the
   single-agent `private/builder`); **worlds live in a separate document store**, not the asset catalog.
   A `scope` field is already on the asset schema (v4); enforcement + the `public` flag land with the

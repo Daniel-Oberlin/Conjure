@@ -263,7 +263,7 @@ lets the director and the mediator choose well.
 **Choice:** A single **persistence service, scoped per agent**, hosting several **typed** stores.
 Agents work inside `private/<agent>/…` and never see each other's private content; `public/<agent>/…`
 is world-readable (documented, not built). **Worlds are a separate document store**, not the asset
-catalog. Full design in **`docs/persistence-model.md`**; the asset store is `asset-library-plan.md`.
+catalog. Full design in **`docs/specs/agents.md`**; the asset store is `asset-library-plan.md`.
 
 **Why:**
 - **Scope = capability, not a parameter.** The runtime binds each agent's scope and injects it
@@ -290,7 +290,7 @@ owner's headset is the capture authority). Rework the namespace to **user-first*
 `/<user>/[agents/<agent>/]<category>/<name>` — and make **visibility a per-item `public` flag, not a
 path segment**. Worlds associate with a space (or `<void>`). Default public; visibility inherits the
 active world. A second user may **join a public world** and co-locate. Full plan in
-**`docs/spaces-and-users-plan.md`**.
+**`docs/specs/spaces.md`**.
 
 **Why:**
 - **A "space" is the shared room layer made first-class** (resolves the per-world-room duplication and
@@ -314,7 +314,7 @@ build (5 phases) in the plan; Phase 1 (users + namespace + migration) is foundat
 `RoomSnap.register` into a **Web Worker** (the render applies on its reply); split the apply-gate into
 **pose vs shape** so tracking drift re-lays only cheap transforms; gate the per-surface **styling** to run
 only on change; and **time-slice** the mesh re-triangulation across frames under a per-frame budget
-(`--geo-slice-ms`). Full mechanism in **`docs/local-first-geometry.md` §14**.
+(`--geo-slice-ms`). Full mechanism in **`docs/specs/spaces-geometry.md` §14**.
 
 **Why:**
 - The capture ran ~22 ms synchronously in one `tick`, blowing the 90 Hz / 11.1 ms budget **every ~2 s**. The

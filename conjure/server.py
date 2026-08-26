@@ -68,7 +68,7 @@ SPACES_DIR = CACHE / "spaces"                  # legacy space tree
 SESSION_PTR = CACHE / "_session.txt"
 ASSET_CACHE = CACHE / "assets"                 # created in _init_state (after migration), not at import
 LIBRARY_DB = CACHE / "library.db"             # durable asset catalog (docs/asset-library-plan.md) — DATA
-# The scope new assets/worlds are written under: <user>/agents/<agent> (docs/spaces-and-users-plan.md
+# The scope new assets/worlds are written under: <user>/agents/<agent> (docs/specs/spaces.md
 # §3). A data seam for now — single user/agent, no enforcement yet; the builder is the only writer.
 DEFAULT_SCOPE = scope_for(DEFAULT_USER, "builder")
 # scripts/tunnel.sh (an external shell script) writes the current cloudflared URL here; /tunnel redirects
@@ -87,7 +87,7 @@ def _has_alpha(im) -> bool:
 
 
 # World constructor: a per-agent macro of ordinary server operations, run once at world *creation*
-# (docs/persistence-model.md §6). Each command maps to the same env/patch effect the director's tools
+# (docs/specs/agents.md §7.5). Each command maps to the same env/patch effect the director's tools
 # produce; the set grows as constructors need more. The builder shows real-room edges by default; the
 # future dungeonmaster turns them off — same mechanism, different agent.json.
 _WORLD_COMMANDS = {
@@ -235,7 +235,7 @@ def _reset_room_authority(s: WorldStore) -> None:
 
 def _migrate_world_dirs(root: Path) -> None:
     """One-time: move worlds from the pre-user layout `<root>/private/<agent>/` to the user-first
-    `<root>/<DEFAULT_USER>/agents/<agent>/` (docs/spaces-and-users-plan.md §9). Idempotent — only acts
+    `<root>/<DEFAULT_USER>/agents/<agent>/` (docs/specs/spaces.md). Idempotent — only acts
     when the old dir exists and the destination doesn't; prunes the emptied `private/` tree."""
     old_root = root / "private"
     if not old_root.is_dir():
@@ -580,7 +580,7 @@ def _slog(tag: str, msg: str) -> None:
     except OSError:
         pass
 
-# Edit-rights follow ownership (co-location-plan.md §4): only the ACTIVE world's owner may change the
+# Edit-rights follow ownership (specs/spaces.md §7): only the ACTIVE world's owner may change the
 # scene content of the shared world. Enforced server-side, never via the prompt — the MCP client and the
 # headset attach an `X-Conjure-User` header; a non-owner hitting these routes gets 403. A *missing*
 # header (the direct dev CLI) is treated as the owner (interim convenience). Reads, scoped catalog ops,
@@ -643,7 +643,7 @@ app.add_middleware(_ScopeFromHeader)
 # touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
 _AUTOSAVE_INTERVAL = 1.0
 _autosave_task: asyncio.Task | None = None
-# Space claim & occupancy (new-space-flow steps 4/7 — admission gate + lifecycle). The active space is a
+# Space claim & occupancy (specs/spaces.md §6.2/§6.3 — admission gate + lifecycle). The active space is a
 # shared PHYSICAL resource: it's CLAIMED while an AR headset holds it (occupied), and UNCLAIMED (free for
 # the next AR user to re-establish from anywhere) when the last one leaves. Boot starts unclaimed (D1 —
 # provisional boot), so the first AR user always establishes. Two pieces of live-session state:
@@ -852,8 +852,8 @@ def _asset_in_agent_scope(rec: Optional[dict]) -> bool:
 
 
 def _inherit_visibility(asset_id: str) -> dict:
-    """`{"public": 0|1}` for a NEW asset, inherited from the active world's visibility (spaces-and-users
-    §4: created in a private world ⇒ private). Empty dict if the asset already exists — never overwrite a
+    """`{"public": 0|1}` for a NEW asset, inherited from the active world's visibility (specs/spaces.md
+    §5: created in a private world ⇒ private). Empty dict if the asset already exists — never overwrite a
     visibility the owner set after the fact."""
     if library.get(asset_id) is not None:
         return {}
@@ -861,7 +861,7 @@ def _inherit_visibility(asset_id: str) -> dict:
 
 
 def _ensure_referenced_public(asset_id: str) -> Optional[str]:
-    """Public-uses-public invariant (spaces-and-users §4): a public world may reference only public
+    """Public-uses-public invariant (specs/spaces.md §5): a public world may reference only public
     assets, so a visitor can load the whole scene. Placing one of YOUR OWN private assets into a public
     world publishes it (you're sharing it by placing it) and returns a notice for the director to relay;
     no-op in a private world, or for an already-public asset / another user's asset."""
@@ -1636,7 +1636,7 @@ def _candidate_surface(e: dict) -> dict:
 
 
 def _geo_candidates(lat: float, lon: float) -> list[dict]:
-    """Stage 1 of space selection (new-space-flow §3, D2/D7): every space ACROSS ALL USERS whose stored
+    """Stage 1 of space selection (specs/spaces.md §6, D2/D7): every space ACROSS ALL USERS whose stored
     geolocation is within `_GEO_RANGE_M` of (lat, lon), each with its surface constellation for the
     client's registration vote. Geolocation only NARROWS the field (two rooms at one address both qualify);
     the client's `RoomSnap.selectSpace` picks the exact one. Nearest-first is just a tiebreak — the
@@ -1721,7 +1721,7 @@ async def report_geolocation(req: GeoReport) -> dict:
 
 @app.post("/space/select")
 async def select_space(req: SpaceSelect) -> dict:
-    """Stage 2 (commit) of space selection + the AR **admission gate** (new-space-flow steps 3/4/7). The
+    """Stage 2 (commit) of space selection + the AR **admission gate** (specs/spaces.md §6.1/§6.3). The
     client has voted its live capture against the /geolocation candidates; what happens depends on whether
     the active space is already CLAIMED (an AR headset is holding it — see `_occupied`):
 
@@ -2535,7 +2535,7 @@ async def post_patch(patch: Patch) -> dict:
 # --- Room model: the client→server reverse channel (a headset reports its real room) ------------
 # Captured surfaces become `real`-tagged stylable entities; `environment.room` holds the boundary,
 # active flag, and the single room **authority** (only that headset may report room geometry).
-# See docs/room-model.md.
+# See docs/specs/worlds-surfaces.md.
 
 class RoomSurface(BaseModel):
     id: str                                   # stable id from the headset, e.g. "real_wall_3"
@@ -2548,7 +2548,7 @@ class RoomSurface(BaseModel):
     mesh_segment: Optional[str] = None            # segment id when backed by the refined mesh
     hostWall: Optional[str] = None                # for an inset (door/window/wall-art): the wall id it belongs to,
                                                   # derived once by the authority's snapInsets → stored + reused on recovery (§5.2)
-    # Corner-relative structural anchor for an inset (docs/local-first-geometry.md §5.3): its place on the
+    # Corner-relative structural anchor for an inset (docs/specs/spaces-geometry.md §6.1): its place on the
     # host wall as distances to SHARED features — signed along-wall distances from the host wall's corner
     # points, and perpendicular distances from the wall∩floor / wall∩ceiling edges — never the wall's
     # scan-artifact centroid. Any client reconstructs the same physical spot from its OWN captured
@@ -2617,7 +2617,7 @@ def _default_surface_material(semantic: str) -> dict:
     return mat
 
 
-# ---- space ↔ world composition (docs/spaces-and-users-plan.md §5/§6) -------------------------------
+# ---- space ↔ world composition (docs/specs/spaces.md §2/§4) -------------------------------
 # A SPACE owns the real-surface geometry (+ a base material) and the boundary, shared across a user's
 # worlds. A WORLD owns placed objects, display prefs, and per-surface style OVERRIDES (material that
 # differs from the space's base), keyed by surface id in environment.room.surfaceStyles. The live
@@ -2684,7 +2684,7 @@ def _space_from_world_doc(user: str, name: str, doc: dict) -> dict:
     """Extract a space's geometry from a COMPOSED (live) world doc — the save-time counterpart of
     `_compose`. Real surfaces become the space's geometry carried at per-semantic DEFAULT materials
     (per-world styling is split off separately as surfaceStyles by `_decompose`), plus the boundary.
-    The space is user-owned and public by default (spaces-and-users-plan.md §5). Used by `_save_active`
+    The space is user-owned and public by default (specs/spaces.md §2). Used by `_save_active`
     to persist newly-captured walls back into the shared space."""
     surfaces = []
     for e in doc.get("entities", []):
@@ -2736,7 +2736,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
 
     A world is stored geometry-free — it carries only placed objects, display prefs, and per-surface
     style overrides. The real-surface geometry + boundary live in a shared, user-owned *space* (docs/
-    spaces-and-users-plan.md §5). `environment.space` points a world at its space:
+    specs/spaces.md §2). `environment.space` points a world at its space:
 
         VOID ("<void>")     → an outdoor/void world: no room to merge — objects + skybox only.
         "<owner>/<name>"    → a shared space, possibly ANOTHER user's (D3, the target form).
@@ -2751,7 +2751,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     Returns `(space_owner, space_name, composed_store)` with room-capture authority reset (fresh session
     state). VOID returns `(world_owner, VOID, …)` — the owner is irrelevant for a room-less world.
 
-    new-space-flow **step 0** — the old LEGACY-MIGRATION path is gone (activate is read-only; it never
+    specs/spaces.md §6.1 — the old LEGACY-MIGRATION path is gone (activate is read-only; it never
     rewrites a world doc). **step 2** — space references are now fully-qualified `<owner>/<name>`, so a
     world can be tied to a space owned by someone else. **step 5** — Path B (the `absent → home` fallback)
     is gone: a world with no space ref now composes as VOID, and `/worlds/new` stamps the active space up
@@ -2801,7 +2801,7 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 # active world's owner ever reaches here — the guard is just against two of their live headsets at once.
 _AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle authority holds before takeover
 _authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
-# NOTE (local-first, docs/local-first-geometry.md §2): the old ESTABLISH-then-FREEZE machinery (a timed
+# NOTE (local-first, docs/specs/spaces-geometry.md §2): the old ESTABLISH-then-FREEZE machinery (a timed
 # window that committed the static shell as a coherent set then froze it) is gone. It existed to stabilize
 # the SHARED, server-rendered geometry — but clients now render their OWN capture locally, so the server
 # just keeps the stored SEED current (add new / update meaningfully-changed / prune absent) and never
@@ -2841,7 +2841,7 @@ def _ang_delta_deg(a: list, b: list) -> float:
     return max(abs(((a[i] - b[i] + 180) % 360) - 180) for i in range(3))
 
 
-# The seed updates ONLY on a STRUCTURAL change (docs/local-first-geometry.md §7), never on per-capture
+# The seed updates ONLY on a STRUCTURAL change (docs/specs/spaces-geometry.md §8), never on per-capture
 # cm-drift — so the stored reference constellation stays stable (clients render their own live geometry
 # regardless). Per-cm jitter of the owner's re-registered posts (Tmat re-solves each capture, amplified by
 # distance) used to sail through the old cm-level gate and rewrite ~a quarter of the seed every 2 s.
@@ -2877,7 +2877,7 @@ def _surface_structural_change(e: dict, s) -> tuple[bool, str]:
 async def ingest_room(req: RoomUpdate) -> dict:
     """Ingest captured room geometry from the room **authority** headset into the shared MODEL / SEED.
 
-    LOCAL-FIRST (docs/local-first-geometry.md §2): every client renders its OWN live capture, so this no
+    LOCAL-FIRST (docs/specs/spaces-geometry.md §2): every client renders its OWN live capture, so this no
     longer broadcasts geometry for rendering. It just keeps the stored SEED current — the reference
     constellation guests register against, the director's geometry queries, and what's persisted. A surface
     is added when new, updated only on a STRUCTURAL change (`_surface_structural_change` §7.4 — no time-based

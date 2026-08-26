@@ -60,7 +60,7 @@
   // A captured plane lies in its local X-Z plane (normal +Y); our <a-plane> is X-Y (normal +Z). Compose
   // a -90° X rotation so the rendered plane aligns with the captured one, then convert to euler degrees.
   // A-Frame applies rotations in YXZ order (NOT THREE's default XYZ) — using XYZ here renders walls/insets
-  // up to ~48° off-square. See docs/room-model.md.
+  // up to ~48° off-square. See docs/specs/worlds-surfaces.md.
   /**
    * @param {THREE_NS} THREE
    * @param {{x:number, y:number, z:number, w:number}} q   quaternion-like (captured plane orientation)
@@ -85,7 +85,7 @@
   // is a short diagnostic string.
   // Frame registration — recover the rigid transform (yaw about gravity + x/z translation) that maps the
   // CURRENT detected planes onto the persistent reference constellation, so surface ids survive a tracking
-  // relocalization (boundary re-entry flips the frame ~167° + ~3 m; see docs/room-model.md §8a).
+  // relocalization (boundary re-entry flips the frame ~167° + ~3 m; see docs/specs/spaces-geometry.md §4.1).
   //
   // A Hough/RANSAC-style VOTE, not a nearest-match: it must run before any correspondence is known and no
   // matter how far the frame jumped, so it never relies on proximity (the 0.5 m id match happens AFTER, in
@@ -96,7 +96,7 @@
   //   2. translation — per candidate yaw, grid-vote the densest (ref.pos − R·cur.pos) over same-size pairs.
   //   3. score — count planes landing within 0.4 m of a same-semantic reference; accept the best only if
   //      >=4 inliers AND >=40%, else null (caller holds the last good frame). A genuinely different space
-  //      yields no consensus, so a null doubles as a "not in this space" signal (room-model.md §8a).
+  //      yields no consensus, so a null doubles as a "not in this space" signal (specs/spaces-geometry.md §4.1).
   /**
    * The tunable robustness knobs for register()/selectSpace(). Any field may be overridden (from the
    * server-injected window.CONJURE_REG — see conjure-client.js); an absent/undefined field keeps the
@@ -124,7 +124,7 @@
     if (ref.length < 3) return { Tmat: null, stat: "ref<3", cov: 0 };
     /** @param {number} a  @returns {number} */
     function wrap(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; }
-    // Robustness for a GUEST's partial/extra plane set (room-model §8, multi-user co-location). A guest
+    // Robustness for a GUEST's partial/extra plane set (specs/spaces.md §7, multi-user co-location). A guest
     // sees the room from a different vantage: some reference surfaces are MISSING (occluded) and there are
     // EXTRA planes (furniture/clutter) with no reference. Two ideas make the vote tolerate both:
     //  • size-compat is ASYMMETRIC — a detected plane may be a PARTIAL (smaller) view of a reference, so
@@ -213,7 +213,7 @@
     // Accept on DISTINCT reference COVERAGE (not fraction-of-detected): enough of the known room explained
     // by ONE transform. Robust to EXTRA detected planes (absent from the formula) and MISSING ones (need
     // only a fraction of the reference). A genuinely different space can't cover ≥MIN_COV surfaces of the
-    // reference under one consistent transform ⇒ null ("not in this space", room-model §8a).
+    // reference under one consistent transform ⇒ null ("not in this space", specs/spaces-geometry.md §4.1).
     if (!best || cov < MIN_COV || cov < MIN_COV_FRAC * ref.length) return { Tmat: null, stat: stat, cov: cov, residuals: best ? best.res : [] };
     // Append the SOLVED transform (yaw about gravity + translation) so diagnostics can tell whether a
     // relocalization actually changed the frame (yaw jumps) or registration stayed put while the world
@@ -247,7 +247,7 @@
       orient: Math.abs(nrm.y) > 0.7 ? "horizontal" : "vertical" };
   }
 
-  // Two-stage space selection, fine stage (new-space-flow §3, D2/D7). Geolocation already narrowed the
+  // Two-stage space selection, fine stage (specs/spaces.md §6, D2/D7). Geolocation already narrowed the
   // field to a few geo-near candidate spaces; this picks WHICH one the headset is physically in by trying
   // to register() the live capture (cur) against each candidate's stored constellation and keeping the one
   // with the highest reference COVERAGE. A candidate only qualifies if register() confidently locks (its
@@ -311,7 +311,7 @@
     return same || flip;
   }
 
-  // Identify a WALL by its PLANE, not its centroid (docs/local-first-geometry.md §5.3/§10). A wall's
+  // Identify a WALL by its PLANE, not its centroid (docs/specs/spaces-geometry.md §4.2/§4.3). A wall's
   // centroid is a scan artifact — it's the centre of whatever rectangle the Quest captured, so it slides
   // ALONG the wall between captures and between devices. Matching walls by centroid therefore re-mints an
   // id (losing style, and shifting every inset keyed to that wall) whenever the captured extent changes.
@@ -798,7 +798,7 @@
       // within-width test stops a coplanar/collinear neighbour from stealing it — the door-50/wall-59 bug),
       // and RECORD the choice. NB: the parallel test is `|dot|` (parallel OR ANTI-parallel), deliberately —
       // an inset's LIVE normal can be INWARD, ~180° from its host wall's outward normal (see matchRef, and
-      // docs/wall-art-45-flip.md). A co-facing test (dot > 0) would REJECT the true host for such insets.
+      // docs/investigations/wall-art-behind-wall.md). A co-facing test (dot > 0) would REJECT the true host for such insets.
       // The flip side: proximity+|dot| can't tell the two faces of a room-partition apart when they're
       // near-coincident — the recorded host_wall above is the only reliable disambiguator there.
       if (s.hostWall) walls.forEach(function (wl) { if (wl.id === s.hostWall) best = wl; });
