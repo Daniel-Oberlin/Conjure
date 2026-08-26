@@ -231,3 +231,40 @@ test("slewSettled: an EMA of a fixed gap crosses the epsilon within ~tau·ln(gap
   assert.ok(tEarly > pe, "not an instant snap — still easing after 2 frames");
   assert.ok(tSettle !== null && tSettle <= analytic + 3 * dt, `settled by ~tau·ln(gap/eps) (at ${tSettle}s)`);
 });
+
+// --- shouldSpawnGuest: the desktop-guest teleport must never touch a headset -----------------------
+// Regression for an observed out-of-body bug. Owner on voice + a browser tab; guest in a headset. The
+// session went private (guest evicted), then public. The guest's page reloaded, and for ~3 s it held a
+// live socket and a known worldOwner while NOT yet in an XR session. The owner's browser was streaming
+// presence at 10 Hz, so the first packet landed in that window and teleported the guest's RIG 1.2 m to
+// the owner's right — then `guestSpawned` latched, so entering AR three seconds later inherited the
+// offset for good. The camera hangs off the rig; world content and the raw-XR controller beams do not.
+// You end up viewing the scene from a metre beside your own hands.
+//
+// The old guard asked "am I in a session right now", which is honestly false for the first seconds after
+// EVERY page load — a headset's included. Capability is the question that has a stable answer.
+const GUEST = { spawned: false, hasOwnerPose: true, me: "guest", owner: "daniel",
+                presenting: false, arCapable: false };
+
+test("shouldSpawnGuest: a desktop guest with the owner's pose does spawn", () => {
+  assert.equal(WM.shouldSpawnGuest(GUEST), true);
+});
+
+test("shouldSpawnGuest: an AR-CAPABLE client is never spawned, even before it enters the session", () => {
+  // the reported bug, exactly: not presenting yet, everything else identical to the desktop case
+  assert.equal(WM.shouldSpawnGuest({ ...GUEST, arCapable: true }), false);
+});
+
+test("shouldSpawnGuest: a client already in a session is never spawned", () => {
+  assert.equal(WM.shouldSpawnGuest({ ...GUEST, presenting: true }), false);
+});
+
+test("shouldSpawnGuest: the owner never spawns beside themselves, and it happens at most once", () => {
+  assert.equal(WM.shouldSpawnGuest({ ...GUEST, me: "daniel" }), false);
+  assert.equal(WM.shouldSpawnGuest({ ...GUEST, me: null }), false);
+  assert.equal(WM.shouldSpawnGuest({ ...GUEST, spawned: true }), false);
+});
+
+test("shouldSpawnGuest: no owner pose yet ⇒ nothing to spawn relative to", () => {
+  assert.equal(WM.shouldSpawnGuest({ ...GUEST, hasOwnerPose: false }), false);
+});

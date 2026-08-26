@@ -120,6 +120,20 @@ Cheap guards, roughly in order of value:
 Worth weighing against the current property that a settled room sends no traffic at all — a guard must
 not reintroduce per-capture churn.
 
+### The desktop guest is spawned, then stranded
+
+`maybeSpawnGuest` drops a desktop guest 1.2 m to the owner's right, and its own comment says *"then let
+wasd/mouse take over"*. Nothing does: there are **no `wasd-controls` or `look-controls`** anywhere in the
+client. So the guest is teleported once and then cannot move or look around — half of the feature the
+spawn exists to serve.
+
+That also means the browser-only co-location demo the design promised (two tabs, presence, move around)
+does not actually work end to end; the guest is a fixed camera.
+
+Adding them is small, but note the interaction: the components must not be attached on an AR-capable
+client, for the same reason the spawn must not fire there — the rig has to stay at the origin in a
+session. Attaching them off the same `arCapable` check the spawn now uses is the natural shape.
+
 ### Cross-user candidate search is a filesystem walk
 
 `_geo_candidates` walks every user's spaces on each `/geolocation`. Fine at present scale; the same

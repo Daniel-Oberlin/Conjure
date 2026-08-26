@@ -294,9 +294,21 @@ dependency.
   each capture and never establishes, mutates, mints or posts geometry. This removed a feedback drift
   where a guest evolving its local copy of the shared reference made the world drift over a session.
 - **Desktop guest.** No XR session, so nothing to register. It renders in the reference frame directly
-  (`#world-root` at identity), spawns 1.2 m to the owner's right on the owner's first presence pose
-  (`maybeSpawnGuest`, `conjure-client.js:1118`), and gets `look-controls` + `wasd-controls`. This is a
-  complete co-location loop with one headset.
+  (`#world-root` at identity) and spawns 1.2 m to the owner's right on the owner's first presence pose
+  (`maybeSpawnGuest`). It cannot then move — the desktop navigation the design calls for is not built
+  (see [`backlogs/spaces.md`](../backlogs/spaces.md)).
+
+  **The spawn must never reach a headset.** `#rig` carries the camera and has to sit at the origin in a
+  session — that is what aligns the A-Frame world frame with the headset's reference space — while world
+  content and the raw-XR controller beams hang off `#world-root` and the scene root respectively. Move
+  the rig and you view the scene from beside your own hands. Two guards, because either alone leaks:
+
+  - `WM.shouldSpawnGuest` asks **capability**, not current state: a device that can do `immersive-ar` is
+    a headset and is never spawned, even before it enters a session. Gating on "am I presenting *now*"
+    is false for the first seconds after every page load, headsets included — and the spawn latches for
+    the page, so a hit in that window survives into the session.
+  - `enter-vr` re-asserts the origin (`resetRigForSession`), so any displacement self-corrects rather
+    than persisting.
 
 ### 8.1 Presence
 
@@ -360,7 +372,8 @@ still needs a second headset.
 | owner middleware | `conjure/server.py:600` |
 | geometry ingest | `conjure/server.py:2877` `ingest_room` |
 | presence relay | `conjure/server.py:4407` |
-| desktop-guest spawn | `client/conjure-client.js:1118` `maybeSpawnGuest` |
+| desktop-guest spawn | `client/conjure-client.js` `maybeSpawnGuest` + `WM.shouldSpawnGuest` |
+| rig-origin invariant | `client/conjure-client.js` `resetRigForSession` (on `enter-vr`) |
 
 ---
 

@@ -97,6 +97,32 @@
     return [p[0] + right.x * dist, 0, p[2] + right.z * dist];
   }
 
+  // May this client teleport its rig next to the owner (the desktop-guest spawn that `spawnRight` feeds)?
+  //
+  // The rig MUST stay at the origin in an XR session — the whole A-Frame world frame is aligned to the
+  // headset's reference space by keeping it there (see index.html) — so moving it displaces the CAMERA
+  // while world content and the raw-XR controller beams stay put: you view the scene from a metre to the
+  // side of your own hands.
+  //
+  // The subtle part is WHEN this is asked. It used to gate on "am I in an XR session right now", which is
+  // false for the first few seconds after EVERY page load — including a headset's. An owner's presence
+  // arriving in that window teleported a headset guest, and the spawn latches, so entering AR moments
+  // later inherited the offset permanently. So the question is CAPABILITY, not current state: a device
+  // that can do immersive-ar is a headset that simply hasn't entered yet, and must never be spawned.
+  /**
+   * @param {{spawned: boolean, hasOwnerPose: boolean, me: string|null, owner: string|null,
+   *          presenting: boolean, arCapable: boolean}} s
+   * @returns {boolean}
+   */
+  function shouldSpawnGuest(s) {
+    if (s.spawned) return false;              // once only, per page load
+    if (!s.hasOwnerPose) return false;        // nothing to spawn relative to
+    if (!s.me || s.me === s.owner) return false;   // only a GUEST spawns, and only beside someone else
+    if (s.presenting) return false;           // already in a session — the headset positions you
+    if (s.arCapable) return false;            // AR-capable ⇒ a headset pre-session, NOT a desktop viewer
+    return true;
+  }
+
   // Capture a real surface's geometry-defining fields (transform + shape) as a SurfaceSig, for the render
   // apply-gate (surfaceMoved). Snapshots position, rotation, extent, and openings — nothing about styling.
   /**
@@ -236,6 +262,7 @@
   }
 
   return { nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
+           shouldSpawnGuest: shouldSpawnGuest,
            surfaceSig: surfaceSig, surfaceMoved: surfaceMoved,
            surfacePoseMoved: surfacePoseMoved, surfaceShapeChanged: surfaceShapeChanged,
            advanceSig: advanceSig, slewAlpha: slewAlpha, slewSettled: slewSettled };

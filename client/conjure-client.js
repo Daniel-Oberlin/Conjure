@@ -975,6 +975,10 @@
   // #world-root's local frame so it aligns for everyone (AR: world-root is parked at the registered
   // frame; desktop: world-root is at identity, so it's just the camera pose).
   var socket = null, R_AV = 0.13, GAP_AV = 0.03, worldOwner = null, guestSpawned = false;
+  // Set once the immersive-ar probe answers (setupARButton). A headset reports true BEFORE it enters
+  // a session, which is exactly the window the desktop-guest spawn used to fire in.
+  var arCapable = false;
+  var ORIGIN = null;   // AFRAME.THREE.Vector3(0,0,0), built lazily — AFRAME isn't up at parse time
   // Last capture's plane bases: local walls (F_track) + seed walls (F_ref). Cached by _placeContent so
   // ConjureFrames.toRef can invert its solve for interaction modules.
   var framePlanes = { local: null, ref: null };
@@ -1116,15 +1120,34 @@
   // wasd/mouse take over. Desktop only (in AR the headset places you); #world-root is identity on
   // desktop, so the owner's world-frame pose is also the scene-frame position for the rig.
   function maybeSpawnGuest(ownerPose) {
-    if (guestSpawned || !ownerPose || !ownerPose.p) return;
-    var me = currentUser();
-    if (!me || me === worldOwner) return;                 // only a *guest* spawns relative to the owner
     var sc = document.querySelector("a-scene");
-    if (sc && sc.is && sc.is("vr-mode")) return;          // AR session → the headset positions you
+    // `isPresenting` is the canonical WebXR flag (true for immersive AR *and* VR); is('vr-mode') is a
+    // fallback for A-Frame builds that set the state slightly differently — same pairing as the eye
+    // billboarding above. And `arCapable` is the load-bearing one: see WM.shouldSpawnGuest.
+    var presenting = !!(sc && ((sc.renderer && sc.renderer.xr && sc.renderer.xr.isPresenting) ||
+                               (sc.is && sc.is("vr-mode"))));
+    if (!WM.shouldSpawnGuest({ spawned: guestSpawned, hasOwnerPose: !!(ownerPose && ownerPose.p),
+                               me: currentUser(), owner: worldOwner,
+                               presenting: presenting, arCapable: arCapable })) return;
     var rig = document.getElementById("rig"); if (!rig) return;
     var sp = WM.spawnRight(AFRAME.THREE, ownerPose, 1.2);   // 1.2 m to the owner's right, on the floor
     rig.object3D.position.set(sp[0], sp[1], sp[2]);
     guestSpawned = true;
+  }
+
+  // The rig MUST sit at the origin in a session (index.html): that's what aligns the A-Frame world frame
+  // with the headset's reference space, so captured geometry lands around you instead of offset. Anything
+  // that moved it — the desktop-guest spawn above, most likely — displaces the CAMERA while world content
+  // and the raw-XR controller beams stay put, which reads as an out-of-body offset that never heals
+  // (`guestSpawned` latches for the page). Re-assert the invariant on every session start so the whole
+  // class of "something moved the rig" self-corrects instead of persisting.
+  function resetRigForSession() {
+    var rig = document.getElementById("rig");
+    if (!ORIGIN) ORIGIN = new AFRAME.THREE.Vector3(0, 0, 0);
+    if (rig && !rig.object3D.position.equals(ORIGIN)) {
+      console.log("[conjure] rig was off-origin entering a session — reset", rig.object3D.position);
+      rig.object3D.position.set(0, 0, 0);
+    }
   }
 
   // The avatar entity is parked at the HEAD position and yawed to the headset's heading, so the body box
@@ -2389,6 +2412,7 @@
   function setupARButton() {
     if (!navigator.xr || !navigator.xr.isSessionSupported) return;
     navigator.xr.isSessionSupported("immersive-ar").then(function (supported) {
+      arCapable = !!supported;          // a headset, even before it enters a session (maybeSpawnGuest)
       if (!supported) return;
       warmGeo();   // AR-capable device → start acquiring the location fix now (before Enter AR is clicked),
                    // so it's ready by the time they enter. Desktop (no immersive-ar) never geolocates.
@@ -2529,7 +2553,8 @@
     setInterval(presenceTick, 100);                 // ~10 Hz head-pose broadcast (presence)
     var sc = document.querySelector("a-scene");      // space selection runs only from a real AR session
     if (sc) {
-      sc.addEventListener("enter-vr", onEnterAR);
+      sc.addEventListener("enter-vr", resetRigForSession);   // before onEnterAR: the frame must be
+      sc.addEventListener("enter-vr", onEnterAR);             // origin-aligned before we select a space
       sc.addEventListener("exit-vr", function () {  // left AR → release our hold so the space can unlock
         amHolding = false;
         awaitingSpace = false; hideHeadsetMessage();   // bailed out of AR mid-selection → drop the notice
