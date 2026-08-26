@@ -252,7 +252,7 @@ def test_spacestore_active_pointer_and_bad_user(tmp_path):
             s.list(bad)
 
 
-# -- SessionRepository (docs/sessions-plan.md §3) ------------------------------------------------
+# -- SessionRepository (docs/specs/agents.md §7.1) ------------------------------------------------
 
 def _meta(title="Session 1", agent="builder"):
     return {"id": "session-1", "owner": "daniel", "agent": agent, "title": title,
@@ -349,7 +349,7 @@ def test_worlddir_roundtrip_and_active_pointer(tmp_path):
 
 def test_worldrepo_set_live_drives_the_live_scope_but_not_others(tmp_path):
     # The facade addresses the LIVE scope via the server-declared live session (set_live), and any OTHER
-    # scope via its own active-session pointer (docs/sessions-plan.md §3, "5.5").
+    # scope via its own active-session pointer (docs/specs/agents.md §7.1).
     from conjure.world import WorldRepository, SessionRepository
     se = SessionRepository(tmp_path)
     repo = WorldRepository(tmp_path, sessions=se)
@@ -397,7 +397,7 @@ def test_sessionrepo_transcript_append_read_roundtrip_and_tolerates_torn_line(tm
     assert len(repo.read_transcript(scope, "session-1")) == 2         # torn line skipped, not fatal
 
 
-# -- StateStore (the generic agent-state store; docs/sessions-plan.md §5) -------------------------
+# -- StateStore (the generic agent-state store; docs/specs/agents.md §7.4) -------------------------
 
 def test_statestore_crud_and_dotted_paths(tmp_path):
     from conjure.world import StateStore
@@ -426,7 +426,7 @@ def test_sessionrepo_state_is_a_statestore_under_the_session(tmp_path):
             / "state" / "inventory.json").exists()
 
 
-# -- migration to the user-first session tree (docs/sessions-plan.md §7) --------------------------
+# -- migration to the user-first session tree (docs/specs/agents.md §7.1) --------------------------
 
 def test_migrate_cache_to_users(tmp_path):
     from conjure.world import migrate_cache_to_users, SessionRepository

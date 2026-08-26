@@ -1739,7 +1739,7 @@ def test_new_world_defaults_public(srv, client):
 
 
 def test_worlds_list_is_session_local_no_cross_user(srv, client):
-    # bob has a public world; the AGENT-facing world list must NOT surface it (session-scoping-plan §A) —
+    # bob has a public world; the AGENT-facing world list must NOT surface it (docs/specs/agents.md §7.2) —
     # cross-user discovery is gone from /worlds/list and lives only in the shell's /sessions listing.
     client.post("/worlds/new", json={"name": "shared", "scope": "bob/agents/builder"},
                 headers={"X-Conjure-User": "bob"})
@@ -1835,7 +1835,7 @@ def test_space_select_refuses_building_in_a_private_space_with_no_world(srv, cli
 
 
 def sessions_available(client, scope):
-    """Other users' PUBLIC sessions the shell offers to visit (session-scoping-plan §B) — the discovery
+    """Other users' PUBLIC sessions the shell offers to visit (docs/specs/agents.md §7.2) — the discovery
     that replaced the agent-facing 'available worlds' list."""
     return client.get("/sessions", params={"scope": scope}).json()["available"]
 
@@ -2268,7 +2268,7 @@ def test_scope_activate_resumes_last_active_with_its_content(srv, client):
 
 
 def test_state_reports_the_live_tuple(srv, client):
-    # The canonical "what's live" seam: identifiers for the single shared session (shared-session-plan §2).
+    # The canonical "what's live" seam: identifiers for the single shared session (docs/specs/agents.md §9.1).
     s = client.get("/state").json()
     assert s["ok"]
     assert s["scope"] == srv.DEFAULT_SCOPE and s["agent"] == "builder" and s["owner"] == "daniel"
@@ -2302,7 +2302,7 @@ def test_agent_last_defaults_to_builder(srv, client):
 
 
 def test_scope_activate_moves_the_global_session_pointer_and_live_agent(srv, client):
-    # One shared session (shared-session-plan P1): the live agent is derived from the global session
+    # One shared session (docs/specs/agents.md §9): the live agent is derived from the global session
     # pointer (scope → agent), not a per-user _last_agent record.
     client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"})
     assert srv._read_session_ptr()[0] == "daniel/agents/outdoor"         # global pointer moved
@@ -2413,7 +2413,7 @@ def test_first_world_spec_and_constructor_command_forms(srv):
 
 def test_new_world_store_runs_world_then_first_world_chain(srv):
     # world.on_create (builder: edges ON) runs first, then the first-world-only chain (edges OFF) — the
-    # later step wins, proving the chain order (docs/sessions-plan.md §6).
+    # later step wins, proving the chain order (docs/specs/agents.md §7.5).
     import conjure.server as S
     s = S._new_world_store("daniel/agents/builder",
                            extra_on_create=[{"tool": "show_edges", "args": {"on": False}}])
@@ -2470,7 +2470,7 @@ async def test_session_new_aborts_on_constructor_failure(srv, client, monkeypatc
 def test_boot_world_restores_the_global_session_pointer(srv):
     # After a restart, boot resumes exactly the session the global pointer records — the scope's active
     # session, and that session's active world — so the viewer comes back where everyone was, agent
-    # derived from the scope (docs/sessions-plan.md §3).
+    # derived from the scope (docs/specs/agents.md §7.1).
     import conjure.server as S
     from conjure.world import WorldStore
     outdoor = S.scope_for(S.DEFAULT_USER, "outdoor")

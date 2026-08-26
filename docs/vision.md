@@ -42,7 +42,7 @@ Each agent gets its **own world**, kept separate from the others, and you can **
 experiences mid-session** — DJ, then a quick world-build, then back into the campaign — without losing
 any of them. (Saving worlds *across* sessions comes later — see *Persistent, connectable memory* below.)
 The deterministic plumbing that makes switching reliable, and the scoping that gives each experience
-exactly the powers it needs, are designed in [agents.md](./agents.md).
+exactly the powers it needs, are specified in [specs/agents.md](./specs/agents.md).
 
 ## Who it's for
 

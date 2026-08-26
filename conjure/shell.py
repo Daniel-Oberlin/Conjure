@@ -1,4 +1,4 @@
-"""The shell — a deterministic command plane above the agents (docs/agents.md §2).
+"""The shell — a deterministic command plane above the agents (docs/specs/agents.md §6).
 
 Control that must be reliable — switching the active LLM, entering/leaving shell mode, inspecting
 what's loaded — runs here, *parsed, never sent to an LLM*. The shell wraps the active agent (today's
@@ -274,7 +274,7 @@ class Shell:
 
         `activate_world=True` (a user-driven switch) also asserts a world in the new scope on the world
         server. The agent server sets it **False** when *following* a world-server-driven agent change
-        (shared-session C2): the world is already live there, so re-asserting would be a redundant loop."""
+        (docs/specs/agents.md §8.3): the world is already live there, so re-asserting would be a redundant loop."""
         prev_agent = self._agent_name() if self._director else None
         keep_active = self._director.active if self._director else None
 
@@ -318,7 +318,7 @@ class Shell:
                    on_tool: Optional[OnTool] = None) -> None:
         """Route one line: a recognised command runs here (deterministic); anything else goes to the
         active agent, attributed to `speaker` (WHO said it). `speaker` is per-call so one shell can serve
-        many speakers (the agent server, shared-session-plan §6); it defaults to the shell's own `_user`
+        many speakers (the agent server, docs/specs/agents.md §9.4); it defaults to the shell's own `_user`
         for a single-user front-end."""
         cmd = self._as_command(text)
         if cmd is None:
@@ -520,7 +520,7 @@ class Shell:
     # -- sessions: list/new/switch/rename/delete, driven through the world server (the source of truth for
     # the live (scope, session)). A session switch doesn't re-bind the Director — same agent/tools; the
     # agent server's /ws follower just swaps the transcript (step 2) — so these can run in the connection
-    # task and POST directly, no cross-task hook (unlike agent switching, docs/sessions-plan.md §3).
+    # task and POST directly, no cross-task hook (unlike agent switching, docs/specs/agents.md §7.1).
     def _scope(self) -> str:
         return scope_for(self._acting, self._agent_name())    # the SPEAKER's scope (set per-dispatch), not host
 
@@ -566,7 +566,7 @@ class Shell:
             rows.append(self._mark(is_live, bool(s.get("active")))
                         + f"{s.get('title')} ({s['id']}) — world {s.get('active_world')}{extra}{vis}")
         text = "Sessions:\n" + ("\n".join(rows) or "  (none)")
-        # Other users' public sessions you can VISIT (session-scoping-plan §B), scoped to THIS agent — a
+        # Other users' public sessions you can VISIT (docs/specs/agents.md §7.2), scoped to THIS agent — a
         # human act, so it lives here in the shell, not in the agent's world tools. Visit by name.
         avail = data.get("available", [])
         if avail:
@@ -626,7 +626,7 @@ class Shell:
             msg = f"Switched to session {data.get('session')}{whose}."
         await self._say(on_text, msg if data.get("ok") else data.get("error", "error"))
 
-    # -- dir / delete: a filesystem-like view + purge of the namespace (docs/agents.md §2). Both go
+    # -- dir / delete: a filesystem-like view + purge of the namespace (docs/specs/agents.md §6). Both go
     # through the world server's /admin endpoints, so they act on its live state (not raw files).
     def _path(self, m, default: str = "") -> str:
         """The path argument of a command, resolved against this connection's cwd."""

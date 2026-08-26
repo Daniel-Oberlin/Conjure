@@ -265,7 +265,7 @@ class WorldDir:
     That keeps name→id resolution total, which is what lets a person or an agent keep saying "the meadow".
 
     This is the layer both `WorldRepository` (rooted per capability scope) and `SessionRepository` (rooted
-    per session's ``worlds/``) reuse — the only difference is which directory (docs/sessions-plan.md §3).
+    per session's ``worlds/``) reuse — the only difference is which directory (docs/specs/agents.md §7.1).
     """
 
     def __init__(self, dir: str | Path):
@@ -416,7 +416,7 @@ class WorldRepository:
     (voice), so it's validated to a safe charset (no path separators / traversal). A tiny per-scope
     ``_active.txt`` pointer records which world is live, so a restart resumes where you were.
 
-    **Session facade (docs/sessions-plan.md §3, Option 1).** When constructed with a `SessionRepository`
+    **Session facade (docs/specs/agents.md §7.1).** When constructed with a `SessionRepository`
     (``sessions=``), every per-name op is transparently routed to the scope's **active session's**
     ``worlds/`` dir instead of the bare scope dir — so worlds are stored per-session while the public API
     and ``scope`` (the capability namespace) stay exactly as before, and no call site changes. Without
@@ -430,7 +430,7 @@ class WorldRepository:
                                                      # for the live scope's world addressing (§3, "5.5")
 
     def set_live(self, scope: str, sid: str) -> None:
-        """Declare the globally-live session (docs/sessions-plan.md §3). Per-name ops on `scope` then
+        """Declare the globally-live session (docs/specs/agents.md §7.1). Per-name ops on `scope` then
         address `sid` explicitly — set by the server in ONE place (`_switch_to`/boot) — instead of the
         facade independently re-reading the active-session pointer (which could lag the server and, before
         this, leaked the outgoing world into a new session on a switch)."""
@@ -517,7 +517,7 @@ class WorldRepository:
     def list_public_sessions(self, *, agent: str | None = None,
                              exclude_user: str | None = None) -> list[dict]:
         """Every PUBLIC session belonging to *other* users, in a given AGENT — the discovery a human
-        browses to visit someone else's live world (session-scoping-plan §B). One entry per public
+        browses to visit someone else's live world (docs/specs/agents.md §7.2). One entry per public
         session: `{scope, owner, agent, session, title, active_world}`. Scoped to the caller's active
         `agent` (same lens as your own list — to see another agent's sessions you switch agents) and
         excludes the caller's WHOLE user (`exclude_user`), so your own other agents/sessions never appear
@@ -576,20 +576,20 @@ class WorldRepository:
     def get_last_agent(self, user: str) -> str | None:
         """The agent this `user` last used. **Legacy / migration read-through only** — superseded by the
         global session pointer (`get_session`), from which the live agent is now derived
-        (shared-session-plan §2). Read on boot solely to reconstruct the pointer from a pre-session cache."""
+        (docs/specs/agents.md §9.1). Read on boot solely to reconstruct the pointer from a pre-session cache."""
         p = self._scope_dir(user) / "_last_agent.txt"
         return (p.read_text().strip() or None) if p.exists() else None
 
     def set_last_agent(self, user: str, agent: str) -> None:
         """Legacy writer, retained only to simulate a pre-session cache (migration tests). The runtime no
-        longer writes this — the live agent is derived from `get_session` (shared-session-plan §2)."""
+        longer writes this — the live agent is derived from `get_session` (docs/specs/agents.md §9.1)."""
         d = self._scope_dir(user)
         d.mkdir(parents=True, exist_ok=True)
         (d / "_last_agent.txt").write_text(agent)
 
     def get_session(self) -> tuple[str, str] | None:
         """The single global **session pointer** — the `(scope, world)` that is live across the whole
-        server (shared-session-plan §2). This is the one fact boot restores; `agent = agent_of(scope)` is
+        server (docs/specs/agents.md §9.1). This is the one fact boot restores; `agent = agent_of(scope)` is
         derived from it, so `_last_agent.txt` is no longer the source of truth. Distinct from the per-scope
         `get_active` (which world to resume *for a given agent's scope*). The active SPACE isn't stored here
         — it's derived from the live world's `environment.space`. Returns None when unset (fresh cache)."""
@@ -604,7 +604,7 @@ class WorldRepository:
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "_session.txt").write_text(f"{scope}\t{wid}")
 
-    # -- admin (shell dir/delete; docs/agents.md §2) ---------------------------------------------
+    # -- admin (shell dir/delete; docs/specs/agents.md §6) ---------------------------------------------
     def list_users(self) -> list[str]:
         """Every user with worlds on disk — the immediate subdirs of the root (`<root>/<user>/…`)."""
         return sorted(p.name for p in self.root.iterdir() if p.is_dir()) if self.root.is_dir() else []
@@ -630,15 +630,15 @@ class WorldRepository:
 def _session_seg(seg: str) -> str:
     """Validate a session **id** as one safe path segment — kept **verbatim** (not slugified, so a
     stable id never shifts under us) and rejecting traversal/empties. The mutable human *title* lives in
-    the meta doc, not the path, so a rename never moves anything on disk (docs/sessions-plan.md §3)."""
+    the meta doc, not the path, so a rename never moves anything on disk (docs/specs/agents.md §7.1)."""
     if not seg or seg in (".", "..") or not _SCOPE_PART.fullmatch(seg):
         raise ValueError(f"bad session id {seg!r}")
     return seg
 
 
 class SessionRepository:
-    """Sessions on disk under a scope: ``<root>/<user>/agents/<agent>/sessions/<id>/`` (docs/
-    sessions-plan.md §3). A *session* is an instance of an agent — its meta (``session.json``), its
+    """Sessions on disk under a scope: ``<root>/<user>/agents/<agent>/sessions/<id>/``
+    (docs/specs/agents.md §7.1). A *session* is an instance of an agent — its meta (``session.json``), its
     append-only transcript (``transcript.jsonl``), its agent state (``state/``), and the worlds created
     within it (``worlds/``).
 
@@ -648,10 +648,8 @@ class SessionRepository:
     doc, so a rename is a metadata edit that moves nothing. A per-scope ``sessions/_active.txt`` records
     the live session for that scope.
 
-    **Step 1 scope (docs/sessions-plan.md §9):** the container — meta CRUD, the per-scope active pointer,
-    and the **path helpers** (`worlds_dir`/`state_dir`/`transcript_path`) that later steps' transcript,
-    state, and world sub-stores build on. Those I/O layers wire in on steps 2, 4, 5; nothing imports this
-    class yet, so it changes no runtime behavior.
+    This class is the container: meta CRUD, the per-scope active pointer, and the **path helpers**
+    (`worlds_dir`/`state_dir`/`transcript_path`) the transcript, state and world sub-stores build on.
     """
 
     def __init__(self, root: str | Path):
@@ -685,17 +683,17 @@ class SessionRepository:
 
     def worlds(self, scope: str, sid: str) -> "WorldDir":
         """The session's worlds as a name-addressed `WorldDir` rooted at ``.../sessions/<id>/worlds/``
-        (docs/sessions-plan.md §3, Option 1) — the same per-name API as a scope's worlds, one level
+        (docs/specs/agents.md §7.1) — the same per-name API as a scope's worlds, one level
         deeper. This is how the runtime reaches the live session's worlds without threading a scope
         through every call: resolve the active session once, then address worlds by name."""
         return WorldDir(self.worlds_dir(scope, sid))
 
     def state(self, scope: str, sid: str) -> "StateStore":
-        """The session's agent-state as a `StateStore` rooted at ``.../sessions/<id>/state/`` (docs/
-        sessions-plan.md §5) — the storage behind the agent's generic ``state_*`` tools."""
+        """The session's agent-state as a `StateStore` rooted at ``.../sessions/<id>/state/``
+        (docs/specs/agents.md §7.4) — the storage behind the agent's generic ``state_*`` tools."""
         return StateStore(self.state_dir(scope, sid))
 
-    # -- transcript (append-only JSONL; docs/sessions-plan.md §4) --------------------------------
+    # -- transcript (append-only JSONL; docs/specs/agents.md §7.3) --------------------------------
     def append_transcript(self, scope: str, sid: str, entry: dict) -> None:
         """Append one turn as a JSON line — cheap O(1) growth, no whole-file rewrite. Entries are plain
         dicts (``{role, by, text, …}``); the agent server converts to/from its `Turn`, so this layer stays
@@ -752,7 +750,7 @@ class SessionRepository:
 
     def delete(self, scope: str, sid: str) -> bool:
         """Remove the whole session directory — its transcript, state, and worlds included (worlds belong
-        to the session; docs/sessions-plan.md §8.10). Clears the active pointer if it named this one."""
+        to the session; docs/specs/agents.md §6.6). Clears the active pointer if it named this one."""
         d = self.dir(scope, sid)
         if not d.is_dir():
             return False
@@ -773,7 +771,7 @@ class SessionRepository:
 
 
 class StateStore:
-    """A per-session bag of named JSON documents in one directory (docs/sessions-plan.md §5) — the storage
+    """A per-session bag of named JSON documents in one directory (docs/specs/agents.md §7.4) — the storage
     behind the agent's generic ``state_*`` tools. Plain JSON docs, dotted-path CRUD, atomic per-doc writes.
     The agent's data **schema** is declared/owned elsewhere (`agent.json`); this layer is schema-free — it
     doesn't know a `map` from an `inventory`, which is the whole point (no domain baked into storage)."""
@@ -838,7 +836,7 @@ class StateStore:
 
 class SpaceStore:
     """Named, **USER-owned** physical spaces on disk: ``<root>/<user>/spaces/<name>.json`` (docs/
-    spaces-and-users-plan.md §5; sessions-plan.md §3). A *space* is the captured real geometry —
+    spaces-and-users-plan.md §5; docs/specs/agents.md §7.1). A *space* is the captured real geometry —
     `surfaces` (geometry + default materials) + `boundary` + meta (`owner`, `public`, `geolocation`) —
     shared across all of a user's worlds, *not* a full WorldStore doc and *not* per-agent. The owner's
     headset is its capture authority. Stored as a plain JSON dict; a per-user ``_active.txt`` records the
@@ -1025,7 +1023,7 @@ def migrate_worlds_to_ids(users_root: str | Path) -> int:
 
 
 def migrate_cache_to_users(cache: str | Path) -> bool:
-    """One-time, idempotent relocation to the user-first, session tree (docs/sessions-plan.md §3, §7).
+    """One-time, idempotent relocation to the user-first, session tree (docs/specs/agents.md §7.1).
 
     Moves the pre-session layout::
 

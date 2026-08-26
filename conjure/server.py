@@ -56,7 +56,7 @@ SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 # The precious DATA root — the resolved user home (docs/user-home-plan.md §3), NOT the in-project
 # .cache anymore. On startup the in-project .cache is migrated into here (see _init_state).
 CACHE = DATA_DIR
-# User-first tree (docs/sessions-plan.md §3): everything a user owns lives under <data>/users/<user>/ —
+# User-first tree (docs/specs/agents.md §7.1): everything a user owns lives under <data>/users/<user>/ —
 # their agents' sessions (worlds/state/transcript) AND their spaces. Worlds:
 #   <data>/users/<user>/agents/<agent>/sessions/<id>/worlds/<name>.json
 # Spaces:  <data>/users/<user>/spaces/<name>.json
@@ -113,7 +113,7 @@ def _agent_world_config(scope: str) -> dict:
 
 
 def _first_world_spec(scope: str) -> tuple[str, list[dict]]:
-    """The session constructor's first-world spec (docs/sessions-plan.md §6): its NAME (default ``home``,
+    """The session constructor's first-world spec (docs/specs/agents.md §7.5): its NAME (default ``home``,
     overridable) + the first-world-only `on_create` steps. `first_world` may be a bare string (name only)
     or an object ``{name, on_create}``."""
     fw = _agent_block(scope, "session").get("first_world")
@@ -165,7 +165,7 @@ def _lookup_ref(bindings: dict, path: str):
 
 
 def _resolve_refs(value, bindings: dict):
-    """Interpolate ``${name.field}`` references (docs/sessions-plan.md §6) through an arg value, recursing
+    """Interpolate ``${name.field}`` references (docs/specs/agents.md §7.5) through an arg value, recursing
     into dicts/lists. A whole-value ``${…}`` preserves the referenced value's type; an embedded one
     substitutes as text. Unknown references raise KeyError (→ fail-hard)."""
     if isinstance(value, str):
@@ -181,7 +181,7 @@ def _resolve_refs(value, bindings: dict):
 
 
 async def _build_generative_ops(steps: list[dict]) -> tuple[list[dict], Optional[str]]:
-    """Run the **generative** constructor steps (docs/sessions-plan.md §6, 4c) → world patch ops, WITHOUT
+    """Run the **generative** constructor steps (docs/specs/agents.md §7.5) → world patch ops, WITHOUT
     touching the live world. Skybox-from-description generates + registers the image and emits an `env`
     patch pointing the sky at it; the caller applies the ops to the world it's about to build.
 
@@ -256,7 +256,7 @@ def _migrate_world_dirs(root: Path) -> None:
 
 
 def _read_session_ptr() -> tuple[str, str] | None:
-    """The single global **session pointer** (docs/sessions-plan.md §3) — `(scope, session-id)`, the one
+    """The single global **session pointer** (docs/specs/agents.md §7.1) — `(scope, session-id)`, the one
     fact boot restores. `agent = agent_of(scope)` and the active world are read back from that session.
     None on a fresh cache (the boot migration writes it whenever there was anything to migrate)."""
     if not SESSION_PTR.exists():
@@ -289,7 +289,7 @@ def _ensure_session(scope: str, sid: str | None = None, *, active_world: str | N
 
 def _boot_world() -> tuple[str, str, WorldStore]:
     """Resume exactly where the server was: read the global session pointer `(scope, sid)`, make that the
-    live session, and load that session's active world (docs/sessions-plan.md §3, §7). `agent = agent_of
+    live session, and load that session's active world (docs/specs/agents.md §7.1). `agent = agent_of
     (scope)` is derived. The one-time on-disk relocation (`migrate_cache_to_users`, run in `_init_state`)
     is what writes the pointer for a pre-session cache; here we just restore it, falling back to the
     builder default when there's nothing."""
@@ -364,7 +364,7 @@ def _init_state() -> None:
     migrate_project_cache_to_home(PROJECT_CACHE, DATA_DIR, CACHE_ROOT)
     ASSET_CACHE.mkdir(parents=True, exist_ok=True)   # deferred from import → after the home exists
     library = AssetLibrary(LIBRARY_DB)
-    # One-time, idempotent relocations (docs/sessions-plan.md §7): first the pre-user layout under the
+    # One-time, idempotent relocations (docs/specs/agents.md §7.1): first the pre-user layout under the
     # legacy worlds tree, then the whole worlds/spaces tree → the user-first session tree.
     _migrate_world_dirs(WORLDS_DIR)                  # pre-user layout → <user>/agents/<agent> (one-time)
     migrate_cache_to_users(CACHE)                    # worlds/spaces → <data>/users/…/sessions/session-1 (one-time)
@@ -1270,7 +1270,7 @@ async def _activate_scope(scope: str) -> dict:
     already active. Used on agent switch so the live world belongs to the NEW agent's scope, not the
     previous agent's (a fresh world with no captured space resolves to VOID — skybox/objects only)."""
     # The live agent is derived from the global session pointer (set by _switch_to below) — no separate
-    # last-agent to record here (shared-session-plan §2).
+    # last-agent to record here (docs/specs/agents.md §9.1).
     if scope == active_scope:
         return {"ok": True, "world": worlds.name_of(scope, active_world), "id": active_world,
                 "scope": scope, "unchanged": True}
@@ -1291,7 +1291,7 @@ async def scope_activate(req: ActivateScopeRequest) -> dict:
     return await _activate_scope(req.scope)
 
 
-# ---- session management (docs/sessions-plan.md §3) --------------------------------------------------
+# ---- session management (docs/specs/agents.md §7.1) --------------------------------------------------
 # Multiple sessions per scope, switchable. A session is an instance of the agent (its own transcript +
 # worlds + state); the agent server keys its transcript on the live (scope, session). Switching a session
 # writes the global pointer, so every peripheral follows — the same source-of-truth pattern as agents.
@@ -1409,7 +1409,7 @@ class SessionRef(BaseModel):
 @app.get("/sessions")
 async def sessions_list(scope: str = DEFAULT_SCOPE) -> dict:
     """Every session in `scope` with its meta + which is live, plus `available` — other USERS' public
-    sessions a human can visit (session-scoping-plan §B). The shell's `sessions` verb renders both; the
+    sessions a human can visit (docs/specs/agents.md §7.2). The shell's `sessions` verb renders both; the
     agent never sees this (cross-user movement is a person's act, not the LLM's). `available` excludes the
     caller's whole user, so your own other agents/sessions don't masquerade as strangers'."""
     active = sessions.get_active(scope)
@@ -1431,7 +1431,7 @@ async def sessions_list(scope: str = DEFAULT_SCOPE) -> dict:
 @app.post("/session/new")
 async def session_new(req: SessionRef) -> dict:
     """Create a new session in `scope` and switch to it. Its first world is built by the constructor
-    (docs/sessions-plan.md §6): named by the agent's `session.first_world` (default ``home``), set up by
+    (docs/specs/agents.md §7.5): named by the agent's `session.first_world` (default ``home``), set up by
     `world.on_create` ⊕ the first-world-only `on_create` chain. The greeting is appended by the agent
     server; generative first-world steps (skybox) are a later pass."""
     # Clean + uniqueness-check the title FIRST: the constructor below can generate a skybox (tens of
@@ -1537,7 +1537,7 @@ class SessionVisibilityRequest(BaseModel):
 @app.post("/session/visibility")
 async def session_visibility(req: SessionVisibilityRequest) -> dict:
     """Make a session public (discoverable + joinable by others) or private (owner only). Visibility now
-    lives on the SESSION and a world inherits it (docs/sessions-plan.md §8.2); step 6a records it, step 6b
+    lives on the SESSION and a world inherits it (docs/specs/agents.md §9.4); step 6a records it, step 6b
     re-keys discovery + the join/privacy gates onto it. Default target = the active session."""
     sid = _resolve_sid(req.scope, req.session) if req.session else sessions.get_active(req.scope)
     if not sid or not sessions.exists(req.scope, sid):
@@ -1551,7 +1551,7 @@ async def session_visibility(req: SessionVisibilityRequest) -> dict:
 
 
 def _session_public(scope: str, sid: str) -> bool:
-    """A session's visibility (docs/sessions-plan.md §8.2) — the unit of visibility a world now inherits.
+    """A session's visibility (docs/specs/agents.md §9.4) — the unit of visibility a world now inherits.
     Defaults public (missing meta / pre-session). Source of truth for the join gate + asset inheritance."""
     if sessions is None:
         return True
@@ -1569,7 +1569,7 @@ def _active_public() -> bool:
 @app.get("/agent/last")
 async def agent_last(user: str = DEFAULT_USER) -> dict:
     """The **live** agent, so a front-end launched without an explicit --agent resumes it. There's one
-    shared session (shared-session-plan P1), so the answer is global: `agent = agent_of(active_scope)`,
+    shared session (docs/specs/agents.md §9), so the answer is global: `agent = agent_of(active_scope)`,
     derived from the session pointer — not a per-user record. The `user` param is vestigial (kept for
     back-compat)."""
     return {"ok": True, "agent": agent_of(active_scope)}
@@ -1577,7 +1577,7 @@ async def agent_last(user: str = DEFAULT_USER) -> dict:
 
 @app.get("/state")
 async def live_state() -> dict:
-    """The canonical **"what's live"** snapshot for the single shared session (shared-session-plan §2) —
+    """The canonical **"what's live"** snapshot for the single shared session (docs/specs/agents.md §9.1) —
     `{scope, agent, world, owner, space}`. The reconciliation seam a client / the agent server reads on
     connect (and mirrored into every `/ws` snapshot's `state`). Identifiers only; `GET /world` returns the
     full doc. Subsumes `GET /agent/last` (its `agent` is `state.agent`)."""
@@ -1802,7 +1802,7 @@ async def _establish_world_in(user: str, space_ref: str, world_name: str = "defa
 
 @app.post("/worlds/list")
 async def worlds_list(req: ScopeRef) -> dict:
-    """The caller's own worlds in their current session (session-scoping-plan §A) — NOT other users'
+    """The caller's own worlds in their current session (docs/specs/agents.md §7.2) — NOT other users'
     worlds: cross-user discovery/visiting is a human act at the shell, never handed to the agent. `active`
     is the caller's OWN world that is live, or null when the live (shared) world is someone else's;
     `current` is always the true live world `{owner, name}` so the agent knows when it's inhabiting
@@ -1848,8 +1848,8 @@ async def worlds_new(req: WorldRef) -> dict:
 
 @app.post("/worlds/switch")
 async def worlds_switch(req: WorldRef) -> dict:
-    """Switch to a world in the caller's OWN scope (session-scoping-plan §A, decision 3: no world-level
-    cross-user switch). Entering another user's world is a human act — visit their public session at the
+    """Switch to a world in the caller's OWN scope — there is no world-level cross-user switch
+    (docs/specs/agents.md §7.2). Entering another user's world is a human act — visit their public session at the
     shell (`session switch <owner>/<agent>/<sid>`)."""
     try:
         if not worlds.exists(req.scope, req.name):
@@ -4473,7 +4473,7 @@ def _head_from_anchor(anchor: dict | None) -> dict | None:
 
 
 def _live_state() -> dict:
-    """The canonical **"what's live"** identifiers for the single shared session (shared-session-plan §2):
+    """The canonical **"what's live"** identifiers for the single shared session (docs/specs/agents.md §9.1):
     the active world + its `scope`/`agent`/`owner`, and the `space` it composes against (the fully-qualified
     `<owner>/<name>` ref, or VOID for an outdoor/space-less world). Identifiers only — no world doc — so it's
     the cheap reconciliation seam every peripheral reads: the headset renders the world, the agent server
@@ -4482,7 +4482,7 @@ def _live_state() -> dict:
     return {
         "scope": active_scope,
         "agent": agent_of(active_scope),
-        "session": active_sid,          # the live SESSION within the scope (docs/sessions-plan.md §3); the
+        "session": active_sid,          # the live SESSION within the scope (docs/specs/agents.md §7.1); the
                                         # agent server keys its transcript on (scope, session)
         # `world` is the display NAME (what a person reads); `world_id` is the permanent identity a
         # client should key state on, so a rename doesn't read as a world switch.
@@ -4497,14 +4497,14 @@ def _live_state() -> dict:
 def _snapshot_msg() -> dict:
     """The snapshot a client receives — the full world doc for rendering, the active world's OWNER (so a
     desktop guest knows whom to spawn next to, Phase 4 §6), and the canonical live-state identifiers under
-    `state` so every subscriber reconciles from one broadcast (shared-session-plan §2). `world`/`owner` stay
+    `state` so every subscriber reconciles from one broadcast (docs/specs/agents.md §9.1). `world`/`owner` stay
     top-level for the existing renderer; `state.world` is the world *name*, `state` is additive."""
     return {"type": "snapshot", "world": store.doc, "owner": active_scope.split("/", 1)[0],
             "state": _live_state()}
 
 
 async def _regate_clients() -> None:
-    """Bump already-connected `/ws` clients when the live session is private (docs/sessions-plan.md §8.3):
+    """Bump already-connected `/ws` clients when the live session is private (docs/specs/agents.md §9.4):
     every non-owner guest is moved from `clients` to `_blocked` (kept, so a later go-public can re-admit
     them), taken off the broadcast set, and sent an `evicted` message so the render client blanks to
     passthrough. A public session is a no-op; the owner always stays."""

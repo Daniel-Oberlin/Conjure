@@ -20,9 +20,10 @@ You stand in a holodeck (black void, 1 m white grid) and talk. Conjure can:
   (Gemini or OpenAI, picked by capability — e.g. transparency → OpenAI) and then hangs it.
 - **Set the scene** — generate a high-res 360° **skybox** that wraps the whole environment, or
   turn any in-world image into the surrounding sky.
-- **Talk to more than one AI** — a roster of named LLMs (Claude + Gemini + "Chat"/OpenAI) shares one
-  conversation; switch mid-stream ("let me talk to Gemini") or hand off a single turn ("Gemini, make
-  a picture of a cat"), and a newly-active LLM picks up the whole conversation seamlessly.
+- **Talk to more than one AI** — a roster of named LLMs (Claude + Gemini + "Chat"/OpenAI + Grok) shares
+  one conversation; switch mid-stream with a shell command (`llm gemini`, or spoken "conjure talk to
+  gemini") and the newly-active LLM picks up the whole conversation seamlessly. Switching is
+  deterministic and never inferred from what you said, so "put a shell on the table" stays a request.
 - **Feel real-time** — a brief spoken acknowledgement ("on it") the instant you ask.
 
 Everything is live: edits broadcast over a WebSocket to every connected headset. Models for
@@ -42,24 +43,29 @@ squaring + corner-joining, real door/window cutouts, and upright mounted art. De
 ## How it fits together
 
 ```
- voice  ┌───────────┐  MCP   ┌──────────────┐  WebSocket  ┌──────────────┐
- ◀────▶ │  PipeCat  │ ◀────▶ │ World server │ ◀─────────▶ │ A-Frame      │  Quest 3
- (mic/  │  + shell  │        │ (FastAPI):   │  (patches)  │ WebXR client │  (or any
-  spkr) │  + agent  │        │ world + MCP  │             │              │   browser)
-        └───────────┘        │ + assets/gen │
-                             └──────┬───────┘
-                                    │  Poly Pizza (models) · Gemini/OpenAI (images) · local Whisper/Kokoro
+ voice  ┌───────────┐  WS   ┌──────────────┐  MCP  ┌──────────────┐  WebSocket  ┌──────────────┐
+ ◀────▶ │  PipeCat  │ ◀───▶ │ Agent server │ ◀───▶ │ World server │ ◀─────────▶ │ A-Frame      │  Quest 3
+ (mic/  │ ears+mouth│       │ shell+agent  │       │ (FastAPI):   │  (patches)  │ WebXR client │  (or any
+  spkr) └───────────┘       │ + transcript │       │ world + MCP  │             │              │   browser)
+        ┌───────────┐  WS   │              │       │ + assets/gen │             └──────────────┘
+        │    CLI    │ ◀───▶ └──────┬───────┘       └──────┬───────┘
+        └───────────┘              └──────────────────────┤ follows the live world/session over /ws
+                                    Poly Pizza (models) · Gemini/OpenAI (images) · local Whisper/Kokoro
 ```
 
-- **World server** (`conjure/`, Python/FastAPI) owns one declarative world document, applies
-  **patches**, serves the WebXR app + cached assets, and exposes world-editing **MCP tools**.
-- **Shell + agent** — the **shell** (`conjure/shell.py`) is a deterministic command plane (switch
-  agent/LLM, status — no LLM); below it the **builder agent** (`conjure/director.py`, loaded
-  declaratively from `agents/builder/`) is the brain for both voice and CLI: it owns the shared
-  user/assistant transcript, an **LLM roster** (`conjure/llm.py` — Claude/Gemini/OpenAI, switchable mid-conversation),
-  the MCP tools, and the live room injected into its prompt. PipeCat is just ears+mouth (Whisper STT →
-  shell → agent → Kokoro TTS); the CLI feeds it typed text. New LLMs/agents register declaratively —
-  nothing else changes.
+- **World server** (`conjure/server.py`, FastAPI) owns one declarative world document, applies
+  **patches**, serves the WebXR app + cached assets, exposes world-editing **MCP tools**, and is the
+  single source of truth for what's live (world · session · space). It runs standalone — you can walk
+  your world with no AI in the loop.
+- **Agent server** (`conjure/agent_server.py`) is the long-lived host of the **shell**
+  (`conjure/shell.py` — a deterministic command plane: switch agent/LLM/session, walk the namespace, no
+  LLM) and, below it, the active **agent** (`conjure/director.py`, loaded declaratively from
+  `agents/<name>/`). It owns the one shared transcript and an **LLM roster** (`conjure/llm.py` —
+  Claude/Gemini/OpenAI/Grok, switchable mid-conversation), and it *follows* the world server: when a
+  headset walks into a room that belongs to another agent, it re-binds. New LLMs/agents register
+  declaratively — nothing else changes. Spec: [docs/specs/agents.md](./docs/specs/agents.md).
+- **Voice and CLI are thin clients** — one WebSocket each, sending raw lines and rendering events. No
+  state, no keys, no parsing: all command logic is server-side, so the two can't drift.
 - Model roles (STT/TTS/LLM/image-gen) and asset sources sit behind **swappable registries**
   (`docs/providers.md`), so providers plug in without touching callers.
 
@@ -206,11 +212,12 @@ address and `…/agents/<agent>/worlds` is a shortcut to the active session's.
 
 Every command declares whether it's **voice-safe**: voice gets the modal verbs ("where am I", "go to
 the meadow", "new session") and is refused the ones that need a screen. Full table:
-[docs/agents.md §2](./docs/agents.md).
+[docs/specs/agents.md §6](./docs/specs/agents.md).
 
 The agent server picks its agent at launch (`conjure-agent --agent outdoor`); switch live with
-`conjure agent <name>` — a server-side command, since it moves everyone in the shared session.
-*(Voice still hosts its own director in-process — it moves onto the agent server in a later step.)*
+`conjure agent <name>` — a server-side command, since it moves everyone in the shared session. It
+routes through the world server, so every client (and the headset) follows the same pointer move.
+Unfinished work and known problems: [docs/backlogs/agents.md](./docs/backlogs/agents.md).
 
 ## On the Quest 3
 
@@ -235,8 +242,8 @@ scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
             send_room.py (synthetic room), mcp_smoke.py, mic_check.py, vad_check.py
 tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`); a
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
-docs/       vision · spec · architecture · agents · room-model · decisions · providers · roadmap · setup · testing/https guides
-  specs/    per-area LIVING specs — what is built and how it behaves today (dynamics, occlusion)
+docs/       vision · spec · architecture · room-model · decisions · providers · roadmap · setup · testing/https guides
+  specs/    per-area LIVING specs — what is built and how it behaves today (agents, dynamics, occlusion)
   backlogs/ the matching per-area backlogs — unfinished work, future directions, known problems
 ```
 

@@ -114,7 +114,7 @@ def srv(tmp_path, monkeypatch):
 
     monkeypatch.setattr(server, "ASSET_CACHE", tmp_path)
     # Isolated user-first tree + session-backed world store + a tmp global pointer, so autosave/reset/
-    # switch stay off the real repo (docs/sessions-plan.md §3).
+    # switch stay off the real repo (docs/specs/agents.md §7.1).
     users = tmp_path / "users"
     _sessions = SessionRepository(users)
     monkeypatch.setattr(server, "sessions", _sessions)

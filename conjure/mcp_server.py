@@ -29,7 +29,7 @@ BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
 # (env), NOT an LLM tool argument. Every maintenance call carries it so the world server enforces scope.
 SCOPE = os.environ.get("CONJURE_SCOPE", scope_for(DEFAULT_USER, "builder"))
 
-# --- Hard tool gate (agent-separation-plan §3c, Layer 2) -------------------------------------------
+# --- Hard tool gate (docs/specs/agents.md §4, Layer 2) -------------------------------------------
 # The agent's tool allow-list + access level, injected as env by the director at launch (never an LLM
 # arg). This MCP server is a SEPARATE process from the LLM/director, so enforcing here is a real second
 # layer: it holds regardless of what the LLM was *offered* (director-side Layer 1), catching any call
@@ -92,7 +92,7 @@ _USER = SCOPE.split("/", 1)[0]   # launch identity (fallback until the director 
 
 # The identity subsequent calls act as, sent on every world-server request (owner gate + asset-ownership
 # scope). Defaults to the launch (user, scope); the director overrides it PER TURN via set_caller() so a
-# shared session attributes each turn to its actual SPEAKER — agent-server-plan Step 3. Turns are
+# shared session attributes each turn to its actual SPEAKER — docs/specs/agents.md §8.5. Turns are
 # serialized (single floor), so a process-global caller is safe against interleaving.
 _CALLER = {"user": _USER, "scope": SCOPE}
 
@@ -113,7 +113,7 @@ async def set_caller(user: str, scope: str) -> str:
     """[control — the director calls this, not the LLM] Set the identity subsequent tool calls act as: the
     current turn's SPEAKER. Not in any agent's tool allow-list (never offered to the model) and exempt from
     the capability gate. Lets one shared MCP server attribute each turn to whoever spoke, so the world
-    server enforces ownership/permissions per-speaker (agent-server-plan Step 3)."""
+    server enforces ownership/permissions per-speaker (docs/specs/agents.md §8.5)."""
     _CALLER["user"] = user or _USER
     _CALLER["scope"] = scope or SCOPE
     return "ok"

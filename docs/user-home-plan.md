@@ -3,8 +3,8 @@
 **Status:** BUILT (design agreed + implemented 2026-08-17; see §8). Moves runtime state and agent definitions
 out of the project directory into a user-owned home, adds a user settings file, and makes agent
 definitions a **search path** (user + bundled) instead of a single project dir. No security — users
-are identity only. Extends `spaces-and-users-plan.md` (namespace) and `sessions-plan.md` (the
-`.cache/users/<user>/…` tree that this doc relocates).
+are identity only. Extends `spaces-and-users-plan.md` (namespace) and
+[`specs/agents.md §7.1`](./specs/agents.md) (the `users/<user>/…` tree that this doc relocates).
 
 ## 1. Why
 
@@ -26,7 +26,7 @@ The word is overloaded on purpose; they are genuinely different and only one sid
 - **Agent *definition*** — `agents/<name>/agent.json` — the template/"class". Authored, versioned.
   **This doc makes it user-ownable** via a search path.
 - **Agent *runtime namespace*** — `…/users/<user>/agents/<agent>/…` — a user's instance data (sessions,
-  worlds, assets, state). Already user-first (sessions-plan §3); this doc only *relocates* the tree, it
+  worlds, assets, state). Already user-first (specs/agents.md §7.1); this doc only *relocates* the tree, it
   does not reshape it.
 
 ## 3. Layout — XDG by default, one-dir escape hatch
@@ -62,7 +62,7 @@ curation). It's an index but a *precious* one.
 
 | Today (`.cache/…`)              | What it is                                             | New home |
 |---------------------------------|--------------------------------------------------------|----------|
-| `users/`                        | session/world/space tree (sessions-plan §3)            | **data/**`users/` |
+| `users/`                        | session/world/space tree (specs/agents.md §7.1)            | **data/**`users/` |
 | `_session.txt`                  | global session pointer                                 | **data/**`_session.txt` |
 | `assets/`                       | content-addressed media — images, skyboxes             | **data/**`assets/` |
 | `library.db` (+ `-shm`,`-wal`)  | asset catalog: curation + captions + embeddings; **not** regenerable | **data/**`library.db` (WAL sidecars move with it) |
@@ -176,7 +176,7 @@ Resolved: **build the local model now, don't preclude the server one.**
    faces an empty home. (Landed as one commit; steps 3 and 5 were merged for this reason.)
 4. ✅ Agent search path — `load_agent`/`resolve_agent_dir`/`list_agents` iterate `AGENTS_PATH`; user
    shadows bundled; `shell agents` tags user defs.
-6. ✅ Docs: README (data-location note), sessions-plan §3, spaces-and-users-plan §3 (superseded-root
+6. ✅ Docs: README (data-location note), specs/agents.md §7.1, spaces-and-users-plan §3 (superseded-root
    banners).
 
 Each step tested (pytest + `node --test`) and committed; env/monkeypatch overrides keep tests on tmpdirs.

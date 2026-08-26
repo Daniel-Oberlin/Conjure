@@ -225,7 +225,7 @@ class Settings:
     # Per-vendor director/image models for the roster members beyond Claude. Trailing + defaulted so
     # existing Settings(...) constructions stay valid. (Wired in conjure.llm's ROSTER table.)
     agent_url: str = "http://localhost:8770"         # the agent server thin clients (cli/voice) talk to
-                                                     # (shared-session-plan §4); mirrors world_url one hop up
+                                                     # (docs/specs/agents.md §11); mirrors world_url one hop up
     gemini_model: str = "gemini-2.5-flash"           # Gemini director model
     openai_director_model: str = "gpt-4.1"           # OpenAI ("Chat") director model
     openai_image_model: str = "gpt-image-1"          # OpenAI image generator model

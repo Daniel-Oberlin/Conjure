@@ -25,6 +25,10 @@ behaves today, kept accurate against the code — and a matching **backlog** in
 alternatives and the reasoning behind consequential forks stay in [decisions.md](./decisions.md). The
 split exists so a spec can be trusted: nothing in it is a plan, an intention, or a maybe.
 
+- **[specs/agents.md](./specs/agents.md)** — the orchestration layer: the agent definition and two-layer
+  tool scoping, the `Director` turn loop and prompt injection, the shell's command registry and
+  namespace, sessions (disk layout, state store, constructor), the agent server's protocol and its
+  follow loop, and the one-shared-reality permission model. ([backlog](./backlogs/agents.md))
 - **[specs/dynamics.md](./specs/dynamics.md)** — dynamic modules: the manifest, the client contract, the
   shared clock/bus/pointer runtime, XR actions and pointer arbitration, placement, and the tier-C commit
   path. ([backlog](./backlogs/dynamics.md))
@@ -35,17 +39,9 @@ split exists so a spec can be trusted: nothing in it is a plan, an intention, or
 - **[room-model.md](./room-model.md)** — the **next phase** (roadmap Phase 5): bringing the real room
   (AR / scene understanding — passthrough, semantic surfaces, mountable real walls/furniture,
   progressive mesh refinement) out of the Quest and into the world model.
-- **[agent-separation-plan.md](./agent-separation-plan.md)** — making `Director` a generic agent
-  runtime (everything builder-specific moves into the agent def), removing inline LLM handover, and a
-  two-layer tool-scoping design (client omission now, server-side hard gate on trigger); introduces the
-  skybox-only **`outdoor`** agent as the test.
-- **[agent-server-plan.md](./agent-server-plan.md)** — moving the director + shared transcript into a
-  long-lived **agent server** so voice/CLI become thin HTTP/SSE clients and multiple users share one
-  conversation (matching the shared world).
-- **[shared-session-plan.md](./shared-session-plan.md)** — the **state model** under the agent server:
-  the one shared reality `(space, world)` with `agent = f(world)`, how the world/agent servers, headsets
-  and dumb clients reconcile to a single session pointer, the two floors (conversational + spatial),
-  **pinning while held**, three-tier access (editor/viewer/locked-out), and the multi-user edge cases.
+*(`agents.md`, `agent-separation-plan.md`, `agent-server-plan.md`, `sessions-plan.md`,
+`session-scoping-plan.md` and `shared-session-plan.md` were consolidated into
+[specs/agents.md](./specs/agents.md) + [backlogs/agents.md](./backlogs/agents.md) on 2026-08-25.)*
 
 > For current project status / what works today, see the top-level [README](../README.md) — it's
 > the single source of truth for status, so these docs don't drift.

@@ -7,7 +7,7 @@ and the reasoning behind consequential forks live in [`docs/decisions.md`](../de
 A **dynamic module** is a live, animated, interactive effect the director can conjure into a world —
 fireflies, a rippling Water Picture, object manipulation. This spec is the contract for implementing
 one, and the reference for the runtime surface a module is handed. It is the counterpart to
-[`docs/agents.md`](../agents.md) for agents.
+[`docs/specs/agents.md`](./agents.md) for agents.
 
 ---
 

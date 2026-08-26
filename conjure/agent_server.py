@@ -1,4 +1,4 @@
-"""The agent server — the long-lived host of the shared agent (shared-session-plan §3, Step C).
+"""The agent server — the long-lived host of the shared agent (docs/specs/agents.md §8).
 
 The `Shell` (command logic) → `Director` → shared transcript live here; voice/CLI are **dumb clients**
 over a single per-connection **WebSocket**:
@@ -17,7 +17,7 @@ Director/transcript/floor underneath; only `{user, in_shell}` is per-connection.
 
 Single **turn floor** (D4): one utterance runs at a time; a second while one's in flight gets `busy`.
 The follow loop rides the world server's `/ws` and re-binds the Director on an agent change (C2).
-Barge-in (C3) will add a `{type:"interrupt"}` client message that cancels the in-flight turn.
+Barge-in reserves a `{type:"interrupt"}` client message; it is shelved (docs/backlog.md).
 """
 
 from __future__ import annotations
@@ -214,7 +214,7 @@ def _turn(entry: dict) -> "Turn":
 def _sync_transcript(app: FastAPI) -> None:
     """Load the live session's saved transcript into the Director once per session change — so a restart or
     an agent switch resumes the conversation (a re-bind gives a fresh, empty Director; this refills it from
-    disk). Also restore the session's last-used LLM (docs/sessions-plan.md §2): a remembered choice beats
+    disk). Also restore the session's last-used LLM (docs/specs/agents.md §5.2): a remembered choice beats
     the agent's default priority. Idempotent: tracked by `app.state.loaded_session`."""
     cur = _current_session(app)
     d = app.state.shell.director if app.state.shell else None
@@ -236,7 +236,7 @@ def _sync_transcript(app: FastAPI) -> None:
 
 def _persist_llm(app: FastAPI) -> None:
     """Remember the live session's active LLM in its meta, so a switch sticks across restart/switch-back
-    (docs/sessions-plan.md §2). No-op until a session is known."""
+    (docs/specs/agents.md §5.2). No-op until a session is known."""
     cur = _current_session(app)
     d = app.state.shell.director if app.state.shell else None
     if d is None or cur is None:
@@ -254,7 +254,7 @@ def _persist_llm(app: FastAPI) -> None:
 
 
 def _maybe_seed(app: FastAPI) -> None:
-    """Seed a new session's agent-state ONCE (docs/sessions-plan.md §5.4/§6). The world server marks a
+    """Seed a new session's agent-state ONCE (docs/specs/agents.md §7.4/§7.5). The world server marks a
     fresh session ``seeded: False``; here we copy the agent's declared seed docs (`AgentDef.state[doc].
     seed_data`, resolved at load) into the session's `StateStore` — a fresh mutable copy per instance —
     then flip ``seeded: True``. Never clobbers a doc that already exists. Runs before the greeting so a
@@ -282,7 +282,7 @@ def _maybe_seed(app: FastAPI) -> None:
 
 
 async def _maybe_greet(app: FastAPI) -> None:
-    """Speak a new session's opening line ONCE (docs/sessions-plan.md §6). The world server marks a fresh
+    """Speak a new session's opening line ONCE (docs/specs/agents.md §7.5). The world server marks a fresh
     session ``greeted: False``; here — if the transcript is empty and the agent declares a greeting — we
     append it (literal verbatim, or generated via one LLM turn), persist it, broadcast it to live clients,
     and flip ``greeted: True`` so reconnects/re-syncs never repeat it."""

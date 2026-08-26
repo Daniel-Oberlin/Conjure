@@ -36,7 +36,7 @@ def ws_url(agent_url: str, user: str, *, backlog: bool = True, client: str = "cl
 def prompt_from_context(ctx: dict) -> str:
     """Format the REPL prompt from the latest `context` DATA: in shell mode
     `conjure:<user>.shell <cwd>>`, else `conjure:<user>.<agent>.<llm>>`. Formatting lives in the client
-    (a voice client would render none) — only the data comes from the server (shared-session-plan §8).
+    (a voice client would render none) — only the data comes from the server (docs/specs/agents.md §10).
 
     The working directory is shown absolute with `~` for your own home, so it never lies about where you
     are — a shortcut like `…/worlds` resolves server-side and the prompt shows what it resolved to."""

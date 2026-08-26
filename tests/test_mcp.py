@@ -407,7 +407,7 @@ async def test_switch_world_tool_reports_error(monkeypatch):
     assert "Couldn't switch" in out and "nope" in out
 
 
-# --- Hard tool gate (agent-separation-plan §3c, Layer 2) -------------------------------------------
+# --- Hard tool gate (docs/specs/agents.md §4, Layer 2) -------------------------------------------
 
 async def test_tool_gate_blocks_out_of_scope_tool(monkeypatch):
     # Enforced in the real wired dispatch (mcp.call_tool), a separate process from the LLM — so it

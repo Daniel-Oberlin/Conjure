@@ -189,7 +189,7 @@ def test_allows_llm():
 
 def test_state_seed_is_resolved_at_load(tmp_path):
     # The declared state doc's `seed` file (relative to the agent dir) is resolved to parsed JSON under
-    # `seed_data` at load, so the constructor copies it with no runtime file I/O (docs/sessions-plan.md §5.4).
+    # `seed_data` at load, so the constructor copies it with no runtime file I/O (docs/specs/agents.md §7.4).
     _write_agent(tmp_path, "dm", {
         "prompt": "hi",
         "state": {"map": {"seed": "map-seed.json", "inject": "{map}"}},

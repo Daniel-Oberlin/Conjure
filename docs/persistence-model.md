@@ -4,13 +4,13 @@
 it covers worlds, agent scoping, and how the stores compose. See also `asset-library-plan.md`
 (the asset store) and `decisions.md` #7 (the capability/sandbox model this scoping rides on).
 
-> **Superseding layer — `sessions-plan.md`.** The next step generalizes the implicit "active world per
-> scope" into a first-class **session** (an *instance* of an agent-class): named, owned, persisted, and
-> switchable, carrying its transcript, its worlds, and its arbitrary state. Under that model worlds nest
-> **under a session** (`…/agents/<agent>/sessions/<id>/worlds/…`), ownership + visibility move up from
-> world to session, and the `state` store (§4) gains an `agent.json` declaration (schema + seed). This
-> doc's stores and scoping are the foundation `sessions-plan.md` builds on; where they differ, the
-> session plan is the forward direction.
+> **Superseded by the session layer — [`specs/agents.md §7`](./specs/agents.md).** The implicit "active
+> world per scope" is now a first-class **session** (an *instance* of an agent-class): named, owned,
+> persisted, switchable, carrying its transcript, its worlds, and its arbitrary state. Worlds nest
+> **under a session** (`…/agents/<agent>/sessions/<id>/worlds/…`), ownership + visibility live on the
+> session and a world inherits them, and the `state` store (§4) takes its declaration (schema + seed)
+> from `agent.json`. This doc's stores and scoping are the foundation that was built on; where the two
+> differ, the spec is what the code does.
 
 The idea: **one persistence service, scoped per agent, hosting several *typed* stores.** Each agent
 (the builder, a future role-playing "dungeonmaster", …) operates inside its own namespace and never
@@ -99,11 +99,12 @@ So `bladerunner1` is a **named, mutable, versioned document** that *points at* a
 scoped world store adds named **save / load / list / switch** under a scope. It's *simpler* than the asset catalog (no
 embeddings, no similarity search) precisely because worlds are named documents, not searchable media.
 
-A third **generic `state` store** (agent memory / settings — a scoped KV/doc store) can appear later
-under the same scheme if an agent needs arbitrary persistence. **Design settled in `sessions-plan.md`
-§5:** the tools stay **generic and agent-agnostic** (`state_get/set/merge/delete/list/schema` — CRUD
-over named JSON docs by dotted path, reusing `world.py`'s `_set_path` + inverse machinery so state edits
-are undoable). The **domain schema is agent-owned data, not part of any tool definition** — declared in
+A third **generic `state` store** (agent memory / settings — a scoped doc store) is built, per session,
+under the same scheme. **See [`specs/agents.md §7.4`](./specs/agents.md):** the tools stay **generic and
+agent-agnostic** (`state_get/set/merge/delete/list/schema` — CRUD over named JSON docs by dotted path,
+reusing `world.py`'s `_set_path`; the *inverse* half that would make state edits undoable is not wired
+yet — [backlogs/agents.md](./backlogs/agents.md)). The **domain schema is agent-owned data, not part of
+any tool definition** — declared in
 `agent.json` (a `state` block) as file references (`seed`, `schema`, `inject`), the same "declare +
 reference a file" pattern as `prompt_file`. One declaration feeds three consumers: prompt **injection**
 (via `director._injections`, like `{user}`), an **introspection** tool (`state_schema` for large state),
@@ -160,7 +161,7 @@ saving.
 no separate seed file is required (an agent may still ship a richer seed doc if it wants pre-placed
 content).
 
-**The constructor grows into a session constructor (`sessions-plan.md` §6).** Once a session is the
+**The constructor grew into a session constructor ([`specs/agents.md §7.5`](./specs/agents.md)).** Once a session is the
 instance, `on_create` is one of several `__init__` jobs run when a session is minted: the world macro
 (built), a **`greeting`** (the opening assistant turn, *appended to the transcript* so it persists and
 replays on resume), and **initial state** (the declared `state` seeds copied into the session — a fresh
@@ -192,7 +193,7 @@ branching are a separate, later feature** (a different shape: snapshots, not an 
   autosave-on-change, boot-into-last-active-or-`default`, the `list/new/switch/delete` endpoints +
   MCP tools, and the `agent.json` `on_create` constructor run at world creation. Scope is carried in
   the request body (server-side default for now; capability-injected when the second agent lands).
-- **Next:** the **session layer** (`sessions-plan.md`) — `SessionRepository` + disk layout, transcript
+- **Built since:** the **session layer** ([`specs/agents.md §7`](./specs/agents.md)) — `SessionRepository` + disk layout, transcript
   persistence (append-only JSONL), session shell verbs (list/switch/rename/delete/new), the session
   constructor (`greeting` + state seed), and the generic `state_*` store. Undo/redo (rides the existing
   inverses; blocks nothing) is independent and can land any time alongside.

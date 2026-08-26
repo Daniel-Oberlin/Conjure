@@ -1,4 +1,4 @@
-"""Phase 2 — the voice loop (PipeCat), a thin client of the agent server (shared-session Step C3).
+"""Phase 2 — the voice loop (PipeCat), a thin client of the agent server (docs/specs/agents.md §10).
 
 Wires a real-time voice front-end to the shared agent:
 
@@ -105,7 +105,7 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     holder: dict = {"ws": None}          # the current agent-server socket (None while (re)connecting)
     stop = asyncio.Event()
 
-    # The voice client is DUMB (shared-session Step C3): it sends completed user turns to the agent server
+    # The voice client is DUMB (docs/specs/agents.md §10): it sends completed user turns to the agent server
     # over a WebSocket and speaks the server's replies. No Director/shell/LLM here — pipecat is just ears +
     # mouth. `bridge` passes frames through and provides speak()/submit(); a listener task turns server
     # events into speech. The early-ack and the final each arrive as their own event → their own spoken

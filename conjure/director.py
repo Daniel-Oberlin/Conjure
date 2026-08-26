@@ -14,7 +14,7 @@ The agent owns:
     carries no record of which LLM authored a reply, so switching LLMs is invisible in the history,
   • the **LLM roster** (conjure.llm) — the named LLMs it allows, one *active* at a time,
   • the world-editing **MCP tools** (it is an MCP client of its scoped servers over stdio),
-  • the per-turn **context** it injects (e.g. `room://current` — the live room, agents.md §5).
+  • the per-turn **context** it injects (e.g. `room://current` — the live room, docs/specs/agents.md §5.3).
 
 Every turn runs on the **active** LLM. Switching the active LLM is the shell's job — deterministic,
 parsed there (conjure.shell), never inferred from the utterance here.
@@ -45,9 +45,9 @@ OnTool = Callable[..., Awaitable[None]]   # (name: str, args: dict) -> None
 
 class Busy(RuntimeError):
     """A turn was submitted while another is already in flight. The Director holds a **single floor**
-    (agent-server-plan D4, reject-while-busy): among people co-located in one room, concurrent speech
+    (docs/specs/agents.md §5.1, reject-while-busy): among people co-located in one room, concurrent speech
     is an edge case and they naturally take turns, so we reject rather than queue or interleave. The
-    agent server (later slice) turns this into a `busy` event; in-process callers can catch it."""
+    agent server turns this into a `busy` event; in-process callers can catch it."""
 
 
 def _fill_injection(prompt: str, name: str, value: str) -> str:
@@ -81,8 +81,8 @@ def _stdio_params(spec: ServerSpec, settings: Settings, agent: str = "builder", 
     """Build stdio launch params from a registry ServerSpec: map a bare 'python' to this interpreter,
     substitute ${world_url} in the env, and inject the agent's **capabilities** as env (never LLM args):
     the (user, agent) catalog SCOPE, plus the tool allow-list + access level. The MCP server enforces
-    SCOPE today; CONJURE_TOOLS/CONJURE_ACCESS are scaffolded for the later server-side gate
-    (docs/agent-separation-plan.md §3c) — the client-side filter is what scopes tools for now."""
+    all three: SCOPE for catalog ownership, and CONJURE_TOOLS/CONJURE_ACCESS for the hard capability
+    gate in `_GatedMCP` — Layer 2 of the two-layer scoping (docs/specs/agents.md §4)."""
     from mcp import StdioServerParameters
     command = sys.executable if spec.command in ("python", "python3") else spec.command
     env = {**os.environ, **{k: v.replace("${world_url}", settings.world_url) for k, v in spec.env.items()}}
@@ -111,7 +111,8 @@ def _scope_tools(live, allow: list[str]):
     **opt-in only** — there is no wildcard: an agent gets exactly the tools it names, and an empty list
     means none (default-deny). Raises if the allow-list names a tool the server doesn't expose — a typo
     should fail loudly, not silently under-grant. Enforcement-by-omission: the LLM is only ever
-    *offered* the tools that survive this filter (a hard server-side gate is a later slice)."""
+    *offered* the tools that survive this filter; the MCP server's `_GatedMCP` is the hard second
+    layer, out of the model's process (docs/specs/agents.md §4)."""
     names = {t.name for t in live}
     unknown = sorted(t for t in allow if t not in names)
     if unknown:
@@ -121,7 +122,7 @@ def _scope_tools(live, allow: list[str]):
 
 
 def _pick_active(agentdef: AgentDef, roster: dict, default_active: str) -> str:
-    """The LLM a session starts on (docs/sessions-plan.md §2). The agent's `llms` list doubles as a
+    """The LLM a session starts on (docs/specs/agents.md §5.2). The agent's `llms` list doubles as a
     PRIORITY list: the first entry that's actually available wins. `scoped_roster` filters by global
     ROSTER order, so we consult `agentdef.llms` directly to honor the *agent's* ordering. A wildcard
     (`["*"]`) or no match falls back to the agent's `default_llm`, then settings.llm (`default_active`),
@@ -133,7 +134,7 @@ def _pick_active(agentdef: AgentDef, roster: dict, default_active: str) -> str:
             or next(iter(roster)))
 
 
-# The generic, agent-agnostic agent-state tools (docs/sessions-plan.md §5.1) — director-HOSTED (decision A):
+# The generic, agent-agnostic agent-state tools (docs/specs/agents.md §7.4) — director-HOSTED (decision A):
 # offered to the LLM only when the agent declares a `state` block, and dispatched in-process against the
 # live session's StateStore (never over the world MCP server). CRUD over named JSON docs by dotted path;
 # no domain schema here (that's the agent's own data).
@@ -178,10 +179,10 @@ class Director:
         self._speaker = user             # WHO owns the turn currently in flight (set per turn in `handle`);
                                          # the `{user}` injection and ownership resolve from this.
         self._busy = False               # the single floor (D4); guarded in `handle`, see `Busy`.
-        self._identity_aware = False     # set by `connect`: tell the MCP server WHO speaks each turn (Step 3).
+        self._identity_aware = False     # set by `connect`: tell the MCP server WHO speaks each turn (§8.5).
                                          # Off for hand-built/test Directors (no set_caller call → clean tests).
         self.transcript: list[Turn] = []
-        # Director-HOSTED tools (docs/sessions-plan.md §5, decision A): tools the agent server offers the
+        # Director-HOSTED tools (docs/specs/agents.md §7.4, decision A): tools the agent server offers the
         # LLM in-process, dispatched here instead of over the world MCP server. The first is the generic
         # `state_*` store; the seam (`_local_tools` + the `_execute_tool` short-circuit) is reusable for more.
         self.state_defs = dict(state_defs or {})   # agent-owned state declaration ({doc: {seed, schema, inject}})
@@ -279,7 +280,7 @@ class Director:
                     director = cls(settings, session, roster, active, tools, prompt=agentdef.prompt,
                                    agent=agentdef, user=user, allowed_tools={t.name for t in scoped},
                                    state_defs=agentdef.state)
-                    director._identity_aware = True   # real MCP session → set the per-turn speaker (Step 3)
+                    director._identity_aware = True   # real MCP session → set the per-turn speaker (§8.5)
                     yield director
         finally:
             if close_errlog is not None:
@@ -292,9 +293,9 @@ class Director:
         prompt uses it — many agents won't care about room surfaces). Add a row to add an injection."""
         rows = [
             ("user", lambda: self._speaker),      # WHO is speaking this turn (human identity; per-turn)
-            ("context", self._fetch_context),     # live MCP context resources (async; agents.md §5)
+            ("context", self._fetch_context),     # live MCP context resources (async; docs/specs/agents.md §5.3)
         ]
-        # Agent-state docs declaring an `inject` placeholder (docs/sessions-plan.md §5.3): wire each into
+        # Agent-state docs declaring an `inject` placeholder (docs/specs/agents.md §7.4): wire each into
         # the prompt as JSON, read from the live session's StateStore — the SAME mechanism as {user}.
         for docname, spec in self.state_defs.items():
             placeholder = ((spec or {}).get("inject") or "").strip().strip("{}").strip()
@@ -357,8 +358,8 @@ class Director:
         return text
 
     async def _state_tool(self, name: str, args: dict) -> str:
-        """Dispatch a generic `state_*` tool against the live session's `StateStore` (docs/sessions-plan.md
-        §5.1). Returns a text result (JSON for reads, "ok"/"not found" for writes)."""
+        """Dispatch a generic `state_*` tool against the live session's `StateStore`
+        (docs/specs/agents.md §7.4). Returns a text result (JSON for reads, "ok"/"not found" for writes)."""
         if self._state is None:
             return "error: no session state is available yet"
         doc = args.get("doc")
@@ -386,7 +387,7 @@ class Director:
         return f"error: unknown state tool {name!r}"
 
     def _state_validator(self, doc: str):
-        """A validator for a state doc's declared JSON Schema (docs/sessions-plan.md §5.3), or None if the
+        """A validator for a state doc's declared JSON Schema (docs/specs/agents.md §7.4), or None if the
         doc has no schema. The callback raises ValueError on a schema violation → the write is refused
         (§8.7 reject-on-invalid). No-op if `jsonschema` isn't installed (best-effort)."""
         schema = (self.state_defs.get(doc) or {}).get("schema_data")
@@ -409,7 +410,7 @@ class Director:
         """Fetch the agent's `context` MCP resources (e.g. `room://current`) as raw text, injected at
         the prompt's `{context}` placeholder (the agent's prompt.md owns the surrounding framing via a
         `{#context}…{/context}` section — see `_fill_injection`). Gives the agent live room state
-        without a query_room round-trip (docs/agents.md §5). Only called when the prompt references
+        without a query_room round-trip (docs/specs/agents.md §5.3). Only called when the prompt references
         `{context}`; returns "" when there's nothing (no resources, or all failed) so the section drops
         out. A missing/failed resource is skipped, never fatal."""
         if not self.agent or not self.agent.context:
@@ -446,7 +447,7 @@ class Director:
             self._busy = False
 
     async def greet(self, instruction: str) -> str:
-        """Produce a session's **generated** opening line (docs/sessions-plan.md §6): run the active LLM
+        """Produce a session's **generated** opening line (docs/specs/agents.md §7.5): run the active LLM
         once on `instruction` with the agent's system prompt, record ONLY the assistant turn (no user turn
         — the greeting is system-initiated, not a human utterance), and return it. No tools (a greeting
         shouldn't act on the world). Holds the single floor like `handle`."""
@@ -471,7 +472,7 @@ class Director:
 
     async def _set_caller(self, speaker: str) -> None:
         """Tell the MCP server which user THIS turn's tool calls act as — the speaker — so the world server
-        resolves ownership/permissions per-speaker in a shared session (agent-server-plan Step 3). Turns are
+        resolves ownership/permissions per-speaker in a shared session (docs/specs/agents.md §8.5). Turns are
         serialized (single floor), so a per-turn identity on the one MCP server is safe. Best-effort: an MCP
         server without the control tool just keeps its launch identity."""
         agent = self.agent.name if self.agent else "builder"

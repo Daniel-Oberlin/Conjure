@@ -1,16 +1,16 @@
 """Agent definitions + the MCP server registry — the declarative layer behind the director.
 
-An *agent* is an experience (see docs/agents.md): a prompt, the LLMs allowed to run it, the MCP
-servers (toolset) it may use, the context to inject, and any personas it hosts. Each agent is a
-self-contained directory — `agents/<name>/agent.json` plus its `prompt.md` (and later its personas)
-— validated against the shared `agents/servers.json` registry. The directory name *is* the agent's
-identity. This module just **loads and validates** those defs; the runtime wiring (launching servers,
-building the roster) lives in director.py.
+An *agent* is an experience (see docs/specs/agents.md §3): a prompt, the LLMs allowed to run it, the
+MCP servers (toolset) it may use, the context to inject, the dynamic modules it may conjure. Each
+agent is a self-contained directory — `agents/<name>/agent.json` plus its `prompt.md` — validated
+against the shared `agents/servers.json` registry. The directory name *is* the agent's identity. This
+module just **loads and validates** those defs; the runtime wiring (launching servers, building the
+roster) lives in director.py.
 
-v1 scope: the data model + loader. Tool scoping (`tools` allow-list) and read-only `access` are now
-**enforced** — client-side in `director` and hard in `mcp_server._GatedMCP` (agent-separation-plan §3c).
-Context injection is wired too (director `{context}`). Multi-server launch and personas remain later
-slices — their fields are carried here but not yet acted on.
+Everything here is acted on somewhere — tool scoping in `director` + `mcp_server._GatedMCP` (§4),
+context injection in `director` (§5.3), `dynamics` in the world server (specs/dynamics.md §9),
+`session`/`world`/`state` in the constructor (§7.5) — with two exceptions carried but unused:
+`personas`, and more than one `mcp_servers` entry. Both are in docs/backlogs/agents.md.
 """
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ class ServerRef:
     access: str = "all"        # "all" | "read"  (read-only enforced by mcp_server._GatedMCP, §3c)
     # Tool allow-list — **opt-in only, no wildcard**: an agent gets exactly the tools it names, and the
     # default (omitted) is NONE (default-deny), so every tool access is explicit and intentional.
-    # Enforced two ways (docs/agent-separation-plan.md §3c): client-side by filtering the offered tools
+    # Enforced two ways (docs/specs/agents.md §4): client-side by filtering the offered tools
     # (director._scope_tools) + a runtime re-check, AND a hard gate in mcp_server._GatedMCP (a separate
     # process from the LLM) that refuses a disallowed tool before any world-server call.
     tools: list[str] = field(default_factory=list)
@@ -93,13 +93,14 @@ class AgentDef:
     llms: list[str] = field(default_factory=lambda: [WILDCARD])   # allow-list, or [WILDCARD] = any
     default_llm: Optional[str] = None
     servers: list[ServerRef] = field(default_factory=list)
-    context: list[str] = field(default_factory=list)    # MCP resources to inject (later slice)
+    context: list[str] = field(default_factory=list)    # MCP resources injected each turn (§5.3)
     dynamics: list[str] = field(default_factory=list)   # dynamic modules this agent may conjure — a
     #                                                     required allow-list (docs/specs/dynamics.md §9):
     #                                                     scopes conjure_module + drives the director catalog.
-    personas: list[str] = field(default_factory=list)   # persona refs (later slice)
+    personas: list[str] = field(default_factory=list)   # persona refs — parsed, read by NOTHING yet
+    #                                                     (docs/backlogs/agents.md)
     session: dict = field(default_factory=dict)         # session constructor block (greeting, first_world,
-                                                        # state seed) — docs/sessions-plan.md §6
+                                                        # state seed) — docs/specs/agents.md §7.5
     state: dict = field(default_factory=dict)           # agent-owned state declaration: {doc: {seed, schema,
                                                         # inject}} — drives the generic state_* tools (§5)
 
@@ -183,7 +184,7 @@ def load_agent(name: str, *, agents_dir: Optional[Path] = None,
             except FileNotFoundError as e:
                 raise ValueError(f"agent {name!r}: references unknown dynamic module {mod!r} ({e})") from e
 
-    # State declaration (docs/sessions-plan.md §5): resolve each doc's `seed` file (relative to the agent
+    # State declaration (docs/specs/agents.md §7.4): resolve each doc's `seed` file (relative to the agent
     # dir, like `prompt_file`) to its parsed JSON under `seed_data`, so the constructor can copy it into a
     # new session without any file I/O at runtime. A missing/bad seed is left unresolved (skipped, not fatal).
     state = dict(data.get("state") or {})

@@ -30,7 +30,8 @@ with something you can actually experience on the Quest.
   status — no LLM) above declarative, scoped **agents**. The director loads as the `builder` agent
   (`agents/builder/`), with its prompt, allowed LLMs, scoped MCP servers (from `agents/servers.json`),
   and injected context (`room://current`). Shipped: loader, shell skeleton, room-context injection.
-  Next: a second agent + agent-switching, world spaces, personas. Design: [agents.md](./agents.md).
+  Next: world spaces, personas. Spec: [specs/agents.md](./specs/agents.md); unbuilt work:
+  [backlogs/agents.md](./backlogs/agents.md).
 - **Audio-polish follow-ups (open):** (1) room-speaker support without earbuds — acoustic echo
   cancellation or **push-to-talk** (ties to #5), since an open mic+speaker feeds the bot's TTS
   back to itself; today's loop is avoided with earbuds + a terse director prompt. (2) modernize

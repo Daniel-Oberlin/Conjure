@@ -22,8 +22,8 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 
 | # | Component | Runs on | Responsibility |
 |---|---|---|---|
-| 1 | **Voice agent** | host | PipeCat pipeline: STT → shell → agent → TTS, barge-in, addressing gate |
-| 2 | **Shell + agents** | host | A deterministic **shell** (control: switch agent/LLM, reset — no LLM) above the active **agent** — an experience loaded from `agents/<name>/` ([agents.md](./agents.md)): an orchestrating LLM, MCP **client** of its scoped servers, with a **roster of named LLMs** (one active) sharing a single user/assistant transcript (§7). The `builder` is the first agent (today's director) |
+| 1 | **Voice / CLI clients** | host | Thin front-ends. Voice is a PipeCat pipeline (STT → WebSocket → TTS) plus a wake gate; the CLI is a terminal REPL. Neither holds state, keys, or command logic |
+| 2 | **Agent server** | host | The long-lived host of the deterministic **shell** (switch agent/LLM/session, navigate the namespace — no LLM) above the active **agent** — an experience loaded from `agents/<name>/` ([specs/agents.md](./specs/agents.md)): an orchestrating LLM, MCP **client** of its scoped servers, with a **roster of named LLMs** (one active) sharing a single transcript (§7). One shared conversation for every client; follows the world server's live state |
 | 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app; MCP **server** of world-editing tools; broadcasts state |
 | 4 | **Behavior runtime** | host **and** client | QuickJS-WASM sandbox executing behaviors + geometry code (decision #7) |
 | 5 | **Asset pipeline** | host (+ remote model APIs) | Resolve / generate / convert / optimize / cache content |
@@ -35,29 +35,47 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 | 11 | **Audio engine** | client (+ host gen) | Extensible, plugin-based: spatialized playback, programmatic/procedural synthesis (Web Audio / AudioWorklet), generated/streamed sources (§7 spec) |
 
 ```
-                         ┌──────────── MCP (control plane) ─────────────┐
-                         │                    │                         │
-   ┌───────────┐    ┌────┴─────────┐    ┌──────┴──────┐          ┌───────┴────────┐
-   │ Front-ends │   │ World server │    │   Modules   │          │ Model services │
-   │ Shell+agent│───│ + validator  │    │ (NAS, IF,   │          │ (STT/LLM/TTS/  │
-   │  (PipeCat) │   │ + MCP server │    │  input, …)  │          │  gen) provider │
-   └─────┬─────┘    └──┬────────┬──┘    └─────────────┘          │  abstraction   │
-         │ voice       │ state  │ assets                         └────────────────┘
-         │ (WebRTC)    │ (WS)   │ (HTTPS)
-   ┌─────┴───────────────────────────────────┴─────────────────────────────────────┐
-   │  WebXR client (Quest / any device): A-Frame scene · QuickJS behaviors · input  │
+   voice · CLI  ─── WS ───▶  ┌──────────────┐
+   (thin clients)            │ Agent server │  shell + agent + shared transcript
+                             └──┬────────┬──┘
+                    MCP (stdio) │        │ rides /ws as a passive listener
+                         ┌──────▼──────┐ │      ┌─────────────┐   ┌────────────────┐
+                         │ mcp_server  │ │      │   Modules   │   │ Model services │
+                         │ + tool gate │ │      │ (NAS, IF,   │   │ (STT/LLM/TTS/  │
+                         └──────┬──────┘ │      │  input, …)  │   │  gen) provider │
+                        HTTP    │        │      └─────────────┘   │  abstraction   │
+                         ┌──────▼────────▼───┐                    └────────────────┘
+                         │   World server    │  the single source of truth
+                         │ + validator + MCP │  (worlds, sessions, spaces, pointer)
+                         └──┬─────────────┬──┘
+                            │ state (WS)  │ assets (HTTPS)
+   ┌────────────────────────┴─────────────┴─────────────────────────────────────────┐
+   │  WebXR client (Quest / any device): A-Frame scene · QuickJS behaviors · input   │
    └────────────────────────── presence/high-rate channel ──────────────────────────┘
 ```
 
+The two servers are deliberately separate and **order-independent**: the world server boots standalone
+from disk and renders to headsets with no agent server present (walk your world with no AI), and the
+agent server can load without the world server but only serves turns once connected.
+
 ## 3. Channels & protocols  🟢 / 🟡 transport choices
 
-Four planes, deliberately separated by reliability and rate:
+Five planes, deliberately separated by reliability and rate:
 
+0. **Conversation channel — WebSocket** 🟢. One per-connection socket from each thin client to the
+   agent server (`ws://…/ws?user=&client=`). Client → server: `{type:"turn", text}`, one line, verbatim.
+   Server → client: this connection's `context` (data, not a formatted prompt) plus the shared
+   conversation (`user_turn` / `assistant_delta` / `assistant_final` / `tool_call` / `notice` / `busy`)
+   and a `turn_done` prompt gate. All command logic is server-side; the client never parses
+   ([specs/agents.md §8](./specs/agents.md)).
 1. **Control plane — MCP** 🟢. Director ↔ world server and ↔ modules. Tool calls (stdio / SSE /
-   streamable-HTTP via PipeCat `MCPClient`). Low rate, reliable, request/response.
+   streamable-HTTP via PipeCat `MCPClient`). Low rate, reliable, request/response. Identity travels
+   per-turn (`set_caller`) so a shared conversation attributes each turn to whoever spoke.
 2. **State channel — WebSocket** 🟢. Server → all clients (and server ← validated edit results).
    Reliable, ordered. Carries **patches** with a monotonic `rev` (§5). Clients apply to their
-   local A-Frame scene. Also delivers initial world snapshot on join.
+   local A-Frame scene. Also delivers the initial world snapshot on join, and every snapshot carries the
+   canonical live-state identifiers under `state` — so the headset and the agent server both reconcile
+   from one broadcast.
 3. **Presence / high-rate channel** 🟡. Per-user head/hand poses and vehicle kinematic pose.
    High rate, lossy-tolerant, unordered-ok. **Default: server relay** (uniform LAN/WAN, keeps the
    remote-bridge future open, decision #9). MAY use WebRTC datachannel / PeerJS P2P on LAN as an
@@ -171,17 +189,22 @@ Every change is a patch — the unit of live sync **and** undo/redo.
 ## 7. The agent (director) + shell  🟡
 
 The director is now the **`builder` agent** — an experience loaded from `agents/builder/`
-([agents.md](./agents.md)): a prompt, the LLMs allowed to run it, the MCP servers it's scoped to, and
-the context it injects. Above it sits a deterministic **shell** (`conjure/shell.py`): the control plane
-for things that must be reliable — switch agent/LLM, reset, status — parsed, never sent to an LLM. The
-shell forwards anything that isn't a command to the active agent, which runs the orchestration loop
+([specs/agents.md](./specs/agents.md)): a prompt, the LLMs allowed to run it, the MCP servers it's
+scoped to, the context it injects, the dynamic modules it may conjure. Above it sits a deterministic
+**shell** (`conjure/shell.py`): the control plane for things that must be reliable — switch
+agent/LLM/session, navigate and prune the namespace — parsed, never sent to an LLM. Both live in the
+**agent server** (`conjure/agent_server.py`), one long-lived process holding one shell → one director →
+one shared transcript, with voice and CLI as thin clients over the conversation channel (§3).
+
+The shell forwards anything that isn't a command to the active agent, which runs the orchestration loop
 (one turn):
 
 1. **Perceive** — addressing gate (§ voice) / shell admits agent-directed speech → STT → the agent's
    LLM. The prompt carries: the **live room**, injected via the `room://current` context resource
-   (agents.md §5) so the agent needn't re-query it; the performance budget + headroom; the agent's
-   scoped MCP tools; and session/conversation memory. (`query_world` is still used for the mutable
-   generated scene.)
+   ([specs/agents.md §5.3](./specs/agents.md)) so the agent needn't re-query it; the placed scene
+   (`world://current`) and its conjurable modules (`dynamics://available`); the agent's scoped MCP
+   tools; and the session transcript. (`query_world` is still used where a prefetched snapshot would go
+   stale.)
 2. **Plan & act** — the agent calls MCP tools (world-editing and/or module tools). It reads
    state back when an edit is context-dependent.
 3. **Apply** — tools mutate server world state through the validation gate → patches → broadcast.
@@ -189,8 +212,11 @@ shell forwards anything that isn't a command to the active agent, which runs the
 5. **Record** — snapshot for undo; log the action + resulting diff (observability/provenance).
 
 Design notes: keep tools **coarse and intent-level** (`place_asset("campfire", near=user)`) so the
-agent reasons about goals, not transforms. The shell + agent abstraction (scoped toolsets, personas,
-per-agent world spaces, and a second agent beyond the builder) is designed in **[agents.md](./agents.md)**.
+agent reasons about goals, not transforms. The whole orchestration layer — the agent def, two-layer tool
+scoping, the shell's command registry and namespace, sessions and their constructor, the agent server's
+protocol and its follow loop, and the shared-session permission model — is specified in
+**[specs/agents.md](./specs/agents.md)**, with the unbuilt parts (personas, per-agent world-space
+composition, pinning while held) in **[backlogs/agents.md](./backlogs/agents.md)**.
 
 ### 7a. LLM roster — many named LLMs in one session  🟡
 
@@ -199,16 +225,19 @@ An agent is run by a **roster** of LLMs, not a single model (scoped to the agent
 - **Roster** — a user-editable map of **casual name → provider/model config** (e.g. `"Gemini"` →
   Gemini, `"Chat"` → GPT), each behind the provider abstraction (decision #1). One is **active**
   at a time; the active stream is routed to it.
-- **Switching** — "let me talk to Gemini" (or addressing a name directly) makes that LLM active. This
-  is the **shell**'s job (a deterministic command — agents.md §2); the inline phrase is still also
-  handled inside the agent today (migration deferred). The casual name doubles as an addressing target
-  alongside the wake word (decision #5).
+- **Switching** — `llm gemini` typed, or "talk to Gemini" spoken. This is **exclusively** the shell's
+  job (a deterministic command — [specs/agents.md §6](./specs/agents.md)): the inline `route_turn`
+  handover was removed from the agent, so no utterance is ever parsed for a switch. The active LLM is
+  **shared** — a switch by anyone affects everyone — and the choice is remembered on the session, so it
+  survives a restart or a switch-back.
 - **Shared transcript** — a single user/assistant conversation log. It carries **no record of which
   LLM authored a reply**: every reply is a plain `assistant` turn, so a newly-active LLM inherits the
   whole history seamlessly and a switch of LLMs is invisible in the context. The system prompt names
   no LLM either — it is identical whichever LLM is active. World state and tool/edit history are
   shared too, so switching never drops context. (Earlier revisions tagged each turn with its LLM and
-  prefixed other LLMs' lines `[Name]`; that identity-in-context machinery was removed.)
+  prefixed other LLMs' lines `[Name]`; that identity-in-context machinery was removed.) *User* turns
+  are attributed — each carries the human `speaker`, which the model sees as a label and which the
+  world server enforces ownership against.
 - Open design points: whether a switch should ever be surfaced *to the model* (today it is not);
   per-LLM system-prompt/persona.
 
@@ -301,7 +330,8 @@ live video / remote-screen surfaces (§12).
 ## 11. Modules, input & capability extensions
 
 ### 11a. Modules  🟡
-MCP servers an agent also clients into — each agent declares which (via the registry, agents.md §4).
+MCP servers an agent also clients into — each agent declares which (via the registry,
+[specs/agents.md §3](./specs/agents.md)).
 **Module manifest** (Conjure metadata atop MCP):
 
 ```jsonc
@@ -348,8 +378,12 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
 - **Asset store** — content-addressed blobs + descriptors (§10).
 - **Vector index** — embeddings of world name/description/tags for semantic recall ("the beach world").
 - **Connection graph** — portals between worlds.
-- **Session store** — the **shared transcript** (plain `user`/`assistant` turns, no per-LLM
-  attribution, §7a) + edit provenance ("why is this here"). Shared across all roster LLMs.
+- **Session store** — a **session** is an instance of an agent: its **shared transcript** (append-only
+  `transcript.jsonl`, plain `user`/`assistant` turns with a human speaker, no per-LLM attribution, §7a),
+  the worlds created in it, and its agent state (`state/`, a bag of named JSON docs behind the generic
+  `state_*` tools). Named, owned, persisted, switchable; visibility lives here and a world inherits it.
+  One global pointer records which session is live. See
+  [specs/agents.md §7](./specs/agents.md).
 - **Anchor registry** (forward-compat) — persistent real-world anchor id ↔ pose, keyed to a place.
 
 Storage choices 🔴 (open, low-stakes): SQLite + a vector extension and a filesystem blob store is a
