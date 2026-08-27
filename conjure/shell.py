@@ -119,6 +119,41 @@ def display_path(path: str, user: str) -> str:
     return "~" + path[len(home):] if path.startswith(home + "/") else path
 
 
+# --------------------------------------------------------------------------- speaking a listing
+#
+# Every listing the shell prints is a column of rows with a `*` or `@` in front of the current one. On a
+# screen that reads instantly. Spoken it is worse than useless: the marker is a character a TTS engine
+# either mispronounces or (since the voice speech stage strips asterisks) drops entirely — so a voice
+# user heard the list with no idea which one they were in. Alignment padding, ids, paths and the legend
+# that explains the markers are all noise too.
+#
+# So a listing is DATA, and how it reads is the renderer's business: `_join_spoken` + `spoken_list` for a
+# voice connection, the existing columns for a terminal. The marker becomes a sentence.
+
+
+def _join_spoken(items: list[str]) -> str:
+    """`a`, `a and b`, `a, b and c` — how a person reads a list out."""
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def spoken_list(noun: str, labels: list[str], *, current: str = "", here: str = "You're in") -> str:
+    """A listing as one speakable sentence: *"3 agents: builder, outdoor and scratch. You're in builder."*
+
+    `current` replaces the visual marker with words — the one piece of information the markers carried
+    and the one a listener otherwise loses. Empty lists say so plainly rather than reading "(none)"."""
+    if not labels:
+        return f"No {noun}s here."
+    n = len(labels)
+    if n == 1 and current == labels[0]:
+        return f"One {noun}: {labels[0]}, and you're in it."     # …not "You're in Only one."
+    head = f"{n} {noun}{'' if n == 1 else 's'}: {_join_spoken(labels)}."
+    return f"{head} {here} {current}." if current else head
+
+
 def _match_name(token: str, roster) -> Optional[str]:
     """Case-insensitive lookup of a spoken/typed word against the roster's casual LLM names
     ('gemini' → 'Gemini'); None if it matches none. The gate that keeps a switch deterministic."""
@@ -412,11 +447,20 @@ class Shell:
             await self._say(on_text, hit or f"No command {topic!r}. Type 'help'.")
             return
         rows = [(h, v) for _, _, h, v in self._table]
-        if self._voice:                                       # spoken: only what's worth hearing
-            lines = ["Commands:"] + [f"  {h}" for h, v in rows if v]
-        else:
-            lines = ["Commands  (· = also available by voice):"] + \
-                    [f"  {'·' if v else ' '} {h}" for h, v in rows]
+        if self._voice:
+            # Just the words you can say. The full usage lines carry `<name>`, `|` and `·`, which read as
+            # syntax noise, and several rows share a first word (`agent` lists, `agent <name>` switches) —
+            # so dedupe to the verbs and let `help <command>` give the detail.
+            verbs: list[str] = []
+            for h, v in rows:
+                verb = h.split()[0]
+                if v and verb not in verbs:
+                    verbs.append(verb)
+            await self._say(on_text, f"You can say: {_join_spoken(verbs)}. "
+                                     f"Ask for help with one of them for the details.")
+            return
+        lines = ["Commands  (· = also available by voice):"] + \
+                [f"  {'·' if v else ' '} {h}" for h, v in rows]
         lines.append("(While talking to an agent, prefix a command with 'conjure', e.g. 'conjure open shell'.)")
         await self._say(on_text, "\n".join(lines))
 
@@ -436,6 +480,17 @@ class Shell:
         w = await self._session_api("POST", "/worlds/list", scope=self._scope())
         cur = (w.get("current") or {}) if w.get("ok") else {}
         world = f"{cur.get('owner', '?')}/{cur.get('name', '?')}" if cur else "?"
+        if self._voice:
+            # A sentence, not a status bar. The `·` separators read as nothing (or as "middle dot"), the
+            # id in parentheses is unspeakable, and the roster/tool counts are a terminal's affordance —
+            # you can always ask `tools`. This is the single most useful thing to ask by voice, since
+            # there is no status bar in a headset.
+            title = session_str.split(" (")[0]
+            await self._say(on_text,
+                            f"You're {self._acting}, in the {self._agent_name()} agent with {d.active}. "
+                            f"Session {title}, world {world.split('/')[-1]}. "
+                            f"{'Shell' if self.in_shell else 'Agent'} mode.")
+            return
         await self._say(on_text,
                         f"user: {self._acting} · agent: {self._agent_name()} · LLM: {d.active} · "
                         f"session: {session_str} · world: {world} · "
@@ -468,7 +523,12 @@ class Shell:
         await self._say(on_text, "Chat history cleared.")
 
     async def _llms(self, on_text, m=None):
-        rows = [("* " if n == self._director.active else "  ") + n for n in self._director.roster]
+        names = list(self._director.roster)
+        if self._voice:
+            await self._say(on_text, spoken_list("LLM", names, current=self._director.active,
+                                                 here="You're talking to"))
+            return
+        rows = [("* " if n == self._director.active else "  ") + n for n in names]
         await self._say(on_text, "LLMs:\n" + "\n".join(rows))
 
     async def _switch_llm(self, on_text, m) -> bool:
@@ -494,6 +554,10 @@ class Shell:
 
     async def _agents(self, on_text, m=None):
         active = self._agent_name()
+        names = [n for n, _ in list_agents()]
+        if self._voice:
+            await self._say(on_text, spoken_list("agent", names, current=active))
+            return
         rows = [("* " if n == active else "  ") + n + ("" if src == "bundled" else "  (user)")
                 for n, src in list_agents()]
         await self._say(on_text, "Agents:\n" + "\n".join(rows))
@@ -565,6 +629,17 @@ class Shell:
             await self._say(on_text, data.get("error", "error"))
             return
         live = data.get("live") or {}
+        if self._voice:
+            # Titles only. The id, the world, the LLM and the visibility are all `show`-worthy detail
+            # that turns a two-second answer into a paragraph; the one thing a listener needs is which
+            # of them they are in.
+            titles, here = [], ""
+            for s in data.get("sessions", []):
+                titles.append(s.get("title") or s["id"])
+                if live.get("scope") == scope and live.get("session") == s["id"]:
+                    here = titles[-1]
+            await self._say(on_text, spoken_list("session", titles, current=here))
+            return
         rows = []
         for s in data.get("sessions", []):
             is_live = live.get("scope") == scope and live.get("session") == s["id"]
@@ -609,7 +684,10 @@ class Shell:
             return
         if verb == "new":
             data = await self._session_api("POST", "/session/new", scope=scope, title=" ".join(tokens[1:]) or None)
-            msg = f"Created and switched to {data.get('title')} ({data.get('session')})."
+            title = data.get("title") or data.get("session")
+            # The id is a handle for typing, not for hearing — "session dash two" tells a listener nothing.
+            msg = (f"Created and switched to {title}." if self._voice
+                   else f"Created and switched to {title} ({data.get('session')}).")
         elif verb == "rename":
             title = " ".join(tokens[1:])
             if not title:
@@ -630,7 +708,7 @@ class Shell:
                 await self._say(on_text, "Usage: session <name>  |  session <user> <name>  "
                                          "(quote a name with spaces)")
                 return
-            msg = f"Switched to session {data.get('session')}{whose}."
+            msg = f"Switched to session {data.get('title') or data.get('session')}{whose}."
         await self._say(on_text, msg if data.get("ok") else data.get("error", "error"))
 
     # -- dir / delete: a filesystem-like view + purge of the namespace (docs/specs/agents.md §6). Both go
@@ -856,9 +934,13 @@ class Shell:
         """One line per entry, columns aligned. Deliberately NOT a tree: the recursive form dumped every
         world, space and asset of every user at the root, which is unreadable at any real size."""
         rows = data.get("children") or []
-        if self._voice:                                   # a path read aloud is noise; the rows are the answer
-            return "\n".join(f"{c['label']}" + (f" — {c['detail']}" if c.get("detail") else "")
-                              for c in rows) or "(empty)"
+        if self._voice:
+            # A path read aloud is noise, and so is the per-row detail; the names are the answer. The
+            # `*` on the active row would be stripped before it was ever spoken, so it becomes words.
+            labels = [c["label"] for c in rows]
+            current = next((c["label"] for c in rows if c.get("active")), "")
+            noun = loc_name(data.get("path", "")) or "entry"
+            return spoken_list(noun.rstrip("s") or "entry", labels, current=current)
         head = display_path(data.get("path", "/"), self._acting)
         if data.get("path") != data.get("requested", data.get("path")):
             head += f"   (→ {data['path']})"

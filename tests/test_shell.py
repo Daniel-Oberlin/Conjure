@@ -778,3 +778,60 @@ def test_every_row_declares_whether_it_is_voice_safe():
     # The namespace verbs need a screen (or shouldn't be spoken at all).
     assert {"dir", "show", "cd", "delete", "rename"} <= cli
     assert not (voice & cli), "a command is either speakable or it isn't"
+
+
+# --------------------------------------------------------------------------- voice-tailored output
+#
+# The shell's listings are columns with a `*` or `@` marking the current row. Spoken, the marker is at
+# best mispronounced and at worst — since the voice speech stage strips asterisks before the engine sees
+# them — silently gone, leaving a listener with a list and no idea which one they are in.
+
+def test_join_spoken_reads_like_a_person():
+    from conjure.shell import _join_spoken
+    assert _join_spoken([]) == ""
+    assert _join_spoken(["a"]) == "a"
+    assert _join_spoken(["a", "b"]) == "a and b"
+    assert _join_spoken(["a", "b", "c"]) == "a, b and c"
+
+
+def test_spoken_list_turns_the_marker_into_words():
+    from conjure.shell import spoken_list
+    assert spoken_list("agent", ["builder", "outdoor", "scratch"], current="builder") == (
+        "3 agents: builder, outdoor and scratch. You're in builder.")
+    assert spoken_list("LLM", ["Claude", "Grok"], current="Grok", here="You're talking to") == (
+        "2 LLMs: Claude and Grok. You're talking to Grok.")
+
+
+def test_spoken_list_handles_the_awkward_edges():
+    from conjure.shell import spoken_list
+    assert spoken_list("world", []) == "No worlds here."               # not "(none)"
+    assert spoken_list("session", ["Home"], current="Home") == (
+        "One session: Home, and you're in it.")                        # not "You're in Home."
+    assert spoken_list("world", ["a", "b"]) == "2 worlds: a and b."    # nothing current → no claim
+
+
+async def test_agents_and_llms_are_spoken_as_sentences_not_columns():
+    sh, d, out, on_text = _shell()
+    await sh._dispatch("llm", on_text, voice=True)
+    spoken = out[-1][1]
+    assert spoken == "2 LLMs: Claude and Gemini. You're talking to Claude."
+    assert "*" not in spoken and "\n" not in spoken
+
+    out.clear()
+    await sh._dispatch("llm", on_text, voice=False)                    # the terminal keeps its column
+    typed = out[-1][1]
+    assert typed.startswith("LLMs:") and "* Claude" in typed
+
+
+async def test_where_is_a_sentence_for_voice_and_a_status_line_for_a_terminal():
+    """`where` is the single most useful thing to ask by voice — there's no status bar in a headset."""
+    sh, d, out, on_text = _shell()
+    await sh._dispatch("where", on_text, voice=True)
+    spoken = out[-1][1]
+    assert "·" not in spoken                                            # reads as nothing, or "middle dot"
+    assert "LLMs," not in spoken                                        # roster/tool counts are a terminal thing
+    assert spoken.startswith("You're daniel, in the builder agent with Claude.")
+
+    out.clear()
+    await sh._dispatch("where", on_text, voice=False)
+    assert "·" in out[-1][1] and "tools)" in out[-1][1]

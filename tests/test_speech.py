@@ -36,17 +36,24 @@ def test_an_emoji_is_named_and_labelled():
     assert name_emoji("🎉") == "party popper emoji"
 
 
-def test_a_run_of_emoji_codepoints_becomes_one_phrase():
-    """A joined family or a skin-toned thumb is ONE picture to a reader. Naming every component —
-    "man emoji woman emoji girl emoji" — would bury the sentence it was decorating."""
+def test_one_cluster_is_one_name():
+    """A joined family or a skin-toned thumb is ONE picture to a reader, so it gets one name. Without an
+    emoji database the best available is the first component's — accurate about what is there."""
     assert name_emoji("family 👨‍👩‍👧 photo") == "family man emoji photo"
     assert name_emoji("nice 👍🏽 work") == "nice thumbs up sign emoji work"
     assert name_emoji("❤️") == "heavy black heart emoji"          # variation selector is not spoken
 
 
-def test_adjacent_but_distinct_emoji_each_get_named():
-    out = name_emoji("👍 🎉")
-    assert out.count("emoji") == 2 and "thumbs up" in out and "party popper" in out
+def test_a_run_names_every_emoji_and_pluralises_once():
+    """Naming only the first would silently discard the rest, and a listener can't tell something went.
+    Runs are rare; slightly awkward to hear beats losing content."""
+    assert name_emoji("👍🎉🔥") == "thumbs up sign party popper fire emojis"
+    assert name_emoji("nice 👍🎉") == "nice thumbs up sign party popper emojis"
+
+
+def test_emoji_separated_by_text_are_named_separately():
+    """A space breaks the run — these are two decorations, not one string."""
+    assert name_emoji("👍 🎉") == "thumbs up sign emoji party popper emoji"
 
 
 def test_symbols_that_are_not_emoji_are_left_alone():

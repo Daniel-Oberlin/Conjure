@@ -54,13 +54,31 @@ def drop_asterisks(text: str) -> str:
     return re.sub(r"(?m)^[^\S\n]+", "", out)      # …and the indent a leading bullet left behind
 
 
-def name_emoji(text: str) -> str:
-    """Replace each emoji with its name followed by the word "emoji" — 🍦 → `soft ice cream emoji`.
+def _cluster_name(text: str, i: int) -> tuple[str, int]:
+    """Name the emoji CLUSTER starting at `i`, and return where it ends.
 
-    Otherwise the character is silently dropped by the engine and the sentence loses whatever the LLM
-    meant by it. A RUN of adjacent emoji codepoints becomes ONE phrase, named for the first of them:
-    joined sequences (👨‍👩‍👧) and skin-toned ones (👍🏽) are single pictures to a reader, and naming every
-    component would bury the sentence."""
+    A cluster is one base codepoint plus whatever binds to it — a variation selector, a skin tone, or a
+    zero-width joiner and the base it joins. 👨‍👩‍👧 and 👍🏽 are each one picture to a reader, so each is
+    one name. Without an emoji database the best available name is the first component's, which is why
+    the family reads as "man": accurate about what is there, if not about the whole."""
+    n = len(text)
+    first, j = text[i], i + 1
+    while j < n and (_is_glue(text[j]) or (_is_glue(text[j - 1]) and _is_emoji(text[j]))):
+        j += 1
+    try:
+        label = unicodedata.name(first).lower()
+    except ValueError:                             # unnamed codepoint — better silent than "unknown"
+        return "", j
+    return re.sub(r"^(?:emoji component |emoji modifier )", "", label), j
+
+
+def name_emoji(text: str) -> str:
+    """Replace emoji with their names, so the engine says something rather than dropping them silently.
+
+    One emoji is `<name> emoji` — 🍦 → *soft ice cream emoji*. **A run of several is every name followed
+    by one plural** — 👍🎉🔥 → *thumbs up sign party popper fire emojis*. Slightly awkward to hear, and
+    deliberately so: naming only the first would quietly discard the rest, and a listener cannot tell
+    that something was dropped. Runs are rare; losing content is worse than reading it out."""
     out: list[str] = []
     i, n = 0, len(text)
     while i < n:
@@ -68,16 +86,13 @@ def name_emoji(text: str) -> str:
             out.append(text[i])
             i += 1
             continue
-        first = text[i]                            # name the run after its FIRST namable codepoint
-        while i < n and (_is_emoji(text[i]) or _is_glue(text[i])):
-            i += 1
-        try:
-            label = unicodedata.name(first).lower()
-        except ValueError:                         # unnamed codepoint — better silent than "unknown"
-            continue
-        # Names carry a leading category for some blocks; the noun is what a listener needs.
-        label = re.sub(r"^(?:emoji component |emoji modifier )", "", label)
-        out.append(f"{label} emoji")
+        names: list[str] = []                      # every cluster in this uninterrupted run
+        while i < n and _is_emoji(text[i]):
+            label, i = _cluster_name(text, i)
+            if label:
+                names.append(label)
+        if names:
+            out.append(f"{' '.join(names)} {'emojis' if len(names) > 1 else 'emoji'}")
     return "".join(out)
 
 

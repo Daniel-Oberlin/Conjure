@@ -392,6 +392,30 @@ Voice also gets spoken aliases for `llm <name>` — `talk to gemini`, `switch to
 These are **voice-only**: in text they would claim every LLM name as a reserved word, so the canonical
 typed form is the noun command.
 
+**The `voice` flag also selects the OUTPUT.** Which commands exist is one registry; how their answers
+read is not. Every listing the shell prints is a column of rows with `*` or `@` marking the current one,
+which is instant on a screen and useless aloud — the marker is a character a TTS engine mispronounces
+or, since the voice speech stage strips asterisks, never sees at all. A voice listener got a list of
+names and no idea which one they were in.
+
+So a listing is **data**, and rendering is per-audience (`spoken_list`, `_join_spoken`):
+
+| Command | Terminal | Voice |
+|---|---|---|
+| `agent` · `llm` · `sessions` · `worlds` | column, `*`/`@` marker, ids, detail | *"3 agents: builder, outdoor and scratch. You're in builder."* |
+| `where` | `·`-separated status line with roster and tool counts | *"You're daniel, in the builder agent with Grok. Session Home, world animal-house. Agent mode."* |
+| `help` | every row, `·` marking the voice-safe ones | the verbs only — usage lines are `<name>`/`|`/`·` syntax noise, and `help <command>` still gives detail |
+| `dir`-style listing | path header, aligned columns | names only, current one named in words |
+
+The marker becomes a sentence: that is the one thing it carried, and the only thing a listener would
+otherwise lose. Ids (`session-1`, `wld_…`), paths, alignment and the legend explaining the markers are
+all dropped — they are handles for typing, not for hearing. `/session/switch` returns the session
+**title** alongside its id for the same reason; reporting "switched to session-1" was poor typed and
+worse spoken.
+
+Single-line results ("Created and switched to world home.") already read the same either way and are
+left alone — the split is where structure exists, not everywhere.
+
 ### 6.3 Two shapes of command
 
 A **noun** command acts on whatever is LIVE and reads the same spoken or typed. A **path** command acts

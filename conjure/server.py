@@ -1664,12 +1664,16 @@ async def session_switch(req: SessionRef) -> dict:
         if not _session_public(target_scope, sid):
             return {"ok": False, "error": f"that session is private — ask {owner} to make it public"}
         r = await _switch_session(target_scope, sid)
-        return {"ok": True, "session": sid, "owner": owner, "world": r.get("world")}
+        # Carry the TITLE as well as the id: the id is a stable handle, the title is what a person (or a
+        # TTS engine) should be told they switched to.
+        return {"ok": True, "session": sid, "title": _session_title(target_scope, sid),
+                "owner": owner, "world": r.get("world")}
     sid = _resolve_sid(req.scope, req.session)                   # own session
     if not sid:
         return {"ok": False, "error": f"no session {req.session!r} in {req.scope}"}
     r = await _switch_session(req.scope, sid)
-    return {"ok": True, "session": sid, "world": r.get("world")}
+    return {"ok": True, "session": sid, "title": _session_title(req.scope, sid),
+            "world": r.get("world")}
 
 
 @app.post("/session/rename")
@@ -1733,6 +1737,15 @@ def _session_public(scope: str, sid: str) -> bool:
         return bool(sessions.load_meta(scope, sid).get("public", True))
     except (OSError, ValueError):
         return True
+
+
+def _session_title(scope: str, sid: str) -> str:
+    """A session's display title, falling back to its id. What a person should be TOLD they switched to;
+    the id stays the stable handle underneath."""
+    try:
+        return sessions.load_meta(scope, sid).get("title") or sid
+    except (OSError, ValueError):
+        return sid
 
 
 def _active_public() -> bool:
