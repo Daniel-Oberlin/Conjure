@@ -159,7 +159,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
   ],
   "context": ["room://current"],               // MCP resources injected each turn (§5.3)
   "dynamics": ["fireflies", "water", "grab"],  // required allow-list (specs/dynamics.md §9)
-  "world":   { "on_create": [ … ], "on_exit": [] },     // §7.5
+  "world":   { "outdoor": false, "on_create": [ … ], "on_exit": [] },  // §7.5
   "session": { "greeting": "…", "first_world": { … } }, // §7.5
   "state":   { "quest": { "seed": …, "schema": …, "inject": "{quest}" } }  // §7.4
 }
@@ -176,6 +176,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
 | `mcp_servers[].tools` | no (`[]`) | each name exists on the live server, at connect | opt-in only; omitted ⇒ **none** |
 | `context` | no (`[]`) | — | MCP resource URIs; fetched only if `{context}` appears in the prompt |
 | `dynamics` | no (`[]`) | every module resolves on the dynamics search path | a dangling name **fails the load** |
+| `world.outdoor` | no (`false`) | — | this agent's worlds are **room-less**: they never adopt the live space (§7.5) |
 | `world` / `session` / `state` | no (`{}`) | `state[].seed`/`schema` files parsed if present (failures skipped) | read by the world server and the agent server, not the loader |
 | `personas` | no (`[]`) | — | parsed into `AgentDef.personas` and **read by nothing** |
 
@@ -201,7 +202,9 @@ running interpreter, so the subprocess inherits the venv.
   `set_caller`, so a new tool can't go silently un-granted). Context: `room://current`,
   `world://current`, `dynamics://available`. Dynamics: `fireflies`, `water`, `grab`.
 - **`outdoor`** — skybox-only: twelve tools, no `context` at all (so it pays **zero** per-turn context
-  cost — the live contrast with builder), no dynamics. Its `session.first_world.on_create` runs a
+  cost — the live contrast with builder), no dynamics. Declares `world.outdoor` — its worlds are
+  room-less and never adopt the live space, which is a property of *the agent* rather than of whichever
+  request happened to create a world. Its `session.first_world.on_create` runs a
   generative constructor (§7.5). It holds the **read** half of the library (`search_library`,
   `query_assets`) but none of the mutating half — every sky it generates is catalogued, so without
   reads it would write to a store it can never read, and the agent wall (§2) means nothing else could

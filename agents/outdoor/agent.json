@@ -14,6 +14,7 @@
       ]
     }
   ],
+  "world": { "outdoor": true },
   "session": {
     "greeting": "New session. Where would you like to go? Describe a place and I'll build the sky around you.",
     "first_world": { "name": "home", "on_create": [

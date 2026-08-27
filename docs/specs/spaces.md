@@ -167,7 +167,7 @@ space it was told to establish, and `_boot_world` opts out (below).
 
 | Case | Why |
 |---|---|
-| the world is explicitly `outdoor` | a sky world has no room to tie to |
+| the world is `outdoor` | a sky world has no room to tie to. Either the request said so (`new_world(outdoor=True)`) **or the agent did** (`world.outdoor` — [`specs/agents.md §3`](./agents.md)); they OR together, so an agent whose point is to put you elsewhere doesn't inherit whatever room you were standing in |
 | `active_space == VOID` | nothing is live — an unclaimed server, or the current world is itself void |
 | the creator may not build in the live space | someone else's **private** space (§5) |
 

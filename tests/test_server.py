@@ -1819,12 +1819,14 @@ def test_agent_switch_keeps_the_live_space(srv, client):
     from conjure import server as S
     srv.store.doc["entities"].append({"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
         "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]}}})
-    r = client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"}).json()
+    # `scratch`, not `outdoor`: an outdoor agent's worlds are room-less BY DECLARATION (§C6), so it would
+    # pass this test for the wrong reason — or rather fail it for the right one.
+    r = client.post("/scope/activate", json={"scope": "daniel/agents/scratch"}).json()
     assert r["ok"] and not r.get("unchanged")
-    assert S.active_scope == "daniel/agents/outdoor"
+    assert S.active_scope == "daniel/agents/scratch"
     assert S.active_space == "home" and S.active_space_owner == "daniel"     # still in the same room
     assert any(e["id"] == "real_wall_9" for e in _entities(client))          # composes the room's geometry
-    assert srv.worlds.load("daniel/agents/outdoor", r["id"]).doc["environment"]["space"] == "daniel/home"
+    assert srv.worlds.load("daniel/agents/scratch", r["id"]).doc["environment"]["space"] == "daniel/home"
 
 
 def test_a_new_session_first_world_keeps_the_live_space(srv, client):
@@ -1848,11 +1850,61 @@ def test_implicit_mint_degrades_to_void_in_someone_elses_private_space(srv, clie
     S.active_space_owner, S.active_space = "carol", "loft"
     try:
         assert client.post("/worlds/new", json={"name": "trespass"}).json()["ok"] is False   # explicit → error
-        r = client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"}).json()   # implicit → VOID
+        r = client.post("/scope/activate", json={"scope": "daniel/agents/scratch"}).json()   # implicit → VOID
         assert r["ok"]
-        assert srv.worlds.load("daniel/agents/outdoor", r["id"]).doc["environment"]["space"] == "<void>"
+        assert srv.worlds.load("daniel/agents/scratch", r["id"]).doc["environment"]["space"] == "<void>"
     finally:
         S.active_space_owner, S.active_space = monkey
+
+
+def test_an_outdoor_agents_worlds_are_room_less_however_they_are_minted(srv, client):
+    """An agent whose point is to put you SOMEWHERE ELSE declares `world.outdoor`, and every mint path
+    honours it. Without this, the space stamp (which every path now applies) gave the outdoor agent's
+    constructor-built first world the whole room you were standing in — measured at 59 surfaces on the
+    real capture. `new_world(outdoor=True)` only ever covered "this one world is a sky"."""
+    srv.store.doc["entities"].append({"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
+        "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]}}})
+    # the implicit path: an agent switch mints this scope's first world
+    r = client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"}).json()
+    assert r["ok"]
+    assert srv.worlds.load("daniel/agents/outdoor", r["id"]).doc["environment"]["space"] == "<void>"
+    assert not any(e.get("meta", {}).get("real") for e in _entities(client))   # no room composed in
+    # the explicit path, with the flag omitted — the agent's declaration still wins
+    assert client.post("/worlds/new", json={"name": "dunes",
+                                            "scope": "daniel/agents/outdoor"}).json()["ok"]
+    assert srv.worlds.load("daniel/agents/outdoor", "dunes").doc["environment"]["space"] == "<void>"
+
+
+def test_only_the_declaring_agent_is_outdoor(srv):
+    """`world.outdoor` is opt-in and read off the agent definition, so it can't leak between agents."""
+    from conjure import server as S
+    assert S._agent_wants_outdoor("daniel/agents/outdoor") is True
+    assert S._agent_wants_outdoor("daniel/agents/builder") is False
+    assert S._agent_wants_outdoor("daniel/agents/nonexistent") is False    # unreadable def ⇒ not outdoor
+
+
+def test_a_normal_agent_still_adopts_the_space(srv, client):
+    """The other half: `world.outdoor` is opt-in, so an agent that doesn't declare it is unaffected."""
+    srv.store.doc["entities"].append({"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
+        "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]}}})
+    assert client.post("/worlds/new", json={"name": "loft"}).json()["ok"]
+    assert srv.worlds.load("daniel/agents/builder", "loft").doc["environment"]["space"] == "daniel/home"
+
+
+def test_an_outdoor_agent_may_be_used_inside_someone_elses_private_space(srv, client):
+    """An outdoor world wants no space, so the build-permission question doesn't arise — refusing here
+    would mean you couldn't switch to a sky agent while standing in a friend's room."""
+    from conjure import server as S
+    _geo_space(srv, "carol", "loft", 1.0, 2.0, public=False)
+    keep = (S.active_space_owner, S.active_space)
+    S.active_space_owner, S.active_space = "carol", "loft"
+    try:
+        assert client.post("/worlds/new", json={"name": "trespass"}).json()["ok"] is False   # builder: refused
+        r = client.post("/worlds/new", json={"name": "sky", "scope": "daniel/agents/outdoor"}).json()
+        assert r["ok"] is True                                                               # outdoor: fine
+        assert srv.worlds.load("daniel/agents/outdoor", "sky").doc["environment"]["space"] == "<void>"
+    finally:
+        S.active_space_owner, S.active_space = keep
 
 
 def test_agent_switch_mints_a_session_marked_fresh(srv, client):

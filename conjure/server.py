@@ -113,6 +113,16 @@ def _agent_world_config(scope: str) -> dict:
     return _agent_block(scope, "world")
 
 
+def _agent_wants_outdoor(scope: str) -> bool:
+    """Does this agent's `world.outdoor` say its worlds are room-less (specs/agents.md §3)?
+
+    Whether a world wants a space is a property of the AGENT, not of the request that happened to
+    create it. `new_world(outdoor=True)` covers "this one world is a sky"; an agent whose whole point is
+    to put you somewhere else needs to say so once, or its constructor-built first world silently
+    inherits whatever room you were standing in."""
+    return bool(_agent_world_config(scope).get("outdoor", False))
+
+
 def _first_world_spec(scope: str) -> tuple[str, list[dict]]:
     """The session constructor's first-world spec (docs/specs/agents.md §7.5): its NAME (default ``home``,
     overridable) + the first-world-only `on_create` steps. `first_world` may be a bare string (name only)
@@ -147,12 +157,14 @@ def _new_world_store(scope: str, *, extra_on_create: list[dict] = (),
     The world ADOPTS the live space (`_space_for_new_world`, D5/step 5) — this is the one chokepoint every
     mint path shares, so a world born while you're standing in your room has your room in it no matter
     which path minted it. `adopt_space=False` is for the ONE caller that runs before a space is resolved
-    (`_boot_world`); `outdoor` forces VOID for an explicitly room-less world."""
+    (`_boot_world`); `outdoor` forces VOID for an explicitly room-less world, and so does the owning
+    agent's `world.outdoor` — the per-request flag and the per-agent declaration OR together, so an
+    outdoor agent's worlds are room-less however they were minted."""
     s = WorldStore.load(SAMPLE_WORLD)
     env = s.doc.setdefault("environment", {})
     env["public"] = True                                          # worlds are public by default (§4)
     if adopt_space:
-        env["space"] = _space_for_new_world(scope, outdoor=outdoor)
+        env["space"] = _space_for_new_world(scope, outdoor=outdoor or _agent_wants_outdoor(scope))
     ops = _run_world_commands(_agent_world_config(scope).get("on_create", []))
     ops += _run_world_commands(list(extra_on_create))
     if ops:
@@ -1844,9 +1856,11 @@ async def worlds_new(req: WorldRef) -> dict:
         if worlds.exists(req.scope, req.name):
             return {"ok": False, "error": f"world {req.name!r} already exists — switch to it instead"}
         creator = req.scope.split("/", 1)[0]
+        outdoor = req.outdoor or _agent_wants_outdoor(req.scope)   # per-request OR per-agent (§3)
         # D8/step 6: the active space must let the creator build here — their own space, or a PUBLIC one.
         # A PRIVATE space owned by someone else restricts world-creation to its owner (VOID isn't a space).
-        if not req.outdoor and active_space != VOID and not _may_create_world_in(
+        # An outdoor world wants no space at all, so the permission question doesn't arise.
+        if not outdoor and active_space != VOID and not _may_create_world_in(
                 creator, active_space_owner, active_space):
             return {"ok": False, "error": f"{active_space_owner}'s space is private — "
                                           f"only {active_space_owner} can build worlds here."}
@@ -1855,7 +1869,7 @@ async def worlds_new(req: WorldRef) -> dict:
         # D5/step 5: the world ADOPTS the active, geo+surface-selected space — "build your own world in it",
         # even someone else's (D3) — or VOID when outdoor / nothing is live. That stamp is `_new_world_store`'s
         # job now, shared with every other mint path (agent switch, session mint) so none can forget it.
-        fresh = _new_world_store(req.scope, outdoor=req.outdoor)
+        fresh = _new_world_store(req.scope, outdoor=outdoor)
         # Mint the id here so the switch addresses the world by identity from the very first moment.
         wid = new_world_id()
         fresh.doc["id"], fresh.doc["name"] = wid, req.name
