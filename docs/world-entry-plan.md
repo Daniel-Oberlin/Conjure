@@ -68,6 +68,23 @@ agent I was using, in the space I'm standing in.* The current fallbacks throw aw
 
 This is a simpler rule than what exists, and it is the whole fix for problems 3, 4 and 5.
 
+> **Second principle — every degradation is audible.**
+>
+> A fallback that fires silently is indistinguishable from a bug, and it is how all five of these went
+> unnoticed for so long. Whenever the system gives you something other than what the pointer asked for,
+> it says so, in one line, on the same channel that already carries the unasked-agent-change notice.
+
+| Degradation | Told you today |
+|---|---|
+| new world got no space (someone else's private space) | no |
+| boot couldn't restore what the pointer named | log only, not broadcast |
+| the world/session you were in was deleted, so you got another | no |
+| a space matched but you were deliberately left where you are (C2) | n/a — new |
+| the constructor failed and the switch was abandoned | n/a — new |
+
+The mechanism exists and there is precedent: an agent change nobody asked for is already announced
+(decision #20 — "kept, made audible"). This extends the same courtesy to the other five.
+
 ## 3. The changes
 
 ### C1 — one entry routine (the shared head)
@@ -113,6 +130,38 @@ Split the two meanings that are currently one:
 Rendering is unchanged, so no client work. The only new behaviour is that space selection may claim an
 *unset* world. This does **not** resurrect the anonymous-default fallback that was deliberately
 removed — nothing is guessed; the decision is deferred until a headset actually knows the answer.
+
+#### C2b — a deliberately-void world is not relocated by a space match
+
+Today, if you leave and restart while in an outdoor world and then put the headset on, **you are pulled
+out of it into whichever agent last used the space you're standing in.** Traced: the client votes the
+live capture against the geo candidates *even in a void world*, commits the match, and the server joins
+that space's remembered world — in that space's remembered scope, which is usually the builder.
+
+The client comment says exactly why it works that way:
+
+> *Runs even when the active world is VOID … that's exactly when we must vote the live capture against
+> candidates to find/mint the physical room — otherwise selection can never resolve (the old
+> `!isVoidWorld` gate is what left an outdoor re-entry stuck on "finding").*
+
+So the voting is right and must stay. What went wrong is that **two separate things were fused**:
+
+1. **resolving which physical space you are in** — needed always, even in a void world: for the
+   boundary, for occupancy, and so that a *later* switch knows where you are;
+2. **acting on that by moving you to that space's last world** — which is exactly what you don't want
+   when you deliberately chose to be nowhere.
+
+Splitting them is the fix, and **C2 already supplies the discriminator**, which is why this belongs
+here rather than in its own change:
+
+| Live world's space | A headset establishes a space | Why |
+|---|---|---|
+| **unset** | claim it, and relocate — this *is* the provisional-boot case | nobody chose; spatial truth beats a temporal guess |
+| **void** | claim it for boundary and occupancy, **do not relocate**, say so | the current world is a deliberate choice to be nowhere |
+| a reference | unchanged (match → admitted, mismatch → refused) | already correct |
+
+The existing rule — *"spatial truth supersedes the temporal guess"* — stays true and gets sharper: it
+applies to a **guess**. A void world is not a guess.
 
 ### C3 — the agent declares its session defaults
 
@@ -191,9 +240,13 @@ threading a flag through every arrival, and it makes §5.3 stop being about perm
 ## 5. Decisions
 
 1. **Reset and assets — both, keep by default.** `reset agent <name>` leaves the catalog alone;
-   `--assets` (or `reset agent <name> assets`) also purges rows in that scope. Noted consequence: a true
-   first-run test of an agent whose opening *generates* a skybox needs the `--assets` form, or the
-   constructor silently reuses the cached one and you don't exercise the path you meant to.
+   `--assets` (or `reset agent <name> assets`) also purges rows in that scope. **Purely disk hygiene —
+   it does not affect whether a first-run test is genuine.** (An earlier draft of this line claimed the
+   constructor would otherwise reuse a cached skybox. It won't: procurement runs the generator
+   unconditionally and only write-throughs the result afterwards — there is no catalog lookup on the
+   generate path at all. Reuse is explicit-only, via the director calling `search_library`, which a
+   constructor step never does. That is the library's founding premise: generation is non-deterministic,
+   so the same prompt yields different bytes and a fresh call every time.)
 2. **A failing constructor aborts.** See §5a below for the shape.
 3. **Revised — notice, not refuse.** See §5b.
 4. **`reset agent <name>` as a verb**, not extended deletion. A reset is several deletions plus pointer
