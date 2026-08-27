@@ -1,4 +1,4 @@
-"""User-home path resolution (docs/user-home-plan.md §3/§4). Pure over injected env/settings, so no
+"""User-home path resolution (docs/specs/config.md §1/§2). Pure over injected env/settings, so no
 real home is touched: every case passes an explicit `env` dict (and `settings` where relevant)."""
 
 import os

@@ -1170,7 +1170,7 @@ def _relocate(src: Path, dst: Path) -> bool:
     return True
 
 
-# The precious items that move into the DATA root (docs/user-home-plan.md §3.1). `backups/` is
+# The precious items that move into the DATA root (docs/specs/config.md §7). `backups/` is
 # intentionally absent — user-owned, never touched. `worlds/`/`spaces/` are the pre-user legacy trees,
 # carried along if still present. The disposable `tunnel_url` (ephemeral dev-tooling scratch written by
 # scripts/tunnel.sh) moves into the CACHE root, not the DATA tree — so nothing lands in the in-project
@@ -1182,7 +1182,7 @@ _HOME_CACHE_ITEMS: tuple[str, ...] = ("tunnel_url",)
 
 def migrate_project_cache_to_home(project_cache: str | Path, data_dir: str | Path,
                                   cache_dir: str | Path) -> bool:
-    """One-time relocation of the in-project ``.cache`` into the user home (docs/user-home-plan.md §6).
+    """One-time relocation of the in-project ``.cache`` into the user home (docs/specs/config.md §7).
 
     Moves the precious tree (``users/``, ``_session.txt``, ``assets/``, ``library.db`` + WAL sidecars,
     and any legacy ``worlds/``/``spaces/``) into ``data_dir``, and the disposable ``tunnel_url`` into
@@ -1205,6 +1205,6 @@ def migrate_project_cache_to_home(project_cache: str | Path, data_dir: str | Pat
     for name in _HOME_CACHE_ITEMS:
         moved |= _relocate(project_cache / name, cache_dir / name)
     if moved:
-        breadcrumb.write_text(f"Contents moved to the user home (docs/user-home-plan.md §6):\n"
+        breadcrumb.write_text(f"Contents moved to the user home (docs/specs/config.md §7):\n"
                               f"  data  → {data_dir}\n  cache → {cache_dir}\n")
     return moved

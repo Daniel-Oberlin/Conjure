@@ -535,7 +535,7 @@ def test_migrate_is_idempotent_and_noop_on_fresh(tmp_path):
     assert migrate_cache_to_users(tmp_path) is False                       # users/ exists now → no-op
 
 
-# ── user-home migration (.cache → resolved home; docs/user-home-plan.md §6) ──────────────────────
+# ── user-home migration (.cache → resolved home; docs/specs/config.md §7) ──────────────────────
 def _fake_cache(cache):
     """A realistic in-project .cache: precious data, the disposable tunnel_url, and user backups/."""
     (cache / "users" / "daniel" / "agents" / "builder").mkdir(parents=True)

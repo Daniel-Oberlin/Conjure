@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The in-project cache — now only a MIGRATION INPUT (docs/user-home-plan.md §6): on startup its
+# The in-project cache — now only a MIGRATION INPUT (docs/specs/config.md §7): on startup its
 # contents are relocated into the resolved user home. Kept as a constant so the migration can find it.
 PROJECT_CACHE = ROOT / ".cache"
 
@@ -25,7 +25,7 @@ PROJECT_CACHE = ROOT / ".cache"
 DEFAULT_USER = "daniel"
 
 # ---------------------------------------------------------------------------
-# User home resolution (docs/user-home-plan.md §3/§4).
+# User home resolution (docs/specs/config.md §1/§2).
 #
 # Locations resolve highest-wins:  env var  >  settings.json  >  XDG default.
 # By default the three roots follow the XDG Base Directory spec; if $CONJURE_HOME is set they
@@ -74,7 +74,7 @@ def load_settings(config_dir: Path) -> dict:
 
 
 # The template written on first run. `null` for a path key means "use the resolved default" — the
-# resolver treats a falsy value as absent (docs/user-home-plan.md §4), so a fresh file changes nothing;
+# resolver treats a falsy value as absent (docs/specs/config.md §3), so a fresh file changes nothing;
 # it exists purely so the keys are discoverable and a user can fill one in.
 DEFAULT_SETTINGS: dict = {
     "data_dir": None,        # override the precious data root (sessions/worlds/assets/library.db)
@@ -112,7 +112,7 @@ def _resolve_dir(env: Mapping[str, str], settings: Mapping, *, env_var: str, set
 
 
 def resolve_agents_path(env: Mapping[str, str], settings: Mapping, config_dir: Path) -> list[Path]:
-    """The ordered agent-definition search path (docs/user-home-plan.md §5): env
+    """The ordered agent-definition search path (docs/specs/config.md §4): env
     `CONJURE_AGENTS_PATH` (os-sep-separated) > settings["agents_path"] > [<config>/agents, bundled].
     User entries come first so a user agent shadows a bundled one of the same name."""
     explicit = env.get("CONJURE_AGENTS_PATH", "").strip()
@@ -201,7 +201,7 @@ def resolve_wake_words(env: Mapping[str, str], settings: Mapping) -> list[str]:
 
 
 def resolve_dynamics_path(env: Mapping[str, str], settings: Mapping, config_dir: Path) -> list[Path]:
-    """The ordered dynamic-module search path — mirrors `resolve_agents_path` (docs/user-home-plan.md §5,
+    """The ordered dynamic-module search path — mirrors `resolve_agents_path` (docs/specs/config.md §4,
     docs/specs/dynamics.md §3): env `CONJURE_DYNAMICS_PATH` (os-sep-separated) >
     settings["dynamics_path"] > [<config>/dynamics, bundled]. User entries come first so a user module
     shadows a bundled one of the same name."""
@@ -238,8 +238,7 @@ def resolve_paths(env: Mapping[str, str] | None = None, settings: Mapping | None
 
 
 # Import-time snapshot of the resolved home. Module-level constants (not just a resolver behind a
-# function) so tests can monkeypatch them exactly like the legacy paths (docs/user-home-plan.md §4.1).
-# NOTE: not yet consumed by the app — step 3 repoints the live paths onto these after migration.
+# function) so tests can monkeypatch them exactly like the legacy paths (docs/specs/config.md §6).
 _RESOLVED = resolve_paths()
 CONFIG_DIR = _RESOLVED["config_dir"]
 DATA_DIR = _RESOLVED["data_dir"]

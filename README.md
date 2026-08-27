@@ -242,7 +242,7 @@ conjure/    world server (schema · world store · FastAPI app · MCP tools + ro
             cli (agent-server REPL) · ctl (direct world commands) ·
             assets pipeline · image-gen registry · config · doctor
 agents/     bundled agent defs (builder/: agent.json + prompt.md) + servers.json (MCP registry);
-            user-authored agents in ~/.config/conjure/agents/ shadow these (docs/user-home-plan.md)
+            user-authored agents in ~/.config/conjure/agents/ shadow these (docs/specs/config.md)
 client/     A-Frame WebXR client + live patch applier
 examples/   starter world + hand-authored example patches
 scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
@@ -256,7 +256,7 @@ docs/       vision · spec · architecture · decisions · providers · roadmap 
   investigations/  debugging campaigns: what was measured, and what was tried and REJECTED
 ```
 
-**Where your data lives.** Runtime state is stored in your user home, not the repo (docs/user-home-plan.md):
+**Where your data lives.** Runtime state is stored in your user home, not the repo (docs/specs/config.md):
 worlds, sessions, generated assets, and the asset catalog under `~/.local/share/conjure/` (precious —
 back it up); settings + your own agent defs under `~/.config/conjure/`; disposable scratch under
 `~/.cache/conjure/`. Override any location via `settings.json` or env, or set `CONJURE_HOME` to

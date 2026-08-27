@@ -54,7 +54,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
 LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settings.debug_log)
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
-# The precious DATA root — the resolved user home (docs/user-home-plan.md §3), NOT the in-project
+# The precious DATA root — the resolved user home (docs/specs/config.md §1), NOT the in-project
 # .cache anymore. On startup the in-project .cache is migrated into here (see _init_state).
 CACHE = DATA_DIR
 # User-first tree (docs/specs/agents.md §7.1): everything a user owns lives under <data>/users/<user>/ —
@@ -75,7 +75,7 @@ DEFAULT_SCOPE = scope_for(DEFAULT_USER, "builder")
 # scripts/tunnel.sh (an external shell script) writes the current cloudflared URL here; /tunnel redirects
 # to it (a short, fixed LAN address you can type on the Quest instead of the long random trycloudflare URL
 # each session). Ephemeral dev-tooling scratch → the disposable CACHE_ROOT (the user-home cache), NOT the
-# in-project .cache and NOT the precious DATA tree (docs/user-home-plan.md §3.1). The script resolves the
+# in-project .cache and NOT the precious DATA tree (docs/specs/config.md §7). The script resolves the
 # same CACHE_ROOT from config, so both ends agree on one location.
 TUNNEL_FILE = CACHE_ROOT / "tunnel_url"
 MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
@@ -424,7 +424,7 @@ def _init_state() -> None:
     global _selected_cids, _space_holders
     _selected_cids = set()                           # a fresh session: every AR client re-selects (step 4/7)
     _space_holders = set()                           # nobody holds the space yet → provisional boot (D1)
-    # User-home migration FIRST (docs/user-home-plan.md §6): relocate the in-project .cache into the
+    # User-home migration FIRST (docs/specs/config.md §7): relocate the in-project .cache into the
     # resolved home BEFORE anything opens a path under it (catalog, repositories, asset cache). Also
     # ensures the settings.json template exists. Idempotent (breadcrumb-guarded).
     ensure_settings_file(CONFIG_DIR)

@@ -35,7 +35,7 @@ def _write_agent(tmp_path, name, data, files=None):
     return tmp_path
 
 
-# ── agent-definition search path (docs/user-home-plan.md §5) ─────────────────────────────────────
+# ── agent-definition search path (docs/specs/config.md §4) ─────────────────────────────────────
 def test_search_path_user_shadows_bundled(tmp_path):
     user = tmp_path / "user"; bundled = tmp_path / "bundled"
     user.mkdir(); bundled.mkdir()

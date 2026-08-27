@@ -30,7 +30,7 @@ WILDCARD = "*"      # "any configured LLM" / "any registered server" — the exp
 
 def _search_path(agents_path: Optional[list[Path]] = None) -> list[Path]:
     """The agent-definition search path — the explicit arg, else the resolved `config.AGENTS_PATH`
-    (read live so tests can monkeypatch it). User dirs first, bundled last (docs/user-home-plan.md §5)."""
+    (read live so tests can monkeypatch it). User dirs first, bundled last (docs/specs/config.md §4)."""
     return agents_path if agents_path is not None else config.AGENTS_PATH
 
 
@@ -138,7 +138,7 @@ def load_agent(name: str, *, agents_dir: Optional[Path] = None,
 
     Resolution: an explicit `agents_dir` pins a single directory (`<agents_dir>/<name>`; used by tests);
     otherwise the name is looked up on the search path (`agents_path`, else `config.AGENTS_PATH`), so a
-    user agent shadows a bundled one (docs/user-home-plan.md §5).
+    user agent shadows a bundled one (docs/specs/config.md §4).
 
     The directory name is the agent's identity, so `agent.json` needn't repeat it (a `name` field, if
     present, is validated to match). `prompt_file` is resolved relative to the agent's directory.

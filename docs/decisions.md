@@ -487,3 +487,43 @@ what makes a room match recognisable *as* a room match, since the state carries 
 served under `outdoor`, which declares no `dynamics`, so it carried no module scripts and rendered
 `animal-house`'s `grab`/`water` entities as inert attributes. Module `<script>`s are no longer scoped to
 the active agent; see [`docs/specs/dynamics.md`](./specs/dynamics.md) §9.
+
+### 21. Where an installation's files live — ✅ RESOLVED
+**Choice:** XDG Base Directory layout (`config`/`data`/`cache`), with `CONJURE_HOME` as a one-dir
+consolidation escape hatch. Agent *definitions* live in **config**, not data. Provider prefs and secrets
+stay in `.env` for now. Built 2026-08-17; the result is [`docs/specs/config.md`](./specs/config.md).
+
+**The problem.** Three things sat in the project directory that shouldn't. Agent definitions were
+`<project>/agents/<name>/`, so a user couldn't add their own without editing the checkout. Runtime data —
+every session, transcript, world, space and generated asset — sat in `<project>/.cache/`, which is
+**precious, unregenerable data wearing the name of the most disposable thing on a disk**: it invites
+`rm -rf`, it's caught by `git clean`, and backup tools skip it by convention. And settings didn't exist
+yet, so there was a chance to put them somewhere right the first time.
+
+**XDG vs. a single `~/.conjure`.** A single directory is friendlier to explain and trivially portable.
+XDG won because the split is the *point*: putting sessions and assets under `data/` and nothing but
+regenerable scratch under `cache/` makes "is this safe to delete?" answerable by location instead of by
+reading a doc. Portability is recovered by `CONJURE_HOME`, which consolidates all three under one root —
+so the friendly single-dir install is a superset, not a rejected alternative. It also turns out to be how
+tests relocate an entire home in one variable.
+
+**Agent definitions: config or data.** Config. They are *authored* — hand-written JSON and prompts, the
+kind of thing you keep in a dotfiles repo and want backed up with your editor config. Data is what the
+program produces. Definitions also become a **search path** rather than a directory (user first, bundled
+last), which is what makes "my own agents ⊕ the project's" work without a checkout edit; the same
+mechanism was later given to dynamic modules.
+
+**`library.db` is data, not cache.** Called out because the name argues the other way. It is an index,
+but not a derived one — labels, captions, public flags and embeddings are curation, and a lost catalog is
+not rebuilt by rescanning `assets/`.
+
+**Env beats settings.json.** The 12-factor order (git, docker, aws). The deciding case is safety, not
+convention: if the file won, a real `data_dir` in a developer's home would beat a test's env var and the
+test could write to live data.
+
+**Deferred: folding `.env` into `settings.json`.** Tempting — provider/model prefs are the same category
+as settings. But the API keys in `.env` must *not* move, since `settings.json` is meant to be syncable
+with dotfiles, so the change is a **split** rather than a move, and orthogonal to relocation. `settings.json`
+therefore started as locations only. (It has since taken the wake-word lists, which are preferences, not
+locations — the boundary that actually holds is *secret vs. not*, not *location vs. preference*.) See
+[`docs/backlogs/config.md`](./backlogs/config.md).

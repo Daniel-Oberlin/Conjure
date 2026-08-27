@@ -557,7 +557,7 @@ class Shell:
         return True
 
     def _agent_names(self) -> list[str]:
-        """Available agent names across the search path (user defs shadow bundled — user-home-plan §5)."""
+        """Available agent names across the search path (user defs shadow bundled — specs/config.md §4)."""
         return agent_names()
 
     async def _agents(self, on_text, m=None):

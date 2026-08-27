@@ -52,6 +52,10 @@ split exists so a spec can be trusted: nothing in it is a plan, an intention, or
   each other, and the embedder. ([backlog](./backlogs/library.md))
 - **[specs/occlusion.md](./specs/occlusion.md)** — real-world depth occlusion: the global depth pre-pass
   and the `off`/`hands`/`hands-solid` modes. ([backlog](./backlogs/occlusion.md))
+- **[specs/config.md](./specs/config.md)** — the **installation layer**: the three XDG roots and the
+  precious/disposable split, how every location resolves (env > `settings.json` > default), what
+  `settings.json` owns versus `.env`, the user-first search paths that let a user add or shadow an agent
+  or a dynamic module, and how tests stay off a real home. ([backlog](./backlogs/config.md))
 
 The three space specs form a stack, and the prefixes say which layer you are in: `spaces` is the
 *record*, `spaces-geometry` treats a surface as *geometry to locate*, `worlds-surfaces` treats it as
@@ -71,7 +75,9 @@ the three space specs above, with `pops-and-jitters-journey.md` and `wall-art-45
 `investigations/`, on 2026-08-26. `spec.md` → [vision.md](./vision.md); `setup.md`,
 `testing-on-quest.md`, `https-setup.md` → [running.md](./running.md); `asset-library-plan.md` →
 [specs/library.md](./specs/library.md) + its backlog; and the flat `backlog.md` + `known-issues.md`
-distributed into the per-area backlogs — all 2026-08-26.)*
+distributed into the per-area backlogs — all 2026-08-26. `user-home-plan.md` →
+[specs/config.md](./specs/config.md) + its backlog, with the layout forks to
+[decisions.md](./decisions.md) §21, on 2026-08-27.)*
 
 > For current project status / what works today, see the top-level [README](../README.md) — it's
 > the single source of truth for status, so these docs don't drift.

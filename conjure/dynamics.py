@@ -29,7 +29,7 @@ ANCHORS = ("free", "surface", "volume", "ambient")
 
 def _search_path(dynamics_path: Optional[list[Path]] = None) -> list[Path]:
     """The dynamic-module search path — the explicit arg, else the resolved `config.DYNAMICS_PATH`
-    (read live so tests can monkeypatch it). User dirs first, bundled last (docs/user-home-plan.md §5)."""
+    (read live so tests can monkeypatch it). User dirs first, bundled last (docs/specs/config.md §4)."""
     return dynamics_path if dynamics_path is not None else config.DYNAMICS_PATH
 
 
