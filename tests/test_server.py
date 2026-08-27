@@ -1477,6 +1477,37 @@ def _void_world(srv, client, name="beach"):
     assert srv.active_space == srv.VOID
 
 
+def test_a_deleted_world_sends_you_back_as_the_same_agent(srv, client):
+    """§C4. Your space remembers the last world you used in it, so putting the headset on returns you
+    there. If that world was deleted the system correctly builds a replacement — but it used to build it
+    in the general-purpose BUILDER's scope regardless of who you were with, so you came back as a
+    different agent. Preserve the agent; own the world as yourself."""
+    from conjure import server as S
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    srv.spaces.save("daniel", "home", {**srv.spaces.load("daniel", "home"),
+                                       "last_scope": "daniel/agents/scratch",
+                                       "last_world": "wld_deadbeef01"})     # …which does not exist
+    r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
+                                           "user": "daniel", "cid": "hs1"}).json()
+    assert r["ok"] and not r.get("refused")
+    assert S.active_scope == "daniel/agents/scratch"        # the agent that space was last used from
+    assert S.active_space == "home"                         # …and we're in the room
+
+
+def test_the_fallback_skips_an_agent_that_cannot_live_in_a_space(srv):
+    """The chain skips a candidate whose agent declares `world.outdoor` — its worlds are room-less by
+    declaration (§C6), so preferring it would contradict its own definition — and one whose definition
+    no longer resolves at all. Then, and only then, the default agent."""
+    from conjure import server as S
+    assert S._entry_scope_for("daniel", prefer="daniel/agents/scratch") == "daniel/agents/scratch"
+    # outdoor can't host a world tied to a space → falls through to the live scope (builder here)
+    assert S._entry_scope_for("daniel", prefer="daniel/agents/outdoor") == S.DEFAULT_SCOPE
+    # a deleted/renamed agent → likewise
+    assert S._entry_scope_for("daniel", prefer="daniel/agents/vanished") == S.DEFAULT_SCOPE
+    # and the world is owned by the CALLER even when the space (and its agent) belong to someone else
+    assert S._entry_scope_for("bob", prefer="daniel/agents/scratch") == "bob/agents/scratch"
+
+
 def test_an_outdoor_world_is_not_relocated_by_recognising_the_room(srv, client):
     """§C2b. The client votes its capture against candidates even in a void world — it must, or an outdoor
     re-entry never resolves a space at all. But resolving WHICH space you're in and MOVING you to that

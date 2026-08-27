@@ -1889,7 +1889,17 @@ async def select_space(req: SpaceSelect) -> dict:
         if w and scope and worlds.exists(scope, w):
             out = await _switch_to(scope, w)
         elif _may_create_world_in(who, *matched_ref):      # space has no world → build one in it (D3)
-            out = await _establish_world_in(who, _space_ref(*matched_ref))
+            # The remembered world is gone (deleted, or the space is brand new). Keep the AGENT that
+            # space was last used from rather than dropping to the default one (§2), and SAY that we had
+            # to build something — a silent fallback is indistinguishable from a bug.
+            landing = _entry_scope_for(who, prefer=scope)
+            if w and scope:
+                _slog("select", f"user={who!r} last world {w!r} is gone → new world in "
+                                f"{landing} (was {scope})")
+                await _broadcast({"type": "notice",
+                                  "text": f"The world you were last in here is gone — "
+                                          f"starting a fresh one in {agent_of(landing)}."})
+            out = await _establish_world_in(who, _space_ref(*matched_ref), prefer_scope=scope)
         else:                                              # private space, nothing to join, not the owner (D8)
             _slog("select", f"user={who!r} matched {req.owner}/{req.name} but it's PRIVATE with no world → refused")
             return {"ok": True, "refused": True,
@@ -1908,10 +1918,42 @@ async def select_space(req: SpaceSelect) -> dict:
     return out
 
 
-async def _establish_world_in(user: str, space_ref: str, world_name: str = "default") -> dict:
+def _entry_scope_for(user: str, *, prefer: Optional[str] = None) -> str:
+    """Which scope to mint a replacement world in when a pointer went stale (world-entry plan §2).
+
+    **Degrade to the next-broadest thing that is still true, never to a global default.** The user's
+    intent — *put me back with the agent I was using* — survives a missing world, so preserve the AGENT
+    and let the caller own the world as themselves:
+
+        the space's remembered scope  →  the live scope  →  the default agent
+
+    A candidate is skipped when its agent no longer resolves on the search path (deleted or renamed), or
+    when it declares `world.outdoor` — an outdoor agent's worlds are room-less by declaration (§C6), so
+    it cannot host a world tied to a space and preferring it would contradict its own definition.
+
+    This is what fixed coming back as the *builder*: the scope was hard-coded, so a space whose remembered
+    world had been deleted handed you to a general-purpose agent regardless of who you were with."""
+    for cand in (prefer, active_scope):
+        agent = agent_of(cand) if cand else ""
+        if not agent:
+            continue
+        scope = scope_for(user, agent)
+        if _agent_wants_outdoor(scope):          # can't tie an outdoor agent's world to a space
+            continue
+        try:
+            resolve_agent_dir(agent)             # still on the search path?
+        except Exception:                        # noqa: BLE001 — deleted/renamed agent: try the next
+            continue
+        return scope
+    return scope_for(user, "builder")
+
+
+async def _establish_world_in(user: str, space_ref: str, world_name: str = "default", *,
+                              prefer_scope: Optional[str] = None) -> dict:
     """Create `world_name` in `user`'s scope tied to `space_ref` and switch into it — the connecting user
-    building their own world in a (possibly someone else's) space (D3)."""
-    scope = scope_for(user, "builder")
+    building their own world in a (possibly someone else's) space (D3). `prefer_scope` names the agent
+    this should land in if it still can (`_entry_scope_for`)."""
+    scope = _entry_scope_for(user, prefer=prefer_scope)
     fresh = _new_world_store(scope)
     fresh.doc.setdefault("environment", {})["space"] = space_ref
     return await _switch_to(scope, world_name, store_override=fresh)

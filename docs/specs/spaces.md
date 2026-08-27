@@ -271,11 +271,26 @@ second Python implementation.
 | Vote | Outcome |
 |---|---|
 | matched an existing space, which has a last world | join that world (return visit) |
-| matched, but it has no world yet | mint the connecting user a world tied to it |
+| matched, but its last world is **gone** or it has none | mint the connecting user a world tied to it, **in the agent that space was last used from** (below), and say so |
 | matched, private, no joinable world, not the owner | refused |
+| **the live world is deliberately `<void>`** | claim the space, **do not relocate** (§4.3) |
 | no match | "somewhere new": mint a fresh geo-stamped `space-N` + world, owned by the connecting user |
 
 A space is born **with** its location, at mint time.
+
+**Where a replacement world lands** (`_entry_scope_for`). Your intent — *put me back with the agent I was
+using* — survives a missing world, so the chain preserves the **agent** and lets you own the world as
+yourself:
+
+> the space's `last_scope` → the live scope → the default agent
+
+A candidate is skipped when its agent no longer resolves on the search path, or when it declares
+`world.outdoor` (§4.3) — an outdoor agent's worlds are room-less by declaration, so it cannot host one
+tied to a space. This scope was previously **hard-coded to `builder`**, so a space whose remembered world
+had been deleted handed you to a general-purpose agent regardless of who you had been talking to.
+
+**The fallback is announced.** A degradation that fires silently is indistinguishable from a bug, which
+is how this went unnoticed: the notice names what happened and which agent you landed in.
 
 **Claimed** — the admission gate:
 
