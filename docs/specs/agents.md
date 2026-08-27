@@ -383,8 +383,8 @@ Input it doesn't recognise as a command is forwarded to the active agent unchang
   **Every alias must be a non-word.** A real word would swallow ordinary speech that merely starts with
   it — silent in the other direction, and worse than the problem it solves. Amend by observation.
 
-  The **voice client's mic gate** (`--wake-word`, a separate concern — §Voice) matches the same aliases,
-  since it is defeated by the same mis-hearing. An explicit `--wake-word banana` means banana alone.
+  The **voice client's mic gate** is a *different word* with its own list (`CONJURE_VOICE_WAKE_WORDS`,
+  default `computer`) — see §Voice. The two gates compose in one breath and must not collide.
 - **In shell mode** — every line is a command; the prefix isn't needed. A line matching no command is
   rejected (`Unknown command: … Type 'help'.`), never sent to an LLM, so control mode never silently
   "does something".
@@ -1042,9 +1042,25 @@ cadence. `backlog=0`, because a fresh connection shouldn't get the whole transcr
 
 `--wake-word` is a separate, purely voice-input concern: a mic-activation gate ahead of the socket.
 Bare wake word arms for the next utterance; wake word plus text submits the remainder immediately. It
-matches the same **alias list** as the shell's inline escape (§6.1) — the same mis-hearing defeats both,
-and a gate that silently ignores you is harder to diagnose than one that mis-fires. Passing a word that
-isn't the configured wake word (`--wake-word banana`) matches that word alone.
+has its own alias list (`CONJURE_VOICE_WAKE_WORDS` > settings `voice_wake_words` >
+`DEFAULT_VOICE_WAKE_WORDS`, i.e. `computer`), for the same reason the shell's does — a mis-hearing
+defeats it, and a gate that silently ignores you is harder to diagnose than one that mis-fires. Passing
+a word that isn't the configured one (`--wake-word banana`) matches that word alone.
+
+**The two gates must be distinct, and it is enforced.** They do different jobs and compose in one
+breath: the mic gate decides whether you are addressing Conjure at all, the shell's wake word decides
+whether what you said is a command.
+
+```
+"computer conjure where am I"  →  mic strips "computer"  →  "conjure where am I"  →  shell: `where am I`
+"computer make a tree"         →  mic strips "computer"  →  "make a tree"         →  content, to the LLM
+```
+
+Because the gate **consumes** its word before anything downstream sees the line, sharing one makes
+spoken shell commands unreachable — `"conjure where am I"` would arrive at the shell as `"where am I"`,
+which is content, and you would have to say the word twice. `_make_wake_gate` therefore **refuses to
+start** on an overlap (`wake_word_conflict`) rather than warning: the failure is silent, and its symptom
+looks like a broken shell rather than a misconfigured gate.
 
 #### The speech stage — what a voice client hears
 

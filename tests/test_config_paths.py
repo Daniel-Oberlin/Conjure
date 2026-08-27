@@ -159,3 +159,25 @@ def test_wake_aliases_expands_the_canonical_word_only():
     assert wake_aliases() == WAKE_WORDS
     assert wake_aliases("Conjure") == WAKE_WORDS       # case-insensitive, expands
     assert wake_aliases("banana") == ["banana"]
+
+
+def test_the_two_wake_lists_are_distinct_by_default():
+    """The mic gate strips its word before the shell sees the line, so any overlap makes spoken shell
+    commands unreachable. The shipped defaults must never collide."""
+    from conjure.config import VOICE_WAKE_WORDS, WAKE_WORDS, wake_word_conflict
+    assert wake_word_conflict(WAKE_WORDS, VOICE_WAKE_WORDS) == []
+    assert WAKE_WORDS[0] == "conjure" and VOICE_WAKE_WORDS[0] == "computer"
+
+
+def test_wake_word_conflict_names_every_overlap():
+    from conjure.config import wake_word_conflict
+    assert wake_word_conflict(["conjure", "coinjure"], ["computer"]) == []
+    assert wake_word_conflict(["conjure", "coinjure"], ["coinjure", "x"]) == ["coinjure"]
+
+
+def test_voice_wake_words_resolve_independently_of_the_shell_list():
+    from conjure.config import DEFAULT_VOICE_WAKE_WORDS, resolve_voice_wake_words, voice_wake_aliases
+    assert resolve_voice_wake_words({}, {}) == list(DEFAULT_VOICE_WAKE_WORDS)
+    assert resolve_voice_wake_words({"CONJURE_VOICE_WAKE_WORDS": "hey,HEY"}, {}) == ["hey"]
+    assert resolve_voice_wake_words({}, {"voice_wake_words": ["Ahoy"]}) == ["ahoy"]
+    assert voice_wake_aliases("banana") == ["banana"]      # only the canonical expands

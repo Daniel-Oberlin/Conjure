@@ -82,6 +82,7 @@ DEFAULT_SETTINGS: dict = {
     "agents_path": None,     # list of dirs; user-first search path for agent definitions
     "dynamics_path": None,   # list of dirs; user-first search path for dynamic-module definitions
     "wake_words": None,      # list; the shell wake word + STT mis-hearings (null = DEFAULT_WAKE_WORDS)
+    "voice_wake_words": None,  # list; the voice mic-activation word — must NOT overlap wake_words
     "default_user": DEFAULT_USER,
 }
 
@@ -140,6 +141,45 @@ DEFAULT_WAKE_WORDS: tuple[str, ...] = (
 )
 
 
+# The VOICE mic-activation gate's word — deliberately a DIFFERENT word from the shell's.
+#
+# They do different jobs and they compose: the mic gate decides whether you are talking to Conjure at
+# all, and the shell wake word decides whether what you said is a command. The gate CONSUMES its word
+# before anything else sees the line, so sharing one makes shell commands unreachable by voice —
+# "conjure where am I" arrives at the shell as "where am I", which is content, and you would have to say
+# "conjure conjure where am I". Distinct words, and `resolve_wake_words` enforces it.
+DEFAULT_VOICE_WAKE_WORDS: tuple[str, ...] = (
+    "computer",     # the classic. A real word is tolerable HERE: a false trigger only opens the mic,
+)                   # where a false shell match would swallow content.
+
+
+def _clean_words(raw, fallback: tuple[str, ...]) -> list[str]:
+    """Lowercase, strip, de-duplicate, keep order; fall back if nothing usable survives."""
+    out: list[str] = []
+    for w in raw:
+        w = str(w).strip().lower()
+        if w and w not in out:
+            out.append(w)
+    return out or list(fallback)
+
+
+def resolve_voice_wake_words(env: Mapping[str, str], settings: Mapping) -> list[str]:
+    """The mic gate's word and its aliases: env `CONJURE_VOICE_WAKE_WORDS` (comma-separated) >
+    settings["voice_wake_words"] > `DEFAULT_VOICE_WAKE_WORDS`."""
+    explicit = env.get("CONJURE_VOICE_WAKE_WORDS", "").strip()
+    if explicit:
+        return _clean_words(explicit.split(","), DEFAULT_VOICE_WAKE_WORDS)
+    if settings.get("voice_wake_words"):
+        return _clean_words(settings["voice_wake_words"], DEFAULT_VOICE_WAKE_WORDS)
+    return list(DEFAULT_VOICE_WAKE_WORDS)
+
+
+def wake_word_conflict(shell_words, voice_words) -> list[str]:
+    """Words claimed by BOTH gates, which is always a misconfiguration — see `DEFAULT_VOICE_WAKE_WORDS`
+    for why. Returned rather than raised so each caller can decide how loudly to complain."""
+    return [w for w in voice_words if w in set(shell_words)]
+
+
 def resolve_wake_words(env: Mapping[str, str], settings: Mapping) -> list[str]:
     """The wake word and its aliases: env `CONJURE_WAKE_WORDS` (comma-separated) > settings["wake_words"]
     (a list) > `DEFAULT_WAKE_WORDS`. Lowercased and de-duplicated, order preserved — the FIRST entry is
@@ -152,12 +192,7 @@ def resolve_wake_words(env: Mapping[str, str], settings: Mapping) -> list[str]:
         raw = [str(w) for w in settings["wake_words"]]
     else:
         raw = list(DEFAULT_WAKE_WORDS)
-    out: list[str] = []
-    for w in raw:
-        w = w.strip().lower()
-        if w and w not in out:
-            out.append(w)
-    return out or list(DEFAULT_WAKE_WORDS)
+    return _clean_words(raw, DEFAULT_WAKE_WORDS)
 
 
 def resolve_dynamics_path(env: Mapping[str, str], settings: Mapping, config_dir: Path) -> list[Path]:
@@ -193,6 +228,7 @@ def resolve_paths(env: Mapping[str, str] | None = None, settings: Mapping | None
         "agents_path": resolve_agents_path(env, settings, config_dir),
         "dynamics_path": resolve_dynamics_path(env, settings, config_dir),
         "wake_words": resolve_wake_words(env, settings),
+        "voice_wake_words": resolve_voice_wake_words(env, settings),
     }
 
 
@@ -206,6 +242,7 @@ CACHE_ROOT = _RESOLVED["cache_dir"]      # genuinely-disposable cache (NOT the p
 AGENTS_PATH: list[Path] = _RESOLVED["agents_path"]
 DYNAMICS_PATH: list[Path] = _RESOLVED["dynamics_path"]
 WAKE_WORDS: list[str] = _RESOLVED["wake_words"]      # [0] is canonical; the rest are STT mis-hearings
+VOICE_WAKE_WORDS: list[str] = _RESOLVED["voice_wake_words"]   # the mic gate — MUST be disjoint from above
 
 # The precious data tree now lives in the resolved home (post-migration). These names are kept because
 # other modules import them (e.g. agent_server → USERS_DIR); they alias into DATA_DIR. `CACHE_DIR` is a
@@ -453,10 +490,22 @@ def get_settings() -> Settings:
     )
 
 
-def wake_aliases(word: Optional[str] = None) -> list[str]:
-    """The alias set to match on. Given nothing, or the canonical wake word, the whole configured list;
-    given some other word, just that word — so `--wake-word banana` means banana and nothing else."""
+def _aliases_for(word: Optional[str], configured: list[str]) -> list[str]:
+    """The alias set to match on: given nothing, or a word already in `configured`, the whole list;
+    given anything else, just that word — so `--wake-word banana` means banana and nothing else."""
     if not word or not word.strip():
-        return list(WAKE_WORDS)
+        return list(configured)
     w = word.strip().lower()
-    return list(WAKE_WORDS) if w in WAKE_WORDS else [w]
+    return list(configured) if w in configured else [w]
+
+
+def wake_aliases(word: Optional[str] = None) -> list[str]:
+    """Aliases for the SHELL wake word (the command escape)."""
+    return _aliases_for(word, WAKE_WORDS)
+
+
+def voice_wake_aliases(word: Optional[str] = None) -> list[str]:
+    """Aliases for the VOICE mic gate. Deliberately a separate list from `wake_aliases`: the gate strips
+    its word before the shell ever sees the line, so any overlap makes shell commands unreachable by
+    voice (`DEFAULT_VOICE_WAKE_WORDS`)."""
+    return _aliases_for(word, VOICE_WAKE_WORDS)

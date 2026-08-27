@@ -29,7 +29,8 @@ import sys
 import urllib.request
 from typing import Callable, Optional
 
-from .config import DEFAULT_USER, Settings, get_settings, wake_aliases
+from .config import (DEFAULT_USER, VOICE_WAKE_WORDS, WAKE_WORDS, Settings, get_settings,
+                     voice_wake_aliases, wake_word_conflict)
 
 # PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
 PIPELINE_IDLE_TIMEOUT_SECS = 3600  # 1 hour
@@ -46,10 +47,19 @@ def _make_wake_gate(wake_word: Optional[str]) -> Callable[[str], Optional[str]]:
     punctuation) is the command."""
     if not wake_word or not wake_word.strip():
         return lambda text: text
-    # Match the configured ALIASES too, not just the literal word: the mic gate is defeated by the same
-    # STT mis-hearing the shell's inline escape is ("coinjure"), and a gate that silently ignores you is
-    # harder to diagnose than one that mis-fires. `--wake-word banana` still means banana alone.
-    words = wake_aliases(wake_word)
+    # Match the configured aliases too, not just the literal word — the gate is defeated by an STT
+    # mis-hearing just as the shell's escape is, and a gate that silently ignores you is harder to
+    # diagnose than one that mis-fires. `--wake-word banana` still means banana alone.
+    words = voice_wake_aliases(wake_word)
+    # The gate CONSUMES its word before anything downstream sees the line, so sharing one with the shell
+    # makes shell commands unreachable by voice: "conjure where am I" would arrive as "where am I", which
+    # is content. Refuse rather than warn — the failure is silent and would look like a broken shell.
+    clash = wake_word_conflict(WAKE_WORDS, words)
+    if clash:
+        raise SystemExit(
+            f"--wake-word {', '.join(clash)!r} is also the shell's wake word, which would make spoken "
+            f"shell commands unreachable (the mic gate strips it first). Pick a different word — the "
+            f"default is {VOICE_WAKE_WORDS[0]!r} — or change CONJURE_WAKE_WORDS.")
     pattern = re.compile(r"\b(?:" + "|".join(re.escape(w) for w in words) + r")\b", re.IGNORECASE)
     state = {"armed": False}
 
@@ -247,9 +257,11 @@ def main() -> int:
     ap.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
     ap.add_argument("--agent", default=None,
                     help="agent to load from agents/<name>/ (default: resume your last-used, else builder)")
-    ap.add_argument("--wake-word", default=None, metavar="WORD",
-                    help="only send phrases after this wake word to the director (e.g. --wake-word conjure); "
-                         "then it waits for the wake word again")
+    ap.add_argument("--wake-word", default=None, metavar="WORD", nargs="?", const=VOICE_WAKE_WORDS[0],
+                    help=f"mic gate: only send phrases after this word (bare --wake-word uses "
+                         f"{VOICE_WAKE_WORDS[0]!r}); then it waits for it again. Must NOT be the shell's "
+                         f"wake word ({WAKE_WORDS[0]!r}) — the gate strips its own word first, so sharing "
+                         f"one would make spoken shell commands unreachable")
     args = ap.parse_args()
 
     settings = get_settings()
