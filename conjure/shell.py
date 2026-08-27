@@ -34,7 +34,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Awaitable, Callable, Optional
 
 from .agents import agent_names, list_agents
-from .config import DEFAULT_USER, Settings, scope_for
+from .config import DEFAULT_USER, WAKE_WORDS, Settings, scope_for
 from .director import Director
 
 # How long `_last_agent` waits for the world server before falling back to `builder`. A front-end can do
@@ -47,8 +47,16 @@ _LAST_AGENT_POLL = 0.25
 OnText = Callable[..., Awaitable[None]]
 OnTool = Callable[..., Awaitable[None]]
 
-# "conjure …" inline escape (STT rarely punctuates, so the comma is optional).
-_WAKE = re.compile(r"^conjure\b[,:]?\s*(?P<rest>.*)$", re.I | re.S)
+def wake_pattern(words) -> "re.Pattern":
+    """The inline-escape matcher for a wake-word list. STT rarely punctuates, so the comma is optional."""
+    alts = "|".join(re.escape(w) for w in words) or "conjure"
+    return re.compile(rf"^(?:{alts})\b[,:]?\s*(?P<rest>.*)$", re.I | re.S)
+
+
+# "conjure …" inline escape. Built from the CONFIGURED list, so a mis-hearing is a config line rather
+# than a code change: "conjure" isn't in most STT vocabularies and comes back as "coinjure" often
+# enough that a command silently reached the agent as content (config.DEFAULT_WAKE_WORDS).
+_WAKE = wake_pattern(WAKE_WORDS)
 # Spoken aliases for `llm <name>`. Voice only: in text these would claim every LLM name as a reserved
 # word, so the canonical typed form is the noun command, consistent with `agent`/`world`/`session`.
 _SPOKEN_LLM = re.compile(r"^(?:talk\s+to|switch\s+to|use|become|be)\s+(?P<name>[a-z0-9]+)$", re.I)

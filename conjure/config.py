@@ -10,7 +10,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Optional
 
 from dotenv import load_dotenv
 
@@ -81,6 +81,7 @@ DEFAULT_SETTINGS: dict = {
     "cache_dir": None,       # override the disposable cache root
     "agents_path": None,     # list of dirs; user-first search path for agent definitions
     "dynamics_path": None,   # list of dirs; user-first search path for dynamic-module definitions
+    "wake_words": None,      # list; the shell wake word + STT mis-hearings (null = DEFAULT_WAKE_WORDS)
     "default_user": DEFAULT_USER,
 }
 
@@ -122,6 +123,43 @@ def resolve_agents_path(env: Mapping[str, str], settings: Mapping, config_dir: P
     return [config_dir / "agents", BUNDLED_AGENTS_DIR]
 
 
+# The wake word, plus the ways speech-to-text commonly gets it wrong. "conjure" is not in most STT
+# vocabularies, so Whisper guesses at something phonetically near — and a mis-heard wake word doesn't
+# fail loudly, it silently sends a *command* to the agent as if it were content. Every entry must be a
+# non-word: a real word here would swallow ordinary speech that happened to start with it, which is a
+# worse failure than the one it fixes.
+#
+# Amend by observation, not imagination — add what you actually hear go wrong (`grep '\\[ws\\]recv'
+# temp/conjure.log`), via `CONJURE_WAKE_WORDS` or settings.json rather than by editing this list.
+DEFAULT_WAKE_WORDS: tuple[str, ...] = (
+    "conjure",      # the real one
+    "coinjure",     # observed
+    "conjur",
+    "conjour",
+    "konjure",
+)
+
+
+def resolve_wake_words(env: Mapping[str, str], settings: Mapping) -> list[str]:
+    """The wake word and its aliases: env `CONJURE_WAKE_WORDS` (comma-separated) > settings["wake_words"]
+    (a list) > `DEFAULT_WAKE_WORDS`. Lowercased and de-duplicated, order preserved — the FIRST entry is
+    the canonical one a user is told to say."""
+    raw: list[str] = []
+    explicit = env.get("CONJURE_WAKE_WORDS", "").strip()
+    if explicit:
+        raw = explicit.split(",")
+    elif settings.get("wake_words"):
+        raw = [str(w) for w in settings["wake_words"]]
+    else:
+        raw = list(DEFAULT_WAKE_WORDS)
+    out: list[str] = []
+    for w in raw:
+        w = w.strip().lower()
+        if w and w not in out:
+            out.append(w)
+    return out or list(DEFAULT_WAKE_WORDS)
+
+
 def resolve_dynamics_path(env: Mapping[str, str], settings: Mapping, config_dir: Path) -> list[Path]:
     """The ordered dynamic-module search path — mirrors `resolve_agents_path` (docs/user-home-plan.md §5,
     docs/specs/dynamics.md §3): env `CONJURE_DYNAMICS_PATH` (os-sep-separated) >
@@ -154,6 +192,7 @@ def resolve_paths(env: Mapping[str, str] | None = None, settings: Mapping | None
         "cache_dir": cache_dir,
         "agents_path": resolve_agents_path(env, settings, config_dir),
         "dynamics_path": resolve_dynamics_path(env, settings, config_dir),
+        "wake_words": resolve_wake_words(env, settings),
     }
 
 
@@ -166,6 +205,7 @@ DATA_DIR = _RESOLVED["data_dir"]
 CACHE_ROOT = _RESOLVED["cache_dir"]      # genuinely-disposable cache (NOT the precious data tree)
 AGENTS_PATH: list[Path] = _RESOLVED["agents_path"]
 DYNAMICS_PATH: list[Path] = _RESOLVED["dynamics_path"]
+WAKE_WORDS: list[str] = _RESOLVED["wake_words"]      # [0] is canonical; the rest are STT mis-hearings
 
 # The precious data tree now lives in the resolved home (post-migration). These names are kept because
 # other modules import them (e.g. agent_server → USERS_DIR); they alias into DATA_DIR. `CACHE_DIR` is a
@@ -411,3 +451,12 @@ def get_settings() -> Settings:
             "CONJURE_BINDINGS", '{"select":"trigger","grab":"grip","resize":"trigger","reel":"right.stickY",'
             '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX"}'),
     )
+
+
+def wake_aliases(word: Optional[str] = None) -> list[str]:
+    """The alias set to match on. Given nothing, or the canonical wake word, the whole configured list;
+    given some other word, just that word — so `--wake-word banana` means banana and nothing else."""
+    if not word or not word.strip():
+        return list(WAKE_WORDS)
+    w = word.strip().lower()
+    return list(WAKE_WORDS) if w in WAKE_WORDS else [w]

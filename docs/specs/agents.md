@@ -368,10 +368,23 @@ Input it doesn't recognise as a command is forwarded to the active agent unchang
 
 ### 6.1 Two ways a command is recognised
 
-- **Inline, while talking to an agent** — only a line led by the **`conjure` wake word** is intercepted
-  (`^conjure\b[,:]?\s*(rest)`; the comma is optional because STT rarely punctuates). So "put a **shell**
-  on the table" reaches the builder as content, while "**conjure** open shell" is a command. A bare
-  `conjure` means `open shell`.
+- **Inline, while talking to an agent** — only a line led by the **wake word** is intercepted
+  (`^(?:conjure|…)\b[,:]?\s*(rest)`; the comma is optional because STT rarely punctuates). So "put a
+  **shell** on the table" reaches the builder as content, while "**conjure** open shell" is a command. A
+  bare wake word means `open shell`.
+
+  **The wake word is a configured list, not one string.** "Conjure" is not in most STT vocabularies, so
+  Whisper returns something phonetically near — "coinjure" is the one observed. That failure is silent
+  in the worst way: the line doesn't match, so a *command* is forwarded to the agent as *content*, and
+  the agent obligingly tries to build you a coinjure. The list resolves env `CONJURE_WAKE_WORDS` >
+  settings.json `wake_words` > `config.DEFAULT_WAKE_WORDS`, so a newly-observed mis-hearing is a config
+  line rather than a code change; entry `[0]` is the canonical one a user is told to say.
+
+  **Every alias must be a non-word.** A real word would swallow ordinary speech that merely starts with
+  it — silent in the other direction, and worse than the problem it solves. Amend by observation.
+
+  The **voice client's mic gate** (`--wake-word`, a separate concern — §Voice) matches the same aliases,
+  since it is defeated by the same mis-hearing. An explicit `--wake-word banana` means banana alone.
 - **In shell mode** — every line is a command; the prefix isn't needed. A line matching no command is
   rejected (`Unknown command: … Type 'help'.`), never sent to an LLM, so control mode never silently
   "does something".
@@ -1028,7 +1041,10 @@ server's `assistant_delta` / `assistant_final` / `notice` events are spoken, pre
 cadence. `backlog=0`, because a fresh connection shouldn't get the whole transcript spoken at it.
 
 `--wake-word` is a separate, purely voice-input concern: a mic-activation gate ahead of the socket.
-Bare wake word arms for the next utterance; wake word plus text submits the remainder immediately.
+Bare wake word arms for the next utterance; wake word plus text submits the remainder immediately. It
+matches the same **alias list** as the shell's inline escape (§6.1) — the same mis-hearing defeats both,
+and a gate that silently ignores you is harder to diagnose than one that mis-fires. Passing a word that
+isn't the configured wake word (`--wake-word banana`) matches that word alone.
 
 #### The speech stage — what a voice client hears
 

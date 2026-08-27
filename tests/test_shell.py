@@ -835,3 +835,32 @@ async def test_where_is_a_sentence_for_voice_and_a_status_line_for_a_terminal():
     out.clear()
     await sh._dispatch("where", on_text, voice=False)
     assert "·" in out[-1][1] and "tools)" in out[-1][1]
+
+
+# --------------------------------------------------------------------------- wake-word aliases
+
+def test_a_mis_heard_wake_word_still_opens_the_shell():
+    """The failure this fixes is silent: STT hears "coinjure", the line doesn't match, and a COMMAND is
+    forwarded to the agent as content — which then tries to build you a coinjure."""
+    sh, d, out, on_text = _shell()
+    for heard in ("conjure where", "coinjure where", "Conjur where", "KONJURE where", "conjour where"):
+        assert sh.as_command(heard, False) == "where", heard
+    for heard in ("conjure", "coinjure"):
+        assert sh.as_command(heard, False) == "open shell"
+
+
+def test_an_alias_does_not_swallow_ordinary_speech():
+    """Every alias must be a non-word. A real word here would eat content that merely starts with it —
+    a worse failure than the mis-hearing, because it would be silent in the other direction."""
+    sh, d, out, on_text = _shell()
+    for content in ("conjuring a spell", "concert hall", "conjunction", "a conjure trick"):
+        assert sh.as_command(content, False) is None, content
+
+
+def test_the_wake_pattern_is_built_from_the_configured_list():
+    """So a new mis-hearing is a config line, not a code change."""
+    from conjure.shell import wake_pattern
+    rx = wake_pattern(["abra", "cadabra"])
+    assert rx.match("abra open shell").group("rest") == "open shell"
+    assert rx.match("cadabra, where").group("rest") == "where"        # comma optional — STT rarely punctuates
+    assert rx.match("conjure where") is None                          # not in this list

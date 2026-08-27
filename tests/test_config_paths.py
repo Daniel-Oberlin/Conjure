@@ -126,3 +126,36 @@ def test_ensure_settings_file_is_idempotent(tmp_path):
     (cfg / "settings.json").write_text('{"data_dir": "/mine"}')   # user edits it
     config.ensure_settings_file(cfg)                             # must NOT clobber
     assert config.load_settings(cfg) == {"data_dir": "/mine"}
+
+
+# --------------------------------------------------------------------------- wake words
+#
+# "conjure" is not in most STT vocabularies, so Whisper guesses at something phonetically near. A
+# mis-heard wake word doesn't fail loudly — it silently sends a COMMAND to the agent as content — so the
+# aliases are configuration, amendable as new mis-hearings turn up.
+
+def test_wake_words_default_to_the_shipped_list():
+    from conjure.config import DEFAULT_WAKE_WORDS, resolve_wake_words
+    assert resolve_wake_words({}, {}) == list(DEFAULT_WAKE_WORDS)
+    assert DEFAULT_WAKE_WORDS[0] == "conjure"          # [0] is canonical — what a user is told to say
+    assert "coinjure" in DEFAULT_WAKE_WORDS            # the observed mis-hearing
+
+
+def test_wake_words_resolve_env_over_settings_over_default():
+    from conjure.config import resolve_wake_words
+    assert resolve_wake_words({"CONJURE_WAKE_WORDS": "hey,yo"}, {"wake_words": ["ignored"]}) == ["hey", "yo"]
+    assert resolve_wake_words({}, {"wake_words": ["Abra", "Cadabra"]}) == ["abra", "cadabra"]
+
+
+def test_wake_words_are_normalised_and_never_empty():
+    from conjure.config import DEFAULT_WAKE_WORDS, resolve_wake_words
+    assert resolve_wake_words({"CONJURE_WAKE_WORDS": " Hey , HEY,hey ,  "}, {}) == ["hey"]   # dedupe + fold
+    assert resolve_wake_words({"CONJURE_WAKE_WORDS": " , , "}, {}) == list(DEFAULT_WAKE_WORDS)  # never none
+
+
+def test_wake_aliases_expands_the_canonical_word_only():
+    """`--wake-word conjure` should also catch its mis-hearings; `--wake-word banana` means banana."""
+    from conjure.config import WAKE_WORDS, wake_aliases
+    assert wake_aliases() == WAKE_WORDS
+    assert wake_aliases("Conjure") == WAKE_WORDS       # case-insensitive, expands
+    assert wake_aliases("banana") == ["banana"]

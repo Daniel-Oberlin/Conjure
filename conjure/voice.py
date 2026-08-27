@@ -29,7 +29,7 @@ import sys
 import urllib.request
 from typing import Callable, Optional
 
-from .config import DEFAULT_USER, Settings, get_settings
+from .config import DEFAULT_USER, Settings, get_settings, wake_aliases
 
 # PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
 PIPELINE_IDLE_TIMEOUT_SECS = 3600  # 1 hour
@@ -46,7 +46,11 @@ def _make_wake_gate(wake_word: Optional[str]) -> Callable[[str], Optional[str]]:
     punctuation) is the command."""
     if not wake_word or not wake_word.strip():
         return lambda text: text
-    pattern = re.compile(r"\b" + re.escape(wake_word.strip()) + r"\b", re.IGNORECASE)
+    # Match the configured ALIASES too, not just the literal word: the mic gate is defeated by the same
+    # STT mis-hearing the shell's inline escape is ("coinjure"), and a gate that silently ignores you is
+    # harder to diagnose than one that mis-fires. `--wake-word banana` still means banana alone.
+    words = wake_aliases(wake_word)
+    pattern = re.compile(r"\b(?:" + "|".join(re.escape(w) for w in words) + r")\b", re.IGNORECASE)
     state = {"armed": False}
 
     def gate(text: str) -> Optional[str]:
