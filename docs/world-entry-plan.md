@@ -163,40 +163,112 @@ that C4 makes survivable. Building either without the other leaves a trap.
 | starting a private-by-nature agent | public until it thinks to say otherwise | private from the first line |
 | testing a first run | edit files by hand | `reset agent <name>` |
 
-## 5. Open questions — please decide
+### C6 — an agent declares whether its worlds want a space
 
-1. **Does a reset delete the agent's assets too?** Generated skyboxes and models in that scope are
-   expensive to recreate and arguably not part of "the conversation". My inclination: **no** by default,
-   with `reset agent <name> --assets` to include them. But a first-run test of an agent whose opening
-   *generates* a skybox will silently reuse the cached one, which is not a true first run.
-2. **When the constructor's opening fails** (image generation errors) on an *implicit* arrival — should
-   the switch fail, or land you in a plain world with a notice? Session create currently fails hard,
-   which is right for an explicit request. For an agent switch I lean to **notice and continue**: not
-   being able to switch agents because an image API is down is worse than a missing sky.
-3. **The private-space asymmetry** (introduced by me): an explicit `new_world` in someone else's private
-   space *refuses*, while an implicit arrival degrades to a space-less world. Under §2's principle,
-   should the implicit arrival instead refuse to enter and leave you where you are? I now think **yes** —
-   silently landing somewhere with no space is the exact failure this plan is trying to end.
-4. **Naming.** `reset agent <name>` vs. extending `delete` to agent paths and leaving the dance manual.
-   I prefer the verb, because the dance is the part that's easy to get wrong.
+**Found while answering §5.3, and it is a regression from the space-stamp fix.** `outdoor` is a
+per-request parameter on world creation; an agent cannot declare that its worlds are room-less. The
+outdoor agent's declared opening doesn't say so either — it only sets a sky. So now that every mint path
+stamps the live space, switching to the outdoor agent for the first time while standing in a captured
+space mints a world **with the whole room composed into it**. Measured on the real capture:
+
+```
+SWITCH TO OUTDOOR (first ever):  world: default   persisted space: daniel/space-1
+                                 real surfaces composed: 59
+```
+
+The outdoor agent exists to put you *somewhere else*. Its own worlds on disk are all `<void>`, because
+they were made by an explicit request that passed the flag; only the constructor-built first world is
+wrong, and only when a space is live.
+
+The fix is to let the agent say it: `world.outdoor: true` in the agent definition (default `false`),
+consulted wherever a world is minted for that scope. That is a smaller and more honest change than
+threading a flag through every arrival, and it makes §5.3 stop being about permissions:
+
+- agent wants a space, and can have one → stamp it
+- agent wants a space, **can't** have one (someone else's private space) → void, **and say so**
+- agent doesn't want a space → void, silently, which is correct
+
+## 5. Decisions
+
+1. **Reset and assets — both, keep by default.** `reset agent <name>` leaves the catalog alone;
+   `--assets` (or `reset agent <name> assets`) also purges rows in that scope. Noted consequence: a true
+   first-run test of an agent whose opening *generates* a skybox needs the `--assets` form, or the
+   constructor silently reuses the cached one and you don't exercise the path you meant to.
+2. **A failing constructor aborts.** See §5a below for the shape.
+3. **Revised — notice, not refuse.** See §5b.
+4. **`reset agent <name>` as a verb**, not extended deletion. A reset is several deletions plus pointer
+   surgery; spelling it as `delete` would mean trusting that a delete is "really" doing a reset.
+
+### 5a. What aborting means
+
+The design constraint that makes abort cheap: **nothing is written until every fallible step has
+succeeded.** Session creation already works this way — the generative steps run into patch ops *before*
+any directory, world file or pointer is touched, so a failure has nothing to roll back. `enter` must
+preserve that property rather than construct-then-fix-up.
+
+Given that, "abort" is a **no-op**, and the answer to *where do you go* is **nowhere — you stay exactly
+where you were**, with a notice saying why the switch didn't happen. Nothing was created, no pointer
+moved, the live world is untouched. Not the shell: dropping someone into command mode is a bigger
+disruption than the failure warrants, and in a headset the shell means nothing.
+
+Two arrivals can't "stay where they were", because there is nowhere to stay:
+
+| Arrival | On constructor failure |
+|---|---|
+| agent / session / world switch | **no-op + notice.** You stay put. |
+| **boot** | can't refuse — the server must come up. Fall down the §2 chain; last resort is a plain world with no constructor, logged loudly. |
+| **space established by a headset** | refuse the selection; the headset stays in passthrough with a message. The mechanism already exists — it's what a private-space refusal does. |
+
+The rule underneath: **abort at the outermost point that still leaves a consistent state.**
+
+One honest limit. The greeting is generated by the *agent server*, on its next reconcile, after the
+world server has already committed — so a greeting failure cannot abort anything. Today it marks the
+session greeted anyway so it never retries, which I think is right: a missing opening line is not an
+inconsistent session. So "the constructor is atomic" is true of the world-server half (generative steps,
+world build, state seed) and not of the greeting.
+
+### 5b. What an "implicit arrival" into someone else's private space actually is
+
+Concretely, one situation: **you are a co-located guest.** Another user established the space, it is
+private, and the admission gate let you in because you are physically in it. You then switch agents (or
+your session is restored) — and the world minted for you can't be built in their space, so it comes out
+with no space at all.
+
+I proposed refusing. **That's wrong**, because C6 shows void is sometimes the *correct* outcome — an
+outdoor agent's world should have no space, and refusing to switch to it would be absurd.
+
+So the distinction isn't refuse-vs-void, it's **silent-vs-explained**. Landing in a space-less world
+without being told is the failure this plan is about; landing in one having been told *"you can't build
+in Bob's private space, so this world has no room in it"* is fine, and leaves you free to carry on or
+switch back. Combined with C6, the case stops needing a special rule at all.
 
 ## 6. Execution order
 
 Each step is independently testable and leaves the tree green.
 
-1. **C3** — declarative session visibility. Smallest, no interaction with the rest; unblocks the erotic
-   agent immediately.
-2. **C2** — unset vs. void. Pure data-model change with one new behaviour; needs a test that a world
+1. **C6** — `world.outdoor` in the agent definition. Goes first because it is a live regression: the
+   outdoor agent currently inherits your room on a first switch. Small and self-contained.
+2. **C3** — declarative session visibility. Same shape as C6, same place in the definition; unblocks the
+   erotic agent immediately.
+3. **C2** — unset vs. void. Pure data-model change with one new behaviour; needs a test that a world
    minted before space selection later adopts the space.
-3. **C1** — the shared entry routine. The refactor. No behaviour change intended beyond the opening now
-   running on every arrival; the existing suite is the regression net.
-4. **C4** — the fallback chain, inside the routine C1 just created.
-5. **C5** — agent delete + `reset`, which is also how 1–4 get properly exercised.
+4. **C1** — the shared entry routine, carrying the abort rule from §5a. The refactor. No behaviour
+   change intended beyond the opening now running on every arrival; the existing suite is the regression
+   net.
+5. **C4** — the fallback chain, inside the routine C1 just created.
+6. **C5** — agent delete + `reset agent <name> [--assets]`, which is also how 1–5 get exercised.
+
+C6 and C3 are both "a per-agent default that currently lives somewhere it shouldn't" — one in a
+per-request flag, one in prompt prose. Doing them together keeps the agent-definition change to a single
+pass over the loader and its validation.
 
 ## 7. Spec changes this implies
 
+- **`specs/agents.md` §3** — the agent definition gains `session.public` and `world.outdoor`, and the
+  table of validated fields grows two rows.
 - **`specs/agents.md` §7.5** — the constructor runs on *every* session mint, not just the explicit one;
-  the agent definition gains `session.public`; `first_world` is honoured everywhere.
+  `first_world` is honoured everywhere; the abort rule (§5a) and its one limit (the greeting is outside
+  the atomic half) are stated.
 - **`specs/agents.md` §9.1** — the pointer-restore rules become the fallback chain.
 - **`specs/spaces.md` §4.2** — three space states; the boot opt-out becomes "unset", and space selection
   may claim an unset world.
