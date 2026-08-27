@@ -191,6 +191,31 @@ a last-N bound, which affects what a late joiner sees.
 
 ## Agent state
 
+**State is per-session, and some agents need per-agent.** A state doc is a fresh mutable copy per
+session (§7.4's class/instance split), so what an agent learns lives inside **one conversation**. Start a
+second session with the same agent and it seeds blank again; everything learned stays behind in the
+first, still on disk, no longer consulted.
+
+That lifetime is right for the demo it was built for — a quest's progress *should* reset with a new
+game — and it stays invisible in practice, because `agent <name>` resumes the scope's last-used session
+rather than minting one. It bites the first time someone types `session new`, which is exactly when they
+least expect the agent to have forgotten them.
+
+It is wrong for any agent whose whole point is accumulating a picture of the **user** rather than the
+playthrough: preferences, likes and limits, how they want to be addressed. Surfaced by a user agent
+keeping a `kinks` doc — a list built up over months is meaningless if a new conversation resets it.
+
+The shape this wants is a **second scope for state, beside the per-session one**: docs declared
+per-agent live at `<user>/agents/<agent>/state/` and are shared by every session that agent owns, while
+per-session docs stay where they are. The agent's own declaration says which it wants — the natural
+spelling is a `"scope": "agent" | "session"` field on the doc, defaulting to `session` so nothing
+existing changes. Both resolve through the same `StateStore`; only the directory differs, and the
+injection and the six `state_*` tools are unchanged because they address a doc by name, not by path.
+
+Open: whether a per-agent doc should be per-**user**-per-agent (almost certainly yes — it's the user's
+preferences, and scope already carries the user) and what happens to an agent-scoped doc when the agent
+itself is deleted.
+
 **Undo for state edits.** `state_set` deliberately mirrors the world patch op shape
 (`{op:"set", path:…, value:…}`) so it can inherit `world.py`'s inverse machinery: `_set_path` returns the
 prior value at a path, so the inverse writes it back — "undo that" would walk back a game move exactly as
