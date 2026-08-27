@@ -1964,6 +1964,57 @@ def _probe_agent(tmp_path, monkeypatch, name, block):
     return f"daniel/agents/{name}"
 
 
+def test_every_session_mint_path_runs_the_agents_opening(srv, client, tmp_path, monkeypatch):
+    """§C1. `first_world` used to have exactly one caller — `/session/new`. An agent switch minted a bare
+    `default` from `world.on_create` alone, and a session switch hard-coded the name `home`. All three now
+    share one builder, so an agent's declared opening happens however you arrive."""
+    scope = _probe_agent(tmp_path, monkeypatch, "lounge", {
+        "session": {"first_world": {"name": "parlour",
+                                    "on_create": [{"cmd": "show_edges", "args": {"on": False}}]}}})
+
+    # (a) agent switch — the path that skipped the opening entirely
+    assert client.post("/scope/activate", json={"scope": scope}).json()["world"] == "parlour"
+    assert srv.store.doc["environment"]["spacePresentation"]["edgesVisible"] is False
+
+    # (b) session new — the path that always had it
+    assert client.post("/session/new", json={"scope": scope}).json()["ok"]
+    assert srv.worlds.name_of(scope, srv.active_world) == "parlour"
+
+    # (c) session switch into a session with no world yet — the path that hard-coded `home`
+    sid = srv._next_sid(scope)
+    srv.sessions.save_meta(scope, sid, {"id": sid, "owner": "daniel", "agent": "lounge",
+                                        "title": "Third", "public": True, "active_world": "",
+                                        "llm": "", "greeted": False, "seeded": False})
+    assert client.post("/session/switch", json={"scope": scope, "session": sid}).json()["ok"]
+    assert srv.worlds.name_of(scope, srv.active_world) == "parlour"
+    assert srv.store.doc["environment"]["spacePresentation"]["edgesVisible"] is False
+
+
+def test_a_failing_opening_aborts_and_leaves_you_where_you_were(srv, client, tmp_path, monkeypatch):
+    """§5a. The opening is the fallible part of construction (it calls image models), so it is built
+    BEFORE anything is written — an abort is therefore a no-op with nothing to roll back, and the answer
+    to "where do you go" is *nowhere*. Prototype-phase choice: a half-constructed session is worse than a
+    refused switch."""
+    from conjure import server as S
+    scope = _probe_agent(tmp_path, monkeypatch, "doomed", {
+        "session": {"first_world": {"name": "nope", "on_create": [
+            {"tool": "generate_skybox_image", "args": {"description": "a sky"}, "as": "sky"},
+            {"tool": "set_skybox", "args": {"image_id": "${sky.image_id}"}}]}}})
+    monkeypatch.setattr(S, "image_generators", {})        # no generator ⇒ the constructor fails
+    before_scope, before_world = S.active_scope, S.active_world
+
+    r = client.post("/scope/activate", json={"scope": scope}).json()
+    assert r["ok"] is False and "constructor failed" in r["error"]
+    assert S.active_scope == before_scope and S.active_world == before_world   # you did not move
+    assert srv.worlds.list(scope) == []                                        # and nothing was written
+    assert srv.sessions.list(scope) == []
+
+    # the explicit route refuses identically
+    r2 = client.post("/session/new", json={"scope": scope}).json()
+    assert r2["ok"] is False and "constructor failed" in r2["error"]
+    assert srv.sessions.list(scope) == []
+
+
 def test_an_agent_can_declare_its_sessions_private(srv, client, tmp_path, monkeypatch):
     """Sessions are public by default because the shared experience is the feature — but an agent can be
     private BY NATURE, and the only lever before this was to instruct the model to flip visibility on its
@@ -2530,17 +2581,23 @@ def test_scope_activate_is_noop_when_already_active(srv, client):
     assert r["ok"] and r.get("unchanged") and srv.active_scope == srv.DEFAULT_SCOPE
 
 
-def test_scope_activate_creates_default_for_a_new_agent_scope(srv, client):
+def test_scope_activate_opens_a_new_agent_with_its_declared_first_world(srv, client):
+    """A first-ever switch to an agent runs that agent's DECLARED opening — `session.first_world`: its
+    name and its (here generative) `on_create` chain — not a bare `default`. Before, the opening was
+    reachable only by typing `session new`, so outdoor's moon-gate sky never appeared on the way people
+    actually arrive."""
     outdoor = "daniel/agents/outdoor"
     r = client.post("/scope/activate", json={"scope": outdoor}).json()
-    assert r["ok"] and r["world"] == "default"
+    assert r["ok"] and r["world"] == "home"                   # outdoor declares first_world.name = "home"
     assert srv.active_scope == outdoor                        # the live world now belongs to outdoor
-    assert srv.worlds.exists(outdoor, "default")             # …created + persisted under its scope
+    assert srv.worlds.exists(outdoor, "home")                 # …created + persisted under its scope
+    # its generative step ran: the constructor's skybox is baked into the world it built
+    assert srv.store.doc["environment"].get("sky", {}).get("src")
 
 
 def test_scope_activate_resumes_last_active_with_its_content(srv, client):
     outdoor = "daniel/agents/outdoor"
-    client.post("/scope/activate", json={"scope": outdoor})       # outdoor/default live
+    client.post("/scope/activate", json={"scope": outdoor})       # outdoor's first world goes live
     client.post("/patch", json={"ops": [{"op": "add", "entity": {"id": "sky_marker", "components": {}}}]})
     client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})   # leave (saves outdoor/default)
     assert srv.active_scope == srv.DEFAULT_SCOPE
@@ -2560,11 +2617,11 @@ def test_state_reports_the_live_tuple(srv, client):
 
 def test_state_reflects_a_scope_activation(srv, client):
     # Switching agent/scope moves the live tuple; /state derives agent from the scope and reports the
-    # space the new world composes against (VOID for the outdoor default — no captured room).
+    # space the new world composes against (VOID for outdoor — it declares `world.outdoor`).
     client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"})
     s = client.get("/state").json()
-    assert s["scope"] == "daniel/agents/outdoor" and s["agent"] == "outdoor" and s["world"] == "default"
-    expected_space = srv.VOID if srv.active_space == srv.VOID else f"{srv.active_space_owner}/{srv.active_space}"
+    assert s["scope"] == "daniel/agents/outdoor" and s["agent"] == "outdoor" and s["world"] == "home"
+    expected_space = srv.VOID if srv._no_space() else f"{srv.active_space_owner}/{srv.active_space}"
     assert s["space"] == expected_space
 
 

@@ -504,8 +504,14 @@ def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
         try:
             import httpx
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(f"{settings.world_url}/scope/activate", json={"scope": scope})
+            # 180s: a first-ever switch runs the agent's declared opening, which may generate a skybox
+            # (the world server broadcasts a notice before it starts).
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                resp = await client.post(f"{settings.world_url}/scope/activate", json={"scope": scope})
+            body = resp.json()
+            if not body.get("ok"):
+                # The constructor aborted, so NOTHING moved (world-entry plan §5a) — say why and stay put.
+                raise RuntimeError(body.get("error") or "the world server refused the switch")
         except Exception as exc:  # noqa: BLE001
             app.state.expect_agent = None                 # nothing moved — don't muffle a later real change
             if on_text:

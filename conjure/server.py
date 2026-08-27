@@ -159,6 +159,33 @@ def _run_world_commands(cmds: list[dict]) -> list[dict]:
     return ops
 
 
+async def _build_first_world(scope: str) -> tuple[Optional[str], Optional[WorldStore], Optional[str]]:
+    """Build a session's FIRST world from the agent's declared opening — `session.first_world`: its name,
+    its sync `on_create` steps, and its **generative** ones (specs/agents.md §7.5).
+
+    Returns `(name, store, None)` on success or `(None, None, error)` on failure, and **writes nothing
+    either way**. That is the whole point: it is shared by every path that mints a session, and the
+    generative steps are the one fallible part of construction, so building before committing makes an
+    abort a no-op with nothing to roll back (world-entry plan §5a).
+
+    Before this, only `/session/new` consulted `first_world`. An agent switch minted a bare `default`
+    from `world.on_create` alone, so an agent's intended opening — outdoor's moon-gate sky — was
+    reachable only by typing `session new`."""
+    wname, fw_on_create = _first_world_spec(scope)
+    if any((s.get("tool") or s.get("cmd")) not in _WORLD_COMMANDS for s in fw_on_create):
+        # Generative work is slow (image models). Say so before going quiet — the callers all allow for
+        # a long wait, but the user shouldn't have to infer that from silence.
+        await _broadcast({"type": "notice", "text": "Setting up your new world…"})
+    gen_ops, gen_err = await _build_generative_ops(fw_on_create)
+    if gen_err:
+        return None, None, f"constructor failed: {gen_err}"
+    raw = _new_world_store(scope, extra_on_create=fw_on_create)
+    if gen_ops:
+        raw.apply_patch(gen_ops, origin="constructor")   # generative results (e.g. the skybox) bake in
+    _reset_room_authority(raw)
+    return wname, raw, None
+
+
 def _new_world_store(scope: str, *, extra_on_create: list[dict] = (),
                      adopt_space: bool = True, outdoor: bool = False) -> WorldStore:
     """A fresh world: the blank starter + the owning agent's `world.on_create` constructor. `extra_on_create`
@@ -1337,8 +1364,11 @@ async def _activate_scope(scope: str) -> dict:
     """Make a world in `scope` live: resume that scope's last-active world, or create its `default` if
     the scope has none — the `_boot_world` logic generalized to any scope. A no-op when `scope` is
     already active. Used on agent switch so the live world belongs to the NEW agent's scope, not the
-    previous agent's. A `default` minted here ADOPTS the live space like any other new world
-    (`_space_for_new_world`), so switching agents while standing in your room keeps the room."""
+    previous agent's. A world minted here ADOPTS the live space like any other (`_space_for_new_world`),
+    so switching agents while standing in your room keeps the room — and it runs the agent's **declared
+    opening** (`_build_first_world`), so a first-ever switch gives you what that agent is for rather than
+    a bare `default`. The opening is built before anything is written, so a failure leaves you where you
+    were (§5a)."""
     # The live agent is derived from the global session pointer (set by _switch_to below) — no separate
     # last-agent to record here (docs/specs/agents.md §9.1).
     if scope == active_scope:
@@ -1347,7 +1377,10 @@ async def _activate_scope(scope: str) -> dict:
     active = worlds.get_active(scope)
     if active and worlds.exists(scope, active):
         return await _switch_to(scope, active)                 # resume the scope's last-active world
-    return await _switch_to(scope, "default", store_override=_new_world_store(scope))  # or create its default
+    wname, raw, err = await _build_first_world(scope)           # …or open it for the first time
+    if err:
+        return {"ok": False, "error": err}
+    return await _switch_to(scope, wname, store_override=raw)
 
 
 class ActivateScopeRequest(BaseModel):
@@ -1453,20 +1486,23 @@ def _resolve_user(spoken: str, agent: str) -> Optional[str]:
 
 
 async def _switch_session(scope: str, sid: str) -> dict:
-    """Make session `sid` live: route worlds to it, resume its active world (or mint a blank ``home`` in
-    the live space if it has none yet — the constructor that seeds a richer first world is a later step),
-    and switch — which
-    writes the global pointer ``(scope, sid)`` and broadcasts. The agent server follows the pointer and
-    swaps the transcript (step 2). We DON'T flip the scope's active session here — `_switch_to(sid=…)`
-    does it after saving the outgoing world, so it lands in the right session."""
+    """Make session `sid` live: route worlds to it, resume its active world (or build the agent's declared
+    opening if it has none yet), and switch — which writes the global pointer ``(scope, sid)`` and
+    broadcasts. The agent server follows the pointer and swaps the transcript (step 2). We DON'T flip the
+    scope's active session here — `_switch_to(sid=…)` does it after saving the outgoing world, so it
+    lands in the right session.
+
+    The opening comes from `_build_first_world`, the same routine `/session/new` and an agent switch use;
+    this path used to hard-code the name ``home`` and skip the constructor entirely."""
     wdir = sessions.worlds(scope, sid)              # explicit target — no active-pointer flip yet
     active = wdir.get_active()
     if not (active and wdir.exists(active)):
-        raw = _new_world_store(scope)               # a fresh session with no world yet → a blank home
-        _reset_room_authority(raw)
-        wdir.save("home", raw)
-        wdir.set_active("home")
-        active = "home"
+        wname, raw, err = await _build_first_world(scope)
+        if err:
+            return {"ok": False, "error": err}      # nothing written — the caller stays where it was
+        wdir.save(wname, raw)
+        wdir.set_active(wname)
+        active = wname
     return await _switch_to(scope, active, sid=sid)
 
 
@@ -1515,15 +1551,11 @@ async def session_new(req: SessionRef) -> dict:
         clash = _session_title_taken(req.scope, title)
         if clash:
             return {"ok": False, "error": f"a session called {title!r} already exists here ({clash})"}
-    wname, fw_on_create = _first_world_spec(req.scope)
-    # Generative first-world steps (skybox-from-description) run FIRST, into patch ops — so a failure aborts
-    # here with nothing created/switched (fail-hard + rollback, §8.13). Slow (image gen); the client's
-    # long-turn heartbeat covers the wait.
-    if any((s.get("tool") or s.get("cmd")) not in _WORLD_COMMANDS for s in fw_on_create):
-        await _broadcast({"type": "notice", "text": "Setting up your new world…"})
-    gen_ops, gen_err = await _build_generative_ops(fw_on_create)
-    if gen_err:
-        return {"ok": False, "error": f"constructor failed: {gen_err}"}
+    # The opening is built BEFORE anything is created or switched, so a failure aborts with nothing on
+    # disk to roll back (§5a). Shared with every other path that mints a session.
+    wname, raw, err = await _build_first_world(req.scope)
+    if err:
+        return {"ok": False, "error": err}
     sid = _next_sid(req.scope)
     user = req.scope.split("/", 1)[0]
     sessions.save_meta(req.scope, sid, {
@@ -1531,11 +1563,7 @@ async def session_new(req: SessionRef) -> dict:
         "title": title or f"Session {sid.split('-')[-1]}",
         "public": _agent_session_public(req.scope),
         "active_world": wname, "llm": "", "greeted": False, "seeded": False})
-    wdir = sessions.worlds(req.scope, sid)               # explicit target (no active-pointer flip — that's
-    raw = _new_world_store(req.scope, extra_on_create=fw_on_create)   # world ⊕ first_world constructor chain
-    if gen_ops:
-        raw.apply_patch(gen_ops, origin="constructor")   # generative results (e.g. the skybox) bake in
-    _reset_room_authority(raw)                           #  done in _switch_to, after the outgoing save)
+    wdir = sessions.worlds(req.scope, sid)     # explicit target — the active-pointer flip is _switch_to's
     wdir.save(wname, raw)
     wdir.set_active(wname)
     await _switch_session(req.scope, sid)                # resumes the first world we just built

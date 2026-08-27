@@ -308,7 +308,9 @@ class Shell:
         try:
             import httpx
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            # 180s, like `session new`: a first-ever switch to an agent runs its declared opening, which
+            # may generate a skybox. The server broadcasts "Setting up your new world…" before it does.
+            async with httpx.AsyncClient(timeout=180.0) as client:
                 await client.post(f"{url}/scope/activate",
                                   json={"scope": scope_for(self._user, agent)})
         except Exception:
