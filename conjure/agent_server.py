@@ -34,6 +34,7 @@ from .config import DEFAULT_USER, USERS_DIR, VOID, Settings
 from .director import Busy
 from .llm import Turn
 from .shell import Shell, default_cwd
+from .speech import for_speech
 from .world import MIGRATED_SID, SessionRepository
 
 
@@ -138,6 +139,11 @@ def _permitted(app: FastAPI, conn: Conn) -> bool:
     return (not live) or live.get("public", True) or (conn.user == live.get("owner"))
 
 
+# Event types carrying LLM-authored prose. Only these are rewritten for voice: `user_turn` is the
+# speaker's own words echoed back, and `notice` is server-authored and already speakable.
+_SPOKEN_TEXT = ("assistant_delta", "assistant_final")
+
+
 async def _conv_broadcast(app: FastAPI, event: dict, *, origin: Optional[Conn] = None) -> None:
     """Fan a CONVERSATION event out to PERMITTED clients only — a private session's dialog is never sent to
     a non-owner guest (§8.3). (Control events like context/turn_done go per-connection, not through here.)
@@ -150,11 +156,19 @@ async def _conv_broadcast(app: FastAPI, event: dict, *, origin: Optional[Conn] =
     The marker has to be per-connection, not per-user. One person is routinely on two clients at once
     (a CLI and the voice client), and a client that filtered on the speaker's NAME threw away the other
     client's turns as if it had typed them itself — speak into the voice client and the CLI showed the
-    agent's reply with nothing it was replying to."""
+    agent's reply with nothing it was replying to.
+
+    **Voice gets a different rendering of the same event.** Assistant text bound for a voice client goes
+    through `speech.for_speech` (asterisks dropped, emoji named) — that is why the rewrite lives here, at
+    fan-out, and not in the director: the CLI must keep the written form, and the transcript stores the
+    text unchanged, so the spoken and written conversations stay one conversation."""
     for c in app.state.hub.conns:
         if _permitted(app, c):
+            ev = event
+            if c.kind == "voice" and event.get("type") in _SPOKEN_TEXT:
+                ev = {**event, "text": for_speech(event.get("text") or "")}
             try:
-                await c.send({**event, "mine": True} if c is origin else event)
+                await c.send({**ev, "mine": True} if c is origin else ev)
             except Exception:  # noqa: BLE001 — a dead socket must not break the fan-out
                 pass
 

@@ -139,6 +139,59 @@ async def test_a_second_client_of_the_same_user_still_sees_the_turn():
     assert render_event(spoken, verbose=False) is None
 
 
+async def test_voice_hears_speakable_text_while_the_cli_sees_what_was_written():
+    """The same reply, rendered twice. An LLM writes asterisks and emoji for a screen; through a TTS
+    engine they are noise or silence. The rewrite happens at FAN-OUT, per connection — so the CLI keeps
+    the written form and the two clients stay in one conversation."""
+    from conjure.agent_server import _conv_broadcast
+
+    shell = FakeShell()
+    voice, cli = FakeConn("alice", kind="voice"), FakeConn("alice", kind="cli")
+    app = _app(shell, [voice, cli])
+    await _conv_broadcast(app, {"type": "assistant_final", "text": "**Done!** 🎉"})
+
+    assert voice.sent[-1]["text"] == "Done! party popper emoji"
+    assert cli.sent[-1]["text"] == "**Done!** 🎉"
+
+
+async def test_only_llm_prose_is_rewritten_for_voice():
+    """`user_turn` is the speaker's own words echoed back and `notice` is server-authored — neither is
+    LLM prose, so neither is touched. Rewriting the echo would make a client hear something different
+    from what it just said."""
+    from conjure.agent_server import _conv_broadcast
+
+    shell = FakeShell()
+    voice = FakeConn("alice", kind="voice")
+    app = _app(shell, [voice])
+    await _conv_broadcast(app, {"type": "user_turn", "speaker": "alice", "text": "make it *big*"})
+    await _conv_broadcast(app, {"type": "notice", "text": "Setting up your new world…"})
+
+    assert voice.sent[0]["text"] == "make it *big*"
+    assert voice.sent[1]["text"] == "Setting up your new world…"
+
+
+async def test_the_rewrite_is_a_rendering_not_an_edit():
+    """The transcript stores what the LLM WROTE; only the wire to a voice client carries the spoken
+    form. Otherwise switching clients mid-conversation would rewrite history, and a CLI reading back
+    would see text its own LLM never produced."""
+    shell = FakeShell()
+
+    async def handle(text, *, speaker, on_text=None, on_tool=None):
+        if on_text:
+            await on_text("**Done!** 🎉", final=True, speaker="Claude")
+        shell.director.transcript.append(Turn("user", text.strip(), by=speaker))
+        shell.director.transcript.append(Turn("assistant", "**Done!** 🎉"))
+
+    shell.director.handle = handle
+    conn = FakeConn("alice", kind="voice")
+    app = _app(shell, [conn])
+    await _handle_turn(app, conn, "make a dragon")
+
+    heard = next(e for e in conn.sent if e["type"] == "assistant_final")
+    assert heard["text"] == "Done! party popper emoji"                     # what the engine says
+    assert shell.director.transcript[-1].text == "**Done!** 🎉"            # what was written, unchanged
+
+
 # --------------------------------------------------------------------------- transcript persistence (step 2)
 
 async def test_utterance_is_persisted_to_the_session_transcript(tmp_path):

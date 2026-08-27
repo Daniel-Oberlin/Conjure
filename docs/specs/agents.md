@@ -1006,6 +1006,33 @@ cadence. `backlog=0`, because a fresh connection shouldn't get the whole transcr
 `--wake-word` is a separate, purely voice-input concern: a mic-activation gate ahead of the socket.
 Bare wake word arms for the next utterance; wake word plus text submits the remainder immediately.
 
+#### The speech stage — what a voice client hears
+
+An LLM writes for a screen. Asterisks (`**bold**`, `*shrugs*`, bullets) and emoji are free there and are
+noise or silence through a TTS engine. `conjure/speech.py` is the one place that turns written text into
+**speakable** text:
+
+| Stage | Does |
+|---|---|
+| `asterisks` | removes every `*`, then collapses the runs of spaces and leading indents that leaves — newlines stay, they pace the speech |
+| `emoji` | replaces each emoji with its Unicode name plus the word "emoji" (🍦 → *soft ice cream emoji*), so the character isn't silently dropped along with whatever it meant |
+
+A **run** of adjacent emoji codepoints becomes one phrase named for the first — a joined family or a
+skin-toned thumb is one picture to a reader, and naming every component would bury the sentence. The
+emoji test is explicit pictographic ranges rather than the `So` Unicode category, which would also catch
+©, ® and ™.
+
+Two properties make this safe to extend, and both are why it lives at fan-out (`_conv_broadcast`) rather
+than in the director:
+
+- **Per-connection, not per-turn.** The same reply reaches a CLI written and a voice client spoken.
+- **A rendering, not an edit.** Nothing is persisted or replayed through it — the transcript stores what
+  the LLM wrote, so switching clients mid-conversation never rewrites history.
+
+Only LLM prose is rewritten (`assistant_delta`, `assistant_final`). A `user_turn` is the speaker's own
+words echoed back and a `notice` is server-authored; rewriting either would make a client hear something
+different from what it said. Adding a case is adding a function to `_STAGES`.
+
 ---
 
 ## 11. Boot and lifecycle
