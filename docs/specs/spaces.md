@@ -42,7 +42,8 @@ single space routinely holds several rooms joined by doors — the reference cap
 | Term | Meaning |
 |---|---|
 | **space** | the persistent physical-environment record (this document) |
-| **`<void>`** | sentinel space for a world with no physical tie — a pure-sky or purely-virtual world |
+| **`<void>`** | sentinel for a world **deliberately** without a physical tie — a pure-sky or purely-virtual world (§4.3) |
+| **`UNSET`** | server-side sentinel for a world whose space is **not decided yet** — a placeholder. Renders like `<void>`; relocatable, where `<void>` is not (§4.3) |
 | **active space** | the one space currently composed into the active world |
 | **space owner** | the user who first captured it; the only user who may write its geometry |
 | **authority** | the headset whose captures the server accepts — the active world's owner |
@@ -184,6 +185,38 @@ leaving the ref absent, which `_activate` reads as the honest "no space chosen y
 > The stamp lives at the shared chokepoint rather than at each call site because it was previously only at
 > `/worlds/new`. Every other path minted a room-less world, so switching agents inside your own captured
 > room dropped you into a void world and the incoming agent reported, correctly, that it had no surfaces.
+
+### 4.3 Room-less has two meanings: `UNSET` and `VOID`
+
+A world with no room is either **not decided yet** or **decided to have none**, and those want opposite
+treatment when a headset works out which space you are standing in.
+
+| Server state | On disk | Renders | A space selection… |
+|---|---|---|---|
+| **`UNSET`** | the `space` key is **absent** | room-less | **relocates you** — it's a placeholder, not a choice |
+| **`VOID`** (`"<void>"`) | `"space": "<void>"` | room-less | **claims the space and leaves you put** |
+| a reference | `"space": "<owner>/<name>"` | that space's geometry | admitted on match, refused otherwise |
+
+`UNSET` is purely in-memory (`server.py`); on disk it is the *absence* of the key, which `_activate`
+reads back as `UNSET`, so it round-trips with no new persisted sentinel. The **live document reports
+`<void>` for both**, so the client's two-state contract — `isVoidWorld` ⇒ derive a canonical frame — is
+untouched. Only the server holds the third state, in `active_space`; `_no_space()` is the predicate for
+"no space to work with", which is what almost every caller means.
+
+**Why a deliberately-void world is not relocated.** The client votes its live capture against the geo
+candidates *even in a void world*, and must: gating that on non-void is what once left an outdoor
+re-entry stuck on "finding" forever. But **resolving which space you are in** and **moving you to that
+space's last world** are two different things, and only the first is wanted when you chose to be nowhere.
+Previously they were fused, so leaving and restarting inside an outdoor world and then putting the
+headset on pulled you into whichever agent last used your living room.
+
+**Why that needs `UNSET` to be safe.** A boot placeholder is room-less too, and relocating it is exactly
+right. Before this, `_save_active` stamped `<void>` on any room-less world, so a placeholder became
+*deliberately* outdoor within one autosave (~1 s) — after which the rule above would refuse to relocate
+it and strand a headset user in a blank world. Persisting the absence is what keeps the two apart.
+
+The existing principle survives and gets sharper: **spatial truth supersedes the temporal guess** — it
+applies to a *guess*. A void world is a decision.
 
 ---
 

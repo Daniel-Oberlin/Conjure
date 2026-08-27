@@ -698,6 +698,28 @@ _autosave_task: asyncio.Task | None = None
 _space_holders: "set[WebSocket]" = set()
 _selected_cids: set[str] = set()
 
+# A world's space reference has THREE states, not two. `VOID` ("<void>") means *deliberately* room-less —
+# an outdoor world, or one whose agent declares `world.outdoor`. `UNSET` means *not decided yet*: a world
+# minted before anything knew which space we're in (the boot placeholder). Both render identically (no
+# real geometry) and both report VOID to the client, so the client contract is unchanged — the difference
+# is what a headset is allowed to do about it later:
+#
+#   UNSET  →  a space selection may relocate you (that's the point of a placeholder)
+#   VOID   →  a space selection claims the space but LEAVES YOU WHERE YOU ARE (§C2b)
+#
+# The distinction is why C2b is safe. Without it, `_save_active` rewrites the boot placeholder to VOID
+# within a second, C2b then declines to relocate, and a headset user is stranded in a blank world for
+# reasons nobody could see. UNSET is purely in-memory: on disk it is the ABSENCE of the key, which
+# `_activate` reads back as UNSET, so it round-trips without a new persisted sentinel.
+UNSET = "<unset>"
+
+
+def _no_space() -> bool:
+    """Is there no active space to work with — either deliberately (VOID) or not-yet (UNSET)?
+    Every caller that used to ask `active_space == VOID` means this; only the two places that must tell
+    a decision from a placeholder compare against `UNSET` directly."""
+    return active_space in (VOID, UNSET)
+
 
 def _occupied() -> bool:
     """Is the active space CLAIMED — is any AR headset currently holding it? While occupied, an AR joiner
@@ -724,9 +746,13 @@ def _save_active() -> None:
     space; placed objects + display prefs + per-surface style overrides → the active world doc."""
     if store is None or worlds is None or spaces is None:
         return
-    if active_space == VOID:                                        # outdoor/void world: no space to split out
+    if _no_space():                                 # room-less world: no geometry to split out
         world_doc = copy.deepcopy(store.doc)
-        world_doc.setdefault("environment", {})["space"] = VOID
+        env = world_doc.setdefault("environment", {})
+        if active_space == UNSET:
+            env.pop("space", None)                  # no decision yet — persist the ABSENCE, not a VOID
+        else:                                       # a deliberate outdoor world — record it as such
+            env["space"] = VOID
         worlds.save(active_scope, active_world, WorldStore(world_doc))
         return
     # Geometry is persisted into the SPACE's OWNER's scope — not the world owner's — so a world built in
@@ -1260,7 +1286,7 @@ async def reset_world() -> dict:
     global store
     raw = _new_world_store(active_scope)      # empty starter world (placed content + prefs only)
     space = spaces.load(active_space_owner, active_space) \
-        if (spaces and active_space != VOID and spaces.exists(active_space_owner, active_space)) \
+        if (spaces and not _no_space() and spaces.exists(active_space_owner, active_space)) \
         else {"surfaces": [], "boundary": None}   # keep the active space's geometry (from its owner's scope)
     store = WorldStore(_compose(raw.doc, space))   # keep the physical room; clear only the world's content
     _reset_room_authority(store)
@@ -1809,6 +1835,23 @@ async def select_space(req: SpaceSelect) -> dict:
 
     # --- Unclaimed (provisional boot / everyone left): this AR user ESTABLISHES the space.
     _selected_cids.add(cid)
+
+    # §C2b — a DELIBERATELY room-less world is not relocated by recognising the room you're standing in.
+    # The client votes its capture against the candidates even here, and must: without it, an outdoor
+    # re-entry never resolves a space at all. But resolving WHICH space you are in and MOVING you to that
+    # space's last world are two different things, and only the first is wanted when you chose to be
+    # nowhere. So: claim the space (occupancy + boundary are still real) and stay put.
+    #
+    # This is only safe because UNSET exists (§C2). A boot placeholder is room-less too, and relocating it
+    # is exactly right — it is a guess, not a choice. Were both spelled VOID, this branch would strand a
+    # headset user in a blank world.
+    if active_space == VOID:
+        _slog("select", f"user={who!r} matched {req.owner}/{req.name} but the live world is outdoor "
+                        f"→ space claimed, NOT relocating")
+        await _broadcast({"type": "notice", "text": "You're in a world with no room — staying put."})
+        return {"ok": True, "admitted": True, "kept_outdoor": True,
+                "msg": "You're in an outdoor world, so I've left you in it."}
+
     if matched_ref and spaces.exists(*matched_ref):        # matched → join its last-active world (return visit)
         sp = spaces.load(*matched_ref)
         scope, w = sp.get("last_scope"), sp.get("last_world")
@@ -1874,7 +1917,7 @@ async def worlds_new(req: WorldRef) -> dict:
         # D8/step 6: the active space must let the creator build here — their own space, or a PUBLIC one.
         # A PRIVATE space owned by someone else restricts world-creation to its owner (VOID isn't a space).
         # An outdoor world wants no space at all, so the permission question doesn't arise.
-        if not outdoor and active_space != VOID and not _may_create_world_in(
+        if not outdoor and not _no_space() and not _may_create_world_in(
                 creator, active_space_owner, active_space):
             return {"ok": False, "error": f"{active_space_owner}'s space is private — "
                                           f"only {active_space_owner} can build worlds here."}
@@ -2027,7 +2070,7 @@ async def space_visibility(req: SpaceVisibilityRequest) -> dict:
     owner = req.scope.split("/", 1)[0]
     name = req.name
     if not name:                                       # "make THIS space private"
-        if active_space == VOID or active_space_owner != owner:
+        if _no_space() or active_space_owner != owner:
             return {"ok": False, "error": "you're not in one of your own spaces — name the space to change"}
         name = active_space
     if not spaces.exists(owner, name):
@@ -2504,12 +2547,12 @@ def _admin_do_delete(loc: _Loc) -> dict:
         sid = spaces.resolve(loc.user, loc.name)
         if sid is None:
             return {"ok": False, "error": f"no space {loc.name!r} for {loc.user!r}"}
-        if loc.user == active_space_owner and sid == active_space != _VOID_SPACE:
+        if loc.user == active_space_owner and not _no_space() and sid == active_space:
             return {"ok": False, "error": "can't delete the active space — switch away first"}
         spaces.delete(loc.user, sid)
         return {"ok": True, "deleted": f"space {loc.name!r}"}
     if loc.kind == "spaces":
-        if loc.user == active_space_owner and active_space != _VOID_SPACE \
+        if loc.user == active_space_owner and not _no_space() \
                 and active_space in spaces.list(loc.user):
             return {"ok": False, "error": "the active space is here — switch away first"}
         return {"ok": True, "deleted": f"{spaces.delete_user(loc.user)} spaces for {loc.user!r}"}
@@ -2794,7 +2837,7 @@ def _space_for_new_world(scope: str, *, outdoor: bool = False) -> str:
     /autosave), so it is routinely real-but-unflushed at mint time. The one caller that runs before any
     space is resolved passes `adopt_space=False` instead.
     """
-    if outdoor or active_space == VOID:
+    if outdoor or _no_space():
         return VOID
     if not _may_create_world_in(scope.split("/", 1)[0], active_space_owner, active_space):
         return VOID
@@ -2811,15 +2854,16 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
         VOID ("<void>")     → an outdoor/void world: no room to merge — objects + skybox only.
         "<owner>/<name>"    → a shared space, possibly ANOTHER user's (D3, the target form).
         "<name>"            → a bare/legacy ref → the world-owner's own space (back-compat).
-        absent              → no space chosen yet → treated as VOID (D5, step 5): the honest "no room
-                              yet", NOT the old anonymous-'home' fallback.
+        absent              → no space chosen YET → UNSET (D5 step 5 + §C2): renders exactly like VOID
+                              (the honest "no room yet", never the old anonymous-'home' fallback), but a
+                              headset selecting a space MAY relocate it, where a deliberate VOID may not.
 
     `_compose` merges the world's objects/prefs with the space's surfaces to build the doc the client
     renders. On the way back out, `_save_active` SPLITS the live doc again (geometry → the space's owner's
     scope, objects + overrides → the world), so geometry only ever flows world→space on real capture.
 
     Returns `(space_owner, space_name, composed_store)` with room-capture authority reset (fresh session
-    state). VOID returns `(world_owner, VOID, …)` — the owner is irrelevant for a room-less world.
+    state). A room-less world returns `(world_owner, VOID | UNSET, …)` — the owner is irrelevant for it.
 
     specs/spaces.md §6.1 — the old LEGACY-MIGRATION path is gone (activate is read-only; it never
     rewrites a world doc). **step 2** — space references are now fully-qualified `<owner>/<name>`, so a
@@ -2831,13 +2875,15 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     doc = world.doc
     space_ref = (doc.get("environment", {}) or {}).get("space")
     if space_ref == VOID or not space_ref:                         # explicit outdoor/void OR no space chosen
-        composed_doc = copy.deepcopy(doc)                          # yet (D5): no room to merge — objects +
-        composed_doc["entities"] = [e for e in composed_doc.get("entities", [])   # skybox only. A void world
-                                    if not (e.get("meta") or {}).get("real")]     # owns NO real geometry —
-        composed_doc.setdefault("environment", {})["space"] = VOID   # drop any stray inline reals and mark
-        composed = WorldStore(composed_doc)                          # void so the client uses canonicalFrame
+        composed_doc = copy.deepcopy(doc)                          # yet: no room to merge — objects +
+        composed_doc["entities"] = [e for e in composed_doc.get("entities", [])   # skybox only. Neither
+                                    if not (e.get("meta") or {}).get("real")]     # owns real geometry —
+        # The LIVE doc says VOID for both, so the client's two-state contract (`isVoidWorld` → canonical
+        # frame) is untouched; only the server keeps the third state, in `active_space`.
+        composed_doc.setdefault("environment", {})["space"] = VOID
+        composed = WorldStore(composed_doc)
         _reset_room_authority(composed)
-        return world_owner, VOID, composed
+        return world_owner, (VOID if space_ref == VOID else UNSET), composed
     owner, space_name = _resolve_space_ref(space_ref, world_owner)
     if spaces.exists(owner, space_name):
         space = spaces.load(owner, space_name)                     # the shared physical room
@@ -4561,7 +4607,7 @@ def _live_state() -> dict:
         "world_id": active_world,
         "owner": active_scope.split("/", 1)[0],
         "public": _active_public(),     # the live session's visibility (§8.2) — the agent server gates on it
-        "space": VOID if active_space == VOID else _space_ref(active_space_owner, active_space),
+        "space": VOID if _no_space() else _space_ref(active_space_owner, active_space),
     }
 
 

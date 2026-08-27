@@ -1154,7 +1154,8 @@ def test_activate_no_longer_migrates_embedded_geometry(srv, client):
     """specs/spaces.md §6.1: the legacy geometry-embedded migration is gone. A pre-space world
     doc is no longer rewritten on load, and its INLINE real surfaces are NOT resurrected — real geometry
     lives only in the space now (fed by capture via _save_active). Objects still compose; a world with no
-    space ref now composes as VOID (step 5 removed the anonymous-'home' Path B fallback)."""
+    space ref renders room-less (step 5 removed the anonymous-'home' Path B fallback) and resolves to
+    UNSET rather than VOID — not-decided-yet, which a headset may still claim (§C2)."""
     from conjure.world import WorldStore
     embedded = {
         "id": "l", "name": "legacy", "rev": 3, "environment": {"boundary": {"height": 2.6}},
@@ -1167,8 +1168,9 @@ def test_activate_no_longer_migrates_embedded_geometry(srv, client):
     client.post("/worlds/switch", json={"name": "legacy"})
     ids = {e["id"] for e in _entities(client)}
     assert "ent_box" in ids                                     # placed objects compose as before
-    assert "real_table_2" not in ids                            # inline geometry is NOT resurrected (VOID drops reals)
-    assert srv.active_space == srv.VOID                         # no space ref → VOID (Path B removed, step 5)
+    assert "real_table_2" not in ids                            # inline geometry is NOT resurrected
+    assert srv.active_space == srv.UNSET                        # ABSENT ref → not-yet-decided, not a decision
+    assert srv._no_space() is True                              # …and it renders room-less either way
     wd = srv.worlds.load(srv.DEFAULT_SCOPE, "legacy").doc
     assert any(e["id"] == "real_table_2" for e in wd["entities"])   # inline geometry NOT stripped from disk
     assert "space" not in wd.get("environment", {})                # activate no longer stamps a space ref
@@ -1467,6 +1469,80 @@ def test_occupied_space_refuses_an_ar_user_not_in_it(srv, client):
                                             "user": "eve", "cid": "eve1"}).json()
     assert r2.get("refused") is True
     assert srv.active_space == "home"                            # still the claimed space
+
+
+def _void_world(srv, client, name="beach"):
+    """Put the live pointer in a DELIBERATELY room-less world (the outdoor case)."""
+    assert client.post("/worlds/new", json={"name": name, "outdoor": True}).json()["ok"]
+    assert srv.active_space == srv.VOID
+
+
+def test_an_outdoor_world_is_not_relocated_by_recognising_the_room(srv, client):
+    """§C2b. The client votes its capture against candidates even in a void world — it must, or an outdoor
+    re-entry never resolves a space at all. But resolving WHICH space you're in and MOVING you to that
+    space's last world are different things, and only the first is wanted when you deliberately chose to
+    be nowhere. Reported: leave and restart inside an outdoor world, put the headset on, and you're pulled
+    into whichever agent last used your living room."""
+    from conjure.world import WorldStore
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    ah = srv.worlds.save(srv.DEFAULT_SCOPE, "animal-house", WorldStore(
+        {"name": "animal-house", "rev": 1, "environment": {"space": "daniel/home"}, "entities": []}))
+    _void_world(srv, client)
+    before = srv.active_world
+    # after the switch, for the same reason as above — so a relocation, if it happened, would be visible
+    srv.spaces.save("daniel", "home", {**srv.spaces.load("daniel", "home"),
+                                       "last_scope": srv.DEFAULT_SCOPE, "last_world": ah})
+
+    r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
+                                           "user": "daniel", "cid": "hs1"}).json()
+    assert r["ok"] and r.get("kept_outdoor") is True
+    assert r.get("admitted") is True                       # the space IS claimed — occupancy is still real
+    assert srv.active_world == before                      # …but we did not move
+    assert srv.active_space == srv.VOID                    # still deliberately room-less
+
+
+def test_a_boot_placeholder_IS_relocated_by_recognising_the_room(srv, client):
+    """The contrast that makes §C2b safe, and a **regression guard rather than a new behaviour**: a boot
+    placeholder has always relocated, and must keep doing so. A world minted before anything knew the
+    space is UNSET, not VOID — a guess, not a choice. Were both spelled VOID, the branch above would
+    decline to relocate and strand a headset user in a blank world, which is why C2b needs C2."""
+    from conjure.world import WorldStore
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    ah = srv.worlds.save(srv.DEFAULT_SCOPE, "animal-house", WorldStore(
+        {"name": "animal-house", "rev": 1, "environment": {"space": "daniel/home"}, "entities": []}))
+    # a placeholder with NO space ref at all — what boot mints before a headset has said anything
+    srv.worlds.save(srv.DEFAULT_SCOPE, "placeholder", WorldStore(
+        {"id": "ph", "name": "placeholder", "rev": 1, "environment": {}, "entities": []}))
+    client.post("/worlds/switch", json={"name": "placeholder"})
+    # stamp the return pointer AFTER the switch: switching autosaves the OUTGOING world, which restamps
+    # the space's last_world to whatever we just left.
+    srv.spaces.save("daniel", "home", {**srv.spaces.load("daniel", "home"),
+                                       "last_scope": srv.DEFAULT_SCOPE, "last_world": ah})
+
+    r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
+                                           "user": "daniel", "cid": "hs1"}).json()
+    assert r["ok"] and not r.get("kept_outdoor")
+    assert srv.worlds.name_of(srv.DEFAULT_SCOPE, srv.active_world) == "animal-house"   # relocated
+    assert srv.active_space == "home"
+    assert srv.UNSET != srv.VOID     # the two room-less states are distinct, which is what made this safe
+
+
+def test_autosave_does_not_turn_a_placeholder_into_a_decision(srv, client):
+    """The load-bearing half of §C2. `_save_active` used to stamp VOID on any room-less world, so a boot
+    placeholder became *deliberately* outdoor within one autosave (~1s) — after which §C2b would refuse to
+    relocate it. UNSET must persist as the ABSENCE of the key, so it reads back as UNSET."""
+    from conjure.world import WorldStore
+    srv.worlds.save(srv.DEFAULT_SCOPE, "placeholder", WorldStore(
+        {"id": "ph", "name": "placeholder", "rev": 1, "environment": {}, "entities": []}))
+    client.post("/worlds/switch", json={"name": "placeholder"})
+    srv._save_active()
+    wd = srv.worlds.load(srv.DEFAULT_SCOPE, "placeholder").doc
+    assert "space" not in wd["environment"]                # absence preserved — still undecided
+    assert srv.active_space == srv.UNSET                   # …and still readable as not-yet-decided
+    # a DELIBERATE void world, by contrast, is recorded as such
+    _void_world(srv, client, name="dunes")
+    srv._save_active()
+    assert srv.worlds.load(srv.DEFAULT_SCOPE, "dunes").doc["environment"]["space"] == srv.VOID
 
 
 def test_ar_hold_over_ws_occupies_then_release_unlocks_reselection(srv, client):
