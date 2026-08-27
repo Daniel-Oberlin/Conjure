@@ -1875,6 +1875,56 @@ def test_an_outdoor_agents_worlds_are_room_less_however_they_are_minted(srv, cli
     assert srv.worlds.load("daniel/agents/outdoor", "dunes").doc["environment"]["space"] == "<void>"
 
 
+def _probe_agent(tmp_path, monkeypatch, name, block):
+    """A throwaway agent definition on a temp search path, so a test can exercise the REAL declaration
+    read (`resolve_agent_dir` → `_agent_block`) rather than stubbing the helper it's testing."""
+    import json as _json
+
+    from conjure import config as _config
+    d = tmp_path / "agents" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "agent.json").write_text(_json.dumps({"description": "probe", "prompt": "p", **block}))
+    monkeypatch.setattr(_config, "AGENTS_PATH", [tmp_path / "agents", _config.BUNDLED_AGENTS_DIR])
+    return f"daniel/agents/{name}"
+
+
+def test_an_agent_can_declare_its_sessions_private(srv, client, tmp_path, monkeypatch):
+    """Sessions are public by default because the shared experience is the feature — but an agent can be
+    private BY NATURE, and the only lever before this was to instruct the model to flip visibility on its
+    first turn. That makes privacy contingent on an LLM remembering to act. Now it's a declaration, and
+    it holds on EVERY mint path, not just the explicit one."""
+    from conjure import server as S
+    scope = _probe_agent(tmp_path, monkeypatch, "hush", {"session": {"public": False}})
+    # implicit path — an agent switch mints this scope's first session
+    assert client.post("/scope/activate", json={"scope": scope}).json()["ok"]
+    assert srv.sessions.load_meta(scope, "session-1")["public"] is False
+    # and it is live, so every gate that keys on the live session's visibility sees private
+    assert S._active_public() is False
+
+    # explicit path — `session new` in the same scope
+    assert client.post("/session/new", json={"scope": scope}).json()["ok"]
+    assert srv.sessions.load_meta(scope, "session-2")["public"] is False
+
+
+def test_a_session_is_public_unless_the_agent_says_otherwise(srv, client, tmp_path, monkeypatch):
+    """The other half — an agent that declares nothing, and one that declares public explicitly."""
+    from conjure import server as S
+    scope = _probe_agent(tmp_path, monkeypatch, "chatty", {"session": {"greeting": "hi"}})
+    assert client.post("/scope/activate", json={"scope": scope}).json()["ok"]
+    assert srv.sessions.load_meta(scope, "session-1")["public"] is True
+    assert S._active_public() is True
+
+
+def test_session_visibility_default_is_read_off_the_declaration(srv, tmp_path, monkeypatch):
+    """The unit behind the two above: opt-in, and an unreadable def is public (the safe-for-sharing
+    default, matching every other agent)."""
+    from conjure import server as S
+    assert S._agent_session_public(
+        _probe_agent(tmp_path, monkeypatch, "hush2", {"session": {"public": False}})) is False
+    assert S._agent_session_public(S.DEFAULT_SCOPE) is True
+    assert S._agent_session_public("daniel/agents/nonexistent") is True
+
+
 def test_only_the_declaring_agent_is_outdoor(srv):
     """`world.outdoor` is opt-in and read off the agent definition, so it can't leak between agents."""
     from conjure import server as S

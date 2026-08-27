@@ -160,7 +160,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
   "context": ["room://current"],               // MCP resources injected each turn (§5.3)
   "dynamics": ["fireflies", "water", "grab"],  // required allow-list (specs/dynamics.md §9)
   "world":   { "outdoor": false, "on_create": [ … ], "on_exit": [] },  // §7.5
-  "session": { "greeting": "…", "first_world": { … } }, // §7.5
+  "session": { "public": true, "greeting": "…", "first_world": { … } },  // §7.5
   "state":   { "quest": { "seed": …, "schema": …, "inject": "{quest}" } }  // §7.4
 }
 ```
@@ -177,6 +177,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
 | `context` | no (`[]`) | — | MCP resource URIs; fetched only if `{context}` appears in the prompt |
 | `dynamics` | no (`[]`) | every module resolves on the dynamics search path | a dangling name **fails the load** |
 | `world.outdoor` | no (`false`) | — | this agent's worlds are **room-less**: they never adopt the live space (§7.5) |
+| `session.public` | no (`true`) | — | visibility a NEW session is born with, on **every** mint path (§7.5) |
 | `world` / `session` / `state` | no (`{}`) | `state[].seed`/`schema` files parsed if present (failures skipped) | read by the world server and the agent server, not the loader |
 | `personas` | no (`[]`) | — | parsed into `AgentDef.personas` and **read by nothing** |
 
@@ -675,8 +676,9 @@ Because image generation takes tens of seconds, the server broadcasts a *"Settin
 notice first and the shell allows 180 s.
 
 Order at mint: title cleaned and uniqueness-checked → generative steps → session meta written
-(`greeted: false`, `seeded: false`) → first world built from `world.on_create` ⊕ `first_world.on_create`
-⊕ the generative ops → switch. Then, on the agent server's next reconcile:
+(`greeted: false`, `seeded: false`, `public` from the agent's `session.public`) → first world built from
+`world.on_create` ⊕ `first_world.on_create` ⊕ the generative ops → switch. Then, on the agent server's
+next reconcile:
 
 1. **`_maybe_seed`** — copies the declared seeds into the session's `StateStore`, never clobbering a doc
    that exists, and flips `seeded: true`. Runs before the greeting so a generated greeting can reference

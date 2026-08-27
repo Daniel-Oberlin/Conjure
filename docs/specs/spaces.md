@@ -189,7 +189,10 @@ leaving the ref absent, which `_activate` reads as the honest "no space chosen y
 
 ## 5. Visibility and access
 
-- **Default public.** New items are `public: true`.
+- **Default public.** New items are `public: true` — except a **session**, which is born with whatever
+  its agent's `session.public` declares (default `true`). An agent that is private by nature says so
+  once in its definition rather than instructing its model to flip the flag on the first turn
+  ([`specs/agents.md §3`](./agents.md)).
 - **Visibility inherits the active world.** An asset or state doc created while a *private* world is
   active defaults private; while a *public* world is active, public.
 - **Read** = `owner == caller OR public`. **Write** = `owner == caller`.

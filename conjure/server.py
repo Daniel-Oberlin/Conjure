@@ -123,6 +123,18 @@ def _agent_wants_outdoor(scope: str) -> bool:
     return bool(_agent_world_config(scope).get("outdoor", False))
 
 
+def _agent_session_public(scope: str) -> bool:
+    """The visibility a NEW session in this scope is born with — the agent's `session.public`, default
+    True (specs/agents.md §3, §7.5).
+
+    Sessions are public by default because the shared experience is the feature. But an agent can be
+    private BY NATURE, and the only lever before this was to instruct the model to call
+    `set_world_visibility` on its first turn — which makes privacy contingent on an LLM remembering to
+    act. A per-agent default belongs in the agent's declaration, not in its prose. Applies to EVERY mint
+    path, so a session born of an agent switch is as private as one born of `session new`."""
+    return bool(_agent_block(scope, "session").get("public", True))
+
+
 def _first_world_spec(scope: str) -> tuple[str, list[dict]]:
     """The session constructor's first-world spec (docs/specs/agents.md §7.5): its NAME (default ``home``,
     overridable) + the first-world-only `on_create` steps. `first_world` may be a bare string (name only)
@@ -308,7 +320,8 @@ def _ensure_session(scope: str, sid: str | None = None, *, active_world: str | N
         user = scope.split("/", 1)[0]
         sessions.save_meta(scope, sid, {
             "id": sid, "owner": user, "agent": agent_of(scope), "title": "Session 1",
-            "public": True, "active_world": active_world or worlds.get_active(scope) or "",
+            "public": _agent_session_public(scope),
+            "active_world": active_world or worlds.get_active(scope) or "",
             "llm": "", "greeted": False, "seeded": False})
     sessions.set_active(scope, sid)
     return sid
@@ -1489,7 +1502,8 @@ async def session_new(req: SessionRef) -> dict:
     user = req.scope.split("/", 1)[0]
     sessions.save_meta(req.scope, sid, {
         "id": sid, "owner": user, "agent": agent_of(req.scope),
-        "title": title or f"Session {sid.split('-')[-1]}", "public": True,
+        "title": title or f"Session {sid.split('-')[-1]}",
+        "public": _agent_session_public(req.scope),
         "active_world": wname, "llm": "", "greeted": False, "seeded": False})
     wdir = sessions.worlds(req.scope, sid)               # explicit target (no active-pointer flip — that's
     raw = _new_world_store(req.scope, extra_on_create=fw_on_create)   # world ⊕ first_world constructor chain
