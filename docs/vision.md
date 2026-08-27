@@ -245,8 +245,8 @@ Find / generate / fetch / convert / optimize / cache content.
   draw-call awareness. Enforce a **per-world performance budget** (§8).
 - **Sources of free/CC content** (track license + attribution for *every* asset):
   Poly Pizza, Quaternius, Kenney, Sketchfab (CC filter), Objaverse, Smithsonian 3D,
-  Poly Haven (HDRIs/textures/models). Catalogued in
-  [model-asset-sources.md](./model-asset-sources.md).
+  Poly Haven (HDRIs/textures/models). Only Poly Pizza is wired
+  ([`specs/library.md §3`](./specs/library.md)).
 - **Generative**: text/image → image (e.g. via the director calling image models),
   text/image → 3D (Meshy, Luma, Tripo, Hunyuan3D, Trellis, etc.), text → audio/SFX/music.
 - **Image enhancement & extrapolation (plugin operations)** — post-process images via pluggable

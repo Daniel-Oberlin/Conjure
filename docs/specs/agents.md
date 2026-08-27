@@ -383,8 +383,8 @@ Input it doesn't recognise as a command is forwarded to the active agent unchang
   **Every alias must be a non-word.** A real word would swallow ordinary speech that merely starts with
   it — silent in the other direction, and worse than the problem it solves. Amend by observation.
 
-  The **voice client's mic gate** is a *different word* with its own list (`CONJURE_VOICE_WAKE_WORDS`,
-  default `computer`) — see §Voice. The two gates compose in one breath and must not collide.
+  The **voice client's mic gate** is a *different word*, with **no default at all** — see §Voice. The two
+  gates compose in one breath and must not collide.
 - **In shell mode** — every line is a command; the prefix isn't needed. A line matching no command is
   rejected (`Unknown command: … Type 'help'.`), never sent to an LLM, so control mode never silently
   "does something".
@@ -1042,10 +1042,19 @@ cadence. `backlog=0`, because a fresh connection shouldn't get the whole transcr
 
 `--wake-word` is a separate, purely voice-input concern: a mic-activation gate ahead of the socket.
 Bare wake word arms for the next utterance; wake word plus text submits the remainder immediately. It
-has its own alias list (`CONJURE_VOICE_WAKE_WORDS` > settings `voice_wake_words` >
-`DEFAULT_VOICE_WAKE_WORDS`, i.e. `computer`), for the same reason the shell's does — a mis-hearing
-defeats it, and a gate that silently ignores you is harder to diagnose than one that mis-fires. Passing
-a word that isn't the configured one (`--wake-word banana`) matches that word alone.
+**ships no word at all**: it is opt-in, and which word suits a room is the user's call, not ours. So
+unlike the shell's escape — which must work out of the box and therefore carries its mis-hearings — the
+gate is off until you name one:
+
+```bash
+conjure-voice --wake-word computer            # one word
+conjure-voice --wake-word computer,computa    # …and its mis-hearings, in one go
+```
+
+The flag takes a **comma-separated list** so covering a new mis-hearing needs no env var. (It used to
+take one word and match the literal string `"computer,computa"` if given a list — silently wrong.) A
+standing default can still be set via `CONJURE_VOICE_WAKE_WORDS` > settings `voice_wake_words`; naming a
+single word that is already in that list expands to the whole of it, and anything else is literal.
 
 **The two gates must be distinct, and it is enforced.** They do different jobs and compose in one
 breath: the mic gate decides whether you are addressing Conjure at all, the shell's wake word decides

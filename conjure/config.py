@@ -150,10 +150,12 @@ DEFAULT_WAKE_WORDS: tuple[str, ...] = (
 # all, and the shell wake word decides whether what you said is a command. The gate CONSUMES its word
 # before anything else sees the line, so sharing one makes shell commands unreachable by voice —
 # "conjure where am I" arrives at the shell as "where am I", which is content, and you would have to say
-# "conjure conjure where am I". Distinct words, and `resolve_wake_words` enforces it.
-DEFAULT_VOICE_WAKE_WORDS: tuple[str, ...] = (
-    "computer",     # the classic. A real word is tolerable HERE: a false trigger only opens the mic,
-)                   # where a false shell match would swallow content.
+# "conjure conjure where am I". Distinct words, and `wake_word_conflict` enforces it.
+#
+# **There is deliberately no shipped word.** The gate is opt-in — with none set, every utterance passes
+# through — and which word suits a room is the user's call, not ours. Naming one is what `--wake-word`
+# is for; the list form exists so its STT mis-hearings can ride along.
+DEFAULT_VOICE_WAKE_WORDS: tuple[str, ...] = ()
 
 
 def _clean_words(raw, fallback: tuple[str, ...]) -> list[str]:
@@ -493,13 +495,19 @@ def get_settings() -> Settings:
     )
 
 
-def _aliases_for(word: Optional[str], configured: list[str]) -> list[str]:
-    """The alias set to match on: given nothing, or a word already in `configured`, the whole list;
-    given anything else, just that word — so `--wake-word banana` means banana and nothing else."""
-    if not word or not word.strip():
+def _aliases_for(spec: Optional[str], configured: list[str]) -> list[str]:
+    """The alias set to match on.
+
+    `spec` may name **several** words, comma-separated (`--wake-word hey,hay,hei`) — the flag looked like
+    it took a list and instead matched the literal string "hey,hay,hei", which is the silent-wrong kind
+    of failure. Nothing, or a single word already in `configured`, expands to the whole configured list;
+    anything else is taken literally, so `--wake-word banana` means banana and nothing else."""
+    if not spec or not spec.strip():
         return list(configured)
-    w = word.strip().lower()
-    return list(configured) if w in configured else [w]
+    words = _clean_words(spec.split(","), ())
+    if len(words) == 1 and words[0] in configured:
+        return list(configured)
+    return words
 
 
 def wake_aliases(word: Optional[str] = None) -> list[str]:

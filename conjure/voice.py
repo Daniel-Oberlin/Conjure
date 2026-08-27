@@ -58,8 +58,8 @@ def _make_wake_gate(wake_word: Optional[str]) -> Callable[[str], Optional[str]]:
     if clash:
         raise SystemExit(
             f"--wake-word {', '.join(clash)!r} is also the shell's wake word, which would make spoken "
-            f"shell commands unreachable (the mic gate strips it first). Pick a different word — the "
-            f"default is {VOICE_WAKE_WORDS[0]!r} — or change CONJURE_WAKE_WORDS.")
+            f"shell commands unreachable (the mic gate strips it first). Pick a different word "
+            f"(e.g. --wake-word computer), or change CONJURE_WAKE_WORDS.")
     pattern = re.compile(r"\b(?:" + "|".join(re.escape(w) for w in words) + r")\b", re.IGNORECASE)
     state = {"armed": False}
 
@@ -257,11 +257,12 @@ def main() -> int:
     ap.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
     ap.add_argument("--agent", default=None,
                     help="agent to load from agents/<name>/ (default: resume your last-used, else builder)")
-    ap.add_argument("--wake-word", default=None, metavar="WORD", nargs="?", const=VOICE_WAKE_WORDS[0],
-                    help=f"mic gate: only send phrases after this word (bare --wake-word uses "
-                         f"{VOICE_WAKE_WORDS[0]!r}); then it waits for it again. Must NOT be the shell's "
-                         f"wake word ({WAKE_WORDS[0]!r}) — the gate strips its own word first, so sharing "
-                         f"one would make spoken shell commands unreachable")
+    ap.add_argument("--wake-word", default=None, metavar="WORDS",
+                    help=f"mic gate: only send phrases that start with this word; then it waits for it "
+                         f"again. Off when omitted. Accepts a comma-separated list so an STT mis-hearing "
+                         f"can ride along (--wake-word computer,computa). Must NOT be the shell's wake "
+                         f"word ({WAKE_WORDS[0]!r}) — the gate strips its own word first, so sharing one "
+                         f"would make spoken shell commands unreachable"),
     args = ap.parse_args()
 
     settings = get_settings()

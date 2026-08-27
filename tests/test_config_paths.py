@@ -161,12 +161,14 @@ def test_wake_aliases_expands_the_canonical_word_only():
     assert wake_aliases("banana") == ["banana"]
 
 
-def test_the_two_wake_lists_are_distinct_by_default():
-    """The mic gate strips its word before the shell sees the line, so any overlap makes spoken shell
-    commands unreachable. The shipped defaults must never collide."""
-    from conjure.config import VOICE_WAKE_WORDS, WAKE_WORDS, wake_word_conflict
-    assert wake_word_conflict(WAKE_WORDS, VOICE_WAKE_WORDS) == []
-    assert WAKE_WORDS[0] == "conjure" and VOICE_WAKE_WORDS[0] == "computer"
+def test_the_mic_gate_ships_no_word_at_all():
+    """The gate is opt-in — with nothing configured every utterance passes through — and which word
+    suits a room is the user's call. Naming one is what `--wake-word` is for. (The shell's escape is
+    the opposite: it must work out of the box, so it ships its word and the mis-hearings.)"""
+    from conjure.config import DEFAULT_VOICE_WAKE_WORDS, VOICE_WAKE_WORDS, WAKE_WORDS, wake_word_conflict
+    assert DEFAULT_VOICE_WAKE_WORDS == () and VOICE_WAKE_WORDS == []
+    assert WAKE_WORDS[0] == "conjure"
+    assert wake_word_conflict(WAKE_WORDS, VOICE_WAKE_WORDS) == []      # nothing to collide with
 
 
 def test_wake_word_conflict_names_every_overlap():
@@ -177,7 +179,18 @@ def test_wake_word_conflict_names_every_overlap():
 
 def test_voice_wake_words_resolve_independently_of_the_shell_list():
     from conjure.config import DEFAULT_VOICE_WAKE_WORDS, resolve_voice_wake_words, voice_wake_aliases
-    assert resolve_voice_wake_words({}, {}) == list(DEFAULT_VOICE_WAKE_WORDS)
+    assert resolve_voice_wake_words({}, {}) == []                      # no shipped word
     assert resolve_voice_wake_words({"CONJURE_VOICE_WAKE_WORDS": "hey,HEY"}, {}) == ["hey"]
     assert resolve_voice_wake_words({}, {"voice_wake_words": ["Ahoy"]}) == ["ahoy"]
     assert voice_wake_aliases("banana") == ["banana"]      # only the canonical expands
+
+
+def test_an_alias_spec_may_name_several_words():
+    """`--wake-word hey,hay,hei`. Before this the flag looked like it took a list and instead matched the
+    literal string "hey,hay,hei" — the silent-wrong failure, not a loud one."""
+    from conjure.config import voice_wake_aliases, wake_aliases
+    assert voice_wake_aliases("hey,hay,hei") == ["hey", "hay", "hei"]
+    assert voice_wake_aliases(" Hey , HAY ,hey") == ["hey", "hay"]     # folded, trimmed, de-duplicated
+    assert voice_wake_aliases("banana") == ["banana"]                  # a lone word is still literal
+    # a single word that IS the configured canonical still expands to its list (the shell's case)
+    assert wake_aliases("conjure") == wake_aliases()

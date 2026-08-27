@@ -71,3 +71,20 @@ def test_a_bespoke_gate_word_is_taken_literally():
     gate = _make_wake_gate("banana")
     assert gate("banana make a cat") == "make a cat"
     assert gate("computer make a cat") is None
+
+
+def test_the_gate_word_may_be_given_as_a_comma_separated_list():
+    """One invocation names the word AND its mis-hearings, so covering a new one needs no env var."""
+    gate = _make_wake_gate("computer,computa,computah")
+    assert gate("computer make a cat") == "make a cat"
+    assert gate("computa make a cat") == "make a cat"
+    assert gate("computah make a cat") == "make a cat"
+    assert gate("hello there") is None
+
+
+def test_a_shell_word_hidden_inside_a_list_is_still_refused():
+    """The conflict check runs over the parsed set, not the raw string — otherwise a list would be the
+    way to smuggle a collision past it."""
+    import pytest
+    with pytest.raises(SystemExit, match="unreachable"):
+        _make_wake_gate("computer,conjure")
