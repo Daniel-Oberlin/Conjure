@@ -510,7 +510,7 @@ def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
                 resp = await client.post(f"{settings.world_url}/scope/activate", json={"scope": scope})
             body = resp.json()
             if not body.get("ok"):
-                # The constructor aborted, so NOTHING moved (world-entry plan §5a) — say why and stay put.
+                # The constructor aborted, so NOTHING moved (specs/agents.md §7.5) — say why and stay put.
                 raise RuntimeError(body.get("error") or "the world server refused the switch")
         except Exception as exc:  # noqa: BLE001
             app.state.expect_agent = None                 # nothing moved — don't muffle a later real change

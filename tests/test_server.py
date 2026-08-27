@@ -1155,7 +1155,7 @@ def test_activate_no_longer_migrates_embedded_geometry(srv, client):
     doc is no longer rewritten on load, and its INLINE real surfaces are NOT resurrected — real geometry
     lives only in the space now (fed by capture via _save_active). Objects still compose; a world with no
     space ref renders room-less (step 5 removed the anonymous-'home' Path B fallback) and resolves to
-    UNSET rather than VOID — not-decided-yet, which a headset may still claim (§C2)."""
+    UNSET rather than VOID — not-decided-yet, which a headset may still claim (specs/spaces.md §4.3)."""
     from conjure.world import WorldStore
     embedded = {
         "id": "l", "name": "legacy", "rev": 3, "environment": {"boundary": {"height": 2.6}},
@@ -1478,7 +1478,7 @@ def _void_world(srv, client, name="beach"):
 
 
 def test_a_deleted_world_sends_you_back_as_the_same_agent(srv, client):
-    """§C4. Your space remembers the last world you used in it, so putting the headset on returns you
+    """specs/spaces.md §6.1. Your space remembers the last world you used in it, so putting the headset on returns you
     there. If that world was deleted the system correctly builds a replacement — but it used to build it
     in the general-purpose BUILDER's scope regardless of who you were with, so you came back as a
     different agent. Preserve the agent; own the world as yourself."""
@@ -1496,7 +1496,7 @@ def test_a_deleted_world_sends_you_back_as_the_same_agent(srv, client):
 
 def test_the_fallback_skips_an_agent_that_cannot_live_in_a_space(srv):
     """The chain skips a candidate whose agent declares `world.outdoor` — its worlds are room-less by
-    declaration (§C6), so preferring it would contradict its own definition — and one whose definition
+    declaration (specs/agents.md §3), so preferring it would contradict its own definition — and one whose definition
     no longer resolves at all. Then, and only then, the default agent."""
     from conjure import server as S
     assert S._entry_scope_for("daniel", prefer="daniel/agents/scratch") == "daniel/agents/scratch"
@@ -1509,7 +1509,7 @@ def test_the_fallback_skips_an_agent_that_cannot_live_in_a_space(srv):
 
 
 def test_an_outdoor_world_is_not_relocated_by_recognising_the_room(srv, client):
-    """§C2b. The client votes its capture against candidates even in a void world — it must, or an outdoor
+    """specs/spaces.md §4.3. The client votes its capture against candidates even in a void world — it must, or an outdoor
     re-entry never resolves a space at all. But resolving WHICH space you're in and MOVING you to that
     space's last world are different things, and only the first is wanted when you deliberately chose to
     be nowhere. Reported: leave and restart inside an outdoor world, put the headset on, and you're pulled
@@ -1533,7 +1533,7 @@ def test_an_outdoor_world_is_not_relocated_by_recognising_the_room(srv, client):
 
 
 def test_a_boot_placeholder_IS_relocated_by_recognising_the_room(srv, client):
-    """The contrast that makes §C2b safe, and a **regression guard rather than a new behaviour**: a boot
+    """The contrast that makes the no-relocation rule safe, and a **regression guard rather than a new behaviour**: a boot
     placeholder has always relocated, and must keep doing so. A world minted before anything knew the
     space is UNSET, not VOID — a guess, not a choice. Were both spelled VOID, the branch above would
     decline to relocate and strand a headset user in a blank world, which is why C2b needs C2."""
@@ -1559,8 +1559,8 @@ def test_a_boot_placeholder_IS_relocated_by_recognising_the_room(srv, client):
 
 
 def test_autosave_does_not_turn_a_placeholder_into_a_decision(srv, client):
-    """The load-bearing half of §C2. `_save_active` used to stamp VOID on any room-less world, so a boot
-    placeholder became *deliberately* outdoor within one autosave (~1s) — after which §C2b would refuse to
+    """The load-bearing half of specs/spaces.md §4.3. `_save_active` used to stamp VOID on any room-less world, so a boot
+    placeholder became *deliberately* outdoor within one autosave (~1s) — after which the no-relocation rule would refuse to
     relocate it. UNSET must persist as the ABSENCE of the key, so it reads back as UNSET."""
     from conjure.world import WorldStore
     srv.worlds.save(srv.DEFAULT_SCOPE, "placeholder", WorldStore(
@@ -1926,7 +1926,7 @@ def test_agent_switch_keeps_the_live_space(srv, client):
     from conjure import server as S
     srv.store.doc["entities"].append({"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
         "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]}}})
-    # `scratch`, not `outdoor`: an outdoor agent's worlds are room-less BY DECLARATION (§C6), so it would
+    # `scratch`, not `outdoor`: an outdoor agent's worlds are room-less BY DECLARATION (specs/agents.md §3), so it would
     # pass this test for the wrong reason — or rather fail it for the right one.
     r = client.post("/scope/activate", json={"scope": "daniel/agents/scratch"}).json()
     assert r["ok"] and not r.get("unchanged")
@@ -1996,7 +1996,7 @@ def _probe_agent(tmp_path, monkeypatch, name, block):
 
 
 def test_reset_agent_wipes_it_back_to_never_used(srv, client, tmp_path, monkeypatch):
-    """§C5. Testing a first run means removing every trace of an agent — and every `delete` refuses to
+    """specs/agents.md §6.3. Testing a first run means removing every trace of an agent — and every `delete` refuses to
     touch what is currently live, which is exactly the agent you want to reset. So it's its own verb: the
     sequence (purge → clear the pointers that named what was purged → land somewhere coherent) is the
     part that's easy to get wrong, and doing it by hand means editing the live pointer with the server
@@ -2065,7 +2065,7 @@ def test_autosave_never_resurrects_a_deleted_session(srv, client, tmp_path, monk
 
 
 def test_every_session_mint_path_runs_the_agents_opening(srv, client, tmp_path, monkeypatch):
-    """§C1. `first_world` used to have exactly one caller — `/session/new`. An agent switch minted a bare
+    """specs/agents.md §7.5. `first_world` used to have exactly one caller — `/session/new`. An agent switch minted a bare
     `default` from `world.on_create` alone, and a session switch hard-coded the name `home`. All three now
     share one builder, so an agent's declared opening happens however you arrive."""
     scope = _probe_agent(tmp_path, monkeypatch, "lounge", {

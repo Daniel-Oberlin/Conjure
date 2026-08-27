@@ -166,7 +166,7 @@ async def _build_first_world(scope: str) -> tuple[Optional[str], Optional[WorldS
     Returns `(name, store, None)` on success or `(None, None, error)` on failure, and **writes nothing
     either way**. That is the whole point: it is shared by every path that mints a session, and the
     generative steps are the one fallible part of construction, so building before committing makes an
-    abort a no-op with nothing to roll back (world-entry plan §5a).
+    abort a no-op with nothing to roll back (specs/agents.md §7.5).
 
     Before this, only `/session/new` consulted `first_world`. An agent switch minted a bare `default`
     from `world.on_create` alone, so an agent's intended opening — outdoor's moon-gate sky — was
@@ -732,7 +732,7 @@ _selected_cids: set[str] = set()
 # is what a headset is allowed to do about it later:
 #
 #   UNSET  →  a space selection may relocate you (that's the point of a placeholder)
-#   VOID   →  a space selection claims the space but LEAVES YOU WHERE YOU ARE (§C2b)
+#   VOID   →  a space selection claims the space but LEAVES YOU WHERE YOU ARE (specs/spaces.md §4.3)
 #
 # The distinction is why C2b is safe. Without it, `_save_active` rewrites the boot placeholder to VOID
 # within a second, C2b then declines to relocate, and a headset user is stranded in a blank world for
@@ -1938,13 +1938,13 @@ async def select_space(req: SpaceSelect) -> dict:
     # --- Unclaimed (provisional boot / everyone left): this AR user ESTABLISHES the space.
     _selected_cids.add(cid)
 
-    # §C2b — a DELIBERATELY room-less world is not relocated by recognising the room you're standing in.
+    # specs/spaces.md §4.3 — a DELIBERATELY room-less world is not relocated by recognising the room you're standing in.
     # The client votes its capture against the candidates even here, and must: without it, an outdoor
     # re-entry never resolves a space at all. But resolving WHICH space you are in and MOVING you to that
     # space's last world are two different things, and only the first is wanted when you chose to be
     # nowhere. So: claim the space (occupancy + boundary are still real) and stay put.
     #
-    # This is only safe because UNSET exists (§C2). A boot placeholder is room-less too, and relocating it
+    # This is only safe because UNSET exists (§4.3). A boot placeholder is room-less too, and relocating it
     # is exactly right — it is a guess, not a choice. Were both spelled VOID, this branch would strand a
     # headset user in a blank world.
     if active_space == VOID:
@@ -1993,7 +1993,8 @@ async def select_space(req: SpaceSelect) -> dict:
 
 
 def _entry_scope_for(user: str, *, prefer: Optional[str] = None) -> str:
-    """Which scope to mint a replacement world in when a pointer went stale (world-entry plan §2).
+    """Which scope to mint a replacement world in when a pointer went stale (architecture.md §1;
+    specs/spaces.md §6.1).
 
     **Degrade to the next-broadest thing that is still true, never to a global default.** The user's
     intent — *put me back with the agent I was using* — survives a missing world, so preserve the AGENT
@@ -2002,7 +2003,7 @@ def _entry_scope_for(user: str, *, prefer: Optional[str] = None) -> str:
         the space's remembered scope  →  the live scope  →  the default agent
 
     A candidate is skipped when its agent no longer resolves on the search path (deleted or renamed), or
-    when it declares `world.outdoor` — an outdoor agent's worlds are room-less by declaration (§C6), so
+    when it declares `world.outdoor` — an outdoor agent's worlds are room-less by declaration (specs/agents.md §3), so
     it cannot host a world tied to a space and preferring it would contradict its own definition.
 
     This is what fixed coming back as the *builder*: the scope was hard-coded, so a space whose remembered
@@ -2998,7 +2999,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
         VOID ("<void>")     → an outdoor/void world: no room to merge — objects + skybox only.
         "<owner>/<name>"    → a shared space, possibly ANOTHER user's (D3, the target form).
         "<name>"            → a bare/legacy ref → the world-owner's own space (back-compat).
-        absent              → no space chosen YET → UNSET (D5 step 5 + §C2): renders exactly like VOID
+        absent              → no space chosen YET → UNSET (D5 step 5 + specs/spaces.md §4.3): renders like VOID
                               (the honest "no room yet", never the old anonymous-'home' fallback), but a
                               headset selecting a space MAY relocate it, where a deliberate VOID may not.
 

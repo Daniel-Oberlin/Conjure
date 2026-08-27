@@ -232,31 +232,6 @@ there is no migration or "reseed" path when an authored map genuinely gains a ro
 
 ## Constructor
 
-**An implicitly-minted session skips `session.first_world`.** `_first_world_spec` has exactly one caller
-— `/session/new`. An **agent switch** into a scope with no session goes through `_activate_scope` →
-`_switch_to(scope, "default", store_override=_new_world_store(scope))`, which applies `world.on_create`
-but neither the declared first-world **name** nor its generative `on_create` chain. `_switch_session`
-has the same gap and additionally hard-codes the name `home`.
-
-Demonstrated with a probe agent declaring `first_world: {name: "lounge", on_create: [show_edges off]}`:
-
-| Path | World minted | `edgesVisible` |
-|---|---|---|
-| `POST /scope/activate` | `default` | *(unset — the chain never ran)* |
-| `POST /session/new` | `lounge` | `false` |
-
-So the first-ever switch to `outdoor` gives a bare `default` with no sky instead of `home` with its
-moon-gate forest — the agent's intended opening experience is reachable only by typing `session new`.
-
-This is the third instance of one pattern: **an obligation the explicit route performs and the implicit
-mint paths forget.** The other two were the `environment.space` stamp (fixed — every path now mints
-through `_new_world_store`, [`specs/spaces.md §4.2`](../specs/spaces.md)) and the `greeted`/`seeded`
-flags (fixed in `_ensure_session`, [`specs/agents.md §7.5`](../specs/agents.md)). Both were fixed by
-moving the obligation to the shared chokepoint; this one can't be, because the constructor's generative
-steps are **async** and need the *"Setting up your new world…"* broadcast plus the 180 s allowance, while
-`_new_world_store` is sync. The honest fix is for `_activate_scope`, on finding a scope with no session
-at all, to delegate to the same routine `/session/new` uses rather than mint a bare default.
-
 **A richer step vocabulary.** `_build_generative_ops` handles exactly three tool names —
 `generate_skybox_image`, `generate_grounded_skybox_image`, `set_skybox`. Everything else is silently
 ignored (deliberately forward-compatible, but it means a constructor step can be a no-op with no

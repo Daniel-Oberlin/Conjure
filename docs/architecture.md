@@ -23,6 +23,17 @@
   ("track X, play from shared-clock t₀"), not the audio analysis. Every client then derives the same
   state locally from a shared clock, a seed, and the config in the snapshot — consistency without
   per-frame sync (§6, [specs/dynamics.md §1](./specs/dynamics.md)).
+- **Degrade to the next-broadest thing that is still true, never to a global default.** When a pointer
+  names something that is gone — a deleted world, a purged session — the user's intent usually survives
+  it: *put me back with the agent I was using, in the space I am standing in*. Falling back to a
+  general-purpose default throws away facts that are still good. World gone → another world in that
+  session, else that agent's freshly-built opening; session gone → a new one **in the same agent**;
+  the default agent only when nothing better is knowable
+  ([specs/spaces.md §6.1](./specs/spaces.md)).
+- **Every degradation is audible.** A fallback that fires silently is indistinguishable from a bug, and
+  is how a cluster of world-entry defects survived unnoticed for months. Whenever the system hands you
+  something other than what was asked for, it says so in one line — on the same channel that already
+  announces an agent change nobody asked for (decision #20).
 - **Vendor-neutral baseline + extensions** (decision #11). Device features light up when present.
 - **Network-decoupled components** so compute can move (Pi / Mac / home GPU box, decision #1).
 
