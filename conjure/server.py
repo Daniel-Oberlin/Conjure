@@ -773,6 +773,15 @@ def _save_active() -> None:
     space; placed objects + display prefs + per-surface style overrides → the active world doc."""
     if store is None or worlds is None or spaces is None:
         return
+    if sessions is not None and active_sid and not sessions.dir(active_scope, active_sid).exists():
+        # The live session's DIRECTORY was removed out from under us (`reset agent`, a session purge).
+        # Saving now would re-create what was just deleted — autosave must never resurrect a deleted
+        # session. Nothing is lost: whoever deleted it meant to.
+        #
+        # Keyed on the directory, not `sessions.exists`, which tests for `session.json`: a session can
+        # legitimately hold worlds before any meta is written, and treating that as deleted would
+        # silently disable autosave for it.
+        return
     if _no_space():                                 # room-less world: no geometry to split out
         world_doc = copy.deepcopy(store.doc)
         env = world_doc.setdefault("environment", {})
@@ -1360,7 +1369,7 @@ async def _switch_to(scope: str, ref: str, store_override: WorldStore | None = N
     return {"ok": True, "world": name, "id": wid, "rev": store.doc["rev"]}
 
 
-async def _activate_scope(scope: str) -> dict:
+async def _activate_scope(scope: str, *, force: bool = False) -> dict:
     """Make a world in `scope` live: resume that scope's last-active world, or create its `default` if
     the scope has none — the `_boot_world` logic generalized to any scope. A no-op when `scope` is
     already active. Used on agent switch so the live world belongs to the NEW agent's scope, not the
@@ -1368,10 +1377,13 @@ async def _activate_scope(scope: str) -> dict:
     so switching agents while standing in your room keeps the room — and it runs the agent's **declared
     opening** (`_build_first_world`), so a first-ever switch gives you what that agent is for rather than
     a bare `default`. The opening is built before anything is written, so a failure leaves you where you
-    were (§5a)."""
+    were (§5a).
+
+    `force` re-enters a scope that is already live — used by `reset agent`, whose whole purpose is to
+    rebuild the scope it is standing in."""
     # The live agent is derived from the global session pointer (set by _switch_to below) — no separate
     # last-agent to record here (docs/specs/agents.md §9.1).
-    if scope == active_scope:
+    if scope == active_scope and not force:
         return {"ok": True, "world": worlds.name_of(scope, active_world), "id": active_world,
                 "scope": scope, "unchanged": True}
     active = worlds.get_active(scope)
@@ -1381,6 +1393,68 @@ async def _activate_scope(scope: str) -> dict:
     if err:
         return {"ok": False, "error": err}
     return await _switch_to(scope, wname, store_override=raw)
+
+
+class ResetAgentRequest(BaseModel):
+    user: str = DEFAULT_USER
+    agent: str
+    assets: bool = False      # also purge the catalog rows in this scope (default: keep them)
+
+
+@app.post("/agent/reset")
+async def agent_reset(req: ResetAgentRequest) -> dict:
+    """Wipe an agent back to never-used, so the next arrival is a genuine **first run**.
+
+    Removes every session in the scope — transcripts, agent state, and the worlds inside them. Assets are
+    **kept** by default: a generated skybox is expensive and is not part of "the conversation". Pass
+    `assets` to purge those too, which is what you want when testing an opening that generates one.
+
+    Spelled as its own verb rather than as several `delete` calls because a reset is a *sequence* —
+    purge, then clear the pointers that named what was purged, then land somewhere coherent — and the
+    part that is easy to get wrong is the sequence, not any one deletion. Doing it by hand means editing
+    the live-session pointer with the server down.
+
+    Resetting the agent you are STANDING IN is the normal case (that is how you test a first run), so it
+    is supported directly: purge, then force re-entry, which rebuilds the session and runs the agent's
+    declared opening (§7.5). `_save_active` refuses to resurrect a session whose directory is gone, so
+    the purge is not undone on the way out."""
+    if sessions is None or worlds is None:
+        return {"ok": False, "error": "no session store"}
+    try:
+        agent = clean_name(req.agent, what="agent name")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    try:
+        resolve_agent_dir(agent)
+    except Exception:                                          # noqa: BLE001
+        return {"ok": False, "error": f"no agent {agent!r} — nothing to reset"}
+
+    scope = scope_for(req.user, agent)
+    was_live = scope == active_scope
+    sids = sessions.list(scope)
+    for sid in sids:
+        sessions.delete(scope, sid)
+    n_assets = 0
+    if req.assets and library is not None:
+        # Query the catalog directly rather than through `_asset_rows`, which returns DISPLAY nodes for
+        # the shell's tree (the id rides in `label`). A deletion loop shouldn't depend on a formatter.
+        for row in library.by_user(req.user, limit=10_000):
+            if (row.get("scope") or "") != scope:
+                continue
+            ok, _ = library.delete(row["id"])
+            n_assets += 1 if ok else 0
+    _slog("reset", f"agent {scope}: {len(sids)} session(s)"
+                   + (f", {n_assets} asset(s)" if req.assets else "") + (" (was live)" if was_live else ""))
+
+    out = {"ok": True, "agent": agent, "scope": scope,
+           "sessions": len(sids), "assets": n_assets, "was_live": was_live}
+    if was_live:
+        # Re-enter what we just emptied: a fresh session, and the agent's opening built from scratch.
+        entered = await _activate_scope(scope, force=True)
+        if not entered.get("ok"):
+            return {**out, "ok": False, "error": entered.get("error"), "reentered": False}
+        out["world"] = entered.get("world")
+    return out
 
 
 class ActivateScopeRequest(BaseModel):

@@ -187,6 +187,11 @@ class Shell:
             (re.compile(r"^users?$", re.I), self._users, "users — everyone with a namespace here", False),
             (re.compile(r"^clear$", re.I), self._clear,
              "clear — wipe this session's chat history (keeps worlds and assets)", True),
+            (re.compile(r"^reset\s+agent\s+(?P<name>[\w.-]+)(?P<assets>\s+(?:--)?assets)?$", re.I),
+             self._reset_agent,
+             "reset agent <name> [assets] — wipe an agent back to never-used (every session, its "
+             "transcripts, state and worlds) so the next arrival is a genuine first run. Assets are "
+             "kept unless you say 'assets'", False),
 
             # -- paths: act on anything addressable
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
@@ -766,6 +771,27 @@ class Shell:
             await self._say(on_text, f"Deleted {display_path(path, self._acting)} ({took}).")
         else:
             await self._say(on_text, f"Not deleted: {data.get('error', 'error')}")
+
+    async def _reset_agent(self, on_text, m) -> None:
+        """`reset agent <name> [assets]` — a purge plus the pointer surgery that has to follow it.
+
+        Typed-only and deliberately not a `delete`: a reset is a *sequence*, and the sequence is the part
+        that is easy to get wrong. Resetting the agent you are in is the normal case — it is how you test
+        a first run — so the server re-enters it afterwards and you land on a genuine opening."""
+        if not self._permitted:                               # destructive + shared-effect (§6d)
+            await self._say(on_text, "This session is private — you can't reset an agent here.")
+            return
+        name, assets = m.group("name"), bool(m.group("assets"))
+        data = await self._session_api("POST", "/agent/reset",
+                                       user=self._acting, agent=name, assets=assets)
+        if not data.get("ok"):
+            await self._say(on_text, f"Not reset: {data.get('error', 'error')}")
+            return
+        bits = [f"{data.get('sessions', 0)} session(s)"]
+        if assets:
+            bits.append(f"{data.get('assets', 0)} asset(s)")
+        where = f" — reopened at {data['world']!r}" if data.get("world") else ""
+        await self._say(on_text, f"Reset agent {name}: removed {', '.join(bits)}{where}.")
 
     # -- nouns backed by the world server -------------------------------------------------------
     async def _worlds(self, on_text, m=None):

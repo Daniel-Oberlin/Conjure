@@ -1995,6 +1995,75 @@ def _probe_agent(tmp_path, monkeypatch, name, block):
     return f"daniel/agents/{name}"
 
 
+def test_reset_agent_wipes_it_back_to_never_used(srv, client, tmp_path, monkeypatch):
+    """§C5. Testing a first run means removing every trace of an agent — and every `delete` refuses to
+    touch what is currently live, which is exactly the agent you want to reset. So it's its own verb: the
+    sequence (purge → clear the pointers that named what was purged → land somewhere coherent) is the
+    part that's easy to get wrong, and doing it by hand means editing the live pointer with the server
+    down. We did that twice."""
+    from conjure import server as S
+    scope = _probe_agent(tmp_path, monkeypatch, "throwaway", {
+        "session": {"first_world": {"name": "parlour"}}})
+    assert client.post("/scope/activate", json={"scope": scope}).json()["ok"]
+    client.post("/session/new", json={"scope": scope})           # a second session, with worlds
+    assert len(srv.sessions.list(scope)) == 2
+    assert S.active_scope == scope                               # …and we are standing in it
+    # something distinctive to look for afterwards — session ids are sequential and get REUSED after a
+    # purge, so their names prove nothing about whether the contents really went
+    client.post("/worlds/new", json={"name": "keepsake", "scope": scope})
+    assert srv.worlds.exists(scope, "keepsake")
+
+    r = client.post("/agent/reset", json={"user": "daniel", "agent": "throwaway"}).json()
+    assert r["ok"] and r["sessions"] == 2 and r["was_live"] is True
+    assert len(srv.sessions.list(scope)) == 1                    # re-entry minted ONE fresh session…
+    assert not srv.worlds.exists(scope, "keepsake")              # …and nothing came back with it
+    assert r["world"] == "parlour"                               # rebuilt from the agent's opening
+    assert S.active_scope == scope
+    # the fresh session is genuinely fresh — un-greeted, un-seeded, so the constructor will run again
+    sid = srv.sessions.get_active(scope)
+    meta = srv.sessions.load_meta(scope, sid)
+    assert meta["greeted"] is False and meta["seeded"] is False
+
+
+def test_reset_keeps_assets_unless_asked(srv, client, tmp_path, monkeypatch):
+    """Generated content is expensive and is not part of "the conversation", so it survives by default.
+    Pass `assets` when the opening you're testing GENERATES one — otherwise the constructor quietly
+    reuses nothing and you never exercise what you meant to."""
+    scope = _probe_agent(tmp_path, monkeypatch, "hoarder", {})
+    srv.library.upsert("keep.png", kind="image", scope=scope, label="a sky")
+    client.post("/scope/activate", json={"scope": scope})
+
+    r = client.post("/agent/reset", json={"user": "daniel", "agent": "hoarder"}).json()
+    assert r["ok"] and r["assets"] == 0
+    assert srv.library.get("keep.png") is not None               # kept
+
+    r2 = client.post("/agent/reset", json={"user": "daniel", "agent": "hoarder",
+                                           "assets": True}).json()
+    assert r2["ok"] and r2["assets"] == 1
+    assert srv.library.get("keep.png") is None                   # purged on request
+
+
+def test_reset_refuses_an_agent_that_does_not_exist(srv, client):
+    r = client.post("/agent/reset", json={"user": "daniel", "agent": "nosuchagent"}).json()
+    assert r["ok"] is False and "nothing to reset" in r["error"]
+
+
+def test_autosave_never_resurrects_a_deleted_session(srv, client, tmp_path, monkeypatch):
+    """What makes the reset simple, and correct on its own: `_save_active` writes the live world back to
+    disk, so purging the live session and then letting autosave run would re-create what was just
+    removed. Keyed on the session DIRECTORY, not on `session.json` — a session can hold worlds before any
+    meta is written, and treating that as deleted would silently disable autosave for it."""
+    from conjure import server as S
+    scope = _probe_agent(tmp_path, monkeypatch, "ghost", {})
+    client.post("/scope/activate", json={"scope": scope})
+    sid = S.active_sid
+    assert srv.sessions.dir(scope, sid).exists()
+
+    srv.sessions.delete(scope, sid)                              # purged out from under the live pointer
+    S._save_active()                                             # must be a no-op, not a resurrection
+    assert not srv.sessions.dir(scope, sid).exists()
+
+
 def test_every_session_mint_path_runs_the_agents_opening(srv, client, tmp_path, monkeypatch):
     """§C1. `first_world` used to have exactly one caller — `/session/new`. An agent switch minted a bare
     `default` from `world.on_create` alone, and a session switch hard-coded the name `home`. All three now

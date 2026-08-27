@@ -408,6 +408,7 @@ on anything addressable. Nouns for the live thing, paths for any thing.
 | `sessions` · `session …` | list · `new [title]` · `rename <title>` · `<name>` · `<user> <name>` | ✓ |
 | `worlds` · `world [new] <name>` | list · switch · create and switch | ✓ |
 | `clear` | wipe this session's chat history (keeps worlds and assets) | ✓ |
+| `reset agent <name> [assets]` | wipe an agent back to **never-used** — every session, its transcript, state and worlds — so the next arrival is a genuine first run. Assets are kept unless asked for | — |
 | `spaces` · `users` | list your captured spaces · everyone with a namespace here | — |
 
 | Path command | Effect | Voice |
@@ -1044,7 +1045,15 @@ debounce). `_save_active` **splits** it: real-surface geometry + boundary → th
 space owner's scope, so a world built in someone else's space writes its walls back to them); placed
 objects, display prefs and per-surface style overrides → the **world** doc. It also records
 `last_scope`/`last_world` on the space, which is what `/space/select` resumes on a return visit. A
-VOID/outdoor world has no space to split out and is saved whole.
+room-less world has no space to split out and is saved whole — as `<void>` if it is deliberately
+outdoor, and with the ref **omitted** if it is merely undecided ([`specs/spaces.md §4.3`](./spaces.md)).
+
+**Autosave never resurrects a deleted session.** `_save_active` returns early when the live session's
+*directory* is gone — purged by `reset agent`, or by a session delete — because writing the live world
+back would re-create exactly what was just removed. Keyed on the directory rather than on `session.json`:
+a session can legitimately hold worlds before any meta is written, and treating that as deleted would
+silently disable autosave for it. This is what lets `reset` be a plain purge followed by a re-entry,
+with no ordering dance.
 
 ---
 
@@ -1057,6 +1066,7 @@ VOID/outdoor world has no space to split out and is saved whole.
 | `GET /state` | the canonical live-state identifiers | no |
 | `GET /agent/last` | the live agent (subsumed by `/state`) | no |
 | `POST /scope/activate` | make a world in a scope live (agent switch) | no |
+| `POST /agent/reset` | wipe an agent back to never-used; re-enters it if it was live | no |
 | `GET /sessions?scope=` | a scope's sessions + visitable + live | no |
 | `POST /session/{new,switch,rename,delete,visibility}` | session verbs | no |
 | `POST /worlds/{list,new,switch,delete,rename,visibility}` | world verbs (session-local) | no |
