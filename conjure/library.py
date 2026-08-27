@@ -1,6 +1,6 @@
 """Asset library — a durable, queryable catalog over the content-addressed asset cache.
 
-This is the **Conjure cache store** (docs/asset-library-plan.md §5): one domain among several planned
+This is the **Conjure cache store** (docs/specs/library.md §1): one domain among several planned
 (cache | photo library | music library). It persists one row per procured asset (image, model,
 skybox) keyed by its file id, carrying the **originating intent** (prompt/query), the output-affecting
 params, provider/model, licence/attribution, kind-specific `attributes`, and the user's own
@@ -48,8 +48,9 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY,
   kind TEXT,                       -- image | model | skybox | grounded_skybox | audio | photo | …
-  scope TEXT,                      -- capability namespace <user>/agents/<agent> (specs/spaces.md);
-                                   --   a data seam now — enforcement arrives with the second agent
+  scope TEXT,                      -- capability namespace <user>/agents/<agent> (specs/agents.md §2);
+                                   --   ENFORCED: every read carries the scope ∪ public predicate, and
+                                   --   the `*/agents/<agent>` glob keeps public from crossing agents
   public INTEGER DEFAULT 1,        -- visibility flag (NOT a path segment): 1 = world-readable, 0 = private
   source TEXT,                     -- cache://<id> | nas://<path> | https://…
   filename TEXT,                   -- physical name under .cache/assets (NULL for external sources)

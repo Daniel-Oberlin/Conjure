@@ -172,7 +172,7 @@ Two things keep it safe rather than lossy: **durable facts live in the state sto
 the map, inventory and variables survive summarization untouched; and the summary prompt can be
 agent-tunable, with the option to **pin** key turns (the greeting, pivotal decisions) so they're never
 summarized away. `session.json.summary` is the storage hook. A **per-model token budget** for the
-trim is separately shelved in [`backlog.md`](../backlog.md).
+trim is separately shelved below (harvested from the old flat backlog).
 
 **Timestamps.** Transcript entries carry `{role, by, text}` and **no `ts`** — the persisted entry is
 built by `agent_server._entry`, and the plan's `ts` was deferred. Storing it is nearly free and useful
@@ -352,3 +352,126 @@ Because the transcript is append-only and world change is patch-sourced, a sessi
 Nothing records the world event log alongside the dialog today, so this is unrealized. See the matching
 item in [`backlogs/dynamics.md`](./dynamics.md) — tiers A and B are procedural and event-sourced, so the
 module half is replayable from `(seed, clock, event log)` for near-free.
+
+---
+
+## Harvested from the old flat `docs/backlog.md` (2026-08-26)
+
+*Items filed against this subsystem before the per-area backlogs existed. Status lines
+and dates are as originally written; none has been re-verified against today's code.*
+
+## Director claims a surface restyle is done without calling the tool ("the couch")
+
+**Status:** open · noticed 2026-06-26 · **CONFIRMED hallucination** (repro'd both ways)
+
+**Confirmation (clean session, same couch):** "surface 41 green" → director called `show_surface(real_couch_41)`
+then `style_surface(real_couch_41, green)` → `Styled 1 surface(s)` → couch turned green. Same surface,
+same world — works when the tool is actually called. So the failing turn was purely the director
+emitting "Done" without calling `style_surface`. Likely contributing factor: the failing turn was in a
+DEGRADED-tracking session with the every-2s re-ingest flood (noisy context); the successful one was a
+clean restart with no flood. So the prompt guardrail is the fix; reducing context noise may also help.
+
+**Symptom:** "Make the couch green" → director replies "Done — the couch is now green!" but nothing
+changes. Reported as couch-specific and reproducible; other surfaces (tables, walls) restyle fine.
+
+**Evidence (decisive):** the saved world `new-room` (rev 273) shows the 4 tables `color=blue
+visible=True` (styled) but `real_couch_41` still `color=#888 visible=None` — **never touched**. The log
+for that turn has **no `style_surface` tool call and no `material.color` patch** — just the final
+"Done". So the director hallucinated completion without calling the tool.
+
+**Not a surface bug:** matching (`target="couch"` → semantic match), material defaults (couch = normal
+opaque panel; only doors/windows are special), and recapture (updates in place, preserves style) treat
+the couch *identically* to the tables that worked. If `style_surface(target="couch")` had run it would
+have worked. No couch-specific code path exists — this is LLM behavior (assert-done-without-acting),
+same class as the re-query papercut.
+
+**Possible trigger (unconfirmed):** an unstyled surface shows in the director's room summary as
+`visible=False` (styled ones flip to `visible=True`), so the model may treat the couch as "not active"
+and skip to a confirmation.
+
+**Proposed fix:** (1) prompt guardrail — never report a change as done unless a tool was actually
+called this turn; (2) clarify that every real surface, **including furniture (couch/shelf/table)**, is
+a valid `style_surface` target. Both are soft (prompt-level).
+
+**To confirm on repro (the user will retry in a fresh world):** watch the log on "make the couch X" —
+- **no `style_surface` call** → confirmed hallucination → the prompt guardrail is the fix;
+- **`style_surface(target="couch")` fires but the couch still doesn't change** → flips to a CLIENT
+  rendering bug (couch `material.color` not applied), a different investigation.
+
+**Side note:** the same log shows the room re-ingesting all ~45 surfaces every ~2s continuously — heavy
+and noisy (recapture never touches `material.color`, so not the couch cause); may be amplified by the
+shared-room layer in the multi-world code. Worth watching.
+
+## Director re-queries for ids it already has in context
+
+**Status:** open · noticed 2026-06-25 during live director testing
+
+**Symptom:** the director re-runs `query_assets`/`search_library` for data it retrieved a turn or two
+earlier and still has in context. Live: it listed the 3 transparent images *with ids*, then on "place
+them left to right" announced "let me look those up properly first!" and ran the identical query again
+to get ids it already had. Cheap and correct (fast local SQL, right result) — a papercut, not a defect.
+
+**Cause:** the reuse nudge exists in the prompt ("REUSE ids you already retrieved; don't re-run
+query_assets for something you just listed") but doesn't hold reliably. Two reasons: (1) it's one
+clause buried in a single ~600-word run-on paragraph, so it gets diluted; (2) the model defaults to
+"verify before acting" — describing felt low-stakes, *placing* felt like a commit, so it re-confirmed.
+Suppressing a cheap idempotent re-lookup is inherently soft for a prompt nudge.
+
+**Options:** (a) leave it — cheap and correct; (b) hoist the reuse rule into a prominent standalone
+line — low risk, diminishing returns (the nudge already exists once); (c) **restructure the whole
+builder prompt** from one wall-of-text paragraph into scannable sections / a "Rules" block — the real
+fix, since right now every behavioral rule competes inside one paragraph. (c) is behavioral (can't be
+unit-tested) and risks nudging other behaviors, so it needs a live test pass.
+
+**Lean:** (c) is the high-leverage move if these "nudge didn't stick" papercuts keep recurring;
+otherwise (a) is defensible.
+
+## Voice barge-in (shared-session C3b, shelved)
+
+**What:** interrupt the director mid-turn by talking over it — VAD detects the user speaking while TTS
+is playing → cancel the in-flight turn and take the new utterance.
+
+**Why shelved:** voice landed as a thin WebSocket client (C3a) with mute-while-speaking; barge-in is a
+UX polish, not required for the shared-conversation goal.
+
+**Proposed fix:** the WebSocket protocol already reserves a `{type:"interrupt"}` client→server message.
+Wiring it: (1) the agent server must run each turn as a **cancellable task** (not awaited inline in the
+connection's receive loop) so the loop stays responsive mid-turn; on `interrupt`, cancel that task, emit
+`interrupted`+`turn_done`, release the floor. (2) voice: turn OFF mute-while-speaking (or gate it), and on
+VAD-during-TTS send `{type:"interrupt"}` + stop local TTS. Needs echo handling (earbuds today) so the
+bot's own voice doesn't self-interrupt.
+
+**Open decision:** does an interrupt discard the partial turn's world edits, or keep them? (Probably keep
+what already applied; just stop further tool calls.)
+
+## Per-model token budget for history trim (shelved)
+
+**What:** replace the director's fixed **turn-count** history cap (`settings.history_cap`, default 40 —
+bounds the LLM's view of the transcript in `Director._recent_history`) with a **token budget derived
+from each LLM's context window**, so the trim adapts across models (Claude, Gemini, grok, gpt-*).
+
+**Why shelved:** the 40-turn cap already fixed the real problem (a bloated session made the director
+skip tool calls). Turn-count is predictable and enough for now; the token version is a refinement.
+
+**Key insight (don't lose this):** the binding constraint was **quality, not the window** — the model
+had plenty of context left and still degraded. So the trim length is a **reliability** knob, NOT a
+"fill the window" one; a bigger window is not a reason to keep more history. Size to the degradation
+knee, clamp by the window only on small models:
+`trim_budget = min(quality_budget, context_window × safety_frac − reserved)`.
+
+**Proposed fix:**
+- Add a static `context_window` (public, known metadata) to each roster adapter; conservative default
+  (~128k) for unknowns. (Provider APIs don't expose it reliably → curated map.)
+- `reserved` = system prompt (incl. the injected room+world context) + tool schemas + current turn +
+  response headroom (`max_tokens`); roughly constant since the injected context is bounded.
+- `_recent_history` keeps the most-recent turns whose cumulative token estimate ≤ available; `chars/4`
+  is plenty for trimming (no exact tokenizer needed).
+- The `quality_budget` stays the PRIMARY limit and is tuned **empirically** (watch the `[bcast]`/`[tool]`
+  trace as history grows — the window doesn't tell you the degradation knee). Optional per-model overrides.
+
+**Safe here specifically:** `world://current` + `room://current` are re-injected fresh every turn, so
+trimming old chat loses only conversational continuity, never scene knowledge — aggressive trimming is
+safe, and summarizing dropped turns is optional (narrative continuity only).
+
+**Open decision:** pure trim vs. rolling summarization of dropped turns; and whether the `quality_budget`
+is one shared cap or per-model (tuned by observation).

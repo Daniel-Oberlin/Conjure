@@ -17,7 +17,7 @@ Director/transcript/floor underneath; only `{user, in_shell}` is per-connection.
 
 Single **turn floor** (D4): one utterance runs at a time; a second while one's in flight gets `busy`.
 The follow loop rides the world server's `/ws` and re-binds the Director on an agent change (C2).
-Barge-in reserves a `{type:"interrupt"}` client message; it is shelved (docs/backlog.md).
+Barge-in reserves a `{type:"interrupt"}` client message; it is shelved (docs/backlogs/agents.md).
 """
 
 from __future__ import annotations

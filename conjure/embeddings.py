@@ -1,6 +1,6 @@
 """Embeddings — a backend-swappable `Embedder` over a shared text-image space.
 
-docs/asset-library-plan.md §4: the *model* is SigLIP (text + image land in one space, so a text query
+docs/specs/library.md §6: the *model* is SigLIP (text + image land in one space, so a text query
 can match image content). The *backend that runs it* is chosen by deployment behind this interface:
 
 - **SigLipEmbedder** — local torch + transformers. The dev default; zero export friction, the matched

@@ -315,11 +315,11 @@ class Settings:
     # phantom AR holder, so the admission gate engages for a SINGLE headset (match the active space ⇒
     # admitted; anything else ⇒ refused). See server._occupied.
     force_occupied: bool = False
-    # Asset-library embeddings (docs/asset-library-plan.md §4). "auto" uses local SigLIP when the
+    # Asset-library embeddings (docs/specs/library.md §6). "auto" uses local SigLIP when the
     # optional torch/transformers are installed, else stays off; "fake"/"none" for tests/disable.
     embed_backend: str = "auto"
     embed_model: str = "google/siglip2-so400m-patch14-384"
-    # Caption backfill for assets with no label (docs/asset-library-plan.md §12). Gemini multimodal by
+    # Caption backfill for assets with no label (docs/backlogs/library.md). Gemini multimodal by
     # default; "none"/"fake" to disable/test.
     caption_provider: str = "gemini"
     caption_model: str = "gemini-2.5-flash"

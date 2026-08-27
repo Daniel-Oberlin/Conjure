@@ -106,3 +106,30 @@ to the agent definition; noted here because this is the layer it would write to.
 recoverable in principle. The missing pieces are the same as for state generally: **action grouping**
 (one director turn = one undoable unit, not N patches) and **origin filtering** (never undo an automatic
 re-capture or re-anchor). See [`backlogs/agents.md`](./agents.md).
+
+---
+
+## Harvested from the old flat `docs/backlog.md` (2026-08-26)
+
+*Items filed against this subsystem before the per-area backlogs existed. Status lines
+and dates are as originally written; none has been re-verified against today's code.*
+
+## Image upside-down when framed in a window (wall art is fine)
+
+**Status:** open · noticed 2026-06-24 · **needs Quest testing**
+
+**Symptom:** `place_image(on_surface=<window>)` hangs the image **upside down**; on a wall-art surface
+it's correct and quick.
+
+**Cause:** `place_image` (`server.py:1069`) **adopts the captured surface's `rotation` verbatim** for
+the image plane. Wall-art planes are captured upright/inward-facing; **window** planes come back with
+a flipped orientation (the headset's plane detection inverts their up/normal), so the image inherits
+the flip. Capture-side quirk, not the placement math per se.
+
+**Proposed fix:** don't trust the captured rotation for image orientation — compute an **upright,
+room-inward-facing** mounting rotation (normal toward the room interior, zero roll) from the surface
+position + room center, used for *all* on-surface placements. Alt: normalize window/door surface
+rotations at ingest so "up" is consistent. Either way, **verify on a Quest** (window orientation is
+device/capture-dependent; can't confirm blind).
+
+---

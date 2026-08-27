@@ -8,8 +8,9 @@ the bytes and catalogs the row via `register_asset` — so a new asset type is *
 registry entry*, with no schema change: kind-specific fields ride the catalog's JSON `attributes` bag.
 
 This module has NO dependency on the running server (only stdlib + Pillow, and trimesh lazily for
-models), so it's unit-testable in isolation and reusable by a future NAS `scan()` (asset-library-plan
-Phase 5). The bottom half is the `conjure-import` CLI: a thin HTTP client of the world server.
+models), so it's unit-testable in isolation and reusable by a future NAS `scan()`
+(docs/backlogs/library.md). The bottom half is the `conjure-import` CLI: a thin HTTP client of the
+world server.
 """
 
 from __future__ import annotations

@@ -42,4 +42,4 @@ thing. Say what would change your mind.
 - [`docs/backlogs/`](../backlogs/) — what it should do next. Open theories from an investigation are
   cross-linked from the relevant backlog.
 - [`docs/decisions.md`](../decisions.md) — consequential forks and the reasoning behind them.
-- [`docs/known-issues.md`](../known-issues.md) — currently-open user-visible issues, not campaigns.
+- [`docs/backlogs/`](../backlogs/) — currently-open problems, per subsystem, not campaigns.

@@ -68,7 +68,7 @@ SPACES_DIR = CACHE / "spaces"                  # legacy space tree
 # The single global session pointer — what's live across the WHOLE server (scope<TAB>session-id).
 SESSION_PTR = CACHE / "_session.txt"
 ASSET_CACHE = CACHE / "assets"                 # created in _init_state (after migration), not at import
-LIBRARY_DB = CACHE / "library.db"             # durable asset catalog (docs/asset-library-plan.md) — DATA
+LIBRARY_DB = CACHE / "library.db"             # durable asset catalog (docs/specs/library.md) — DATA
 # The scope new assets/worlds are written under: <user>/agents/<agent> (docs/specs/spaces.md
 # §3). A data seam for now — single user/agent, no enforcement yet; the builder is the only writer.
 DEFAULT_SCOPE = scope_for(DEFAULT_USER, "builder")
@@ -346,7 +346,7 @@ resolver: AssetResolver | None = (
 # Filesystem-mutating, stateful singletons — opened by _init_state() on SERVER STARTUP, never at import,
 # so `import conjure.server` (tests, dev, tooling) can't run schema migrations / move world dirs / write
 # to the real .cache. They're None until startup; the test fixture sets them directly (startup never
-# fires under a plain TestClient). See docs/backlog.md (the import-time-startup hazard).
+# fires under a plain TestClient).
 library: "AssetLibrary | None" = None
 worlds: "WorldRepository | None" = None
 sessions: "SessionRepository | None" = None    # the session container; `worlds` routes per-session through it
@@ -3170,7 +3170,7 @@ async def place_asset(req: PlaceAssetRequest) -> dict:
     }
 
 
-# --- asset library: explicit, director-driven reuse over the catalog (docs/asset-library-plan.md §7).
+# --- asset library: explicit, director-driven reuse over the catalog (docs/specs/library.md §7).
 #     search_library (read-only) → tiered candidates; place_cached_asset → reuse a model by id;
 #     correct_asset → relabel / reject a mismatch. The director searches BEFORE going to the web. -----
 
@@ -3231,7 +3231,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                         _ensure_referenced_public(req.id))
 
 
-# --- catalog maintenance: scoped CRUD over the asset library (docs/asset-library-plan.md). The
+# --- catalog maintenance: scoped CRUD over the asset library (docs/specs/library.md). The
 #     `scope` on each request is set by the agent's MCP server (a capability, not an LLM arg) and
 #     enforced here. query_assets is read-only + scope-filtered; update/delete are per-id scope-checked.
 

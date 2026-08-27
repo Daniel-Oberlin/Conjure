@@ -138,7 +138,8 @@ the agent's load. Optional entries were deliberately deferred.
 
 - **Quest perf budget** — the limitation that bites hardest. N particle systems and shaders on a
   mobile-class GPU drop frames (cf. the walking-microstutter reprojection finding in
-  [`docs/known-issues.md`](../known-issues.md)). Needs an **active-module quota** and LOD; neither exists.
+  [`investigations/pops-and-jitters.md`](../investigations/pops-and-jitters.md)). Needs an
+  **active-module quota** and LOD; neither exists.
 - **Disposal is unpoliced.** Leaked GPU memory on unload crashes the headset over a long session. The
   contract requires full disposal in `remove`, but nothing verifies it. A dev-mode leak check after
   `dismiss_module` would catch the classic bug.

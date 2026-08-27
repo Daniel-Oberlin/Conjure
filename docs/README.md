@@ -46,6 +46,10 @@ split exists so a spec can be trusted: nothing in it is a plan, an intention, or
 - **[specs/worlds-surfaces.md](./specs/worlds-surfaces.md)** — how a **world presents** a space: real
   surfaces as ordinary entities, the base-plus-override styling split, the two immersion axes, the
   director's surface tools, and openings and edges. ([backlog](./backlogs/worlds-surfaces.md))
+- **[specs/library.md](./specs/library.md)** — the **asset catalog**: keying on intent rather than
+  output bytes, the core+attributes record, one write-through for every ingest path, staged search
+  (alias → exact → FTS → vector) and its confidence tier, the scope predicate that walls agents off from
+  each other, and the embedder. ([backlog](./backlogs/library.md))
 - **[specs/occlusion.md](./specs/occlusion.md)** — real-world depth occlusion: the global depth pre-pass
   and the `off`/`hands`/`hands-solid` modes. ([backlog](./backlogs/occlusion.md))
 
@@ -64,7 +68,10 @@ drops that and a backlog won't hold it, but it is the knowledge that stops a dea
 2026-08-25. `room-model.md`, `space-model.md`, `spaces-and-users-plan.md`, `new-space-flow.md`,
 `local-first-geometry.md`, `co-location-plan.md`, `pose-smoothing-plan.md` and `persistence-model.md` →
 the three space specs above, with `pops-and-jitters-journey.md` and `wall-art-45-flip.md` moving to
-`investigations/`, on 2026-08-26.)*
+`investigations/`, on 2026-08-26. `spec.md` → [vision.md](./vision.md); `setup.md`,
+`testing-on-quest.md`, `https-setup.md` → [running.md](./running.md); `asset-library-plan.md` →
+[specs/library.md](./specs/library.md) + its backlog; and the flat `backlog.md` + `known-issues.md`
+distributed into the per-area backlogs — all 2026-08-26.)*
 
 > For current project status / what works today, see the top-level [README](../README.md) — it's
 > the single source of truth for status, so these docs don't drift.

@@ -127,7 +127,7 @@ content-source modules (§13).
 | Module | Notes |
 |---|---|
 | ✅ **Local file importer** (`conjure-import`) | Bring arbitrary files on disk into the library. Extensible **handler registry** (`conjure/importer.py`): images, **stereo side-by-side / top-bottom** pairs (tagged `attributes.stereo` → rendered per-eye by the client `stereo` component), and `.glb` models — a new asset type is one handler. Content-addressed ⇒ automatic dedup; captions + embeds on ingest. Server seam: `POST /library/import`; all ingest paths share the `register_asset` write-through. |
-| 💡 NAS photo library | `search_photos` / `get_photo`, incl. stereoscopic & 360° media. Generalizes the importer's `scan(path)` seam (asset-library-plan Phase 5). |
+| 💡 NAS photo library | `search_photos` / `get_photo`, incl. stereoscopic & 360° media. Generalizes the importer's `scan(path)` seam (backlogs/library.md — the NAS store). |
 | 💡 Interactive-fiction (Z-machine) | Director renders IF state as VR/AR scenes. |
 | 💡 Remote-session (streaming) | Remote screen onto a surface (forward-compat). |
 

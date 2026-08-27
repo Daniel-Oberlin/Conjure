@@ -137,7 +137,8 @@ session. Attaching them off the same `arCapable` check the spawn now uses is the
 ### Cross-user candidate search is a filesystem walk
 
 `_geo_candidates` walks every user's spaces on each `/geolocation`. Fine at present scale; the same
-indexing note as the world-index item in [`backlogs/agents.md`](./agents.md).
+indexing note as the **world index for cross-user public discovery** item below, harvested from the old
+flat backlog — the two are one piece of work.
 
 ---
 
@@ -212,3 +213,100 @@ simultaneously-active spaces on one server — is out of scope and would touch t
 
 Offset (1.2 m) and facing are constants. Fine for testing; a real multi-user session would want them
 configurable, and probably wants the guest not to spawn inside the owner.
+
+---
+
+## Harvested from the old flat `docs/backlog.md` (2026-08-26)
+
+*Items filed against this subsystem before the per-area backlogs existed. Status lines
+and dates are as originally written; none has been re-verified against today's code.*
+
+## World index for cross-user public discovery (scale the existing walk)
+
+**Status:** open (perf only) · noted 2026-06-29 · **walk shipped 2026-06-30**
+
+**Shipped:** cross-user discovery now works — `WorldRepository.list_public()` scans every
+`<root>/*/agents/*` dir, reads each doc, and returns the public ones tagged by owner; `/worlds/list`
+returns them as `available`, and `switch_world(name, owner=…)` enters another user's public world. This
+is the "filesystem walk + read each" approach.
+
+**Remaining (perf):** the walk reads *every* world doc on each `list_worlds` call — fine at small scale,
+won't scale. When discovery gets heavy, add a derived **world index** — a catalog table of
+`owner / name / public / space` from the docs (docs stay source of truth), kept in sync on world
+save/delete — turning the walk into one indexed lookup. Defer until it actually hurts.
+
+## "Private space" gates world-creation, not joining — revisit the semantics
+
+**Status:** shelved (design question) · raised 2026-07-07 · from specs/spaces step 6 (D8)
+
+**The concern:** `space.public` currently gates only **world-creation-in-the-space** (a private space =
+only the owner may anchor new worlds there). "Private" colloquially means "keep others out," so the label
+mismatches the behavior. Three orthogonal concerns share too few words: (1) **co-location** — are you
+physically in the room (a fact, not a permission; the admission gate); (2) **content visibility** — can you
+enter a given world (`world.public` + the `/ws` refusal); (3) **authoring control** — can you anchor a NEW
+world here (`space.public`, D8). We labeled #3 "private/public," but users reach for "private" expecting #2
+at the room level.
+
+**Concrete smell:** a "private" space still mints **public, joinable** worlds by default — flip your space
+private, create a world, and it comes up public and any co-located person can join it. The privacy doesn't
+flow through to what you'd expect.
+
+**Options when revisited:**
+- **Collapse toward intuition (preferred):** private space = fully yours — only the owner authors worlds
+  there *and* only the owner joins worlds anchored there; public = shared. One rule ("my room, my worlds,
+  nobody else"); composes cleanly with the admission gate (a non-owner in a private space is just refused);
+  kills the "private space spawns public worlds" surprise.
+- **Rename, keep the feature:** stop calling #3 "privacy" — e.g. space "authoring: open vs. owner-only" —
+  and leave joining to per-world visibility.
+
+**Also missing (either way):** an owner-controlled restriction on *who may be present in worlds here*,
+distinct from co-location (today co-location admits anyone physically in the room). Not a bug — a framing
+misstep worth fixing before it ossifies. See the full discussion in the session where step 6 landed.
+
+---
+
+---
+
+## Harvested from the old `docs/known-issues.md` (2026-08-26)
+
+*Field-observed problems and shelved work, moved here when the flat known-issues file was
+retired. A parked branch is a property of the item, not a reason for a separate document.
+Status lines are as originally written; not re-verified against today's code.*
+
+## Observed (unfixed): world switching & active-world preservation
+
+Two rough edges seen on-device, **not yet fixed**. Captured here so they're not lost.
+
+> **Notes (Daniel):** switching worlds is not always successful, and the currently-active world is not always
+> preserved correctly between sessions.
+
+Three distinct mechanisms were found behind these, in order of impact:
+
+1. **Duplicate-space roulette (main driver of "wrong world on re-entry").** `_geo_candidates` returns *every*
+   space within GPS range, and the client's `RoomSnap.selectSpace` picks by best registration coverage. When
+   several **geo-overlapping** spaces exist at one physical location (leftovers accumulated during the
+   churn/deadlock era, when garbage seeds couldn't be re-matched so each re-entry minted a fresh `space-N` +
+   a world named after it), the vote lands on a *different* space each re-entry — and each space carries its
+   own `last_world` — so you pop into a different world. Non-deterministic by nature (vote noise decides).
+   *Mitigation today:* keep only one space per location (a clean `.cache/spaces` avoids it). *Not built:* a
+   guard that refuses to mint a new space when a geo-overlapping one already registers well enough.
+
+2. **`_switch_to` `last_world` lag (sub-second, self-correcting).** On a world switch, `_switch_to` calls
+   `_save_active()` for the **outgoing** world (stamping the outgoing space's `last_world`) but never stamps
+   the **incoming** space's `last_world`. It's corrected on the next autosave, which fires within
+   `_AUTOSAVE_INTERVAL` (~1 s) because `store` rebinds to a new rev. So only if you exit within ~1 s of a
+   switch (with no edit) does re-entry land in the pre-switch world. *Fix:* stamp `last_world` at the **end**
+   of `_switch_to` (after `_activate` rebinds the globals) so it's correct-by-construction. Small; not landed.
+
+3. **Geo-timeout hang ("Getting your world… working out what space you're in" forever).** When the Quest GPS
+   fix times out (`code=3`), the space-selection overlay never dismisses: the give-up fallback
+   (`endAwaitingSpace()` after `GEO_MAX_TRIES`) never fires because `geoTries` is reset to 0 on every
+   `onEnterAR` (`conjure-client.js`), so with the 20 s GPS timeout it can't accumulate to the limit before a
+   re-entry resets it (`grep 'giving up after' temp/conjure.log` → 0 hits). The room actually locks fine
+   underneath (`[coloc] … LOCK`, `[room] accept …`); only the overlay is stuck. *Workaround:* run with
+   `--force-geo /<user>/spaces/<name>` to bypass the flaky Quest GPS. *Fix:* give "awaiting a space" a
+   **wall-clock deadline** independent of `geoTries`, so a dropped fix falls back to the active world.
+
+**Relevant code.** Server: `_switch_to` / `_save_active` (`last_world`), `select_space` / `_geo_candidates`
+(selection + minting). Client: `warmGeo` / `onEnterAR` / `beginSpaceSelection` / `commitSelect` (the geo
+state machine).

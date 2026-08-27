@@ -263,7 +263,7 @@ lets the director and the mediator choose well.
 **Choice:** A single **persistence service, scoped per agent**, hosting several **typed** stores.
 Agents work inside `private/<agent>/…` and never see each other's private content; `public/<agent>/…`
 is world-readable (documented, not built). **Worlds are a separate document store**, not the asset
-catalog. Full design in **`docs/specs/agents.md`**; the asset store is `asset-library-plan.md`.
+catalog. Full design in **`docs/specs/agents.md`**; the asset store is `specs/library.md`.
 
 **Why:**
 - **Scope = capability, not a parameter.** The runtime binds each agent's scope and injects it
