@@ -138,6 +138,9 @@ DEFAULT_WAKE_WORDS: tuple[str, ...] = (
     "conjur",
     "conjour",
     "konjure",
+    "coinure",
+    "connure",
+    "conure"
 )
 
 
