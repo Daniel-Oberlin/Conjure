@@ -32,11 +32,6 @@
   - Keep store of created content, version controlled?
 
 # Audio
-  - Special filter rule module for audio from LLM
-    - Never emit asterisk (emoji's ok)
-    - say "emoji" after an emoji
-  - Audit shell for usability when voice is enabled
-    - Never emit asterisk from shell (do something useful instead)
   - Can we reduce latency by starting speech before generation is finished?
   - Quest streaming
     - User audio separation in same room
