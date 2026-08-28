@@ -26,10 +26,21 @@
 - **Degrade to the next-broadest thing that is still true, never to a global default.** When a pointer
   names something that is gone — a deleted world, a purged session — the user's intent usually survives
   it: *put me back with the agent I was using, in the space I am standing in*. Falling back to a
-  general-purpose default throws away facts that are still good. World gone → another world in that
-  session, else that agent's freshly-built opening; session gone → a new one **in the same agent**;
-  the default agent only when nothing better is knowable
-  ([specs/spaces.md §6.1](./specs/spaces.md)).
+  general-purpose default throws away facts that are still good.
+
+  The ladder is the same at every level, and it has **three** rungs, not two: *the thing you were last
+  in* → *any surviving sibling* → *build a new one*. So: world gone → the world you were in before it,
+  else any other world in that session, else that agent's freshly-built opening; session gone → the
+  session before it, else any other session **in the same agent**, else a new one there; the default
+  agent only when nothing better is knowable ([specs/spaces.md §6.1](./specs/spaces.md)).
+
+  The middle rung is the one that gets dropped. Written as two rungs, this principle was implemented as
+  two — "no pointer" read as "never been here", so deleting the world you were last in minted a fresh
+  one while its siblings sat untouched in the same session (and the session level had the identical
+  defect, hidden because its fallback happened to name a session id that usually existed). The pointer
+  is therefore an **MRU list** rather than a single id: rung 1 walks past however many of its entries
+  have been deleted, which is what makes it a rung and not a coin flip
+  ([specs/agents.md §7.6](./specs/agents.md)).
 - **Every degradation is audible.** A fallback that fires silently is indistinguishable from a bug, and
   is how a cluster of world-entry defects survived unnoticed for months. Whenever the system hands you
   something other than what was asked for, it says so in one line — on the same channel that already

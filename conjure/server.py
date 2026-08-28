@@ -342,7 +342,11 @@ def _ensure_session(scope: str, sid: str | None = None, *, active_world: str | N
     every session born of an agent switch — no state seeded, no greeting."""
     if sessions is None:                               # unit-test paths without a session store: no-op
         return sid or MIGRATED_SID
-    sid = sid or sessions.get_active(scope) or MIGRATED_SID
+    # The same three rungs as the world level (architecture.md §1), and for the same reason: deleting the
+    # session you were last in used to leave no pointer, and this read "no pointer" as "never been here".
+    # `MIGRATED_SID` is the NAME to give a brand-new session, not a resolution step — as a fallback it
+    # only ever worked by accident, when a scope happened to still have a `session-1`.
+    sid = sid or sessions.get_active(scope) or sessions.newest(scope) or MIGRATED_SID
     if not sessions.exists(scope, sid):
         user = scope.split("/", 1)[0]
         sessions.save_meta(scope, sid, {
@@ -1386,12 +1390,36 @@ async def _activate_scope(scope: str, *, force: bool = False) -> dict:
     if scope == active_scope and not force:
         return {"ok": True, "world": worlds.name_of(scope, active_world), "id": active_world,
                 "scope": scope, "unchanged": True}
-    active = worlds.get_active(scope)
-    if active and worlds.exists(scope, active):
-        return await _switch_to(scope, active)                 # resume the scope's last-active world
-    wname, raw, err = await _build_first_world(scope)           # …or open it for the first time
+    # The three-rung ladder (architecture.md §1). Rung 1 is the MRU pointer, which walks past however
+    # many of its entries have been deleted. Rung 2 is the floor: a world that exists but was never in
+    # the history — created and never switched to, or the history exhausted. Only then do we mint.
+    # Captured before minting, which creates one: a scope with no session at all has never been used, so
+    # building its opening is a FIRST RUN and unremarkable. The same mint under someone who had worlds
+    # here is a degradation, and an empty new world is otherwise indistinguishable from losing the lot.
+    been_here = bool(sessions and sessions.list(scope))
+    # The session rung, announced here rather than inside `_ensure_session` (which is sync, and whose
+    # other callers are boot paths with nobody listening yet). An agent switch is the arrival where a
+    # purged session is actually noticed.
+    if sessions is not None and not sessions.get_active(scope):
+        resumed = sessions.newest(scope)
+        if resumed:
+            await _broadcast({"type": "notice",
+                              "text": f"The session you were in is gone — resumed "
+                                      f"'{_session_title(scope, resumed)}'."})
+    active = worlds.get_active(scope)                          # rung 1 — self-healing, silent
+    if not active:
+        active = worlds.newest(scope)                          # rung 2 — a surviving sibling
+        if active:
+            await _broadcast({"type": "notice",
+                              "text": f"The world you were in is gone — opened "
+                                      f"'{worlds.name_of(scope, active) or active}'."})
+    if active:
+        return await _switch_to(scope, active)
+    wname, raw, err = await _build_first_world(scope)          # rung 3 — the agent's opening
     if err:
         return {"ok": False, "error": err}
+    if been_here:
+        await _broadcast({"type": "notice", "text": f"No worlds left here — starting '{wname}'."})
     return await _switch_to(scope, wname, store_override=raw)
 
 

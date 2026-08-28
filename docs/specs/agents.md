@@ -806,6 +806,41 @@ sky. Tracked in [`backlogs/agents.md`](../backlogs/agents.md).
 
 The `world.on_exit` block is declared and read by nothing.
 
+### 7.6 Arriving: the three-rung ladder
+
+Every arrival — an agent switch, a session switch, boot — has to answer *which world* and *which
+session*. Both answers come off the same ladder ([architecture.md §1](../architecture.md)):
+
+| Rung | World (`_activate_scope`) | Session (`_ensure_session`) | Announced |
+|---|---|---|:--:|
+| 1 | the newest world in the history that still exists | the newest session in the history that still exists | — |
+| 2 | any surviving world in that session, newest by mtime | any surviving session in that agent, newest by mtime | ✓ |
+| 3 | build the agent's opening (§7.5) | create one, which then runs §7.5 | ✓ if you'd been here |
+
+**The pointer is an MRU list.** `_active.txt` — at both levels — holds up to ten ids, newest first, and
+reading it means *the newest entry that still exists*. That single change supplies rung 1 and both of
+its awkward cases for free: `delete` drops the id wherever it sits in the history rather than unlinking
+the file, so the entry before it becomes current; and reading skips any number of dead entries, so
+"the one before it is gone too" is not a special case. It is also self-healing against ids removed
+out-of-band — a purge, a manual `rm` — and a legacy single-line file is already a valid one-entry list.
+
+**Rung 2 is a floor, not a preference.** It catches what the history cannot: a world created but never
+switched to was never activated, so it never entered the MRU, and without this rung an exhausted history
+reads as *"this scope is empty"* — the mint-past-your-data bug in its other form. mtime is a weak signal
+(a restore or an rsync can flatten it), which is tolerable precisely because this is a rare floor beneath
+an explicit history, and because landing on it is said out loud.
+
+**Rung 1 is silent; 2 and 3 are not.** Resuming the previous world is the pointer doing its job, and
+narrating it would make every ordinary delete-and-return feel like a fault. Rungs 2 and 3 hand you
+something other than what you left, so they say which and why. Rung 3 is silent in one case: a scope with
+no sessions at all has never been used, so building its opening is a **first run**, not a loss.
+
+> Before this, both resolvers had two rungs and `delete` unlinked the pointer — so deleting the world you
+> were last in left no pointer, "no pointer" meant "never been here", and the arrival minted a new world
+> past its surviving siblings. The session level had the identical two lines and only appeared to work
+> because its fallback was the constant `MIGRATED_SID` (`"session-1"`), which usually named a session that
+> existed. `MIGRATED_SID` is now only the *name* given to a brand-new session, never a resolution step.
+
 ---
 
 ## 8. The agent server

@@ -729,3 +729,130 @@ def test_an_accented_name_is_found_by_its_unaccented_spelling():
     # the accent survives in what's STORED — only the match key folds
     from conjure.world import clean_name
     assert clean_name("Café Noir") == "Café Noir"
+
+
+# --------------------------------------------------------------------------- the MRU pointer
+#
+# `_active.txt` used to hold ONE id, unlinked when its target was deleted. So deleting the world (or
+# session) you were last in left NO pointer, every resolver read that as "never been here", and it minted
+# something new while siblings sat right there. Observed 2026-08-28 at the world level; the session level
+# had the identical two lines. The file is now an MRU list and reading it means "newest that still exists".
+
+def test_deleting_the_live_world_falls_back_to_the_previous_one(tmp_path):
+    from conjure.world import WorldRepository
+    repo, scope = WorldRepository(tmp_path), "daniel/agents/outdoor"
+    for name in ("home", "beach", "meadow"):
+        repo.save(scope, name, WorldStore(_doc()))
+        repo.set_active(scope, name)
+    assert repo.get_active(scope) == repo.resolve(scope, "meadow")
+    repo.delete(scope, "meadow")
+    assert repo.get_active(scope) == repo.resolve(scope, "beach")     # …not None, and not a new world
+
+
+def test_it_keeps_walking_when_the_previous_one_is_gone_too(tmp_path):
+    """The case a 'current + previous' pair could not answer: several deletions in a row."""
+    from conjure.world import WorldRepository
+    repo, scope = WorldRepository(tmp_path), "daniel/agents/outdoor"
+    for name in ("home", "beach", "meadow"):
+        repo.save(scope, name, WorldStore(_doc()))
+        repo.set_active(scope, name)
+    repo.delete(scope, "meadow")
+    repo.delete(scope, "beach")
+    assert repo.get_active(scope) == repo.resolve(scope, "home")
+
+
+def test_a_world_deleted_from_the_middle_of_the_history_is_forgotten(tmp_path):
+    """Delete has to drop the id wherever it sits, not only when it is the head — otherwise a dead entry
+    stays buried in the list and resurfaces as the answer once the ones above it go."""
+    from conjure.world import WorldRepository
+    repo, scope = WorldRepository(tmp_path), "daniel/agents/outdoor"
+    for name in ("home", "beach", "meadow"):
+        repo.save(scope, name, WorldStore(_doc()))
+        repo.set_active(scope, name)
+    repo.delete(scope, "beach")                                        # buried, not current
+    repo.delete(scope, "meadow")                                       # now the head goes too
+    assert repo.get_active(scope) == repo.resolve(scope, "home")
+
+
+def test_a_pointer_to_a_world_removed_out_of_band_self_heals(tmp_path):
+    """A purge or a manual `rm` never calls `delete`, so the list keeps a dead id. Reading skips it."""
+    from conjure.world import WorldRepository
+    repo, scope = WorldRepository(tmp_path), "daniel/agents/outdoor"
+    for name in ("home", "beach"):
+        repo.save(scope, name, WorldStore(_doc()))
+        repo.set_active(scope, name)
+    gone = repo.resolve(scope, "beach")
+    repo._dir(scope)._path(gone).unlink()                              # behind the repository's back
+    assert repo.get_active(scope) == repo.resolve(scope, "home")
+
+
+def test_the_last_world_leaves_no_pointer_rather_than_a_dead_one(tmp_path):
+    from conjure.world import WorldRepository
+    repo, scope = WorldRepository(tmp_path), "daniel/agents/outdoor"
+    repo.save(scope, "home", WorldStore(_doc()))
+    repo.set_active(scope, "home")
+    repo.delete(scope, "home")
+    assert repo.get_active(scope) is None and repo.newest(scope) is None
+
+
+def test_a_legacy_single_line_pointer_still_reads(tmp_path):
+    """Every pointer on disk predates the list format. A one-line file IS a one-entry list."""
+    from conjure.world import WorldRepository
+    repo, scope = WorldRepository(tmp_path), "daniel/agents/outdoor"
+    repo.save(scope, "home", WorldStore(_doc()))
+    wid = repo.resolve(scope, "home")
+    repo._dir(scope).dir.joinpath("_active.txt").write_text(wid)       # no trailing newline, one entry
+    assert repo.get_active(scope) == wid
+
+
+def test_the_history_is_capped(tmp_path):
+    """A convenience history, not an audit log — it must not grow for the life of a session."""
+    from conjure.world import WorldRepository, _MRU_CAP
+    repo, scope = WorldRepository(tmp_path), "daniel/agents/outdoor"
+    for i in range(_MRU_CAP + 5):
+        repo.save(scope, f"w{i}", WorldStore(_doc()))
+        repo.set_active(scope, f"w{i}")
+    lines = repo._dir(scope).dir.joinpath("_active.txt").read_text().split()
+    assert len(lines) == _MRU_CAP
+
+
+def test_re_entering_a_world_moves_it_to_the_front_without_duplicating(tmp_path):
+    from conjure.world import WorldRepository
+    repo, scope = WorldRepository(tmp_path), "daniel/agents/outdoor"
+    for name in ("home", "beach"):
+        repo.save(scope, name, WorldStore(_doc()))
+        repo.set_active(scope, name)
+    repo.set_active(scope, "home")
+    lines = repo._dir(scope).dir.joinpath("_active.txt").read_text().split()
+    assert lines == [repo.resolve(scope, "home"), repo.resolve(scope, "beach")]
+
+
+def test_newest_is_the_floor_for_a_world_that_was_never_entered(tmp_path):
+    """Rung 2. A world created but never switched to never entered the history, so an exhausted MRU must
+    not read as 'this scope is empty' — that is the mint-past-your-data bug in its other form."""
+    from conjure.world import WorldRepository
+    repo, scope = WorldRepository(tmp_path), "daniel/agents/outdoor"
+    repo.save(scope, "never-entered", WorldStore(_doc()))
+    assert repo.get_active(scope) is None                              # never activated → no history
+    assert repo.newest(scope) == repo.resolve(scope, "never-entered")  # …but it is right there
+
+
+def test_sessions_fall_back_the_same_way(tmp_path):
+    """Deliberately the same rule at both levels: an arrival should not behave differently depending on
+    whether it was the world or the session that went."""
+    from conjure.world import SessionRepository
+    repo, scope = SessionRepository(tmp_path), "daniel/agents/outdoor"
+    for sid in ("session-1", "session-7"):
+        repo.save_meta(scope, sid, _meta())
+        repo.set_active(scope, sid)
+    repo.delete(scope, "session-7")
+    assert repo.get_active(scope) == "session-1"                       # …not None, and not a new session
+    repo.delete(scope, "session-1")
+    assert repo.get_active(scope) is None and repo.newest(scope) is None
+
+
+def test_a_session_never_activated_is_still_found(tmp_path):
+    from conjure.world import SessionRepository
+    repo, scope = SessionRepository(tmp_path), "daniel/agents/outdoor"
+    repo.save_meta(scope, "session-3", _meta())
+    assert repo.get_active(scope) is None and repo.newest(scope) == "session-3"

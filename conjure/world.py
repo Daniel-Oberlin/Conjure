@@ -247,6 +247,51 @@ class WorldStore:
                 raise ValueError("patch op missing 'op'")
 
 
+# --------------------------------------------------------------------------- the MRU pointer
+#
+# `_active.txt` used to hold ONE id, and `delete` unlinked it when it named the thing being deleted. So
+# deleting the world (or session) you were last in left no pointer at all, and every resolver read "no
+# pointer" as "never been here" and minted something new — walking past siblings that were sitting right
+# there. Observed 2026-08-28 at the world level; the session level had the identical two lines.
+#
+# The file is now a most-recently-used LIST, newest first, and reading it means "the newest entry that
+# still exists". Repointing-on-delete and resuming-a-sibling both fall out of that, with no new fields
+# and no timestamps to keep honest — and a legacy one-line file is already a valid one-entry list.
+#
+# Cap it: this is a convenience history, not an audit log, and an unbounded file would grow for the life
+# of a session.
+_MRU_CAP = 10
+
+
+def _mru_read(path: Path) -> list[str]:
+    try:
+        return [ln.strip() for ln in path.read_text().splitlines() if ln.strip()]
+    except OSError:
+        return []
+
+
+def _mru_touch(path: Path, entry: str) -> None:
+    """Move `entry` to the front, keeping the rest in order."""
+    rest = [e for e in _mru_read(path) if e != entry]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join([entry] + rest[:_MRU_CAP - 1]) + "\n")
+
+
+def _mru_drop(path: Path, entry: str) -> None:
+    """Forget `entry` wherever it sits — it may be the head or buried in the history."""
+    rest = [e for e in _mru_read(path) if e != entry]
+    if rest:
+        path.write_text("\n".join(rest) + "\n")
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _mru_first(path: Path, exists) -> str | None:
+    """The newest entry that still exists. Self-healing: an id removed out-of-band (a manual `rm`, a
+    purge that didn't go through `delete`) is skipped like any other dead entry."""
+    return next((e for e in _mru_read(path) if exists(e)), None)
+
+
 class WorldDir:
     """**Id-addressed** world documents in ONE flat directory — ``<dir>/<id>.json`` — plus a per-dir
     ``_active.txt`` holding the live world's id.
@@ -384,21 +429,30 @@ class WorldDir:
         if wid is None:
             return False
         self._path(wid).unlink(missing_ok=True)
-        if self.get_active() == wid:
-            (self.dir / "_active.txt").unlink(missing_ok=True)
+        _mru_drop(self.dir / "_active.txt", wid)   # unconditional: it may be anywhere in the history
         return True
 
     # -- the live pointer ----------------------------------------------------------------------
     def get_active(self) -> str | None:
-        p = self.dir / "_active.txt"
-        return (p.read_text().strip() or None) if p.exists() else None
+        """The most recent world that still EXISTS — the pointer is an MRU list, walked top down, so a
+        deleted world (or several) falls through to the one before it rather than to nothing."""
+        return _mru_first(self.dir / "_active.txt", lambda wid: self._path(wid).exists())
+
+    def newest(self) -> str | None:
+        """Rung 2: any surviving world, most recently written first. Reached when the MRU is exhausted —
+        every world in it deleted, or a world that exists but was never *activated* and so never entered
+        it. mtime is a weak signal (a restore can flatten it) but this is a rare floor beneath an
+        explicit history, and landing here is announced."""
+        if not self.dir.is_dir():
+            return None
+        files = sorted(self.dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return files[0].stem if files else None
 
     def set_active(self, ref: str) -> None:
         wid = self.resolve(ref)
         if wid is None:
             raise ValueError(f"no world {ref!r}")
-        self.dir.mkdir(parents=True, exist_ok=True)
-        (self.dir / "_active.txt").write_text(wid)
+        _mru_touch(self.dir / "_active.txt", wid)
 
 
 def _slug_or_none(name: str):
@@ -569,6 +623,9 @@ class WorldRepository:
 
     def get_active(self, scope: str) -> str | None:
         return self._dir(scope).get_active()
+
+    def newest(self, scope: str) -> str | None:
+        return self._dir(scope).newest()
 
     def set_active(self, scope: str, name: str) -> None:
         self._dir(scope).set_active(name)
@@ -755,19 +812,27 @@ class SessionRepository:
         if not d.is_dir():
             return False
         shutil.rmtree(d)
-        if self.get_active(scope) == sid:
-            (self._sessions_dir(scope) / "_active.txt").unlink(missing_ok=True)
+        _mru_drop(self._sessions_dir(scope) / "_active.txt", _session_seg(sid))
         return True
 
     # -- per-scope active pointer ----------------------------------------------------------------
     def get_active(self, scope: str) -> str | None:
-        p = self._sessions_dir(scope) / "_active.txt"
-        return (p.read_text().strip() or None) if p.exists() else None
+        """The most recent session that still exists — an MRU list, exactly as at the world level."""
+        return _mru_first(self._sessions_dir(scope) / "_active.txt",
+                          lambda s: self.dir(scope, s).is_dir())
+
+    def newest(self, scope: str) -> str | None:
+        """Rung 2: any surviving session, most recently written first. Same floor, same caveats, same
+        rule as `WorldDir.newest` — deliberately, so an arrival behaves the same at either level."""
+        d = self._sessions_dir(scope)
+        if not d.is_dir():
+            return None
+        dirs = sorted((p for p in d.iterdir() if p.is_dir()),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        return dirs[0].name if dirs else None
 
     def set_active(self, scope: str, sid: str) -> None:
-        d = self._sessions_dir(scope)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "_active.txt").write_text(_session_seg(sid))
+        _mru_touch(self._sessions_dir(scope) / "_active.txt", _session_seg(sid))
 
 
 class StateStore:

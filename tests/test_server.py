@@ -3383,3 +3383,103 @@ def test_cd_and_show_reject_a_world_that_does_not_exist(srv, client):
     assert ok["ok"] is True
     bad = client.post("/admin/tree", json={"path": "/daniel/agents/builder/worlds/nope"}).json()
     assert bad["ok"] is False and "no world" in bad["error"]
+
+
+# --------------------------------------------------------------------------- the arrival ladder
+#
+# Reported 2026-08-28: switch out of an agent, delete the world you were in from the OTHER agent, switch
+# back — and it tried to build a new world, walking past two surviving ones. `_activate_scope` had two
+# rungs (resume the remembered world, else mint) where architecture.md §1 specifies three, and
+# `WorldDir.delete` unlinked the pointer instead of repointing it, which is what made rung 1 unreachable.
+
+def _worlds_in(srv, scope):
+    return sorted(srv.worlds.name_of(scope, w) for w in srv.worlds.list(scope))
+
+
+def test_deleting_the_world_you_were_in_resumes_a_sibling_not_a_new_one(srv, client):
+    outdoor = "daniel/agents/outdoor"
+    client.post("/scope/activate", json={"scope": outdoor})            # mints outdoor's opening, 'home'
+    client.post("/worlds/new", json={"scope": outdoor, "name": "keeper"})
+    client.post("/worlds/new", json={"scope": outdoor, "name": "doomed"})
+    before = _worlds_in(srv, outdoor)
+    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})  # step away, as the report did
+    srv.worlds.delete(outdoor, "doomed")                               # …and delete the one it was in
+    client.post("/scope/activate", json={"scope": outdoor})            # come back
+    assert srv.worlds.name_of(outdoor, srv.active_world) in ("keeper", "home")
+    assert _worlds_in(srv, outdoor) == [w for w in before if w != "doomed"]   # nothing was minted
+
+
+def test_the_fallback_is_announced(srv, client, monkeypatch):
+    """Every degradation is audible (architecture.md §1) — an arrival somewhere other than where you left
+    off is indistinguishable from a bug if it happens in silence."""
+    outdoor, said = "daniel/agents/outdoor", []
+
+    async def spy(msg):
+        if msg.get("type") == "notice":
+            said.append(msg["text"])
+
+    client.post("/scope/activate", json={"scope": outdoor})
+    client.post("/worlds/new", json={"scope": outdoor, "name": "keeper"})
+    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})
+    # Rung 2 only. Deleting ONE of two worlds now lands on rung 1 — the previous entry in the history —
+    # and that is a resumption, not a degradation, so it is deliberately silent.
+    srv.worlds._dir(outdoor).dir.joinpath("_active.txt").unlink()      # history lost, worlds intact
+    monkeypatch.setattr(srv, "_broadcast", spy)
+    client.post("/scope/activate", json={"scope": outdoor})
+    assert any("gone" in t for t in said), said
+
+
+def test_resuming_the_previous_world_is_silent(srv, client, monkeypatch):
+    """Rung 1 is not a degradation — it is the pointer doing its job. Narrating it would make every
+    ordinary delete-and-return feel like something went wrong."""
+    outdoor, said = "daniel/agents/outdoor", []
+
+    async def spy(msg):
+        if msg.get("type") == "notice":
+            said.append(msg["text"])
+
+    client.post("/scope/activate", json={"scope": outdoor})
+    client.post("/worlds/new", json={"scope": outdoor, "name": "keeper"})
+    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})
+    srv.worlds.delete(outdoor, "keeper")
+    monkeypatch.setattr(srv, "_broadcast", spy)
+    client.post("/scope/activate", json={"scope": outdoor})
+    assert not said, said
+
+
+def test_a_first_ever_arrival_is_not_announced_as_a_loss(srv, client, monkeypatch):
+    """Minting IS the right answer for an agent you have never opened. Narrating that as a degradation
+    would cry wolf on the one path where nothing went wrong."""
+    said = []
+
+    async def spy(msg):
+        if msg.get("type") == "notice":
+            said.append(msg["text"])
+
+    monkeypatch.setattr(srv, "_broadcast", spy)
+    client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"})   # never opened in this fixture
+    assert not any("gone" in t or "No worlds left" in t for t in said), said
+
+
+def test_a_world_that_was_never_entered_is_still_preferred_over_minting(srv, client):
+    """Rung 2. `/worlds/new` switches to what it creates, so to get an un-entered world we make one and
+    leave — the MRU then has no live entry for it, which used to read as 'this scope is empty'."""
+    outdoor = "daniel/agents/outdoor"
+    client.post("/scope/activate", json={"scope": outdoor})
+    client.post("/worlds/new", json={"scope": outdoor, "name": "orphan"})
+    srv.worlds._dir(outdoor).dir.joinpath("_active.txt").unlink()      # history lost, worlds intact
+    client.post("/scope/activate", json={"scope": srv.DEFAULT_SCOPE})
+    n_before = len(srv.worlds.list(outdoor))
+    client.post("/scope/activate", json={"scope": outdoor})
+    assert len(srv.worlds.list(outdoor)) == n_before                   # opened one, did not add one
+
+
+def test_deleting_the_live_session_resumes_a_sibling_session(srv, client):
+    """The same rung one level up. It used to 'work' only when a scope happened to still have the literal
+    id `session-1` — `MIGRATED_SID`, a migration-era constant standing in for a search."""
+    scope = srv.DEFAULT_SCOPE
+    first = srv._ensure_session(scope)                                 # whatever the fixture is live in
+    made = client.post("/session/new", json={"scope": scope, "title": "second"}).json()
+    assert made["ok"] and srv.sessions.get_active(scope) != first
+    srv.sessions.delete(scope, srv.sessions.get_active(scope))
+    assert srv._ensure_session(scope) == first                         # …resumed, not recreated
