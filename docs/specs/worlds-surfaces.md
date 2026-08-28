@@ -162,6 +162,18 @@ id, or `all`.
 ceiling a galaxy" is `material.src` pointing at a generated image — the same plane-material path
 `place_image` uses. There is no separate room-rendering code to maintain.
 
+**But colour alone is not enough on a captured surface.** Its fill draws only when
+`material.visible` is *explicitly* true; absent that it falls back to `defaultSurfaceVisible`, which is
+**false in AR** (§3) — the real table is already there to look at, so the virtual panel starts hidden.
+So `style_surface` always sets `material.visible = True` and clears `material.src` alongside the colour;
+without that the patch applies, the tool reports success, and nothing changes on screen.
+
+The generic `update_entity` is the trap: it sets only the fields it is given. It now applies the same
+three-field treatment when its target carries `meta.real` and a colour is being set, and says so in its
+result — because a tool that reports success for an invisible change is worse than one that refuses.
+Recolouring a captured surface through either tool is therefore safe; `style_surface` remains the direct
+route, and the only one that takes an opacity.
+
 ### 4.1 Mounting onto a surface
 
 Hanging content on a real surface is `place_image(on_surface=<id | friendly id>)`: the image is aligned

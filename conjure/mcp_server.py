@@ -22,6 +22,7 @@ repeat loop (docs/backlogs/agents.md); unproven, but the phrasing costs nothing 
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
@@ -347,7 +348,7 @@ async def realign_room() -> str:
     reloading. Re-captures the room at the current tracking origin. Only affects a headset in AR."""
     out = await _post("/space/realign", {})
     if not out.get("ok"):
-        return f"Couldn't realign: {out.get('error', 'unknown error')}."
+        return f"Couldn't realign: {_reason(out)}."
     return "Re-aligning the room to your real space — look around for a moment."
 
 
@@ -358,8 +359,42 @@ async def reset_world() -> str:
     start fresh. (A captured room re-appears on its own once they're back in AR.)"""
     out = await _post("/reset", {})
     if not out.get("ok"):
-        return f"Couldn't reset: {out.get('error', 'unknown error')}."
+        return f"Couldn't reset: {_reason(out)}."
     return "The world has been reset to an empty holodeck — ready to build again."
+
+
+# Markers that identify a provider content-policy refusal inside an SDK error dump.
+_MODERATION_MARKERS = ("moderation_blocked", "safety system", "content_policy", "content policy")
+
+
+def _reason(out: dict) -> str:
+    """The failure to hand back to the model — trimmed, and with a provider's raw JSON dump reduced to
+    the one fact that matters.
+
+    Two problems with pasting the SDK error verbatim: a 400-character blob costs context and buries the
+    actionable word, and a refusal that reads like a transient error invites a retry. Observed
+    2026-08-28: an image blocked for content was retried four times against three generators, and each
+    failure was reported to the user as a success (docs/backlogs/agents.md). Callers add the final
+    period, so the trailing one is stripped here."""
+    err = str(out.get("error") or "unknown error").strip().rstrip(".")
+    low = err.lower()
+    if any(m in low for m in _MODERATION_MARKERS):
+        m = re.search(r"safety_violations=\[([^\]]*)\]", err) or re.search(r"'categories': \[([^\]]*)\]", err)
+        what = f" ({m.group(1).replace(chr(39), '')})" if m else ""
+        return (f"the image provider's content policy refused this{what}. Rewording the same subject "
+                f"for this generator will be refused again — say so rather than retrying")
+    return err
+
+
+async def _is_real_surface(id: str) -> bool:
+    """Is this entity id a captured room surface? Keyed on `meta.real`, the authoritative marker — the
+    `real_…` id prefix is a convention, not a guarantee. Returns False if the world can't be read: a
+    lookup failure must not turn an ordinary entity update into a no-op."""
+    try:
+        doc = await _get("/world")
+    except Exception:  # noqa: BLE001 — world unreachable; the patch below will surface the real error
+        return False
+    return any(e.get("id") == id and (e.get("meta") or {}).get("real") for e in doc.get("entities", []))
 
 
 @mcp.tool()
@@ -391,7 +426,7 @@ async def texture_surface(target: str, image_id: str, repeat: Optional[float] = 
     """
     out = await _post("/texture_surface", _body(target=target, image_id=image_id, repeat=repeat))
     if not out.get("ok"):
-        return f"Couldn't texture {target!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't texture {target!r}: {_reason(out)}."
     return f"Mapped the image onto {out['count']} surface(s) ({target})." + _notice(out)
 
 
@@ -406,7 +441,7 @@ async def style_surface(target: str, color: Optional[str] = None, opacity: Optio
     """
     out = await _post("/style_surface", _body(target=target, color=color, opacity=opacity))
     if not out.get("ok"):
-        return f"Couldn't style {target!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't style {target!r}: {_reason(out)}."
     return f"Styled {out['count']} surface(s) ({target})."
 
 
@@ -557,7 +592,7 @@ async def search_library(
     """
     out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind, scope=_scope()))
     if not out.get("ok"):
-        return f"Library search failed: {out.get('error', 'unknown error')}."
+        return f"Library search failed: {_reason(out)}."
     cands, tier = out.get("candidates", []), out.get("confidence_tier", "none")
     if not cands:
         return "No matching asset in the library (confidence: none) — generate or fetch a new one."
@@ -584,7 +619,7 @@ async def place_cached_asset(
     out = await _post("/place_cached_asset", _body(id=id, size_m=size_m, position=position, name=name,
                                                    placement=placement))
     if not out.get("ok"):
-        return f"Couldn't reuse {id!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't reuse {id!r}: {_reason(out)}."
     return f"Reused {out.get('title')!r} as {out['id']}." + _notice(out)
 
 
@@ -604,7 +639,7 @@ async def view_relative(direction: str = "forward", distance: float = 1.0) -> st
     with a live view (an active session)."""
     out = await _post("/view_relative", _body(direction=direction, distance=distance))
     if not out.get("ok"):
-        return f"Couldn't resolve that view: {out.get('error', 'unknown error')}."
+        return f"Couldn't resolve that view: {_reason(out)}."
     p = out["point"]
     lines = [f"Point {out['distance']} m {out['direction']} of the user: "
              f"[{p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}] — use as `position` to place there."]
@@ -637,7 +672,7 @@ async def query_assets(sql: str) -> str:
     """
     out = await _post("/query_assets", _body(sql=sql, scope=_scope()))
     if not out.get("ok"):
-        return f"Query failed: {out.get('error', 'unknown error')}."
+        return f"Query failed: {_reason(out)}."
     rows = out.get("rows", [])
     if not rows:
         return "0 rows."
@@ -676,7 +711,7 @@ async def update_asset(
         id=id, scope=_scope(), label=label, query=query, tags=tags, notes=notes, kind=kind,
         rating=rating, favorite=favorite, public=public, default_for=default_for, reject_for=reject_for))
     if not out.get("ok"):
-        return f"Couldn't update {id!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't update {id!r}: {_reason(out)}."
     return "Updated."
 
 
@@ -686,7 +721,7 @@ async def delete_asset(id: str) -> str:
     file is left on disk. Use to remove a bad or duplicate asset ('delete that duplicate woman model')."""
     out = await _post("/delete_asset", _body(id=id, scope=_scope()))
     if not out.get("ok"):
-        return f"Couldn't delete {id!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't delete {id!r}: {_reason(out)}."
     return f"Deleted {id} from the library."
 
 
@@ -734,7 +769,7 @@ async def new_world(name: str, public: bool = True, outdoor: bool = False) -> st
     tied to a captured room and holds its orientation on its own."""
     out = await _post("/worlds/new", _body(name=name, scope=_scope(), public=public, outdoor=outdoor))
     if not out.get("ok"):
-        return f"Couldn't create {name!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't create {name!r}: {_reason(out)}."
     kind = "outdoor " if outdoor else ""
     return f"Created and switched to {kind}'{out.get('world', name)}' ({'public' if public else 'private'})."
 
@@ -747,7 +782,7 @@ async def set_world_visibility(public: bool, name: Optional[str] = None) -> str:
     You can only change the visibility of worlds you own."""
     out = await _post("/worlds/visibility", _body(public=public, scope=_scope(), name=name))
     if not out.get("ok"):
-        return f"Couldn't change visibility: {out.get('error', 'unknown error')}."
+        return f"Couldn't change visibility: {_reason(out)}."
     pub = out.get("published_assets") or []
     extra = (f" Also published {len(pub)} private asset(s) it uses so visitors can see the whole scene: "
              f"{', '.join(pub)}." if pub else "")
@@ -763,7 +798,7 @@ async def set_space_visibility(public: bool, name: Optional[str] = None) -> str:
     CURRENT space; pass `name` to target another space you own. You can only change spaces you own."""
     out = await _post("/space/visibility", _body(public=public, scope=_scope(), name=name))
     if not out.get("ok"):
-        return f"Couldn't change space visibility: {out.get('error', 'unknown error')}."
+        return f"Couldn't change space visibility: {_reason(out)}."
     return f"Space '{out.get('space', name or 'current')}' is now {'public' if public else 'private'}."
 
 
@@ -775,7 +810,7 @@ async def switch_world(name: str) -> str:
     (Visiting another user's world is a person's action at the shell — not something you do here.)"""
     out = await _post("/worlds/switch", _body(name=name, scope=_scope()))
     if not out.get("ok"):
-        return f"Couldn't switch to {name!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't switch to {name!r}: {_reason(out)}."
     return f"Switched to '{out.get('world', name)}'."
 
 
@@ -785,7 +820,7 @@ async def delete_world(name: str) -> str:
     away first."""
     out = await _post("/worlds/delete", _body(name=name, scope=_scope()))
     if not out.get("ok"):
-        return f"Couldn't delete {name!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't delete {name!r}: {_reason(out)}."
     return f"Deleted world '{name}'."
 
 
@@ -820,7 +855,7 @@ async def generate_image(
     out = await _post("/images/generate", _body(
         prompt=prompt, aspect_ratio=aspect_ratio, transparent=transparent, generator=generator))
     if not out.get("ok"):
-        return f"Couldn't generate image: {out.get('error', 'unknown error')}."
+        return f"Couldn't generate image: {_reason(out)}."
     # Full provenance in the result (so the log shows which generator/model ran, dims, and alpha):
     return (f"Generated image_id={out['image_id']} via {_gen_info(out)}, transparent={transparent}. "
             f"Call place_image with this image_id to hang it.")
@@ -836,7 +871,7 @@ async def generate_skybox_image(prompt: str, generator: Optional[str] = None) ->
     """
     out = await _post("/images/skybox", _body(prompt=prompt, generator=generator), timeout=200.0)
     if not out.get("ok"):
-        return f"Couldn't generate skybox image: {out.get('error', 'unknown error')}."
+        return f"Couldn't generate skybox image: {_reason(out)}."
     return (f"Generated skybox image_id={out['image_id']} via {_gen_info(out)}. "
             f"Call set_skybox with this image_id to wrap the scene.")
 
@@ -852,7 +887,7 @@ async def generate_grounded_skybox_image(prompt: str, generator: Optional[str] =
     """
     out = await _post("/images/grounded_skybox", _body(prompt=prompt, generator=generator), timeout=200.0)
     if not out.get("ok"):
-        return f"Couldn't generate grounded skybox image: {out.get('error', 'unknown error')}."
+        return f"Couldn't generate grounded skybox image: {_reason(out)}."
     return (f"Generated grounded skybox image_id={out['image_id']} via {_gen_info(out)}. "
             f"Call set_grounded_skybox with this image_id to wrap the scene.")
 
@@ -872,7 +907,7 @@ async def edit_image(
     out = await _post("/images/edit", _body(
         image_id=image_id, prompt=prompt, transparent=transparent, generator=generator))
     if not out.get("ok"):
-        return f"Couldn't edit image: {out.get('error', 'unknown error')}."
+        return f"Couldn't edit image: {_reason(out)}."
     return f"Edited → image_id={out['image_id']} via {_gen_info(out)}, transparent={transparent}."
 
 
@@ -891,7 +926,7 @@ async def outpaint_image(
     out = await _post("/images/outpaint", _body(
         image_id=image_id, aspect=aspect, prompt=prompt, generator=generator))
     if not out.get("ok"):
-        return f"Couldn't outpaint image: {out.get('error', 'unknown error')}."
+        return f"Couldn't outpaint image: {_reason(out)}."
     return f"Outpainted → image_id={out['image_id']} via {_gen_info(out)} (aspect {aspect or '16:9'})."
 
 
@@ -904,7 +939,7 @@ async def skybox_from_image(image_id: str, generator: Optional[str] = None) -> s
     """
     out = await _post("/images/skybox_from", _body(image_id=image_id, generator=generator), timeout=200.0)
     if not out.get("ok"):
-        return f"Couldn't build a skybox image: {out.get('error', 'unknown error')}."
+        return f"Couldn't build a skybox image: {_reason(out)}."
     return (f"Built skybox image_id={out['image_id']} via {_gen_info(out)}. "
             f"Call set_skybox with this image_id.")
 
@@ -972,7 +1007,7 @@ async def place_image(
         stretch=stretch or None,
         stereo=stereo))
     if not out.get("ok"):
-        return f"Couldn't place image: {out.get('error', 'unknown error')}."
+        return f"Couldn't place image: {_reason(out)}."
     return f"Hung image {out['image_id']} as {out['id']}." + _notice(out)
 
 
@@ -1017,7 +1052,7 @@ async def conjure_module(
                                        on_surface=on_surface, billboard=billboard or None,
                                        stretch=stretch or None, name=name))
     if not out.get("ok"):
-        return f"Couldn't conjure module: {out.get('error', 'unknown error')}."
+        return f"Couldn't conjure module: {_reason(out)}."
     return f"Conjured {out['module']} (id {out['id']})."
 
 
@@ -1027,7 +1062,7 @@ async def dismiss_module(name: Optional[str] = None, module: Optional[str] = Non
     (e.g. 'fireflies') to remove every instance of that kind."""
     out = await _post("/module/dismiss", _body(name=name, module=module))
     if not out.get("ok"):
-        return f"Couldn't dismiss module: {out.get('error', 'unknown error')}."
+        return f"Couldn't dismiss module: {_reason(out)}."
     return f"Dismissed {', '.join(out['removed'])}."
 
 
@@ -1037,7 +1072,7 @@ async def set_skybox(image_id: str) -> str:
     skybox_from_image) as the surrounding sky/environment."""
     out = await _post("/set_skybox", _body(image_id=image_id))
     if not out.get("ok"):
-        return f"Couldn't set the skybox: {out.get('error', 'unknown error')}."
+        return f"Couldn't set the skybox: {_reason(out)}."
     return "Wrapped the scene in that image as a 360° skybox." + _notice(out)
 
 
@@ -1059,7 +1094,7 @@ async def set_grounded_skybox(
     """
     out = await _post("/set_grounded_skybox", _body(image_id=image_id, height=height, radius=radius))
     if not out.get("ok"):
-        return f"Couldn't set the grounded skybox: {out.get('error', 'unknown error')}."
+        return f"Couldn't set the grounded skybox: {_reason(out)}."
     return "Wrapped the scene in that image as a grounded skybox — you're standing on it." + _notice(out)
 
 
@@ -1077,7 +1112,7 @@ async def edit_scene_image(id: str, prompt: str) -> str:
     """
     out = await _post("/edit_image", {"id": id, "prompt": prompt})
     if not out.get("ok"):
-        return f"Couldn't edit {id!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't edit {id!r}: {_reason(out)}."
     return f"Updated image {id} → {out['image_id']} via {_gen_info(out)}."
 
 
@@ -1089,7 +1124,7 @@ async def widen_scene_image(id: str, aspect: Optional[str] = None, prompt: Optio
     """
     out = await _post("/outpaint_image", _body(id=id, aspect=aspect, prompt=prompt))
     if not out.get("ok"):
-        return f"Couldn't widen {id!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't widen {id!r}: {_reason(out)}."
     return f"Extended image {id} → {out['image_id']} via {_gen_info(out)} (aspect {aspect or '16:9'})."
 
 
@@ -1101,7 +1136,7 @@ async def skybox_from_scene_image(id: str) -> str:
     """
     out = await _post("/skybox_from_image", {"id": id}, timeout=200.0)
     if not out.get("ok"):
-        return f"Couldn't build a skybox from {id!r}: {out.get('error', 'unknown error')}."
+        return f"Couldn't build a skybox from {id!r}: {_reason(out)}."
     return f"Wrapped the scene as a 360° skybox (image {out['image_id']} via {_gen_info(out)})."
 
 
@@ -1120,7 +1155,8 @@ async def update_entity(
     rotation: Optional[list[float]] = None,
     scale: Optional[list[float]] = None,
 ) -> str:
-    """Update an entity's color and/or transform. Only provided fields change."""
+    """Update an entity's color and/or transform. Only provided fields change. (For a real room
+    surface, style_surface is the direct route — this works too, but it can only recolor.)"""
     changes: dict[str, Any] = {}
     if color is not None:
         changes["components.material.color"] = color
@@ -1132,8 +1168,19 @@ async def update_entity(
         changes["transform.scale"] = scale
     if not changes:
         return "No changes specified."
+    note = ""
+    if color is not None and await _is_real_surface(id):
+        # A real surface's fill only draws when material.visible is explicitly true — otherwise it
+        # falls back to the global default, which is FALSE in AR (client applyRealVisibility). So a
+        # bare colour change lands on a hidden mesh: the patch succeeds, the tool reports success, and
+        # nothing whatsoever appears. `style_surface` avoids this by always setting visible first
+        # (server.style_surface); do the same here rather than report a change nobody can see.
+        changes["components.material.visible"] = True
+        changes["components.material.src"] = ""      # clear any texture so the colour shows
+        note = (" (a real surface, so it was also made visible and any texture cleared — "
+                "style_surface is the direct route for this)")
     patch = await _post_patch([{"op": "update", "id": id, "set": changes}])
-    return f"Updated {id!r}: {changes}. World rev {patch['rev']}."
+    return f"Updated {id!r}: {changes}. World rev {patch['rev']}.{note}"
 
 
 @mcp.tool()

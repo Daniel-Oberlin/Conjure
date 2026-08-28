@@ -563,3 +563,91 @@ async def test_a_toggle_result_still_says_which_way_it_went(monkeypatch):
     assert await _tool("show_edges")(on=True) == "Surface edges are now on."
     assert await _tool("show_edges")(on=False) == "Surface edges are now off."
     assert "with dimensions" in await _tool("show_annotations")(on=True, dimensions=True)
+
+
+# --------------------------------------------------------------------------- real surfaces via update_entity
+#
+# Observed 2026-08-28: "make table 115 dark pink" → update_entity(id, color) → patch applied, client
+# logged `update real_table_115 found=true {components.material.color}` — and the table stayed grey.
+# A real surface's fill only draws when material.visible is explicitly true (client
+# applyRealVisibility falls back to a global default that is FALSE in AR). So the tool reported success
+# for a change nobody could see.
+
+def _world_with_real_table():
+    return {"entities": [
+        {"id": "real_table_115", "meta": {"real": True, "semantic": "table"}},
+        {"id": "cube", "meta": {}}]}
+
+
+@respx.mock
+async def test_recolouring_a_real_surface_also_makes_it_visible(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_world_with_real_table()))
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 54}))
+    out = await _tool("update_entity")(id="real_table_115", color="#C71585")
+    sets = json.loads(route.calls.last.request.content)["ops"][0]["set"]
+    assert sets["components.material.color"] == "#C71585"
+    assert sets["components.material.visible"] is True     # ← without this the change is invisible
+    assert sets["components.material.src"] == ""           # and a texture would hide the colour anyway
+    assert "real surface" in out                           # the result SAYS what it did beyond the ask
+
+
+@respx.mock
+async def test_an_ordinary_entity_is_not_given_the_surface_treatment(monkeypatch):
+    """visible/src are a fix for a real-surface quirk. Forcing them on a normal entity would silently
+    un-hide something the director deliberately hid, and wipe its texture."""
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_world_with_real_table()))
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 55}))
+    out = await _tool("update_entity")(id="cube", color="red")
+    sets = json.loads(route.calls.last.request.content)["ops"][0]["set"]
+    assert sets == {"components.material.color": "red"}
+    assert "real surface" not in out
+
+
+@respx.mock
+async def test_moving_a_real_surface_is_not_a_recolour(monkeypatch):
+    """The visibility fix is tied to COLOUR, the operation that is invisible without it — not to every
+    field. A transform-only update must stay exactly what was asked for."""
+    monkeypatch.setattr(m, "BASE", "http://world")
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 56}))
+    await _tool("update_entity")(id="real_table_115", position=[1, 2, 3])
+    sets = json.loads(route.calls.last.request.content)["ops"][0]["set"]
+    assert sets == {"transform.position": [1, 2, 3]}       # and no /world lookup was needed
+
+
+@respx.mock
+async def test_an_unreadable_world_still_applies_the_plain_update(monkeypatch):
+    """The lookup is an enhancement. If it fails, the update must still go through — degrading to a
+    no-op would be worse than the bug it fixes."""
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(500))
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 57}))
+    await _tool("update_entity")(id="real_table_115", color="red")
+    assert json.loads(route.calls.last.request.content)["ops"][0]["set"] == {"components.material.color": "red"}
+
+
+# --------------------------------------------------------------------------- provider refusals
+#
+# Observed 2026-08-28: a blocked image returned 400 characters of raw SDK JSON to the model, which then
+# retried the same subject against three generators and told the user it had succeeded each time.
+
+def test_a_content_refusal_is_stated_once_and_briefly():
+    blob = ("Error code: 400 - {'error': {'message': 'Your request was rejected by the safety system. "
+            "If you believe this is an error, contact us at help.openai.com and include the request ID "
+            "req_45fe3cec. safety_violations=[sexual].', 'type': 'image_generation_user_error', "
+            "'code': 'moderation_blocked', 'moderation_details': {'categories': ['sexual']}}}")
+    out = m._reason({"error": blob})
+    assert len(out) < len(blob) / 2                 # the blob costs context and buries the point
+    assert "content policy" in out and "sexual" in out
+    assert "refused again" in out                   # tells it not to retry — it retried 4 times
+    assert "req_45fe3cec" not in out and "help.openai.com" not in out
+
+
+def test_an_ordinary_error_survives_untouched_apart_from_its_full_stop():
+    """Only moderation dumps are summarised; a real error must reach the model verbatim. The trailing
+    period goes because every caller adds one — that is what produced "keep Grok..".""" 
+    assert m._reason({"error": "no model found"}) == "no model found"
+    assert m._reason({"error": "Grok can't produce transparency. Use Chat for transparency."}) \
+        == "Grok can't produce transparency. Use Chat for transparency"
+    assert m._reason({}) == "unknown error"

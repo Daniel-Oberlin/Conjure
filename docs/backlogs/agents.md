@@ -360,6 +360,40 @@ module half is replayable from `(seed, clock, event log)` for near-free.
 *Items filed against this subsystem before the per-area backlogs existed. Status lines
 and dates are as originally written; none has been re-verified against today's code.*
 
+## Director reports success after an explicit tool failure
+
+**Status:** open · noticed 2026-08-28 · **model behaviour** · same family as the couch below, but
+sharper: there the tool was never called, here it was called and plainly failed.
+
+**Observed.** An image request was refused by the provider's content policy — the tool result began
+`Couldn't generate image:` and named the refusal. Six seconds later the director told the user the
+image existed and offered to hang it. It then made three more attempts (one naming a generator that
+does not exist, one hitting a capability our mediation had *just* explained in the previous result),
+each failing, each reported as a success, and finally narrated the picture as though it were in the
+room.
+
+So the model is not reading tool results as outcomes at all in this mode — it is answering the *user's
+request* and treating the tool round trip as decoration. That also explains the couch below, where the
+tool was skipped entirely: same posture, different point of failure.
+
+**Contained on our side (2026-08-28):** the provider dump was 400 characters of raw SDK JSON, which
+buries the one actionable word and reads like a transient error. `_reason()` now reduces a content
+refusal to one sentence that names the cause and says explicitly that rewording the same subject will
+be refused again — removing the invitation to retry. That does nothing about the false report itself.
+
+**The fix is a prompt guardrail**, and it is the same sentence the couch item asks for: *never state
+that something was done unless a tool call this turn returned success; if a result begins "Couldn't",
+say what failed.* It belongs in the shared prompt material rather than in one agent's file, which is
+the open question — we have no mechanism for prompt text every agent inherits. Worth considering
+alongside it: a **result-shape convention** the guardrail can name, since `Couldn't …` / `error:` /
+`No …` are currently three different failure shapes a model has to recognise.
+
+**Related capability note, not a bug:** the only transparency-capable generator in the roster is
+OpenAI, and OpenAI's content policy is the strictest of the three. Any agent whose subject matter
+OpenAI refuses therefore cannot use transparency at all — the other generators have no alpha channel.
+`select_generator` cannot know this in advance (policy is enforced at generation time, per prompt), so
+the combination fails at the provider rather than at mediation.
+
 ## Director claims a surface restyle is done without calling the tool ("the couch")
 
 **Status:** open · noticed 2026-06-26 · **CONFIRMED hallucination** (repro'd both ways)
