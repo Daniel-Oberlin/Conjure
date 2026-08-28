@@ -414,10 +414,16 @@ it** is held, so a gesture can never be ended by a different control:
   along the grabbed corner's outward axis** rather than radially: dragging a corner out is mostly lateral
   hand movement that barely changes controller→centre distance, and an unsigned measure bounced back
   through zero at the centre.
-- **sticks, while holding a model** → `yaw` about gravity-up; a *free* model also takes `pitch` and `bank`,
-  measured against the **viewer**. Viewer-relative because nothing in a glTF records which way a model
-  faces, so its own axes cannot define pitch or bank. Images are excluded — turning a picture edge-on is
-  only a way to lose it.
+- **sticks, while holding anything with a body** → `yaw` about gravity-up; a *free* one also takes `pitch`
+  and `bank`, measured against the **viewer**. Viewer-relative because nothing in a glTF records which way
+  a model faces, so its own axes cannot define pitch or bank — and the viewer's frame is well-defined from
+  wherever you stand, which makes it the one convention that fits every kind of content.
+  A **body** means a loaded model or a `geometry` (an image plane, a primitive). Two exclusions:
+  a **billboard**, which re-aims at each viewer every frame and would overwrite the spin on the next tick;
+  and a **dynamic module's own entity**, which carries only its component and has nothing of its own to
+  turn. Surface-attached content never reaches the stick path at all — it returns from its own branch, so
+  wall art stays flush. A free-standing image can therefore be turned edge-on and effectively vanish;
+  that is the user's call to make, and one nudge back undoes it.
 - **release** → commit.
 
 Scale is clamped twice: within one gesture (0.25×–4×) and in total against the size the object was first

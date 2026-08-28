@@ -374,14 +374,24 @@
       }
     },
 
-    // Stick-driven rotation of a held MODEL (never a flat image — turning a picture edge-on is just a way
-    // to lose it). Grounded models get YAW only, matching how they're re-solved: upright on the floor.
-    // Free models also get PITCH and BANK, measured against the VIEWER — tip away from you, roll as you see
-    // it. That's deliberate: nothing in a glTF records which way a model faces, so its own axes can't define
-    // pitch or bank, while the viewer's frame is well-defined for every model and from wherever you stand.
+    // Stick-driven rotation of anything held with a BODY to turn — a loaded model, or a plane/primitive
+    // (a free-standing image included). Grounded things get YAW only, matching how they're re-solved:
+    // upright on the floor. Free ones also get PITCH and BANK, measured against the VIEWER — tip away from
+    // you, roll as you see it. That's deliberate: nothing in a glTF records which way a model faces, so its
+    // own axes can't define pitch or bank, while the viewer's frame is well-defined from wherever you stand.
+    //
+    // Surface-attached content never reaches here — `_update` returns from its own branch, so art stays
+    // flush to its wall. Images WERE excluded outright, on the grounds that turning a picture edge-on is a
+    // way to lose it; that's a real hazard but it's the user's to take, and it costs one stick nudge back.
     _stickRotate: function (st, p, dt) {
       var el = st.target, obj = el.object3D;
-      if (!el.components || !el.components["gltf-model"]) return false;   // models only
+      if (!el.components) return false;
+      // A billboard re-aims at each viewer every frame, so a spin would be overwritten on the next tick —
+      // the stick would feel broken rather than merely inert.
+      if (el.components.billboard) return false;
+      // Needs a body: a model, or geometry (image plane, primitive). Excludes a dynamic module's entity —
+      // it carries only its own component, with nothing of its own to turn.
+      if (!el.components["gltf-model"] && !el.components.geometry) return false;
       var THREE = AFRAME.THREE, rate = (this.data.rotateSpeed || 90) * Math.PI / 180 * (dt / 1000);
       var dz = function (v) { return Math.abs(v) < STICK_DEAD ? 0 : v; };
       var yaw = dz(p.value("yaw")), moved = false;
