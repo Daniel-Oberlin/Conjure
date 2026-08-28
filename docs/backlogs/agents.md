@@ -404,7 +404,7 @@ shared-room layer in the multi-world code. Worth watching.
 
 ## Grok narrates one tool and calls another, then loops on it
 
-**Status:** contained 2026-08-28 · noticed 2026-08-28 (erotic agent, Grok) · **model behaviour, not ours**
+**Status:** contained 2026-08-28 · noticed 2026-08-28 (a user agent running Grok) · **model behaviour, not ours**
 
 **Symptom:** "Annotations and Surface Edges" → the director said *"show_annotations with on is true"* and
 called `show_edges({"on": true})`. Then said and did exactly the same thing again. Forty-plus times, one
@@ -438,6 +438,75 @@ guardrail: *a tool result that says it succeeded means it succeeded; do not call
 checking whether it correlates with the two failed `generate_image` calls immediately before it, since a
 model that has just been refused twice may be in a retry mood. Grok is the only model observed doing it;
 the guard is provider-neutral regardless.
+
+## A tool turn can speak twice — the ack and the reply say the same thing
+
+**Status:** shelved 2026-08-28 · **CONFIRMED** (mechanism traced end to end; fix deferred, four options below)
+
+**Symptom:** on a turn that runs a tool, the user hears two complete replies a few seconds apart, saying
+substantially the same thing in slightly different words.
+
+**Mechanism — ours, not the model's.** A turn emits text at *every* hop. Hop 1 produces text alongside
+the tool call and goes out `final=False`; hop 2 produces the closing text `final=True`. `Director.emit`
+forwards both to `on_text`; `agent_server.py` broadcasts them as `assistant_delta` and
+`assistant_final`; `voice.py` speaks **both** — there is no filter between them.
+
+That is by design: the first is meant to be an **acknowledgement** ("On it") so the user isn't left in
+silence while a slow tool runs. The design assumes the model writes a short ack there. Some models
+instead write a complete, past-tense answer *before* doing the work, and then a second complete answer
+after — so the "ack" and the "reply" are the same sentence twice.
+
+**Evidence (34 turns, 2026-08-27→28):**
+
+| | doubled |
+|---|---|
+| turns that ran a tool (17) | 4 |
+| turns that ran no tool (17) | **0** |
+
+No counterexamples: the extra utterance appears only where there is a tool call for it to precede, and
+only sometimes within those, because the model only sometimes emits text alongside the call. The two log
+lines are written by *different* code paths (the non-final branch of `emit`, and `_handle` after
+`run_turn` returns), so the log distinguishes two events rather than one seen twice.
+
+**The ack was not buying anything in the observed turns.** Measured: request → first text 18s and 6s;
+first text → tool call **0s** in both. The model had already finished thinking, so the ack covered no
+latency at all, and the tool it preceded (`style_surface`) takes milliseconds. An ack only earns its
+place ahead of a genuinely slow tool — image and skybox generation run ~8s.
+
+**Two side-effects, independent of whether the duplication is audible:**
+- The pre-tool text **asserts completion before the tool has run**. Same family as the couch
+  hallucination above; harmless when the call then succeeds, but the user has already been told it
+  worked if it doesn't.
+- Only the final reply enters the transcript. The user hears two utterances; the record keeps one, so
+  the transcript under-reports what was said.
+
+**Options, roughly in order of confidence:**
+1. **Gate the ack on the tool's expected duration** — speak pre-tool text only ahead of known-slow tools
+   (image/skybox generation). Puts the ack where its value actually is; needs no model cooperation.
+2. **Near-duplicate suppression in the speech stage.** `speech.py` already exists as the per-connection
+   "what the model wrote vs. what should be said" filter. Needs a similarity threshold — a judgement call.
+3. **Length gate** — an ack is short, an answer is not. Crude, one line, provider-independent.
+4. **Prompt guardrail** — don't describe a change as done before calling the tool. Also addresses the
+   assert-before-acting hazard, but it is soft and lives in each agent's own prompt.
+
+**Not yet established:** whether this is what a user reporting "it repeats itself" is actually reacting
+to — the phrase lock-in below is present in the same transcripts and fits the same description. And the
+trace stops at `bridge.speak()`; TTS was not observed rendering both.
+
+## Replies converge on a repeated phrase as a session runs
+
+**Status:** open · noticed 2026-08-28 · **model behaviour**
+
+Late in a long session, successive replies increasingly end on the same clause, cosmetically reworded
+each time — four consecutive replies across two turns closed on the same beat. The history the model
+sees is a trimmed tail; once that tail is saturated with a pattern, the most probable continuation is
+another instance of it, which then saturates it further.
+
+Self-reinforcing, so it worsens with session length, and it is the most likely sustainer of the tool
+loop above (which continued even after a hop where every requested tool ran and succeeded). Nothing in
+our code causes it. Levers are prompt-side, or context-side: the trim currently keeps the most recent
+turns, which is exactly the window most contaminated once lock-in starts. Worth considering whether the
+trim should preserve diversity rather than pure recency.
 
 ## Sticky tool arguments across turns (Grok)
 

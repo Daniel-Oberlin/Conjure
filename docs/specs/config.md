@@ -177,7 +177,7 @@ DYNAMICS_PATH = [ <config>/dynamics , <project>/dynamics ]
 ```
 
 - **First match wins**, keyed on the *directory name* — which is the definition's identity. A user
-  `builder` shadows the bundled `builder`; a user `erotic` simply adds one.
+  `builder` shadows the bundled `builder`; a user agent under a name we don't ship simply adds one.
 - `resolve_agent_dir(name)` returns the first `<dir>/<name>/agent.json` on the path, and raises naming
   every directory it tried — a missing agent says where it looked.
 - `list_agents()` unions the path first-match-wins and tags each entry `user` or `bundled`; the shell's

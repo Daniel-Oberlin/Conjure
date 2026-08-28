@@ -237,7 +237,7 @@ async def test_director_logs_utterance_tool_calls_and_reply():
 
 # --------------------------------------------------------------------------- the repeat guard
 #
-# Observed 2026-08-28 (erotic/Grok): the model answered every `show_edges({"on": true})` result with the
+# Observed 2026-08-28 (a user agent on Grok): the model answered every `show_edges({"on": true})` result
 # identical call again — 40+ times, each one broadcasting a patch to every connected client — and only
 # stopped when the server was killed. `llm.MAX_TOOL_HOPS` bounds the turn; this guard cuts the specific
 # pathology far earlier, and without executing the repeat.
