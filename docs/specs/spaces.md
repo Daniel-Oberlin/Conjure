@@ -90,6 +90,13 @@ single space routinely holds several rooms joined by doors — the reference cap
   disk predates `recent`, so the pair is the fallback when the history is absent. Rewritten by world
   renames (`world.py:1015`).
 
+  Reading it filters on **two** things, not one: the world must still exist, and the caller must be able
+  to enter it (`_may_join_world_in` — you own the scope, or its live session is public). The second
+  filter matters because the history is genuinely **cross-user**: it is written under the space's owner
+  using whichever scope is live, so your own room remembers a guest's worlds alongside your own. Without
+  it, matching your room could switch you into someone else's private world and `_regate_clients` would
+  then evict you — from your own room — to passthrough, with the switch already committed.
+
   It is a history rather than a single pointer for the reason given in
   [architecture.md §1](../architecture.md): a lone pointer has no answer to *the thing it names was
   deleted*, so walking back into your own room after a cleanup minted a new world instead of opening the
@@ -281,9 +288,9 @@ second Python implementation.
 
 | Vote | Outcome |
 |---|---|
-| matched an existing space, whose newest remembered world still exists | join that world (return visit), silently |
-| matched, but that world is **gone** | join the newest surviving entry of `recent` — a world you had *in this room* — and say so |
-| matched, but **nothing** in its history survives, or it has none | mint the connecting user a world tied to it, **in the agent that space was last used from** (below), and say so |
+| matched an existing space, whose newest remembered world is **there and joinable** | join that world (return visit), silently |
+| matched, but that world is **gone** or **not yours to enter** | join the newest entry of `recent` that is both — a world you had *in this room* — and say which of the two it was |
+| matched, but **nothing** in its history is joinable, or it has none | mint the connecting user a world tied to it, **in the agent that space was last used from** (below), and say so |
 | matched, private, no joinable world, not the owner | refused |
 | **the live world is deliberately `<void>`** | claim the space, **do not relocate** (§4.3) |
 | no match | "somewhere new": mint a fresh geo-stamped `space-N` + world, owned by the connecting user |
@@ -309,9 +316,11 @@ standing in one room a world built for another and render its walls on top of th
 answer, not a degradation. When a space's own history is spent, the correct move is to build a world
 **bound to this space**, which is what `_establish_world_in` does.
 
-**The fallback is announced.** A degradation that fires silently is indistinguishable from a bug, which
-is how this went unnoticed: the notice names what happened and which agent you landed in. Resuming the
-*head* of the history is not a fallback and stays silent.
+**The fallback is announced, and says which kind it was.** A degradation that fires silently is
+indistinguishable from a bug, which is how this went unnoticed: the notice names what happened and which
+agent you landed in. *Gone* and *private* are reported differently on purpose — one is your data lost,
+the other is someone else's door shut, and they call for different reactions. Resuming the *head* of the
+history is not a fallback and stays silent.
 
 **So is being moved by the room.** A match relocates you to that space's world in whatever scope owns it
 — your room can hand you a different world, and a different agent, which is the design (decision #20).

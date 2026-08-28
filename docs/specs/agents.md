@@ -1079,6 +1079,12 @@ are demoted, not dropped:
   later go-public can re-admit) and sends `evicted`, so the render client blanks to passthrough.
   `_readmit_clients` is the inverse: back into `clients` plus a fresh snapshot, no page reload. A
   refused-at-join guest gets the **same** `evicted` signal, so entry and eviction behave identically.
+  Bumping a headset also drops it from `_space_holders`, so the sweep ends with `_unclaim()` — a no-op
+  while the owner is still standing there, but otherwise it frees the space *and* reopens selection.
+  Without that the space stayed committed for the claim epoch: the evicted headset's `cid` was already
+  in `_selected_cids`, so its re-vote returned `selected: False` and it sat in passthrough until the
+  wearer physically left AR. Eviction has to be recoverable by looking around, not by taking the headset
+  off ([specs/spaces.md §6.1](./spaces.md)).
 - **CLI/voice** — `_apply_bumps` forces non-permitted clients into shell mode with a notice, and a
   private session's *dialog* is never broadcast to them (`_conv_broadcast` filters on `_permitted`).
   `Conn.bumped` distinguishes our bump from a shell the user chose, so going public only undoes what we

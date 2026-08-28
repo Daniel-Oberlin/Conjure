@@ -3625,3 +3625,113 @@ def test_being_admitted_to_the_room_you_are_already_in_says_nothing(srv, client,
     client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
                                        "user": "daniel", "cid": "hs-same"})
     assert not any("now — opened" in t for t in said), said
+
+
+# --------------------------------------------------------------------------- a history entry you may not enter
+#
+# A space's history is genuinely cross-user: `_save_active` writes it under the SPACE's owner using
+# whichever scope is live, so your own room can remember a guest's world. Walking that history with only
+# an existence check meant switching into a world whose session is private and being thrown straight back
+# out by `_regate_clients` — evicted from your own room, with the switch already committed.
+
+def _private_world_of(srv, user, name, space):
+    """A world in `user`'s own scope, in a session marked private."""
+    from conjure.world import WorldStore
+    scope = f"{user}/agents/builder"
+    sid = srv.sessions.get_active(scope) or "session-1"
+    srv.sessions.save_meta(scope, sid, {"id": sid, "owner": user, "agent": "builder",
+                                        "title": "hidden", "public": False})
+    wid = srv.worlds.save(scope, name, WorldStore(
+        {"name": name, "rev": 1, "environment": {"space": space}, "entities": []}))
+    return scope, wid
+
+
+def test_a_private_entry_is_walked_past_not_walked_into(srv, client):
+    """The one that evicted you from your own room: bob's private world is the newest thing remembered
+    here, so we skip it and open the newest one that is actually ours to enter."""
+    mine = _world_in(srv, "workshop", "daniel/office")
+    bobs_scope, bobs = _private_world_of(srv, "bob", "bobs-lab", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               recent=[[bobs_scope, bobs], [srv.DEFAULT_SCOPE, mine]],
+               last_scope=bobs_scope, last_world=bobs)
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                       "user": "daniel", "cid": "hs-priv"})
+    assert _wname(srv) == "workshop" and srv.active_scope == srv.DEFAULT_SCOPE
+
+
+def test_skipping_a_private_entry_says_private_not_gone(srv, client, monkeypatch):
+    """'Gone' and 'private' call for different reactions from whoever hears it — one is data loss, the
+    other is someone else's door being shut."""
+    said = []
+
+    async def spy(msg):
+        if msg.get("type") == "notice":
+            said.append(msg["text"])
+
+    mine = _world_in(srv, "workshop", "daniel/office")
+    bobs_scope, bobs = _private_world_of(srv, "bob", "bobs-lab", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               recent=[[bobs_scope, bobs], [srv.DEFAULT_SCOPE, mine]],
+               last_scope=bobs_scope, last_world=bobs)
+    monkeypatch.setattr(srv, "_broadcast", spy)
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                       "user": "daniel", "cid": "hs-priv-say"})
+    assert any("private" in t and "workshop" in t for t in said), said
+    assert not any("is gone" in t for t in said), said
+
+
+def test_your_own_private_world_is_still_yours_to_open(srv, client):
+    """The filter is about OTHER people's private sessions. Locking yourself out of your own would be a
+    worse bug than the one it fixes."""
+    scope, wid = _private_world_of(srv, "daniel", "my-lab", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               recent=[[scope, wid]], last_scope=scope, last_world=wid)
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                       "user": "daniel", "cid": "hs-own"})
+    assert _wname(srv) == "my-lab"
+
+
+def test_nothing_joinable_mints_rather_than_switching_into_a_locked_world(srv, client):
+    bobs_scope, bobs = _private_world_of(srv, "bob", "bobs-lab", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               recent=[[bobs_scope, bobs]], last_scope=bobs_scope, last_world=bobs)
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                       "user": "daniel", "cid": "hs-none"})
+    assert srv.active_scope.split("/", 1)[0] == "daniel"      # …in OUR scope, not switched into bob's
+    assert srv.worlds.name_of(srv.active_scope, srv.active_world) != "bobs-lab"
+
+
+# -- eviction has to be recoverable ---------------------------------------------------------------
+
+async def test_bumping_a_holder_reopens_selection(srv):
+    """`_regate_clients` dropped holders without unclaiming, so the space stayed committed for the epoch:
+    the evicted headset's re-vote returned selected=False and it sat in passthrough until the wearer
+    physically left AR. Freeing the space is what makes eviction recoverable."""
+    class _WS:
+        async def send_json(self, ev): pass
+
+    ws = _WS()
+    srv.clients[ws] = "guest"                                 # a guest holding the space
+    srv._space_holders.add(ws)
+    srv._selected_cids.add("guest-cid")
+    _set_session_public(srv, False)
+    await srv._regate_clients()
+    assert ws not in srv._space_holders and not srv._occupied()
+    assert srv._selected_cids == set()                        # …so the next vote is heard
+
+
+async def test_the_owner_holding_the_space_keeps_it_claimed(srv):
+    """Unclaiming is only right when the sweep emptied it — the owner is never bumped, and a space they
+    are still standing in must stay claimed or the admission gate falls open."""
+    class _WS:
+        async def send_json(self, ev): pass
+
+    owner_ws, guest_ws = _WS(), _WS()
+    srv.clients[owner_ws] = srv.active_scope.split("/", 1)[0]
+    srv.clients[guest_ws] = "guest"
+    srv._space_holders.update({owner_ws, guest_ws})
+    srv._selected_cids.add("owner-cid")
+    _set_session_public(srv, False)
+    await srv._regate_clients()
+    assert owner_ws in srv._space_holders and srv._occupied()
+    assert srv._selected_cids == {"owner-cid"}                # not reopened while it is still held

@@ -767,12 +767,29 @@ def _touch_recent(recent, scope: str, wid: str) -> list[list[str]]:
     return [[scope, wid]] + [list(p)[:2] for p in rest][:_MRU_CAP - 1]
 
 
-def _space_last_live(sp: dict) -> tuple[Optional[str], Optional[str], bool]:
-    """The newest world in this space that still exists → `(scope, world_id, was_head)`.
+def _may_join_world_in(user: str, scope: str) -> bool:
+    """Would `user` survive the visibility gate on `scope`'s live session (§8.3)? Owners always may; a
+    guest only if that session is public. The counterpart to `_may_create_world_in`, which governs
+    building rather than entering."""
+    if scope.split("/", 1)[0] == user:
+        return True
+    return _session_public(scope, _active_sid_for(scope))
 
-    Self-healing over deleted entries, exactly like the world and session pointers — a world removed
-    anywhere else never comes back to prune this list, so reading has to skip the dead. `was_head` is
-    False when we had to walk past the most recent one, which is what makes the arrival worth announcing.
+
+def _space_last_live(sp: dict, user: str) -> tuple[Optional[str], Optional[str], str]:
+    """The newest world in this space that `user` can actually open → `(scope, world_id, why_not_head)`.
+
+    Two reasons to walk past an entry, and the caller is told which:
+
+      - **gone** — deleted. Self-healing, exactly like the world and session pointers: a world removed
+        anywhere else never comes back to prune this list, so reading has to skip the dead.
+      - **private** — it exists, but it belongs to someone else's private session. A space's history is
+        genuinely cross-user (`_save_active` writes it under the SPACE's owner using whichever scope is
+        live), so your own room can remember a guest's private world. Joining it and *then* being thrown
+        out by `_regate_clients` is the behaviour this filter replaces: it evicted you from your own room
+        to passthrough, with the evicting switch already committed.
+
+    `why_not_head` is `""` when the newest entry was usable — the ordinary case, and the silent one.
 
     **Only worlds tied to THIS space are candidates**, which is why there is no rung 2 here. A world
     carries `environment.space` and `_activate` composes it against that space, so falling back to a
@@ -784,10 +801,18 @@ def _space_last_live(sp: dict) -> tuple[Optional[str], Optional[str], bool]:
     legacy = (sp.get("last_scope"), sp.get("last_world"))
     if legacy[0] and legacy[1] and legacy not in hist:
         hist.append(legacy)                     # a space saved before `recent` existed carries only this
-    for i, (scope, wid) in enumerate(hist):
-        if scope and wid and worlds.exists(scope, wid):
-            return scope, wid, i == 0
-    return None, None, True
+    why = ""
+    for scope, wid in hist:
+        if not (scope and wid):
+            continue
+        if not worlds.exists(scope, wid):
+            why = why or "gone"
+            continue
+        if not _may_join_world_in(user, scope):
+            why = why or "private"              # the FIRST reason we walked, which is what to report
+            continue
+        return scope, wid, why
+    return None, None, why
 
 
 def _occupied() -> bool:
@@ -2040,17 +2065,20 @@ async def select_space(req: SpaceSelect) -> dict:
     if matched_ref and spaces.exists(*matched_ref):        # matched → join a world of ITS history
         sp = spaces.load(*matched_ref)
         was = (active_scope, active_world)                 # where the restart/last session left us
-        scope, w, was_head = _space_last_live(sp)
+        scope, w, why = _space_last_live(sp, who)
         _slog("select", f"user={who!r} MATCHED {req.owner}/{req.name} → "
-                        + (f"join {scope.split('/', 1)[0]}/{w}{'' if was_head else ' (fell back)'}"
-                           if w else "no world yet, mint one in it"))
+                        + (f"join {scope.split('/', 1)[0]}/{w}{f' (skipped {why})' if why else ''}"
+                           if w else f"no world to join here{f' ({why})' if why else ''}, mint one"))
         if w and scope:
-            if not was_head:
-                # Walked past the most recent entry: it was deleted. Rung 1 of the ladder, but a visible
-                # one — you asked for nothing and got a different world than you last had in this room.
-                await _broadcast({"type": "notice",
-                                  "text": f"The world you were last in here is gone — opened "
-                                          f"'{worlds.name_of(scope, w) or w}' instead."})
+            if why:
+                # Walked past the most recent entry. Rung 1 of the ladder, but a visible one — you asked
+                # for nothing and got a different world than you last had in this room, so say which and
+                # say why: "gone" and "private" call for different reactions from the person hearing it.
+                await _broadcast({"type": "notice", "text":
+                                  (f"The world you were last in here is gone — opened "
+                                   if why == "gone" else
+                                   f"The most recent world here is private — opened ")
+                                  + f"'{worlds.name_of(scope, w) or w}' instead."})
             out = await _switch_to(scope, w)
         elif _may_create_world_in(who, *matched_ref):      # nothing of this space's survives → build (D3)
             # Keep the AGENT that space was last used from rather than dropping to the default one (§2),
@@ -2059,11 +2087,12 @@ async def select_space(req: SpaceSelect) -> dict:
             prior = sp.get("last_scope")
             landing = _entry_scope_for(who, prefer=prior)
             if prior:
-                _slog("select", f"user={who!r} no surviving world in this space → new world in "
-                                f"{landing} (was {prior})")
-                await _broadcast({"type": "notice",
-                                  "text": f"The worlds you had here are gone — "
-                                          f"starting a fresh one in {agent_of(landing)}."})
+                _slog("select", f"user={who!r} no joinable world in this space ({why or 'none'}) → "
+                                f"new world in {landing} (was {prior})")
+                await _broadcast({"type": "notice", "text":
+                                  ("The worlds here are private — " if why == "private" else
+                                   "The worlds you had here are gone — ")
+                                  + f"starting a fresh one in {agent_of(landing)}."})
             out = await _establish_world_in(who, _space_ref(*matched_ref), prefer_scope=prior)
         else:                                              # private space, nothing to join, not the owner (D8)
             _slog("select", f"user={who!r} matched {req.owner}/{req.name} but it's PRIVATE with no world → refused")
@@ -4885,6 +4914,11 @@ async def _regate_clients() -> None:
                 "msg": f"this session is now private — ask {owner} to make it public."})
         except Exception:  # noqa: BLE001 — a dead socket must not break the sweep
             pass
+    # Dropping holders without this left the space CLAIMED by nobody and still marked as committed: the
+    # evicted headset's cid is in `_selected_cids` for the epoch, so its re-vote returned
+    # `{"selected": False}` and it sat in passthrough until the wearer physically left AR. Freeing it is
+    # what makes eviction recoverable — and it is a no-op while the owner is still holding.
+    _unclaim()
 
 
 async def _readmit_clients() -> None:
