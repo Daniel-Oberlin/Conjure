@@ -828,7 +828,21 @@ server → client   {type:"context", …}                    # this connection's
   can't *speak* the history, so it wants only the current context. `shell=1` opens the connection
   already in shell mode (`cli --open-shell`).
 - **`turn_done` always fires**, in a `finally`, and is the client's prompt gate.
-- `busy` is the single floor rejecting a concurrent turn.
+- `busy` is the single floor rejecting a concurrent turn. It is **always paired with a `turn_done`** —
+  the gate has to re-arm, or a refusal wedges the prompt just as surely as the wait it replaced.
+- **The receive loop reads ahead.** A submitted line runs as a task and the loop goes straight back to
+  `receive_json`; a line that arrives mid-flight is answered `busy` immediately. Serialization is
+  unchanged — still one command at a time — but the socket is always being read. Awaiting the handler
+  inline instead is the obvious shape and it makes a slow command look like a **crash**: a generative
+  session constructor can run for its full 180s, during which nothing is read, so the client shows a
+  dead terminal and then flushes the entire backlog at once (observed 2026-08-28). `busy` could not
+  fire for a same-connection follow-up, because the follow-up was never read.
+- **World-server notices are relayed into the conversation.** The world server narrates its slow or
+  surprising moments (*"Setting up your new world…"*, *"You're in a world with no room — staying put"*)
+  on its own socket, which only world clients — the headset — are on. `_follow_world_state` forwards
+  any `notice` it sees to the conversation hub, so the CLI or voice client that *asked* is the one told.
+  Without it the reassurance was addressed to whoever was wearing the headset, which is not necessarily
+  anyone.
 
 **Shell mode is per-connection** (`Conn.in_shell`), so one client entering command mode never drags the
 others in. So are `user` and `cwd`. Everything else — Director, transcript, active LLM, floor — is

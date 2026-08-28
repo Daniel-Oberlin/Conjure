@@ -5,6 +5,7 @@ a fake shell + fake connections — no network, no MCP subprocess, no LLM. The `
 with a TestClient over an injected fake shell (build_app's `shell=` bypasses the real Shell.session)."""
 
 import asyncio
+import json
 import tempfile
 import types
 
@@ -565,3 +566,155 @@ def test_the_open_shell_flag_is_in_the_url_so_a_reconnect_restores_it():
     from conjure.agent_client import ws_url
     assert "shell=1" in ws_url("http://h:1", "alice", shell=True)
     assert "shell=1" not in ws_url("http://h:1", "alice")
+
+
+# --------------------------------------------------------------------------- read-ahead on the socket
+#
+# Observed 2026-08-28: a `session new` whose generative constructor ran for its full 180s made the CLI
+# look DEAD. Every command typed during the wait produced nothing, then the whole backlog flushed at
+# once when the slow one finally failed. Nothing was lost — the receive loop simply awaited the handler
+# inline, so the following lines were never read off the socket, and the `busy` reply the clients
+# already render could not fire for a follow-up on the same connection.
+
+class SlowShell(FakeShell):
+    """A shell whose command takes as long as we let it — the generative-constructor shape."""
+
+    def __init__(self):
+        super().__init__()
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+        self.dispatched: list[str] = []
+
+    async def _dispatch(self, cmd, on_text, *, speaker=None, permitted=True, cwd="", voice=False):
+        self.dispatched.append(cmd)
+        self.started.set()
+        await self.release.wait()
+        await on_text(f"done «{cmd}»", final=True, speaker=self.director.active)
+
+
+def _drain(ws, until="turn_done", limit=20):
+    out = []
+    for _ in range(limit):
+        ev = ws.receive_json()
+        out.append(ev)
+        if ev["type"] == until:
+            return out
+    return out
+
+
+def test_a_line_typed_during_a_slow_command_is_answered_not_swallowed():
+    from fastapi.testclient import TestClient
+    shell = SlowShell()
+    with TestClient(build_app(get_settings(), shell=shell)) as client:
+        with client.websocket_connect("/ws?user=alice&shell=1") as ws:
+            ws.receive_json()                                  # context
+            ws.send_json({"type": "turn", "text": "session new trash"})
+            ws.send_json({"type": "turn", "text": "dir"})      # arrives while the first is still running
+            events = _drain(ws)                                # …and must be answered NOW, not in 180s
+            assert [e["type"] for e in events] == ["busy", "turn_done"]
+            shell.release.set()
+            assert any(e["type"] == "notice" for e in _drain(ws))
+    # The rejected line never ran — serialization is unchanged, only the silence is gone.
+    assert shell.dispatched == ["session new trash"]
+
+
+def test_the_busy_reply_re_arms_the_client_prompt():
+    """`turn_done` is the client's prompt gate and its in-flight counter. A `busy` without one leaves the
+    terminal wedged for a different reason than the bug it replaced."""
+    from fastapi.testclient import TestClient
+    shell = SlowShell()
+    with TestClient(build_app(get_settings(), shell=shell)) as client:
+        with client.websocket_connect("/ws?user=alice&shell=1") as ws:
+            ws.receive_json()
+            ws.send_json({"type": "turn", "text": "slow"})
+            ws.send_json({"type": "turn", "text": "quick"})
+            assert [e["type"] for e in _drain(ws)] == ["busy", "turn_done"]
+            shell.release.set()
+            _drain(ws)
+
+
+def test_commands_still_run_one_at_a_time():
+    """Read-ahead must not become concurrency: the second command runs only after the first completes."""
+    from fastapi.testclient import TestClient
+    shell = SlowShell()
+    with TestClient(build_app(get_settings(), shell=shell)) as client:
+        with client.websocket_connect("/ws?user=alice&shell=1") as ws:
+            ws.receive_json()
+            ws.send_json({"type": "turn", "text": "first"})
+            ws.send_json({"type": "turn", "text": "second"})
+            _drain(ws)                                         # the busy pair for "second"
+            shell.release.set()
+            _drain(ws)                                         # "first" completes
+            ws.send_json({"type": "turn", "text": "third"})    # now the floor is free
+            _drain(ws)
+    assert shell.dispatched == ["first", "third"]              # "second" was refused, never queued
+
+
+async def test_a_world_side_notice_is_relayed_into_the_conversation(monkeypatch):
+    """The world server narrates its slow moments ("Setting up your new world…") on ITS socket, which
+    only the headset is on. The follow loop consumed only `state` snapshots, so the person who typed the
+    command — on the agent server — waited out a generative constructor in silence."""
+    import types
+
+    import conjure.agent_server as a
+
+    sent = []
+
+    class _Conn:
+        kind = "cli"
+        async def send(self, ev):
+            sent.append(ev)
+
+    app = types.SimpleNamespace(state=types.SimpleNamespace(
+        settings=get_settings(), user="alice", hub=a.Hub(), live=None,
+        stop_follow=asyncio.Event()))
+    app.state.hub.add(_Conn())
+
+    class _WS:
+        """One world-server message, then the loop is told to stop."""
+        def __aiter__(self):
+            async def gen():
+                yield json.dumps({"type": "notice", "text": "Setting up your new world…"})
+                app.state.stop_follow.set()
+            return gen()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): return False
+
+    import websockets                        # imported inside `_follow_world`, so patch the module
+    monkeypatch.setattr(websockets, "connect", lambda *_a, **_k: _WS())
+    await a._follow_world_state(app)
+    assert {"type": "notice", "text": "Setting up your new world…"} in sent
+
+
+async def test_the_follow_loop_still_ignores_everything_that_is_not_a_notice(monkeypatch):
+    """Relaying indiscriminately would push world patch traffic into the conversation pane."""
+    import types
+
+    import conjure.agent_server as a
+
+    sent = []
+
+    class _Conn:
+        kind = "cli"
+        async def send(self, ev):
+            sent.append(ev)
+
+    app = types.SimpleNamespace(state=types.SimpleNamespace(
+        settings=get_settings(), user="alice", hub=a.Hub(), live=None,
+        stop_follow=asyncio.Event()))
+    app.state.hub.add(_Conn())
+
+    class _WS:
+        def __aiter__(self):
+            async def gen():
+                yield json.dumps({"type": "patch", "patch": {"rev": 7}})
+                yield json.dumps({"type": "notice"})            # no text — nothing to say
+                app.state.stop_follow.set()
+            return gen()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): return False
+
+    import websockets                        # imported inside `_follow_world`, so patch the module
+    monkeypatch.setattr(websockets, "connect", lambda *_a, **_k: _WS())
+    await a._follow_world_state(app)
+    assert sent == []

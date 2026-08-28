@@ -54,7 +54,14 @@ class Conn:
                                          # a user who chose shell, so we only auto-restore what we bumped
 
     async def send(self, event: dict) -> None:
-        await self.ws.send_json(event)
+        """Tolerant of a closed socket, for the same reason `Hub.broadcast` is: a client that has gone
+        away is not an error condition. It matters more now that a command runs as a detached task —
+        disconnect mid-command and its remaining sends (including the `turn_done` in a `finally`) land
+        on a dead socket, where an exception would surface only as an unretrieved-task warning."""
+        try:
+            await self.ws.send_json(event)
+        except Exception:  # noqa: BLE001 — gone, closing, or already closed
+            pass
 
 
 class Hub:
@@ -482,6 +489,13 @@ async def _follow_world_state(app: FastAPI) -> None:
                     state = msg.get("state")             # only snapshots carry it
                     if state:
                         await _reconcile_state(app, state)
+                    elif msg.get("type") == "notice" and msg.get("text"):
+                        # The world server narrates its own slow or surprising moments ("Setting up your
+                        # new world…", "You're in a world with no room — staying put"). Those went only to
+                        # world clients — the headset — so the CLI or voice client that ASKED heard
+                        # nothing and waited out a generative constructor in silence. Relay them into the
+                        # conversation, where the person who typed the command actually is.
+                        await _conv_broadcast(app, {"type": "notice", "text": msg["text"]})
         except Exception:  # noqa: BLE001 — world server down/restarting → back off and reconnect
             if app.state.stop_follow.is_set():
                 return
@@ -642,14 +656,35 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
                     await conn.send(event)
             else:
                 await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd))
+            # READ AHEAD. Awaiting the handler here is the obvious shape and it is wrong: a slow command
+            # (a generative session constructor runs for tens of seconds) never returns, so the loop
+            # never reaches `receive_json` again and every following line sits unread in the socket
+            # buffer. The client shows a dead terminal, then flushes the whole backlog at once when the
+            # slow one finally lands — observed 2026-08-28, a `session new` whose skybox provider took
+            # its full 180s. Nothing was lost; nothing was *answered* either.
+            #
+            # So the handler runs as a task and we keep reading. Serialization is unchanged — one command
+            # at a time, exactly as before — but a line that arrives mid-flight now gets told so. `busy`
+            # is the existing reply the clients already render ("One moment — I'm still working on the
+            # last request"); it could never fire for a same-connection follow-up before, because the
+            # follow-up was never read.
+            inflight: Optional[asyncio.Task] = None
             while True:
                 msg = await websocket.receive_json()
-                if msg.get("type") == "turn":
-                    await _handle_turn(app, conn, msg.get("text", ""))
+                if msg.get("type") != "turn":
+                    continue
                 # (C3) elif msg.get("type") == "interrupt": cancel the in-flight turn
+                if inflight is not None and not inflight.done():
+                    await conn.send({"type": "busy"})
+                    await conn.send({"type": "turn_done"})   # the prompt gate: without it the client's
+                    continue                                 # in-flight count leaks and never re-arms
+                inflight = asyncio.create_task(_handle_turn(app, conn, msg.get("text", "")))
         except WebSocketDisconnect:
             pass
         finally:
+            # Let an in-flight command finish: it is mostly server-side work (minting a session, running
+            # a constructor) that is worse abandoned half-done than completed unheard. Its final sends
+            # fail into the closed socket, which `_handle_turn` already tolerates.
             app.state.hub.remove(conn)
 
     return app
