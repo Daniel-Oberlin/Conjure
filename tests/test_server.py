@@ -3735,3 +3735,43 @@ async def test_the_owner_holding_the_space_keeps_it_claimed(srv):
     await srv._regate_clients()
     assert owner_ws in srv._space_holders and srv._occupied()
     assert srv._selected_cids == {"owner-cid"}                # not reopened while it is still held
+
+
+# --------------------------------------------------------------------------- anchors need walls
+#
+# Observed 2026-08-28: models placed with grab in a VOID world teleported on release, and a headset reload
+# snapped them back — the committed pose was right, the live render wrong. A client that had captured a
+# room in an EARLIER world carried that plane basis into the void world (it is cleared on world switch
+# now), authored a wall-relative anchor against walls this world does not have, and every client holding
+# that basis then solved it. Storing the anchor is what made a client-side fault outlive the client.
+
+def test_a_void_world_refuses_a_wall_relative_anchor(srv, client):
+    client.post("/worlds/new", json={"scope": srv.DEFAULT_SCOPE, "name": "meadow", "outdoor": True})
+    assert srv._no_space()                                     # room-less by construction
+    eid = _place_box(client)
+    r = client.post("/manipulate", json={"id": eid, "position": [1, 1, -2],
+                                         "anchor": {"mode": "free", "refs": [{"id": "real_wall_1"}]}}).json()
+    assert r["ok"] is True
+    e = next(x for x in _entities(client) if x["id"] == eid)
+    assert e["transform"]["position"] == [1, 1, -2]            # the move itself still lands
+    assert "anchor" not in (e.get("meta") or {})               # …but nothing wall-relative is persisted
+
+
+def test_a_world_with_a_room_still_stores_the_anchor(srv, client):
+    """The guard is about room-less worlds only. Dropping the anchor where it IS meaningful would
+    reintroduce the drift it exists to remove — the client's exact drop replaced by a re-derivation."""
+    eid = _place_box(client)
+    anchor = {"mode": "free", "refs": [{"id": "real_wall_1"}]}
+    client.post("/manipulate", json={"id": eid, "position": [1, 1, -2], "anchor": anchor})
+    e = next(x for x in _entities(client) if x["id"] == eid)
+    assert (e.get("meta") or {}).get("anchor") == anchor
+
+
+def test_refusing_the_anchor_does_not_block_the_move(srv, client):
+    """The move is the user's actual intent; only the frame metadata is nonsense here."""
+    client.post("/worlds/new", json={"scope": srv.DEFAULT_SCOPE, "name": "meadow2", "outdoor": True})
+    eid = _place_box(client)
+    client.post("/manipulate", json={"id": eid, "position": [4, 0.5, -1], "rotation": [0, 90, 0],
+                                     "anchor": {"mode": "free", "refs": []}})
+    e = next(x for x in _entities(client) if x["id"] == eid)
+    assert e["transform"]["position"] == [4, 0.5, -1] and e["transform"]["rotation"] == [0, 90, 0]

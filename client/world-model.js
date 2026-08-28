@@ -326,7 +326,24 @@
     return posGap < posEps && angGap < angEps;
   }
 
-  return { nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
+  /**
+   * Is `framePlanes` a basis a pose may be converted THROUGH — both the local (F_track) walls and the
+   * seed (F_ref) walls, each with enough planes to define a frame?
+   *
+   * One predicate because the two directions must agree. `ConjureFrames.anchorFor` reads only the local
+   * walls and `toRef` needs both, so when the two disagreed a grab commit sent a raw local position
+   * PLUS a wall-relative anchor — and the receiving client solved that anchor against different walls
+   * and teleported the object. Authoring an anchor you cannot convert back through is never right.
+   *
+   * A room-less world legitimately has no basis at all; there the raw pose IS the pose.
+   */
+  function hasFrameBasis(fp) {
+    var lp = fp && fp.local, rp = fp && fp.ref;
+    return !!(lp && lp.length >= 2 && rp && rp.length >= 2);
+  }
+
+  return { hasFrameBasis: hasFrameBasis,
+           nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,
            relocInit: relocInit, relocStep: relocStep,
            surfaceSig: surfaceSig, surfaceMoved: surfaceMoved,

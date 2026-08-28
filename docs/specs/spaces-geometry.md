@@ -286,6 +286,29 @@ locally.
 
 The single exception is §6.
 
+### 5.4a The basis is per-world, and a room-less world has none
+
+Interaction modules convert a dragged pose through `ConjureFrames` (`anchorFor`, `toRef`), which read one
+cached basis: `framePlanes` — the last capture's **local** walls (F_track) and **seed** walls (F_ref).
+Two rules govern it, and both exist because breaking either produced the same symptom, an object
+teleporting on release and snapping back on reload:
+
+- **It is cleared on every world switch.** `_placeContent` is its only writer and runs only when the
+  world has real surfaces, so a room-less world can neither refresh nor blank it. Left alone it carried
+  the *previous* room's walls into a void world, where a grab commit authored an anchor against walls
+  that world does not have, the inbound `meta.anchor` re-solved against them, and `contentPoseIsLocal`
+  then claimed the local solve owned the pose — suppressing the server's correct raw transform in the
+  same patch. Reload looked like a fix because a fresh page has no basis at all.
+- **Both wall sets or neither** (`WorldModel.hasFrameBasis`). `anchorFor` reads only the local walls and
+  `toRef` needs both, so a half-present basis let a commit send a raw local position *plus* a
+  wall-relative anchor — two descriptions of the pose that disagree, in a message where one is supposed
+  to be the conversion of the other.
+
+**In a room-less world the raw pose IS the pose.** That is not a degraded path but the correct one, and
+the server enforces it: `/manipulate` refuses to store `meta.anchor` while the live space is `<void>`
+(a plane-relative anchor names surfaces that do not exist there). The guard is what keeps a client-side
+basis fault local to that client instead of persisting it for every client and every reload.
+
 ### 5.5 Avatars
 
 The moving, high-frequency case. Computed at the **source**, re-solved at each **receiver**:

@@ -4610,7 +4610,12 @@ async def manipulate_entity(req: ManipulateRequest) -> dict:
     # on the fly from the F_ref pose every capture, so it's wall-solved either way. Keeping the exact anchor
     # the user's drop produced just replaces a re-derived approximation with the real thing — the same
     # accuracy models get. (Surface-attached content is host-relative; surface_offset covers it below.)
-    if req.anchor and not (ent.get("meta") or {}).get("on_surface"):
+    # …but NOT in a room-less world. An anchor is plane-relative — surface ids plus offsets — so in a VOID
+    # world it names walls that do not exist here, and any client holding a stale basis will solve it and
+    # teleport the object. The client should not send one (it needs a basis to author it), but a stale
+    # basis is exactly the bug this guards: refusing it here contains a client-side fault to that client,
+    # instead of persisting it into the world for everyone and every reload.
+    if req.anchor and not (ent.get("meta") or {}).get("on_surface") and not _no_space():
         sets["meta.anchor"] = req.anchor          # client-authored, stored as-is (see ManipulateRequest)
     applied = store.apply_patch([{"op": "update", "id": req.id, "set": sets}], origin="manipulate")
     # ANCHORED content (a grounded model) re-derives its pose from `meta.anchor` on every client capture, so a

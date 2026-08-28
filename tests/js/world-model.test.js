@@ -338,3 +338,34 @@ test("relocStep: a COLD start keeps the long grace — don't nag someone still w
   s = WM.relocStep(s, "lost", 4000);
   assert.equal(s.showing, true, "…but 3 s of never locking still explains itself");
 });
+
+// --------------------------------------------------------------------------- frame basis
+//
+// Observed 2026-08-28: models placed with grab in a VOID world teleported on release, and a headset
+// reload snapped them back — so what was committed was right and only the live render was wrong. The
+// commit had sent a raw local position PLUS a wall-relative anchor, because `anchorFor` needed only the
+// LOCAL walls while `toRef` needed both; the receiving client then solved that anchor against a stale
+// basis left over from the previous world. One predicate now governs both directions.
+
+test("a frame basis needs BOTH wall sets — authoring an anchor you cannot convert back is never right", () => {
+  const plane = { id: "w1" }, two = [plane, plane];
+  assert.strictEqual(WM.hasFrameBasis({ local: two, ref: two }), true);
+  assert.strictEqual(WM.hasFrameBasis({ local: two, ref: null }), false);   // ← the teleport case
+  assert.strictEqual(WM.hasFrameBasis({ local: null, ref: two }), false);
+});
+
+test("a room-less world has no basis, and that is not a failure", () => {
+  // A void/outdoor world never captures, so nothing ever populates this. The raw pose IS the pose there,
+  // and the caller commits it unconverted rather than treating the absence as an error.
+  assert.strictEqual(WM.hasFrameBasis({ local: null, ref: null }), false);
+  assert.strictEqual(WM.hasFrameBasis({}), false);
+  assert.strictEqual(WM.hasFrameBasis(null), false);
+});
+
+test("one plane is not a frame", () => {
+  // solveAnchor needs two walls to define an orientation; one leaves the yaw free, and a basis that
+  // silently half-works is worse than none.
+  const one = [{ id: "w1" }];
+  assert.strictEqual(WM.hasFrameBasis({ local: one, ref: one }), false);
+  assert.strictEqual(WM.hasFrameBasis({ local: [], ref: [] }), false);
+});

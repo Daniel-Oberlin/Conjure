@@ -728,6 +728,15 @@
       var sc = document.querySelector("a-scene");
       var rc = sc && sc.components && sc.components["room-capture"];
       if (rc && rc.resetFrame) rc.resetFrame();
+      // …and the plane basis derived from it. `resetFrame` clears room-capture's own state; `framePlanes`
+      // lives out here and used to survive, so the PREVIOUS room's walls stayed live as a conversion basis
+      // in the next world. In a void/outdoor world that is unrecoverable on its own: `_placeContent` is the
+      // only writer and its caller returns early on `!surfaces.length`, so nothing there can refresh or
+      // blank it. A grab release then authored a wall-relative anchor against walls this world does not
+      // have, the inbound `meta.anchor` re-solved against them (the teleport), and `contentPoseIsLocal`
+      // claimed the local solve owned the pose — suppressing the server's correct raw transform in the
+      // same patch. Observed 2026-08-28 placing models in a void world entered from a captured room.
+      framePlanes.local = framePlanes.ref = null;
     }
     root().innerHTML = "";
     geoQueue = []; geoPending = {}; surfDumped = false;   // world switch destroyed every surface el → drop stale rebuild entries + re-arm the [surf] dump
@@ -1091,13 +1100,18 @@
     // re-solves the SAME anchor against the SAME walls, which is exact.
     anchorFor: function (position, quaternion, mode) {
       var PA = window.PlaneAnchor, lp = framePlanes.local;
-      if (!PA || !lp || lp.length < 2) return null;
+      // Requires the SEED basis too, though it only reads the local one. An anchor is committed together
+      // with a `toRef` conversion of the same pose, and `toRef` needs both — so a basis good enough to
+      // author from but not to convert back through let a half-converted commit out: a raw local position
+      // plus a wall-relative anchor, which the receiving client then solved against different walls.
+      // If there is no basis to come back through, there is no basis to author from.
+      if (!PA || !WM.hasFrameBasis(framePlanes)) return null;
       return PA.authorAnchor(AFRAME.THREE,
         { position: position, quaternion: quaternion, mode: mode || "free" }, lp);
     },
     toRef: function (position, quaternion, mode) {
       var PA = window.PlaneAnchor, lp = framePlanes.local, rp = framePlanes.ref;
-      if (!PA || !lp || !rp || lp.length < 2 || rp.length < 2) return null;
+      if (!PA || !WM.hasFrameBasis(framePlanes)) return null;   // the same rule both ways — see hasFrameBasis
       var anchor = PA.authorAnchor(AFRAME.THREE,
         { position: position, quaternion: quaternion, mode: mode || "free" }, lp);
       var sol = PA.solveAnchor(AFRAME.THREE, anchor, rp);
