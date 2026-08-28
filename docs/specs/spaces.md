@@ -66,7 +66,8 @@ single space routinely holds several rooms joined by doors — the reference cap
   "geolocation": { "lat": …, "lon": … },   // coarse; may be null
   "surfaces": [ /* real-surface entities, geometry + DEFAULT material */ ],
   "boundary": { "floorPolygon": [[x,z], …], "height": 2.6 },
-  "last_scope": "daniel/agents/builder/…",  // return-visit pointer
+  "recent": [ ["daniel/agents/builder", "wld_ab12…"], … ],  // what was open HERE, newest first
+  "last_scope": "daniel/agents/builder/…",  // the head of `recent`, kept for readers that want just one
   "last_world": "bladerunner1"
 }
 ```
@@ -81,8 +82,18 @@ single space routinely holds several rooms joined by doors — the reference cap
   (`mcp_server.py:267`). Nothing clamps placement against it and nothing renders it — despite
   `query_room`'s docstring saying models land inside the room, that is advice to the model, not an
   enforced invariant. See [`backlogs/spaces.md`](../backlogs/spaces.md).
-- **`last_scope` / `last_world`** are the return-visit pointer: match this space again and you land back
-  in the world you left. Rewritten by world renames (`world.py:1015`).
+- **`recent` is the return-visit history** — `[[scope, world_id], …]`, newest first, capped at
+  `_MRU_CAP`. Match this space again and you land back in the newest entry that **still exists**; the
+  scope rides along with each world because the agent it belongs to is half of *put me back where I was*.
+  `last_scope`/`last_world` are its head, written at the same moment and kept because several readers
+  want only "the last one" (the admin listing, public-space discovery) — and because every space doc on
+  disk predates `recent`, so the pair is the fallback when the history is absent. Rewritten by world
+  renames (`world.py:1015`).
+
+  It is a history rather than a single pointer for the reason given in
+  [architecture.md §1](../architecture.md): a lone pointer has no answer to *the thing it names was
+  deleted*, so walking back into your own room after a cleanup minted a new world instead of opening the
+  one you had there before it. The world and session pointers are MRU lists for the same reason.
 
 ---
 
@@ -270,8 +281,9 @@ second Python implementation.
 
 | Vote | Outcome |
 |---|---|
-| matched an existing space, which has a last world | join that world (return visit) |
-| matched, but its last world is **gone** or it has none | mint the connecting user a world tied to it, **in the agent that space was last used from** (below), and say so |
+| matched an existing space, whose newest remembered world still exists | join that world (return visit), silently |
+| matched, but that world is **gone** | join the newest surviving entry of `recent` — a world you had *in this room* — and say so |
+| matched, but **nothing** in its history survives, or it has none | mint the connecting user a world tied to it, **in the agent that space was last used from** (below), and say so |
 | matched, private, no joinable world, not the owner | refused |
 | **the live world is deliberately `<void>`** | claim the space, **do not relocate** (§4.3) |
 | no match | "somewhere new": mint a fresh geo-stamped `space-N` + world, owned by the connecting user |
@@ -289,8 +301,24 @@ A candidate is skipped when its agent no longer resolves on the search path, or 
 tied to a space. This scope was previously **hard-coded to `builder`**, so a space whose remembered world
 had been deleted handed you to a general-purpose agent regardless of who you had been talking to.
 
+**There is deliberately no "any world in that session" rung here**, though the agent-switch ladder
+([specs/agents.md §7.6](./agents.md)) has one. The candidate sets are not the same shape: a session's
+worlds are siblings in one working context, whereas a world carries its own `environment.space` and
+`_activate` composes it against *that* space. Reaching sideways into the session would hand a headset
+standing in one room a world built for another and render its walls on top of the real ones — a wrong
+answer, not a degradation. When a space's own history is spent, the correct move is to build a world
+**bound to this space**, which is what `_establish_world_in` does.
+
 **The fallback is announced.** A degradation that fires silently is indistinguishable from a bug, which
-is how this went unnoticed: the notice names what happened and which agent you landed in.
+is how this went unnoticed: the notice names what happened and which agent you landed in. Resuming the
+*head* of the history is not a fallback and stays silent.
+
+**So is being moved by the room.** A match relocates you to that space's world in whatever scope owns it
+— your room can hand you a different world, and a different agent, which is the design (decision #20).
+An agent change is narrated by the agent server (`_agent_change_notice`); a relocation that keeps the
+same agent — restart the server in a different room — used to be silent, the same surprise minus the
+attribution. `/space/select` now says *"You're in daniel/office now — opened 'workshop'."* when it moved
+you and the agent notice will not fire, so the event is announced exactly once.
 
 **Claimed** — the admission gate:
 

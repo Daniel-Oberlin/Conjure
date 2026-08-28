@@ -45,7 +45,7 @@ from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
-from .world import (MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
+from .world import (_MRU_CAP, MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
                     NAME_SEGMENT, _set_path, clean_name, fold_accents, migrate_cache_to_users,
                     migrate_env_room_to_space_presentation,
                     migrate_project_cache_to_home, migrate_worlds_to_ids, new_world_id)
@@ -752,6 +752,44 @@ def _no_space() -> bool:
     return active_space in (VOID, UNSET)
 
 
+# A space's own history of what was open in it, newest first — `[[scope, world_id], …]`, capped like the
+# world/session MRUs (`_MRU_CAP`). Same idea, third place: a single `last_world` meant that deleting
+# it left a space with no memory at all, so walking back into your room after a cleanup minted a fresh
+# world rather than opening the one you had there before it (architecture.md §1, rung 1).
+#
+# The SCOPE rides along with each world, not just the id: the agent that world belongs to is half of
+# "put me back where I was", and re-deriving it afterwards is what `_entry_scope_for` has to guess at.
+#
+# It is NOT the same as the session-level ladder's rung 2, and deliberately so — see `_space_last_live`.
+def _touch_recent(recent, scope: str, wid: str) -> list[list[str]]:
+    """Move `(scope, wid)` to the front of a space's history."""
+    rest = [p for p in (recent or []) if list(p)[:2] != [scope, wid]]
+    return [[scope, wid]] + [list(p)[:2] for p in rest][:_MRU_CAP - 1]
+
+
+def _space_last_live(sp: dict) -> tuple[Optional[str], Optional[str], bool]:
+    """The newest world in this space that still exists → `(scope, world_id, was_head)`.
+
+    Self-healing over deleted entries, exactly like the world and session pointers — a world removed
+    anywhere else never comes back to prune this list, so reading has to skip the dead. `was_head` is
+    False when we had to walk past the most recent one, which is what makes the arrival worth announcing.
+
+    **Only worlds tied to THIS space are candidates**, which is why there is no rung 2 here. A world
+    carries `environment.space` and `_activate` composes it against that space, so falling back to a
+    sibling from the same *session* — the session ladder's rung 2 — could hand a headset standing in one
+    room a world built for another, and render its walls on top of the real ones. When this history is
+    exhausted the right answer is to build a world BOUND to this space, not to reach sideways.
+    """
+    hist = [tuple(p)[:2] for p in (sp.get("recent") or []) if len(p) >= 2]
+    legacy = (sp.get("last_scope"), sp.get("last_world"))
+    if legacy[0] and legacy[1] and legacy not in hist:
+        hist.append(legacy)                     # a space saved before `recent` existed carries only this
+    for i, (scope, wid) in enumerate(hist):
+        if scope and wid and worlds.exists(scope, wid):
+            return scope, wid, i == 0
+    return None, None, True
+
+
 def _occupied() -> bool:
     """Is the active space CLAIMED — is any AR headset currently holding it? While occupied, an AR joiner
     must match the active space (the admission gate); while unoccupied the space is free to (re)establish.
@@ -803,6 +841,10 @@ def _save_active() -> None:
          "surfaces": [], "boundary": None}
     fresh = _space_from_world_doc(owner, active_space, store.doc)      # geometry + boundary, default-materialed
     space["surfaces"], space["boundary"] = fresh["surfaces"], fresh["boundary"]
+    # What was open HERE, newest first — the space's own MRU (specs/spaces.md §6.1). `last_scope`/
+    # `last_world` stay as the head of it: several readers still want just "the last one" (the admin
+    # listing, public-space discovery), and a space saved before this field existed has only those.
+    space["recent"] = _touch_recent(space.get("recent"), active_scope, active_world)
     space["last_scope"], space["last_world"] = active_scope, active_world   # for nearest-space selection
     spaces.save(owner, active_space, space)
     spaces.set_active(owner, active_space)                            # keep the owner's current physical space current
@@ -1995,30 +2037,48 @@ async def select_space(req: SpaceSelect) -> dict:
         return {"ok": True, "admitted": True, "kept_outdoor": True,
                 "msg": "You're in an outdoor world, so I've left you in it."}
 
-    if matched_ref and spaces.exists(*matched_ref):        # matched → join its last-active world (return visit)
+    if matched_ref and spaces.exists(*matched_ref):        # matched → join a world of ITS history
         sp = spaces.load(*matched_ref)
-        scope, w = sp.get("last_scope"), sp.get("last_world")
+        was = (active_scope, active_world)                 # where the restart/last session left us
+        scope, w, was_head = _space_last_live(sp)
         _slog("select", f"user={who!r} MATCHED {req.owner}/{req.name} → "
-                        + (f"join {scope.split('/', 1)[0]}/{w}" if (w and scope and worlds.exists(scope, w))
-                           else "no world yet, mint one in it"))
-        if w and scope and worlds.exists(scope, w):
-            out = await _switch_to(scope, w)
-        elif _may_create_world_in(who, *matched_ref):      # space has no world → build one in it (D3)
-            # The remembered world is gone (deleted, or the space is brand new). Keep the AGENT that
-            # space was last used from rather than dropping to the default one (§2), and SAY that we had
-            # to build something — a silent fallback is indistinguishable from a bug.
-            landing = _entry_scope_for(who, prefer=scope)
-            if w and scope:
-                _slog("select", f"user={who!r} last world {w!r} is gone → new world in "
-                                f"{landing} (was {scope})")
+                        + (f"join {scope.split('/', 1)[0]}/{w}{'' if was_head else ' (fell back)'}"
+                           if w else "no world yet, mint one in it"))
+        if w and scope:
+            if not was_head:
+                # Walked past the most recent entry: it was deleted. Rung 1 of the ladder, but a visible
+                # one — you asked for nothing and got a different world than you last had in this room.
                 await _broadcast({"type": "notice",
-                                  "text": f"The world you were last in here is gone — "
+                                  "text": f"The world you were last in here is gone — opened "
+                                          f"'{worlds.name_of(scope, w) or w}' instead."})
+            out = await _switch_to(scope, w)
+        elif _may_create_world_in(who, *matched_ref):      # nothing of this space's survives → build (D3)
+            # Keep the AGENT that space was last used from rather than dropping to the default one (§2),
+            # and SAY that we had to build — a silent fallback is indistinguishable from a bug. NOT a
+            # sibling from that session: see `_space_last_live` on why reaching sideways is wrong here.
+            prior = sp.get("last_scope")
+            landing = _entry_scope_for(who, prefer=prior)
+            if prior:
+                _slog("select", f"user={who!r} no surviving world in this space → new world in "
+                                f"{landing} (was {prior})")
+                await _broadcast({"type": "notice",
+                                  "text": f"The worlds you had here are gone — "
                                           f"starting a fresh one in {agent_of(landing)}."})
-            out = await _establish_world_in(who, _space_ref(*matched_ref), prefer_scope=scope)
+            out = await _establish_world_in(who, _space_ref(*matched_ref), prefer_scope=prior)
         else:                                              # private space, nothing to join, not the owner (D8)
             _slog("select", f"user={who!r} matched {req.owner}/{req.name} but it's PRIVATE with no world → refused")
             return {"ok": True, "refused": True,
                     "msg": f"{matched_ref[0]}'s space is private — there's no world here you can join."}
+        # You were somewhere else a moment ago and the room moved you. That is the design working — the
+        # space owns the world owns the scope, and your room is the better evidence of where you are
+        # (decision #20) — but it has to SAY so, and until now it only did when the AGENT changed
+        # (`_agent_change_notice`). Restart in a different room under the same agent and you were
+        # relocated in silence. Announce the same fact the agent notice would have carried, minus the
+        # agent, and only when that notice will NOT fire, so nobody hears it twice.
+        if (active_scope, active_world) != was and agent_of(active_scope) == agent_of(was[0]):
+            await _broadcast({"type": "notice",
+                              "text": f"You're in {_space_ref(*matched_ref)} now — opened "
+                                      f"'{worlds.name_of(active_scope, active_world)}'."})
         out["joined"] = _space_ref(*matched_ref)
         return out
 

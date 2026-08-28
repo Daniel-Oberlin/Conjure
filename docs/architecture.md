@@ -40,7 +40,15 @@
   defect, hidden because its fallback happened to name a session id that usually existed). The pointer
   is therefore an **MRU list** rather than a single id: rung 1 walks past however many of its entries
   have been deleted, which is what makes it a rung and not a coin flip
-  ([specs/agents.md §7.6](./specs/agents.md)).
+  ([specs/agents.md §7.6](./specs/agents.md)). A **space** keeps the same history of what was open in it
+  ([specs/spaces.md §2](./specs/spaces.md)), so returning to a room whose last world was deleted opens
+  the one you had there before it.
+
+  **The rungs are per candidate set, and the sets are not interchangeable.** A session's worlds are
+  siblings in one working context, so "any other world in that session" is a fair rung there. A *space*
+  has no such rung, because a world carries the space it composes against: reaching sideways into the
+  session would put one room's walls on top of another's. Consistency is in the *shape* of the ladder,
+  not in flattening what counts as a neighbour.
 - **Every degradation is audible.** A fallback that fires silently is indistinguishable from a bug, and
   is how a cluster of world-entry defects survived unnoticed for months. Whenever the system hands you
   something other than what was asked for, it says so in one line — on the same channel that already

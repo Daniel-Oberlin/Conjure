@@ -1545,9 +1545,12 @@ def test_a_boot_placeholder_IS_relocated_by_recognising_the_room(srv, client):
     srv.worlds.save(srv.DEFAULT_SCOPE, "placeholder", WorldStore(
         {"id": "ph", "name": "placeholder", "rev": 1, "environment": {}, "entities": []}))
     client.post("/worlds/switch", json={"name": "placeholder"})
-    # stamp the return pointer AFTER the switch: switching autosaves the OUTGOING world, which restamps
-    # the space's last_world to whatever we just left.
+    # Stamp the return pointer AFTER the switch: switching autosaves the OUTGOING world, which restamps
+    # the space's history to whatever we just left. `recent` and `last_*` are written together by
+    # `_save_active` and can only disagree in a hand-built fixture, so set both — the head of the history
+    # IS the last world.
     srv.spaces.save("daniel", "home", {**srv.spaces.load("daniel", "home"),
+                                       "recent": [[srv.DEFAULT_SCOPE, ah]],
                                        "last_scope": srv.DEFAULT_SCOPE, "last_world": ah})
 
     r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
@@ -3483,3 +3486,142 @@ def test_deleting_the_live_session_resumes_a_sibling_session(srv, client):
     assert made["ok"] and srv.sessions.get_active(scope) != first
     srv.sessions.delete(scope, srv.sessions.get_active(scope))
     assert srv._ensure_session(scope) == first                         # …resumed, not recreated
+
+
+# --------------------------------------------------------------------------- a space remembers more than one world
+#
+# `last_world` was a SINGLE field, so deleting it left the space with no memory at all: walk back into
+# that room after a cleanup and it minted a fresh world rather than opening the one you had there before.
+# The third place the same single-pointer shape caused the same bug (worlds and sessions were the first
+# two). A space's history is `recent` — `[[scope, world_id], …]`, newest first.
+
+def _world_in(srv, name, space):
+    from conjure.world import WorldStore
+    return srv.worlds.save(srv.DEFAULT_SCOPE, name, WorldStore(
+        {"name": name, "rev": 1, "environment": {"space": space}, "entities": []}))
+
+
+def test_a_space_falls_back_to_the_world_you_had_there_before(srv, client):
+    older = _world_in(srv, "workshop", "daniel/office")
+    newer = _world_in(srv, "gallery", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               recent=[[srv.DEFAULT_SCOPE, newer], [srv.DEFAULT_SCOPE, older]],
+               last_scope=srv.DEFAULT_SCOPE, last_world=newer)
+    srv.worlds.delete(srv.DEFAULT_SCOPE, "gallery")                # the one you were last in, gone
+    n_before = len(srv.worlds.list(srv.DEFAULT_SCOPE))
+    r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                           "user": "daniel", "cid": "hs-fallback"}).json()
+    assert r["ok"] and _wname(srv) == "workshop"                   # …not a fresh mint
+    assert len(srv.worlds.list(srv.DEFAULT_SCOPE)) == n_before
+
+
+def test_falling_back_inside_a_space_says_so(srv, client, monkeypatch):
+    said = []
+
+    async def spy(msg):
+        if msg.get("type") == "notice":
+            said.append(msg["text"])
+
+    older = _world_in(srv, "workshop", "daniel/office")
+    newer = _world_in(srv, "gallery", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               recent=[[srv.DEFAULT_SCOPE, newer], [srv.DEFAULT_SCOPE, older]],
+               last_scope=srv.DEFAULT_SCOPE, last_world=newer)
+    srv.worlds.delete(srv.DEFAULT_SCOPE, "gallery")
+    monkeypatch.setattr(srv, "_broadcast", spy)
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                       "user": "daniel", "cid": "hs-say"})
+    assert any("gone" in t and "workshop" in t for t in said), said
+
+
+def test_resuming_the_head_of_a_space_history_is_not_announced_as_a_loss(srv, client, monkeypatch):
+    said = []
+
+    async def spy(msg):
+        if msg.get("type") == "notice":
+            said.append(msg["text"])
+
+    wid = _world_in(srv, "gallery", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               recent=[[srv.DEFAULT_SCOPE, wid]], last_scope=srv.DEFAULT_SCOPE, last_world=wid)
+    monkeypatch.setattr(srv, "_broadcast", spy)
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                       "user": "daniel", "cid": "hs-head"})
+    assert not any("gone" in t for t in said), said
+
+
+def test_a_space_saved_before_the_history_existed_still_resolves(srv, client):
+    """Every space doc on disk predates `recent`; the legacy pair has to keep working on its own."""
+    wid = _world_in(srv, "office-world", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               last_scope=srv.DEFAULT_SCOPE, last_world=wid)      # no `recent` at all
+    r = client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                           "user": "daniel", "cid": "hs-legacy"}).json()
+    assert r["ok"] and _wname(srv) == "office-world"
+
+
+def test_the_history_never_reaches_into_another_space(srv, client):
+    """The session ladder's rung 2 — 'any sibling in that session' — would be WRONG here: a world carries
+    its own `environment.space`, so a sibling built for another room would compose that room's walls on
+    top of the real ones. When a space's own history is spent, the answer is to build one BOUND to it."""
+    _world_in(srv, "elsewhere", "daniel/home")                    # a sibling in the same scope, other space
+    gone = _world_in(srv, "gallery", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               recent=[[srv.DEFAULT_SCOPE, gone]], last_scope=srv.DEFAULT_SCOPE, last_world=gone)
+    srv.worlds.delete(srv.DEFAULT_SCOPE, "gallery")
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                       "user": "daniel", "cid": "hs-bound"})
+    assert _wname(srv) != "elsewhere"                             # did NOT reach sideways
+    # …and what it DID open is bound to the room you are standing in — which is the whole reason a
+    # sibling from the same session is the wrong candidate, however consistent it would look.
+    assert (srv.active_space_owner, srv.active_space) == ("daniel", "office")
+
+
+def test_the_history_records_what_was_open_and_caps(srv, client):
+    from conjure.world import _MRU_CAP
+    _geo_space(srv, "daniel", "home", 37.77, -122.42)
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
+                                       "user": "daniel", "cid": "hs-rec"})
+    for i in range(_MRU_CAP + 3):
+        client.post("/worlds/new", json={"scope": srv.DEFAULT_SCOPE, "name": f"w{i}"})
+    srv._save_active()
+    recent = srv.spaces.load("daniel", "home").get("recent") or []
+    assert 0 < len(recent) <= _MRU_CAP
+    assert recent[0] == [srv.active_scope, srv.active_world]      # newest first, and it is where we are
+
+
+# -- being moved by the room is announced ---------------------------------------------------------
+
+def test_a_room_match_that_relocates_you_says_so(srv, client, monkeypatch):
+    """Decision #20 made a room-driven AGENT change audible. A relocation within the SAME agent — restart
+    the server in a different room — stayed silent, which is the same surprise minus the attribution."""
+    said = []
+
+    async def spy(msg):
+        if msg.get("type") == "notice":
+            said.append(msg["text"])
+
+    wid = _world_in(srv, "office-world", "daniel/office")
+    _geo_space(srv, "daniel", "office", 40.71, -74.0,
+               recent=[[srv.DEFAULT_SCOPE, wid]], last_scope=srv.DEFAULT_SCOPE, last_world=wid)
+    monkeypatch.setattr(srv, "_broadcast", spy)
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "office",
+                                       "user": "daniel", "cid": "hs-move"})
+    assert any("daniel/office" in t and "office-world" in t for t in said), said
+
+
+def test_being_admitted_to_the_room_you_are_already_in_says_nothing(srv, client, monkeypatch):
+    """No relocation, no announcement — otherwise every headset reconnect narrates itself."""
+    said = []
+
+    async def spy(msg):
+        if msg.get("type") == "notice":
+            said.append(msg["text"])
+
+    _geo_space(srv, "daniel", "home", 37.77, -122.42,
+               recent=[[srv.active_scope, srv.active_world]],
+               last_scope=srv.active_scope, last_world=srv.active_world)
+    monkeypatch.setattr(srv, "_broadcast", spy)
+    client.post("/space/select", json={"matched": True, "owner": "daniel", "name": "home",
+                                       "user": "daniel", "cid": "hs-same"})
+    assert not any("now — opened" in t for t in said), said
