@@ -304,10 +304,21 @@ teleporting on release and snapping back on reload:
   wall-relative anchor — two descriptions of the pose that disagree, in a message where one is supposed
   to be the conversion of the other.
 
-**In a room-less world the raw pose IS the pose.** That is not a degraded path but the correct one, and
-the server enforces it: `/manipulate` refuses to store `meta.anchor` while the live space is `<void>`
-(a plane-relative anchor names surfaces that do not exist there). The guard is what keeps a client-side
-basis fault local to that client instead of persisting it for every client and every reload.
+**A room-less world still has a frame — just not a plane-relative one.** Absent a basis, the commit falls
+back to the entity's pose *local to `#world-root`*, not to its scene-space pose. In a void world those
+differ: world-root is parked at `Tmat⁻¹` (§2, item 4), so the world-root-local pose already **is** F_ref
+and needs no per-entity conversion. The fallback is correct *because of* the canonical parking, not in
+the absence of a frame — read it as "no frame here" and the obvious simplification (commit the world
+pose) is wrong by exactly the registration transform.
+
+So the two mechanisms are orthogonal, and a void world uses the second: a **plane-relative anchor**
+converts per entity against walls, while the **canonical frame** converts everything at once via the
+scene graph. That is also why a void world's skybox and content hold a consistent space-relative heading
+across visits despite the world composing no geometry.
+
+The server enforces which one applies: `/manipulate` refuses to store `meta.anchor` while the live space
+is `<void>`, since a plane-relative anchor names surfaces that do not exist there. The guard keeps a
+client-side basis fault local to that client instead of persisting it for every client and every reload.
 
 ### 5.5 Avatars
 
