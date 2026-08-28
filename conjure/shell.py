@@ -13,7 +13,10 @@ agent. While *in* an agent, only input led by the `conjure` wake word is taken a
 **Two audiences, one registry.** Voice is live in the simulation with no screen; the CLI has a terminal.
 Rather than two command sets that would drift, every row carries a `voice` flag: voice-safe commands are
 the modal/navigational ones whose output is speakable ("where am I", "go to the meadow", "new session"),
-while the namespace commands — listings, paths, deletion — are CLI-only and refuse politely by voice.
+plus the *whole-name* listings (`spaces`, `users`) that answer a question rather than dump a tree. What
+stays CLI-only is anything whose value is a **path** — `dir`, `show`, `cd`, `rename`, `delete` — because
+a path read aloud is noise and typing one is the point. `reset agent` is voice-safe but **confirmed**:
+destructive by voice needs a second utterance, since the first may be a mis-hearing.
 
 **Two shapes of command.** A *noun* command acts on the thing that is LIVE (`world meadow`, `session new`),
 and reads the same spoken or typed. A *path* command acts on anything addressable (`dir`, `show`, `cd`,
@@ -114,6 +117,11 @@ def unquote_arg(arg: str) -> str:
     return arg
 
 
+# How long a spoken `reset agent` stays armed. Long enough to think about it, short enough that a "yes"
+# meant for something else — or for a question asked minutes later — can't reach back and fire it.
+_CONFIRM_TTL = 60.0
+
+
 def loc_name(path: str) -> str:
     """The last segment of a path — the entry's own name."""
     return (path or "").rstrip("/").rsplit("/", 1)[-1]
@@ -148,16 +156,21 @@ def _join_spoken(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def spoken_list(noun: str, labels: list[str], *, current: str = "", here: str = "You're in") -> str:
+def spoken_list(noun: str, labels: list[str], *, current: str = "", here: str = "You're in",
+                sole: str = "and you're in it") -> str:
     """A listing as one speakable sentence: *"3 agents: builder, outdoor and scratch. You're in builder."*
 
     `current` replaces the visual marker with words — the one piece of information the markers carried
-    and the one a listener otherwise loses. Empty lists say so plainly rather than reading "(none)"."""
+    and the one a listener otherwise loses. Empty lists say so plainly rather than reading "(none)".
+
+    `here` and `sole` exist because "in" is not right for every noun: you are *standing in* a space and
+    you *are* a user, so both phrasings are the caller's to set. `sole` is the one-and-it's-yours case,
+    which otherwise reads "You're in Only one."."""
     if not labels:
         return f"No {noun}s here."
     n = len(labels)
     if n == 1 and current == labels[0]:
-        return f"One {noun}: {labels[0]}, and you're in it."     # …not "You're in Only one."
+        return f"One {noun}: {labels[0]}, {sole}."
     head = f"{n} {noun}{'' if n == 1 else 's'}: {_join_spoken(labels)}."
     return f"{head} {here} {current}." if current else head
 
@@ -197,6 +210,10 @@ class Shell:
         # (tests) leaves it None and clears in-memory only. `async (on_text) -> None`.
         self._clear_transcript_hook = None
         self._cwd = ""                   # this dispatch's working directory (per-connection; see _dispatch)
+        # An armed spoken `reset agent`: (who, agent, assets, monotonic-time). One slot, not per-user —
+        # arming a second reset should replace the first, and it carries WHO armed it so `_confirm`
+        # can refuse someone else's (§ _confirm).
+        self._pending_reset: Optional[tuple[str, str, bool, float]] = None
         # (matcher, handler, help, voice). First match wins; the unknown-command fallback is tried after,
         # in _dispatch. The handler is called as handler(on_text, match). Add a row to add a command.
         #
@@ -226,15 +243,17 @@ class Shell:
             (re.compile(r"^worlds$", re.I), self._worlds, "worlds — list this session's worlds", True),
             (re.compile(r"^world(?:\s+(?P<rest>\S.*))?$", re.I), self._world,
              "world [new] <name> — list, switch to, or create a world", True),
-            (re.compile(r"^spaces?$", re.I), self._spaces, "spaces — list your captured spaces", False),
-            (re.compile(r"^users?$", re.I), self._users, "users — everyone with a namespace here", False),
+            (re.compile(r"^spaces?$", re.I), self._spaces, "spaces — list your captured spaces", True),
+            (re.compile(r"^users?$", re.I), self._users, "users — everyone with a namespace here", True),
             (re.compile(r"^clear$", re.I), self._clear,
              "clear — wipe this session's chat history (keeps worlds and assets)", True),
             (re.compile(r"^reset\s+agent\s+(?P<name>[\w.-]+)(?P<assets>\s+(?:--)?assets)?$", re.I),
              self._reset_agent,
              "reset agent <name> [assets] — wipe an agent back to never-used (every session, its "
              "transcripts, state and worlds) so the next arrival is a genuine first run. Assets are "
-             "kept unless you say 'assets'", False),
+             "kept unless you say 'assets'. By voice it asks first — answer 'yes'", True),
+            (re.compile(r"^(?:yes|yeah|confirm|do it|go ahead)$", re.I), self._confirm,
+             "yes — confirm the reset just offered (voice; expires in a minute)", True),
 
             # -- paths: act on anything addressable
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
@@ -861,13 +880,49 @@ class Shell:
     async def _reset_agent(self, on_text, m) -> None:
         """`reset agent <name> [assets]` — a purge plus the pointer surgery that has to follow it.
 
-        Typed-only and deliberately not a `delete`: a reset is a *sequence*, and the sequence is the part
-        that is easy to get wrong. Resetting the agent you are in is the normal case — it is how you test
-        a first run — so the server re-enters it afterwards and you land on a genuine opening."""
+        Deliberately not a `delete`: a reset is a *sequence*, and the sequence is the part that is easy
+        to get wrong. Resetting the agent you are in is the normal case — it is how you test a first run
+        — so the server re-enters it afterwards and you land on a genuine opening.
+
+        **Typed runs immediately; spoken asks first.** Typing it is already a deliberate act. Speaking it
+        is one mis-hearing away from an accident, and the damage is unrecoverable, so by voice the first
+        utterance only *arms* it (`_confirm` fires it) — and the name is checked before arming, because a
+        garbled agent name is the likeliest way for this to go wrong."""
         if not self._permitted:                               # destructive + shared-effect (§6d)
             await self._say(on_text, "This session is private — you can't reset an agent here.")
             return
         name, assets = m.group("name"), bool(m.group("assets"))
+        if self._voice:
+            known = self._agent_names()
+            match = next((a for a in known if a.lower() == name.lower()), None)
+            if not match:
+                await self._say(on_text, f"There's no agent called {name}. "
+                                         f"{spoken_list('agent', known, here='')}")
+                return
+            self._pending_reset = (self._acting, match, assets, time.monotonic())
+            extra = " and its generated images" if assets else ", keeping its images"
+            await self._say(on_text, f"That wipes every session, transcript, world and memory "
+                                     f"{match} has{extra}. It can't be undone. Say yes to confirm.")
+            return
+        await self._run_reset(on_text, name, assets)
+
+    async def _confirm(self, on_text, m=None) -> None:
+        """`yes` — fire the reset `_reset_agent` armed. Expires, and is bound to the speaker who armed
+        it: a stray "yes" a minute later, or from someone else in the room, must not destroy anything."""
+        pending, self._pending_reset = self._pending_reset, None
+        if not pending:
+            await self._say(on_text, "Nothing to confirm.")
+            return
+        who, name, assets, at = pending
+        if who != self._acting:
+            await self._say(on_text, f"That reset was {who}'s to confirm.")
+            return
+        if time.monotonic() - at > _CONFIRM_TTL:
+            await self._say(on_text, f"That's expired — say 'reset agent {name}' again.")
+            return
+        await self._run_reset(on_text, name, assets)
+
+    async def _run_reset(self, on_text, name: str, assets: bool) -> None:
         data = await self._session_api("POST", "/agent/reset",
                                        user=self._acting, agent=name, assets=assets)
         if not data.get("ok"):
@@ -910,14 +965,21 @@ class Shell:
         await self._say(on_text, msg if data.get("ok") else data.get("error", "error"))
 
     async def _spaces(self, on_text, m=None):
-        await self._dir_at(on_text, f"/{self._acting}/spaces")
+        # "You're standing in the living room" — a space is a real place you are physically inside, and
+        # that is the fact a listener wants back. The row's own `active` flag supplies which one.
+        await self._dir_at(on_text, f"/{self._acting}/spaces",
+                           here="You're standing in", sole="and you're standing in it")
 
     async def _users(self, on_text, m=None):
-        await self._dir_at(on_text, "/")
+        # `current` is the SPEAKER, not the row marked active. The marker tracks whichever user the world
+        # server last acted for; spoken back as "You're …" that would be a lie to a guest, and the guest
+        # is exactly who needs to hear it right. The terminal keeps the marker, which is honest there.
+        await self._dir_at(on_text, "/", noun="user", current=self._acting,
+                           here="You're", sole="and that's you")
 
-    async def _dir_at(self, on_text, path: str) -> None:
+    async def _dir_at(self, on_text, path: str, **voice) -> None:
         data = await self._admin("tree", path)
-        await self._say(on_text, self._render_listing(data) if data.get("ok")
+        await self._say(on_text, self._render_listing(data, **voice) if data.get("ok")
                         else data.get("error", "error"))
 
     # ----------------------------------------------------------------- helpers
@@ -938,17 +1000,25 @@ class Shell:
         except Exception as exc:                              # network / server down / bad JSON
             return {"ok": False, "error": f"admin request failed: {exc}"}
 
-    def _render_listing(self, data: dict) -> str:
+    def _render_listing(self, data: dict, *, noun: str = "", current: str = "",
+                        here: str = "You're in", sole: str = "and you're in it") -> str:
         """One line per entry, columns aligned. Deliberately NOT a tree: the recursive form dumped every
-        world, space and asset of every user at the root, which is unreadable at any real size."""
+        world, space and asset of every user at the root, which is unreadable at any real size.
+
+        The keyword arguments are the **voice** rendering only — a caller that knows what it is listing
+        can name the noun and phrase the "you are here" clause; the terminal form ignores them."""
         rows = data.get("children") or []
         if self._voice:
             # A path read aloud is noise, and so is the per-row detail; the names are the answer. The
             # `*` on the active row would be stripped before it was ever spoken, so it becomes words.
             labels = [c["label"] for c in rows]
-            current = next((c["label"] for c in rows if c.get("active")), "")
-            noun = loc_name(data.get("path", "")) or "entry"
-            return spoken_list(noun.rstrip("s") or "entry", labels, current=current)
+            if not current:
+                current = next((c["label"] for c in rows if c.get("active")), "")
+            # Path-derived nouns are the plural of the thing ("spaces", "worlds"), so drop the s. The
+            # fallback is "item", not "entry": `spoken_list` pluralises by appending one, and "entrys"
+            # is the sort of thing that only shows up once a listener hears it.
+            noun = noun or loc_name(data.get("path", "")).rstrip("s") or "item"
+            return spoken_list(noun, labels, current=current, here=here, sole=sole)
         head = display_path(data.get("path", "/"), self._acting)
         if data.get("path") != data.get("requested", data.get("path")):
             head += f"   (→ {data['path']})"

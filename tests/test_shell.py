@@ -773,9 +773,10 @@ def test_every_row_declares_whether_it_is_voice_safe():
     sh, d, out, on_text = _shell()
     voice = {h.split()[0] for _, _, h, v in sh._table if v}
     cli = {h.split()[0] for _, _, h, v in sh._table if not v}
-    # Voice gets the modal/navigational verbs — the ones that make sense with no screen.
-    assert {"agent", "llm", "session", "world", "where", "clear"} <= voice
-    # The namespace verbs need a screen (or shouldn't be spoken at all).
+    # Voice gets the modal/navigational verbs — the ones that make sense with no screen — plus the
+    # whole-name listings, which answer a question rather than dump a tree.
+    assert {"agent", "llm", "session", "world", "where", "clear", "spaces", "users", "reset"} <= voice
+    # What stays CLI-only is what takes or prints a PATH: unspeakable to say, unusable to hear.
     assert {"dir", "show", "cd", "delete", "rename"} <= cli
     assert not (voice & cli), "a command is either speakable or it isn't"
 
@@ -864,3 +865,129 @@ def test_the_wake_pattern_is_built_from_the_configured_list():
     assert rx.match("abra open shell").group("rest") == "open shell"
     assert rx.match("cadabra, where").group("rest") == "where"        # comma optional — STT rarely punctuates
     assert rx.match("conjure where") is None                          # not in this list
+
+
+# --------------------------------------------------------------------------- spaces / users / reset by voice
+#
+# These three were CLI-only. `spaces` and `users` answer a question rather than dump a tree, so they read
+# fine aloud — but only once the noun and the "you are here" clause fit what is being listed. `reset` is
+# destructive, so by voice it is armed and then confirmed.
+
+async def test_spaces_are_places_you_stand_in_not_things_you_are_in():
+    sh, out, on_text, calls = _admin_shell(lambda a, p: _listing(
+        p, {"label": "living room", "kind": "space", "active": True},
+           {"label": "studio", "kind": "space"}))
+    await sh._dispatch("spaces", on_text, voice=True)
+    assert out[-1][1] == "2 spaces: living room and studio. You're standing in living room."
+    assert calls == [("tree", "/daniel/spaces")]
+
+
+async def test_one_space_and_you_are_in_it_reads_as_a_sentence():
+    sh, out, on_text, calls = _admin_shell(lambda a, p: _listing(
+        p, {"label": "home", "kind": "space", "active": True}))
+    await sh._dispatch("spaces", on_text, voice=True)
+    assert out[-1][1] == "One space: home, and you're standing in it."
+
+
+async def test_a_space_you_are_not_in_makes_no_claim():
+    """Outdoors or in a void world there is no active row — saying nothing beats guessing."""
+    sh, out, on_text, calls = _admin_shell(lambda a, p: _listing(p, {"label": "home", "kind": "space"}))
+    await sh._dispatch("spaces", on_text, voice=True)
+    assert out[-1][1] == "1 space: home."
+
+
+async def test_users_are_named_and_you_are_told_which_one_you_are():
+    """The path is "/", whose last segment is empty — the generic noun would have said "2 entrys"."""
+    sh, out, on_text, calls = _admin_shell(lambda a, p: _listing(
+        p, {"label": "daniel", "kind": "user", "active": True}, {"label": "guest", "kind": "user"}))
+    await sh._dispatch("users", on_text, voice=True)
+    assert out[-1][1] == "2 users: daniel and guest. You're daniel."
+
+
+async def test_the_spoken_user_is_the_SPEAKER_not_the_marked_row():
+    """The active marker tracks whoever the world server last acted for. Read back as "You're …" to a
+    guest that is simply false, and a guest is exactly who needs it right."""
+    sh, out, on_text, calls = _admin_shell(lambda a, p: _listing(
+        p, {"label": "daniel", "kind": "user", "active": True}, {"label": "guest", "kind": "user"}))
+    await sh._dispatch("users", on_text, voice=True, speaker="guest")
+    assert out[-1][1].endswith("You're guest.")
+
+
+async def test_the_terminal_listing_is_untouched_by_the_voice_phrasing():
+    sh, out, on_text, calls = _admin_shell(lambda a, p: _listing(
+        p, {"label": "living room", "kind": "space", "active": True}))
+    await sh._dispatch("spaces", on_text)                    # no voice= → terminal
+    assert "living room" in out[-1][1] and "You're standing in" not in out[-1][1]
+
+
+# -- reset: armed, then confirmed -----------------------------------------------------------------
+
+def _reset_shell():
+    sh, out, on_text, calls = _session_shell(
+        lambda mth, p, kw: {"ok": True, "sessions": 3, "world": "default"})
+    sh.in_shell = True
+    return sh, out, on_text, calls
+
+
+async def test_a_spoken_reset_asks_before_it_wipes_anything():
+    sh, out, on_text, calls = _reset_shell()
+    await sh._dispatch("reset agent builder", on_text, voice=True)
+    assert calls == []                                       # nothing was destroyed yet
+    said = out[-1][1]
+    assert "can't be undone" in said and "yes" in said.lower() and "builder" in said
+
+
+async def test_yes_fires_the_armed_reset():
+    sh, out, on_text, calls = _reset_shell()
+    await sh._dispatch("reset agent builder", on_text, voice=True)
+    await sh._dispatch("yes", on_text, voice=True)
+    assert [c[1] for c in calls] == ["/agent/reset"]
+    assert calls[0][2]["agent"] == "builder" and calls[0][2]["assets"] is False
+
+
+async def test_a_stray_yes_destroys_nothing():
+    sh, out, on_text, calls = _reset_shell()
+    await sh._dispatch("yes", on_text, voice=True)
+    assert calls == [] and "Nothing to confirm" in out[-1][1]
+
+
+async def test_confirming_twice_does_not_reset_twice():
+    """The armed reset is consumed by the first `yes`, so a repeated or echoed one is inert."""
+    sh, out, on_text, calls = _reset_shell()
+    await sh._dispatch("reset agent builder", on_text, voice=True)
+    await sh._dispatch("yes", on_text, voice=True)
+    await sh._dispatch("yes", on_text, voice=True)
+    assert len(calls) == 1
+
+
+async def test_an_expired_confirmation_is_refused_and_says_how_to_retry():
+    import conjure.shell as sm
+    sh, out, on_text, calls = _reset_shell()
+    await sh._dispatch("reset agent builder", on_text, voice=True)
+    who, name, assets, at = sh._pending_reset
+    sh._pending_reset = (who, name, assets, at - sm._CONFIRM_TTL - 1)
+    await sh._dispatch("yes", on_text, voice=True)
+    assert calls == [] and "expired" in out[-1][1] and "reset agent builder" in out[-1][1]
+
+
+async def test_someone_else_cannot_confirm_your_reset():
+    sh, out, on_text, calls = _reset_shell()
+    await sh._dispatch("reset agent builder", on_text, voice=True)
+    await sh._dispatch("yes", on_text, voice=True, speaker="guest")
+    assert calls == [] and "daniel's to confirm" in out[-1][1]
+
+
+async def test_a_misheard_agent_name_is_caught_before_arming():
+    """STT mangling a name is the likeliest way this goes wrong, and the server would only say 'no such
+    agent' AFTER a confirmation. Check first, and name the real ones."""
+    sh, out, on_text, calls = _reset_shell()
+    await sh._dispatch("reset agent bilder", on_text, voice=True)
+    assert sh._pending_reset is None and calls == []
+    assert "no agent called bilder" in out[-1][1] and "builder" in out[-1][1]
+
+
+async def test_typing_the_reset_still_runs_it_immediately():
+    """Typing is already deliberate; a confirmation prompt in a terminal is friction for its own sake."""
+    sh, out, on_text, calls = _reset_shell()
+    await sh.feed("reset agent builder", on_text=on_text)
+    assert [c[1] for c in calls] == ["/agent/reset"] and sh._pending_reset is None

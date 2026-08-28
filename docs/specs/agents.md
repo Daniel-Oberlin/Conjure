@@ -426,6 +426,11 @@ that would drift, every row of `Shell._table` carries a `voice` flag. A CLI-only
 voice refuses politely: *"'dir' is a terminal command — run it from the CLI."* The client declares
 itself with `?client=voice|cli`; the agent server passes `voice=(conn.kind == "voice")` into dispatch.
 
+The line the flag draws is **the path**, not danger or destructiveness. A command whose value is a path
+— `dir`, `show`, `cd`, `rename`, `delete` — is unspeakable to say and unusable to hear, so it stays
+typed. Everything addressed by a whole name is speakable, including the listings (`spaces`, `users`) and
+including a destructive one, which is confirmed instead of forbidden.
+
 Voice also gets spoken aliases for `llm <name>` — `talk to gemini`, `switch to claude`, `use grok`.
 These are **voice-only**: in text they would claim every LLM name as a reserved word, so the canonical
 typed form is the noun command.
@@ -441,9 +446,17 @@ So a listing is **data**, and rendering is per-audience (`spoken_list`, `_join_s
 | Command | Terminal | Voice |
 |---|---|---|
 | `agent` · `llm` · `sessions` · `worlds` | column, `*`/`@` marker, ids, detail | *"3 agents: builder, outdoor and scratch. You're in builder."* |
+| `spaces` | column with surface counts, geo and visibility | *"2 spaces: living room and studio. You're standing in living room."* |
+| `users` | column, `*` on the server's active user | *"2 users: daniel and guest. You're daniel."* |
 | `where` | `·`-separated status line with roster and tool counts | *"You're daniel, in the builder agent with Grok. Session Home, world animal-house. Agent mode."* |
 | `help` | every row, `·` marking the voice-safe ones | the verbs only — usage lines are `<name>`/`|`/`·` syntax noise, and `help <command>` still gives detail |
 | `dir`-style listing | path header, aligned columns | names only, current one named in words |
+
+**"In" is not right for every noun**, so `spoken_list` takes the phrasing from its caller: you are
+*standing in* a space and you *are* a user. `users` also departs from the marker deliberately — the `*`
+tracks whichever user the world server last acted for, and spoken back as *"You're …"* that would be a
+lie to a guest, who is exactly the listener who needs it right. So the terminal keeps the marker and the
+spoken form names the **speaker**; each is true for its own audience.
 
 The marker becomes a sentence: that is the one thing it carried, and the only thing a listener would
 otherwise lose. Ids (`session-1`, `wld_…`), paths, alignment and the legend explaining the markers are
@@ -470,8 +483,18 @@ on anything addressable. Nouns for the live thing, paths for any thing.
 | `sessions` · `session …` | list · `new [title]` · `rename <title>` · `<name>` · `<user> <name>` | ✓ |
 | `worlds` · `world [new] <name>` | list · switch · create and switch | ✓ |
 | `clear` | wipe this session's chat history (keeps worlds and assets) | ✓ |
-| `reset agent <name> [assets]` | wipe an agent back to **never-used** — every session, its transcript, state and worlds — so the next arrival is a genuine first run. Assets are kept unless asked for | — |
-| `spaces` · `users` | list your captured spaces · everyone with a namespace here | — |
+| `reset agent <name> [assets]` | wipe an agent back to **never-used** — every session, its transcript, state and worlds — so the next arrival is a genuine first run. Assets are kept unless asked for | ✓ (confirmed) |
+| `yes` | confirm the reset just offered | ✓ |
+| `spaces` · `users` | list your captured spaces · everyone with a namespace here | ✓ |
+
+**`reset agent` is the one confirmed command.** Typed, it runs at once — typing it is already a
+deliberate act, and a prompt in a terminal is friction for its own sake. **Spoken, the first utterance
+only arms it**: the shell names what will be destroyed and waits for `yes`. Three properties make the
+confirmation worth having rather than ceremonial — the agent name is checked against the search path
+*before* arming, since a garbled name is the likeliest way this goes wrong and the server would
+otherwise only object after the confirmation; the armed reset carries **who** armed it, so another
+speaker's `yes` is refused; and it **expires** (60s), so a `yes` meant for something else cannot reach
+back and fire it. The first `yes` consumes it, so an echo is inert.
 
 | Path command | Effect | Voice |
 |---|---|:--:|
