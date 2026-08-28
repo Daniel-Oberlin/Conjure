@@ -538,3 +538,28 @@ async def test_post_patch_raises_owner_only_on_403(monkeypatch):
         403, json={"ok": False, "error": "This world belongs to daniel; only the owner can change it."}))
     with pytest.raises(PermissionError, match="belongs to daniel"):
         await m._post_patch([{"op": "add", "entity": {"id": "x"}}])
+
+
+# --------------------------------------------------------------------------- result phrasing
+#
+# Tool results are read by a MODEL, not a person. "Surface edges on." is verbless, imperative-shaped
+# English — a result that reads like an instruction is one the model can satisfy by calling the tool
+# again. Suspected contributor to the 2026-08-28 repeat loop (docs/backlogs/agents.md).
+
+@respx.mock
+async def test_toggle_results_report_a_state_rather_than_naming_an_action(monkeypatch):
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
+    for tool, kwargs in (("show_edges", {}), ("show_annotations", {}), ("set_immersion", {"mode": "ar"})):
+        out = await _tool(tool)(**kwargs)
+        assert " is now " in out or " are now " in out, f"{tool} returned {out!r}"
+
+
+@respx.mock
+async def test_a_toggle_result_still_says_which_way_it_went(monkeypatch):
+    """Unambiguous is not the same as vague — the model has to be able to read the new state off it."""
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 1}))
+    assert await _tool("show_edges")(on=True) == "Surface edges are now on."
+    assert await _tool("show_edges")(on=False) == "Surface edges are now off."
+    assert "with dimensions" in await _tool("show_annotations")(on=True, dimensions=True)

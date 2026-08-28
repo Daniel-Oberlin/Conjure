@@ -423,6 +423,15 @@ Two distinct model failures in one turn, worth separating:
 executing it, and `MAX_TOOL_HOPS` ends the turn audibly. A stuck model can no longer take the server
 with it, and the client stops seeing patch churn.
 
+**Phrasing tightened (2026-08-28):** four tool results were verbless headlines — `"Surface edges on."`,
+`"Surface annotations on."`, `"Immersion set to ar."`, `"Reset to an empty holodeck…"` — which is
+imperative-shaped English. A result a model can read as *an instruction to do the thing* is one it can
+satisfy by calling the tool again. They now report state (`"Surface edges are now on."`), matching the
+`is now` pattern the visibility tools already used. **This is a suspected contributor, not a proven
+cause** — the log shows one hop (06:36:39) where both tools ran and both succeeded, and it kept looping
+anyway, which points at plain pattern lock-in rather than any misreading. The phrasing costs nothing
+either way; the guards are what actually contain it.
+
 **What is still open:** why Grok does this at all. Same family as the "couch" hallucination and the
 re-query papercut above — assert-one-thing-do-another — and the same soft fix probably applies (a prompt
 guardrail: *a tool result that says it succeeded means it succeeded; do not call it again*). Worth

@@ -10,6 +10,13 @@ Needs the world server running (default http://localhost:8080, override CONJURE_
 
 Phase-1 scope: primitive entities + basic environment, matching the current client
 renderer. `place_asset` / generation arrive with the asset pipeline (Phase 3).
+
+**Result strings are read by a model, not a person.** They must state a *fact about the world*, never
+a headline that could be read as an instruction: "Surface edges are now on", not "Surface edges on."
+The verbless form is imperative-shaped English, and a tool result that reads like a command is a
+result the model can answer by running the tool again. Suspected contributor to the 2026-08-28
+repeat loop (docs/backlogs/agents.md); unproven, but the phrasing costs nothing either way.
+`"<thing>' is now <state>."` is the house pattern.
 """
 
 from __future__ import annotations
@@ -330,7 +337,7 @@ async def set_immersion(mode: str) -> str:
     if env is None:
         return f"Unknown mode {mode!r}. Use one of: {', '.join(_IMMERSION)}."
     await _post_patch([{"op": "env", "set": dict(env)}])
-    return f"Immersion set to {mode}."
+    return f"Immersion is now {mode}."
 
 
 @mcp.tool()
@@ -352,7 +359,7 @@ async def reset_world() -> str:
     out = await _post("/reset", {})
     if not out.get("ok"):
         return f"Couldn't reset: {out.get('error', 'unknown error')}."
-    return "Reset to an empty holodeck — ready to build again."
+    return "The world has been reset to an empty holodeck — ready to build again."
 
 
 @mcp.tool()
@@ -410,7 +417,7 @@ async def show_annotations(on: bool = True, dimensions: bool = False) -> str:
     inspect/identify surfaces. dimensions: also show each surface's size (default off; turn on only if
     the user asks for sizes)."""
     await _post_patch([{"op": "env", "set": {"spacePresentation.annotations": on, "spacePresentation.annotationDims": dimensions}}])
-    return f"Surface annotations {'on' if on else 'off'}{' with dimensions' if (on and dimensions) else ''}."
+    return f"Surface annotations are now {'on' if on else 'off'}{' with dimensions' if (on and dimensions) else ''}."
 
 
 @mcp.tool()
@@ -434,7 +441,7 @@ async def show_edges(on: bool = True) -> str:
     """Show or hide the polygon outline drawn around every room surface (the bright wireframe of the
     real room). Edges are ON by default; turn them off for a cleaner passthrough view."""
     await _post_patch([{"op": "env", "set": {"spacePresentation.edgesVisible": on}}])
-    return f"Surface edges {'on' if on else 'off'}."
+    return f"Surface edges are now {'on' if on else 'off'}."
 
 
 @mcp.tool()
