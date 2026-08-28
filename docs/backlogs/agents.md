@@ -402,6 +402,50 @@ a valid `style_surface` target. Both are soft (prompt-level).
 and noisy (recapture never touches `material.color`, so not the couch cause); may be amplified by the
 shared-room layer in the multi-world code. Worth watching.
 
+## Grok narrates one tool and calls another, then loops on it
+
+**Status:** contained 2026-08-28 · noticed 2026-08-28 (erotic agent, Grok) · **model behaviour, not ours**
+
+**Symptom:** "Annotations and Surface Edges" → the director said *"show_annotations with on is true"* and
+called `show_edges({"on": true})`. Then said and did exactly the same thing again. Forty-plus times, one
+patch broadcast per hop, until the server was killed by hand.
+
+Two distinct model failures in one turn, worth separating:
+
+1. **The spoken text names a different tool than the call.** It had already called
+   `show_annotations({"on": true})` correctly one hop earlier, so it *can*; it then narrated that call
+   while emitting a different one. This is raw tool-name confusion, and it is what made the log look
+   like `show_annotations` was the thing looping when it never ran again.
+2. **It never converged.** Every `Surface edges on.` result was answered with the identical call.
+
+**What was fixed:** the *containment*, not the cause — the turn is now bounded twice over
+([specs/agents.md §5.6](../specs/agents.md)): the repeat guard refuses the third identical call without
+executing it, and `MAX_TOOL_HOPS` ends the turn audibly. A stuck model can no longer take the server
+with it, and the client stops seeing patch churn.
+
+**What is still open:** why Grok does this at all. Same family as the "couch" hallucination and the
+re-query papercut above — assert-one-thing-do-another — and the same soft fix probably applies (a prompt
+guardrail: *a tool result that says it succeeded means it succeeded; do not call it again*). Worth
+checking whether it correlates with the two failed `generate_image` calls immediately before it, since a
+model that has just been refused twice may be in a retry mood. Grok is the only model observed doing it;
+the guard is provider-neutral regardless.
+
+## Sticky tool arguments across turns (Grok)
+
+**Status:** open · noticed 2026-08-28
+
+Asked for a transparent-background image "using Gemini", the director correctly passed
+`transparent: true, generator: "Gemini"` — a combination our mediation refuses, since Gemini has no
+alpha. The user then asked again **without mentioning transparency**, and the model sent
+`transparent: true` a second time, so it failed identically. It had carried the argument from the
+previous turn rather than deriving it from what was asked.
+
+The refusal text now names both ways out by name (*"Use Chat for transparency. Or drop transparent to
+keep Gemini."*) instead of the old *"omit the generator or pick one that can"*, which the model never
+acted on — it dropped the request entirely and changed the subject. Whether a more actionable error is
+enough to break the stickiness is unverified; if not, the next lever is a prompt line telling the
+director to re-derive image arguments from the current utterance.
+
 ## Director re-queries for ids it already has in context
 
 **Status:** open · noticed 2026-06-25 during live director testing

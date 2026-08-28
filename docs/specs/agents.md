@@ -359,6 +359,31 @@ Some tools are dispatched **in-process** rather than over MCP (`_local_tools` + 
 `_execute_tool`). Today that is exactly the generic agent-state store (§7.4): offered only when the
 agent declares a `state` block, and added to `_allowed_tools` so the Layer-1 re-check passes.
 
+### 5.6 Bounding the turn
+
+A turn is a loop — run the tools the model asked for, feed the results back, ask again — and **nothing
+in any vendor's protocol makes it terminate**. A model can answer every tool result with the same call
+forever; each hop is an API call and a patch broadcast to every connected client. Two independent
+limits, deliberately at different levels:
+
+- **The repeat guard** (`Director`, `REPEAT_LIMIT = 2`) is per turn and keys on the tool name *and* its
+  arguments. The first two identical calls run; from the third the Director **does not execute** and
+  returns an error-shaped result naming the loop and telling the model to reply. Two is the largest
+  count that is still obviously legitimate — read, edit, read again — and the argument key means "style
+  surface 12, then 13" is progress, not repetition. The refusal is logged `REPEAT`.
+- **The hop cap** (`llm.MAX_TOOL_HOPS = 24`) bounds the round trips in every provider loop, for a model
+  that loops while *varying* its arguments enough to slip past the guard. On the cap the turn ends with
+  `HOP_LIMIT_NOTICE` emitted `final=True` — so it is spoken, and lands in the transcript where the next
+  turn's history shows the model its own failure instead of an unexplained gap.
+
+The order matters: the guard cuts the common pathology early and **without executing anything**, so the
+world stops changing the moment the loop is detected; the cap is the backstop that guarantees the turn
+ends at all. Neither shortens real work — the cap is far above any real build turn, and the guard only
+ever refuses a call whose exact result the model already has.
+
+> Why not simply end the turn on a repeat? Because the user is waiting for a reply. Handing back a
+> result lets the model read its way out and answer; cutting it off produces silence.
+
 ---
 
 ## 6. The shell

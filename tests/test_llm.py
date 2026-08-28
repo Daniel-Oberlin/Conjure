@@ -3,6 +3,8 @@ registry. No network: anthropic/genai clients are monkeypatched."""
 
 from conjure.config import Settings
 from conjure.llm import (
+    HOP_LIMIT_NOTICE,
+    MAX_TOOL_HOPS,
     ClaudeLLM,
     GeminiLLM,
     GrokImageGenerator,
@@ -330,6 +332,25 @@ def test_requested_generator_lacking_capability_errors():
     assert gen is None and "transparency" in err.lower()
 
 
+def test_a_refusal_names_the_generator_that_can_do_it():
+    """Observed 2026-08-28: asked for a transparent image "using Gemini", the director got back
+    "omit the generator or pick one that can", never worked out *which* one could, and gave up on the
+    request entirely. A refusal has to carry its own next step — both ways out, by name."""
+    reg = _registry(google_api_key="g", openai_api_key="o")
+    _, err = select_generator(reg, "generate", requested="Gemini", transparent=True)
+    assert "Chat" in err            # the one that CAN — otherwise the caller is guessing
+    assert "Gemini" in err          # and the one it keeps by dropping transparency instead
+    _, err = select_generator(reg, "outpaint", requested="Chat")
+    assert "Gemini" in err
+
+
+def test_a_refusal_says_so_plainly_when_nothing_can_do_it():
+    """Naming an alternative that doesn't exist would send the caller round a second useless loop."""
+    reg = _registry(google_api_key="g")           # Gemini only — nothing can do transparency
+    _, err = select_generator(reg, "generate", requested="Gemini", transparent=True)
+    assert "No configured generator" in err
+
+
 def test_requested_unknown_generator_errors():
     reg = _registry(google_api_key="g")
     gen, err = select_generator(reg, "generate", requested="Nope")
@@ -353,6 +374,152 @@ def test_request_accepts_vendor_alias():
     reg = _registry(google_api_key="g", openai_api_key="o")
     assert select_generator(reg, "generate", requested="OpenAI")[0].name == "Chat"
     assert select_generator(reg, "edit", requested="google")[0].name == "Gemini"
+
+
+# --------------------------------------------------------------------------- the hop cap
+#
+# Every director loop feeds tool results back and asks again. Nothing in any vendor's protocol says the
+# model ever stops: observed 2026-08-28, Grok answered every `show_edges` result with the same call
+# again, 40+ times, each hop an API call and a patch broadcast to every client, until the server was
+# killed by hand. These tests pin the backstop in all three loops — a stuck model must end the turn,
+# not the process.
+
+async def _never_stops_openai(monkeypatch):
+    """An SDK stand-in that answers every request with the same tool call, forever."""
+    import openai
+
+    hops = {"n": 0}
+
+    class _Chat:
+        async def create(self, **kw):
+            hops["n"] += 1
+            return _oa_resp(None, [_oa_tc(f"c{hops['n']}", "show_edges", '{"on": true}')])
+
+    monkeypatch.setattr(openai, "AsyncOpenAI",
+                        lambda **kw: type("Cl", (), {"chat": type("C", (), {"completions": _Chat()})()})())
+    return hops
+
+
+async def test_a_model_that_never_stops_calling_tools_ends_the_turn(monkeypatch):
+    hops = await _never_stops_openai(monkeypatch)
+    emitted, executed = [], []
+
+    async def emit(t, *, final): emitted.append((final, t))
+
+    async def execute_tool(name, args): executed.append(name); return "Surface edges on."
+
+    out = await GrokLLM("Grok", "key", "grok-4").run_turn(
+        system="SYS", history=[], user_text="annotations and edges",
+        tools=[ToolSpec("show_edges", "edges", {"type": "object"})],
+        execute_tool=execute_tool, emit=emit,
+    )
+    assert hops["n"] == MAX_TOOL_HOPS          # bounded — without the cap this test never returns
+    assert len(executed) == MAX_TOOL_HOPS
+    assert out == HOP_LIMIT_NOTICE             # and the turn RESOLVES rather than dying silently
+
+
+async def test_hitting_the_cap_is_audible_and_recorded(monkeypatch):
+    """The notice is emitted final=True, so it reaches the user's ears AND lands in the transcript —
+    which is what shows the model its own failure on the next turn instead of an unexplained gap."""
+    await _never_stops_openai(monkeypatch)
+    emitted = []
+
+    async def emit(t, *, final): emitted.append((final, t))
+
+    async def execute_tool(name, args): return "ok"
+
+    out = await GrokLLM("Grok", "key", "grok-4").run_turn(
+        system="SYS", history=[], user_text="go",
+        tools=[ToolSpec("show_edges", "edges", {"type": "object"})],
+        execute_tool=execute_tool, emit=emit,
+    )
+    assert emitted[-1] == (True, HOP_LIMIT_NOTICE) and out == HOP_LIMIT_NOTICE
+
+
+async def test_the_claude_loop_is_bounded_too(monkeypatch):
+    """Three loops, one constant — a cap on only the provider that misbehaved would be a patch."""
+    import anthropic
+
+    hops = {"n": 0}
+
+    class _Msgs:
+        async def create(self, **kw):
+            hops["n"] += 1
+            return type("R", (), {"content": [
+                _blk("tool_use", id=f"t{hops['n']}", name="show_edges", input={"on": True})]})()
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic",
+                        lambda **kw: type("C", (), {"messages": _Msgs()})())
+
+    async def emit(t, *, final): ...
+
+    async def execute_tool(name, args): return "ok"
+
+    out = await ClaudeLLM("Claude", "key", "claude-x").run_turn(
+        system="SYS", history=[], user_text="go",
+        tools=[ToolSpec("show_edges", "edges", {"type": "object"})],
+        execute_tool=execute_tool, emit=emit,
+    )
+    assert hops["n"] == MAX_TOOL_HOPS and out == HOP_LIMIT_NOTICE
+
+
+async def test_the_gemini_loop_is_bounded_too(monkeypatch):
+    from google import genai
+
+    hops = {"n": 0}
+    fc = type("FC", (), {"name": "show_edges", "args": {"on": True}})()
+
+    class _Models:
+        async def generate_content(self, **kw):
+            hops["n"] += 1
+            return _resp([_part(function_call=fc)])
+
+    class _Client:
+        def __init__(self, **kw):
+            self.aio = type("Aio", (), {"models": _Models()})()
+
+    monkeypatch.setattr(genai, "Client", _Client)
+
+    async def emit(t, *, final): ...
+
+    async def execute_tool(name, args): return "ok"
+
+    out = await GeminiLLM("Gemini", "key", "gemini-x").run_turn(
+        system="SYS", history=[], user_text="go",
+        tools=[ToolSpec("show_edges", "edges", {"type": "object"})],
+        execute_tool=execute_tool, emit=emit,
+    )
+    assert hops["n"] == MAX_TOOL_HOPS and out == HOP_LIMIT_NOTICE
+
+
+async def test_a_turn_that_finishes_normally_is_untouched_by_the_cap(monkeypatch):
+    """The guard must not shorten real work: a two-hop turn still returns the model's own final text."""
+    import openai
+
+    responses = [
+        _oa_resp("On it", [_oa_tc("c1", "show_edges", '{"on": true}')]),
+        _oa_resp("Edges are on.", None),
+    ]
+    state = {"n": 0}
+
+    class _Chat:
+        async def create(self, **kw):
+            r = responses[state["n"]]; state["n"] += 1
+            return r
+
+    monkeypatch.setattr(openai, "AsyncOpenAI",
+                        lambda **kw: type("Cl", (), {"chat": type("C", (), {"completions": _Chat()})()})())
+
+    async def emit(t, *, final): ...
+
+    async def execute_tool(name, args): return "ok"
+
+    out = await GrokLLM("Grok", "key", "grok-4").run_turn(
+        system="SYS", history=[], user_text="edges please",
+        tools=[ToolSpec("show_edges", "edges", {"type": "object"})],
+        execute_tool=execute_tool, emit=emit,
+    )
+    assert out == "Edges are on."
 
 
 # --------------------------------------------------------------------------- OpenAI image gen (faked)

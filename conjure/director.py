@@ -43,6 +43,13 @@ OnText = Callable[..., Awaitable[None]]   # (text, *, final: bool, speaker: str)
 OnTool = Callable[..., Awaitable[None]]   # (name: str, args: dict) -> None
 
 
+# How many times one tool may be called with identical arguments inside a single turn before the
+# Director stops running it (docs/specs/agents.md §5.6). Two is the largest number that is still
+# obviously legitimate — read, edit, read again — and three identical calls in one turn is not
+# something a working turn does.
+REPEAT_LIMIT = 2
+
+
 class Busy(RuntimeError):
     """A turn was submitted while another is already in flight. The Director holds a **single floor**
     (docs/specs/agents.md §5.1, reject-while-busy): among people co-located in one room, concurrent speech
@@ -501,7 +508,22 @@ class Director:
             if on_text:
                 await on_text(t, final=final, speaker=self.active)
 
+        # Per-turn repeat guard (docs/specs/agents.md §5.6). A model that answers a tool result with the
+        # *identical* call is not making progress, and every hop re-broadcasts a patch to every client.
+        # The first two go through — a re-read around an edit is legitimate, and the world may have moved
+        # under it. From the third, refuse: don't execute, and hand back a result that names the loop, so
+        # the model reads its way out instead of being cut off mid-turn. `llm.MAX_TOOL_HOPS` is the
+        # backstop for a loop that varies its arguments enough to slip past this.
+        calls: dict[tuple[str, str], int] = {}
+
         async def execute(n, a):
+            key = (n, json.dumps(a, sort_keys=True, default=str))
+            calls[key] = calls.get(key, 0) + 1
+            if calls[key] > REPEAT_LIMIT:
+                await self._log(f"{who}/tool", f"REPEAT {n} — refused (call #{calls[key]}, identical args)")
+                return (f"error: you have already called {n} with these exact arguments "
+                        f"{calls[key] - 1} times in this turn and it is not being run again. "
+                        f"It already succeeded — stop calling it and reply to the user.")
             return await self._execute_tool(n, a, on_tool, who)
 
         system = await self._system()

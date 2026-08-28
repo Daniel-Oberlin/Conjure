@@ -235,6 +235,72 @@ async def test_director_logs_utterance_tool_calls_and_reply():
     assert any(t == "builder.claude" and "done" in m for t, m in events)                       # final reply
 
 
+# --------------------------------------------------------------------------- the repeat guard
+#
+# Observed 2026-08-28 (erotic/Grok): the model answered every `show_edges({"on": true})` result with the
+# identical call again — 40+ times, each one broadcasting a patch to every connected client — and only
+# stopped when the server was killed. `llm.MAX_TOOL_HOPS` bounds the turn; this guard cuts the specific
+# pathology far earlier, and without executing the repeat.
+
+class RepeatingLLM:
+    """Calls one tool with identical arguments `n` times in a single turn."""
+
+    def __init__(self, name, tool, args, n):
+        self.name, self.tool, self.args, self.n = name, tool, args, n
+        self.results: list[str] = []
+
+    async def run_turn(self, *, system, history, user_text, tools, execute_tool, emit):
+        for _ in range(self.n):
+            self.results.append(await execute_tool(self.tool, dict(self.args)))
+        await emit("done", final=True)
+        return "done"
+
+
+async def test_an_identical_repeated_tool_call_stops_being_executed():
+    llm = RepeatingLLM("Claude", "show_edges", {"on": True}, n=6)
+    d = _director(Claude=llm)
+    await d.handle("annotations and edges")
+    # Twice through — a read/edit/read pair is legitimate — then never again, however long it goes on.
+    assert d._session.calls == [("show_edges", {"on": True})] * 2
+    assert len(llm.results) == 6                       # every call still ANSWERED, so the turn can end
+
+
+async def test_the_refusal_tells_the_model_what_to_do_instead():
+    """Cutting the model off mid-turn would leave the user with silence. Handing back a result that
+    names the loop lets it read its way out and reply."""
+    llm = RepeatingLLM("Claude", "show_edges", {"on": True}, n=4)
+    d = _director(Claude=llm)
+    await d.handle("edges")
+    refusal = llm.results[-1]
+    assert "show_edges" in refusal and "already" in refusal
+    assert refusal.startswith("error:")                # shaped like every other tool failure it knows
+
+
+async def test_the_same_tool_with_different_arguments_is_not_a_repeat():
+    """The guard keys on the arguments too — 'make 12 blue, make 13 red' is one tool, real progress."""
+    class _Varying:
+        name = "Claude"
+
+        async def run_turn(self, *, system, history, user_text, tools, execute_tool, emit):
+            for cid in range(5):
+                await execute_tool("style_surface", {"id": cid, "color": "blue"})
+            await emit("done", final=True)
+            return "done"
+
+    d = _director(Claude=_Varying())
+    await d.handle("colour them all")
+    assert len(d._session.calls) == 5
+
+
+async def test_the_repeat_count_resets_between_turns():
+    """A guard that carried across turns would refuse 'edges on' just because you asked yesterday."""
+    d = _director(Claude=RepeatingLLM("Claude", "show_edges", {"on": True}, n=2))
+    await d.handle("edges")
+    d.roster["Claude"] = RepeatingLLM("Claude", "show_edges", {"on": True}, n=2)
+    await d.handle("edges again")
+    assert d._session.calls == [("show_edges", {"on": True})] * 4     # all four ran; none refused
+
+
 async def test_emit_and_tools_are_wired_through():
     seen, gemini = [], FakeLLM("Gemini")
     d = _director(active="Gemini", Gemini=gemini)

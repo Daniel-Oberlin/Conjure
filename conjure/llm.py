@@ -80,6 +80,23 @@ def _messages(history: list[Turn]) -> list[tuple[str, str]]:
 
 # =================================================================== director LLMs
 
+# A turn is a loop — call tools, feed the results back, repeat until the model stops asking. Nothing in
+# the protocol guarantees it ever stops: a model can answer every tool result with the same tool call
+# forever, and each hop costs an API call and broadcasts a patch to every client. Observed 2026-08-28
+# (Grok, 40+ identical `show_edges({"on": true})` hops, only ended by killing the server).
+#
+# So every provider loop is bounded. The number is generous — a real build turn (generate an image,
+# place it, style three surfaces) is well under it — because the *pathological* case is caught far
+# earlier and more precisely by the Director's repeat guard (docs/specs/agents.md §5.6); this is the
+# backstop for a model that loops without repeating itself exactly.
+MAX_TOOL_HOPS = 24
+
+# What the user hears when the backstop fires. It is emitted as the turn's final text and therefore
+# lands in the transcript — deliberately, so the next turn's history shows the model its own failure
+# instead of leaving an unexplained gap. Every degradation is audible (architecture §1).
+HOP_LIMIT_NOTICE = "I got stuck repeating myself, so I stopped there. Ask me again?"
+
+
 class ClaudeLLM:
     name: str
 
@@ -98,7 +115,7 @@ class ClaudeLLM:
         messages.append({"role": "user", "content": user_text})
 
         final_text = ""
-        while True:
+        for _ in range(MAX_TOOL_HOPS):
             resp = await client.messages.create(
                 model=self.model, max_tokens=1024, system=system, tools=ant_tools, messages=messages,
             )
@@ -116,6 +133,9 @@ class ClaudeLLM:
                 out = await execute_tool(tu.name, tu.input)
                 results.append({"type": "tool_result", "tool_use_id": tu.id, "content": out})
             messages.append({"role": "user", "content": results})
+        else:
+            final_text = HOP_LIMIT_NOTICE                    # ran the cap out without ever stopping
+            await emit(final_text, final=True)
         return final_text
 
 
@@ -150,7 +170,7 @@ class GeminiLLM:
         contents.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
 
         final_text = ""
-        while True:
+        for _ in range(MAX_TOOL_HOPS):
             resp = await client.aio.models.generate_content(
                 model=self.model, contents=contents, config=config)
             cand = (resp.candidates or [None])[0]
@@ -171,6 +191,9 @@ class GeminiLLM:
                 for fc in calls
             ]
             contents.append(types.Content(role="user", parts=results))  # Gemini has no "tool" role
+        else:
+            final_text = HOP_LIMIT_NOTICE                    # ran the cap out without ever stopping
+            await emit(final_text, final=True)
         return final_text
 
 
@@ -206,7 +229,7 @@ class _OpenAICompatibleLLM:
         messages.append({"role": "user", "content": user_text})
 
         final_text = ""
-        while True:
+        for _ in range(MAX_TOOL_HOPS):
             kwargs: dict = {"model": self.model, "messages": messages}
             if oa_tools:
                 kwargs["tools"] = oa_tools
@@ -238,6 +261,9 @@ class _OpenAICompatibleLLM:
                 args = json.loads(tc.function.arguments or "{}")
                 out = await execute_tool(tc.function.name, args)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+        else:
+            final_text = HOP_LIMIT_NOTICE                    # ran the cap out without ever stopping
+            await emit(final_text, final=True)
         return final_text
 
 
@@ -563,6 +589,17 @@ def _resolve_name(registry: dict[str, ImageGenerator], requested: str) -> Option
     return next((n for n in registry if n.lower() == req), None)  # custom registries (e.g. tests)
 
 
+def _who_can(registry: dict[str, ImageGenerator], op: str, *, transparent: bool = False) -> str:
+    """A sentence naming the configured generators that *can* do what the requested one can't — so a
+    refusal carries its own next step instead of leaving the caller to guess."""
+    able = [n for n, g in registry.items()
+            if _supports(g, op) and (g.capabilities.transparency if transparent else True)]
+    what = "transparency" if transparent else op
+    if not able:
+        return f"No configured generator can do {what}."
+    return f"Use {' or '.join(able)} for {what}."
+
+
 def select_generator(registry: dict[str, ImageGenerator], op: str, *,
                      requested: Optional[str] = None,
                      transparent: bool = False) -> tuple[Optional[ImageGenerator], Optional[str]]:
@@ -584,9 +621,16 @@ def select_generator(registry: dict[str, ImageGenerator], op: str, *,
         gen = registry[match]
         if not _supports(gen, op):
             return None, (f"{match} can't {op} (it supports: "
-                          f"{', '.join(sorted(gen.capabilities.operations))})")
+                          f"{', '.join(sorted(gen.capabilities.operations))}). "
+                          f"{_who_can(registry, op)}")
         if transparent and not gen.capabilities.transparency:
-            return None, f"{match} can't produce transparency — omit the generator or pick one that can"
+            # Name the way out. Both halves of the request are the user's — the generator AND the
+            # transparency — and only one can be honored, so the caller has to choose. Saying only
+            # "pick one that can" leaves the model to guess which, and the observed failure (2026-08-28)
+            # was it not retrying at all.
+            return None, (f"{match} can't produce transparency. "
+                          f"{_who_can(registry, op, transparent=True)} "
+                          f"Or drop transparent to keep {match}.")
         return gen, None
 
     candidates = [(e, registry[e.name]) for e in ROSTER if e.name in registry and usable(registry[e.name])]
