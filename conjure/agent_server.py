@@ -112,7 +112,11 @@ def _context_event(shell: Shell, live: Optional[dict], user: str, in_shell: bool
         except Exception:                        # noqa: BLE001 — decoration; never let it cost a client its
             pass                                 # prompt/agent/world, which is the rest of this event
     if live:
-        for k in ("scope", "world", "space", "owner"):
+        # `public` rides along so a client can tell whether the live session is private WITHOUT
+        # inferring it from what it didn't receive. Privacy is otherwise enforced by omission
+        # (`_conv_broadcast` skips non-permitted clients), which the OWNER never sees — and the owner
+        # is exactly who needs to know, e.g. to pause `--stt-corpus` recording.
+        for k in ("scope", "world", "space", "owner", "public"):
             if k in live:
                 ev[k] = live[k]
     return ev

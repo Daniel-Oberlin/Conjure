@@ -57,6 +57,16 @@ roughly 0.9 s per utterance on CPU. The old value was the *multilingual* `base` 
 passing `language=EN`, which constrains decoding without buying the English-only weights. Details and
 the full table are in the investigation.
 
+**Corpus capture — `--stt-corpus`.** Records clip + manifest + prefilled label to `temp/stt-corpus/`,
+gated on the session being public, with a pair-wise purge. See spec §9 for the built behaviour; the
+sections below are the parts still outstanding. Required one field on the agent server's `context`
+event: `public`, so the **owner** can tell a session is private — privacy is otherwise enforced by
+omission, which the owner never observes.
+
+**Still to build: the scorer.** Walk the manifest, run N models over each clip, join to `truth.tsv`,
+and print the condition table (models down, devices across). It should refuse to score any clip whose
+`reviewed` is not set, rather than quietly counting a prefill as truth.
+
 **`--agent` removed.** The flag was parsed, passed into `_run`, and never read, while `--help`
 advertised it as selecting the agent. Voice is a thin client and the agent server owns which agent is
 open, so the flag could not have been honoured without a `/scope/activate` on connect — and agent
@@ -64,11 +74,15 @@ switching already works by voice. Dropped rather than wired; the spec now record
 
 ---
 
-## Next: the capture-and-evaluate framework
+## The capture-and-evaluate framework
 
-This is the highest-value remaining work, because **every subsequent decision is blocked on it.** The
-synthetic bench corpus cannot separate `small.en` from `large-v3-turbo` — the difference is smaller
-than its sampling noise — and it cannot represent a Bluetooth microphone at all.
+**Capture is built** (`--stt-corpus`, `conjure/stt_corpus.py`, spec §9). **Scoring is not.** The design
+below is retained because it is the contract the scorer has to honour — and because the reasoning
+behind `reviewed`, the pairing rule and the tag choices is not recoverable from the code.
+
+Everything downstream is still blocked on **collecting and labelling clips**: the synthetic bench
+cannot separate `small.en` from `large-v3-turbo` — the difference is smaller than its sampling noise —
+and it cannot represent a Bluetooth microphone at all.
 
 ### Where it lives, and how it is turned on
 

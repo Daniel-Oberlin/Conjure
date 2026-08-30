@@ -148,13 +148,77 @@ compose: the mic gate opens the channel, the shell's escape decides whether what
   line. `context`, `user_turn`, `tool_call` and `turn_done` are not spoken.
 - **Idle timeout** is one hour, and does not cancel the pipeline — silence is not a failure.
 
-## 9. Testing
+## 9. The STT corpus (`--stt-corpus`)
+
+Off by default. When on, every recognized utterance is written to `temp/stt-corpus/` (gitignored) so
+models can be compared offline on **real** audio — the synthetic bench that chose `small.en` cannot
+represent a Bluetooth microphone, and is too small to separate the top candidates
+([the investigation](../investigations/stt-accuracy.md)).
+
+```
+temp/stt-corpus/
+  clips/20260830-142305-118.wav   audio        — machine
+  manifest.jsonl                  capture log  — machine, append-only
+  truth.tsv                       the labels   — HUMAN, hand-edited
+```
+
+**The tap is `run_stt`**, subclassed in `voice.py`: it receives the exact WAV the recognizer saw and
+yields the text it produced, so the pair is captured at the one point where both exist. Recording runs
+off-thread and swallows its own errors — a diagnostic that can break the thing it diagnoses is worse
+than none.
+
+**Format follows the writer.** JSONL for the manifest (machine-written: escapes commas and quotes,
+gains fields without rewriting old rows); TSV for truth (hand-edited: speech has no tabs, so it
+survives `vim` as well as a spreadsheet). Scoring results live in neither — they are derived and
+regenerable, and accumulating them would mutate the record that is meant to hold still.
+
+**`truth` is prefilled with the hypothesis**, so labelling is scan-and-fix. The `reviewed` column is
+load-bearing, not bookkeeping: with two columns, `truth == hypothesis` means either *verified* or
+*never looked at*, and an unreviewed prefill scores its own source model at 0% WER — so abandoning a
+labelling pass halfway would make the measurement **invert** rather than degrade. Anything unrecognised
+in that column counts as not reviewed.
+
+**One condition tag, auto-captured.** The PortAudio input device name, read once at startup — an open
+stream stays on the device it opened with, so per-clip re-reads would disagree with the audio they
+describe. Utterance length is derived at scoring time from `duration_s`. Environment is deliberately
+not recorded (see the backlog for the confound this accepts).
+
+### Privacy gate
+
+Capture requires the live session to be **public**, and the client learns this from the `public` field
+on the `context` event. Session privacy is otherwise enforced by *omission* — `_conv_broadcast` skips
+non-permitted clients — which the **owner never observes**, and the owner is exactly who needs to know
+here.
+
+Unknown state does not record. Before the first `context` event, and after a dropped connection, the
+gate is closed: a governed recorder must never be running when you assumed it wasn't. Every transition
+prints, since a recorder that stops silently is as bad as one that starts silently.
+
+### Purge
+
+`--stt-corpus-purge` deletes **unreviewed clips and their labels together**, then exits. A clip and its
+label are one unit: a transcript with no audio cannot be run against a model, so labels never outlive
+their clips, and a label whose clip is already gone is reported as a defect rather than kept.
+
+The asymmetry is labelled-versus-unlabelled, not audio-versus-labels. Unreviewed clips are cheap,
+plentiful, and what fills the disk. `--all` additionally removes reviewed pairs and prompts for a typed
+confirmation first — that is the operation that destroys work.
+
+## 10. Testing
 
 The wake gate is pure and fully unit-tested (`tests/test_voice.py`), including that the two gates
-compose and that a colliding word is refused. The real-time pipeline is not unit-tested; the
-**Tier-2 contract test** asserts the pipecat classes we construct still have the shapes we call
-([`testing.md`](../testing.md)). Accuracy itself is not covered by any automated test today — that gap
-is what the capture-and-evaluate work in the backlog exists to close.
+compose and that a colliding word is refused. The corpus is likewise pure file behaviour and tested
+without pipecat or a microphone (`tests/test_stt_corpus.py`) — including that purge takes pairs, that
+an unknown `reviewed` marker reads as *not* reviewed, and that tabs in a hypothesis cannot break the
+TSV.
+
+The real-time pipeline is not unit-tested. The **Tier-2 contract test** asserts the pipecat classes we
+construct still have the shapes we call ([`testing.md`](../testing.md)) — including that
+`WhisperSTTService.run_stt` is still an async generator taking `audio`, since `--stt-corpus` taps it
+and drift there would stop recording *silently*.
+
+Accuracy itself is still covered by no automated test; that is what a labelled corpus exists to make
+possible.
 
 ## Related
 

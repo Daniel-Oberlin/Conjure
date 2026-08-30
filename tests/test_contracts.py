@@ -9,7 +9,7 @@ import pytest
 def test_pipecat_surface_we_depend_on():
     pytest.importorskip("pipecat")
     from pipecat.audio.vad.silero import SileroVADAnalyzer  # noqa: F401
-    from pipecat.frames.frames import TTSSpeakFrame
+    from pipecat.frames.frames import TranscriptionFrame, TTSSpeakFrame
     from pipecat.pipeline.pipeline import Pipeline  # noqa: F401
     from pipecat.pipeline.task import PipelineParams, PipelineTask  # noqa: F401
     from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: F401
@@ -26,6 +26,13 @@ def test_pipecat_surface_we_depend_on():
 
     assert hasattr(WhisperSTTService, "Settings")
     assert hasattr(KokoroTTSService, "Settings")
+    # --stt-corpus subclasses WhisperSTTService and taps run_stt: it must stay an ASYNC GENERATOR
+    # (we iterate it and re-yield), it receives the audio bytes, and the text arrives on a
+    # TranscriptionFrame.text. Drift in any of the three silently stops the corpus recording.
+    assert inspect.isasyncgenfunction(WhisperSTTService.run_stt)
+    assert "audio" in set(inspect.signature(WhisperSTTService.run_stt).parameters)
+    assert hasattr(WhisperSTTService, "sample_rate")
+    assert "text" in {f.name for f in __import__("dataclasses").fields(TranscriptionFrame)}
     # voice.py's DirectorProcessor subclasses FrameProcessor: overrides process_frame(self, frame,
     # direction) and calls push_frame; it speaks the director's reply via TTSSpeakFrame(text=...).
     assert {"frame", "direction"} <= set(inspect.signature(FrameProcessor.process_frame).parameters)

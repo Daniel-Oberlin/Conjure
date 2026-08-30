@@ -26,11 +26,13 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
+import time
 import urllib.request
 from typing import Callable, Optional
 
 from .config import (DEFAULT_USER, VOICE_WAKE_WORDS, WAKE_WORDS, Settings, get_settings,
                      voice_wake_aliases, wake_word_conflict)
+from .stt_corpus import CORPUS_DIR, Corpus, purge as purge_corpus, summary as corpus_summary
 
 # PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
 PIPELINE_IDLE_TIMEOUT_SECS = 3600  # 1 hour
@@ -86,11 +88,12 @@ def _agent_reachable(url: str) -> bool:
         return False
 
 
-async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None) -> None:
+async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None,
+               corpus: Optional["Corpus"] = None) -> None:
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
-    from pipecat.frames.frames import TTSSpeakFrame
+    from pipecat.frames.frames import TranscriptionFrame, TTSSpeakFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineTask
@@ -117,6 +120,21 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
 
     holder: dict = {"ws": None}          # the current agent-server socket (None while (re)connecting)
     stop = asyncio.Event()
+
+    # Corpus capture is gated on the LIVE session being public (docs/backlogs/voice.md). `None` means we
+    # have not seen a `context` event yet, and unknown must not record: the whole point of a governed
+    # recorder is that it is never on when you assumed it wasn't. Every flip is announced, because a
+    # recorder that silently stops is as bad as one that silently starts.
+    session: dict = {"public": None, "said": None}
+
+    def gate_capture() -> bool:
+        ok = session["public"] is True
+        if ok != session["said"]:
+            session["said"] = ok
+            print("[stt-corpus] recording" if ok else
+                  "[stt-corpus] paused — session is private" if session["public"] is False else
+                  "[stt-corpus] paused — waiting for the session state")
+        return ok
 
     # The voice client is DUMB (docs/specs/agents.md §10): it sends completed user turns to the agent server
     # over a WebSocket and speaks the server's replies. No Director/shell/LLM here — pipecat is just ears +
@@ -167,7 +185,37 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     # (faster-whisper re-decodes at a higher temperature when a segment trips its confidence
     # thresholds, so a small model on a bad mic gets slower and worse together). Costs ~0.9s more per
     # utterance on CPU. Do not "upgrade" to distil-medium.en — measured worse AND slower.
-    stt = WhisperSTTService(settings=WhisperSTTService.Settings(model="small.en", language=Language.EN))
+    stt_model = "small.en"
+    stt_settings = WhisperSTTService.Settings(model=stt_model, language=Language.EN)
+
+    if corpus is None:
+        stt = WhisperSTTService(settings=stt_settings)
+    else:
+        # Tap `run_stt`: it receives the exact WAV the recognizer saw and yields the text it produced,
+        # so the pair is captured at the one point where both exist. Nothing here may raise into the
+        # pipeline — a diagnostic that can break the thing it is diagnosing is worse than none.
+        class _CorpusWhisperSTTService(WhisperSTTService):
+            async def run_stt(self, audio: bytes):
+                t0 = time.perf_counter()
+                said = ""
+                async for frame in super().run_stt(audio):
+                    if isinstance(frame, TranscriptionFrame):
+                        said = frame.text or ""
+                    yield frame
+                if not said.strip():
+                    return                       # silence / a dropped no-speech segment: nothing to label
+                if not gate_capture():
+                    return
+                try:
+                    await asyncio.to_thread(
+                        corpus.record, audio, hypothesis=said.strip(), model=stt_model,
+                        decode_s=round(time.perf_counter() - t0, 3),
+                        sample_rate=self.sample_rate)
+                except Exception as exc:  # noqa: BLE001 — never cost the user a turn over a dropped clip
+                    print(f"[stt-corpus] could not record clip: {exc}", file=sys.stderr)
+
+        stt = _CorpusWhisperSTTService(settings=stt_settings)
+
     tts = KokoroTTSService(settings=KokoroTTSService.Settings(voice="af_heart"))
 
     bridge = VoiceBridge()
@@ -190,9 +238,12 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
                                 await bridge.speak(txt)
                         elif t == "busy":
                             await bridge.speak("One moment — I'm still working on the last request.")
+                        elif t == "context" and "public" in ev:
+                            session["public"] = bool(ev["public"])   # gates corpus capture; never spoken
                         # context / user_turn / tool_call / turn_done → not spoken
             except Exception:  # noqa: BLE001 — agent server down/restarting: back off and reconnect
                 holder["ws"] = None
+                session["public"] = None         # lost the server ⇒ lost the privacy state ⇒ stop recording
                 if stop.is_set():
                     return
                 await asyncio.sleep(1.0)
@@ -256,6 +307,33 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
         listen_task.cancel()
 
 
+def _purge_cli(*, include_reviewed: bool) -> int:
+    """`--stt-corpus-purge`. Unreviewed pairs go without ceremony; reviewed ones need a typed yes."""
+    before = corpus_summary()
+    if not before["clips"]:
+        print(f"No clips in {before['root']}.")
+        return 0
+    print(f"{before['clips']} clip(s) in {before['root']} — {before['reviewed']} reviewed, "
+          f"{before['clips'] - before['reviewed']} not.")
+    if include_reviewed and before["reviewed"]:
+        # The labels are the hours; the audio is the part that cannot be re-created at all. Losing a
+        # reviewed pair loses both, so this one is not a silent flag.
+        try:
+            if input(f"Delete ALL {before['clips']} clips including {before['reviewed']} reviewed "
+                     f"(their labels go too)? Type 'yes': ").strip().lower() != "yes":
+                print("Nothing deleted.")
+                return 1
+        except (EOFError, KeyboardInterrupt):
+            print("\nNothing deleted.")
+            return 1
+    rep = purge_corpus(include_reviewed=include_reviewed)
+    print(f"Removed {rep.removed}, kept {rep.kept}.")
+    if rep.orphans:
+        print(f"Also dropped {len(rep.orphans)} label(s) whose audio was already missing "
+              f"(a transcript with no clip cannot be measured).")
+    return 0
+
+
 def main() -> int:
     import argparse
 
@@ -269,7 +347,22 @@ def main() -> int:
                          f"can ride along (--wake-word computer,computa). Must NOT be the shell's wake "
                          f"word ({WAKE_WORDS[0]!r}) — the gate strips its own word first, so sharing one "
                          f"would make spoken shell commands unreachable")
+    # Not --capture-*: "capture" already means ROOM capture throughout this codebase, so a voice flag
+    # borrowing the word would read as something to do with Room Setup.
+    ap.add_argument("--stt-corpus", action="store_true",
+                    help=f"record each utterance to {CORPUS_DIR.relative_to(CORPUS_DIR.parent.parent)}/ "
+                         f"for offline STT evaluation. Off by default; pauses while a session is "
+                         f"private. See docs/backlogs/voice.md")
+    ap.add_argument("--stt-corpus-purge", action="store_true",
+                    help="delete UNREVIEWED clips and their labels, then exit — the default purge, "
+                         "since unreviewed clips are what fill the disk and are freely re-captured")
+    ap.add_argument("--all", action="store_true",
+                    help="with --stt-corpus-purge: delete reviewed clips too. Asks first — a reviewed "
+                         "clip and its label are hours of work and cannot be regenerated")
     args = ap.parse_args()
+
+    if args.stt_corpus_purge:
+        return _purge_cli(include_reviewed=args.all)
 
     settings = get_settings()
 
@@ -282,14 +375,25 @@ def main() -> int:
 
     if args.wake_word:
         print(f"🔒 Wake word active: say '{args.wake_word}' before a command.")
+
+    corpus = None
+    if args.stt_corpus:
+        corpus = Corpus()
+        # Say it out loud at startup. A recorder you forgot you enabled is the failure mode that
+        # matters, and naming the device here is also how you notice the mic is not the one you think.
+        print(f"⏺  STT corpus recording to {corpus.root} (input: {corpus.device}). "
+              f"Paused while a session is private. Purge: --stt-corpus-purge")
     try:
-        asyncio.run(_run(settings, args.user, args.wake_word))
+        asyncio.run(_run(settings, args.user, args.wake_word, corpus))
     except KeyboardInterrupt:
         print("\nStopped.")
     except ImportError as exc:
         print(f"Voice dependencies are missing ({exc}).\n"
               f"Install them with `./scripts/setup.sh` (see docs/running.md), then re-run.")
         return 1
+    if corpus is not None and corpus.count:
+        print(f"⏺  Recorded {corpus.count} clip(s). Label them by editing the `truth` column of "
+              f"{corpus.truth} and marking `reviewed` y.")
     return 0
 
 
