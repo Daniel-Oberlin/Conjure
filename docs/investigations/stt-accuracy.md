@@ -223,7 +223,7 @@ Each entry: symptom → cause → fix → knob → commit.
   audio (§2.3).
 - **Knob:** `conjure/voice.py` — the `WhisperSTTService.Settings(model=...)` line. Not yet
   config-driven; `CONJURE_STT` exists but `voice.py` does not read it (backlog).
-- **Commit:** `ce7b3c5`
+- **Commit:** `b7be8de`
 
 ## Related
 
