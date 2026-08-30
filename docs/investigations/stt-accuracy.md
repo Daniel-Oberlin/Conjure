@@ -61,8 +61,14 @@ decimated to 8 kHz, restored to 16 kHz). faster-whisper on CPU, M2 Max.
 | `distil-medium.en` (*pipecat's default*) | 5.0% | 5.8% | 1.83 | 1.6 |
 | `large-v3-turbo` | 1.7% | 0.8% | 3.35 | 0.9 |
 
-Script preserved at `$CLAUDE_JOB_DIR/tmp/bench.py` (scratch, not committed — it depends on macOS `say`
-and is superseded by the real-audio harness in the backlog).
+Reproduce with **`python scripts/stt_bench.py`** (`--models` to pick a subset; clips are cached under
+`temp/stt-bench/`). Kept because it is currently the only re-runnable measurement in this campaign —
+the real-audio scorer does not exist yet.
+
+**Re-run 2026-08-30 reproduced the table to within one word**, with one entry moving: `base` narrowband
+came back **9.2%** rather than 8.3%. The clips are re-synthesized per fresh checkout, and one word is
+0.8 points on a 120-word corpus — so this is the noise floor demonstrating itself, not a contradiction.
+It is also the reason the script now prints that floor in its own header.
 
 **Proved:**
 
@@ -198,7 +204,8 @@ packet-loss concealment, or a real room — which are plausibly the parts that a
 
 Consequences that must not be forgotten when quoting this table:
 
-- The only difference reliably above the noise floor is **`base` versus everything else**.
+- The only difference reliably above the noise floor is **`base` versus everything else** — which the
+  re-run above confirms from the other direction: the numbers that moved were the ones inside it.
 - This corpus **cannot separate `small.en` from `large-v3-turbo`** (3 errors vs 2).
 - `large-v3-turbo` scoring *better* on narrowband than clean (0.8% vs 1.7%) is a **one-word**
   difference. It is noise, not a finding, and it is not evidence that degradation helps.
