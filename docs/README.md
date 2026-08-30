@@ -52,6 +52,11 @@ split exists so a spec can be trusted: nothing in it is a plan, an intention, or
   each other, and the embedder. ([backlog](./backlogs/library.md))
 - **[specs/occlusion.md](./specs/occlusion.md)** — real-world depth occlusion: the global depth pre-pass
   and the `off`/`hands`/`hands-solid` modes. ([backlog](./backlogs/occlusion.md))
+- **[specs/voice.md](./specs/voice.md)** — the **ears-and-mouth front-end**: the thin-client contract
+  that puts voice and the CLI in one conversation, the PipeCat pipeline, VAD and the two silence
+  thresholds, the Whisper model and why it was chosen by measurement, Kokoro TTS, why barge-in is off,
+  and the mic-activation gate and its enforced separation from the shell's wake word.
+  ([backlog](./backlogs/voice.md))
 - **[specs/config.md](./specs/config.md)** — the **installation layer**: the three XDG roots and the
   precious/disposable split, how every location resolves (env > `settings.json` > default), what
   `settings.json` owns versus `.env`, the user-first search paths that let a user add or shadow an agent

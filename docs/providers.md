@@ -21,7 +21,8 @@ cost, strong tool-calling where it matters, one API key (Anthropic). Maps onto t
 ### Speech-to-text (STT)
 | Option | Hosting | Notes |
 |---|---|---|
-| ✅ **Whisper** (MLX / faster-whisper) | local | PipeCat-native; great on Apple Silicon. Utterance-based (VAD-segmented), not true streaming — fine for commands. |
+| ✅ **Whisper** (faster-whisper) | local | PipeCat-native. Utterance-based (VAD-segmented), not true streaming — fine for commands. **Built:** `small.en`, chosen by measurement ([specs/voice.md](./specs/voice.md) §4). Runs **CPU-only float32** on Apple Silicon — CTranslate2 has no Metal backend. |
+| 💡 Whisper via **MLX** | local | The same models on the Apple GPU, in native fp16 — the only route to `large-v3-turbo` at usable latency (it measures 0.9× realtime on CPU). PipeCat ships `WhisperSTTServiceMLX`; not wired up. See [backlogs/voice.md](./backlogs/voice.md). |
 | 💡 Moonshine | local | Built for **streaming on edge / Raspberry Pi**; low latency, low hallucination. Needs custom wiring. |
 | 💡 NVIDIA Parakeet (`parakeet.cpp`) | local | Very fast, runs on Apple Silicon via Metal. Needs custom wiring. |
 | 💡 Deepgram / AssemblyAI | cloud | True low-latency streaming; snappiest feel. Per-minute cost + keys. |

@@ -161,7 +161,14 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
         )
     )
 
-    stt = WhisperSTTService(settings=WhisperSTTService.Settings(model="base", language=Language.EN))
+    # `small.en`, not `base`. Measured on an M2 Max over a 12-clip synthetic corpus (see
+    # docs/investigations/stt-accuracy.md): `base` is the MULTILINGUAL model, and passing language=EN
+    # only constrains decoding — it does not buy the English-only weights. WER 8.3% → 2.5%, and
+    # `small.en` was also the only model whose decode time did not blow up on band-limited audio
+    # (faster-whisper re-decodes at a higher temperature when a segment trips its confidence
+    # thresholds, so a small model on a bad mic gets slower and worse together). Costs ~0.9s more per
+    # utterance on CPU. Do not "upgrade" to distil-medium.en — measured worse AND slower.
+    stt = WhisperSTTService(settings=WhisperSTTService.Settings(model="small.en", language=Language.EN))
     tts = KokoroTTSService(settings=KokoroTTSService.Settings(voice="af_heart"))
 
     bridge = VoiceBridge()
