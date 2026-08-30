@@ -369,3 +369,62 @@ test("one plane is not a frame", () => {
   assert.strictEqual(WM.hasFrameBasis({ local: one, ref: one }), false);
   assert.strictEqual(WM.hasFrameBasis({ local: [], ref: [] }), false);
 });
+
+// ---- levelDeviation: catching one room's floor moving, without anyone noticing ------------------------
+// The self-triggering half of the raised-floor investigation (docs/backlogs/spaces-geometry.md). It has to
+// work with no ground truth and no extra persistence, which it does by leaning on registration never
+// touching y — so the stored seed is directly comparable to a live capture.
+
+test("levelDeviation ignores a whole-space offset but catches one floor moving alone", () => {
+  const seed = {
+    floor_A: { y: -0.005, sem: "floor" }, floor_B: { y: -0.026, sem: "floor" },
+    floor_C: { y: 0.004, sem: "floor" }, ceil_A: { y: 2.663, sem: "ceiling" },
+    ceil_B: { y: 2.445, sem: "ceiling" }, ceil_C: { y: 2.677, sem: "ceiling" },
+  };
+  // The whole space sits 4 cm higher this session (a different local-floor origin) AND floor_B is 13 cm
+  // high on top of that — the reported symptom, hiding inside a legitimate global shift.
+  const live = {};
+  Object.keys(seed).forEach((id) => { live[id] = seed[id].y + 0.04; });
+  live.floor_B += 0.13;
+
+  const dev = WM.levelDeviation(live, seed);
+  const byId = Object.fromEntries(dev.map((d) => [d.id, d.dev]));
+  assert.ok(Math.abs(byId.floor_B - 0.13) < 1e-9, "the offending floor's deviation is the real 13 cm");
+  Object.keys(byId).forEach((id) => {
+    if (id === "floor_B") return;
+    assert.ok(Math.abs(byId[id]) < 1e-9, `${id} reads 0 — the 4 cm global shift is absorbed, not reported`);
+  });
+});
+
+test("levelDeviation stays quiet when the whole space shifts together", () => {
+  const seed = { a: { y: 0 }, b: { y: 0 }, c: { y: 2.6 }, d: { y: 2.6 } };
+  const live = { a: 0.09, b: 0.09, c: 2.69, d: 2.69 };
+  const dev = WM.levelDeviation(live, seed);
+  assert.ok(dev.every((x) => Math.abs(x.dev) < 1e-9),
+            "a rigid whole-space shift is not an anomaly — it is what a relocalization looks like");
+});
+
+test("levelDeviation uses the MEDIAN so one bad floor cannot drag the baseline and hide", () => {
+  // With a MEAN, a single 30 cm outlier across 4 surfaces pulls the baseline 7.5 cm toward itself and
+  // reports every innocent surface as 7.5 cm wrong — the outlier camouflages itself in the noise.
+  const seed = { a: { y: 0 }, b: { y: 0 }, c: { y: 2.6 }, d: { y: 2.6 } };
+  const live = { a: 0, b: 0, c: 2.6, d: 2.9 };
+  const dev = Object.fromEntries(WM.levelDeviation(live, seed).map((x) => [x.id, x.dev]));
+  assert.ok(Math.abs(dev.d - 0.3) < 1e-9, "the outlier keeps its full 30 cm");
+  assert.ok(Math.abs(dev.a) < 1e-9 && Math.abs(dev.b) < 1e-9 && Math.abs(dev.c) < 1e-9,
+            "and the innocent surfaces are not smeared with a share of it");
+});
+
+test("levelDeviation reports nothing below three comparable surfaces", () => {
+  // With two, "the space shifted" and "one floor is wrong" are the same number. Guessing is worse than
+  // silence — a false anomaly in a log you read days later costs more than a missed one.
+  assert.deepStrictEqual(WM.levelDeviation({ a: 0.2, b: 0.0 }, { a: { y: 0 }, b: { y: 0 } }), []);
+  assert.deepStrictEqual(WM.levelDeviation({ a: 0.2 }, { a: { y: 0 } }), []);
+});
+
+test("levelDeviation only compares surfaces the seed actually knows", () => {
+  const seed = { a: { y: 0 }, b: { y: 0 }, c: { y: 2.6 } };
+  const live = { a: 0, b: 0, c: 2.6, fresh_mint: 1.4 };   // a just-minted id has no baseline yet
+  const dev = WM.levelDeviation(live, seed);
+  assert.deepStrictEqual(dev.map((d) => d.id).sort(), ["a", "b", "c"]);
+});

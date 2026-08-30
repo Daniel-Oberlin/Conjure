@@ -12,6 +12,70 @@ Items are grouped by what they block, roughly most-actionable first.
 
 ## Known problems
 
+### A surface drops out and returns uncoloured
+
+**Status:** open · noticed 2026-08-30, intermittently, since the smoothing work landed
+
+A real surface occasionally vanishes and comes back **without its styling**. The mechanism is fully traced;
+what is *not* known is which of three causes fires.
+
+Three consecutive captures without the surface trip two independent debounces: `_localAbsent` removes the
+DOM element (`conjure-client.js:1528`) and `_absent` drops the id from `_known` (`:2378`) → POST → the
+server emits `{"op": "remove"}` (`server.py:3305`), deleting the seed entity **and its material**.
+`surfaceStyles` is rebuilt from the snapshot's real entities (`:765`), so the colour is gone for good and
+the surface redraws at the default material whenever it returns.
+
+Three different causes produce that identical appearance, and today's log cannot tell them apart:
+
+| Cause | What actually happened | Where the fix would land |
+|---|---|---|
+| **device miss** | the Quest never emitted the plane in `detectedPlanes` for 3+ captures | the debounce count — or nothing, if it's a platform floor |
+| **matcher miss** | the plane *was* detected, but `matchWall` / `matchInset` / `matchRef` rejected its `_ref` entry → a fresh id minted | the identity tolerances (`--wall-perp-tol`, `--wall-yaw-tol`, `--wall-overlap-slop`) |
+| **style orphan** | identity held — `_ref` is never pruned, so `matchWall` re-inherited the *same* id — but the seed entity had already been pruned, so the colour is gone anyway | protect styling from the prune, the way `anchored` protects geometry |
+
+The third is the trap, and the reason this needs instrumenting rather than guessing: it is **not an identity
+bug at all**, and chasing it as one costs a week. `_ref` outliving the seed is deliberate (§6.1 — identity
+resolves against the local constellation, not the lagging seed), so the same id genuinely can come back
+stripped of its styling with the matcher working perfectly.
+
+Instrumented by [the geometry event log](#instrumentation--the-geometry-event-log) below.
+
+### One room's floor sits 4–6 inches high, intermittently
+
+**Status:** open · noticed 2026-08-30 · flips back and forth over a timescale of days
+
+In the three-room space, one room's floor renders ~10–15 cm above the real floor, then reverts on its own
+after a few days.
+
+**What this rules out first:** nothing in our pipeline moves a floor. `sealWalls` reads floors and only ever
+writes walls (`room-snap.js:554`), `joinCorners` writes walls, `snapInsets` writes insets. A floor renders at
+its raw `detectedPlanes` pose in F_track, untouched. So the error arrives **upstream of us**, and the job of
+instrumentation is to prove that and say *which* upstream thing — not to hunt for a bug in the snap chain.
+
+The seed's height census, for reference (`users/daniel/spaces/space-1.json`):
+
+| floor | y | ceiling | y |
+|---|---|---|---|
+| `real_floor_8` | −0.005 | `real_ceiling_25` | 2.663 |
+| `real_floor_10` | −0.026 | `real_ceiling_21` | **2.445** |
+| `real_floor_32` | +0.004 | `real_ceiling_13` | 2.677 |
+
+`real_ceiling_21` sits 23 cm below the other two — likely the identifying feature for whichever room this is
+(physical mapping pending, see [open inputs](#open-inputs)).
+
+Three candidate causes, cleanly separable by what moves *with* the floor:
+
+1. **The device map shifted regionally.** The founding measurement of this whole architecture is that the
+   Quest's multi-room map is non-rigid by up to ~9 cm **concentrated in one region** (spec §1). 4–6 inches is
+   larger than that, but it is the same phenomenon. ⇒ that room's floor, ceiling **and** wall bottoms all
+   move together.
+2. **The floor plane alone re-fit.** Room Setup snapped to a rug, a threshold, a low object. ⇒ the floor
+   moves; its ceiling and walls do not.
+3. **The `local-floor` origin moved.** Every number holds in refSpace and the real floor is elsewhere. ⇒
+   nothing we currently record changes at all; only ground truth can see it.
+
+Instrumented by [the geometry event log](#instrumentation--the-geometry-event-log) below.
+
 ### Walking micro-stutter — a platform limit, not our code
 
 The residual "flick out and back" while walking is **dropped-frame positional reprojection during
@@ -48,12 +112,20 @@ Two candidate attacks, neither attempted:
    wall stability. Raised in-session and deferred because the walls themselves still chase raw noise —
    fixing (1) first makes (2) mostly unnecessary.
 
-### The MARKER probe was never built
+### The MARKER probe — built for geometry, still missing for jitter
 
-Every correlation between what the user *saw* and what the data *recorded* has been inferred from
-counts. The missing tool is a **controller-button marker**: press the instant you see a pop, log
-`MARK t=… lastDt=… lastJerk=… rebuilds=…` plus the recent ring. That gives frame-exact
-perception↔data correspondence. **Build this first if the investigation resumes.**
+Every correlation between what the user *saw* and what the data *recorded* has been inferred from counts.
+The tool that fixes that is a **controller-button marker**: press the instant you see it, and the log gets
+a dated record of what the system believed at that moment.
+
+**Built 2026-08-30 for the geometry side** (`mark` binding, default **B**; see
+[`specs/spaces-geometry.md` §10.3](../specs/spaces-geometry.md)) — it dumps the height census, registration
+state, residual summary and the recent churn ring, stamped with the controller's own height, which for the
+raised floor is the only ground truth that exists.
+
+**Still missing for the jitter campaign**, which needs a different payload: `lastDt`, `lastJerk`, `rebuilds`
+and the frame ring, at frame precision rather than capture precision. The button and the transport are now
+there, so this is a payload, not a new mechanism. Build it if that investigation resumes.
 
 ### GC is not testable on Quest
 
@@ -74,6 +146,64 @@ the knob overrides it at runtime.
 
 The default is a **human visual call** (smoothness vs peripheral sharpness), not a data question: 0.5 is
 meaningfully smoother, 0.3 a balance, 0 sharpest.
+
+---
+
+## Instrumentation — the geometry event log
+
+**Status:** **shipped 2026-08-30**; two validations open (below). The design and event reference now live in
+[`specs/spaces-geometry.md` §10](../specs/spaces-geometry.md) — this entry keeps only what is *not* done and
+what the build changed about the plan.
+
+Always-on and change-gated, to `temp/geometry-<date>.jsonl`, rotated daily and pruned past
+`--geometry-log-days` (21). A settled room emits nothing. Both halves shipped together — churn and heights —
+since a device-side map re-fit would produce both symptoms and the value is in reading them on one timeline.
+
+### Open — what still has to happen
+
+- **Room mapping.** Which physical room is `real_floor_10` / `real_ceiling_21` (the ceiling 23 cm below the
+  other two)? Daniel to identify. Not a build gate: the ids are stable, so the mapping can be attached to
+  the log afterwards. It decides which room's numbers to read first when the next occurrence lands.
+- **On-device cost A/B — not yet run.** The estimate is sub-0.1 ms on a capture that currently runs ~5 ms,
+  and exactly 0 ms on non-capture frames: every probe is in the capture body (0.5 Hz) or on a transition,
+  events are batched rather than one fetch per line, and the only per-frame addition is a rising-edge check
+  on a pointer list `controller-beams` already builds. **That is an estimate, not a measurement.** Run
+  `--debug-jitter` before and after and hold the spec's baseline (31/33 captures ≤6 ms, no per-capture
+  drop). Until then the number in §10 is a claim.
+- **Baselines need one clean session.** The anomaly check compares live heights against the persisted seed,
+  so it says nothing until a session has run with the seed current.
+
+### What the build changed about the plan
+
+- **Wall bottoms do not come from `polyY`.** The plan said to reuse Pass A's `polyY` as a wall's world
+  bottom. Wrong: a WebXR plane's polygon is in the plane's own X-Z frame, so `pt.y` is ~0 for every point —
+  `polyY` is not a height at all. `heightCensus` derives the bottom from `_lp.y − extent[1]/2` instead.
+- **Candidate ranking had to be plane-relative.** The first cut of `explainNoMatch` ranked candidates by
+  centroid distance, which is exactly what `matchWall` refuses to do — a wall's centroid slides metres along
+  the wall between captures, so a wall seen from the other end would have been reported as "the device never
+  emitted it", the most misleading answer available. Caught by a unit test; it now ranks by how far through
+  matchWall's gates each candidate gets.
+- **No separate baseline store was needed.** Registration solves yaw about gravity plus x/z and never
+  touches y, so height *differences* are frame-invariant and the existing seed is a valid baseline directly.
+  The plan assumed a new persisted scalar per space.
+- **`styled: true` would have been constant.** The obvious check — does the pruned entity have a material —
+  is true for every real surface, because `_surface_entity` creates one from `_default_surface_material`.
+  The field would have read `true` on every line and answered nothing at the moment it mattered. It now
+  compares against that per-semantic default (a director edit, not a material) and records the actual
+  colour; the client side reports the colour rather than a boolean for the same reason.
+- **`bindings` had one default in two places.** Adding the `mark` action to the dataclass left
+  `get_settings()` serving the old scheme; the literal is now a single `DEFAULT_BINDINGS` constant.
+  Caught only by curling the running server — no test covered the injected value.
+- **Tests write to their own log dir.** `conftest` now points `GEO_LOG_DIR` at `tmp_path` — `conjure.log`
+  already suffers from a test run appending to the live dev log, and it would be worse here.
+
+### Not done, deliberately
+
+- **No per-frame plane re-pose.** That is [Pose smoothing Phase 2](#pose-smoothing-phase-2--per-frame-target-refresh),
+  a different problem with its own trade-off.
+- **No heap sampling** — dead on Oculus Browser, see [GC is not testable on Quest](#gc-is-not-testable-on-quest).
+- **`--debug-registration` was not made the default.** ~6 fetches per capture; it would perturb what it
+  measures, which is the mistake the jitter campaign already paid for once.
 
 ---
 

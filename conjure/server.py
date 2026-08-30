@@ -22,7 +22,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,6 +53,7 @@ from .world import (_MRU_CAP, MIGRATED_SID, SessionRepository, SpaceStore, World
 ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT / "client"
 LOG_FILE = ROOT / "temp" / "conjure.log"   # client diagnostics (gated by settings.debug_log)
+GEO_LOG_DIR = ROOT / "temp"                # geometry event log: temp/geometry-YYYY-MM-DD.jsonl (rotated)
 SAMPLE_WORLD = ROOT / "examples" / "sample_world.json"
 # The precious DATA root — the resolved user home (docs/specs/config.md §1), NOT the in-project
 # .cache anymore. On startup the in-project .cache is migrated into here (see _init_state).
@@ -654,6 +655,57 @@ def _slog(tag: str, msg: str) -> None:
     except OSError:
         pass
 
+
+# --- geometry event log -------------------------------------------------------------------------------
+# One JSONL line per CHANGE in the room's surface set or its height census (docs/backlogs/spaces-geometry.md
+# — "Instrumentation"). Deliberately NOT conjure.log: that file is a single unrotated blob that pytest also
+# appends to, and the unit of analysis here is "compare Tuesday to Friday" over a symptom that recurs on a
+# timescale of days. Rotated daily, pruned past `geometry_log_days`.
+#
+# Structured rather than prose because the questions are numeric: did floor_10's height move relative to the
+# rest of the space, and by how much. `t` is the SERVER's receive time (one clock for the whole file, so
+# lines from the headset and from ingest_room sort together); the client's own stamp rides along as `ct`.
+_geo_log_day: str = ""            # the date of the last retention sweep, so it runs once per day, not per line
+
+
+def _geo_prune(today: str) -> None:
+    """Delete rotated geometry logs older than `geometry_log_days`. Runs at most once per calendar day."""
+    global _geo_log_day
+    if _geo_log_day == today:
+        return
+    _geo_log_day = today
+    days = settings.geometry_log_days
+    if days <= 0:                                        # 0 = keep everything
+        return
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    for p in GEO_LOG_DIR.glob("geometry-*.jsonl"):
+        stamp = p.stem.removeprefix("geometry-")
+        if len(stamp) == 10 and stamp < cutoff:          # lexical compare is chronological for ISO dates
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
+def _glog(ev: str, fields: dict, *, sid: str = "server", ct: float | None = None) -> None:
+    """Append one geometry event. `ev` is a dotted name (`churn.mint`, `level.census`, `seed.prune`);
+    `fields` is whatever that event needs. Never raises — a diagnostic must not break a capture."""
+    if not settings.geometry_log:
+        return
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    rec = {"t": now.isoformat(timespec="milliseconds"), "sid": sid, "ev": ev}
+    if ct is not None:
+        rec["ct"] = ct
+    rec.update(fields)
+    try:
+        GEO_LOG_DIR.mkdir(exist_ok=True)
+        _geo_prune(today)
+        with (GEO_LOG_DIR / f"geometry-{today}.jsonl").open("a") as f:
+            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
 # Edit-rights follow ownership (specs/spaces.md §7): only the ACTIVE world's owner may change the
 # scene content of the shared world. Enforced server-side, never via the prompt — the MCP client and the
 # headset attach an `X-Conjure-User` header; a non-owner hitting these routes gets 403. A *missing*
@@ -1253,6 +1305,7 @@ async def index() -> HTMLResponse:
     flag = "true" if settings.debug_log else "false"
     rflag = "true" if settings.debug_registration else "false"
     jflag = "true" if settings.debug_jitter else "false"   # jitter probes only (clean, no registration diag)
+    gflag = "true" if settings.geometry_log else "false"   # always-on, change-gated geometry event log
     # Co-location robustness knobs (two-headset guest tuning) — read by RoomSnap.register/selectSpace and the
     # capture throttle in conjure-client.js. Omitting a field falls back to the client's built-in default.
     reg = (f"{{minCov:{settings.reg_min_cov},minCovFrac:{settings.reg_min_cov_frac},"
@@ -1272,6 +1325,7 @@ async def index() -> HTMLResponse:
             f"overlapSlop:{settings.wall_overlap_slop}}}")
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
                         f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_DEBUG_JITTER={jflag};"
+                        f"window.CONJURE_GEOMETRY_LOG={gflag};"
                         f"window.CONJURE_FORCE_GEO={fg};"
                         f"window.CONJURE_DROP_SURFACE={ds};"
                         f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};"
@@ -3303,16 +3357,33 @@ async def ingest_room(req: RoomUpdate) -> dict:
         for eid in existing:
             if eid not in new_ids and eid not in anchored:
                 geo_ops.append({"op": "remove", "id": eid})
+                # A prune destroys the surface's MATERIAL along with its geometry, and the client rebuilds
+                # `surfaceStyles` from the snapshot — so this line is the moment a surface's colour is lost
+                # for good. It is the server half of the "drops out and returns uncoloured" symptom; the
+                # client half is `churn.prune`. Named by id because `seed_ops=N` alone can't be chased.
+                meta = (existing[eid].get("meta") or {})
+                mat = (existing[eid].get("components") or {}).get("material") or {}
+                # `styled` means "a DIRECTOR edit is being destroyed", not "a material exists" — every real
+                # surface is created with a per-semantic default (_default_surface_material), so a plain
+                # truthiness check would report True for all of them and say nothing. Compare against that
+                # default instead, and record the colour so the loss is legible in the log.
+                _glog("seed.prune", {"id": eid, "sem": meta.get("semantic"),
+                                     "styled": mat != _default_surface_material(meta.get("semantic") or ""),
+                                     "color": mat.get("color"), "tex": bool(mat.get("src"))})
+                _slog("seed", f"surface {eid} absent from post → PRUNED from seed")
     for s in req.surfaces:                                    # add new / update STRUCTURALLY-changed (§7.4)
         if s.id in existing:
             changed, why = _surface_structural_change(existing[s.id], s)
             if changed:
                 geo_ops.append({"op": "update", "id": s.id, "set": _surface_update_set(s)})
                 changed_ids.add(s.id)
+                _glog("seed.update", {"id": s.id, "sem": s.semantic, "why": why})
                 _slog("seed", f"surface {s.id} {why} → seed updated")
         else:
             geo_ops.append({"op": "add", "entity": _surface_entity(s)})
             changed_ids.add(s.id)
+            _glog("seed.add", {"id": s.id, "sem": s.semantic})
+            _slog("seed", f"surface {s.id} new → added to seed")
     if geo_ops:
         store.apply_patch(geo_ops, origin="room")             # seed updated in place; NOT broadcast
 
@@ -4989,12 +5060,32 @@ class ClientLog(BaseModel):
     msg: str
 
 
+class GeometryLog(BaseModel):
+    sid: str                           # one AR client/page-load, so a session's lines group
+    events: list[dict]                 # [{ev, ct, ...}] — batched, see the client's geoFlush
+
+
 @app.post("/client_log")
 async def client_log(req: ClientLog) -> dict:
     """Append a diagnostic line from the WebXR client to temp/conjure.log (and echo to the console), so
     headset-side logs are captured without remote browser debugging. Gated by settings.debug_log OR
     settings.debug_registration (so registration diagnostics still write when only that flag is on)."""
     _slog(req.tag or "log", req.msg)
+    return {"ok": True}
+
+
+@app.post("/geometry_log")
+async def geometry_log(req: GeometryLog) -> dict:
+    """Append a BATCH of geometry events to temp/geometry-<date>.jsonl (docs/backlogs/spaces-geometry.md).
+
+    Batched on purpose. The client's `debugLog` does one fetch per line, which is why --debug-jitter had to
+    be decoupled from --debug-registration — the measurement was contaminating the measurement. An
+    always-on probe cannot afford that, so the client buffers and flushes on a timer; this route is the
+    only thing per flush, not per event."""
+    for e in req.events[:200]:                            # a runaway client can't flood the day's file
+        ev = str(e.pop("ev", "?"))
+        ct = e.pop("ct", None)
+        _glog(ev, e, sid=req.sid, ct=ct if isinstance(ct, (int, float)) else None)
     return {"ok": True}
 
 

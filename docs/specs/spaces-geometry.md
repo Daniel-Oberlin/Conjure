@@ -551,7 +551,82 @@ swim.
 
 ---
 
-## 10. Knobs
+## 10. The geometry event log
+
+Two field faults recur on a timescale of **days**: a surface drops out and comes back without its styling,
+and one room's floor renders 10–15 cm high. Every diagnostic in §9 is per-capture and opt-in behind
+`--debug-registration`, which is correct for a sit-down session and useless here — the flag is off every
+time either fault occurs.
+
+So there is a second lane, **always on and change-gated**: `temp/geometry-<date>.jsonl`. A settled room
+emits **nothing**. That property is what makes it affordable to leave running for weeks, and it is enforced
+by construction, not by discipline — every event fires on a transition.
+
+Separate from `conjure.log` deliberately: that file is unrotated and the test suite also appends to it,
+while the unit of analysis here is "compare Tuesday to Friday". This one rotates daily and prunes past
+`--geometry-log-days` (21).
+
+**Batched, never a fetch per event.** `debugLog` does one POST per line, which is exactly why the jitter
+probes had to be decoupled from the registration diagnostics (§9) — the measurement was contaminating the
+measurement. Events accumulate in memory and flush on a ~5 s timer, so the per-event cost is an array push.
+
+| Event | Fires when |
+|---|---|
+| `space.enter` | first capture in a world — role, `_ref`/seed sizes, count per semantic |
+| `churn.miss` / `.regain` | a known id goes unmatched (n=1..3), or returns before the debounce |
+| `churn.mint` / `.hide` / `.prune` | a fresh id is minted; the element is removed after 3 misses; the id leaves the POST set |
+| `churn.restyle_lost` | an id that used to render with a material now renders bare |
+| `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
+| `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
+| `seed.add` / `.update` / `.prune` | the server's own view — a prune is where a surface's material is destroyed |
+| `mark` | the controller-button ground-truth probe (§10.3) |
+
+### 10.1 Why a surface vanished — device or matcher
+
+The load-bearing field is `why`. A surface can disappear for three reasons that look **identical in the
+headset**, and they have nothing in common:
+
+- **device** — the Quest never emitted a plane that could be this surface. Nothing to tune.
+- **matcher** — a plane was right there and an identity gate rejected it. `explainNoMatch` names the gate
+  and its **margin against its tolerance** (`perp=0.19/0.15`), which is the number that says what to set
+  `--wall-perp-tol` to.
+- **style orphan** — identity held (`_ref` outlives the seed by design, §6.1) but the seed entity was
+  already pruned, so the colour is gone with the matcher working perfectly. `churn.restyle_lost`.
+
+Ranking candidates is **plane-relative, not by centroid**, for the same reason `matchWall` is: a wall's
+centroid slides metres along the wall between captures, so centroid-ranking would report a wall seen from
+the other end as "never detected" — the most misleading thing this could say. Candidates wildly off in
+facing or plane are discarded as *other walls*, not failed matches.
+
+### 10.2 One room's floor, without anyone noticing
+
+`heightCensus` (pure, in `room-snap.js`, called **before** `sealWalls` — sealing rewrites the very gap being
+measured) reports every floor and ceiling height, and every wall's gap to the floor **below it**, using the
+same `covers` footprint test `sealWalls` uses to decide which room a wall is in. Floor + ceiling + wall gaps
+all moving together is a regional map shift (§1); the floor moving alone is a plane re-fit.
+
+The anomaly test fires **without the user noticing anything**. Registration solves yaw about gravity plus an
+x/z translation and never touches y (§4), so height *differences* are identical in F_track and F_ref — which
+makes the stored seed a valid baseline for a live capture with no extra persistence. `WM.levelDeviation`
+takes each surface's live-minus-seed height and subtracts the **median**, absorbing any whole-space offset;
+what remains is "this floor moved relative to the rest of the space", which is the reported symptom and
+cannot be explained away as drift. Median rather than mean, so one badly wrong floor cannot drag the
+baseline toward itself and hide. Below 3 comparable surfaces it returns nothing — with two, a whole-space
+shift and one bad plane are the same number.
+
+### 10.3 The marker — the only ground truth there is
+
+For the raised floor the system has **no ground truth**: nothing internal can tell it the rendered floor is
+four inches above the physical one, so no automatic probe can trigger on it.
+
+The `mark` binding (default **B**) writes the full census, registration state, residual summary and the
+recent churn ring — stamped with the **controller's own height**. Rest the controller on the real floor and
+press: `err` is the actual error in metres. The grip pose sits a few cm above whatever it rests on, a fixed
+bias that is immaterial against a 10–15 cm signal and constant across sessions, so the session-to-session
+delta is exact regardless. Input arrives through `ConjurePointers`, already read and cached per `XRFrame`
+by `controller-beams`, so the per-frame cost is a rising-edge check.
+
+## 11. Knobs
 
 | Knob | Default | Purpose |
 |---|---|---|
@@ -569,10 +644,12 @@ swim.
 | `--foveation` | 0 | GPU headroom; raising it cut the dropped-frame rate monotonically |
 | `--debug-registration` | off | registration/residual logging |
 | `--debug-jitter` | off | frame-pacing probes (kept decoupled so heavy logging cannot contaminate timings) |
+| `--no-geometry-log` | — | disable the always-on, change-gated geometry event log (§10) |
+| `--geometry-log-days` | 21 | retention for the rotated `temp/geometry-<date>.jsonl`; 0 keeps all |
 
 ---
 
-## 11. Where the solver lives
+## 12. Where the solver lives
 
 The solve runs on **both** the client (JS, against live geometry) and the server (Python, against the
 seed). Rather than embedding Node in the Python server, the solver is **ported** and both
@@ -587,19 +664,20 @@ with a golden test like `plane_anchor`'s.
 
 ---
 
-## 12. Surface reference
+## 13. Surface reference
 
 **`client/room-snap.js`** — pure geometry, `THREE` passed in, unit-tested:
 
 `register`, `selectSpace`, `canonicalFrame`, `surfaceToRef`, `matchRef`, `matchWall`, `matchInset`,
 `dupInsetIds`, `wallCorners`, `authorInsetAnchor`, `reconstructInset`, `insetAlong`, `hostWallFor`,
-`joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`, `yawOf`.
+`joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`, `yawOf`, `heightCensus`, `explainNoMatch`.
 
 **`client/plane-anchor.js`** — `authorAnchor`, `solveAnchor`; internals `wallFrame`, `averageQuat`,
 `twistAbout`, `solveSym3`, `cond2`.
 
 **`client/world-model.js`** — `surfaceSig`, `surfaceMoved`, `surfacePoseMoved`, `surfaceShapeChanged`,
-`advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`.
+`advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`,
+`levelDeviation`.
 
 **`client/room-worker.js`** — the off-thread `register` host.
 
@@ -615,14 +693,16 @@ with a golden test like `plane_anchor`'s.
 | local render + world-root identity | `client/conjure-client.js:1396` |
 | content placement | `client/conjure-client.js` `_placeContent` |
 | recovery | `client/conjure-client.js` `_recoverMissing` |
+| geometry event log — client | `client/conjure-client.js` `geoLog` / `_logChurn` / `_logLevel` / `_markProbe` |
+| geometry event log — sink | `conjure/server.py` `_glog`, `_geo_prune`, `/geometry_log` |
 
 **Tests:** `tests/js/room-snap.test.js` (synthetic rooms plus `fixtures/golden-room.json`, a real
 45-surface two-room Quest capture), `tests/js/plane-anchor.test.js`, `tests/js/world-model.test.js`,
-`tests/test_plane_anchor.py`.
+`tests/test_plane_anchor.py`, `tests/test_geometry_log.py`.
 
 ---
 
-## 13. Related specs
+## 14. Related specs
 
 - [`specs/spaces.md`](./spaces.md) — the space record, selection, admission, authority.
 - [`specs/worlds-surfaces.md`](./worlds-surfaces.md) — styling, visibility, immersion, openings.

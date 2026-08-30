@@ -15,6 +15,19 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=int(os.environ.get("CONJURE_PORT", "8080")))
     ap.add_argument("--debug-registration", action="store_true",
                     help="show the co-location registration HUD + per-capture log in the headset (off by default)")
+    ap.add_argument("--no-geometry-log", action="store_true",
+                    help="disable the always-on geometry event log (temp/geometry-<date>.jsonl). It is ON by "
+                         "default and CHANGE-gated — a settled room writes nothing — because the symptoms it "
+                         "exists for (a surface dropping out and returning uncoloured; one room's floor "
+                         "sitting a few inches high) are noticed days later, when an opt-in probe would have "
+                         "been off. Records: space.enter (the session's opening surface census), churn.* "
+                         "(miss/regain/mint/hide/prune/restyle_lost, each saying WHY a surface failed to "
+                         "match — 'device' = the Quest never emitted a plane there, or the matcher gate and "
+                         "margin that rejected it), level.census + level.anomaly (per-room floor/ceiling "
+                         "heights, and one moving relative to the rest of the space), track.reset/track.lock, "
+                         "seed.add/update/prune, and mark (the controller-button ground-truth probe).")
+    ap.add_argument("--geometry-log-days", type=int, default=21, metavar="DAYS",
+                    help="retention for the rotated geometry logs (default: 21). 0 keeps everything.")
     ap.add_argument("--debug-jitter", action="store_true",
                     help="enable ONLY the frame-pacing/jitter probes without the heavy registration "
                          "diagnostics — for a clean per-frame cost measurement (off by default). Emits: RATE "
@@ -153,6 +166,9 @@ def main() -> None:
         os.environ["CONJURE_DEBUG_REGISTRATION"] = "1"
     if args.debug_jitter:
         os.environ["CONJURE_DEBUG_JITTER"] = "1"
+    if args.no_geometry_log:
+        os.environ["CONJURE_GEOMETRY_LOG"] = "0"
+    os.environ["CONJURE_GEOMETRY_LOG_DAYS"] = str(args.geometry_log_days)
     if args.force_geo:
         os.environ["CONJURE_FORCE_GEO"] = args.force_geo
     if args.drop_surface:

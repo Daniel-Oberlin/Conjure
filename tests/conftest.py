@@ -143,6 +143,11 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "IMAGES", {})  # clean image store per test
     monkeypatch.setattr(server, "resolver", None)
     monkeypatch.setattr(server, "_authority_ts", 0.0)    # fresh room-authority timing per test
+    # Keep the geometry event log OFF the real temp/ tree. conjure.log already suffers from this — a test
+    # run appends to the live dev log and you have to window by timestamp before trusting the tail — and it
+    # would be far worse here, where the whole value of the file is being able to read days back through it.
+    monkeypatch.setattr(server, "GEO_LOG_DIR", tmp_path / "geolog")
+    monkeypatch.setattr(server, "_geo_log_day", "")      # …and let each test's retention sweep run fresh
     monkeypatch.setattr(server, "library", AssetLibrary(tmp_path / "library.db"))  # isolated catalog
     monkeypatch.setattr(server, "embedder", None)  # no embeddings by default; tests set a FakeEmbedder
     monkeypatch.setattr(server, "captioner", None)  # no captioner by default; tests set a FakeCaptioner
