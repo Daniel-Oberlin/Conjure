@@ -268,7 +268,7 @@ def main() -> int:
                          f"again. Off when omitted. Accepts a comma-separated list so an STT mis-hearing "
                          f"can ride along (--wake-word computer,computa). Must NOT be the shell's wake "
                          f"word ({WAKE_WORDS[0]!r}) — the gate strips its own word first, so sharing one "
-                         f"would make spoken shell commands unreachable"),
+                         f"would make spoken shell commands unreachable")
     args = ap.parse_args()
 
     settings = get_settings()
