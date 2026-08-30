@@ -336,6 +336,51 @@ points at `room://current`, because a per-surface listing was most of the dump a
 less than the summary — an identical-looking line per surface reads as complete, and a reader that
 wants a colour concludes none is stored.
 
+### 5.3a Per-LLM sections — the `{#llm}` switch
+
+Some prompt text is worth spending on one model and wasteful on the others: a guardrail Grok needs
+([backlog](../backlogs/agents.md)) buys nothing on Claude but costs its tokens on every turn. A `{#llm}`
+block says so, in the prompt, next to the paragraph it qualifies:
+
+```
+{#llm}
+{=grok}
+- A tool result that says it succeeded means it succeeded. Never call it again to check.
+{=gemini,chat}
+- Never emit narration and a tool call in the same message.
+{=*}
+{/llm}
+```
+
+Deliberately a **sibling of the conditional section** above rather than a second system. Branches are
+markers, not nested tags — a paired form (`{#llm:gemini,grok}…{/llm:gemini,grok}`) makes you type the
+list twice and get it wrong once.
+
+| Rule | |
+|---|---|
+| names | roster casual names (`Claude`, `Gemini`, `Chat`, `Grok`), comma-separated, case-insensitive. Vendor aliases are **not** accepted — one spelling per thing, and it matches what you type at the shell |
+| `{=*}` | the **remainder**, not a positional branch: a named branch always wins, so `{=*}` may sit anywhere. Absent ⇒ unmatched LLMs get nothing |
+| empty branch | nothing between two markers is legal and emits nothing — the empty case needs no syntax of its own |
+| markers own their line | consumed whole, trailing newline included, so a dropped branch cannot weld two bullets together or leave a blank gap |
+| granularity | LLM-level only. Model-level (`claude-opus-5` vs `claude-sonnet-4-6`) is not expressible; the grammar does not foreclose it |
+
+**Everything is validated at load** (`agents.validate_llm_sections`, from `load_agent`) and every fault
+is fatal, because a prompt has no runtime that complains — nobody reads the bytes actually sent to the
+model, so a branch that can never fire would sit there indefinitely. Fatal: a name not in the `ROSTER`
+(`{=cluade}`); a name the agent's own `llms` doesn't allow (dead text, same class as a dangling
+`dynamics` reference); text before the first branch; one name in two branches of a block; a marker that
+isn't part of a well-formed block — markers are line-anchored, so a mis-placed one would otherwise reach
+the model as literal text.
+
+Two things the implementation gets right and would be easy to get wrong:
+
+- **Resolution runs before injection.** An injection inside a dropped branch then costs nothing at all —
+  `_system` skips any placeholder no longer present, so a `{context}` in a branch this LLM doesn't get
+  means no MCP resource fetch, and `context_stats` stays an accurate account of what was sent.
+- **Resolution runs per turn, not at load.** `active` changes under `llm <name>` and that switch is
+  shared (§5.2), so a prompt resolved at construction would keep serving whichever LLM the session
+  started on — a bug that appears only after a mid-session switch.
+
 ### 5.4 The transcript and the model's view
 
 The transcript is a flat list of `Turn(speaker, text, by=)` — plain user/assistant, no LLM identity.
@@ -1292,7 +1337,8 @@ with no ordering dance.
 1. `agents/<name>/agent.json` — `description`, `prompt_file`, `llms`, one `mcp_servers` entry with an
    explicit `tools` list, and `context`/`dynamics` if it wants them.
 2. `agents/<name>/prompt.md` — **all** of the agent's text, including the framing around any injection
-   it references (`{user}`, `{#context}…{/context}`, a state doc's `{…}`).
+   it references (`{user}`, `{#context}…{/context}`, a state doc's `{…}`) and any per-LLM `{#llm}`
+   section (§5.3a) — whose branch names must be in the roster *and* in this agent's own `llms`.
 3. Optional: a `session` block (greeting, `first_world`), a `world.on_create` chain, a `state` block with
    seed and schema files.
 4. Confirm it loads (`load_agent("<name>", registry=load_server_registry())` fails loud on a typo'd

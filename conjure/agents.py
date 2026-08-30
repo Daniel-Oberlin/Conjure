@@ -15,6 +15,7 @@ context injection in `director` (§5.3), `dynamics` in the world server (specs/d
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -158,6 +159,12 @@ def load_agent(name: str, *, agents_dir: Optional[Path] = None,
     if not prompt.strip():
         raise ValueError(f"agent {name!r}: needs a non-empty 'prompt' or 'prompt_file'")
 
+    llms = list(data.get("llms", [WILDCARD]))
+    # Per-LLM prompt sections (§5.3): validate the `{#llm}` blocks HERE, at load, so a typo'd or
+    # unreachable branch fails like a dangling `dynamics` name. A branch that can never fire is dead
+    # text, and dead text in a prompt is invisible — nothing downstream would ever complain.
+    validate_llm_sections(prompt, agent=name, llms=llms)
+
     servers: list[ServerRef] = []
     for s in data.get("mcp_servers", []):
         ref = ServerRef(server=s["server"], access=s.get("access", "all"),
@@ -204,7 +211,7 @@ def load_agent(name: str, *, agents_dir: Optional[Path] = None,
 
     return AgentDef(
         name=name, description=data.get("description", ""), prompt=prompt,
-        llms=list(data.get("llms", [WILDCARD])), default_llm=data.get("default_llm"),
+        llms=llms, default_llm=data.get("default_llm"),
         servers=servers, context=list(data.get("context", [])), dynamics=dynamics,
         personas=list(data.get("personas", [])), session=dict(data.get("session") or {}),
         state=state,
@@ -216,3 +223,140 @@ def scoped_roster(agent: AgentDef, roster: dict) -> dict:
     if agent.allows_any_llm():
         return dict(roster)
     return {name: llm for name, llm in roster.items() if name in agent.llms}
+
+
+# --------------------------------------------------------------------------- per-LLM prompt sections
+#
+# A `{#llm}` switch in an agent's prompt.md (docs/specs/agents.md §5.3): some prompt text is worth
+# spending on one model and wasteful on the others — a guardrail Grok needs and Claude does not. Without
+# this the only choices are to pay for the line on every model or not have it at all.
+#
+#     {#llm}
+#     {=grok}
+#     - A tool result that says it succeeded means it succeeded.
+#     {=gemini,chat}
+#     - Never emit narration and a tool call in the same message.
+#     {=*}
+#     {/llm}
+#
+# Deliberately a SIBLING of the existing conditional section (`{#context}…{/context}`, see
+# director._fill_injection) rather than a second system. Branches are markers, not nested tags: a paired
+# form (`{#llm:gemini,grok}…{/llm:gemini,grok}`) makes you type the list twice and get it wrong once.
+#
+# Everything is validated at LOAD (`validate_llm_sections`, called from `load_agent`) so a typo fails
+# loudly like a dangling `dynamics` name — a branch that can never fire is dead text, and dead text in a
+# prompt is invisible. Resolution happens per TURN (`resolve_llm_sections`, called from
+# `Director._system`), because the active LLM changes under `llm <name>` mid-session.
+
+_LLM_OPEN, _LLM_CLOSE = "{#llm}", "{/llm}"
+# Markers own their whole line, trailing newline included, so a dropped branch cannot weld two bullets
+# together or leave a double blank line where a section used to be.
+_BLOCK_RE = re.compile(r"^\{\#llm\}[ \t]*\r?\n(.*?)^\{/llm\}[ \t]*(?:\r?\n|\Z)", re.S | re.M)
+_BRANCH_RE = re.compile(r"^\{=([^}\r\n]*)\}[ \t]*(?:\r?\n|\Z)", re.M)
+
+
+def _parse_branches(body: str, where: str) -> list[tuple[tuple[str, ...], str]]:
+    """One block's body → [(names, text)], names lowercased; `("*",)` is the remainder branch.
+
+    Raises ValueError on the shapes that would otherwise resolve silently and wrongly."""
+    marks = list(_BRANCH_RE.finditer(body))
+    if not marks:
+        if body.strip():
+            raise ValueError(f"{where}: text inside {_LLM_OPEN} before the first {{=…}} branch")
+        return []
+    if body[:marks[0].start()].strip():
+        # A switch with a fall-through preamble is harder to read at a glance than the same line placed
+        # above the block, where it plainly always applies.
+        raise ValueError(f"{where}: text inside {_LLM_OPEN} before the first {{=…}} branch")
+    out: list[tuple[tuple[str, ...], str]] = []
+    seen: set[str] = set()
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(body)
+        names = tuple(n.strip().lower() for n in m.group(1).split(",") if n.strip())
+        if not names:
+            raise ValueError(f"{where}: empty branch marker {{={m.group(1)}}} — name an LLM, or use {{=*}}")
+        if WILDCARD in names and len(names) > 1:
+            raise ValueError(f"{where}: branch {{={m.group(1)}}} mixes '*' with a name; "
+                             f"'*' is the remainder and stands alone")
+        for n in names:
+            if n in seen:                      # silent precedence between two branches is not worth having
+                raise ValueError(f"{where}: {n!r} appears in more than one branch of the same "
+                                 f"{_LLM_OPEN} block")
+            seen.add(n)
+        out.append((names, body[m.end():end]))
+    return out
+
+
+def _llm_blocks(prompt: str, where: str) -> list[tuple[re.Match, list[tuple[tuple[str, ...], str]]]]:
+    """Every well-formed `{#llm}` block, parsed — and a hard error for any marker that is NOT part of one.
+
+    That last part matters: markers are line-anchored, so a mis-indented or inline `{#llm}` simply
+    wouldn't match, and would then be passed through to the model as literal text. Silence is the wrong
+    failure for a prompt, where nobody is reading the bytes that were actually sent."""
+    blocks = [(m, _parse_branches(m.group(1), where)) for m in _BLOCK_RE.finditer(prompt)]
+    residue = _BLOCK_RE.sub("", prompt)
+    if _LLM_OPEN in residue or _LLM_CLOSE in residue:
+        raise ValueError(f"{where}: an unmatched or mis-placed {_LLM_OPEN}/{_LLM_CLOSE} — each block "
+                         f"opens and closes on its own line")
+    stray = _BRANCH_RE.search(residue)
+    if stray:
+        raise ValueError(f"{where}: branch marker {{={stray.group(1)}}} outside any {_LLM_OPEN} block")
+    return blocks
+
+
+def validate_llm_sections(prompt: str, *, agent: str, llms: list[str]) -> None:
+    """Fail loudly on a `{#llm}` block that can never do what it looks like it does.
+
+    Two name checks, both fatal (docs/backlogs/agents.md — decisions taken):
+      • not in the global ROSTER — `{=cluade}` must not silently never fire;
+      • in the ROSTER but not in this agent's own `llms` allow-list — dead text, the same class of
+        mistake as a dangling `dynamics` reference, which already fails the load.
+
+    `llms` is the agent's raw allow-list (`["*"]` = any). ROSTER is imported lazily, like `dynamics`, so
+    the agent loader stays usable without pulling the LLM module."""
+    from .llm import ROSTER
+
+    where = f"agent {agent!r}: prompt"
+    blocks = _llm_blocks(prompt, where)
+    if not blocks:
+        return
+    known = {e.name.lower(): e.name for e in ROSTER}
+    allowed = None if WILDCARD in llms else {n.lower() for n in llms}
+    for _, branches in blocks:
+        for names, _text in branches:
+            for n in names:
+                if n == WILDCARD:
+                    continue
+                if n not in known:
+                    raise ValueError(f"{where} names unknown LLM {n!r} in a {{#llm}} branch "
+                                     f"(known: {sorted(known.values())})")
+                if allowed is not None and n not in allowed:
+                    raise ValueError(f"{where} has a {{#llm}} branch for {known[n]!r}, which this agent's "
+                                     f"'llms' does not allow ({llms}) — the branch could never fire")
+
+
+def resolve_llm_sections(prompt: str, active: str) -> str:
+    """Collapse every `{#llm}` block to the branch for the `active` LLM (a roster casual name).
+
+    First matching NAMED branch wins; `{=*}` is the remainder and applies only when no name matched, so
+    it may sit anywhere in the block. No branch and no `{=*}` ⇒ nothing, which is also what an empty
+    branch means — the "empty branch" case needs no syntax of its own.
+
+    Called per turn from `Director._system`, BEFORE the injection pass, so a `{context}` inside a dropped
+    branch costs no MCP resource fetch (`_system` only computes an injection whose placeholder survives)
+    and `context_stats` stays accurate to what was actually sent."""
+    if _LLM_OPEN not in prompt:
+        return prompt                                    # the overwhelmingly common case — no scan, no cost
+    want = (active or "").strip().lower()
+
+    def _pick(m: re.Match) -> str:
+        branches = _parse_branches(m.group(1), "prompt")
+        for names, text in branches:
+            if want in names:
+                return text
+        for names, text in branches:
+            if WILDCARD in names:
+                return text
+        return ""
+
+    return _BLOCK_RE.sub(_pick, prompt)

@@ -376,6 +376,44 @@ async def test_context_not_fetched_when_prompt_omits_placeholder():
     assert session.resources_read == []                        # never fetched
 
 
+async def test_llm_sections_resolve_per_turn_and_follow_a_switch():
+    """The active LLM changes under `llm <name>` and the switch is SHARED (§5.2), so the prompt has to
+    be resolved every turn. Freezing it at construction would work perfectly until someone switched
+    models mid-session — the failure only shows after a switch, which is the worst time to find it."""
+    prompt = "Build.\n{#llm}\n{=grok}\n- grok guardrail\n{=*}\n- everyone else\n{/llm}\n"
+    claude, grok = FakeLLM("Claude"), FakeLLM("Grok")
+    d = Director(settings=None, session=FakeSession(), roster={"Claude": claude, "Grok": grok},
+                 active="Claude", tools=[], prompt=prompt, agent=_agent([]))
+    await d.handle("add a tree")
+    assert "everyone else" in claude.seen[0]["system"]
+    assert "grok guardrail" not in claude.seen[0]["system"]
+
+    d.active = "Grok"                                          # what the shell's `llm grok` does
+    await d.handle("add another")
+    assert "grok guardrail" in grok.seen[0]["system"]
+    assert "everyone else" not in grok.seen[0]["system"]
+    assert "{#llm}" not in grok.seen[0]["system"]              # markers never reach the model
+
+
+async def test_injection_inside_a_dropped_llm_branch_is_never_fetched():
+    """Sections resolve BEFORE injections, so a `{context}` in a branch this LLM doesn't get costs no
+    MCP resource fetch at all — and `context_stats` stays an honest account of what was sent."""
+    llm, session = FakeLLM("Claude"), FakeSession()
+    prompt = "Build.\n{#llm}\n{=grok}\n{#context}scene:\n{context}{/context}\n{/llm}\n"
+    d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
+                 prompt=prompt, agent=_agent(["room://current"]))
+    await d.handle("add a tree")
+    assert session.resources_read == []                        # the placeholder never survived to be seen
+    assert "scene:" not in llm.seen[0]["system"]
+    # …and the same prompt on Grok does fetch it, so the skip is the branch and not a broken placeholder
+    grok, session2 = FakeLLM("Grok"), FakeSession()
+    d2 = Director(settings=None, session=session2, roster={"Grok": grok}, active="Grok", tools=[],
+                  prompt=prompt, agent=_agent(["room://current"]))
+    await d2.handle("add a tree")
+    assert session2.resources_read == ["room://current"]
+    assert "Room: 2 surfaces (test)" in grok.seen[0]["system"]
+
+
 async def test_context_fetch_failure_is_not_fatal():
     class BoomSession(FakeSession):
         async def read_resource(self, uri):

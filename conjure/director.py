@@ -30,7 +30,8 @@ import re
 import sys
 from typing import Awaitable, Callable, Optional
 
-from .agents import AgentDef, ServerSpec, load_agent, load_server_registry, scoped_roster
+from .agents import (AgentDef, ServerSpec, load_agent, load_server_registry, resolve_llm_sections,
+                     scoped_roster)
 from .config import DEFAULT_USER, Settings, scope_for
 from .llm import LLM, ToolSpec, Turn, build_roster
 
@@ -316,7 +317,14 @@ class Director:
         # is the agent's own prompt.md. The runtime only fills the placeholders it declares (see
         # `_fill_injection` for the `{name}` / `{#name}…{/name}` forms), and only computes a value when
         # its placeholder actually appears, so nothing agent-specific lives here.
-        prompt = self._prompt
+        #
+        # Per-LLM sections resolve FIRST, for two reasons. An injection inside a branch that gets dropped
+        # then costs nothing at all — the loop below skips any placeholder no longer present, so a
+        # `{context}` in a dropped branch means no MCP resource fetch, and `_last_injected` stays an
+        # accurate account of what was actually sent. And it happens per TURN, not at load: `self.active`
+        # changes whenever anyone runs `llm <name>`, and that switch is shared (§5.2), so a prompt frozen
+        # at construction would silently keep serving the LLM the session started on.
+        prompt = resolve_llm_sections(self._prompt, self.active)
         injected: dict = {}
         for name, provider in self._injections():
             if "{" + name + "}" not in prompt and "{#" + name + "}" not in prompt:

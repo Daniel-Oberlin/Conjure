@@ -206,3 +206,135 @@ def test_state_seed_is_resolved_at_load(tmp_path):
     a = load_agent("dm", agents_dir=tmp_path)
     assert a.state["map"]["seed_data"] == {"start": "home", "nodes": {}}
     assert a.state["map"]["inject"] == "{map}"
+
+
+# ── per-LLM prompt sections: `{#llm}` (docs/specs/agents.md §5.3) ──────────────────────────────
+# Resolution is pure text; the load-time checks are what stop a branch that can never fire from
+# sitting in a prompt unnoticed. A prompt has no runtime that complains — nobody reads the bytes
+# actually sent to the model — so every one of these is fatal at load, like a dangling `dynamics`.
+
+_SWITCH = """- always
+{#llm}
+{=grok}
+- grok only
+{=gemini,chat}
+- shared by two
+{=*}
+- everyone else
+{/llm}
+- after
+"""
+
+
+def test_llm_sections_pick_the_active_branch():
+    from conjure.agents import resolve_llm_sections
+
+    assert resolve_llm_sections(_SWITCH, "Grok") == "- always\n- grok only\n- after\n"
+    # a multi-name branch serves each of its names
+    assert resolve_llm_sections(_SWITCH, "Gemini") == "- always\n- shared by two\n- after\n"
+    assert resolve_llm_sections(_SWITCH, "Chat") == "- always\n- shared by two\n- after\n"
+    # …and anything unnamed falls to the remainder
+    assert resolve_llm_sections(_SWITCH, "Claude") == "- always\n- everyone else\n- after\n"
+    # roster names are matched case-insensitively (the shell's `llm grok` and `{=Grok}` agree)
+    assert resolve_llm_sections(_SWITCH, "GROK") == resolve_llm_sections(_SWITCH, "grok")
+
+
+def test_llm_sections_leave_the_surrounding_lines_intact():
+    """Markers own their whole line. A dropped branch must not weld two bullets together or leave a
+    blank gap where a section used to be — the output is a prompt someone has to be able to read."""
+    from conjure.agents import resolve_llm_sections
+
+    out = resolve_llm_sections("- a\n{#llm}\n{=grok}\n- g\n{/llm}\n- b\n", "Claude")
+    assert out == "- a\n- b\n"                       # no stray newline, no joined bullets
+    assert resolve_llm_sections("- a\n{#llm}\n{=grok}\n- g\n{/llm}\n- b\n", "Grok") == "- a\n- g\n- b\n"
+
+
+def test_llm_sections_empty_branch_and_missing_remainder_both_emit_nothing():
+    """"A branch can be empty" needs no syntax of its own, and an absent `{=*}` means the same thing."""
+    from conjure.agents import resolve_llm_sections
+
+    explicit = "x\n{#llm}\n{=grok}\n- g\n{=*}\n{/llm}\ny\n"
+    implicit = "x\n{#llm}\n{=grok}\n- g\n{/llm}\ny\n"
+    assert resolve_llm_sections(explicit, "Claude") == "x\ny\n"
+    assert resolve_llm_sections(implicit, "Claude") == "x\ny\n"
+
+
+def test_llm_sections_remainder_never_beats_a_named_branch():
+    """`{=*}` is the ELSE, not a positional branch, so it may sit anywhere in the block."""
+    from conjure.agents import resolve_llm_sections
+
+    p = "{#llm}\n{=*}\n- fallback\n{=grok}\n- grok\n{/llm}\n"
+    assert resolve_llm_sections(p, "Grok") == "- grok\n"
+    assert resolve_llm_sections(p, "Claude") == "- fallback\n"
+
+
+def test_llm_sections_leave_ordinary_prompts_untouched():
+    from conjure.agents import resolve_llm_sections
+
+    # no block → returned verbatim, including the OTHER conditional form and any JSON/SQL braces
+    p = 'Build.\n{#context}scene:\n{context}{/context}\nx {"k": 1} {user}\n'
+    assert resolve_llm_sections(p, "Claude") == p
+
+
+def test_llm_branch_naming_an_unknown_llm_fails_the_load(tmp_path):
+    """`{=cluade}` must not silently never fire."""
+    _write_agent(tmp_path, "typo", {"prompt": "a\n{#llm}\n{=cluade}\n- x\n{/llm}\n"})
+    with pytest.raises(ValueError, match="unknown LLM 'cluade'"):
+        load_agent("typo", agents_dir=tmp_path)
+
+
+def test_llm_branch_outside_the_agents_allow_list_fails_the_load(tmp_path):
+    """In the roster but not in this agent's `llms` — the branch could never fire, so it is dead text.
+    Same class as a dangling `dynamics` reference, and treated the same way."""
+    _write_agent(tmp_path, "narrow",
+                 {"prompt": "a\n{#llm}\n{=grok}\n- x\n{/llm}\n", "llms": ["Claude"]})
+    with pytest.raises(ValueError, match="could never fire"):
+        load_agent("narrow", agents_dir=tmp_path)
+    # …and the same prompt is fine once the agent actually allows it
+    _write_agent(tmp_path, "wide", {"prompt": "a\n{#llm}\n{=grok}\n- x\n{/llm}\n", "llms": ["Claude", "Grok"]})
+    assert load_agent("wide", agents_dir=tmp_path).llms == ["Claude", "Grok"]
+    # a wildcard agent allows any roster name
+    _write_agent(tmp_path, "any", {"prompt": "a\n{#llm}\n{=grok}\n- x\n{/llm}\n"})
+    assert load_agent("any", agents_dir=tmp_path).name == "any"
+
+
+def test_llm_block_text_before_the_first_branch_fails_the_load(tmp_path):
+    """A switch with a fall-through preamble reads ambiguously; the line belongs above the block."""
+    _write_agent(tmp_path, "pre", {"prompt": "{#llm}\n- stray\n{=grok}\n- x\n{/llm}\n"})
+    with pytest.raises(ValueError, match="before the first"):
+        load_agent("pre", agents_dir=tmp_path)
+
+
+def test_llm_duplicate_name_in_one_block_fails_the_load(tmp_path):
+    """Two branches claiming one LLM would resolve by silent precedence — not worth having."""
+    _write_agent(tmp_path, "dupe", {"prompt": "{#llm}\n{=grok}\n- x\n{=grok,chat}\n- y\n{/llm}\n"})
+    with pytest.raises(ValueError, match="more than one branch"):
+        load_agent("dupe", agents_dir=tmp_path)
+
+
+def test_llm_stray_or_mismatched_markers_fail_the_load(tmp_path):
+    """Markers are line-anchored, so a mis-placed one would not match the block pattern and would be
+    passed through to the model as literal text. Silence is the wrong failure mode for a prompt."""
+    _write_agent(tmp_path, "open", {"prompt": "{#llm}\n{=grok}\n- x\n"})            # never closed
+    with pytest.raises(ValueError, match="unmatched or mis-placed"):
+        load_agent("open", agents_dir=tmp_path)
+    _write_agent(tmp_path, "loose", {"prompt": "a\n{=grok}\n- x\n"})                # branch, no block
+    with pytest.raises(ValueError, match="outside any"):
+        load_agent("loose", agents_dir=tmp_path)
+    _write_agent(tmp_path, "inline", {"prompt": "a {#llm} b\n"})                    # not on its own line
+    with pytest.raises(ValueError, match="unmatched or mis-placed"):
+        load_agent("inline", agents_dir=tmp_path)
+
+
+def test_llm_branch_mixing_a_name_with_the_wildcard_fails_the_load(tmp_path):
+    _write_agent(tmp_path, "mixed", {"prompt": "{#llm}\n{=grok,*}\n- x\n{/llm}\n"})
+    with pytest.raises(ValueError, match="stands alone"):
+        load_agent("mixed", agents_dir=tmp_path)
+
+
+def test_the_bundled_agents_still_load():
+    """The validation runs on every load, so a bad block in a shipped prompt.md would break startup."""
+    from conjure.agents import AGENTS_DIR
+
+    for name in ("builder", "outdoor", "scratch"):
+        assert load_agent(name, agents_dir=AGENTS_DIR).name == name

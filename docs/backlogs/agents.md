@@ -38,6 +38,46 @@ Each says how strong it is. **Certain** = the code plainly does this, with a lin
   `_new_world_store` and read by nothing. The admin tree still shows worlds without their (session-level)
   visibility. All three want a cleanup pass.
 
+## Per-LLM prompt sections — the `{#llm}` switch
+
+**Status:** **shipped 2026-08-30.** The grammar and its rules now live in
+[`specs/agents.md` §5.3a](../specs/agents.md); this entry keeps only what is open and what the build
+changed about the plan.
+
+Some prompt text is worth spending on one model and wasteful on the others, and there was no way to say
+so. Two open items below end at exactly that wall — *"the next lever is a prompt line"* — and both name a
+single model: [Grok narrates one tool and calls another](#grok-narrates-one-tool-and-calls-another-then-loops-on-it)
+wants *a tool result that says it succeeded means it succeeded*, and
+[Sticky tool arguments across turns](#sticky-tool-arguments-across-turns-grok) wants *re-derive image
+arguments from the current utterance*. **Neither line has been written yet** — the mechanism is built, the
+guardrails it exists for are still unwritten and unverified. Writing them is the next step, and the one
+that decides whether it was worth building.
+
+### Open
+
+- **Nothing uses it.** No shipped `prompt.md` has a `{#llm}` block, so the feature is exercised only by
+  its tests. Until a real guardrail lands, the load-time validation is the only thing standing between a
+  typo'd branch and silence.
+- **Whether the guardrails work at all is unmeasured.** Both source items are model-behaviour problems
+  where the prompt fix is a *suspicion*; the containment (repeat guard, `MAX_TOOL_HOPS`) is what actually
+  holds today. Adding a branch is cheap, so the risk is believing it fixed something it didn't.
+- **Model-level granularity** (`claude-opus-5` vs `claude-sonnet-4-6`) is not expressible. Every observed
+  case is LLM-level, so this is deliberate, not an oversight — the grammar leaves room for it.
+
+### What the build changed about the plan
+
+- **The parser lives in `agents.py`, not `director.py`.** The plan put it beside `_fill_injection`. But
+  the load-time validation needs it and `director` imports `agents`, not the reverse — so the resolver
+  sits with the agent-definition machinery (`prompt.md` is agent-owned data) and `director` imports it.
+  `ROSTER` is imported lazily inside the validator, matching how `dynamics` is already handled, so the
+  loader stays usable without pulling the LLM module.
+- **Stray markers had to be an error too.** Not in the plan. Markers are line-anchored, so a mis-indented
+  or inline `{#llm}` simply wouldn't match the block pattern — and would then be passed through to the
+  model as literal text. Silence is the wrong failure for a prompt, so any marker not part of a
+  well-formed block now fails the load.
+- **Two shapes the plan didn't name**, both fatal: an empty branch marker (`{=}`), and a branch mixing a
+  name with the remainder (`{=grok,*}`), which reads as though it means something and doesn't.
+
 ## Never built — designed but absent
 
 **Personas.** `AgentDef.personas` is parsed and read by nothing; there is no `invoke_persona` tool. The
