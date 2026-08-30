@@ -57,6 +57,11 @@ roughly 0.9 s per utterance on CPU. The old value was the *multilingual* `base` 
 passing `language=EN`, which constrains decoding without buying the English-only weights. Details and
 the full table are in the investigation.
 
+**`--agent` removed.** The flag was parsed, passed into `_run`, and never read, while `--help`
+advertised it as selecting the agent. Voice is a thin client and the agent server owns which agent is
+open, so the flag could not have been honoured without a `/scope/activate` on connect — and agent
+switching already works by voice. Dropped rather than wired; the spec now records the absence and why.
+
 ---
 
 ## Next: the capture-and-evaluate framework
@@ -179,9 +184,6 @@ client and one imagined client is usually wrong for the imagined one.
 
 ## Smaller open items
 
-- **`--agent` does nothing.** The flag is parsed, passed into `_run`, and never used, while `--help`
-  documents it as selecting the agent. Either wire it to the connection or remove it; a flag that
-  silently no-ops is worse than an absent one.
 - **Decoder vocabulary.** `faster_whisper.transcribe` accepts `initial_prompt` and `hotwords`; pipecat's
   call site passes neither. A **static** list of the application's own vocabulary — "conjure",
   "skybox", "billboard", "annotations" — would bias the decoder toward words it has weak priors for.

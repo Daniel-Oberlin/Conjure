@@ -86,8 +86,7 @@ def _agent_reachable(url: str) -> bool:
         return False
 
 
-async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None,
-               agent: Optional[str] = None) -> None:
+async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None) -> None:
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
@@ -261,9 +260,9 @@ def main() -> int:
     import argparse
 
     ap = argparse.ArgumentParser(prog="conjure.voice", description="Voice front-end for the Conjure director.")
+    # No --agent: voice is a thin client and the agent server owns which agent is open, so the flag
+    # could only ever have lied. Switch agents by voice instead ("conjure open shell", then "agent <name>").
     ap.add_argument("--user", default=DEFAULT_USER, help="logged-in user (owns spaces/worlds/assets)")
-    ap.add_argument("--agent", default=None,
-                    help="agent to load from agents/<name>/ (default: resume your last-used, else builder)")
     ap.add_argument("--wake-word", default=None, metavar="WORDS",
                     help=f"mic gate: only send phrases that start with this word; then it waits for it "
                          f"again. Off when omitted. Accepts a comma-separated list so an STT mis-hearing "
@@ -284,7 +283,7 @@ def main() -> int:
     if args.wake_word:
         print(f"🔒 Wake word active: say '{args.wake_word}' before a command.")
     try:
-        asyncio.run(_run(settings, args.user, args.wake_word, args.agent))
+        asyncio.run(_run(settings, args.user, args.wake_word))
     except KeyboardInterrupt:
         print("\nStopped.")
     except ImportError as exc:

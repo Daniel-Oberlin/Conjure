@@ -21,7 +21,8 @@ typing it are the same act arriving by different doors. Nothing in this file nee
 is loaded, which LLM is active, or what a world is.
 
 Agent selection is therefore a **server-side** concern — the connection resumes your last-used agent.
-(`--agent` is accepted on the command line and currently does nothing; see the backlog.)
+There is deliberately **no `--agent` flag**: this client cannot honour one, so it could only lie. Switch
+agents by voice (`conjure open shell`, then `agent <name>`).
 
 ## 2. The pipeline
 

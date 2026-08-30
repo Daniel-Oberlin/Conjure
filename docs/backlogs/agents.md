@@ -26,9 +26,6 @@ Each says how strong it is. **Certain** = the code plainly does this, with a lin
   drive the session lands everyone in *daniel's* outdoor scope — a scope the guest doesn't own and
   therefore can't edit. Decide which is right (probably the speaker, matching the session verbs) and
   make the two paths agree.
-- **`voice.py --agent` is a dead flag.** *Certain* — `_run(settings, user, wake_word, agent)` accepts it
-  and never reads it (`voice.py:74`). Voice is a thin client now; the agent server owns which agent is
-  open. Either drop the flag or make it assert `/scope/activate` on connect. The CLI already dropped it.
 - **`world.on_exit` is declared and read by nothing.** *Certain* — `agents/builder/agent.json` carries
   `"on_exit": []` and only `on_create` is ever looked up (`server._new_world_store`). Either implement it
   or remove the field so it isn't mistaken for a hook that runs.
