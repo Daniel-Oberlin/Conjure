@@ -70,27 +70,91 @@ This is the highest-value remaining work, because **every subsequent decision is
 synthetic bench corpus cannot separate `small.en` from `large-v3-turbo` — the difference is smaller
 than its sampling noise — and it cannot represent a Bluetooth microphone at all.
 
-### What a corpus needs
+### Where it lives, and how it is turned on
 
-Three things per clip. The audio is the easy part; the other two are what make it an asset.
+Everything goes under **`temp/stt-corpus/`** — `temp/` is already gitignored and already the home of
+scratch dumps and `conjure.log`, so the corpus cannot ride along in a commit by accident.
 
-1. **Audio.** `SegmentedSTTService` already assembles a complete WAV per utterance and discards it.
-   That is the tap point. One WAV per VAD segment.
-2. **Truth** — what was actually said. Nobody can produce this but the user.
-3. **Condition tags** — device, environment, utterance type. *Painful to retrofit*, so they must be
-   captured at record time, not reconstructed later.
+Enabled by **`--stt-corpus`** on `conjure.voice`, off by default.
 
-A sidecar record per clip carries the hypothesis, the decode time, the model, and the tags. A directory
-of WAVs plus a JSONL manifest; nothing more elaborate.
+*On the flag name:* not `--capture-*`. "Capture" already means **room capture** throughout this
+codebase (`spaces-geometry.md`, "the captured room"), and a voice flag borrowing it would read as
+something to do with Room Setup. `--stt-corpus` says what the artifact is and what it is for.
+
+### Layout: separate what the machine writes from what the human writes
+
+```
+temp/stt-corpus/
+  clips/20260830-142305-118.wav     audio        — machine
+  manifest.jsonl                    capture log  — machine, append-only, never hand-edited
+  truth.tsv                         the labels   — HUMAN, the irreplaceable file
+```
+
+The split is the point, and it is the same precious/disposable distinction
+[`config.md`](../specs/config.md) draws over the XDG roots. Audio can be re-recorded and hypotheses
+recomputed; **the labelling labour cannot be regenerated.** Keeping truth in its own file means a
+capture re-run, a new field, or a bug in the writer can never clobber it.
+
+**Results live in neither.** Scoring N models over the corpus is *derived and regenerable* — produce
+the table on demand. If eval output accumulates in the manifest, every run mutates the thing that is
+supposed to hold still.
+
+#### `manifest.jsonl` — one line per clip, machine-written
+
+JSONL rather than CSV because it is written, not edited: transcripts are full of commas and quotes,
+JSON escapes them without thought, and new fields appear as new keys without rewriting old rows.
+
+Per clip: the id, the timestamp **as a field** (not only in the filename — otherwise every consumer
+ends up parsing filenames, and that parsing becomes load-bearing), the live model and its hypothesis,
+decode time, and segment metadata.
+
+Ids are filename-safe and lexicographically chronological: `20260830-142305-118`. Not ISO with colons —
+legal on macOS, painful in shells and URLs.
+
+#### `truth.tsv` — three columns, hand-owned
+
+`id`, `truth`, `reviewed`. **TSV, not CSV**: speech essentially never contains a tab, so there is no
+quoting minefield and the file survives being edited in `vim` as well as in a spreadsheet — which CSV
+does not, the first time a transcript contains `"Conjure, make a beagle."`
+
+`truth` is **prefilled with the hypothesis**, so labelling is a scan-and-fix pass rather than
+transcription.
+
+**`reviewed` is not optional, and it is not bookkeeping.** With only two states, a row where
+`truth == hypothesis` means either *verified correct* or *never looked at*, and nothing distinguishes
+them afterwards. That fails in a specific, silent way:
+
+- An unreviewed prefilled row scores its source model at **0% WER by construction.**
+- Stop labelling halfway and the untouched tail scores as perfect — so the measurement does not just
+  degrade, it **inverts**: whichever model wrote the prefill wins because you ran out of time.
+
+In a spreadsheet the cost is near zero — scan a screenful, fix the wrong ones, select the block, fill
+down. What it buys is that **partial labelling is safe**: stop anywhere and score honestly on what is
+done.
+
+### Condition tags: derive or auto-capture, never ask
+
+A tag the user has to remember is a tag that silently mislabels a whole session.
+
+- **Device** — auto-captured. PortAudio reports the input device name; it is the tag most likely to be
+  wrong if left manual, since it changes whenever earbuds connect.
+- **Utterance type** (short command vs long description) — **derived at scoring time** from duration
+  and word count. Not a stored field.
+- **Environment** — deliberately **not captured.** In practice it does not vary: same room, same
+  conditions, the only difference being whether the AC is running. Not worth a workflow burden.
+
+*Known limitation, recorded rather than solved:* AC state is therefore an **uncontrolled variable** in
+the corpus. If a device comparison ever comes out close enough that ambient noise could explain it, that
+is the confound to suspect first — the answer then is more clips, not a new field.
 
 ### Making labelling affordable
 
-Transcribing hundreds of commands by hand is the chore that kills this kind of effort. Two mitigations:
+Beyond the prefill above:
 
-- **Bootstrap the labels** — run the largest model offline with no latency pressure and correct its
-  output. Correcting beats typing. **Caveat that must be honoured:** a clip whose draft was accepted
-  without listening scores *that model* unfairly well. Bootstrapped labels are fine for ranking other
-  models and not fine for grading the model that wrote them.
+- **Bootstrap from the best model** — draft the prefill with the largest model offline, no latency
+  pressure. **Caveat that must be honoured:** a clip whose draft was accepted without listening scores
+  *that model* unfairly well. Bootstrapped labels are fine for ranking other models and not fine for
+  grading the model that wrote them. This is exactly what `reviewed` makes visible.
 - **Label only disagreements** — run several models over every clip and hand-check only where they
   differ, typically 10–20% of clips. Where they all agree the answer is nearly always right.
 
@@ -101,15 +165,15 @@ Transcribing hundreds of commands by hand is the chore that kills this kind of e
 | Confirm a large gap (e.g. `base` vs `small.en` — 10 errors vs 3) | ~50 clips |
 | Separate `small.en` from `large-v3-turbo` (under one WER point) | **1,000–2,000 reference words**, ~150–300 short commands |
 
-The second is a few sessions of ordinary use with capture enabled. It is collected passively; there is
+The second is a few sessions of ordinary use with `--stt-corpus` on. It is collected passively; there is
 no sit-down-and-record step.
 
 ### What it buys
 
 1. **Picks the model** on real audio instead of synthesized speech.
-2. **Settles mic-versus-model** — with condition tags, WER becomes a table (models down, devices
-   across). Reading down a column gives the value of a bigger model; reading across a row gives the cost
-   of a worse microphone. No other artifact answers this.
+2. **Settles mic-versus-model** — because the device is recorded per clip, WER becomes a table (models
+   down, devices across). Reading down a column gives the value of a bigger model; reading across a row
+   gives the cost of a worse microphone. No other artifact answers this.
 3. **Diagnoses fragmentation for free** — one WAV per VAD segment means clips that end mid-sentence are
    directly visible. The `stop_secs` 0.6 / turn-timeout 0.8 gap (spec §3) needs no separate
    instrumentation.
@@ -136,10 +200,14 @@ This records the user's voice, continuously, at home — including everything sa
 Non-negotiable properties, because an ungoverned local recording is not obviously better than the cloud
 STT that was rejected on privacy grounds:
 
-- **Off by default**, behind an explicit flag. Not leavable-on by accident.
-- **Written outside the repo and gitignored** — the same care as `docs/private-notes.md`.
-- **Disabled for private sessions** by default.
-- A retention story and a **one-command purge**.
+- **Off by default**, behind `--stt-corpus`. Not leavable-on by accident, and **say so at startup** —
+  a recorder you forgot you enabled is the failure mode that matters.
+- **Under `temp/`**, which is gitignored — so it cannot be committed by accident.
+- **Disabled for private sessions** by default. That is the material least likely to be wanted on disk,
+  and it is also the least useful for the corpus: the point is command vocabulary.
+- A retention story and a **one-command purge**. Note the purge must clear `clips/` and `manifest.jsonl`
+  but **not** silently take `truth.tsv` with them — the labels are hours of work and are not
+  regenerable. Purging audio you have already labelled is reasonable; purging the labels is not.
 
 ---
 
