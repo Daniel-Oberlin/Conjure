@@ -205,9 +205,32 @@ STT that was rejected on privacy grounds:
 - **Under `temp/`**, which is gitignored — so it cannot be committed by accident.
 - **Disabled for private sessions** by default. That is the material least likely to be wanted on disk,
   and it is also the least useful for the corpus: the point is command vocabulary.
-- A retention story and a **one-command purge**. Note the purge must clear `clips/` and `manifest.jsonl`
-  but **not** silently take `truth.tsv` with them — the labels are hours of work and are not
-  regenerable. Purging audio you have already labelled is reasonable; purging the labels is not.
+- A retention story and a **one-command purge** — see below for what it may and may not drop.
+
+### Purge: the clip and its label are one unit
+
+**A label without its audio is worthless.** You cannot run a model against a transcript, so a truth row
+whose WAV is gone contributes nothing to any future measurement — it is a list of sentences someone once
+said. Purge therefore operates on **pairs**: dropping a clip drops its truth row, and a row whose clip
+has vanished is a defect the scorer should report, not a record to preserve.
+
+Which half is actually irreplaceable, stated correctly: **the audio.** Labels can be regenerated from
+audio — tediously, but they can. Audio cannot be regenerated from labels at all. The labelling *effort*
+is expensive; the labelling *artifact* is derivable. The recording is neither.
+
+So the useful asymmetry is not audio-versus-labels, it is **labelled-versus-unlabelled**:
+
+- **Unreviewed clips are cheap and plentiful.** Capture outruns labelling by a wide margin, and they are
+  what fills the disk. They are also fully replaceable — the next session produces more.
+- **Reviewed clips are the expensive artifact**, and expensive precisely *because* the pair is intact.
+
+Default purge should therefore drop **everything not marked `reviewed`**, which is both the space win
+and the safe operation. Removing a reviewed pair should take an explicit confirmation — that is the one
+that destroys work.
+
+The separate `truth.tsv` still earns its place: it keeps hand-written data out of a machine-written,
+append-only file, so a capture re-run or a bug in the writer cannot corrupt labels. That was always the
+argument for the split. It was never an argument for the two halves having independent lifetimes.
 
 ---
 
