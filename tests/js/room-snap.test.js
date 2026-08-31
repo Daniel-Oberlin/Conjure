@@ -1016,47 +1016,64 @@ test("floatingRoom refuses when it cannot tell which room is the outlier", () =>
   assert.strictEqual(RS.floatingRoom(THREE, noCeil, rfDev(), {}), null);
 });
 
-test("floatingRoom moves an inset only if the inset ITSELF drifted with the room", () => {
-  // The regression that motivated drift-based membership. `door_112` sat on a wall whose bottom happened
-  // to land 18 mm from the displaced floor, so proximity swept it into the correction — and it went two
-  // and a half inches into the ground, because its own drift was +16 mm against the room's +96 mm. It had
-  // never moved with the room, and only its drift could say so.
+test("floatingRoom claims a partition for the room it FACES, not both", () => {
+  // The case footprint alone gets wrong. A partition between two rooms is captured as two near-coincident
+  // planes, one per room, anti-parallel — so both sit inside both footprints. Without the facing test the
+  // neighbour's wall is dragged down with this room. On the real space the bedroom/kitchen pair reads
+  // -1.62 and +1.74 on this dot product: same wall, cleanly split.
   const room = rfRoom();
-  const dev = rfDev();
-  const roomOff = (dev[RF_ID.f32] + dev[RF_ID.c13]) / 2;
-
-  const rode = vert("real_door_rode", "door", [20, RF_LIVE.f32 + 1.0, 1], 0, [0.9, 2]);
-  const stayed = vert("real_door_112", "door", [20, RF_LIVE.f32 + 1.0, 1], 0, [0.9, 2]);
-  stayed.hostWall = rode.hostWall = "real_wall_111";
-  dev["real_door_rode"] = roomOff;              // drifted with the room
-  dev["real_door_112"] = roomOff - 0.080;       // did not — the real case, to the millimetre
-
-  const fix = RS.floatingRoom(THREE, room.concat([rode, stayed]), dev, {});
-  assert.ok(fix.ids.includes("real_door_rode"), "an inset that moved with the room is put back");
-  assert.ok(!fix.ids.includes("real_door_112"),
-            "one that never moved is left alone — even sharing a host wall with one that did");
+  const bedZ = 0;                      // bedroom floor sits at x=20 (see rfRoom)
+  // A wall on the bedroom's boundary, captured twice: outward normals point away from each room.
+  const mine   = vert("real_wall_37", "wall", [20, RF_LIVE.f32 + 1.2, 1.6], 0, [3, 2.4]);   // n = +z, away from centre? no:
+  const theirs = vert("real_wall_38", "wall", [20, RF_LIVE.f32 + 1.2, 1.6], 180, [3, 2.4]);
+  const fix = RS.floatingRoom(THREE, room.concat([mine, theirs]), rfDev(), {});
+  // the bedroom floor centre is at z=0, so the wall at z=+1.6 must face +z to be the bedroom's own
+  const claimed = ["real_wall_37", "real_wall_38"].filter((id) => fix.ids.includes(id));
+  assert.strictEqual(claimed.length, 1, `exactly one of the pair is claimed, got ${claimed}`);
+  assert.strictEqual(claimed[0], "real_wall_37", "the one whose interior side contains the floor centre");
 });
 
-test("floatingRoom never moves a wall — sealWalls reconciles those", () => {
-  // A wall's drift cannot be measured honestly: the seed stores it post-seal, a live capture is pre-seal,
-  // and the Quest fits wall edges short by a varying few cm. Measured spread on the real space was ±45 mm
-  // against a 90 mm signal, so no threshold separates "moved with the room" from "fitted differently".
+test("floatingRoom takes every wall of the room, so sealWalls never has to close a grown gap", () => {
+  // Leaving walls behind is what opened a visible slit: wall_82 sat 57 mm above its floor, the floor was
+  // corrected down 95 mm, and the gap became 152 mm — past --wall-seal-tol (0.15). Moving the wall WITH
+  // the room preserves the 57 mm, so sealing never comes into it.
   const room = rfRoom();
-  const dev = rfDev();
-  const roomOff = (dev[RF_ID.f32] + dev[RF_ID.c13]) / 2;
-  const w = vert("real_wall_111", "wall", [20, RF_LIVE.f32 + 1.2, 1], 0, [3, 2.4]);
-  dev["real_wall_111"] = roomOff;               // even a wall whose drift matches exactly
-  const fix = RS.floatingRoom(THREE, room.concat([w]), dev, {});
-  assert.ok(!fix.ids.includes("real_wall_111"), "stays put; sealWalls closes it to the corrected floor");
+  const w = vert("real_wall_82", "wall", [20, RF_LIVE.f32 + 0.057 + 1.2, 1.6], 0, [3, 2.4]);
+  const gapBefore = (w._lp.y - w.extent[1] / 2) - RF_LIVE.f32;
+  const all = room.concat([w]);
+  const fix = RS.floatingRoom(THREE, all, rfDev(), {});
+  assert.ok(fix.ids.includes("real_wall_82"), "a wall of the room moves with it");
+  RS.applyFloatingFix(all, fix);
+  const y = Object.fromEntries(all.map((s) => [s.id, s._lp.y]));
+  const gapAfter = (y["real_wall_82"] - w.extent[1] / 2) - y[RF_ID.f32];
+  assert.ok(Math.abs(gapAfter - gapBefore) < 1e-9,
+            `the wall's gap to its floor is preserved (${gapBefore.toFixed(3)} -> ${gapAfter.toFixed(3)})`);
+  assert.ok(gapAfter < 0.15, "…and stays inside --wall-seal-tol, so no slit can open");
 });
 
-test("floatingRoom leaves a surface with no seed counterpart alone", () => {
-  // A freshly minted id has no baseline, so there is no evidence either way. Absent evidence the raw
-  // capture wins — that is the system's default posture everywhere else too.
+test("floatingRoom carries an inset on a claimed wall, and leaves one on a neighbour's wall", () => {
+  // Insets follow their recorded host rather than their own normal: a wall-art normal can arrive INWARD
+  // (spec 2.2), so a facing test would reject exactly the insets it is meant to carry.
   const room = rfRoom();
-  const fresh = vert("real_door_new", "door", [20, RF_LIVE.f32 + 1.0, 1], 0, [0.9, 2]);
-  const fix = RS.floatingRoom(THREE, room.concat([fresh]), rfDev(), {});
-  assert.ok(!fix.ids.includes("real_door_new"));
+  const mine = vert("real_wall_111", "wall", [20, RF_LIVE.f32 + 1.2, 1.6], 0, [3, 2.4]);
+  const theirs = vert("real_wall_38", "wall", [20, RF_LIVE.f32 + 1.2, 1.6], 180, [3, 2.4]);
+  const door = vert("real_door_112", "door", [20, RF_LIVE.f32 + 1.0, 1.6], 0, [0.9, 2]);
+  const art = vert("real_wall_art_9", "wall art", [20, RF_LIVE.f32 + 1.5, 1.6], 180, [0.4, 0.4]);
+  door.hostWall = "real_wall_111";
+  art.hostWall = "real_wall_38";                       // hangs on the NEIGHBOUR's face of the partition
+  const fix = RS.floatingRoom(THREE, room.concat([mine, theirs, door, art]), rfDev(), {});
+  assert.ok(fix.ids.includes("real_door_112"), "an inset on this room's wall comes with it");
+  assert.ok(!fix.ids.includes("real_wall_art_9"),
+            "one on the neighbour's face does not — even though its own normal points into this room");
+});
+
+test("floatingRoom will not guess a wall that runs through the room centre", () => {
+  // A near-zero dot means the floor centre lies almost ON the wall plane, so which side is "interior" is
+  // undecidable. Leave it raw — the same posture as a surface with no seed counterpart.
+  const room = rfRoom();
+  const through = vert("real_wall_amb", "wall", [20, RF_LIVE.f32 + 1.2, 0], 0, [3, 2.4]);  // plane through the centre
+  const fix = RS.floatingRoom(THREE, room.concat([through]), rfDev(), {});
+  assert.ok(!fix.ids.includes("real_wall_amb"));
 });
 
 test("floatingRoom is off by default and applyFloatingFix moves only y", () => {

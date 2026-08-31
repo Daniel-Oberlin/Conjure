@@ -1836,8 +1836,10 @@
             return { id: w.id, floor: w.floor, gap: mm(w.gap) }; }),
           // Insets by height and host. Their absence is why a door reported as sitting low could only be
           // reasoned about through its wall — the one surface in the room the log could not see.
+          // `h` rides along because a centre alone cannot distinguish "the inset moved" from "the Quest
+          // fitted a taller plane this time" — the ambiguity that left a door's direction unreadable.
           insets: cen.insets.map(function (i) {
-            return { id: i.id, sem: i.sem, y: mm(i.y), host: i.host }; }),
+            return { id: i.id, sem: i.sem, y: mm(i.y), h: mm(i.h), host: i.host }; }),
         });
         return flat;
       },

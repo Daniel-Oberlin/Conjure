@@ -162,7 +162,25 @@ bottom happened to land 18 mm from the *displaced* floor, so it was swept in and
 along with `real_door_112` riding it. Its own drift was **+16 mm against the room's +96 mm**: it had never
 moved. The door ended up ~67 mm below where it belonged, reported from the headset as "a little low".
 
-Two things made it hard to see, and both are now closed: the census logged floors, ceilings and wall gaps
+The first repair over-corrected in the other direction. Judging membership by each surface's own drift
+excluded the walls — a wall's drift cannot be measured honestly, since the seed stores it post-`sealWalls`
+while a live capture is pre-seal — and leaving them behind made their gap to the corrected floor grow by the
+offset. `real_wall_82` sat 57 mm above its floor; at a 95 mm correction that became **152 mm, past
+`--wall-seal-tol` (0.15)**, so `sealWalls` refused and a visible slit opened under a wall that had been fine.
+It came and went with the offset, which wandered 74–99 mm across one session.
+
+Membership is now **spatial**, which is what the rigid-body evidence supported all along: the room's floor,
+ceiling, every wall of that room, and the insets on them. Adjacent rooms are separated by **facing** — a
+partition is two anti-parallel planes, one per room, and the interior is the −normal side. Verified on the
+real space: 10 surfaces move as one room, and none of the neighbours' walls come with them.
+
+**A second, independent defect surfaced while chasing this.** At 07:37 — during a displaced session —
+`seed.update` rewrote `real_wall_82`, `real_wall_37` and `real_ceiling_13` because an *opening count*
+changed. `_surface_update_set` writes the full pose on any structural change, so ~90 mm of live displacement
+was imported into the seed: the reference the correction measures against now partly contains the fault.
+Filed in the backlog; not fixed here.
+
+Two things made this hard to see, and both are now closed: the census logged floors, ceilings and wall gaps
 but **no insets**, so the door was invisible in the log and had to be reasoned about through its host wall;
 and membership used a different rule (proximity) from room selection (drift coherence), when the drift
 evidence that would have excluded the wall was already being computed. Membership is now the same coherence

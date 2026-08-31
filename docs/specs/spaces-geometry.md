@@ -601,8 +601,8 @@ facing or plane are discarded as *other walls*, not failed matches.
 ### 10.2 One room's floor, without anyone noticing
 
 `heightCensus` (pure, in `room-snap.js`, called **before** `sealWalls` — sealing rewrites the very gap being
-measured) reports every floor and ceiling height, every inset's height and host, and every wall's gap to the
-floor **below it**, using the
+measured) reports every floor and ceiling height, every inset's height, extent and host, and every wall's gap to
+the floor **below it**, using the
 same `covers` footprint test `sealWalls` uses to decide which room a wall is in. Floor + ceiling + wall gaps
 all moving together is a regional map shift (§1); the floor moving alone is a plane re-fit.
 
@@ -654,21 +654,26 @@ On top of that, all of these must hold, and any one failing means no correction 
 - at least one **coherent reference** room, and if several, they must agree with each other;
 - the residual displacement, after subtracting the reference baseline, still exceeds the threshold.
 
-**What moves is decided by the same evidence that picked the room**: a surface joins only when its *own*
-drift from the seed matches the room's, within the same tolerance. Proximity was tried first — "is your
-bottom near the floor" — and it put a door two and a half inches into the ground: its host wall sat 18 mm
-from the *displaced* floor and was swept in, while its actual drift was +16 mm against the room's +96 mm. It
-had never moved with the room, and only the drift could say so.
+**What moves is decided spatially**, because the fault is spatial: floor and ceiling agreeing within 1 mm
+proves the room moved as a **rigid body**, so everything physically in it moved too. Membership is the
+room's floor + ceiling, every **wall of that room**, and any inset on those walls (by recorded host, since a
+wall-art normal can arrive *inward* per §2.2 and a facing test would reject exactly the insets it must
+carry).
 
-**Walls are deliberately never moved.** Their drift cannot be measured honestly — the seed stores a wall
-*post*-`sealWalls` while a live capture is pre-seal, so the difference carries the seal amount, and the Quest
-fits wall edges short by a varying few cm regardless (measured spread on the reference space: ±45 mm against
-a 90 mm signal). No threshold separates "moved with the room" from "fitted differently". `sealWalls` already
-exists to reconcile wall edges with floors and ceilings, and closes the gap to the corrected floor on the
-same pass. Insets *are* judged on their own drift rather than following their wall, because an inset's centre
-is a clean measurement and `snapInsets` only ever moves it horizontally.
+**Facing is what separates adjacent rooms.** A partition is captured as **two near-coincident, anti-parallel
+planes** — one per room — so a footprint test claims both and would drag the neighbour's wall down. A
+captured normal points outward from its room, so the room's interior is the −normal side: the floor centre
+must satisfy `(centre − wall) · n < 0`. On the reference space the bedroom/kitchen partition pair reads
+**−1.62 and +1.74**: the same wall, cleanly split. A near-zero dot means the centre lies on the wall plane
+and the side is undecidable, so the wall is left raw.
 
-A surface with no seed counterpart is left raw — absent evidence, the capture wins.
+Two earlier membership rules were wrong and are recorded so they are not retried. **Bottom-proximity**
+("is your bottom near the floor") admitted a near-arbitrary single wall and put a door two and a half inches
+into the ground. **Per-surface drift** looked more principled but cannot be measured honestly for a wall —
+the seed stores it *post*-`sealWalls` while a live capture is pre-seal — and by leaving walls behind it made
+their gap to the corrected floor *grow by the offset*, pushing one past `--wall-seal-tol` and opening a
+visible 15 cm slit under a wall that had been fine. Moving the whole room preserves every gap by
+construction.
 
 The change is **vertical only**: normals, horizontal position and extent are untouched, so registration
 (yaw + x/z) and every plane-relative anchor are unaffected, exactly as with `sealWalls`.

@@ -187,6 +187,23 @@ since a device-side map re-fit would produce both symptoms and the value is in r
 - **The `err` sign flip at a room boundary is the sharpest single reading in the log** — it says which room
   is wrong, which no internal probe can. Worth reaching for first next time.
 
+### A structural change during a displaced session corrupts the seed
+
+**Status:** open · found 2026-08-31 while chasing the floating-room correction · **independent of it**
+
+`_surface_structural_change` fires on an opening-count change, and `_surface_update_set` then writes the
+surface's **full pose**. So "a door appeared on this wall" rewrites that wall's *position* — importing
+whatever displacement the capture happens to carry. Observed: at 07:37, mid-displacement, the seed absorbed
+~90 mm into `real_wall_82`, `real_wall_37` and `real_ceiling_13`.
+
+That matters beyond tidiness: the seed is the baseline the floating-room detector measures drift against, so
+a polluted seed degrades the very reference that detects the fault, and every subsequent correction is
+measured against a moving target.
+
+**The fix is probably to write only what changed** — an opening-count change should update `holes`, not the
+pose — or to refuse a pose write while `level.anomaly` is active for that surface's room. The first is
+narrower and does not need the correction to be switched on.
+
 ### Open — what still has to happen
 
 - **A validity guard on the marker.** One press (07:01:25) read `grip_y = −0.173` where the same floor reads
