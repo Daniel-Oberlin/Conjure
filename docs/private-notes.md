@@ -1,6 +1,15 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
 # Bugs
+- shell: we are inconsistent when showing names vs. slugs in the shell, for example, the worlds command shows the space of a world as the slug, but spaces shows the names of the spaces without the slugs.  IMO, slugs should be hidden from the user, only the names which can be changed should be shown - these should also be in the paths which are shown and navigated.  If someone needs to know the actual filename/path of a world, session, space, etc., there should be a file directive or command or something that makes the disk file visible.  Otherwise, it should be all names.
+- voice "unknown command agents"
+- reset should work in voice
+
+
+# Quick improvements
+- Add rotation tools to images (excluding billboards)
+- LLM specific blocks (specify list of LLMNs, then an all others block, blocks can be empty)
+- LLM routing - tool scoping to different LLMs
 
 # Surfaces
 - Still see occasional disappearance of some surfaces
@@ -37,6 +46,11 @@
     - User audio separation in same room
   - Get better clarity for speech-to-text
   - Support SSML
+
+# VOX
+- Decouppled from Conjure specifically; separate project, works with other projects too
+- Different wake words for different connections
+  - Connections persist until terminated with another wake word "all set" or "we're done", etc.
 
 # Web
   - Perform web requests
