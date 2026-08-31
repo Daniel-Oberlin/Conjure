@@ -1386,6 +1386,7 @@
         this._levelAlarm = {};      // surface id → 1 while its height deviation is being reported (edge-only)
         this._churnRing = [];       // recent churn events, replayed into a [mark] dump for context
         this._float = null;         // the held floating-room correction (--fix-floating-rooms), or null
+        this._floatArmed = 0;       // one-shot: has the "armed" line been logged this session?
         this._floatMiss = 0;        // consecutive captures the detector found nothing, for the release debounce
         // --- JITTER PROBES (branch fix/pops-and-jitters) ------------------------------------------------
         // Diagnose the ~cm "flick out and back" seen while WALKING (not while standing + looking around).
@@ -1817,8 +1818,10 @@
           if (Math.abs(d.dev) <= 0.05) { delete self._levelAlarm[d.id]; return; }
           if (self._levelAlarm[d.id]) return;             // edge-triggered: report once per excursion
           self._levelAlarm[d.id] = 1;
+          // `fix` rides along because this is the exact line you read when the floor still looks wrong:
+          // 0 means the correction was never armed, which is a different problem from it declining to act.
           geoLog("level.anomaly", { id: d.id, sem: d.sem, dev: mm(d.dev), live: mm(d.live), seed: mm(d.seed),
-                                    others: dev.length });
+                                    others: dev.length, fix: +window.CONJURE_FIX_FLOATING || 0 });
           moved = true;                                   // …and attach the full census to the same flush
         });
         if (!moved) return flat;
@@ -1914,6 +1917,13 @@
       _fixFloating: function (localSurfaces, flat) {
         var RS = window.RoomSnap, MIN = +window.CONJURE_FIX_FLOATING;
         if (!RS || !(MIN > 0)) { this._float = null; return 0; }
+        // Say once that it is armed. Without this, a correction that is switched OFF and one that is on but
+        // finding nothing produce byte-identical logs — and the first thing you do when the floor still
+        // floats is ask which of the two you are looking at.
+        if (!this._floatArmed) {
+          this._floatArmed = 1;
+          debugLog("level", "floating-room correction armed at " + MIN + " m", true);
+        }
         var dev = {};
         this._levelDeviation(flat).forEach(function (d) { dev[d.id] = d.dev; });
         var found = RS.floatingRoom(AFRAME.THREE, localSurfaces, dev, { minM: MIN });
@@ -2441,7 +2451,8 @@
             docSurfaces.forEach(function (e) {
               var sm = (e.meta || {}).semantic || "?"; bySemSeed[sm] = (bySemSeed[sm] || 0) + 1; });
             geoLog("space.enter", { role: amOwner ? "owner" : "guest", ref: self._ref.length,
-                                    seed: docSurfaces.length, sem: bySemSeed, planes: cur.length });
+                                    seed: docSurfaces.length, sem: bySemSeed, planes: cur.length,
+                                    fix: +window.CONJURE_FIX_FLOATING || 0 });
           }
         }
 
