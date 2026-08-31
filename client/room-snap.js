@@ -996,7 +996,137 @@
     return best;
   }
 
+  // --- floating-room correction (docs/investigations/raised-floor.md) ----------------------------------
+  // The Quest can anchor one room's stored entity ~10 cm high, so everything in that room renders above the
+  // real floor and objects placed there float. Measured, reproduced, and not curable by a Room Setup
+  // re-scan. This is the one place we knowingly render something other than the raw capture.
+  //
+  // A first version of this shipped and had to be reverted: it fired on ONE capture — the first of a
+  // session, straight after a relocalization — read a room as 229 mm displaced, moved most of it, and left
+  // one wall behind. Three guards come from that, and each answers something that actually happened rather
+  // than something imagined:
+  //
+  //   1. CONFIRMATION. The caller must see the same room and offset on several consecutive captures before
+  //      acting (`confirmFloating`). Everything else in this system debounces — surface removal takes 3
+  //      captures, the relocalize hint takes consecutive good ones — and this took one, at the least
+  //      trustworthy moment there is.
+  //   2. ALL OR NOTHING. If any wall standing in the room's footprint cannot be confidently classified, the
+  //      whole correction is refused. Leaving one wall while its floor drops opens a gap the width of the
+  //      correction, which is how `wall_33` ended up hanging in the air. There is no safe partial room.
+  //   3. A CEILING on the offset. Beyond `maxM` (default 0.15 m, the wall-seal tolerance) we could not
+  //      reconcile the walls even if the diagnosis were right, and the architecture's own worst-case
+  //      regional non-rigidity is ~9 cm (§1). A larger reading is a bad capture, not a worse fault.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces        live, PRE-seal
+   * @param {Record<string, number>} devById   id → deviation vs the seed, every surface, one median basis
+   * @param {{minM?: number, maxM?: number, cohM?: number, faceM?: number}} [opts]
+   * @returns {{floor: string, ceiling: string, offset: number, ids: string[]}|null}
+   */
+  function floatingRoom(THREE, surfaces, devById, opts) {
+    opts = opts || {};
+    var MIN = opts.minM != null ? opts.minM : 0.04;
+    var MAX = opts.maxM != null ? opts.maxM : 0.15;    // guard 3 — past this it is a bad capture, not a fault
+    var COH = opts.cohM != null ? opts.cohM : 0.02;
+    var FACE = opts.faceM != null ? opts.faceM : 0.05;
+    if (!(MIN > 0) || !devById) return null;
+
+    var ceils = surfaces.filter(function (s) { return s.semantic === "ceiling" && s._lp && s._lq && s.extent; });
+    /** @type {{floor: SnapSurface, ceiling: SnapSurface, coh: number, off: number}[]} */
+    var rooms = [];
+    surfaces.forEach(function (f) {
+      if (f.semantic !== "floor" || !f._lp || !f._lq || !f.extent) return;
+      var c = /** @type {SnapSurface|null} */ (null);
+      ceils.forEach(function (cc) { if (!c && covers(THREE, cc, f._lp.x, f._lp.z)) c = cc; });
+      if (!c) return;
+      var df = devById[f.id], dc = devById[c.id];
+      if (df == null || dc == null) return;
+      rooms.push({ floor: f, ceiling: c, coh: Math.abs(df - dc), off: (df + dc) / 2 });
+    });
+    if (rooms.length < 2) return null;
+
+    var coherent = rooms.filter(function (r) { return r.coh <= COH; });
+    var cand = coherent.filter(function (r) { return Math.abs(r.off) >= MIN; });
+    if (cand.length !== 1) return null;
+    var ref = coherent.filter(function (r) { return r !== cand[0]; });
+    if (!ref.length) return null;
+    var lo = Infinity, hi = -Infinity, sum = 0;
+    ref.forEach(function (r) { lo = Math.min(lo, r.off); hi = Math.max(hi, r.off); sum += r.off; });
+    if (hi - lo > COH * 2) return null;
+    var shift = cand[0].off - sum / ref.length;
+    if (Math.abs(shift) < MIN || Math.abs(shift) > MAX) return null;      // guard 3
+
+    // Membership is spatial: the fault is a rigid whole-room displacement, so everything in the room moved.
+    // Facing separates adjacent rooms — a partition is captured as two near-coincident, ANTI-PARALLEL
+    // planes, one per room, and the interior is the −normal side.
+    var fc = cand[0].floor._lp;
+    /** @type {Record<string, number>} */ var ids = {};
+    /** @type {Record<string, number>} */ var walls = {};
+    ids[cand[0].floor.id] = 1; ids[cand[0].ceiling.id] = 1;
+    var ambiguous = false;
+    surfaces.forEach(function (w) {
+      if (w.semantic !== "wall" || !w._lp || !w._lq) return;
+      if (!covers(THREE, cand[0].floor, w._lp.x, w._lp.z)) return;
+      var n = new THREE.Vector3(0, 1, 0).applyQuaternion(w._lq);
+      var facing = (fc.x - w._lp.x) * n.x + (fc.z - w._lp.z) * n.z;
+      if (Math.abs(facing) < FACE) { ambiguous = true; return; }   // guard 2 — a wall we cannot place
+      if (facing > 0) return;                                      // the neighbour's face of a partition
+      ids[w.id] = 1; walls[w.id] = 1;
+    });
+    if (ambiguous) return null;   // guard 2: refuse the room rather than move part of it
+    // Insets ride their recorded host wall, not their own normal: a wall-art normal can arrive INWARD
+    // (§2.2), so a facing test would reject exactly the insets it must carry.
+    surfaces.forEach(function (s) { if (s.hostWall && walls[s.hostWall]) ids[s.id] = 1; });
+    return { floor: cand[0].floor.id, ceiling: cand[0].ceiling.id, offset: shift, ids: Object.keys(ids) };
+  }
+
+  // Guard 1 — confirmation. Fold this capture's `found` into a running state and return the correction only
+  // once the SAME room and a stable offset have been seen `need` times running. Pure so it is testable; the
+  // caller owns the state object and passes it back each capture.
+  //
+  // A disagreeing capture RESETS the count rather than decrementing it, for the reason `WM.relocStep`
+  // already learned: a flickering signal that merely decrements accumulates anyway, and what we need to
+  // exclude is precisely the room whose reading is unsteady.
+  /**
+   * @param {{room: string|null, off: number, n: number, live: any}} st   caller-held; start {room:null,off:0,n:0,live:null}
+   * @param {{floor: string, ceiling: string, offset: number, ids: string[]}|null} found   raw detection
+   * @param {number} need                                                consecutive captures required
+   * @param {number} tol                                                 offset may vary this much between them
+   * @returns {{floor: string, ceiling: string, offset: number, ids: string[]}|null}  confirmed, or null
+   */
+  function confirmFloating(st, found, need, tol) {
+    if (!found) { st.room = null; st.n = 0; st.live = null; return null; }
+    if (st.room !== found.floor || Math.abs(found.offset - st.off) > tol) {
+      st.room = found.floor; st.off = found.offset; st.n = 1; st.live = null;
+      return null;
+    }
+    st.n++;
+    st.off = (st.off * (st.n - 1) + found.offset) / st.n;    // settle on the mean of the agreeing captures
+    if (st.n < need) return null;
+    st.live = { floor: found.floor, ceiling: found.ceiling, offset: st.off, ids: found.ids };
+    return st.live;
+  }
+
+  // Apply a `floatingRoom` result: lower every member surface by the offset. Vertical ONLY — normals,
+  // horizontal position and extent untouched, so registration (yaw + x/z) and every plane-relative anchor
+  // are unaffected, exactly as with sealWalls. Mutates in place.
+  /** @param {SnapSurface[]} surfaces  @param {{offset: number, ids: string[]}} fix  @returns {number} moved */
+  function applyFloatingFix(surfaces, fix) {
+    if (!fix || !fix.offset) return 0;
+    /** @type {Record<string, number>} */ var want = {};
+    var n = 0;
+    fix.ids.forEach(function (id) { want[id] = 1; });
+    surfaces.forEach(function (s) {
+      if (!want[s.id] || !s._lp) return;
+      s._lp.y -= fix.offset;
+      if (s.position) s.position = [s.position[0], s.position[1] - fix.offset, s.position[2]];
+      n++;
+    });
+    return n;
+  }
+
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
+           floatingRoom: floatingRoom, confirmFloating: confirmFloating, applyFloatingFix: applyFloatingFix,
            heightCensus: heightCensus, explainNoMatch: explainNoMatch, floorUnder: floorUnder,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,

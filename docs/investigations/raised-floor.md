@@ -186,6 +186,17 @@ and membership used a different rule (proximity) from room selection (drift cohe
 evidence that would have excluded the wall was already being computed. Membership is now the same coherence
 test, walls are left to `sealWalls`, and insets are judged on their own drift.
 
+**The correction was reverted once, and rebuilt behind three guards.** The first version fired on the
+*first capture of a session*, straight after a relocalization: that capture read the **living room** 220 mm
+above the other two, floor and ceiling coherent to 1 mm. It moved 16 surfaces by 229 mm and held it for the
+session, and `real_wall_33` — facing −0.048 against a 0.05 ambiguity gate — was left raw by **2 mm of
+margin** while the floor beneath it dropped, opening a visible slit. Three defects, root first: it engaged
+on **one** capture and latched, when everything else in this system debounces; **partial room membership
+cannot be safe**, the third appearance of that failure; and nothing capped an offset 2.5× larger than
+anything previously observed. The guards are confirmation over 5 consecutive captures, all-or-nothing
+membership, and a 0.15 m ceiling — each answering one of those, and verified by replay against both real
+captures (the 229 mm incident refused, the genuine 91 mm fault confirmed on the fifth capture).
+
 **Side findings recorded in the backlog, not fixed here:** a ~46 mm sign error in the seed's kitchen height
 (it stores `floor_10` below the living room where physically it is above); the marker validity guard; the
 unexplained `track.reset` triples; and the observation that declaring the space's known-equal surfaces would

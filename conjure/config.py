@@ -330,6 +330,12 @@ class Settings:
     # room's floor sitting a few inches high — are noticed DAYS later, by which time a per-capture opt-in
     # probe like --debug-registration was (correctly) off. Writes temp/geometry-YYYY-MM-DD.jsonl, kept
     # separate from conjure.log because that file is unrotated and pytest also appends to it.
+    # Floating-room correction (docs/investigations/raised-floor.md). The Quest can anchor one room's
+    # stored entity ~10 cm high; this lowers it back for RENDERING only. The one place we knowingly draw
+    # something other than the raw capture, so it ships OFF, and the value is the minimum displacement (m)
+    # that counts as definite. A first version was reverted for acting on a single capture; it now confirms
+    # over five consecutive ones, refuses a room with any wall it cannot place, and caps the offset.
+    fix_floating_rooms: float = 0.0                  # 0 = off; 0.04 is the field-tested value
     geometry_log: bool = True                        # record surface-churn / height-census events
     geometry_log_days: int = 21                      # retention: delete rotated files older than this (0 = keep all)
     # Co-location robustness (two-headset GUEST tuning). Injected into the client as window.CONJURE_REG /
@@ -475,6 +481,7 @@ def get_settings() -> Settings:
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
         debug_jitter=os.environ.get("CONJURE_DEBUG_JITTER", "").strip().lower() in ("1", "true", "yes", "on"),
+        fix_floating_rooms=float(os.environ.get("CONJURE_FIX_FLOATING_ROOMS", "0") or 0),
         geometry_log=os.environ.get("CONJURE_GEOMETRY_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         geometry_log_days=int(os.environ.get("CONJURE_GEOMETRY_LOG_DAYS", "21") or 21),
         reg_min_cov=int(os.environ.get("CONJURE_REG_MIN_COV", "4")),

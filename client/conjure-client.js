@@ -68,6 +68,11 @@
   /** Round to mm for the log — floor heights are the payload and 3 dp is well past sensor precision. */
   function mm(v) { return Math.round((+v || 0) * 1000) / 1000; }
 
+  // Consecutive captures a floating room must be seen on before anything moves (~10 s at the 2 s cadence).
+  // The reverted first version acted on one, and the one it acted on was a session's first capture straight
+  // after a relocalization — the least trustworthy reading there is.
+  var FLOAT_CONFIRM = 5;
+
   // Compact wire form for the geometry worker (fix/pops-and-jitters): send only the fields RoomSnap.register
   // reads, as plain numbers, so a capture's planes + reference constellation cross to the worker in a few KB.
   function serCur(c) { var p = c.pos; return { p: [p.x, p.y, p.z], nyaw: c.nyaw, sem: c.sem, orient: c.orient, ext: [c.ext[0], c.ext[1]] }; }
@@ -1385,6 +1390,9 @@
         this._lastLevel = null;     // last logged height census, keyed id → y — the >2 cm emit gate
         this._levelAlarm = {};      // surface id → 1 while its height deviation is being reported (edge-only)
         this._churnRing = [];       // recent churn events, replayed into a [mark] dump for context
+        this._float = null;         // the confirmed, held floating-room correction, or null
+        this._floatState = { room: null, off: 0, n: 0, live: null };   // confirmFloating's running agreement
+        this._floatArmed = 0; this._floatMiss = 0;
         // --- JITTER PROBES (branch fix/pops-and-jitters) ------------------------------------------------
         // Diagnose the ~cm "flick out and back" seen while WALKING (not while standing + looking around).
         // Leading hypothesis: the ~0.5 Hz capture frame is heavy → a dropped frame → the compositor
@@ -1476,7 +1484,8 @@
         // baseline, so carrying the old one over would report the switch itself as churn and an anomaly.
         this._miss = {}; this._everClaimed = {}; this._wasStyled = {};
         this._lastLevel = null; this._levelAlarm = {}; this._census = null; this._censusFloors = null;
-        this._churnRing = [];
+        this._churnRing = []; this._float = null; this._floatMiss = 0;
+        this._floatState = { room: null, off: 0, n: 0, live: null };
       },
       // Has surface `k` (a fresh record) changed STRUCTURALLY vs `p` (its last-posted snapshot)? Mirrors the
       // server's _surface_structural_change (0.5 m / 20° / opening-count / semantic) so the client only POSTs
@@ -1816,7 +1825,7 @@
           if (self._levelAlarm[d.id]) return;             // edge-triggered: report once per excursion
           self._levelAlarm[d.id] = 1;
           geoLog("level.anomaly", { id: d.id, sem: d.sem, dev: mm(d.dev), live: mm(d.live), seed: mm(d.seed),
-                                    others: dev.length });
+                                    others: dev.length, fix: +window.CONJURE_FIX_FLOATING || 0 });
           moved = true;                                   // …and attach the full census to the same flush
         });
         if (!moved) return flat;
@@ -1899,6 +1908,73 @@
         geoFlush();                                         // land it now — you may take the headset off next
         debugLog("mark", "geometry marker recorded"
           + (over && gripY != null ? " — " + over.id + " err=" + mm(over.y - gripY) + "m" : ""), true);
+      },
+      // A deviation for EVERY surface with a seed counterpart — what the floating-room detector reads.
+      // Same median basis as the anomaly (floors + ceilings), so the two agree by construction and a wall's
+      // noisy stored height cannot shift the baseline everything is judged against. Walls are measured by
+      // BOTTOM: a re-measured extent moves the centre for reasons that have nothing to do with drift.
+      _driftAll: function (localSurfaces) {
+        if (!docSurfaces) return {};
+        var seed = {}, basis = [];
+        var lowOf = function (y, ext) { return y - ((ext && ext[1]) || 0) / 2; };
+        docSurfaces.forEach(function (e) {
+          var sem = (e.meta || {}).semantic, p = (e.transform || {}).position;
+          if (!p) return;
+          var ext = ((e.components || {}).surface || {}).extent;
+          seed[e.id] = { y: sem === "wall" ? lowOf(p[1], ext) : p[1], sem: sem };
+          if (sem === "floor" || sem === "ceiling") basis.push(e.id);
+        });
+        var live = {};
+        localSurfaces.forEach(function (s) {
+          if (!s._lp) return;
+          live[s.id] = s.semantic === "wall" ? lowOf(s._lp.y, s.extent) : s._lp.y;
+        });
+        var out = {};
+        WM.levelDeviation(live, seed, basis).forEach(function (d) { out[d.id] = d.dev; });
+        return out;
+      },
+      // FLOATING-ROOM CORRECTION (--fix-floating-rooms; docs/investigations/raised-floor.md).
+      //
+      // Applied to `localSurfaces` ONLY — never to `surfaces`, the set the owner posts. The seed is the
+      // baseline this is measured against; writing a corrected pose back would dissolve the reference.
+      //
+      // The first version of this had to be reverted for engaging on a single capture. `confirmFloating`
+      // now holds the decision across `FLOAT_CONFIRM` consecutive captures before anything moves — about
+      // ten seconds at the 2 s capture cadence — so the one bad reading that started a session can no
+      // longer latch a 229 mm shift for the rest of it. Release stays on the same three-capture debounce
+      // as surface removal.
+      _fixFloating: function (localSurfaces) {
+        var RS = window.RoomSnap, MIN = +window.CONJURE_FIX_FLOATING;
+        if (!RS || !(MIN > 0)) { this._float = null; return 0; }
+        if (!this._floatArmed) {
+          this._floatArmed = 1;
+          debugLog("level", "floating-room correction armed at " + MIN + " m (confirm over "
+            + FLOAT_CONFIRM + " captures)", true);
+        }
+        var found = RS.floatingRoom(AFRAME.THREE, localSurfaces, this._driftAll(localSurfaces), { minM: MIN });
+        var conf = RS.confirmFloating(this._floatState, found, FLOAT_CONFIRM, 0.02);
+        var held = this._float;
+        if (conf) {
+          this._floatMiss = 0;
+          if (!held || Math.abs(conf.offset - held.offset) > 0.02) {
+            geoLog("level.correct", { on: true, room: conf.floor, ceiling: conf.ceiling,
+                                      offset: mm(conf.offset), n: conf.ids.length,
+                                      confirmed: FLOAT_CONFIRM, was: held ? mm(held.offset) : undefined,
+                                      ids: conf.ids });
+            debugLog("level", "floating room " + conf.floor + " — lowering " + conf.ids.length
+              + " surfaces by " + mm(conf.offset) + "m (confirmed over " + FLOAT_CONFIRM + " captures)", true);
+            held = this._float = conf;
+          } else {
+            held.ids = conf.ids;
+          }
+        } else if (held) {
+          if (++this._floatMiss >= 3) {
+            geoLog("level.correct", { on: false, room: held.floor, offset: mm(held.offset) });
+            debugLog("level", "floating room " + held.floor + " cleared — rendering the raw capture again", true);
+            this._float = held = null;
+          }
+        }
+        return held ? RS.applyFloatingFix(localSurfaces, held) : 0;
       },
       // Live heights vs the persisted seed's, whole-space offset removed — WM.levelDeviation holds the rule
       // and its reasoning; this just supplies the seed side from the current snapshot.
@@ -2398,7 +2474,8 @@
             docSurfaces.forEach(function (e) {
               var sm = (e.meta || {}).semantic || "?"; bySemSeed[sm] = (bySemSeed[sm] || 0) + 1; });
             geoLog("space.enter", { role: amOwner ? "owner" : "guest", ref: self._ref.length,
-                                    seed: docSurfaces.length, sem: bySemSeed, planes: cur.length });
+                                    seed: docSurfaces.length, sem: bySemSeed, planes: cur.length,
+                                    fix: +window.CONJURE_FIX_FLOATING || 0 });
           }
         }
 
@@ -2603,6 +2680,10 @@
         // the slit against whatever floor/ceiling covers it, which is precisely the measurement we want.
         // After sealing every wall agrees with its floor by construction and the census says nothing.
         this._logLevel(localSurfaces);
+        // …then correct a floating room, if one has been confirmed over several captures. AFTER the census,
+        // so the log always records the fault as captured rather than the view we chose to render; BEFORE
+        // sealing, so walls close against the corrected floor.
+        this._fixFloating(localSurfaces);
         window.RoomSnap.sealWalls(THREE, localSurfaces, window.CONJURE_WALL_SEAL_TOL);   // seal wall tops→ceiling, bottoms→floor (§9.1)
         this._localPlanes = localToPlanes(THREE, localSurfaces);   // stash for avatar anchors (§5.1) / presence
         // Reconstruct any seed surface this client didn't capture (§5.2) and fold it into the render set, so

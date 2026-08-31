@@ -934,3 +934,129 @@ test("floorUnder attributes a point to the room whose FOOTPRINT covers it, not t
   assert.strictEqual(RS.floorUnder(THREE, [a, b], 0, 0.5).id, "floor_A");
   assert.strictEqual(RS.floorUnder(THREE, [a, b], 40, 0), null, "outside every room ⇒ no attribution");
 });
+
+// ---- floatingRoom: correcting a room the Quest anchored too high ------------------------------------
+// The fixture is the REAL capture from docs/investigations/raised-floor.md, because the value of this
+// detector is entirely in whether it fires on the fault that happened and stays silent otherwise.
+
+const RF_SEED = { f8: -0.005, f10: 0.0196, f32: 0.004, c13: 2.663, c21: 2.445, c25: 2.663 };
+const RF_LIVE = { f8: -0.006, f10: 0.031, f32: 0.098, c13: 2.749, c21: 2.424, c25: 2.662 };
+const RF_ID = { f8: "real_floor_8", f10: "real_floor_10", f32: "real_floor_32",
+                c13: "real_ceiling_13", c21: "real_ceiling_21", c25: "real_ceiling_25" };
+
+function rfDev(live = RF_LIVE) {
+  const d = {}; for (const k in RF_SEED) d[k] = live[k] - RF_SEED[k];
+  const s = Object.values(d).sort((a, b) => a - b);
+  const med = s.length % 2 ? s[s.length >> 1] : (s[(s.length >> 1) - 1] + s[s.length >> 1]) / 2;
+  const out = {}; for (const k in d) out[RF_ID[k]] = d[k] - med;
+  return out;
+}
+function rfRoom(live = RF_LIVE) {
+  const at = (sem, id, x, y, z) => { const h = horiz(sem, x, y, z, [3, 3]); h.id = id; return h; };
+  return [
+    at("floor", RF_ID.f8, 0, live.f8, 0), at("ceiling", RF_ID.c25, 0, live.c25, 0),
+    at("floor", RF_ID.f10, 10, live.f10, 0), at("ceiling", RF_ID.c21, 10, live.c21, 0),
+    at("floor", RF_ID.f32, 20, live.f32, 0), at("ceiling", RF_ID.c13, 20, live.c13, 0),
+  ];
+}
+/** Feed one detection through confirmation `n` times, as consecutive captures would. */
+function confirmN(st, found, n, need = 5) {
+  let out = null;
+  for (let i = 0; i < n; i++) out = RS.confirmFloating(st, found, need, 0.02);
+  return out;
+}
+
+test("floatingRoom finds the real fault and picks the right room out of three", () => {
+  const fix = RS.floatingRoom(THREE, rfRoom(), rfDev(), {});
+  assert.ok(fix, "the fault fires the detector");
+  assert.strictEqual(fix.floor, RF_ID.f32, "the bedroom, not the kitchen and not the living room");
+  const room = rfRoom();
+  RS.applyFloatingFix(room, RS.floatingRoom(THREE, room, rfDev(), {}));
+  const y = Object.fromEntries(room.map((s) => [s.id, s._lp.y]));
+  // floor_32 and floor_8 are one continuous wooden floor, so their gap must come back to ~0
+  assert.ok(Math.abs(y[RF_ID.f32] - y[RF_ID.f8]) < 0.02, "the shared floor closes");
+});
+
+test("GUARD 1 — a single capture is never enough, however convincing", () => {
+  // The reverted version acted on one capture, and the one it acted on was a session's first, straight
+  // after a relocalization. Five consecutive agreeing captures now, and a disagreement RESETS rather than
+  // decrements — a flickering room is exactly what must be excluded (the lesson relocStep already learned).
+  const st = { room: null, off: 0, n: 0, live: null };
+  const found = RS.floatingRoom(THREE, rfRoom(), rfDev(), {});
+  for (let i = 1; i <= 4; i++) {
+    assert.strictEqual(RS.confirmFloating(st, found, 5, 0.02), null, `still refusing after ${i} capture(s)`);
+  }
+  assert.ok(RS.confirmFloating(st, found, 5, 0.02), "…and acts on the fifth");
+
+  // one disagreeing capture puts it back to the start
+  const st2 = { room: null, off: 0, n: 0, live: null };
+  confirmN(st2, found, 4);
+  RS.confirmFloating(st2, null, 5, 0.02);                      // a capture that detected nothing
+  assert.strictEqual(confirmN(st2, found, 4), null, "the count restarted, it did not merely decrement");
+});
+
+test("GUARD 1 — an offset that wanders never confirms", () => {
+  // The field offset swung 74-99 mm across one session. A room that cannot hold a stable reading is not a
+  // room we understand well enough to move.
+  const st = { room: null, off: 0, n: 0, live: null };
+  const base = RS.floatingRoom(THREE, rfRoom(), rfDev(), {});
+  for (let i = 0; i < 10; i++) {
+    const jittery = { ...base, offset: base.offset + (i % 2 ? 0.05 : -0.05) };
+    assert.strictEqual(RS.confirmFloating(st, jittery, 5, 0.02), null, `never confirms (capture ${i})`);
+  }
+});
+
+test("GUARD 2 — a room with an unplaceable wall is refused entirely, not moved in part", () => {
+  // real_wall_33's facing read -0.048 against a 0.05 gate, so it was left raw by 2 mm while its floor
+  // dropped 229 mm — a slit you could see across the room. There is no safe partial room.
+  const room = rfRoom();
+  const ok = vert("real_wall_ok", "wall", [20, RF_LIVE.f32 + 1.2, 1.4], 0, [3, 2.4]);
+  assert.ok(RS.floatingRoom(THREE, room.concat([ok]), rfDev(), {}), "a placeable wall is fine");
+  const ambiguous = vert("real_wall_33", "wall", [20, RF_LIVE.f32 + 1.2, 0], 0, [3, 2.4]);  // plane through the centre
+  assert.strictEqual(RS.floatingRoom(THREE, room.concat([ok, ambiguous]), rfDev(), {}), null,
+                     "one wall we cannot place refuses the WHOLE correction");
+});
+
+test("GUARD 3 — an implausible offset is a bad capture, not a worse fault", () => {
+  // The reverted version accepted 229 mm: 2.5x anything observed, and far past the ~9 cm of regional
+  // non-rigidity the architecture documents. Past the wall-seal tolerance we could not repair the walls
+  // even if the diagnosis were right.
+  const live = { ...RF_LIVE, f8: RF_SEED.f8 + 0.27, c25: RF_SEED.c25 + 0.27 };   // the 15:14:22 capture
+  const dev = rfDev(live);
+  const off = (dev[RF_ID.f8] + dev[RF_ID.c25]) / 2;
+  assert.ok(Math.abs(off) > 0.15, "the fixture really does present an out-of-range displacement");
+  assert.strictEqual(RS.floatingRoom(THREE, rfRoom(live), dev, {}), null, "refused");
+  assert.ok(RS.floatingRoom(THREE, rfRoom(live), dev, { maxM: 0.5 }), "…and it is the ceiling doing it");
+});
+
+test("floatingRoom claims a partition for the room it FACES, not both", () => {
+  const room = rfRoom();
+  const mine = vert("real_wall_37", "wall", [20, RF_LIVE.f32 + 1.2, 1.6], 0, [3, 2.4]);
+  const theirs = vert("real_wall_38", "wall", [20, RF_LIVE.f32 + 1.2, 1.6], 180, [3, 2.4]);
+  const fix = RS.floatingRoom(THREE, room.concat([mine, theirs]), rfDev(), {});
+  const claimed = ["real_wall_37", "real_wall_38"].filter((id) => fix.ids.includes(id));
+  assert.deepStrictEqual(claimed, ["real_wall_37"], "one of the pair, the one whose interior holds the centre");
+});
+
+test("floatingRoom carries an inset on a claimed wall by its recorded host", () => {
+  // Insets follow their host rather than their own normal: a wall-art normal can arrive INWARD (spec 2.2),
+  // so a facing test would reject exactly the insets it must carry.
+  const room = rfRoom();
+  const mine = vert("real_wall_111", "wall", [20, RF_LIVE.f32 + 1.2, 1.6], 0, [3, 2.4]);
+  const door = vert("real_door_112", "door", [20, RF_LIVE.f32 + 1.0, 1.6], 0, [0.9, 2]);
+  const art = vert("real_art_9", "wall art", [0, RF_LIVE.f8 + 1.5, 1.6], 180, [0.4, 0.4]);
+  door.hostWall = "real_wall_111"; art.hostWall = "real_wall_elsewhere";
+  const fix = RS.floatingRoom(THREE, room.concat([mine, door, art]), rfDev(), {});
+  assert.ok(fix.ids.includes("real_door_112"), "an inset on this room's wall comes with it");
+  assert.ok(!fix.ids.includes("real_art_9"), "one whose host is not in the set does not");
+});
+
+test("floatingRoom stays silent on a healthy space, and applyFloatingFix moves only y", () => {
+  const live = { ...RF_LIVE, f32: RF_SEED.f32 + 0.004, c13: RF_SEED.c13 + 0.004 };
+  assert.strictEqual(RS.floatingRoom(THREE, rfRoom(live), rfDev(live), {}), null);
+  const room = rfRoom();
+  const before = room.map((s) => [s._lp.x, s._lp.z, (s.extent || [])[0]]);
+  RS.applyFloatingFix(room, RS.floatingRoom(THREE, room, rfDev(), {}));
+  assert.deepStrictEqual(room.map((s) => [s._lp.x, s._lp.z, (s.extent || [])[0]]), before,
+                         "horizontal position and extent untouched — anchors and registration are safe");
+});
