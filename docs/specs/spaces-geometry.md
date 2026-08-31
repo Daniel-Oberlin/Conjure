@@ -601,7 +601,8 @@ facing or plane are discarded as *other walls*, not failed matches.
 ### 10.2 One room's floor, without anyone noticing
 
 `heightCensus` (pure, in `room-snap.js`, called **before** `sealWalls` — sealing rewrites the very gap being
-measured) reports every floor and ceiling height, and every wall's gap to the floor **below it**, using the
+measured) reports every floor and ceiling height, every inset's height and host, and every wall's gap to the
+floor **below it**, using the
 same `covers` footprint test `sealWalls` uses to decide which room a wall is in. Floor + ceiling + wall gaps
 all moving together is a regional map shift (§1); the floor moving alone is a plane re-fit.
 
@@ -653,11 +654,24 @@ On top of that, all of these must hold, and any one failing means no correction 
 - at least one **coherent reference** room, and if several, they must agree with each other;
 - the residual displacement, after subtracting the reference baseline, still exceeds the threshold.
 
-**What moves:** the floor, its ceiling, every wall whose *bottom* rests on that floor, and any inset on
-those walls. Wall membership is by bottom rather than footprint because a partition wall spans two rooms'
-footprints — its bottom does not. Insets follow their host wall so a door drops with its opening instead of
-hanging in it. The change is **vertical only**: normals, horizontal position and extent are untouched, so
-registration (yaw + x/z) and every plane-relative anchor are unaffected, exactly as with `sealWalls`.
+**What moves is decided by the same evidence that picked the room**: a surface joins only when its *own*
+drift from the seed matches the room's, within the same tolerance. Proximity was tried first — "is your
+bottom near the floor" — and it put a door two and a half inches into the ground: its host wall sat 18 mm
+from the *displaced* floor and was swept in, while its actual drift was +16 mm against the room's +96 mm. It
+had never moved with the room, and only the drift could say so.
+
+**Walls are deliberately never moved.** Their drift cannot be measured honestly — the seed stores a wall
+*post*-`sealWalls` while a live capture is pre-seal, so the difference carries the seal amount, and the Quest
+fits wall edges short by a varying few cm regardless (measured spread on the reference space: ±45 mm against
+a 90 mm signal). No threshold separates "moved with the room" from "fitted differently". `sealWalls` already
+exists to reconcile wall edges with floors and ceilings, and closes the gap to the corrected floor on the
+same pass. Insets *are* judged on their own drift rather than following their wall, because an inset's centre
+is a clean measurement and `snapInsets` only ever moves it horizontally.
+
+A surface with no seed counterpart is left raw — absent evidence, the capture wins.
+
+The change is **vertical only**: normals, horizontal position and extent are untouched, so registration
+(yaw + x/z) and every plane-relative anchor are unaffected, exactly as with `sealWalls`.
 
 **Where it sits:** applied to `localSurfaces` only, *after* the census — so the log always records the fault
 as captured, not the view we chose to render — and *before* `sealWalls`, so walls close against the

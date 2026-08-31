@@ -2,14 +2,19 @@
 
 # Bugs
 - shell: we are inconsistent when showing names vs. slugs in the shell, for example, the worlds command shows the space of a world as the slug, but spaces shows the names of the spaces without the slugs.  IMO, slugs should be hidden from the user, only the names which can be changed should be shown - these should also be in the paths which are shown and navigated.  If someone needs to know the actual filename/path of a world, session, space, etc., there should be a file directive or command or something that makes the disk file visible.  Otherwise, it should be all names.
-- voice "unknown command agents"
-- reset should work in voice
+- fix floating floors feature - default on
+
 
 
 # Quick improvements
-- Add rotation tools to images (excluding billboards)
-- LLM specific blocks (specify list of LLMNs, then an all others block, blocks can be empty)
+- Grab tool option: rotate and move void world (floor locked)
+- Grab tool option: rotate and scale skybox
 - LLM routing - tool scoping to different LLMs
+
+# LLM consensus
+- Post same thing to all LLMs, record anwsers
+- Have each LLM evaluate best response
+- Look at distribution
 
 # Surfaces
 - Still see occasional disappearance of some surfaces
@@ -26,6 +31,8 @@
   - Water reflection lighting
   - Panoramic photo
   - What does "mesh detection" look like? (see occlusion backlog)
+  - Picture frames and groups of frames that can be repopulated
+  - Thumbnailwha
 
 # Dynamic content
 - Swarm

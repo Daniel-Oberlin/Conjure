@@ -156,6 +156,18 @@ No internal probe can answer that, because internally the space is self-consiste
 | The floor itself | The Quest's bedroom room entity is anchored ~104 mm high | **Not fixable at source** — a Room Setup re-scan does not clear it. Mitigated at render: `floatingRoom` detects a rigidly-displaced room and lowers it back onto the rest of the space (spec §10.4). Measured on this capture: the two known-equal floors closed from **104 mm to 12 mm** | `--fix-floating-rooms` (0 = off; try 0.06) | — |
 | `[post]` logged only the first changed id; server `add`/`remove` were silent | first-hit `reason` string; only `update` had a `[seed]` line | full reason list; `seed.add` / `seed.prune` named by id | — | `371ff83` |
 
+**Follow-on fault, found and fixed the same day.** The first cut of the correction decided *which* surfaces
+belong to a room by geometric proximity — a wall joined if its bottom sat near the floor. `real_wall_111`'s
+bottom happened to land 18 mm from the *displaced* floor, so it was swept in and shifted the full 83 mm,
+along with `real_door_112` riding it. Its own drift was **+16 mm against the room's +96 mm**: it had never
+moved. The door ended up ~67 mm below where it belonged, reported from the headset as "a little low".
+
+Two things made it hard to see, and both are now closed: the census logged floors, ceilings and wall gaps
+but **no insets**, so the door was invisible in the log and had to be reasoned about through its host wall;
+and membership used a different rule (proximity) from room selection (drift coherence), when the drift
+evidence that would have excluded the wall was already being computed. Membership is now the same coherence
+test, walls are left to `sealWalls`, and insets are judged on their own drift.
+
 **Side findings recorded in the backlog, not fixed here:** a ~46 mm sign error in the seed's kitchen height
 (it stores `floor_10` below the living room where physically it is above); the marker validity guard; the
 unexplained `track.reset` triples; and the observation that declaring the space's known-equal surfaces would

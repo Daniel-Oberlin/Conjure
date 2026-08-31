@@ -359,11 +359,17 @@
    * Returns [] below 3 comparable surfaces: with two, a whole-space shift and one bad plane are the same
    * number, and guessing between them is worse than staying quiet.
    *
+   * `basisIds` narrows which surfaces form the MEDIAN without narrowing which get a deviation. Floors and
+   * ceilings are the only clean baseline — a wall's stored height went through `sealWalls` before it was
+   * posted while a live one has not, and inset heights are sparse — so a caller that wants deviations for
+   * everything still wants the baseline computed from those. Omitted ⇒ every entry counts, as before.
+   *
    * @param {Record<string, number>} live            id → height this capture
    * @param {Record<string, {y: number, sem?: string}>} seed   id → height in the stored seed
+   * @param {string[]} [basisIds]                    ids whose drifts form the median (default: all)
    * @returns {{id: string, sem: string|undefined, live: number, seed: number, d: number, dev: number}[]}
    */
-  function levelDeviation(live, seed) {
+  function levelDeviation(live, seed, basisIds) {
     /** @type {{id: string, sem: string|undefined, live: number, seed: number, d: number, dev: number}[]} */
     var out = [];
     Object.keys(live || {}).forEach(function (id) {
@@ -371,8 +377,14 @@
       if (!s) return;
       out.push({ id: id, sem: s.sem, live: live[id], seed: s.y, d: live[id] - s.y, dev: 0 });
     });
-    if (out.length < 3) return [];
-    var ds = out.map(function (o) { return o.d; }).sort(function (a, b) { return a - b; });
+    var basis = out;
+    if (basisIds && basisIds.length) {
+      /** @type {Record<string, number>} */ var want = {};
+      basisIds.forEach(function (id) { want[id] = 1; });
+      basis = out.filter(function (o) { return want[o.id]; });
+    }
+    if (basis.length < 3) return [];
+    var ds = basis.map(function (o) { return o.d; }).sort(function (a, b) { return a - b; });
     var mid = ds.length >> 1;
     var median = ds.length % 2 ? ds[mid] : (ds[mid - 1] + ds[mid]) / 2;
     out.forEach(function (o) { o.dev = o.d - median; });

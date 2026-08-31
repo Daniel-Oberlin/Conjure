@@ -1834,6 +1834,10 @@
           // a wall moved WITH its floor or not. Reported per room (grouped by that floor id).
           walls: cen.walls.filter(function (w) { return w.floor; }).map(function (w) {
             return { id: w.id, floor: w.floor, gap: mm(w.gap) }; }),
+          // Insets by height and host. Their absence is why a door reported as sitting low could only be
+          // reasoned about through its wall — the one surface in the room the log could not see.
+          insets: cen.insets.map(function (i) {
+            return { id: i.id, sem: i.sem, y: mm(i.y), host: i.host }; }),
         });
         return flat;
       },
@@ -1924,9 +1928,7 @@
           this._floatArmed = 1;
           debugLog("level", "floating-room correction armed at " + MIN + " m", true);
         }
-        var dev = {};
-        this._levelDeviation(flat).forEach(function (d) { dev[d.id] = d.dev; });
-        var found = RS.floatingRoom(AFRAME.THREE, localSurfaces, dev, { minM: MIN });
+        var found = RS.floatingRoom(AFRAME.THREE, localSurfaces, this._driftAll(localSurfaces), { minM: MIN });
         var held = this._float;
         if (found) {
           this._floatMiss = 0;
@@ -1952,6 +1954,32 @@
           }
         }
         return held ? RS.applyFloatingFix(localSurfaces, held) : 0;
+      },
+      // A deviation for EVERY surface with a seed counterpart — what decides which surfaces move with a
+      // floating room. Same median basis as the anomaly (floors + ceilings), so the two agree by
+      // construction and a wall's noisy stored height cannot shift the baseline everything is judged
+      // against. Walls are measured by BOTTOM rather than centre because a re-measured extent moves the
+      // centre for reasons that have nothing to do with drift; they are excluded from the correction
+      // anyway (see `floatingRoom`), so this is only for the record.
+      _driftAll: function (localSurfaces) {
+        if (!docSurfaces) return {};
+        var seed = {}, basis = [];
+        var lowOf = function (y, ext) { return y - ((ext && ext[1]) || 0) / 2; };
+        docSurfaces.forEach(function (e) {
+          var sem = (e.meta || {}).semantic, p = (e.transform || {}).position;
+          if (!p) return;
+          var ext = ((e.components || {}).surface || {}).extent;
+          seed[e.id] = { y: sem === "wall" ? lowOf(p[1], ext) : p[1], sem: sem };
+          if (sem === "floor" || sem === "ceiling") basis.push(e.id);
+        });
+        var live = {};
+        localSurfaces.forEach(function (s) {
+          if (!s._lp) return;
+          live[s.id] = s.semantic === "wall" ? lowOf(s._lp.y, s.extent) : s._lp.y;
+        });
+        var out = {};
+        WM.levelDeviation(live, seed, basis).forEach(function (d) { out[d.id] = d.dev; });
+        return out;
       },
       // Live heights vs the persisted seed's, whole-space offset removed — WM.levelDeviation holds the rule
       // and its reasoning; this just supplies the seed side from the current snapshot.

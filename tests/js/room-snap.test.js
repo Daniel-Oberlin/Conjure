@@ -1016,20 +1016,47 @@ test("floatingRoom refuses when it cannot tell which room is the outlier", () =>
   assert.strictEqual(RS.floatingRoom(THREE, noCeil, rfDev(), {}), null);
 });
 
-test("floatingRoom takes the walls standing on that floor, by their bottoms, not by footprint", () => {
-  // A partition wall spans two rooms' footprints, so footprint membership is ambiguous for exactly the
-  // wall that matters. Its BOTTOM is not: it rests on one floor, and that is the room it belongs to.
+test("floatingRoom moves an inset only if the inset ITSELF drifted with the room", () => {
+  // The regression that motivated drift-based membership. `door_112` sat on a wall whose bottom happened
+  // to land 18 mm from the displaced floor, so proximity swept it into the correction — and it went two
+  // and a half inches into the ground, because its own drift was +16 mm against the room's +96 mm. It had
+  // never moved with the room, and only its drift could say so.
   const room = rfRoom();
-  const mine = vert("real_wall_mine", "wall", [20, RF_LIVE.f32 + 1.2, 1], 0, [3, 2.4]);   // on the bedroom floor
-  const partition = vert("real_wall_81", "wall", [0, RF_LIVE.f32 + 1.2, 1], 0, [3, 2.4]); // over the LIVING floor…
-  const theirs = vert("real_wall_yours", "wall", [0, RF_LIVE.f8 + 1.2, 1], 0, [3, 2.4]);  // …but resting on it
-  const door = vert("real_door_1", "door", [20, RF_LIVE.f32 + 1.0, 1], 0, [0.9, 2]);
-  door.hostWall = "real_wall_mine";
-  const fix = RS.floatingRoom(THREE, room.concat([mine, partition, theirs, door]), rfDev(), {});
-  assert.ok(fix.ids.includes("real_wall_mine"));
-  assert.ok(fix.ids.includes("real_wall_81"), "the partition rests on the displaced floor → it moves");
-  assert.ok(!fix.ids.includes("real_wall_yours"), "a wall on the living-room floor stays put");
-  assert.ok(fix.ids.includes("real_door_1"), "an inset follows its host wall, so it can't hang in its opening");
+  const dev = rfDev();
+  const roomOff = (dev[RF_ID.f32] + dev[RF_ID.c13]) / 2;
+
+  const rode = vert("real_door_rode", "door", [20, RF_LIVE.f32 + 1.0, 1], 0, [0.9, 2]);
+  const stayed = vert("real_door_112", "door", [20, RF_LIVE.f32 + 1.0, 1], 0, [0.9, 2]);
+  stayed.hostWall = rode.hostWall = "real_wall_111";
+  dev["real_door_rode"] = roomOff;              // drifted with the room
+  dev["real_door_112"] = roomOff - 0.080;       // did not — the real case, to the millimetre
+
+  const fix = RS.floatingRoom(THREE, room.concat([rode, stayed]), dev, {});
+  assert.ok(fix.ids.includes("real_door_rode"), "an inset that moved with the room is put back");
+  assert.ok(!fix.ids.includes("real_door_112"),
+            "one that never moved is left alone — even sharing a host wall with one that did");
+});
+
+test("floatingRoom never moves a wall — sealWalls reconciles those", () => {
+  // A wall's drift cannot be measured honestly: the seed stores it post-seal, a live capture is pre-seal,
+  // and the Quest fits wall edges short by a varying few cm. Measured spread on the real space was ±45 mm
+  // against a 90 mm signal, so no threshold separates "moved with the room" from "fitted differently".
+  const room = rfRoom();
+  const dev = rfDev();
+  const roomOff = (dev[RF_ID.f32] + dev[RF_ID.c13]) / 2;
+  const w = vert("real_wall_111", "wall", [20, RF_LIVE.f32 + 1.2, 1], 0, [3, 2.4]);
+  dev["real_wall_111"] = roomOff;               // even a wall whose drift matches exactly
+  const fix = RS.floatingRoom(THREE, room.concat([w]), dev, {});
+  assert.ok(!fix.ids.includes("real_wall_111"), "stays put; sealWalls closes it to the corrected floor");
+});
+
+test("floatingRoom leaves a surface with no seed counterpart alone", () => {
+  // A freshly minted id has no baseline, so there is no evidence either way. Absent evidence the raw
+  // capture wins — that is the system's default posture everywhere else too.
+  const room = rfRoom();
+  const fresh = vert("real_door_new", "door", [20, RF_LIVE.f32 + 1.0, 1], 0, [0.9, 2]);
+  const fix = RS.floatingRoom(THREE, room.concat([fresh]), rfDev(), {});
+  assert.ok(!fix.ids.includes("real_door_new"));
 });
 
 test("floatingRoom is off by default and applyFloatingFix moves only y", () => {

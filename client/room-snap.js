@@ -530,6 +530,9 @@
   // A wall on a shared room boundary counts as under BOTH adjoining rooms' footprints.
   var COVER_MARGIN = 0.3;
 
+  /** @type {Record<string, number>} */
+  var INSET_SEM = { "door": 1, "window": 1, "wall art": 1 };
+
   // Does a horizontal surface `h`'s footprint (its rectangle, grown by `margin`) cover the plan point
   // (wx,wz)? Project the point into h's own axes (its raw-plane local X and Z, both horizontal for a
   // floor/ceiling) so a rotated/non-axis-aligned room is handled correctly. Shared by sealWalls (which
@@ -863,11 +866,13 @@
    * @param {THREE_NS} THREE
    * @param {SnapSurface[]} surfaces   local (F_track) surfaces, pre-seal
    * @returns {{floors: {id: string, y: number}[], ceilings: {id: string, y: number}[],
-   *            walls: {id: string, bot: number, top: number, floor: string|null, gap: number|null}[]}}
+   *            walls: {id: string, bot: number, top: number, floor: string|null, gap: number|null}[],
+   *            insets: {id: string, sem: string, y: number, host: string|undefined}[]}}
    */
   function heightCensus(THREE, surfaces) {
     /** @type {{id: string, y: number}[]} */ var floors = [];
     /** @type {{id: string, y: number}[]} */ var ceilings = [];
+    /** @type {{id: string, sem: string, y: number, host: string|undefined}[]} */ var insets = [];
     /** @type {{id: string, bot: number, top: number, floor: string|null, gap: number|null}[]} */
     var walls = [];
     var floorSurfs = surfaces.filter(function (s) { return s.semantic === "floor" && s._lp && s._lq && s.extent; });
@@ -875,6 +880,7 @@
       if (!s._lp) return;
       if (s.semantic === "floor") floors.push({ id: s.id, y: s._lp.y });
       else if (s.semantic === "ceiling") ceilings.push({ id: s.id, y: s._lp.y });
+      else if (INSET_SEM[s.semantic]) insets.push({ id: s.id, sem: s.semantic, y: s._lp.y, host: s.hostWall });
       else if (s.semantic === "wall" && s.extent) {
         var h = s.extent[1] || 0, bot = s._lp.y - h / 2, top = s._lp.y + h / 2;
         // Which room is this wall in? The LOWEST covering floor — the same rule sealWalls uses to pick the
@@ -890,7 +896,8 @@
     });
     /** @param {{id: string}} a  @param {{id: string}} b  @returns {number} */
     var byId = function (a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; };
-    return { floors: floors.sort(byId), ceilings: ceilings.sort(byId), walls: walls.sort(byId) };
+    return { floors: floors.sort(byId), ceilings: ceilings.sort(byId), walls: walls.sort(byId),
+             insets: insets.sort(byId) };
   }
 
   // WHY didn't this surface match? The single most valuable line in the churn log: it separates "the Quest
@@ -1008,20 +1015,18 @@
   /**
    * @param {THREE_NS} THREE
    * @param {SnapSurface[]} surfaces        live, PRE-seal (needs true wall bottoms)
-   * @param {Record<string, number>} devById   id → height deviation vs the seed (WorldModel.levelDeviation)
-   * @param {{minM?: number, cohM?: number, wallM?: number}} [opts]
+   * @param {Record<string, number>} devById   id → height deviation vs the seed, for EVERY surface that has
+   *   a seed counterpart, all offset by the same median (WorldModel.levelDeviation with a floor/ceiling basis)
+   * @param {{minM?: number, cohM?: number}} [opts]
    * @returns {{floor: string, ceiling: string, offset: number, ids: string[]}|null}
    *   `offset` is how far the room sits ABOVE the rest of the space; subtract it to correct.
    */
   function floatingRoom(THREE, surfaces, devById, opts) {
     opts = opts || {};
     var MIN = opts.minM != null ? opts.minM : 0.06;    // displacement that counts as definite
-    var COH = opts.cohM != null ? opts.cohM : 0.02;    // floor and ceiling must agree this closely
-    var WALL = opts.wallM != null ? opts.wallM : 0.03; // a wall joins the room if its bottom is this near the floor
+    var COH = opts.cohM != null ? opts.cohM : 0.02;    // drifts must agree this closely — for the room, and
+    //                                                    for every surface that moves with it
     if (!(MIN > 0) || !devById) return null;
-    // WALL must stay well inside MIN, or at the smallest correctable displacement the NEXT room's walls
-    // fall inside the window and get dragged along with the room being corrected.
-    if (WALL >= MIN * 0.6) WALL = MIN * 0.6;
 
     var ceils = surfaces.filter(function (s) { return s.semantic === "ceiling" && s._lp && s._lq && s.extent; });
     /** @type {{floor: SnapSurface, ceiling: SnapSurface, coh: number, off: number}[]} */
@@ -1048,19 +1053,27 @@
     var shift = cand[0].off - sum / ref.length;
     if (Math.abs(shift) < MIN) return null;
 
-    // Membership. The floor and ceiling, plus every wall STANDING ON that floor — by its own bottom, not by
-    // footprint, because a partition wall spans two rooms' footprints and belongs to whichever floor it
-    // actually rests on. Insets follow their recorded host wall, so a door drops with its wall instead of
-    // hanging in the re-cut opening.
-    var fy = cand[0].floor._lp.y;
+    // MEMBERSHIP IS THE SAME EVIDENCE THAT PICKED THE ROOM: a surface moves only if its OWN drift from the
+    // seed matches the room's. Proximity was tried first — "is your bottom near the floor" — and it is what
+    // put `door_112` two and a half inches into the ground: its host wall sat 18 mm from the displaced floor
+    // and got swept in, while its actual drift was +16 mm against the room's +96 mm. It had never moved, and
+    // the geometry could not say so. The drift can.
+    //
+    // WALLS ARE DELIBERATELY NOT MOVED. Their drift cannot be measured honestly: the seed's walls are stored
+    // POST-seal while a live capture is pre-seal, so the difference carries the seal amount, and the Quest
+    // fits wall edges short by a varying few cm anyway (measured spread on this space: ±45 mm, against a
+    // 90 mm signal). `sealWalls` already exists to reconcile wall edges with floors and ceilings, so it
+    // closes the gap to the corrected floor on the next pass — which is exactly its job and needs no guess
+    // here. Insets are judged on their own drift rather than following their wall, since their centre IS a
+    // clean measurement and `snapInsets` only ever moves them horizontally.
     /** @type {Record<string, number>} */ var ids = {};
-    /** @type {Record<string, number>} */ var walls = {};
-    ids[cand[0].floor.id] = 1; ids[cand[0].ceiling.id] = 1;
     surfaces.forEach(function (s) {
-      if (s.semantic !== "wall" || !s._lp || !s.extent) return;
-      if (Math.abs((s._lp.y - (s.extent[1] || 0) / 2) - fy) <= WALL) { ids[s.id] = 1; walls[s.id] = 1; }
+      if (s.semantic === "wall") return;
+      var d = devById[s.id];
+      if (d == null) return;                            // no seed counterpart ⇒ no evidence ⇒ leave it raw
+      if (Math.abs(d - cand[0].off) <= COH) ids[s.id] = 1;
     });
-    surfaces.forEach(function (s) { if (s.hostWall && walls[s.hostWall]) ids[s.id] = 1; });
+    ids[cand[0].floor.id] = 1; ids[cand[0].ceiling.id] = 1;   // the pair that defined the room, by construction
     return { floor: cand[0].floor.id, ceiling: cand[0].ceiling.id, offset: shift, ids: Object.keys(ids) };
   }
 
