@@ -712,5 +712,6 @@ with a golden test like `plane_anchor`'s.
 - [`specs/spaces.md`](./spaces.md) — the space record, selection, admission, authority.
 - [`specs/worlds-surfaces.md`](./worlds-surfaces.md) — styling, visibility, immersion, openings.
 - [`specs/occlusion.md`](./occlusion.md) — real-world depth occlusion.
-- [`docs/investigations/`](../investigations/) — the debugging campaigns behind §9, and what was ruled
-  out.
+- [`docs/investigations/`](../investigations/) — the debugging campaigns behind §9 and §10, and what was
+  ruled out. [`raised-floor.md`](../investigations/raised-floor.md) is the one §10 was built for, and the
+  worked example of reading its output.

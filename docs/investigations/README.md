@@ -36,6 +36,7 @@ thing. Say what would change your mind.
 | [`pops-and-jitters.md`](./pops-and-jitters.md) | visible motion that shouldn't be there — seams, cracks, content shimmer, and the walking micro-stutter | five fixes shipped; the residual stutter diagnosed as a **WebXR/Quest platform limit** (dropped-frame positional reprojection during translation), our code exonerated by measurement |
 | [`wall-art-behind-wall.md`](./wall-art-behind-wall.md) | a wall-art image intermittently lands *behind* its wall | Fix A landed; **Fix B tried and rejected** — do not retry without new evidence |
 | [`stt-accuracy.md`](./stt-accuracy.md) | speech-to-text gets words wrong — is it the recognizer or the microphone? | model fix shipped (`base` → `small.en`, measured); **four options rejected**, two by measurement; mic-vs-model still open pending a real-audio corpus |
+| [`raised-floor.md`](./raised-floor.md) | one room's floor renders four inches above the real one, on and off for days | cause established — the Quest's **room entity for that room is anchored ~104 mm high**; three hypotheses (warped tracking frame, floor-plane re-fit, bad registration) each **killed by measurement**; device-side, no code fix |
 
 ## Related
 

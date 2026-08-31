@@ -46,56 +46,22 @@ Instrumented by [the geometry event log](#instrumentation--the-geometry-event-lo
 probe is unexercised; nothing is confirmed about which of the three causes fires, because none of them did.
 Worth noting the sessions were short and stationary-ish — the symptom is occasional by report.
 
-### One room's floor sits 4–6 inches high — **diagnosed 2026-08-31: a Quest room-anchor offset**
+### One room's floor sits 4–6 inches high — **diagnosed, device-side**
 
-**Status:** cause established by measurement; **device-side, nothing to fix in our code.** Open only on the
-verification step below.
+**Status:** cause established 2026-08-31. The campaign, its measurements and the three hypotheses it killed
+are in [`investigations/raised-floor.md`](../investigations/raised-floor.md) — read that before proposing
+anything here.
 
-The bedroom's whole surface group renders **~104 mm above** where it physically is. Not a drift and not
-ours: the Quest's stored room entity for that room is anchored high, and every plane in it rides along.
+In one line: the Quest's stored room entity for the **bedroom** is anchored ~104 mm high, and every plane in
+that room rides with it. Proven by two known-equal surface pairs (`floor_32` = `floor_8`, one continuous
+wooden floor; `ceiling_13` = `ceiling_25`) reading +104 mm and +103 mm — agreeing within 1 mm, so the room
+moves as a rigid unit. The tracking frame is sound and registration was flawless throughout. **Nothing to
+fix in our code.**
 
-**The measurement that settles it.** `real_floor_32` (bedroom) and `real_floor_8` (living room) are *the
-same continuous wooden floor*, and `real_ceiling_13` / `real_ceiling_25` are at the same physical height —
-so both differences must be zero, always. Live:
+**Open — the verification.** Re-run Quest Room Setup for the bedroom, re-enter, press the marker in bedroom
+and living room. `floor_32 − floor_8` should return to ~0 and `level.anomaly` should stop firing at entry.
+Until then the cause is *established* but not *closed*.
 
-| | live | truth |
-|---|---|---|
-| `floor_32` − `floor_8` | **+104 mm** | 0 |
-| `ceiling_13` − `ceiling_25` | **+103 mm** | 0 |
-
-Floor and ceiling displaced identically, **within 1 mm**. A room moving as a rigid unit.
-
-**Ruled out, each by measurement, each worth not re-proposing:**
-
-| Hypothesis | Killed by |
-|---|---|
-| the tracking frame is warped in y | the controller on one continuous floor across three rooms: 0.047 / 0.032 / 0.046 / 0.038 — **15 mm spread, 1 mm hysteresis** on the bedroom→living→bedroom return. One floor reads as one height. |
-| registration lost its lock | `cov=59/59 inl=59/59`, residuals 7–14 mm max, across both sessions. A flawless lock the whole time. |
-| the floor plane alone re-fit (a rug, a threshold) | the **ceiling** moved by the same 103 mm. Independent per-plane fits do not agree to 1 mm across a floor and a ceiling four metres apart. |
-| our snap chain | already known — `sealWalls` reads floors and writes only walls (`room-snap.js:554`) — and now confirmed in the field. |
-
-**Which room is wrong** is settled by the sign flip in `err` at the boundary: bedroom **+0.042 / +0.045**,
-living room **−0.044**, kitchen **−0.029**. Living room and kitchen sit just below the controller (that is
-the grip bias); only the bedroom sits above it.
-
-**Corroboration.** `wall_81` carries a persistent **106–120 mm gap** above `floor_8` — it is over the living
-room floor but its bottom sits at the *bedroom's* level, the partition wall riding with the displaced group.
-`sealWalls` has been silently stretching it down ~107 mm every capture, which is why no slit was ever
-visible.
-
-**It is stable, not drifting.** Bedroom−living gap across four censuses: 117 → 103 → 103 → 104 mm. Absolute
-heights bob ±25 mm (the whole space breathing) while the offset holds.
-
-**The seed never got corrupted**, and that is the design working: 104 mm is far below the 0.5 m structural
-threshold, so it never round-trips. The stored seed still has the two floors 9 mm apart — correct.
-
-**Still open — the verification.** Re-run Quest Room Setup for the bedroom, re-enter, and press the marker
-in bedroom and living room. `floor_32` − `floor_8` should return to ~0 and `level.anomaly` should stop
-firing at entry. Until that is done the cause is *established* but not *closed*.
-
-**Predicted, unverified:** content renders against local planes, so anything placed on the bedroom floor
-should be floating ~10 cm above it while living-room and kitchen objects sit flat. A visual check that would
-confirm the diagnosis from the other side.
 
 ### Ground truth for this space — physical constraints worth keeping
 
@@ -205,9 +171,10 @@ since a device-side map re-fit would produce both symptoms and the value is in r
 - **`level.anomaly` fired unprompted at session entry**, before any button press, naming `real_floor_32`
   (+83 mm) and `real_ceiling_13` (+77 mm) — the right two surfaces, the right room, with nobody looking for
   it. That was the whole design bet and it paid immediately.
-- **`dev` was validated against physical reality.** It computed +78 mm for `floor_32`; the controller,
-  measuring the actual floor, independently gave ~78 mm. A statistical inference and a physical measurement
-  agreeing to the millimetre is worth more than either alone.
+- **`dev` was corroborated by physical measurement.** It computed +78 mm for `floor_32`; the controller put
+  the same floor ~80 mm high. Same order, same sign, agreeing **to within the ~2 cm gesture noise** — not
+  more finely than that, since the grip bias was inferred from the same presses. The exact figure comes from
+  the known-equal surface pair (104 mm), which needs no instrument at all.
 - **The marker's characteristics, measured:** grip bias ~3–4 cm, gesture repeatability ~1 cm, and 1 mm
   hysteresis returning to the same spot after walking two rooms away. Comfortably sharp enough for a 10 cm
   signal.
