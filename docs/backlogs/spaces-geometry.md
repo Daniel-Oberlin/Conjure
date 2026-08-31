@@ -187,22 +187,36 @@ since a device-side map re-fit would produce both symptoms and the value is in r
 - **The `err` sign flip at a room boundary is the sharpest single reading in the log** — it says which room
   is wrong, which no internal probe can. Worth reaching for first next time.
 
-### A structural change during a displaced session corrupts the seed
+### A structural change during a displaced session corrupted the seed — **fixed 2026-08-31**
 
-**Status:** open · found 2026-08-31 while chasing the floating-room correction · **independent of it**
+The gate and the payload were decoupled: any structural trigger caused `_surface_update_set` to write the
+**whole record**, so an opening-count change — a legitimate edit to `holes` — rewrote the surface's
+*position* with whatever frame that capture happened to be in.
 
-`_surface_structural_change` fires on an opening-count change, and `_surface_update_set` then writes the
-surface's **full pose**. So "a door appeared on this wall" rewrites that wall's *position* — importing
-whatever displacement the capture happens to carry. Observed: at 07:37, mid-displacement, the seed absorbed
-~90 mm into `real_wall_82`, `real_wall_37` and `real_ceiling_13`.
+Observed: at 07:37 a relocalization put the space ~93 mm low, a door appeared on two walls, and the seed
+absorbed the offset into `real_wall_82`, `real_wall_37` and `real_ceiling_13` while its other 55 surfaces
+kept the old frame. The reference was left internally inconsistent — and the seed is the baseline the
+floating-room detector, guest registration, recovery and the server's own plane queries all measure against.
 
-That matters beyond tidiness: the seed is the baseline the floating-room detector measures drift against, so
-a polluted seed degrades the very reference that detects the fault, and every subsequent correction is
-measured against a moving target.
+The consequence was not theoretical. Replaying the detector against both versions of the seed: with the
+corrupted `ceiling_13` the bedroom read coherent (3 mm) and was corrected; with its pre-write value it read
+25 mm — past the 20 mm gate — and would not have been corrected at all. **A single corrupted surface
+decided whether the correction ran.**
 
-**The fix is probably to write only what changed** — an opening-count change should update `holes`, not the
-pose — or to refuse a pose write while `level.anomaly` is active for that surface's room. The first is
-narrower and does not need the correction to be switched on.
+**Fixed:** `_surface_changes` now returns *every* aspect that changed and `_surface_update_set` writes only
+those. `extent` still carries `position` — a rectangle's size and centre are one measurement (§9.1's
+matched-pair rule) — and the corner-relative inset anchors (`along`/`vertical`) ride the pose, since
+refreshing them from an untrusted capture is how inset identity starts churning (§6.1).
+
+**Seed repaired:** `real_ceiling_13` was reset to `real_ceiling_25`'s height (2.6634), the two being the
+same physical ceiling. Reverting instead to its pre-write 2.677 was considered and rejected — that value is
+itself of unknown provenance and makes the bedroom pair incoherent, whereas the ground-truth constraint
+gives 12 mm coherence and a 91 mm correction. Backup alongside the space file.
+
+**Still un-repaired, both pre-existing rather than from this fault:** `real_floor_32` and `real_floor_8` are
+stored 9 mm apart though they are one continuous wooden floor (this is the residual the correction cannot
+remove), and `real_floor_10` is stored 21 mm *below* the living-room floor where it is physically 25 mm
+*above* — a ~46 mm sign error. Neither is urgent; both would need the same ground-truth treatment.
 
 ### Open — what still has to happen
 

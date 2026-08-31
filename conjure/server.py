@@ -3254,30 +3254,6 @@ _authority_ts: float = 0.0            # server time of the last accepted capture
 # broadcasts geometry for rendering. What remains: absence-pruning + `anchored` (photo-pinned) protection.
 
 
-def _surface_update_set(s) -> dict:
-    """The `update`-op `set` for a re-captured surface (pose + shape, keeping the entity's material)."""
-    up: dict = {"transform.position": s.position, "meta.semantic": s.semantic}
-    if s.rotation is not None:
-        up["transform.rotation"] = s.rotation
-    if s.polygon is not None:
-        up["components.surface.polygon"] = s.polygon
-    if s.extent is not None:
-        up["components.surface.extent"] = s.extent
-    if s.holes is not None:
-        up["components.surface.holes"] = s.holes
-    if s.mesh_segment is not None:
-        up["meta.meshSegment"] = s.mesh_segment
-    if s.hostWall is not None:
-        up["meta.host_wall"] = s.hostWall
-    if s.along is not None:                        # §5.3 corner-relative anchor — refreshed from a good capture
-        up["meta.along"] = s.along
-    if s.vertical is not None:
-        up["meta.vertical"] = s.vertical
-    if s.structuralFallback is not None:
-        up["meta.structural_fallback"] = s.structuralFallback
-    return up
-
-
 def _dist3(a: list, b: list) -> float:
     return sum((a[i] - b[i]) ** 2 for i in range(3)) ** 0.5
 
@@ -3295,28 +3271,72 @@ _LARGE_MOVE_M = 0.5        # a surface must move/resize this far (m) to count as
 _LARGE_ROT_DEG = 20.0      # ...or rotate this far (deg) — a wall genuinely re-oriented, not registration wobble
 
 
-def _surface_structural_change(e: dict, s) -> tuple[bool, str]:
-    """Did surface `s` change STRUCTURALLY vs the stored seed entity `e`? Only these update the seed (§7.4):
-    a semantic reclass, an opening added/removed, or a LARGE move/rotate/resize (furniture actually moved /
-    a re-scan). Sub-threshold per-capture drift returns (False, "") so the seed doesn't churn. The reason
-    string is for the [seed] log."""
+def _surface_changes(e: dict, s) -> list[str]:
+    """Which STRUCTURAL aspects of `s` differ from the stored seed entity `e` (§7.4)? Sub-threshold
+    per-capture drift returns [] so the seed doesn't churn.
+
+    Returns EVERY aspect that changed, not the first — because the caller writes exactly these fields and
+    nothing else. That is the whole point: the gate and the payload used to be decoupled, so an
+    opening-count change (a legitimate edit to `holes`) rewrote the surface's POSITION too, importing
+    whatever frame that capture happened to be in. Observed 2026-08-31: a relocalization put the space
+    ~93 mm low, a door appeared on two walls, and the seed absorbed the offset into those walls and a
+    ceiling while its other 55 surfaces kept the old frame — leaving the reference internally inconsistent.
+    The seed is the baseline the floating-room detector, guest registration, recovery and the server's own
+    plane queries all measure against, so a pose written from an untrusted capture reaches all of them.
+
+    `extent` carries `position` with it deliberately: a rectangle's centre and its size are one measurement
+    (§9.1's matched-pair rule), and storing a new size against an old centre would be worse than either.
+    """
     t = e.get("transform") or {}
     comps = (e.get("components") or {}).get("surface") or {}
+    out: list[str] = []
     if s.semantic != (e.get("meta") or {}).get("semantic"):
-        return True, "reclassified"
+        out.append("semantic")
     if s.holes is not None and len(s.holes) != len(comps.get("holes") or []):
-        return True, "opening changed"
-    if s.position is not None:
-        d = _dist3(s.position, t.get("position") or [0, 0, 0])
-        if d > _LARGE_MOVE_M:
-            return True, f"moved {d:.2f} m"
+        out.append("holes")
+    if s.position is not None and _dist3(s.position, t.get("position") or [0, 0, 0]) > _LARGE_MOVE_M:
+        out.append("position")
     if s.rotation is not None and _ang_delta_deg(s.rotation, t.get("rotation") or [0, 0, 0]) > _LARGE_ROT_DEG:
-        return True, "rotated"
+        out.append("rotation")
     if s.extent is not None:
         ee = comps.get("extent")
         if ee is None or abs(s.extent[0] - ee[0]) > _LARGE_MOVE_M or abs(s.extent[1] - ee[1]) > _LARGE_MOVE_M:
-            return True, "resized"
-    return False, ""
+            out.append("extent")
+    return out
+
+
+def _surface_update_set(s, aspects) -> dict:
+    """The `update`-op `set` for a re-captured surface — **only the aspects that actually changed**.
+
+    A pose is written when the surface genuinely moved (past `_LARGE_MOVE_M`) or was resized, never as a
+    side effect of an unrelated edit. The corner-relative inset anchors (`along`/`vertical`) ride the pose
+    for the same reason: they are derived from the capture's geometry, so refreshing them from an untrusted
+    one is how inset identity starts churning (§6.1)."""
+    up: dict = {}
+    if "semantic" in aspects:
+        up["meta.semantic"] = s.semantic
+        if s.mesh_segment is not None:
+            up["meta.meshSegment"] = s.mesh_segment
+    if "holes" in aspects and s.holes is not None:
+        up["components.surface.holes"] = s.holes
+    if "rotation" in aspects and s.rotation is not None:
+        up["transform.rotation"] = s.rotation
+    if "extent" in aspects:                            # size and centre are one measurement — write both
+        if s.extent is not None:
+            up["components.surface.extent"] = s.extent
+        if s.polygon is not None:
+            up["components.surface.polygon"] = s.polygon
+    if ("position" in aspects or "extent" in aspects) and s.position is not None:
+        up["transform.position"] = s.position
+        if s.hostWall is not None:
+            up["meta.host_wall"] = s.hostWall
+        if s.along is not None:
+            up["meta.along"] = s.along
+        if s.vertical is not None:
+            up["meta.vertical"] = s.vertical
+        if s.structuralFallback is not None:
+            up["meta.structural_fallback"] = s.structuralFallback
+    return up
 
 
 @app.post("/space/capture")
@@ -3326,7 +3346,8 @@ async def ingest_room(req: RoomUpdate) -> dict:
     LOCAL-FIRST (docs/specs/spaces-geometry.md §2): every client renders its OWN live capture, so this no
     longer broadcasts geometry for rendering. It just keeps the stored SEED current — the reference
     constellation guests register against, the director's geometry queries, and what's persisted. A surface
-    is added when new, updated only on a STRUCTURAL change (`_surface_structural_change` §7.4 — no time-based
+    is added when new, updated only on a STRUCTURAL change, and then only in the fields that changed
+    (`_surface_changes` §7.4 — no time-based
     establish/freeze anymore), and pruned after sustained absence; surfaces with a photo pinned to them
     (`anchored`) are never pruned. Those geometry ops are applied to the store but NOT broadcast. Only what
     clients actually consume is broadcast: room-activation env + on-surface image re-anchors. An idle
@@ -3374,12 +3395,15 @@ async def ingest_room(req: RoomUpdate) -> dict:
                 _slog("seed", f"surface {eid} absent from post → PRUNED from seed")
     for s in req.surfaces:                                    # add new / update STRUCTURALLY-changed (§7.4)
         if s.id in existing:
-            changed, why = _surface_structural_change(existing[s.id], s)
-            if changed:
-                geo_ops.append({"op": "update", "id": s.id, "set": _surface_update_set(s)})
+            aspects = _surface_changes(existing[s.id], s)
+            if aspects:
+                up = _surface_update_set(s, aspects)
+                geo_ops.append({"op": "update", "id": s.id, "set": up})
                 changed_ids.add(s.id)
-                _glog("seed.update", {"id": s.id, "sem": s.semantic, "why": why})
-                _slog("seed", f"surface {s.id} {why} → seed updated")
+                why = "+".join(aspects)
+                _glog("seed.update", {"id": s.id, "sem": s.semantic, "why": why,
+                                      "wrote": sorted(up)})
+                _slog("seed", f"surface {s.id} {why} → seed updated ({', '.join(sorted(up))})")
         else:
             geo_ops.append({"op": "add", "entity": _surface_entity(s)})
             changed_ids.add(s.id)

@@ -90,7 +90,10 @@ def test_adds_and_updates_are_named_too(srv, client):
                                         "surfaces": [_surface("real_wall_1", pos=(0.0, 1.2, 2.0))],
                                         "replace": True})
     ups = [x for x in _lines(srv) if x["ev"] == "seed.update"]
-    assert len(ups) == 1 and ups[0]["id"] == "real_wall_1" and "moved" in ups[0]["why"]
+    assert len(ups) == 1 and ups[0]["id"] == "real_wall_1" and ups[0]["why"] == "position"
+    # `wrote` names the fields that actually changed — the log has to show that the gate and the payload
+    # agree, since their disagreeing is what corrupted a seed.
+    assert ups[0]["wrote"] == ["transform.position"]
 
 
 def test_the_log_rotates_by_day_and_prunes_past_retention(srv, monkeypatch, tmp_path):
@@ -142,3 +145,74 @@ def test_an_unserialisable_event_never_breaks_a_capture(srv):
     srv._glog("churn.mint", {"sem": "wall"})
     rows = _lines(srv)
     assert [x["ev"] for x in rows] == ["churn.mint"], "the bad line is dropped, the next one still lands"
+
+
+# ── the seed is written only in the fields that changed (docs/specs/spaces-geometry.md §8) ─────
+# A structural gate that writes the WHOLE record imports whatever frame the capture was in. Observed
+# 2026-08-31: a relocalization put the space ~93 mm low, a door appeared on two walls, and the seed
+# absorbed the offset into those walls and a ceiling while its other 55 surfaces kept the old frame —
+# leaving the reference the floating-room detector, guest registration and recovery all measure against
+# internally inconsistent.
+
+def _post(client, surfaces):
+    return client.post("/space/capture", json={"client_id": "hs_1", "surfaces": surfaces, "replace": True})
+
+
+def _stored(client, sid):
+    return next(e for e in client.get("/world").json()["entities"] if e["id"] == sid)
+
+
+def test_an_opening_change_does_not_rewrite_the_surfaces_position(srv, client):
+    """The exact bug. A door appearing on a wall is a real change to `holes` and nothing else."""
+    wall = _surface("real_wall_1", pos=(0.0, 1.2, 0.0))
+    _post(client, [wall])
+    before = _stored(client, "real_wall_1")["transform"]["position"]
+
+    moved_and_holed = dict(wall, position=[0.0, 1.29, 0.0],          # 90 mm of live displacement…
+                           holes=[{"x": 0.0, "y": 0.0, "w": 0.9, "h": 2.0}])   # …carried by an opening change
+    _post(client, [moved_and_holed])
+
+    after = _stored(client, "real_wall_1")
+    assert after["components"]["surface"]["holes"], "the opening is recorded"
+    assert after["transform"]["position"] == before, "and the displacement is NOT imported with it"
+    ev = next(x for x in _lines(srv) if x["ev"] == "seed.update")
+    assert ev["why"] == "holes" and ev["wrote"] == ["components.surface.holes"]
+
+
+def test_a_rotation_does_not_rewrite_the_surfaces_position(srv, client):
+    """The other half of what was observed: `real_ceiling_13` was written `why: rotated`, and its stored
+    height moved 22 mm with it — enough on its own to flip a room's coherence test either way."""
+    ceil = _surface("real_ceiling_1", "ceiling", pos=(0.0, 2.68, 0.0))
+    _post(client, [ceil])
+    _post(client, [dict(ceil, position=[0.0, 2.59, 0.0], rotation=[180.0, 0.0, 0.0])])
+    after = _stored(client, "real_ceiling_1")
+    assert after["transform"]["rotation"] == [180.0, 0.0, 0.0]
+    assert after["transform"]["position"] == [0.0, 2.68, 0.0], "height held; only the rotation changed"
+
+
+def test_a_genuine_move_still_writes_the_pose(srv, client):
+    """The gate's original purpose is intact — real furniture moving is exactly what it must let through."""
+    s0 = _surface("real_table_1", "table", pos=(0.0, 0.5, 0.0))
+    _post(client, [s0])
+    _post(client, [dict(s0, position=[2.0, 0.5, 0.0])])
+    assert _stored(client, "real_table_1")["transform"]["position"] == [2.0, 0.5, 0.0]
+
+
+def test_a_resize_carries_the_centre_with_it(srv, client):
+    """Size and centre are ONE measurement (§9.1's matched-pair rule). Storing a new extent against an old
+    centre would be worse than writing neither — the rectangle would describe a shape never captured."""
+    s0 = _surface("real_wall_1", pos=(0.0, 1.2, 0.0))
+    _post(client, [s0])
+    _post(client, [dict(s0, position=[0.0, 1.6, 0.0], extent=[4.2, 3.2])])
+    after = _stored(client, "real_wall_1")
+    assert after["components"]["surface"]["extent"] == [4.2, 3.2]
+    assert after["transform"]["position"] == [0.0, 1.6, 0.0], "centre comes with the size"
+
+
+def test_drift_below_the_threshold_still_writes_nothing(srv, client):
+    s0 = _surface("real_wall_1", pos=(0.0, 1.2, 0.0))
+    _post(client, [s0])
+    n = len(_lines(srv))
+    _post(client, [dict(s0, position=[0.0, 1.29, 0.0])])       # 90 mm — drift, not a relocation
+    assert len(_lines(srv)) == n, "a settled room still says nothing"
+    assert _stored(client, "real_wall_1")["transform"]["position"] == [0.0, 1.2, 0.0]

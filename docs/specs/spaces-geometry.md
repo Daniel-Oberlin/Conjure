@@ -422,8 +422,13 @@ round-trips.
 **large move** beyond ~0.5 m or 20° (real furniture moved or a re-scan, not drift) — which prints and
 logs, because it is rare and attention-worthy; a styling or content edit; a boundary change.
 
-**Server side** (`_surface_structural_change`, `server.py:2884`): a surface is added when new, updated
-only on a structural change, and pruned when absent. Those geometry ops are applied to the stored seed
+**Server side** (`_surface_changes`): a surface is added when new, pruned when absent, and on a structural
+change updated **only in the fields that changed**. That last part is load-bearing — writing the whole
+record meant an opening-count change rewrote the surface's *position* too, importing whatever tracking frame
+that capture was in, and the seed is the baseline registration, recovery, the server's plane queries and the
+floating-room detector all measure against. `extent` still carries `position` (a rectangle's size and centre
+are one measurement, §9.1), and the inset anchors `along`/`vertical` ride the pose rather than being
+refreshed from an untrusted capture. Those geometry ops are applied to the stored seed
 and **never broadcast** — clients render locally. Only what clients actually consume goes out:
 room-activation env, boundary, and on-surface image re-anchors.
 
@@ -749,7 +754,7 @@ with a golden test like `plane_anchor`'s.
 
 | Concern | Where |
 |---|---|
-| structural-change gate | `conjure/server.py:2884` `_surface_structural_change` |
+| structural-change gate | `conjure/server.py` `_surface_changes` + `_surface_update_set` (write only what changed) |
 | ingest (seed-only, no broadcast) | `conjure/server.py:2909` `ingest_room` |
 | seed planes for server solves | `conjure/server.py` `_seed_planes` |
 | server-side anchor authoring | `conjure/server.py` `_content_anchor` |
