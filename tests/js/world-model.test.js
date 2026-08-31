@@ -428,3 +428,31 @@ test("levelDeviation only compares surfaces the seed actually knows", () => {
   const dev = WM.levelDeviation(live, seed);
   assert.deepStrictEqual(dev.map((d) => d.id).sort(), ["a", "b", "c"]);
 });
+
+// ---- loadGate: don't assign identity from a room that is still loading -------------------------------
+// Measured on device: entering AR gave 4 and 16 planes against a 58-surface seed on two sessions, and 58
+// on a third. The two partial ones re-minted walls and pruned the originals with their colours; the full
+// one churned nothing.
+
+test("loadGate holds a partial capture and passes a full one", () => {
+  assert.strictEqual(WM.loadGate(4, 58, 0), "hold", "7% of the room — the session that lost two walls");
+  assert.strictEqual(WM.loadGate(16, 58, 0), "hold", "28% — the other one");
+  assert.strictEqual(WM.loadGate(58, 58, 0), "go", "the session that churned nothing");
+  // 30% is where `register` will already accept a lock, so the gate has to sit clear of it
+  assert.strictEqual(WM.loadGate(Math.ceil(0.31 * 58), 58, 0), "hold",
+                     "a capture register would lock on is still not enough to name surfaces from");
+});
+
+test("loadGate never blocks when there is nothing to compare against", () => {
+  // Establishing a fresh space, or a void world: no seed, so no expectation, so no gate.
+  assert.strictEqual(WM.loadGate(4, 0, 0), "go");
+  assert.strictEqual(WM.loadGate(1, 3, 0), "go", "too few seed surfaces to mean anything");
+});
+
+test("loadGate gives up rather than deadlocking on a room that genuinely shrank", () => {
+  // If surfaces are really gone from Room Setup, the capture can never reach the threshold — and holding
+  // forever would also block posting the removal. That is the wall-less-seed deadlock in a new costume,
+  // so patience runs out and says so.
+  assert.strictEqual(WM.loadGate(20, 58, 14), "hold");
+  assert.strictEqual(WM.loadGate(20, 58, 15), "forced", "…and reports that it was forced, not healthy");
+});

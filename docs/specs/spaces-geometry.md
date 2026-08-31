@@ -138,6 +138,27 @@ Two properties follow from scoring coverage rather than fraction-of-detected:
   penalised for it.
 - **Fragmentation cannot double-count.** Two live planes covering one reference surface score once.
 
+### 4.0a The load gate — do not name surfaces from a half-loaded room
+
+`detectedPlanes` is the persisted Room Setup delivered **wholesale**, not something that fills in as you
+look around — so a settled session sees essentially all of it, and a capture holding a small fraction means
+the Quest has not finished restoring the room. Entering AR, that takes seconds.
+
+Acting on those captures re-mints walls. Registration accepts a lock at 30% coverage, so a third of the room
+is enough to solve a frame — and a frame solved from a third of the geometry was measured **~17 cm out in
+x/z**, past `matchWall`'s perpendicular tolerance. The wall is rejected, a new id minted, and the original
+pruned three captures later, **taking its styling with it**. Measured: two sessions that began at 4 and 16
+planes against a 58-surface seed both re-minted walls; one that began at 58 churned nothing.
+
+So a capture below `LOAD_FRAC` (0.6) of the seed's surface count **holds**, exactly as the trust gate holds
+a tilted one — no identity, no render, no post. The cost is a couple of seconds of passthrough on entry,
+which is honest: the room genuinely is not known yet.
+
+`WM.loadGate` returns `hold`, `go`, or **`forced`**. The last is a deadlock escape, not a tuning outcome: a
+room that has genuinely *shrunk* could never reach the threshold, and holding forever would also block
+posting the removal — the wall-less-seed deadlock in a new costume ([backlog](../backlogs/spaces-geometry.md)).
+After `LOAD_PATIENCE` captures it proceeds and says so, so a forced pass is never mistaken for a healthy one.
+
 **A failed registration doubles as a "you are not in this space" signal.** A genuinely different space
 cannot consistently cover ≥4 reference surfaces, which is exactly what `selectSpace` exploits for space
 selection ([`specs/spaces.md §6`](./spaces.md)). The caveat worth stating: *different space* and *bad
@@ -697,6 +718,7 @@ with a golden test like `plane_anchor`'s.
 
 **`client/world-model.js`** — `surfaceSig`, `surfaceMoved`, `surfacePoseMoved`, `surfaceShapeChanged`,
 `advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`,
+`loadGate`,
 `levelDeviation`.
 
 **`client/room-worker.js`** — the off-thread `register` host.

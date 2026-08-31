@@ -391,7 +391,38 @@
     return out;
   }
 
-  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation,
+  /**
+   * Is this capture complete enough to assign IDENTITY from? `detectedPlanes` is the persisted Room Setup
+   * delivered wholesale rather than filling in as you look around, so a settled session sees essentially
+   * all of it and a small fraction means the Quest has not finished restoring the room.
+   *
+   * Acting on a partial capture is what re-mints walls: `register` accepts a lock at 30% coverage, and a
+   * frame solved from a third of the geometry was measured ~17 cm out in x/z — past `matchWall`'s
+   * perpendicular tolerance, so the wall is rejected, a new id minted, and the original pruned with its
+   * styling. Two device sessions that started at 4 and 16 planes (of 58) churned; one that started at 58
+   * did not.
+   *
+   * `"forced"` is a deadlock escape, not a tuning outcome: a room that has genuinely SHRUNK would otherwise
+   * never clear the gate and never be able to post the removal — the wall-less-seed deadlock in a new
+   * costume. It reports itself so a forced pass is never mistaken for a healthy one.
+   *
+   * @param {number} planes    planes in this capture
+   * @param {number} expect    surfaces the persisted seed says exist (0 when there is no seed yet)
+   * @param {number} held      consecutive captures already held by this gate
+   * @param {{frac?: number, patience?: number, minSeed?: number}} [opts]
+   * @returns {"go"|"hold"|"forced"}
+   */
+  function loadGate(planes, expect, held, opts) {
+    opts = opts || {};
+    var frac = opts.frac != null ? opts.frac : 0.6;
+    var patience = opts.patience != null ? opts.patience : 15;
+    var minSeed = opts.minSeed != null ? opts.minSeed : 8;
+    if (!(expect >= minSeed)) return "go";          // nothing to compare against — establishing, or a void world
+    if (planes >= frac * expect) return "go";
+    return held >= patience ? "forced" : "hold";
+  }
+
+  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, loadGate: loadGate,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,
            relocInit: relocInit, relocStep: relocStep,

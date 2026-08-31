@@ -12,7 +12,25 @@ Items are grouped by what they block, roughly most-actionable first.
 
 ## Known problems
 
-### A surface drops out and returns uncoloured
+### A surface drops out and returns uncoloured — **cause found 2026-08-31, fix shipped**
+
+The churn instrumentation fired for the first time and named it. Both replacement walls logged
+`why: matcher` — the Quest **did** emit the planes; our own matcher rejected them, two of three on
+perpendicular offset by 14–21 mm against the 150 mm tolerance. The originals were then pruned, destroying
+three director-set colours (`#4B0082`, `#4f4f4f`, `#000000`).
+
+The cause was **room load**, not the headset and not the floating-room fault (that one is vertical; this is
+horizontal). Ordering by the client clock: sessions whose first capture held 4 and 16 planes of 58 both
+churned; the one that held 58 did not. Registration locks at 30% coverage, and a frame solved from a third
+of the room was ~17 cm out in x/z — past the identity tolerance. Fixed by the **load gate** (spec §4.0a).
+
+**A design assumption this falsified**, worth keeping: `matchWall`'s comment says a tight tolerance is safe
+because *"a missed match only mints a recoverable duplicate."* It is not recoverable — the old id goes
+absent, the debounce prunes it, and the server deletes the entity **and its material**. Still open: whether
+styling should survive a prune (keyed by id, so a returning or re-minted surface inherits it), which is the
+deeper fix for "loses its colouring" whatever the reason the id churned.
+
+### The original report, for the record
 
 **Status:** open · noticed 2026-08-30, intermittently, since the smoothing work landed
 

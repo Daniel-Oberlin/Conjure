@@ -68,6 +68,12 @@
   /** Round to mm for the log — floor heights are the payload and 3 dp is well past sensor precision. */
   function mm(v) { return Math.round((+v || 0) * 1000) / 1000; }
 
+  // How much of the persisted room must be present before a capture is trusted to assign identity, and how
+  // many captures to wait for it. 0.6 sits well above the partial captures that caused re-mints (4/58 and
+  // 16/58 = 7% and 28%) and well below full, so a couple of genuinely-missing surfaces never block. The
+  // patience is a deadlock escape, not a tuning knob — see the LOAD GATE.
+  var LOAD_FRAC = 0.6, LOAD_PATIENCE = 15;
+
   // Compact wire form for the geometry worker (fix/pops-and-jitters): send only the fields RoomSnap.register
   // reads, as plain numbers, so a capture's planes + reference constellation cross to the worker in a few KB.
   function serCur(c) { var p = c.pos; return { p: [p.x, p.y, p.z], nyaw: c.nyaw, sem: c.sem, orient: c.orient, ext: [c.ext[0], c.ext[1]] }; }
@@ -1385,6 +1391,7 @@
         this._lastLevel = null;     // last logged height census, keyed id → y — the >2 cm emit gate
         this._levelAlarm = {};      // surface id → 1 while its height deviation is being reported (edge-only)
         this._churnRing = [];       // recent churn events, replayed into a [mark] dump for context
+        this._loading = 0;          // consecutive captures held by the LOAD GATE (0 = not holding)
         // --- JITTER PROBES (branch fix/pops-and-jitters) ------------------------------------------------
         // Diagnose the ~cm "flick out and back" seen while WALKING (not while standing + looking around).
         // Leading hypothesis: the ~0.5 Hz capture frame is heavy → a dropped frame → the compositor
@@ -1476,7 +1483,7 @@
         // baseline, so carrying the old one over would report the switch itself as churn and an anomaly.
         this._miss = {}; this._everClaimed = {}; this._wasStyled = {};
         this._lastLevel = null; this._levelAlarm = {}; this._census = null; this._censusFloors = null;
-        this._churnRing = [];
+        this._churnRing = []; this._loading = 0;
       },
       // Has surface `k` (a fresh record) changed STRUCTURALLY vs `p` (its last-posted snapshot)? Mirrors the
       // server's _surface_structural_change (0.5 m / 20° / opening-count / semantic) so the client only POSTs
@@ -2417,6 +2424,48 @@
           this._regStat = "settling ny=" + levelY.toFixed(2);
           this._markLost(time);
           this.lastPost = time - RETRY_MS; return;
+        }
+
+        // LOAD GATE — a sibling of the trust gate above, for a room that is still MATERIALIZING.
+        //
+        // `detectedPlanes` is the persisted Room Setup delivered wholesale, not something that fills in as
+        // you look around — so a settled session sees essentially all of it, and a capture holding a small
+        // fraction means the Quest has not finished restoring the room yet. Measured on device: entering AR
+        // gave 4 and 16 planes against a 58-surface seed on two sessions, and 58 on a third.
+        //
+        // Acting on those partial captures is what re-mints walls. `register` accepts a lock at 30% coverage
+        // (§4), so a third of the room is enough to solve a frame — and a frame solved from a third of the
+        // geometry was systematically ~17 cm out in x/z, past `matchWall`'s perpendicular tolerance. The
+        // wall was rejected, a new id minted, and the original pruned four seconds later, taking a
+        // director's colour with it. The two sessions that churned started at 4 and 16 planes; the one that
+        // started at 58 churned nothing.
+        //
+        // So: hold, exactly as the trust gate does, until enough of the room is present to identify it. The
+        // cost is a couple of seconds of passthrough on entry — honest, since the room genuinely is not
+        // known yet — and holding is already what this code does when it cannot lock.
+        //
+        // PATIENCE is the escape hatch, and it is not optional: a room that has genuinely SHRUNK (surfaces
+        // removed from Room Setup) would otherwise never clear the gate and never be able to post the
+        // removal, which is the wall-less-seed deadlock in a new costume (backlogs/spaces-geometry.md).
+        var expect = docSurfaces ? docSurfaces.length : 0;
+        var gate = WM.loadGate(cur.length, expect, this._loading, { frac: LOAD_FRAC, patience: LOAD_PATIENCE });
+        if (gate === "hold") {
+          if (!this._loading) {
+            geoLog("space.loading", { planes: cur.length, expect: expect });
+            debugLog("level", "room still loading — " + cur.length + "/" + expect
+              + " planes; holding identity until it fills in", true);
+          }
+          this._loading++;
+          this._regStat = "loading " + cur.length + "/" + expect;
+          this._markLost(time);
+          this.lastPost = time - RETRY_MS; return;
+        }
+        if (this._loading) {
+          geoLog("space.loaded", { planes: cur.length, expect: expect, held: this._loading,
+                                   forced: gate === "forced" || undefined });
+          debugLog("level", "room loaded — " + cur.length + "/" + expect + " planes after "
+            + this._loading + " held captures", true);
+          this._loading = 0;
         }
 
         // Space selection, stage 2 (specs/spaces.md §6): while candidates are pending, vote THIS capture
