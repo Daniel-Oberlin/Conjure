@@ -623,7 +623,12 @@ The `mark` binding (default **B**) writes the full census, registration state, r
 recent churn ring — stamped with the **controller's own height**. Rest the controller on the real floor and
 press: `err` is the actual error in metres. The grip pose sits a few cm above whatever it rests on, a fixed
 bias that is immaterial against a 10–15 cm signal and constant across sessions, so the session-to-session
-delta is exact regardless. Input arrives through `ConjurePointers`, already read and cached per `XRFrame`
+delta is exact regardless. Measured in the field (2026-08-31): **bias ~3–4 cm, repeatability ~1 cm, 1 mm
+hysteresis** returning to a spot after walking two rooms away.
+
+The sharpest reading it gives is the **sign of `err` either side of a room boundary**, on a floor known to be
+continuous: the room whose `err` is positive is the one whose planes are displaced. No internal probe can
+say that, because internally the space is self-consistent either way. Two presses, one per room, settle it. Input arrives through `ConjurePointers`, already read and cached per `XRFrame`
 by `controller-beams`, so the per-frame cost is a rising-edge check.
 
 ## 11. Knobs
