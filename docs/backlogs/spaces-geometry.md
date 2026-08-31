@@ -218,38 +218,46 @@ stored 9 mm apart though they are one continuous wooden floor (this is the resid
 remove), and `real_floor_10` is stored 21 mm *below* the living-room floor where it is physically 25 mm
 *above* — a ~46 mm sign error. Neither is urgent; both would need the same ground-truth treatment.
 
-### Open — what still has to happen
+### Open — shelved, watching
 
-- **The correction has now run clean once, and that is all.** With the seed repaired and spatial membership
-  in, the bedroom reads coherent at 12 mm and corrects by ~91 mm, and it looked right in the headset
-  (2026-08-31). That is a single confirming observation, not a soak — the fault's own headline is that it
-  "goes back and forth every few days", so the thing worth watching is whether the correction still fires,
-  and still fires correctly, the next time the room's displacement changes size.
-- **Two seed heights are still wrong**, both pre-existing rather than from the write-gate fault:
-  `real_floor_32` and `real_floor_8` are stored 9 mm apart though they are one continuous floor (this is the
-  12 mm residual the correction cannot remove), and `real_floor_10` is stored 21 mm *below* the living-room
-  floor where it is physically 25 mm *above* — a ~46 mm sign error. Both want the same ground-truth
-  treatment `real_ceiling_13` got.
+Neither of these blocks anything; both need time or a recurrence rather than work.
+
+- **Does the correction still fire when the displacement changes size?** It has run clean exactly once
+  (2026-08-31, ~91 mm, looked right in the headset). The fault's own headline is that it "goes back and
+  forth every few days", so the untested case is a *smaller* recurrence — and the one to watch hardest is
+  the room returning to normal, where `level.correct` must switch **off** rather than keep correcting a room
+  that no longer needs it. The threshold has ~30 mm of headroom below today's 70 mm.
+- **The churn half has never fired.** Zero `churn.*` events in any session, so the device-vs-matcher
+  discriminator has never run on a real miss. Tested, unproven — and the `track.reset` bursts are the most
+  likely thing to eventually exercise it.
+- **A `track.reset` burst nobody has explained.** Twelve between 07:09 and 07:24 on 2026-08-31 — including
+  **three inside one second** at 07:11:09, and pairs at 07:11:47, 07:17:21 and 07:24. Each is a recenter or
+  a guardian re-entry, and each re-registers. Walking between three rooms across a boundary drawn round one
+  of them explains the count but not the same-second triples.
 - **A validity guard on the marker.** One press (07:01:25) read `grip_y = −0.173` where the same floor reads
   ~0.03 — the controller had drifted on IMU while out of camera view. It was caught only by cross-checking
   three other sources, which will not always be possible. The tell was in the record: head-to-controller
   distance was **954 mm** against 655–814 mm on the good presses, and the controller sat *below* the
-  rendered floor. Either reject a press whose grip is implausibly far below the local floor, or log a
-  confidence field, so a bad reading announces itself instead of being argued about.
-- **On-device cost A/B — still not run.** The estimate is sub-0.1 ms on a capture that currently runs ~5 ms,
-  and exactly 0 ms on non-capture frames: every probe is in the capture body (0.5 Hz) or on a transition,
-  events are batched rather than one fetch per line, and the only per-frame addition is a rising-edge check
-  on a pointer list `controller-beams` already builds. **That is an estimate, not a measurement.** Run
-  `--debug-jitter` before and after and hold the spec's baseline (31/33 captures ≤6 ms, no per-capture
-  drop). Until then the number in §10 is a claim.
-- **The churn half is still unexercised.** Zero `churn.*` events across both field sessions, so the
-  device-vs-matcher discriminator has never actually run on a real miss. It is tested but unproven.
-- **A `track.reset` burst nobody has explained.** Twelve between 07:09 and 07:24 on 2026-08-31 — including
-  **three inside one second** at 07:11:09, and pairs at 07:11:47, 07:17:21 and 07:24. Each is a recenter or
-  a guardian re-entry, and each re-registers. Walking between three rooms across a boundary drawn round one
-  of them explains the count but not the same-second triples, which look like a jitter in the event rather
-  than three crossings. Every one is an opportunity for identity churn, so it is worth knowing which it is
-  before the churn half is trusted.
+  rendered floor. Either reject such a press or log a confidence field, so a bad reading announces itself.
+
+### The seed heights: one repaired, one deliberately left alone
+
+`real_floor_10` was **repaired 2026-08-31** to `real_floor_8` + 25 mm, the kitchen step as measured. It had
+been stored 21 mm *below* the living-room floor where it is physically 25 mm *above* — a ~46 mm sign error
+predating everything here. Repairing it also promoted the kitchen from *excluded* (floor/ceiling incoherent
+at 55 mm) to a **second coherent reference room** at 10 mm, which is a stronger baseline than one.
+
+`real_floor_32` is still stored **9 mm** from `real_floor_8` though the two are one continuous wooden floor,
+and it is **deliberately not repaired**. Forcing them equal moves `floor_32`'s deviation 9 mm away from
+`ceiling_13`'s, taking the bedroom pair from 12 mm to **20.8 mm — past the 20 mm coherence gate, so the
+correction stops firing entirely.**
+
+That is worth understanding rather than working around. The seed's value is being **self-consistent**, not
+absolutely accurate: every surface captured in one frame, so relative geometry is comparable. Hand-patching
+one surface from ground truth improves its accuracy while breaking that consistency, and the detector needs
+consistency more. The 9 mm is capture noise on a real floor, and it is also the residual the correction
+cannot remove. **If it is ever repaired, the honest way is a fresh capture of the whole space taken while no
+room is displaced — not a per-surface edit.**
 
 ### What the build changed about the plan
 

@@ -575,6 +575,14 @@ while the unit of analysis here is "compare Tuesday to Friday". This one rotates
 probes had to be decoupled from the registration diagnostics (§9) — the measurement was contaminating the
 measurement. Events accumulate in memory and flush on a ~5 s timer, so the per-event cost is an array push.
 
+**Cost, measured** (`scripts/geo_bench.mjs`, replayable): **13.8 µs per capture** on a real 58-surface room
+with the fault reproduced — 0.28% of a ~5 ms capture — and exactly 0 on frames that are not captures. That
+is the whole steady-state addition: `heightCensus`, `levelDeviation` over every surface, and `floatingRoom`.
+`explainNoMatch` runs only on a miss. It is a **floor with a known direction of error** — a Quest's CPU is
+several times slower and the browser-side fetch is not measured — so scale it: even at 10× it is ~0.14 ms.
+The device A/B (`--debug-jitter` with and without, holding 31/33 captures ≤6 ms) is still the real test, but
+it now confirms a measurement rather than an argument.
+
 | Event | Fires when |
 |---|---|
 | `space.enter` | first capture in a world — role, `_ref`/seed sizes, count per semantic |
