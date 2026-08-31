@@ -645,68 +645,6 @@ continuous: the room whose `err` is positive is the one whose planes are displac
 say that, because internally the space is self-consistent either way. Two presses, one per room, settle it. Input arrives through `ConjurePointers`, already read and cached per `XRFrame`
 by `controller-beams`, so the per-frame cost is a rising-edge check.
 
-### 10.4 Correcting a floating room
-
-The one place the client knowingly renders something other than its raw capture. It exists because
-[`investigations/raised-floor.md`](../investigations/raised-floor.md) established a fault that is real,
-reproduced, and **not curable by a Room Setup re-scan**: the Quest anchors one room's stored entity ~10 cm
-high, so every plane in that room renders above the real floor and anything placed there visibly floats.
-
-`--fix-floating-rooms METERS` (**0 = off**, default) lowers that room back onto the rest of the space.
-
-**The criterion is coherence, not magnitude.** A room qualifies only when its floor **and** its ceiling have
-drifted from the seed by the *same* amount — the signature of a room entity moving as a rigid body, which a
-noisy plane fit cannot fake. On the reference capture the affected room read floor +77 mm / ceiling +71 mm
-(coherent to 6 mm) while the kitchen read floor +18 mm / ceiling −38 mm. The kitchen is therefore excluded
-from the candidate set **and** from the baseline, rather than being averaged into something worse.
-
-On top of that, all of these must hold, and any one failing means no correction at all:
-
-- **exactly one** candidate room — two, and there is no way to say which is the outlier and which the
-  reference, so a coin flip could shift a correct room by 9 cm;
-- at least one **coherent reference** room, and if several, they must agree with each other;
-- the residual displacement, after subtracting the reference baseline, still exceeds the threshold.
-
-**What moves is decided spatially**, because the fault is spatial: floor and ceiling agreeing within 1 mm
-proves the room moved as a **rigid body**, so everything physically in it moved too. Membership is the
-room's floor + ceiling, every **wall of that room**, and any inset on those walls (by recorded host, since a
-wall-art normal can arrive *inward* per §2.2 and a facing test would reject exactly the insets it must
-carry).
-
-**Facing is what separates adjacent rooms.** A partition is captured as **two near-coincident, anti-parallel
-planes** — one per room — so a footprint test claims both and would drag the neighbour's wall down. A
-captured normal points outward from its room, so the room's interior is the −normal side: the floor centre
-must satisfy `(centre − wall) · n < 0`. On the reference space the bedroom/kitchen partition pair reads
-**−1.62 and +1.74**: the same wall, cleanly split. A near-zero dot means the centre lies on the wall plane
-and the side is undecidable, so the wall is left raw.
-
-Two earlier membership rules were wrong and are recorded so they are not retried. **Bottom-proximity**
-("is your bottom near the floor") admitted a near-arbitrary single wall and put a door two and a half inches
-into the ground. **Per-surface drift** looked more principled but cannot be measured honestly for a wall —
-the seed stores it *post*-`sealWalls` while a live capture is pre-seal — and by leaving walls behind it made
-their gap to the corrected floor *grow by the offset*, pushing one past `--wall-seal-tol` and opening a
-visible 15 cm slit under a wall that had been fine. Moving the whole room preserves every gap by
-construction.
-
-The change is **vertical only**: normals, horizontal position and extent are untouched, so registration
-(yaw + x/z) and every plane-relative anchor are unaffected, exactly as with `sealWalls`.
-
-**Where it sits:** applied to `localSurfaces` only, *after* the census — so the log always records the fault
-as captured, not the view we chose to render — and *before* `sealWalls`, so walls close against the
-corrected floor. It is **never** applied to the posted set: the seed is the baseline that detects the fault,
-and a corrected pose written back would dissolve the reference. The offset is **held** once engaged and
-re-adopted only on a >2 cm change, so the correction cannot breathe with sensor noise; release takes three
-consecutive captures with no detection, matching the surface-removal debounce.
-
-Measured on the reference capture: two surfaces known to be one continuous physical floor closed from
-**104 mm apart to 12 mm**. The residual is the seed's own error, which no correction can see.
-
-**Choosing the threshold.** It is a trigger, not a gain — the correction applied is the same anywhere in the
-working range. Too low and a second room becomes a candidate, so the detector refuses (you notice: nothing
-happens). Too high and it silently stops seeing a smaller recurrence, which is the failure that bites later.
-On the reference space the innocent rooms sit at ~20 mm and the fault at ~70 mm, so **0.04** sits mid-gap;
-0.06 leaves only 10 mm of headroom and would miss the fault if it returned smaller.
-
 ## 11. Knobs
 
 | Knob | Default | Purpose |
@@ -725,7 +663,6 @@ On the reference space the innocent rooms sit at ~20 mm and the fault at ~70 mm,
 | `--foveation` | 0 | GPU headroom; raising it cut the dropped-frame rate monotonically |
 | `--debug-registration` | off | registration/residual logging |
 | `--debug-jitter` | off | frame-pacing probes (kept decoupled so heavy logging cannot contaminate timings) |
-| `--fix-floating-rooms` | 0 (off) | min displacement (m) to correct a rigidly-displaced room (§10.4); **0.04** in the field |
 | `--no-geometry-log` | — | disable the always-on, change-gated geometry event log (§10) |
 | `--geometry-log-days` | 21 | retention for the rotated `temp/geometry-<date>.jsonl`; 0 keeps all |
 
@@ -753,7 +690,7 @@ with a golden test like `plane_anchor`'s.
 `register`, `selectSpace`, `canonicalFrame`, `surfaceToRef`, `matchRef`, `matchWall`, `matchInset`,
 `dupInsetIds`, `wallCorners`, `authorInsetAnchor`, `reconstructInset`, `insetAlong`, `hostWallFor`,
 `joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`, `yawOf`, `heightCensus`, `explainNoMatch`,
-`floorUnder`, `floatingRoom`, `applyFloatingFix`.
+`floorUnder`.
 
 **`client/plane-anchor.js`** — `authorAnchor`, `solveAnchor`; internals `wallFrame`, `averageQuat`,
 `twistAbout`, `solveSym3`, `cond2`.
@@ -777,7 +714,6 @@ with a golden test like `plane_anchor`'s.
 | content placement | `client/conjure-client.js` `_placeContent` |
 | recovery | `client/conjure-client.js` `_recoverMissing` |
 | geometry event log — client | `client/conjure-client.js` `geoLog` / `_logChurn` / `_logLevel` / `_markProbe` |
-| floating-room correction | `client/room-snap.js` `floatingRoom`; applied in `conjure-client.js` `_fixFloating` |
 | geometry event log — sink | `conjure/server.py` `_glog`, `_geo_prune`, `/geometry_log` |
 
 **Tests:** `tests/js/room-snap.test.js` (synthetic rooms plus `fixtures/golden-room.json`, a real

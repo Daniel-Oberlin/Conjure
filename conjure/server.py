@@ -1326,7 +1326,6 @@ async def index() -> HTMLResponse:
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
                         f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_DEBUG_JITTER={jflag};"
                         f"window.CONJURE_GEOMETRY_LOG={gflag};"
-                        f"window.CONJURE_FIX_FLOATING={settings.fix_floating_rooms};"
                         f"window.CONJURE_FORCE_GEO={fg};"
                         f"window.CONJURE_DROP_SURFACE={ds};"
                         f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};"

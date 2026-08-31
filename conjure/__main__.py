@@ -26,17 +26,6 @@ def main() -> None:
                          "margin that rejected it), level.census + level.anomaly (per-room floor/ceiling "
                          "heights, and one moving relative to the rest of the space), track.reset/track.lock, "
                          "seed.add/update/prune, and mark (the controller-button ground-truth probe).")
-    gate_note = ("correct a room the Quest has anchored too high (docs/investigations/raised-floor.md): "
-                 "when a room's floor AND ceiling have both drifted from the persisted seed by the SAME "
-                 "amount — the signature of the stored room entity moving as a rigid body, which a noisy "
-                 "plane fit cannot fake — and no other room has, that room is lowered back onto the rest of "
-                 "the space for RENDERING only (never posted; the seed stays the reference that detects it). "
-                 "The value is the minimum displacement in metres that counts as definite; 0 (default) "
-                 "disables. 0.04 is the field-tested value: it must sit above the innocent rooms' spread and "
-                 "below the fault, and too high fails SILENTLY on a smaller recurrence. Fires only with "
-                 "exactly one candidate room and at least one coherent "
-                 "reference room, so an ambiguous space is left alone.")
-    ap.add_argument("--fix-floating-rooms", type=float, default=0.0, metavar="METERS", help=gate_note)
     ap.add_argument("--geometry-log-days", type=int, default=21, metavar="DAYS",
                     help="retention for the rotated geometry logs (default: 21). 0 keeps everything.")
     ap.add_argument("--debug-jitter", action="store_true",
@@ -180,7 +169,6 @@ def main() -> None:
     if args.no_geometry_log:
         os.environ["CONJURE_GEOMETRY_LOG"] = "0"
     os.environ["CONJURE_GEOMETRY_LOG_DAYS"] = str(args.geometry_log_days)
-    os.environ["CONJURE_FIX_FLOATING_ROOMS"] = str(args.fix_floating_rooms)
     if args.force_geo:
         os.environ["CONJURE_FORCE_GEO"] = args.force_geo
     if args.drop_surface:
