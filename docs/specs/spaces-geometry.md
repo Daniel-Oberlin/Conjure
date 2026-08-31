@@ -598,7 +598,7 @@ measurement. Events accumulate in memory and flush on a ~5 s timer, so the per-e
 
 **Cost, measured** (`scripts/geo_bench.mjs`, replayable): **13.8 µs per capture** on a real 58-surface room
 with the fault reproduced — 0.28% of a ~5 ms capture — and exactly 0 on frames that are not captures. That
-is the whole steady-state addition: `heightCensus`, `levelDeviation` over every surface, and `floatingRoom`.
+is the whole steady-state addition: `heightCensus` and `levelDeviation` over every surface.
 `explainNoMatch` runs only on a miss. It is a **floor with a known direction of error** — a Quest's CPU is
 several times slower and the browser-side fetch is not measured — so scale it: even at 10× it is ~0.14 ms.
 The device A/B (`--debug-jitter` with and without, holding 31/33 captures ≤6 ms) is still the real test, but

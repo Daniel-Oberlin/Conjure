@@ -1,13 +1,12 @@
 # One room's floor renders four inches high
 
-**Outcome:** cause established 2026-08-31 — the Quest's stored room entity for the bedroom is anchored
-~104 mm high, and every plane in that room rides with it. Three competing hypotheses were killed by
-measurement, and the campaign is recorded here so none of them is re-proposed.
+**Outcome:** cause established — the Quest anchors one room's stored entity high and every plane in that
+room rides with it. Three competing hypotheses killed by measurement. **A Room Setup re-scan does not clear
+it**, and objects on that floor end up buried, so a render-side correction was attempted.
 
-**A Room Setup re-scan does NOT clear it**, which was tried and is the finding that changed the plan: this
-is a standing fault to be lived with, not a one-off to be cleared. Objects placed on that floor visibly rise
-with it — predicted, then confirmed. So the outcome is a **render-side mitigation**, `--fix-floating-rooms`
-(spec §10.4), which closed the two known-equal floors from 104 mm to 12 mm on this capture.
+**Four correction attempts, all reverted. There is no correction on `main`.** The work lives unmerged on
+`feat/fix-floating-rooms` (§ *The correction* below, with what is on the branch and how to resume). What
+shipped to `main` is the instrumentation that diagnosed it, and it stays because it earned its place.
 
 The instrumentation built to answer this is [`specs/spaces-geometry.md` §10](../specs/spaces-geometry.md);
 what remains open is in [`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md).
@@ -121,6 +120,25 @@ good presses, and the controller sat *below* the rendered floor. A validity guar
 
 ---
 
+## The fault is not fixed to one room, and its size is not bounded
+
+| when | room | displacement |
+|---|---|---|
+| 2026-08-31 morning | bedroom (`floor_32` / `ceiling_13`) | ~90–104 mm |
+| 2026-08-31 afternoon | **living room** (`floor_8` / `ceiling_25`) | **~276 mm** |
+
+Both verified the same way — two surfaces that are physically one thing reading as two. On the afternoon
+capture `floor_8 − floor_32` was **+189 mm** where the seed has them 9 mm apart, and room heights were
+preserved (2.668 m live vs 2.669 m seed), so the room is **translated**, not distorted.
+
+**The seed was explicitly cleared of suspicion**, since it had been hand-edited that day: no seed write ever
+touched `floor_8` or `ceiling_25`; the seed's two floors still read as one surface; and only the live
+capture violates that. The distinguishing test needs no baseline and no median — two surfaces that are one
+thing either read as one thing or they do not.
+
+This is the single most important finding for anyone resuming: **any threshold calibrated on one occurrence
+is calibrated on nothing.** That mistake was made, and is recorded below as guard 3.
+
 ## Remaining theories and open questions
 
 | | Likelihood | How to test |
@@ -148,12 +166,68 @@ No internal probe can answer that, because internally the space is self-consiste
 
 ---
 
+## The correction — four attempts, and why each was reverted
+
+Each version was validated against a *single stored capture* and then failed on a capture nobody had seen.
+That is the pattern, and it is the main thing to internalise before touching this again.
+
+| # | Membership rule | How it failed | Commit |
+|---|---|---|---|
+| 1 | **Proximity** — a wall joins if its bottom is within `MIN × 0.6` of the floor | admitted a near-arbitrary single wall. `wall_111` sat 18 mm from the *displaced* floor and was swept in, though its own drift was +16 mm against the room's +96 mm. `door_112` rode it **67 mm into the ground** | `391d8e9` |
+| 2 | **Per-surface drift** — join only if your own drift matches the room's | excluded the walls entirely (a wall's drift cannot be measured honestly — the seed stores it *post*-`sealWalls`, a live capture is pre-seal). Leaving them behind made their gap to the corrected floor **grow by the offset**: `wall_82` went 57 mm → 152 mm, past `--wall-seal-tol`, opening a visible slit | `b0be5c3` |
+| 3 | **Spatial + facing** — the room's floor, ceiling, walls that face into it, insets by host | correct in principle and still the right rule. But it fired on the **first capture of a session**, straight after a relocalization, read the living room as 229 mm displaced, moved 16 surfaces and left `wall_33` behind (facing −0.048 against a 0.05 gate — 2 mm of margin) | `bab67f9` |
+| 4 | **#3 plus three guards** — confirmation over 5 consecutive captures, all-or-nothing membership, 0.15 m offset ceiling | never failed in the field; **never ran in the field either.** Reverted from `main` by choice, to separate the part that works from the part that has not | `f86d163` |
+
+**The recurring failure, three times over, is partial room membership.** Leaving one surface behind while
+its floor moves opens a gap the width of the correction — v1's doors, `wall_82`, `wall_33`. It is
+structural, not a tolerance to tune: **move the whole room or none of it.**
+
+### What is on `feat/fix-floating-rooms`
+
+Branch tip `f86d163`; its history begins at `391d8e9`, the first implementation, so the whole arc is
+readable in order. `main` was rewound to `b0f3d8d` (the revert), keeping everything else.
+
+- `RoomSnap.floatingRoom` — detection and spatial membership
+- `RoomSnap.confirmFloating` — the confirmation state machine (pure, so it is unit-tested)
+- `RoomSnap.applyFloatingFix` — vertical-only application
+- `conjure-client.js` `_fixFloating` / `_driftAll`, `--fix-floating-rooms`, `level.correct` events
+- 9 JS tests including a replay of the 229 mm incident
+
+**Detection is sound and worth keeping.** It is coherence-based: a room qualifies only when its floor *and*
+ceiling have drifted from the seed by the same amount — a rigid body, which a noisy plane fit cannot fake.
+On the reference capture the affected room read floor +77 / ceiling +71 mm while the kitchen read
++18 / −38 mm, so the kitchen was excluded from the candidate set *and* the baseline automatically. It found
+the right room every time. **Every failure was in what it did next, never in what it found.**
+
+### To resume
+
+1. **`git merge feat/fix-floating-rooms`**, then re-read the three guards.
+2. **Guard 3's ceiling (0.15 m) must be revisited first.** It was justified as "2.5× anything observed" —
+   and then 276 mm was observed. As written, **it would refuse the very fault that is live today.** Make it
+   a knob, or re-derive it from something that is not a sample of one.
+3. **Verify guard 1 on device.** Confirmation over 5 captures has never run in a headset. Expect ~10 s of
+   nothing happening on entry before `level.correct` appears — that is the guard, not a hang.
+4. **Watch the release path.** No version has ever been observed switching *off* when a room returns to
+   normal. It is the least-tested branch in the feature.
+5. **Do not calibrate on one capture.** Replay against both stored fixtures — the 229 mm incident (must
+   refuse) and the ~91 mm bedroom fault (must confirm on the fifth capture) — before trusting any change.
+
+### Do this before resuming the correction at all
+
+**Check whether placed content resolves against the wrong floor.** All three floors enter the anchor solve
+as separate floor planes; an anchor resolving against the bedroom floor while the object stands over the
+living-room floor lands ~190 mm out, which matches models being buried to the neck. Unverified.
+
+If that is real it is a **bug on `main`, independent of any correction**, and fixing it removes the *visible
+harm* — content in the wrong place — while leaving the floor cosmetically wrong. That is a far better
+trade than moving room geometry, and it is the cheaper thing to be right about.
+
 ## Fixes shipped
 
 | Symptom | Cause | Fix | Knob | Commit |
 |---|---|---|---|---|
 | No way to detect or attribute a height fault | The system has no ground truth and no persistent record | The geometry event log: change-gated height census, median-deviation alarm, `explainNoMatch`, and the controller marker probe | `--no-geometry-log`, `--geometry-log-days` (21), `mark` binding (default **B**) | `371ff83` |
-| The floor itself | The Quest's bedroom room entity is anchored ~104 mm high | **Not fixable at source** — a Room Setup re-scan does not clear it. Mitigated at render: `floatingRoom` detects a rigidly-displaced room and lowers it back onto the rest of the space (spec §10.4). Measured on this capture: the two known-equal floors closed from **104 mm to 12 mm** | `--fix-floating-rooms` (0 = off; try 0.06) | — |
+| The floor itself | the Quest anchors one room's stored entity high | **Nothing on `main`.** Not fixable at source (a re-scan does not clear it); four render-side attempts were reverted, and the work sits unmerged on `feat/fix-floating-rooms` | — | reverted in `b0f3d8d` |
 | `[post]` logged only the first changed id; server `add`/`remove` were silent | first-hit `reason` string; only `update` had a `[seed]` line | full reason list; `seed.add` / `seed.prune` named by id | — | `371ff83` |
 
 **Follow-on fault, found and fixed the same day.** The first cut of the correction decided *which* surfaces

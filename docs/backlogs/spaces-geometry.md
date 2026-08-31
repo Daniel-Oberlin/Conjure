@@ -14,7 +14,8 @@ Items are grouped by what they block, roughly most-actionable first.
 
 ### A surface drops out and returns uncoloured — **cause found 2026-08-31, fix shipped**
 
-The churn instrumentation fired for the first time and named it. Both replacement walls logged
+Full campaign in [`investigations/surface-churn.md`](../investigations/surface-churn.md). In short: the
+churn instrumentation fired for the first time and named it. Both replacement walls logged
 `why: matcher` — the Quest **did** emit the planes; our own matcher rejected them, two of three on
 perpendicular offset by 14–21 mm against the 150 mm tolerance. The originals were then pruned, destroying
 three director-set colours (`#4B0082`, `#4f4f4f`, `#000000`).
@@ -64,28 +65,37 @@ Instrumented by [the geometry event log](#instrumentation--the-geometry-event-lo
 probe is unexercised; nothing is confirmed about which of the three causes fires, because none of them did.
 Worth noting the sessions were short and stationary-ish — the symptom is occasional by report.
 
-### One room's floor sits 4–6 inches high — **diagnosed, device-side**
+### A room's floor floats — **diagnosed, device-side; no fix on main**
 
-**Status:** cause established 2026-08-31. The campaign, its measurements and the three hypotheses it killed
-are in [`investigations/raised-floor.md`](../investigations/raised-floor.md) — read that before proposing
-anything here.
+**Status:** cause established. Detected and measured; **not corrected.** The full campaign, including four
+attempted fixes and why each was reverted, is in
+[`investigations/raised-floor.md`](../investigations/raised-floor.md) — read it before proposing anything.
 
-In one line: the Quest's stored room entity for the **bedroom** is anchored ~104 mm high, and every plane in
-that room rides with it. Proven by two known-equal surface pairs (`floor_32` = `floor_8`, one continuous
-wooden floor; `ceiling_13` = `ceiling_25`) reading +104 mm and +103 mm — agreeing within 1 mm, so the room
-moves as a rigid unit. The tracking frame is sound and registration was flawless throughout. **Nothing to
-fix in our code.**
+The Quest anchors one room's stored entity high, and every plane in that room rides with it. Proven by
+known-equal surface pairs: `floor_32` = `floor_8` (one continuous wooden floor) and
+`ceiling_13` = `ceiling_25`. The room translates as a **rigid** unit — room heights are preserved — so it is
+a mis-anchored room entity, not a distorted capture. The tracking frame is sound and registration is clean
+throughout. **A Room Setup re-scan does not clear it.**
 
-**A re-scan does not clear it** (tried 2026-08-31), so this is a standing fault rather than a one-off — and
-objects placed on that floor do visibly rise with it, as predicted. Hence the render-side mitigation:
-`--fix-floating-rooms` (spec §10.4), off by default, which closed the two known-equal floors from 104 mm to
-12 mm on the reference capture.
+**It is not fixed to one room, and its size is not bounded.** Observed:
 
-**Open — on-device verification of the correction.** It has never run in a headset. Enter with
-`--fix-floating-rooms 0.06` and check three things: the bedroom floor lands under your feet, objects there
-sit flat, and `level.correct` appears once in the log rather than repeatedly. The residual 12 mm is the
-seed's own error and is expected to stay.
+| date | room | displacement |
+|---|---|---|
+| 2026-08-31 morning | bedroom (`floor_32`) | ~90–104 mm |
+| 2026-08-31 afternoon | **living room** (`floor_8`) | **~276 mm** |
 
+That second reading matters twice over: it is 3× the first, and it moved to a different room. Any threshold
+calibrated on one sample is calibrated on nothing — a mistake already made once (see the investigation's
+guard 3).
+
+**The visible consequence** is placed content: the floor rises, content does not follow it, and models on
+that floor end up buried. Unverified inference: all three floors enter the anchor solve as separate floor
+planes, so an anchor resolving against the wrong floor lands ~190 mm out. Worth confirming — **it would be a
+bug on main independent of any correction, and fixing it would un-bury the content even while the floor
+stays wrong.** Probably the highest-value next step here.
+
+**A correction exists on `feat/fix-floating-rooms`, unmerged.** It would refuse today's fault anyway (its
+offset ceiling is 0.15 m). See the investigation for what is on the branch and how to resume it.
 
 ### Ground truth for this space — physical constraints worth keeping
 
