@@ -934,3 +934,109 @@ test("floorUnder attributes a point to the room whose FOOTPRINT covers it, not t
   assert.strictEqual(RS.floorUnder(THREE, [a, b], 0, 0.5).id, "floor_A");
   assert.strictEqual(RS.floorUnder(THREE, [a, b], 40, 0), null, "outside every room ⇒ no attribution");
 });
+
+// ---- floatingRoom: correcting a room the Quest anchored too high -------------------------------------
+// The fixture is the REAL capture from docs/investigations/raised-floor.md (census 07:25:26 against the
+// persisted seed), because the value of this detector is entirely in whether it fires on the fault that
+// actually happened and stays silent on the two rooms that are merely noisy.
+
+const RF_SEED = { f8: -0.005, f10: -0.026, f32: 0.004, c13: 2.677, c21: 2.445, c25: 2.663 };
+const RF_LIVE = { f8: -0.006, f10: 0.009, f32: 0.098, c13: 2.765, c21: 2.424, c25: 2.662 };
+const RF_ID = { f8: "real_floor_8", f10: "real_floor_10", f32: "real_floor_32",
+                c13: "real_ceiling_13", c21: "real_ceiling_21", c25: "real_ceiling_25" };
+
+/** dev = (live − seed) with the median removed — what WorldModel.levelDeviation produces. */
+function rfDev(live = RF_LIVE) {
+  const d = {}; for (const k in RF_SEED) d[k] = live[k] - RF_SEED[k];
+  const s = Object.values(d).sort((a, b) => a - b);
+  const med = s.length % 2 ? s[s.length >> 1] : (s[(s.length >> 1) - 1] + s[s.length >> 1]) / 2;
+  const out = {}; for (const k in d) out[RF_ID[k]] = d[k] - med;
+  return out;
+}
+
+/** The three rooms, laid out so each ceiling's footprint covers exactly its own floor. */
+function rfRoom(live = RF_LIVE) {
+  const at = (sem, id, x, y, z) => { const h = horiz(sem, x, y, z, [3, 3]); h.id = id; return h; };
+  return [
+    at("floor", RF_ID.f8, 0, live.f8, 0), at("ceiling", RF_ID.c25, 0, live.c25, 0),      // living room
+    at("floor", RF_ID.f10, 10, live.f10, 0), at("ceiling", RF_ID.c21, 10, live.c21, 0),  // kitchen
+    at("floor", RF_ID.f32, 20, live.f32, 0), at("ceiling", RF_ID.c13, 20, live.c13, 0),  // bedroom
+  ];
+}
+
+test("floatingRoom finds the real fault, and picks the right room out of three", () => {
+  const room = rfRoom();
+  const fix = RS.floatingRoom(THREE, room, rfDev(), {});
+  assert.ok(fix, "the fault fires the detector");
+  assert.strictEqual(fix.floor, RF_ID.f32, "the bedroom, not the kitchen and not the living room");
+  assert.strictEqual(fix.ceiling, RF_ID.c13);
+  // 92 mm: the bedroom's coherent +74 mm measured against the living room's −18 mm baseline.
+  assert.ok(Math.abs(fix.offset - 0.092) < 0.002, `offset ${fix.offset}`);
+
+  // The whole point — floor_32 and floor_8 are one continuous wooden floor, so their live gap of 104 mm
+  // must come back to ~0. What is left is the 9 mm the SEED itself has, which no correction can see.
+  RS.applyFloatingFix(room, fix);
+  const y = Object.fromEntries(room.map((s) => [s.id, s._lp.y]));
+  const gap = y[RF_ID.f32] - y[RF_ID.f8];
+  assert.ok(Math.abs(gap) < 0.015, `shared floor closed to ${Math.round(gap * 1000)} mm (was 104)`);
+  assert.ok(Math.abs((y[RF_ID.c13] - y[RF_ID.c25])) < 0.015, "and the two equal ceilings with it");
+});
+
+test("floatingRoom excludes an INCOHERENT room from both the candidate set and the baseline", () => {
+  // The kitchen is the reason coherence is the criterion rather than magnitude: its floor drifted +18 mm
+  // and its ceiling −38 mm. That is a noisy pair of plane fits, not a room that moved — and "correcting"
+  // it by the average would push both further from the truth.
+  const dev = rfDev();
+  const kf = dev[RF_ID.f10], kc = dev[RF_ID.c21];
+  assert.ok(Math.abs(kf - kc) > 0.05, "the kitchen really is incoherent in the reference capture");
+  const fix = RS.floatingRoom(THREE, rfRoom(), dev, {});
+  assert.ok(!fix.ids.includes(RF_ID.f10) && !fix.ids.includes(RF_ID.c21), "and is left entirely alone");
+});
+
+test("floatingRoom stays silent on a healthy space", () => {
+  const live = { ...RF_LIVE, f32: RF_SEED.f32 + 0.004, c13: RF_SEED.c13 + 0.004 };  // bedroom back in line
+  assert.strictEqual(RS.floatingRoom(THREE, rfRoom(live), rfDev(live), {}), null);
+});
+
+test("floatingRoom refuses when it cannot tell which room is the outlier", () => {
+  // TWO coherently displaced rooms, in opposite directions, around an undisturbed third. Each is equally
+  // entitled to call the other wrong, and correcting a correct room by 6 cm is a worse outcome than
+  // leaving a known fault in place. Refuse rather than guess.
+  const live = { f32: RF_SEED.f32 + 0.065, c13: RF_SEED.c13 + 0.065,     // bedroom up
+                 f10: RF_SEED.f10 - 0.065, c21: RF_SEED.c21 - 0.065,     // kitchen down
+                 f8: RF_SEED.f8, c25: RF_SEED.c25 };                     // living room steady
+  const dev = rfDev(live);
+  assert.ok(Math.abs(dev[RF_ID.f32]) >= 0.06 && Math.abs(dev[RF_ID.f10]) >= 0.06,
+            "both really are past the threshold — the refusal is about ambiguity, not size");
+  assert.strictEqual(RS.floatingRoom(THREE, rfRoom(live), dev, {}), null);
+
+  // A floor with no ceiling over it has no coherence to test, so it can never become a candidate however
+  // far it has drifted — the rigid-body signature is the whole evidence.
+  const noCeil = rfRoom().filter((s) => s.id !== RF_ID.c13);
+  assert.strictEqual(RS.floatingRoom(THREE, noCeil, rfDev(), {}), null);
+});
+
+test("floatingRoom takes the walls standing on that floor, by their bottoms, not by footprint", () => {
+  // A partition wall spans two rooms' footprints, so footprint membership is ambiguous for exactly the
+  // wall that matters. Its BOTTOM is not: it rests on one floor, and that is the room it belongs to.
+  const room = rfRoom();
+  const mine = vert("real_wall_mine", "wall", [20, RF_LIVE.f32 + 1.2, 1], 0, [3, 2.4]);   // on the bedroom floor
+  const partition = vert("real_wall_81", "wall", [0, RF_LIVE.f32 + 1.2, 1], 0, [3, 2.4]); // over the LIVING floor…
+  const theirs = vert("real_wall_yours", "wall", [0, RF_LIVE.f8 + 1.2, 1], 0, [3, 2.4]);  // …but resting on it
+  const door = vert("real_door_1", "door", [20, RF_LIVE.f32 + 1.0, 1], 0, [0.9, 2]);
+  door.hostWall = "real_wall_mine";
+  const fix = RS.floatingRoom(THREE, room.concat([mine, partition, theirs, door]), rfDev(), {});
+  assert.ok(fix.ids.includes("real_wall_mine"));
+  assert.ok(fix.ids.includes("real_wall_81"), "the partition rests on the displaced floor → it moves");
+  assert.ok(!fix.ids.includes("real_wall_yours"), "a wall on the living-room floor stays put");
+  assert.ok(fix.ids.includes("real_door_1"), "an inset follows its host wall, so it can't hang in its opening");
+});
+
+test("floatingRoom is off by default and applyFloatingFix moves only y", () => {
+  assert.strictEqual(RS.floatingRoom(THREE, rfRoom(), rfDev(), { minM: 0 }), null);
+  const room = rfRoom();
+  const before = room.map((s) => [s._lp.x, s._lp.z, (s.extent || [])[0]]);
+  RS.applyFloatingFix(room, RS.floatingRoom(THREE, room, rfDev(), {}));
+  const after = room.map((s) => [s._lp.x, s._lp.z, (s.extent || [])[0]]);
+  assert.deepStrictEqual(after, before, "horizontal position and extent untouched — anchors and registration are safe");
+});

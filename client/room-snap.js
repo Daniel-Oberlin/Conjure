@@ -988,8 +988,103 @@
     return best;
   }
 
+  // --- floating-room correction (docs/investigations/raised-floor.md) ----------------------------------
+  // A measured, reproduced fault: the Quest's stored room entity for one room can be anchored ~10 cm high,
+  // so every plane in that room renders above the real floor and anything placed there floats. Confirmed
+  // on-device against two known-equal surfaces, and NOT fixable by a Room Setup re-scan.
+  //
+  // This is the one place we knowingly render something other than the raw capture, so the bar is high: it
+  // must fire only when the evidence is unambiguous, and do nothing at all otherwise.
+  //
+  // THE TIGHT CRITERION is coherence, not magnitude. A room is only a candidate when its floor AND its
+  // ceiling have drifted from the seed by the SAME amount — that is the signature of a room entity moving
+  // as a rigid body, and it is what a noisy plane fit cannot fake. On the reference capture the affected
+  // room read floor +77 mm / ceiling +71 mm (coherent to 6 mm) while the kitchen read floor +18 mm /
+  // ceiling −38 mm — incoherent, so the kitchen is excluded from both the candidate set and the baseline
+  // rather than being "corrected" into something worse.
+  //
+  // On top of that: exactly ONE candidate (two and we cannot tell which is the outlier and which the
+  // reference), at least one coherent reference room, and those references agreeing among themselves.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces        live, PRE-seal (needs true wall bottoms)
+   * @param {Record<string, number>} devById   id → height deviation vs the seed (WorldModel.levelDeviation)
+   * @param {{minM?: number, cohM?: number, wallM?: number}} [opts]
+   * @returns {{floor: string, ceiling: string, offset: number, ids: string[]}|null}
+   *   `offset` is how far the room sits ABOVE the rest of the space; subtract it to correct.
+   */
+  function floatingRoom(THREE, surfaces, devById, opts) {
+    opts = opts || {};
+    var MIN = opts.minM != null ? opts.minM : 0.06;    // displacement that counts as definite
+    var COH = opts.cohM != null ? opts.cohM : 0.02;    // floor and ceiling must agree this closely
+    var WALL = opts.wallM != null ? opts.wallM : 0.03; // a wall joins the room if its bottom is this near the floor
+    if (!(MIN > 0) || !devById) return null;
+    // WALL must stay well inside MIN, or at the smallest correctable displacement the NEXT room's walls
+    // fall inside the window and get dragged along with the room being corrected.
+    if (WALL >= MIN * 0.6) WALL = MIN * 0.6;
+
+    var ceils = surfaces.filter(function (s) { return s.semantic === "ceiling" && s._lp && s._lq && s.extent; });
+    /** @type {{floor: SnapSurface, ceiling: SnapSurface, coh: number, off: number}[]} */
+    var rooms = [];
+    surfaces.forEach(function (f) {
+      if (f.semantic !== "floor" || !f._lp || !f._lq || !f.extent) return;
+      var c = /** @type {SnapSurface|null} */ (null);
+      ceils.forEach(function (cc) { if (!c && covers(THREE, cc, f._lp.x, f._lp.z)) c = cc; });
+      if (!c) return;                                   // a floor with no ceiling over it proves nothing
+      var df = devById[f.id], dc = devById[c.id];
+      if (df == null || dc == null) return;             // not in the seed → no baseline for it
+      rooms.push({ floor: f, ceiling: c, coh: Math.abs(df - dc), off: (df + dc) / 2 });
+    });
+    if (rooms.length < 2) return null;                  // need a room to measure against
+
+    var coherent = rooms.filter(function (r) { return r.coh <= COH; });
+    var cand = coherent.filter(function (r) { return Math.abs(r.off) >= MIN; });
+    if (cand.length !== 1) return null;                 // none = healthy; several = no way to say which is right
+    var ref = coherent.filter(function (r) { return r !== cand[0]; });
+    if (!ref.length) return null;                       // nothing trustworthy left to be the baseline
+    var lo = Infinity, hi = -Infinity, sum = 0;
+    ref.forEach(function (r) { lo = Math.min(lo, r.off); hi = Math.max(hi, r.off); sum += r.off; });
+    if (hi - lo > COH * 2) return null;                 // the references disagree ⇒ no consensus to correct toward
+    var shift = cand[0].off - sum / ref.length;
+    if (Math.abs(shift) < MIN) return null;
+
+    // Membership. The floor and ceiling, plus every wall STANDING ON that floor — by its own bottom, not by
+    // footprint, because a partition wall spans two rooms' footprints and belongs to whichever floor it
+    // actually rests on. Insets follow their recorded host wall, so a door drops with its wall instead of
+    // hanging in the re-cut opening.
+    var fy = cand[0].floor._lp.y;
+    /** @type {Record<string, number>} */ var ids = {};
+    /** @type {Record<string, number>} */ var walls = {};
+    ids[cand[0].floor.id] = 1; ids[cand[0].ceiling.id] = 1;
+    surfaces.forEach(function (s) {
+      if (s.semantic !== "wall" || !s._lp || !s.extent) return;
+      if (Math.abs((s._lp.y - (s.extent[1] || 0) / 2) - fy) <= WALL) { ids[s.id] = 1; walls[s.id] = 1; }
+    });
+    surfaces.forEach(function (s) { if (s.hostWall && walls[s.hostWall]) ids[s.id] = 1; });
+    return { floor: cand[0].floor.id, ceiling: cand[0].ceiling.id, offset: shift, ids: Object.keys(ids) };
+  }
+
+  // Apply a `floatingRoom` result: lower every member surface by the offset. Vertical ONLY — plane normals,
+  // horizontal position and extent are untouched, so registration (yaw + x/z) and every plane-relative
+  // anchor are unaffected, exactly as with sealWalls. Mutates in place.
+  /** @param {SnapSurface[]} surfaces  @param {{offset: number, ids: string[]}} fix  @returns {number} moved */
+  function applyFloatingFix(surfaces, fix) {
+    if (!fix || !fix.offset) return 0;
+    /** @type {Record<string, number>} */ var want = {};
+    var n = 0;
+    fix.ids.forEach(function (id) { want[id] = 1; });
+    surfaces.forEach(function (s) {
+      if (!want[s.id] || !s._lp) return;
+      s._lp.y -= fix.offset;
+      if (s.position) s.position = [s.position[0], s.position[1] - fix.offset, s.position[2]];
+      n++;
+    });
+    return n;
+  }
+
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
            heightCensus: heightCensus, explainNoMatch: explainNoMatch, floorUnder: floorUnder,
+           floatingRoom: floatingRoom, applyFloatingFix: applyFloatingFix,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,
            wallCorners: wallCorners, authorInsetAnchor: authorInsetAnchor, reconstructInset: reconstructInset,

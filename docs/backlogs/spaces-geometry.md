@@ -58,9 +58,15 @@ wooden floor; `ceiling_13` = `ceiling_25`) reading +104 mm and +103 mm — agree
 moves as a rigid unit. The tracking frame is sound and registration was flawless throughout. **Nothing to
 fix in our code.**
 
-**Open — the verification.** Re-run Quest Room Setup for the bedroom, re-enter, press the marker in bedroom
-and living room. `floor_32 − floor_8` should return to ~0 and `level.anomaly` should stop firing at entry.
-Until then the cause is *established* but not *closed*.
+**A re-scan does not clear it** (tried 2026-08-31), so this is a standing fault rather than a one-off — and
+objects placed on that floor do visibly rise with it, as predicted. Hence the render-side mitigation:
+`--fix-floating-rooms` (spec §10.4), off by default, which closed the two known-equal floors from 104 mm to
+12 mm on the reference capture.
+
+**Open — on-device verification of the correction.** It has never run in a headset. Enter with
+`--fix-floating-rooms 0.06` and check three things: the bedroom floor lands under your feet, objects there
+sit flat, and `level.correct` appears once in the log rather than repeatedly. The residual 12 mm is the
+seed's own error and is expected to stay.
 
 
 ### Ground truth for this space — physical constraints worth keeping

@@ -1,9 +1,13 @@
 # One room's floor renders four inches high
 
 **Outcome:** cause established 2026-08-31 — the Quest's stored room entity for the bedroom is anchored
-~104 mm high, and every plane in that room rides with it. **Device-side; there is nothing to fix in our
-code.** Three competing hypotheses were killed by measurement, and the campaign is recorded here so none of
-them is re-proposed.
+~104 mm high, and every plane in that room rides with it. Three competing hypotheses were killed by
+measurement, and the campaign is recorded here so none of them is re-proposed.
+
+**A Room Setup re-scan does NOT clear it**, which was tried and is the finding that changed the plan: this
+is a standing fault to be lived with, not a one-off to be cleared. Objects placed on that floor visibly rise
+with it — predicted, then confirmed. So the outcome is a **render-side mitigation**, `--fix-floating-rooms`
+(spec §10.4), which closed the two known-equal floors from 104 mm to 12 mm on this capture.
 
 The instrumentation built to answer this is [`specs/spaces-geometry.md` §10](../specs/spaces-geometry.md);
 what remains open is in [`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md).
@@ -71,9 +75,15 @@ a floor and a ceiling four metres apart do not drift into agreement within 1 mm 
 left is the Quest's own room entity for the bedroom being anchored high, with its planes faithfully
 following it.
 
-**The fix is a Quest Room Setup re-scan of that room.** Nothing in our pipeline touches a floor: `sealWalls`
-reads floors and writes only walls (`room-snap.js:554`), `joinCorners` writes walls, `snapInsets` writes
-insets. A floor renders at its raw `detectedPlanes` pose, untouched.
+Nothing in our pipeline touches a floor — `sealWalls` reads floors and writes only walls
+(`room-snap.js:554`), `joinCorners` writes walls, `snapInsets` writes insets, and a floor renders at its raw
+`detectedPlanes` pose. So the obvious remedy was a Room Setup re-scan on the device.
+
+**That was tried, and it did not clear the fault.** Whatever anchors that room entity survives a re-scan.
+With no source-side cure and a visible consequence — objects on that floor float — the remaining option is
+to correct it at render, which is what §10.4 does. Note what that costs: it is the first and only place the
+client deliberately draws something other than its raw capture, so the criterion is built to refuse rather
+than guess (see *Precision* below, and the rules in §10.4).
 
 ---
 
@@ -115,8 +125,8 @@ good presses, and the controller sat *below* the rendered floor. A validity guar
 
 | | Likelihood | How to test |
 |---|---|---|
-| A Room Setup re-scan clears it | **high** — everything points at the stored room entity | Re-scan the bedroom, re-enter, press the marker in bedroom and living room. `floor_32 − floor_8` should return to ~0 and the entry-time anomaly should stop |
-| Content placed on the bedroom floor floats ~10 cm | **high**, unverified | Place an object in the bedroom and look at it. Content solves against *local* planes, so it should ride the displaced floor while living-room objects sit flat. Confirms the diagnosis from the other side |
+| ~~A Room Setup re-scan clears it~~ | **REFUTED 2026-08-31** | Re-scanned; the room came back displaced. Whatever anchors that room entity survives a re-scan, which rules out a stale scan and makes this a standing fault to live with rather than a one-off to clear |
+| ~~Content on the bedroom floor floats ~10 cm~~ | **CONFIRMED 2026-08-31** | Objects on the bedroom floor rise with the displaced floor, exactly as predicted — the diagnosis confirmed from the second side, and the user-visible harm that justified building a correction |
 | The reported "goes back and forth every few days" is the room entity re-anchoring | plausible, untested | Requires the fault to recur after a re-scan. The log now dates every occurrence automatically |
 | The `track.reset` burst is involved | low | Twelve resets in 15 minutes, including **three inside one second**. Walking between rooms across a boundary drawn round one of them explains the count but not the same-second triples. Worth explaining on its own terms before it is dismissed |
 
@@ -143,7 +153,7 @@ No internal probe can answer that, because internally the space is self-consiste
 | Symptom | Cause | Fix | Knob | Commit |
 |---|---|---|---|---|
 | No way to detect or attribute a height fault | The system has no ground truth and no persistent record | The geometry event log: change-gated height census, median-deviation alarm, `explainNoMatch`, and the controller marker probe | `--no-geometry-log`, `--geometry-log-days` (21), `mark` binding (default **B**) | `371ff83` |
-| The floor itself | The Quest's bedroom room entity is anchored ~104 mm high | **None in our code** — a Room Setup re-scan on the device | — | — |
+| The floor itself | The Quest's bedroom room entity is anchored ~104 mm high | **Not fixable at source** — a Room Setup re-scan does not clear it. Mitigated at render: `floatingRoom` detects a rigidly-displaced room and lowers it back onto the rest of the space (spec §10.4). Measured on this capture: the two known-equal floors closed from **104 mm to 12 mm** | `--fix-floating-rooms` (0 = off; try 0.06) | — |
 | `[post]` logged only the first changed id; server `add`/`remove` were silent | first-hit `reason` string; only `update` had a `[seed]` line | full reason list; `seed.add` / `seed.prune` named by id | — | `371ff83` |
 
 **Side findings recorded in the backlog, not fixed here:** a ~46 mm sign error in the seed's kitchen height
