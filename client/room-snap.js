@@ -527,6 +527,29 @@
   // it to the wrong room's ceiling and leave a slit). Runs BEFORE snapInsets so door/window holes — placed
   // relative to the wall centre — are computed against the sealed wall (no separate hole compensation).
   // Mutates in place.
+  // A wall on a shared room boundary counts as under BOTH adjoining rooms' footprints.
+  var COVER_MARGIN = 0.3;
+
+  // Does a horizontal surface `h`'s footprint (its rectangle, grown by `margin`) cover the plan point
+  // (wx,wz)? Project the point into h's own axes (its raw-plane local X and Z, both horizontal for a
+  // floor/ceiling) so a rotated/non-axis-aligned room is handled correctly. Shared by sealWalls (which
+  // room does this wall reach into) and heightCensus (which room is this wall's height measured against) —
+  // one definition, so the seal and the diagnostic can never disagree about which room a wall is in.
+  /**
+   * @param {THREE_NS} THREE  @param {SnapSurface} h  @param {number} wx  @param {number} wz
+   * @param {number} [margin]  @returns {boolean}
+   */
+  function covers(THREE, h, wx, wz, margin) {
+    if (!h._lp || !h._lq) return false;
+    var m = margin == null ? COVER_MARGIN : margin;
+    var ax = new THREE.Vector3(1, 0, 0).applyQuaternion(h._lq);
+    var az = new THREE.Vector3(0, 0, 1).applyQuaternion(h._lq);
+    var dx = wx - h._lp.x, dz = wz - h._lp.z;
+    var u = dx * ax.x + dz * ax.z, v = dx * az.x + dz * az.z;
+    var e = h.extent || [0, 0];
+    return Math.abs(u) <= (e[0] || 0) / 2 + m && Math.abs(v) <= (e[1] || 0) / 2 + m;
+  }
+
   /**
    * @param {THREE_NS} THREE
    * @param {SnapSurface[]} surfaces
@@ -536,21 +559,8 @@
   function sealWalls(THREE, surfaces, tol) {
     var T = tol == null ? 0.15 : tol;
     if (!(T > 0)) return;
-    var MARGIN = 0.3;   // a wall on a shared room boundary counts as under BOTH adjoining rooms' footprints
     var ceils = surfaces.filter(function (s) { return s.semantic === "ceiling" && s._lp && s._lq && s.extent; });
     var floors = surfaces.filter(function (s) { return s.semantic === "floor" && s._lp && s._lq && s.extent; });
-    // Does a horizontal surface `h`'s footprint (its rectangle, grown by MARGIN) cover the plan point (wx,wz)?
-    // Project the point into h's own axes (its raw-plane local X and Z, both horizontal for a floor/ceiling)
-    // so a rotated/non-axis-aligned room is handled correctly.
-    /** @param {SnapSurface} h  @param {number} wx  @param {number} wz  @returns {boolean} */
-    function covers(h, wx, wz) {
-      var ax = new THREE.Vector3(1, 0, 0).applyQuaternion(h._lq);
-      var az = new THREE.Vector3(0, 0, 1).applyQuaternion(h._lq);
-      var dx = wx - h._lp.x, dz = wz - h._lp.z;
-      var u = dx * ax.x + dz * ax.z, v = dx * az.x + dz * az.z;
-      var e = h.extent || [0, 0];
-      return Math.abs(u) <= (e[0] || 0) / 2 + MARGIN && Math.abs(v) <= (e[1] || 0) / 2 + MARGIN;
-    }
     surfaces.forEach(function (s) {
       if (s.semantic !== "wall" || !s._lp || !s.extent) return;
       var cy = s._lp.y, h = s.extent[1] || 0, top = cy + h / 2, bot = cy - h / 2;
@@ -560,13 +570,13 @@
       // raised, never lowered: a wall already poking above a ceiling is hidden by it, so no need to trim.
       var newTop = top;
       ceils.forEach(function (c) {
-        if (c._lp.y > newTop && Math.abs(c._lp.y - top) <= T && covers(c, s._lp.x, s._lp.z)) newTop = c._lp.y;
+        if (c._lp.y > newTop && Math.abs(c._lp.y - top) <= T && covers(THREE, c, s._lp.x, s._lp.z)) newTop = c._lp.y;
       });
       // BOTTOM → symmetric: the LOWEST covering floor within tol (reach the lower floor; poke hidden below a
       // higher one). Only lowered.
       var newBot = bot;
       floors.forEach(function (f) {
-        if (f._lp.y < newBot && Math.abs(f._lp.y - bot) <= T && covers(f, s._lp.x, s._lp.z)) newBot = f._lp.y;
+        if (f._lp.y < newBot && Math.abs(f._lp.y - bot) <= T && covers(THREE, f, s._lp.x, s._lp.z)) newBot = f._lp.y;
       });
       if (newTop === top && newBot === bot) return;             // nothing covering within tol → leave it alone
       var nh = newTop - newBot;
@@ -835,7 +845,151 @@
     });
   }
 
+  // --- diagnostics (docs/backlogs/spaces-geometry.md — "Instrumentation") -------------------------------
+  // These two answer the two field symptoms. They live here, with the rest of the pure geometry, so they
+  // are unit-testable and so they reuse the SAME definitions the real code uses (`covers`, matchWall's
+  // gates) — a diagnostic that reimplements the thing it is diagnosing will eventually disagree with it and
+  // send you the wrong way.
+
+  // The room's HEIGHTS, as numbers: every floor's and ceiling's y, and every wall's bottom/top with the
+  // floor it sits over. Answers "when that room's floor is four inches high, what moves WITH it?" — the
+  // floor alone (the Quest re-fit the plane), or the floor + its ceiling + its walls (the device map
+  // shifted regionally, spec §1).
+  //
+  // Call BEFORE sealWalls: sealing rewrites a wall's centre height and height to close the slit against
+  // whatever floor/ceiling it finds, which is exactly the measurement we want to take. After sealing, every
+  // wall bottom agrees with its floor by construction and the census says nothing.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces   local (F_track) surfaces, pre-seal
+   * @returns {{floors: {id: string, y: number}[], ceilings: {id: string, y: number}[],
+   *            walls: {id: string, bot: number, top: number, floor: string|null, gap: number|null}[]}}
+   */
+  function heightCensus(THREE, surfaces) {
+    /** @type {{id: string, y: number}[]} */ var floors = [];
+    /** @type {{id: string, y: number}[]} */ var ceilings = [];
+    /** @type {{id: string, bot: number, top: number, floor: string|null, gap: number|null}[]} */
+    var walls = [];
+    var floorSurfs = surfaces.filter(function (s) { return s.semantic === "floor" && s._lp && s._lq && s.extent; });
+    surfaces.forEach(function (s) {
+      if (!s._lp) return;
+      if (s.semantic === "floor") floors.push({ id: s.id, y: s._lp.y });
+      else if (s.semantic === "ceiling") ceilings.push({ id: s.id, y: s._lp.y });
+      else if (s.semantic === "wall" && s.extent) {
+        var h = s.extent[1] || 0, bot = s._lp.y - h / 2, top = s._lp.y + h / 2;
+        // Which room is this wall in? The LOWEST covering floor — the same rule sealWalls uses to pick the
+        // floor it reaches down to, so `gap` is the very quantity sealing would close.
+        var f = /** @type {SnapSurface|null} */ (null);
+        floorSurfs.forEach(function (c) {
+          if (!covers(THREE, c, s._lp.x, s._lp.z)) return;
+          if (!f || c._lp.y < f._lp.y) f = c;
+        });
+        walls.push({ id: s.id, bot: bot, top: top, floor: f ? f.id : null,
+                     gap: f ? bot - f._lp.y : null });
+      }
+    });
+    /** @param {{id: string}} a  @param {{id: string}} b  @returns {number} */
+    var byId = function (a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; };
+    return { floors: floors.sort(byId), ceilings: ceilings.sort(byId), walls: walls.sort(byId) };
+  }
+
+  // WHY didn't this surface match? The single most valuable line in the churn log: it separates "the Quest
+  // never emitted a plane here" (nothing we can tune) from "a plane was right there and the matcher
+  // rejected it" (a tolerance we can change) — and in the second case names the failing gate with its
+  // actual margin, so `perp=0.19/0.15` tells you what to set --wall-perp-tol to.
+  //
+  // `probe` and `others` are both constellation-form and the call is used in BOTH directions: a MISSING ref
+  // probed against this capture's planes, and a freshly-MINTED plane probed against the reference. The gates
+  // below mirror matchWall's, evaluated against the other side's normal; since gate 1 already bounds the two
+  // normals to within yawTol, the perpendicular offset differs between the two directions only by cos(dyaw)
+  // — immaterial for a diagnostic margin, and it keeps this one function honest in both roles.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {RefSurface} probe                  the surface that failed to match
+   * @param {RefSurface[]} others               what it was matched against
+   * @param {{perpTol?: number, yawTol?: number, overlapSlop?: number, farM?: number}} [opts]
+   * @returns {{why: "device"|"matcher", gate?: string, val?: number, tol?: number,
+   *            id?: string, dist?: number}}
+   *   why="device" — nothing of that semantic was detected within `farM`, so there was nothing to match.
+   *   why="matcher" — the nearest plausible candidate, the gate that rejected it, and by how much.
+   */
+  function explainNoMatch(THREE, probe, others, opts) {
+    opts = opts || {};
+    var PERP_TOL = opts.perpTol != null ? opts.perpTol : 0.15;
+    var YAW_TOL = opts.yawTol != null ? opts.yawTol : Math.PI / 6;
+    var OVERLAP_SLOP = opts.overlapSlop != null ? opts.overlapSlop : 0.3;
+    var FAR = opts.farM != null ? opts.farM : 1.5;
+    var same = (others || []).filter(function (o) { return o.sem === probe.sem; });
+    var vertical = probe.orient === "vertical";
+    if (!vertical) {
+      // Horizontals go through matchRef, whose only gate is a same-facing centroid radius — so for a floor
+      // or ceiling the nearest centroid IS the right candidate and the right margin.
+      var hBest = /** @type {RefSurface|null} */ (null), hD = Infinity;
+      same.forEach(function (o) { var d = probe.pos.distanceTo(o.pos); if (d < hD) { hD = d; hBest = o; } });
+      if (!hBest || hD > FAR) return { why: "device", dist: hBest ? +hD.toFixed(3) : undefined };
+      return { why: "matcher", id: hBest.id, dist: +hD.toFixed(3), gate: "dist",
+               val: +hD.toFixed(3), tol: 0.5 };
+    }
+    // For a WALL, "nearest" must be measured the way matchWall measures identity — by PLANE, not centroid.
+    // A wall's centroid is a scan artifact that slides metres along the wall between captures, so ranking
+    // candidates by centroid distance would report a wall we saw from the other end as "never detected",
+    // which is the single most misleading thing this function could say.
+    //
+    // So: rank by how far through matchWall's gates each candidate gets (a candidate that clears facing and
+    // the coincident-plane test is nearly this wall; one that fails facing is a different wall), tie-broken
+    // by matchWall's own score. Candidates wildly off in facing or plane are discarded outright — they are
+    // other walls in the room, not failed matches of this one.
+    var best = /** @type {RefSurface|null} */ (null);
+    /** @type {{dyaw: number, perp: number, gap: number}} */
+    var bestFacts = { dyaw: 0, perp: 0, gap: 0 };
+    var bestRank = -1, bestScore = Infinity;
+    same.forEach(function (o) {
+      var dyaw = Math.abs(Math.atan2(Math.sin(probe.nyaw - o.nyaw), Math.cos(probe.nyaw - o.nyaw)));
+      var onx = Math.sin(o.nyaw), onz = Math.cos(o.nyaw);
+      var perp = Math.abs((probe.pos.x - o.pos.x) * onx + (probe.pos.z - o.pos.z) * onz);
+      if (dyaw > 2 * YAW_TOL || perp > 5 * PERP_TOL) return;    // a different wall, not a missed match
+      var tx = onz, tz = -onx;
+      var pa = probe.pos.x * tx + probe.pos.z * tz, oa = o.pos.x * tx + o.pos.z * tz;
+      var gap = Math.abs(pa - oa) - (((probe.ext && probe.ext[0]) || 0) / 2 + ((o.ext && o.ext[0]) || 0) / 2);
+      var rank = dyaw > YAW_TOL ? 0 : perp > PERP_TOL ? 1 : gap > OVERLAP_SLOP ? 2 : 3;
+      var score = perp + Math.max(0, gap);                      // matchWall's own tie-break
+      if (rank > bestRank || (rank === bestRank && score < bestScore)) {
+        bestRank = rank; bestScore = score; best = o;
+        bestFacts = { dyaw: dyaw, perp: perp, gap: gap };
+      }
+    });
+    if (!best) return { why: "device" };
+    var out = { why: /** @type {"matcher"} */ ("matcher"), id: best.id,
+                dist: +probe.pos.distanceTo(best.pos).toFixed(3) };
+    if (bestRank === 0)
+      return Object.assign(out, { gate: "dyaw", val: +(bestFacts.dyaw * 180 / Math.PI).toFixed(1),
+                                  tol: +(YAW_TOL * 180 / Math.PI).toFixed(1) });
+    if (bestRank === 1) return Object.assign(out, { gate: "perp", val: +bestFacts.perp.toFixed(3), tol: PERP_TOL });
+    if (bestRank === 2) return Object.assign(out, { gate: "gap", val: +bestFacts.gap.toFixed(3), tol: OVERLAP_SLOP });
+    // Every gate passes, so this candidate WAS matchable — it must already have been claimed by another
+    // plane this capture. That is the id-swap shape, and worth its own name.
+    return Object.assign(out, { gate: "claimed" });
+  }
+
+  // Which floor is the plan point (x,z) standing over? The same footprint test sealWalls and heightCensus
+  // use, exposed so the marker probe can attribute a measured error to a ROOM. Nearest-by-height would be
+  // wrong in precisely the case the marker exists for: when one room's floor is rendered 13 cm high and you
+  // rest the controller on the real floor, the nearest floor plane by height is the one in the OTHER room.
+  /**
+   * @param {THREE_NS} THREE  @param {SnapSurface[]} floors  @param {number} x  @param {number} z
+   * @returns {SnapSurface|null}
+   */
+  function floorUnder(THREE, floors, x, z) {
+    var best = /** @type {SnapSurface|null} */ (null);
+    (floors || []).forEach(function (f) {
+      if (f.semantic !== "floor" || !covers(THREE, f, x, z)) return;
+      if (!best || f._lp.y < best._lp.y) best = f;          // lowest covering floor — sealWalls' rule
+    });
+    return best;
+  }
+
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
+           heightCensus: heightCensus, explainNoMatch: explainNoMatch, floorUnder: floorUnder,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,
            wallCorners: wallCorners, authorInsetAnchor: authorInsetAnchor, reconstructInset: reconstructInset,

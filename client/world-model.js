@@ -342,7 +342,44 @@
     return !!(lp && lp.length >= 2 && rp && rp.length >= 2);
   }
 
-  return { hasFrameBasis: hasFrameBasis,
+  /**
+   * Per floor/ceiling, how far its LIVE height sits from the SEED's once the whole-space offset is removed
+   * — the self-triggering half of the raised-floor investigation (docs/backlogs/spaces-geometry.md).
+   *
+   * Three facts make this work with no extra persistence and no ground truth:
+   *  • Registration solves yaw about gravity plus an x/z translation and never touches y, so height
+   *    DIFFERENCES are identical in F_track and F_ref — the stored seed is a valid baseline for a live
+   *    capture, directly, across sessions and across devices.
+   *  • Subtracting the MEDIAN of the per-surface deltas absorbs any whole-space offset (a different
+   *    local-floor origin between sessions, the map settling as a block). Median, not mean, so one badly
+   *    wrong floor cannot drag the baseline toward itself and hide.
+   *  • What is left is "this surface moved relative to the rest of the space", which is the reported
+   *    symptom exactly, and is the one thing that cannot be explained away as drift.
+   *
+   * Returns [] below 3 comparable surfaces: with two, a whole-space shift and one bad plane are the same
+   * number, and guessing between them is worse than staying quiet.
+   *
+   * @param {Record<string, number>} live            id → height this capture
+   * @param {Record<string, {y: number, sem?: string}>} seed   id → height in the stored seed
+   * @returns {{id: string, sem: string|undefined, live: number, seed: number, d: number, dev: number}[]}
+   */
+  function levelDeviation(live, seed) {
+    /** @type {{id: string, sem: string|undefined, live: number, seed: number, d: number, dev: number}[]} */
+    var out = [];
+    Object.keys(live || {}).forEach(function (id) {
+      var s = seed && seed[id];
+      if (!s) return;
+      out.push({ id: id, sem: s.sem, live: live[id], seed: s.y, d: live[id] - s.y, dev: 0 });
+    });
+    if (out.length < 3) return [];
+    var ds = out.map(function (o) { return o.d; }).sort(function (a, b) { return a - b; });
+    var mid = ds.length >> 1;
+    var median = ds.length % 2 ? ds[mid] : (ds[mid - 1] + ds[mid]) / 2;
+    out.forEach(function (o) { o.dev = o.d - median; });
+    return out;
+  }
+
+  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,
            relocInit: relocInit, relocStep: relocStep,

@@ -24,6 +24,50 @@
     } catch (e) { /* never let logging break a frame */ }
   }
 
+  // --- geometry event log (docs/backlogs/spaces-geometry.md — "Instrumentation") -------------------------
+  // Always-on and CHANGE-gated: a settled room emits NOTHING, so this can be left on for weeks. That is the
+  // whole point — the symptoms it exists for (a surface dropping out and coming back uncoloured; one room's
+  // floor sitting a few inches high) are noticed DAYS later, by which time --debug-registration was off.
+  //
+  // BATCHED, never one fetch per event. `debugLog` does a fetch per line, which is exactly why the jitter
+  // probes had to be decoupled from the registration diagnostics (spec §10) — the measurement was
+  // contaminating the measurement. Events accumulate in memory and flush on a timer, so the per-event cost
+  // is an array push and the per-flush cost is one POST every few seconds.
+  var geoSid = "s_" + Math.random().toString(36).slice(2, 8);   // one page-load; groups a session's lines
+  var geoQ = [], geoTimer = null, GEO_FLUSH_MS = 5000, GEO_MAX_Q = 100;
+  function geoFlush() {
+    geoTimer = null;
+    if (!geoQ.length) return;
+    var batch = geoQ; geoQ = [];
+    try {
+      fetch("/geometry_log", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sid: geoSid, events: batch }) }).catch(function () {});
+    } catch (e) { /* never let logging break a frame */ }
+  }
+  /**
+   * Record one geometry event. `ev` is a dotted name; `fields` is whatever that event needs.
+   * TAKES OWNERSHIP of `fields` — it is stamped and queued, not copied, so callers pass a fresh literal.
+   * Deliberate: the GC-pause theory in the jitter investigation is unconfirmable on Quest, so a probe that
+   * allocates a second object per event is a cost we can neither measure nor justify.
+   */
+  function geoLog(ev, fields) {
+    if (!window.CONJURE_GEOMETRY_LOG) return;
+    var rec = fields || {};
+    rec.ev = ev; rec.ct = Date.now();
+    geoQ.push(rec);
+    // A burst (a whole room re-minting) shouldn't sit in memory for the full window, and shouldn't grow
+    // without bound if the server is unreachable either.
+    if (geoQ.length >= GEO_MAX_Q) { if (geoTimer) clearTimeout(geoTimer); geoFlush(); return; }
+    if (!geoTimer) geoTimer = setTimeout(geoFlush, GEO_FLUSH_MS);
+  }
+  // Don't lose the tail of a session: the interesting events cluster around leaving AR / closing the page.
+  if (typeof window !== "undefined" && window.addEventListener) {
+    window.addEventListener("pagehide", geoFlush);
+    window.addEventListener("beforeunload", geoFlush);
+  }
+  /** Round to mm for the log — floor heights are the payload and 3 dp is well past sensor precision. */
+  function mm(v) { return Math.round((+v || 0) * 1000) / 1000; }
+
   // Compact wire form for the geometry worker (fix/pops-and-jitters): send only the fields RoomSnap.register
   // reads, as plain numbers, so a capture's planes + reference constellation cross to the worker in a few KB.
   function serCur(c) { var p = c.pos; return { p: [p.x, p.y, p.z], nyaw: c.nyaw, sem: c.sem, orient: c.orient, ext: [c.ext[0], c.ext[1]] }; }
@@ -1331,6 +1375,16 @@
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;
         this._recovered = {};       // seed-surface ids reconstructed via anchor (missing from capture) — for §5.2 logging
         this._localPlanes = null;   // last capture's local wall+floor planes (F_track) — for avatar anchors (§5.1)
+        // --- GEOMETRY EVENT LOG (docs/backlogs/spaces-geometry.md — "Instrumentation") ------------------
+        // All change-gated: each of these exists so a capture that changes NOTHING logs nothing.
+        this._miss = {};            // ref id → consecutive captures unclaimed (the churn debounce, mirrored)
+        this._everClaimed = {};      // ref id → 1 once matched at least once, so a stale _ref entry that has
+        //                             never matched (a minted duplicate) can't emit a miss every 2 s forever
+        this._wasStyled = {};       // surface id → 1 if we have ever rendered it WITH a material, so the
+        //                             styling coming back empty is detectable (the style-orphan case)
+        this._lastLevel = null;     // last logged height census, keyed id → y — the >2 cm emit gate
+        this._levelAlarm = {};      // surface id → 1 while its height deviation is being reported (edge-only)
+        this._churnRing = [];       // recent churn events, replayed into a [mark] dump for context
         // --- JITTER PROBES (branch fix/pops-and-jitters) ------------------------------------------------
         // Diagnose the ~cm "flick out and back" seen while WALKING (not while standing + looking around).
         // Leading hypothesis: the ~0.5 Hz capture frame is heavy → a dropped frame → the compositor
@@ -1400,7 +1454,11 @@
         var self = this;
         // A recenter (Meta button) / boundary re-entry fires a 'reset' on the reference space — force an
         // immediate re-capture so registration re-locks the frame within a frame instead of up to ~2 s.
-        this._onReset = function () { self.lastPost = 0; };
+        // LOGGED because it is the single most likely trigger for BOTH field symptoms: a boundary trip
+        // relocalizes the whole tracking frame (spec §4.1, ~167° + ~3 m), which is precisely the event that
+        // can re-fit a floor plane or break a wall's identity. Without this line the churn and the cause
+        // land in the file with nothing connecting them.
+        this._onReset = function () { self.lastPost = 0; geoLog("track.reset", {}); };
       },
       // Force an immediate re-capture (manual realign — see the /space/realign signal below).
       recapture: function () { this.lastPost = 0; },
@@ -1414,6 +1472,11 @@
         this._anchorInv = null; this._refSeq = 0; this._rl = WM.relocInit(); this.lastPost = 0;
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;   // fresh post model
         this._recovered = {};
+        // The geometry log's per-world state goes with it: a new world's surface set and heights are a new
+        // baseline, so carrying the old one over would report the switch itself as churn and an anomaly.
+        this._miss = {}; this._everClaimed = {}; this._wasStyled = {};
+        this._lastLevel = null; this._levelAlarm = {}; this._census = null; this._censusFloors = null;
+        this._churnRing = [];
       },
       // Has surface `k` (a fresh record) changed STRUCTURALLY vs `p` (its last-posted snapshot)? Mirrors the
       // server's _surface_structural_change (0.5 m / 20° / opening-count / semantic) so the client only POSTs
@@ -1513,9 +1576,19 @@
             });
           }
         }
-        var seen = {};
+        var seen = {}, self = this;
         surfaces.forEach(function (s) {
           seen[s.id] = 1;
+          // STYLE-ORPHAN probe. A surface pruned from the seed loses its material with it, and
+          // `surfaceStyles` is rebuilt from the snapshot — so an id that used to render coloured and now
+          // renders bare is the "comes back uncoloured" symptom caught at the exact moment it happens, with
+          // the identity INTACT. Distinguishing that from a re-mint is the whole reason this event exists:
+          // one is a styling-lifetime bug, the other a matcher bug, and they look identical in the headset.
+          if (surfaceStyles[s.id]) self._wasStyled[s.id] = 1;
+          else if (self._wasStyled[s.id]) {
+            delete self._wasStyled[s.id];
+            self._churn("restyle_lost", { id: s.id, sem: s.semantic });
+          }
           applyEntity({ id: s.id, transform: { position: s.position, rotation: s.rotation },
             components: { surface: { extent: s.extent, holes: s.holes || [] }, material: surfaceStyles[s.id] },
             meta: { real: true, semantic: s.semantic } });   // apply the SHARED styling by id (docs §3)
@@ -1525,7 +1598,18 @@
         Array.prototype.forEach.call(wr.querySelectorAll('[data-real="1"]'), function (el) {
           if (seen[el.id]) { delete abs[el.id]; return; }
           abs[el.id] = (abs[el.id] || 0) + 1;
-          if (abs[el.id] >= 3 && el.parentNode) { slewSet.delete(el); el.parentNode.removeChild(el); delete abs[el.id]; }   // drop any in-flight ease (§10)
+          if (abs[el.id] >= 3 && el.parentNode) {
+            // The moment the surface VISIBLY disappears — distinct from `churn.prune` below, which is when
+            // the server forgets it. They are separate debounces on separate state and can diverge; a guest
+            // only ever reaches this one.
+            // The COLOUR, not a boolean: every real surface carries a per-semantic default material, so
+            // "has a material" is true for all of them and says nothing. What is worth recording is what
+            // this surface actually looked like at the moment it went away.
+            var hm = surfaceStyles[el.id] || {};
+            self._churn("hide", { id: el.id, sem: el.dataset.semantic || undefined,
+                                  color: hm.color, tex: !!hm.src });
+            slewSet.delete(el); el.parentNode.removeChild(el); delete abs[el.id];   // drop any in-flight ease (§10)
+          }
         });
       },
       // Place director-authored content (models, props — anything with a remembered F_ref pose) via
@@ -1652,6 +1736,175 @@
         });
         return out;
       },
+      // Record a churn event AND keep it in a short ring, so a [mark] press can dump what was happening to
+      // the surface set in the moments before you pressed it. The ring is the difference between "the log
+      // says a wall re-minted at 14:02" and "the wall re-minted, and you pressed the marker at 14:02".
+      _churn: function (ev, fields) {
+        geoLog("churn." + ev, fields);
+        this._churnRing.push({ ev: ev, id: fields && fields.id, t: Math.round(performance.now()) });
+        if (this._churnRing.length > 20) this._churnRing.shift();
+      },
+      // Compare this capture's surface set against the reference constellation and log only what CHANGED.
+      // Runs for owner and guest alike (both run Pass B), so the visual symptom is captured whichever role
+      // the headset is in — the owner's POST gate below sees only the owner's half.
+      //
+      // `claimed` is the Set of _ref entries Pass B matched; anything in _ref that isn't in it went
+      // unmatched THIS capture. `curRef` is every detected plane in the reference frame, which is what makes
+      // the device-vs-matcher discrimination possible: if no plane of that semantic is anywhere near, the
+      // Quest never emitted it; if one is right there, the matcher rejected it and we can say which gate.
+      _logChurn: function (claimed, claimedInset, curRef) {
+        var RS = window.RoomSnap, self = this;
+        if (!window.CONJURE_GEOMETRY_LOG || !RS) return;
+        var hit = {};
+        claimed.forEach(function (r) { if (r && r.id) hit[r.id] = 1; });
+        (claimedInset || new Set()).forEach(function (id) { hit[id] = 1; });
+        this._ref.forEach(function (r) {
+          if (!r.id) return;
+          if (hit[r.id]) {
+            self._everClaimed[r.id] = 1;
+            if (self._miss[r.id]) {                       // came back before the debounce fired
+              self._churn("regain", { id: r.id, sem: r.sem, after: self._miss[r.id] });
+              delete self._miss[r.id];
+            }
+            return;
+          }
+          if (!self._everClaimed[r.id]) return;           // never matched in this session — not a "loss"
+          var n = self._miss[r.id] = (self._miss[r.id] || 0) + 1;
+          if (n > 3) return;                              // already reported through the debounce; stay quiet
+          var why = RS.explainNoMatch(AFRAME.THREE, r, curRef, window.CONJURE_WALL);
+          self._churn("miss", { id: r.id, sem: r.sem, n: n, why: why.why, gate: why.gate,
+                                val: why.val, tol: why.tol, near: why.id, dist: why.dist });
+        });
+      },
+      // The room's HEIGHTS, and whether one of them has moved relative to the rest of the space.
+      //
+      // The anomaly test is the part that matters: it fires WITHOUT anyone noticing. Registration solves yaw
+      // about gravity plus an x/z translation (spec §4), so it never touches y — which means height
+      // DIFFERENCES are identical in F_track and F_ref, and the persisted seed is therefore a valid baseline
+      // for a live capture with no extra bookkeeping. Take each surface's live-minus-seed height, subtract
+      // the MEDIAN of those (which absorbs any whole-space offset, e.g. a different local-floor origin
+      // between sessions), and what remains is "this floor moved relative to the rest of the space" — which
+      // is exactly the reported symptom, and cannot be explained away as drift.
+      _logLevel: function (localSurfaces) {
+        var RS = window.RoomSnap;
+        if (!window.CONJURE_GEOMETRY_LOG || !RS) return;
+        var cen = this._census = RS.heightCensus(AFRAME.THREE, localSurfaces);   // …also what [mark] dumps
+        // Keep the floor SURFACES too (three references, already live): the marker needs their footprints
+        // to say which ROOM a measured error belongs to, and the census carries only heights.
+        this._censusFloors = localSurfaces.filter(function (s) { return s.semantic === "floor"; });
+        var flat = {};
+        cen.floors.forEach(function (f) { flat[f.id] = f.y; });
+        cen.ceilings.forEach(function (c) { flat[c.id] = c.y; });
+        // Emit gate: the first census of a session, then only when a height moves >2 cm from the last
+        // LOGGED one (matching the apply-gate's own tolerance) or the set of horizontals changes. A settled
+        // session writes one line on entry and nothing after.
+        var prev = this._lastLevel, moved = !prev;
+        if (prev) {
+          var keys = Object.keys(flat), pkeys = Object.keys(prev);
+          if (keys.length !== pkeys.length) moved = true;
+          else for (var i = 0; i < keys.length; i++) {
+            if (prev[keys[i]] == null || Math.abs(prev[keys[i]] - flat[keys[i]]) > 0.02) { moved = true; break; }
+          }
+        }
+        // The deviation test runs EVERY capture even when the census is quiet: a height that has been wrong
+        // since entry never "moves", so gating the alarm on movement would miss the whole session.
+        var dev = this._levelDeviation(flat);
+        var self = this;
+        dev.forEach(function (d) {
+          if (Math.abs(d.dev) <= 0.05) { delete self._levelAlarm[d.id]; return; }
+          if (self._levelAlarm[d.id]) return;             // edge-triggered: report once per excursion
+          self._levelAlarm[d.id] = 1;
+          geoLog("level.anomaly", { id: d.id, sem: d.sem, dev: mm(d.dev), live: mm(d.live), seed: mm(d.seed),
+                                    others: dev.length });
+          moved = true;                                   // …and attach the full census to the same flush
+        });
+        if (!moved) return;
+        this._lastLevel = flat;
+        geoLog("level.census", {
+          floors: cen.floors.map(function (f) { return { id: f.id, y: mm(f.y) }; }),
+          ceilings: cen.ceilings.map(function (c) { return { id: c.id, y: mm(c.y) }; }),
+          // Walls carry only their gap to the floor below them: the raw bottom is a big number that changes
+          // with every relocalization, while the GAP is frame-independent and is the thing that says whether
+          // a wall moved WITH its floor or not. Reported per room (grouped by that floor id).
+          walls: cen.walls.filter(function (w) { return w.floor; }).map(function (w) {
+            return { id: w.id, floor: w.floor, gap: mm(w.gap) }; }),
+        });
+      },
+      // THE MARKER (docs/backlogs/spaces-geometry.md). Press the bound `mark` control and this writes
+      // everything the system knows about the room's heights, stamped with the CONTROLLER's own height.
+      //
+      // It exists because for the raised-floor symptom the system has NO ground truth: nothing internal can
+      // tell it that the rendered floor is four inches above the physical one, so no automatic probe can
+      // trigger on it. Rest the controller on the real floor, press: `err` is then the actual error, in
+      // metres, which is a number that exists nowhere else in the system. (`grip` is the controller's own
+      // pose, a few cm above whatever it rests on — a small fixed bias, immaterial against a 10-15 cm signal
+      // and constant across sessions, so the session-to-session DELTA is exact regardless.)
+      //
+      // Cost: `ConjurePointers.list` is cached per XRFrame and controller-beams already populates it every
+      // frame, so this adds a filter over ~2 pointers and a rising-edge check. Nothing else runs until the
+      // button actually goes down.
+      _markProbe: function (frame, refSpace, sceneEl) {
+        var CP = window.ConjurePointers;
+        if (!window.CONJURE_GEOMETRY_LOG || !CP) return;
+        var ptrs;
+        try { ptrs = CP.controllers(sceneEl); } catch (e) { return; }
+        var hit = null;
+        for (var i = 0; i < ptrs.length; i++) if (ptrs[i].started("mark")) { hit = ptrs[i]; break; }
+        if (!hit) return;
+        var gripY = null, gripP = hit.origin;
+        try {                                              // the physical controller, not the ray origin
+          var gp = hit.source.gripSpace && frame.getPose(hit.source.gripSpace, refSpace);
+          if (gp) { gripY = gp.transform.position.y; gripP = gp.transform.position; }
+        } catch (e) { /* grip space is optional */ }
+        var cen = this._census || { floors: [], ceilings: [], walls: [] };
+        var flat = {};
+        cen.floors.concat(cen.ceilings).forEach(function (f) { flat[f.id] = f.y; });
+        var dev = this._levelDeviation(flat);
+        // Which floor are you standing over? Attributing the error to a ROOM is the whole point, and it has
+        // to be by FOOTPRINT: nearest-by-height is wrong in exactly the case this exists for — with one
+        // room's floor rendered 13 cm high and the controller on the real floor, the nearest floor plane by
+        // height is the one in the other room, so the marker would blame the wrong room.
+        var under = window.RoomSnap.floorUnder(AFRAME.THREE, this._censusFloors || [], gripP.x, gripP.z);
+        var over = null;
+        if (under) cen.floors.forEach(function (f) { if (f.id === under.id) over = f; });
+        var vp = frame.getViewerPose(refSpace);
+        var res = this._regRes || [], rsum = 0, rmax = 0;
+        res.forEach(function (w) { rsum += w.res; if (w.res > rmax) rmax = w.res; });
+        geoLog("mark", {
+          hand: hit.handedness || undefined,
+          grip_y: gripY == null ? undefined : mm(gripY),
+          ray_y: mm(hit.origin.y),
+          head_y: vp ? mm(vp.transform.position.y) : undefined,
+          floor: over ? over.id : undefined,
+          floor_y: over ? mm(over.y) : undefined,
+          // Positive = the rendered floor sits ABOVE where the controller is resting: the reported symptom.
+          err: over && gripY != null ? mm(over.y - gripY) : undefined,
+          floors: cen.floors.map(function (f) { return { id: f.id, y: mm(f.y) }; }),
+          ceilings: cen.ceilings.map(function (c) { return { id: c.id, y: mm(c.y) }; }),
+          dev: dev.map(function (d) { return { id: d.id, dev: mm(d.dev) }; }),
+          reg: this._regStat || undefined,
+          res_mu: res.length ? mm(rsum / res.length) : undefined,
+          res_max: res.length ? mm(rmax) : undefined,
+          ref: this._ref.length,
+          churn: this._churnRing.slice(),                   // what the surface set was doing just before this
+        });
+        geoFlush();                                         // land it now — you may take the headset off next
+        debugLog("mark", "geometry marker recorded"
+          + (over && gripY != null ? " — " + over.id + " err=" + mm(over.y - gripY) + "m" : ""), true);
+      },
+      // Live heights vs the persisted seed's, whole-space offset removed — WM.levelDeviation holds the rule
+      // and its reasoning; this just supplies the seed side from the current snapshot.
+      _levelDeviation: function (flat) {
+        if (!docSurfaces) return [];
+        var seed = {};
+        docSurfaces.forEach(function (e) {
+          var sem = (e.meta || {}).semantic;
+          if (sem !== "floor" && sem !== "ceiling") return;
+          var p = (e.transform || {}).position;
+          if (p) seed[e.id] = { y: p[1], sem: sem };
+        });
+        return WM.levelDeviation(flat, seed);
+      },
       // The room-snapping geometry lives in the pure, unit-tested client/room-snap.js (RoomSnap). These
       // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
       _euler: function (q) { return window.RoomSnap.eulerYXZ(AFRAME.THREE, q); },
@@ -1693,6 +1946,9 @@
       _relocalize: function (on) {
         // A low-frequency, useful signal: tracking lost its lock (passthrough fallback shown) / recovered.
         debugLog("track", on ? "lost lock — showing passthrough + hint" : "re-locked — restoring world");
+        // Into the geometry log too: losing and regaining the lock brackets the window in which ids can
+        // churn and planes can re-fit, so it is the context every churn line is read against.
+        geoLog("track.lock", { lost: !!on, stat: this._regStat || undefined, ref: this._ref.length });
         var root = document.getElementById("world-root"), sky = document.getElementById("sky");
         var groundedSky = document.getElementById("grounded-sky");
         if (on) {
@@ -1975,6 +2231,7 @@
         this._pinSky();                                     // …and pin the sky to that SAME frame (see below)
         pumpGeo();                                           // EVERY frame: drain a few deferred mesh rebuilds (time-sliced)
         slewPoses((timeDelta || 0) / 1000);                  // EVERY frame: ease surfaces/content toward their targets (pose-smoothing; no-op when disabled)
+        this._markProbe(frame, refSpace, sceneEl);           // EVERY frame: rising edge of the `mark` control (see _markProbe)
         // Apply the configured foveated-rendering level once the XR session exists — OVERRIDES index.html's
         // hardcoded foveationLevel (docs: GPU-bound dropped frames while walking). Higher = periphery drawn
         // at lower resolution = less GPU (fewer drops) at the cost of peripheral sharpness/moiré; 0 = full-res
@@ -2123,8 +2380,18 @@
                                      holes: (sf.holes || []).length, semantic: sem };
             });
           }
-          if (!hadRef) console.log("[conjure] seeded room frame from " + self._ref.length + " surfaces"
-            + (amOwner ? "" : " (guest, register-only)"));
+          if (!hadRef) {
+            console.log("[conjure] seeded room frame from " + self._ref.length + " surfaces"
+              + (amOwner ? "" : " (guest, register-only)"));
+            // The session's opening line: what the space looked like when we walked in. Every later churn
+            // and level line is read against this, and comparing two days' entry lines is the cheapest way
+            // to see that a surface never came back or that the seed lost one overnight.
+            var bySemSeed = {};
+            docSurfaces.forEach(function (e) {
+              var sm = (e.meta || {}).semantic || "?"; bySemSeed[sm] = (bySemSeed[sm] || 0) + 1; });
+            geoLog("space.enter", { role: amOwner ? "owner" : "guest", ref: self._ref.length,
+                                    seed: docSurfaces.length, sem: bySemSeed, planes: cur.length });
+          }
         }
 
         // Trust gate — reject captures taken mid-relocalization (boundary re-entry, recenter) so a
@@ -2234,9 +2501,22 @@
             floor = { floorPolygon: c.poly.map(function (pt) { return [pt.x, pt.z]; }), height: 2.6, _area: c.ext[0] * c.ext[1] };
           }
         }
+        // Every detected plane in the REFERENCE frame, constellation-form — the same shape matchWall reads.
+        // Collected as Pass B goes so the churn log can ask "was a plane actually there?" without re-posing
+        // anything: these are the very objects the matcher was given.
+        var curRef = [];
         // Inherit an existing _ref entry's id (and track its slow drift), or mint + remember a new one.
-        function resolveRef(c, lp, cyaw, best) {
+        function resolveRef(c, lp, cyaw, best, probe) {
           if (best) { claimed.add(best); best.pos.lerp(lp, 0.3); best.ext = c.ext.slice(); best.nyaw = cyaw; return best.id; }
+          // A mint means this plane matched NOTHING in the reference. Explain it against _ref BEFORE the new
+          // entry goes in (it would otherwise be its own nearest candidate at distance 0), naming the best
+          // rejected reference and the gate that rejected it — the difference between "a new surface
+          // appeared" and "wall_7 was right there and missed by 4 cm of perpendicular offset".
+          if (window.CONJURE_GEOMETRY_LOG && window.RoomSnap && probe) {
+            var w = window.RoomSnap.explainNoMatch(THREE, probe, self._ref, window.CONJURE_WALL);
+            self._churn("mint", { sem: c.sem, why: w.why, gate: w.gate, val: w.val, tol: w.tol,
+                                  near: w.id, dist: w.dist });
+          }
           var sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
           var r = { id: sid, sem: c.sem, ext: c.ext.slice(), pos: lp.clone(), nyaw: cyaw, orient: c.orient };
           self._ref.push(r); claimed.add(r);
@@ -2248,10 +2528,12 @@
         cur.forEach(function (c) {
           if (INSET_SEMS[c.sem]) return;
           var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
+          var probe = { pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient, ext: c.ext };
+          curRef.push(probe);
           var best = c.orient === "vertical"
-            ? RS.matchWall({ pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient, ext: c.ext }, self._ref, claimed, window.CONJURE_WALL)
-            : RS.matchRef({ pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient }, self._ref, claimed);
-          pushSurface(c, resolveRef(c, rp.lp, cyaw, best), rp.lp, rp.lq, null);
+            ? RS.matchWall(probe, self._ref, claimed, window.CONJURE_WALL)
+            : RS.matchRef(probe, self._ref, claimed);
+          pushSurface(c, resolveRef(c, rp.lp, cyaw, best, probe), rp.lp, rp.lq, null);
         });
         // Pass B2 — INSETS. IDENTITY re-inherits against the PERSISTENT reference constellation `_ref` (the
         // SAME immediate source walls use), matched CORNER-RELATIVELY (§5.3). Each _ref inset carries its
@@ -2283,6 +2565,8 @@
         cur.forEach(function (c) {
           if (!INSET_SEMS[c.sem]) return;
           var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
+          var probe = { pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient, ext: c.ext };
+          curRef.push(probe);
           var hw = RS.hostWallFor(THREE, { _lp: rp.lp, _lq: rp.lq, extent: c.ext }, refWalls);
           var hostId = hw ? hw.id : null, sid = null;
           if (hw) {
@@ -2293,11 +2577,12 @@
             claimedInset.add(sid);
             var rr = refInsetById[sid]; if (rr) { rr.pos.lerp(rp.lp, 0.3); rr.ext = c.ext.slice(); rr.nyaw = cyaw; }
           } else {
-            sid = resolveRef(c, rp.lp, cyaw, null);                      // no structural match → mint (into _ref too)
+            sid = resolveRef(c, rp.lp, cyaw, null, probe);               // no structural match → mint (into _ref too)
           }
           pushSurface(c, sid, rp.lp, rp.lq, hostId);
         });
         if (!surfaces.length) return;
+        this._logChurn(claimed, claimedInset, curRef);      // change-gated: a settled room logs nothing
         if (JIT) this._jMark("passB");                      // matchRef: stable ids + F_ref/F_track views
 
         // LOCAL RENDER (every client): snap corners + insets in F_track, then draw each surface at its OWN
@@ -2306,6 +2591,10 @@
         // world-root stays identity (_updateWorldFrame). The apply-gate inside applyEntity means an unchanged
         // surface isn't re-laid, so nothing "pops".
         window.RoomSnap.joinCorners(THREE, localSurfaces);        // close wall corners (the recovery + snap basis)
+        // Height census BEFORE sealing — sealWalls rewrites each wall's centre height and height to close
+        // the slit against whatever floor/ceiling covers it, which is precisely the measurement we want.
+        // After sealing every wall agrees with its floor by construction and the census says nothing.
+        this._logLevel(localSurfaces);
         window.RoomSnap.sealWalls(THREE, localSurfaces, window.CONJURE_WALL_SEAL_TOL);   // seal wall tops→ceiling, bottoms→floor (§9.1)
         this._localPlanes = localToPlanes(THREE, localSurfaces);   // stash for avatar anchors (§5.1) / presence
         // Reconstruct any seed surface this client didn't capture (§5.2) and fold it into the render set, so
@@ -2369,23 +2658,35 @@
         // it changes structurally — a new surface, a confirmed removal (debounced here, so a one-capture miss
         // never prunes), a large move, or a boundary change. A settled room posts nothing. The server mirrors
         // the posted set and prunes anything absent from it (we own removal-confidence → no server debounce).
+        // `reasons` is a LIST, not a first-hit string. A capture that prunes three surfaces and adds two used
+        // to log one id (`reason = reason || …`), which is the wrong half of the information exactly when
+        // the room is churning — the case the log exists for.
         var self2 = this, curById = {};
         surfaces.forEach(function (s) { curById[s.id] = s; self2._absent[s.id] = 0; self2._known[s.id] = s; });
-        var changed = false, reason = "";
+        var reasons = [];
         Object.keys(self2._known).forEach(function (id) {                 // debounced removals (3 misses)
           if (curById[id]) return;
           self2._absent[id] = (self2._absent[id] || 0) + 1;
-          if (self2._absent[id] >= 3) { delete self2._known[id]; delete self2._absent[id]; changed = true; reason = reason || ("removed " + id); }
+          if (self2._absent[id] < 3) return;
+          var gone = self2._known[id];
+          delete self2._known[id]; delete self2._absent[id];
+          reasons.push("removed " + id);
+          // The client half of losing a surface: this id will be absent from the POST, and the server prunes
+          // on absence — taking the material with it (see server.py `seed.prune`). `anchored` says whether
+          // content was pinned to it, since that is the one case the server refuses to prune.
+          var pm = surfaceStyles[id] || {};
+          self2._churn("prune", { id: id, sem: gone && gone.semantic, color: pm.color, tex: !!pm.src,
+                                  anchored: !!document.querySelector('[data-on-surface="' + id + '"]') });
         });
         Object.keys(self2._known).forEach(function (id) {                 // new / large-move vs last POST
-          if (changed) return;
           var p = self2._posted[id];
-          if (!p) { changed = true; reason = "new " + id; }
-          else if (self2._structMoved(p, self2._known[id])) { changed = true; reason = "moved " + id; }
+          if (!p) reasons.push("new " + id);
+          else if (self2._structMoved(p, self2._known[id])) reasons.push("moved " + id);
         });
         var bstr = boundary ? JSON.stringify(boundary) : null;
-        if (bstr && bstr !== self2._postedBoundary) { changed = true; reason = reason || "boundary"; }
-        if (!changed) return;                                             // settled → nothing to POST
+        if (bstr && bstr !== self2._postedBoundary) reasons.push("boundary");
+        if (!reasons.length) return;                                      // settled → nothing to POST
+        var reason = reasons.join(", ");
 
         var payload = Object.keys(self2._known).map(function (id) { return self2._known[id]; });
         self2._posted = {};

@@ -828,3 +828,109 @@ test("sealWalls + snapInsets: a door's opening lands on the door even though sea
   const inPlane = doorPos.clone().sub(n.clone().multiplyScalar(doorPos.clone().sub(wall._lp).dot(n)));
   assert.ok(rebuilt.distanceTo(inPlane) < 1e-6, "opening lands on the door (hole cut against the sealed wall)");
 });
+
+// ---- heightCensus + explainNoMatch: the geometry event log's two measurements -------------------------
+// Both exist for the field symptoms recorded in docs/backlogs/spaces-geometry.md. They are tested here,
+// with the rest of the pure geometry, for the reason they live here at all: a diagnostic that quietly
+// disagrees with the code it diagnoses sends you the wrong way, which is worse than no diagnostic.
+
+test("heightCensus reports each floor/ceiling height and attributes every wall to the room below it", () => {
+  // Two rooms side by side, room B's floor 13 cm high (the reported symptom), each wall over its own floor.
+  const fA = horiz("floor", 0, 0.00, 0, [4, 4]), cA = horiz("ceiling", 0, 2.60, 0, [4, 4]);
+  const fB = horiz("floor", 8, 0.13, 0, [4, 4]), cB = horiz("ceiling", 8, 2.73, 0, [4, 4]);
+  fA.id = "floor_A"; cA.id = "ceil_A"; fB.id = "floor_B"; cB.id = "ceil_B";
+  const wA = vert("wall_A", "wall", [0, 1.30, 1.9], 0, [4, 2.6]);      // bottom 0.00 → gap 0 over floor A
+  const wB = vert("wall_B", "wall", [8, 1.43, 1.9], 0, [4, 2.6]);      // bottom 0.13 → gap 0 over floor B
+  const cen = RS.heightCensus(THREE, [fA, cA, fB, cB, wA, wB]);
+
+  assert.deepStrictEqual(cen.floors.map((f) => f.id), ["floor_A", "floor_B"], "both floors, sorted by id");
+  assert.ok(Math.abs(cen.floors[1].y - 0.13) < 1e-9, "the raised floor's height is reported as-is");
+  assert.deepStrictEqual(cen.ceilings.map((c) => c.id), ["ceil_A", "ceil_B"]);
+
+  const byId = Object.fromEntries(cen.walls.map((w) => [w.id, w]));
+  assert.strictEqual(byId.wall_A.floor, "floor_A", "wall A attributed to the room it stands in");
+  assert.strictEqual(byId.wall_B.floor, "floor_B", "wall B attributed to the OTHER room, not the nearest floor by height");
+  // The gap is the frame-independent quantity: both walls sit ON their own floor, so both read ~0 even
+  // though their absolute bottoms differ by 13 cm. That is exactly what distinguishes "the whole region
+  // moved" (gaps unchanged) from "the floor plane alone re-fit" (gap opens).
+  assert.ok(Math.abs(byId.wall_A.gap) < 1e-9 && Math.abs(byId.wall_B.gap) < 1e-9,
+            "a wall standing on its own floor reads gap 0 regardless of that floor's absolute height");
+});
+
+test("heightCensus is taken pre-seal: sealing erases the very gap it measures", () => {
+  const floor = horiz("floor", 0, 0.00, 0, [6, 6]), ceil = horiz("ceiling", 0, 2.60, 0, [6, 6]);
+  floor.id = "floor_1"; ceil.id = "ceil_1";
+  const wall = vert("wall_1", "wall", [0, 1.34, 2], 0, [4, 2.5]);       // bottom 0.09 — 9 cm short of the floor
+  const before = RS.heightCensus(THREE, [floor, ceil, wall]);
+  assert.ok(Math.abs(before.walls[0].gap - 0.09) < 1e-9, "pre-seal, the wall's 9 cm gap to its floor is visible");
+  RS.sealWalls(THREE, [floor, ceil, wall], 0.15);
+  const after = RS.heightCensus(THREE, [floor, ceil, wall]);
+  assert.ok(Math.abs(after.walls[0].gap) < 1e-9, "post-seal every wall agrees with its floor by construction");
+});
+
+test("explainNoMatch says 'device' only when no plane could plausibly BE this wall", () => {
+  const probe = { pos: new THREE.Vector3(0, 1.2, 0), nyaw: 0, sem: "wall", orient: "vertical", ext: [3, 2.4] };
+  assert.strictEqual(RS.explainNoMatch(THREE, probe, [], {}).why, "device", "nothing detected at all");
+
+  // A wall facing 90° away and 9 m off-plane is a DIFFERENT wall, not a failed match of this one.
+  const otherWall = { id: "r9", pos: new THREE.Vector3(9, 1.2, 0), nyaw: 90 * D2R, sem: "wall",
+                      orient: "vertical", ext: [3, 2.4] };
+  assert.strictEqual(RS.explainNoMatch(THREE, probe, [otherWall], {}).why, "device");
+
+  // But a same-facing plane 9 m along the SAME infinite plane is NOT "device" — it is a real matchWall
+  // rejection on the overlap guard, and calling it a device miss would send you hunting the Quest for a
+  // plane it did emit. This is the case centroid-ranking gets wrong, which is why ranking is plane-relative.
+  const sameplane = { id: "r1", pos: new THREE.Vector3(9, 1.2, 0), nyaw: 0, sem: "wall",
+                      orient: "vertical", ext: [3, 2.4] };
+  const r = RS.explainNoMatch(THREE, probe, [sameplane], {});
+  assert.strictEqual(r.why, "matcher");
+  assert.strictEqual(r.gate, "gap", "coincident + same-facing, rejected on along-line overlap");
+});
+
+test("explainNoMatch names the matchWall gate that rejected a candidate, with its margin", () => {
+  const at = (x, z, yawDeg, ext) => ({ id: "r1", pos: new THREE.Vector3(x, 1.2, z), nyaw: yawDeg * D2R,
+                                       sem: "wall", orient: "vertical", ext: ext || [3, 2.4] });
+  const probe = { pos: new THREE.Vector3(0, 1.2, 0), nyaw: 0, sem: "wall", orient: "vertical", ext: [3, 2.4] };
+  const opts = { perpTol: 0.15, yawTol: 30 * D2R, overlapSlop: 0.3 };
+
+  // Gate 1 — facing. 40° apart, so it fails on yaw before anything else is even considered.
+  const y = RS.explainNoMatch(THREE, probe, [at(0, 0.05, 40)], opts);
+  assert.strictEqual(y.gate, "dyaw");
+  assert.ok(Math.abs(y.val - 40) < 0.05 && y.tol === 30, "reports degrees against the degree tolerance");
+
+  // Gate 2 — the coincident-plane test. The candidate's normal is +Z, so a 0.19 m offset in z is
+  // perpendicular: 4 cm past tolerance, which is the number that would tell you what to set --wall-perp-tol to.
+  const p = RS.explainNoMatch(THREE, probe, [at(0, 0.19, 0)], opts);
+  assert.strictEqual(p.gate, "perp");
+  assert.ok(Math.abs(p.val - 0.19) < 1e-6 && p.tol === 0.15);
+  assert.strictEqual(p.id, "r1", "and names which reference surface it was");
+
+  // Gate 3 — along-line overlap. Same plane, but slid 4 m along it: two colinear-but-separate walls.
+  const g = RS.explainNoMatch(THREE, probe, [at(4, 0, 0)], opts);
+  assert.strictEqual(g.gate, "gap");
+  assert.ok(Math.abs(g.val - 1.0) < 1e-6, "4 m apart less the two half-widths = a 1 m gap");
+
+  // Every gate passes ⇒ it WAS matchable, so it must already have been claimed by another plane this
+  // capture. That is the id-swap shape and gets its own name rather than being reported as unexplained.
+  assert.strictEqual(RS.explainNoMatch(THREE, probe, [at(0, 0.02, 2)], opts).gate, "claimed");
+});
+
+test("explainNoMatch falls back to matchRef's radius for horizontals", () => {
+  const probe = { pos: new THREE.Vector3(0, 0, 0), nyaw: 0, sem: "floor", orient: "horizontal", ext: [4, 4] };
+  const near = { id: "f1", pos: new THREE.Vector3(0.9, 0, 0), nyaw: 0, sem: "floor", orient: "horizontal", ext: [4, 4] };
+  const r = RS.explainNoMatch(THREE, probe, [near], {});
+  assert.strictEqual(r.gate, "dist");
+  assert.ok(Math.abs(r.val - 0.9) < 1e-6 && r.tol === 0.5, "a floor is matched by centroid radius, not by plane");
+});
+
+test("floorUnder attributes a point to the room whose FOOTPRINT covers it, not the nearest floor by height", () => {
+  // The raised-floor case: room B's floor renders 13 cm high, and you rest the controller on the real
+  // floor in room B (y ~ 0). Nearest-by-height would pick room A's floor (0.00, 13 cm closer than 0.13)
+  // and blame the wrong room — the one failure this helper exists to prevent.
+  const a = horiz("floor", 0, 0.00, 0, [4, 4]); a.id = "floor_A";
+  const b = horiz("floor", 8, 0.13, 0, [4, 4]); b.id = "floor_B";
+  const under = RS.floorUnder(THREE, [a, b], 8, 0.5);       // standing in room B
+  assert.strictEqual(under.id, "floor_B");
+  assert.strictEqual(RS.floorUnder(THREE, [a, b], 0, 0.5).id, "floor_A");
+  assert.strictEqual(RS.floorUnder(THREE, [a, b], 40, 0), null, "outside every room ⇒ no attribution");
+});

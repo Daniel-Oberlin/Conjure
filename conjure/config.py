@@ -20,6 +20,12 @@ ROOT = Path(__file__).resolve().parent.parent
 # contents are relocated into the resolved user home. Kept as a constant so the migration can find it.
 PROJECT_CACHE = ROOT / ".cache"
 
+# Control → ACTION bindings for XR interaction. ONE definition: the dataclass default and get_settings()
+# both read this. They used to carry the literal separately, and adding an action to one silently left the
+# other behind — the running server kept serving the old scheme.
+DEFAULT_BINDINGS = ('{"select":"trigger","grab":"grip","resize":"trigger","reel":"right.stickY",'
+                    '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX","mark":"b"}')
+
 # The default logged-in user when none is specified (--user / the /tunnel/<user> route).
 # No security — users are identity only (docs/specs/spaces.md).
 DEFAULT_USER = "daniel"
@@ -318,6 +324,14 @@ class Settings:
     debug_log: bool = True                           # append client diagnostics to temp/conjure.log
     debug_registration: bool = False                 # co-location registration HUD + per-capture log (opt-in)
     debug_jitter: bool = False                        # frame-pacing/jitter probes only (clean cost measurement)
+    # Geometry EVENT log (docs/backlogs/spaces-geometry.md — "Instrumentation"). Always-on and
+    # CHANGE-gated: a settled room emits nothing, so this is affordable to leave on for weeks. Its whole
+    # purpose is that the two field symptoms — a surface dropping out and returning uncoloured, and one
+    # room's floor sitting a few inches high — are noticed DAYS later, by which time a per-capture opt-in
+    # probe like --debug-registration was (correctly) off. Writes temp/geometry-YYYY-MM-DD.jsonl, kept
+    # separate from conjure.log because that file is unrotated and pytest also appends to it.
+    geometry_log: bool = True                        # record surface-churn / height-census events
+    geometry_log_days: int = 21                      # retention: delete rotated files older than this (0 = keep all)
     # Co-location robustness (two-headset GUEST tuning). Injected into the client as window.CONJURE_REG /
     # CONJURE_CAPTURE_MS; they govern how tolerantly a guest registers its own capture against the
     # authority's shared room. See conjure/__main__.py for the terminology + per-knob meaning.
@@ -424,8 +438,12 @@ class Settings:
     #            so one hand can hold an object while the other shapes it. Pitch and bank are
     #            VIEWER-relative (tip away from you / roll as you see it): nothing in a glTF
     #            records which way a model faces, so its own axes can't define them.
-    bindings: str = ('{"select":"trigger","grab":"grip","resize":"trigger","reel":"right.stickY",'
-                     '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX"}')
+    #   mark   — the GEOMETRY MARKER (docs/backlogs/spaces-geometry.md). Press it and the client writes a
+    #            full height census + registration state + the recent churn ring to the geometry log,
+    #            stamped with the CONTROLLER's own height. Resting the controller on the real floor and
+    #            pressing is the only ground truth the system has: nothing else can tell it that the
+    #            rendered floor is four inches above the physical one.
+    bindings: str = DEFAULT_BINDINGS
 
 
 def get_settings() -> Settings:
@@ -457,6 +475,8 @@ def get_settings() -> Settings:
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
         debug_jitter=os.environ.get("CONJURE_DEBUG_JITTER", "").strip().lower() in ("1", "true", "yes", "on"),
+        geometry_log=os.environ.get("CONJURE_GEOMETRY_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
+        geometry_log_days=int(os.environ.get("CONJURE_GEOMETRY_LOG_DAYS", "21") or 21),
         reg_min_cov=int(os.environ.get("CONJURE_REG_MIN_COV", "4")),
         reg_min_cov_frac=float(os.environ.get("CONJURE_REG_MIN_COV_FRAC", "0.3")),
         reg_size_tol=float(os.environ.get("CONJURE_REG_SIZE_TOL", "0.5")),
@@ -488,9 +508,7 @@ def get_settings() -> Settings:
         caption_model=os.environ.get("CONJURE_CAPTION_MODEL", "gemini-2.5-flash"),
         beam_timeout=float(os.environ.get("CONJURE_BEAM_TIMEOUT", "10.0")),
         beam_trigger=float(os.environ.get("CONJURE_BEAM_TRIGGER", "0.05")),
-        bindings=os.environ.get(
-            "CONJURE_BINDINGS", '{"select":"trigger","grab":"grip","resize":"trigger","reel":"right.stickY",'
-            '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX"}'),
+        bindings=os.environ.get("CONJURE_BINDINGS", DEFAULT_BINDINGS),
     )
 
 

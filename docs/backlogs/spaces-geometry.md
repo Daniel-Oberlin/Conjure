@@ -12,6 +12,111 @@ Items are grouped by what they block, roughly most-actionable first.
 
 ## Known problems
 
+### A surface drops out and returns uncoloured
+
+**Status:** open · noticed 2026-08-30, intermittently, since the smoothing work landed
+
+A real surface occasionally vanishes and comes back **without its styling**. The mechanism is fully traced;
+what is *not* known is which of three causes fires.
+
+Three consecutive captures without the surface trip two independent debounces: `_localAbsent` removes the
+DOM element (`conjure-client.js:1528`) and `_absent` drops the id from `_known` (`:2378`) → POST → the
+server emits `{"op": "remove"}` (`server.py:3305`), deleting the seed entity **and its material**.
+`surfaceStyles` is rebuilt from the snapshot's real entities (`:765`), so the colour is gone for good and
+the surface redraws at the default material whenever it returns.
+
+Three different causes produce that identical appearance, and today's log cannot tell them apart:
+
+| Cause | What actually happened | Where the fix would land |
+|---|---|---|
+| **device miss** | the Quest never emitted the plane in `detectedPlanes` for 3+ captures | the debounce count — or nothing, if it's a platform floor |
+| **matcher miss** | the plane *was* detected, but `matchWall` / `matchInset` / `matchRef` rejected its `_ref` entry → a fresh id minted | the identity tolerances (`--wall-perp-tol`, `--wall-yaw-tol`, `--wall-overlap-slop`) |
+| **style orphan** | identity held — `_ref` is never pruned, so `matchWall` re-inherited the *same* id — but the seed entity had already been pruned, so the colour is gone anyway | protect styling from the prune, the way `anchored` protects geometry |
+
+The third is the trap, and the reason this needs instrumenting rather than guessing: it is **not an identity
+bug at all**, and chasing it as one costs a week. `_ref` outliving the seed is deliberate (§6.1 — identity
+resolves against the local constellation, not the lagging seed), so the same id genuinely can come back
+stripped of its styling with the matcher working perfectly.
+
+Instrumented by [the geometry event log](#instrumentation--the-geometry-event-log) below.
+
+**Field status 2026-08-31: not yet reproduced.** Two sessions totalling ~25 minutes, 59 surfaces, produced
+**zero** `churn.*` events — no miss, no mint, no prune, no lost styling. The reference held 59/59 throughout
+(`cov=59/59 inl=59/59`), including across 12 `track.reset` events. So the identity side is quiet and the
+probe is unexercised; nothing is confirmed about which of the three causes fires, because none of them did.
+Worth noting the sessions were short and stationary-ish — the symptom is occasional by report.
+
+### One room's floor sits 4–6 inches high — **diagnosed 2026-08-31: a Quest room-anchor offset**
+
+**Status:** cause established by measurement; **device-side, nothing to fix in our code.** Open only on the
+verification step below.
+
+The bedroom's whole surface group renders **~104 mm above** where it physically is. Not a drift and not
+ours: the Quest's stored room entity for that room is anchored high, and every plane in it rides along.
+
+**The measurement that settles it.** `real_floor_32` (bedroom) and `real_floor_8` (living room) are *the
+same continuous wooden floor*, and `real_ceiling_13` / `real_ceiling_25` are at the same physical height —
+so both differences must be zero, always. Live:
+
+| | live | truth |
+|---|---|---|
+| `floor_32` − `floor_8` | **+104 mm** | 0 |
+| `ceiling_13` − `ceiling_25` | **+103 mm** | 0 |
+
+Floor and ceiling displaced identically, **within 1 mm**. A room moving as a rigid unit.
+
+**Ruled out, each by measurement, each worth not re-proposing:**
+
+| Hypothesis | Killed by |
+|---|---|
+| the tracking frame is warped in y | the controller on one continuous floor across three rooms: 0.047 / 0.032 / 0.046 / 0.038 — **15 mm spread, 1 mm hysteresis** on the bedroom→living→bedroom return. One floor reads as one height. |
+| registration lost its lock | `cov=59/59 inl=59/59`, residuals 7–14 mm max, across both sessions. A flawless lock the whole time. |
+| the floor plane alone re-fit (a rug, a threshold) | the **ceiling** moved by the same 103 mm. Independent per-plane fits do not agree to 1 mm across a floor and a ceiling four metres apart. |
+| our snap chain | already known — `sealWalls` reads floors and writes only walls (`room-snap.js:554`) — and now confirmed in the field. |
+
+**Which room is wrong** is settled by the sign flip in `err` at the boundary: bedroom **+0.042 / +0.045**,
+living room **−0.044**, kitchen **−0.029**. Living room and kitchen sit just below the controller (that is
+the grip bias); only the bedroom sits above it.
+
+**Corroboration.** `wall_81` carries a persistent **106–120 mm gap** above `floor_8` — it is over the living
+room floor but its bottom sits at the *bedroom's* level, the partition wall riding with the displaced group.
+`sealWalls` has been silently stretching it down ~107 mm every capture, which is why no slit was ever
+visible.
+
+**It is stable, not drifting.** Bedroom−living gap across four censuses: 117 → 103 → 103 → 104 mm. Absolute
+heights bob ±25 mm (the whole space breathing) while the offset holds.
+
+**The seed never got corrupted**, and that is the design working: 104 mm is far below the 0.5 m structural
+threshold, so it never round-trips. The stored seed still has the two floors 9 mm apart — correct.
+
+**Still open — the verification.** Re-run Quest Room Setup for the bedroom, re-enter, and press the marker
+in bedroom and living room. `floor_32` − `floor_8` should return to ~0 and `level.anomaly` should stop
+firing at entry. Until that is done the cause is *established* but not *closed*.
+
+**Predicted, unverified:** content renders against local planes, so anything placed on the bedroom floor
+should be floating ~10 cm above it while living-room and kitchen objects sit flat. A visual check that would
+confirm the diagnosis from the other side.
+
+### Ground truth for this space — physical constraints worth keeping
+
+Established 2026-08-31 by the owner, and worth writing down because every future height reading is read
+against it:
+
+- `floor_32` (bedroom) and `floor_8` (living room) are **one continuous wooden floor** — equal, always.
+- `ceiling_13` (bedroom) and `ceiling_25` (living room) are the **same physical height**.
+- `floor_10` (kitchen) is **+25 mm** above the other two; `ceiling_21` (kitchen) is genuinely **sunken**.
+
+Two consequences:
+
+- **The persisted seed has the kitchen floor wrong by ~46 mm** — it stores `floor_10` 21 mm *below* the
+  living room, where physically it is 25 mm *above*. Sign error, small, separate from the bedroom fault, and
+  present in the seed rather than the live capture (live gets it right to 4 mm). Nothing depends on it today.
+- **These constraints would make the anomaly test exact.** `levelDeviation` infers "normal" statistically
+  via the median, which can only ever say *something* moved relative to the rest. If the space record
+  carried a few declared relationships, the same check becomes a flat assertion — *"`floor_32` and `floor_8`
+  are one surface and they are 104 mm apart"* — with no median, no threshold, and no ambiguity about which
+  room is the outlier. Proposed, not built.
+
 ### Walking micro-stutter — a platform limit, not our code
 
 The residual "flick out and back" while walking is **dropped-frame positional reprojection during
@@ -48,12 +153,20 @@ Two candidate attacks, neither attempted:
    wall stability. Raised in-session and deferred because the walls themselves still chase raw noise —
    fixing (1) first makes (2) mostly unnecessary.
 
-### The MARKER probe was never built
+### The MARKER probe — built for geometry, still missing for jitter
 
-Every correlation between what the user *saw* and what the data *recorded* has been inferred from
-counts. The missing tool is a **controller-button marker**: press the instant you see a pop, log
-`MARK t=… lastDt=… lastJerk=… rebuilds=…` plus the recent ring. That gives frame-exact
-perception↔data correspondence. **Build this first if the investigation resumes.**
+Every correlation between what the user *saw* and what the data *recorded* has been inferred from counts.
+The tool that fixes that is a **controller-button marker**: press the instant you see it, and the log gets
+a dated record of what the system believed at that moment.
+
+**Built 2026-08-30 for the geometry side** (`mark` binding, default **B**; see
+[`specs/spaces-geometry.md` §10.3](../specs/spaces-geometry.md)) — it dumps the height census, registration
+state, residual summary and the recent churn ring, stamped with the controller's own height, which for the
+raised floor is the only ground truth that exists.
+
+**Still missing for the jitter campaign**, which needs a different payload: `lastDt`, `lastJerk`, `rebuilds`
+and the frame ring, at frame precision rather than capture precision. The button and the transport are now
+there, so this is a payload, not a new mechanism. Build it if that investigation resumes.
 
 ### GC is not testable on Quest
 
@@ -74,6 +187,87 @@ the knob overrides it at runtime.
 
 The default is a **human visual call** (smoothness vs peripheral sharpness), not a data question: 0.5 is
 meaningfully smoother, 0.3 a balance, 0 sharpest.
+
+---
+
+## Instrumentation — the geometry event log
+
+**Status:** **shipped 2026-08-30; diagnosed the floor fault on its first day in the field, 2026-08-31.**
+The design and event reference live in [`specs/spaces-geometry.md` §10](../specs/spaces-geometry.md) — this
+entry keeps only what is *not* done and what the field changed.
+
+Always-on and change-gated, to `temp/geometry-<date>.jsonl`, rotated daily and pruned past
+`--geometry-log-days` (21). A settled room emits nothing. Both halves shipped together — churn and heights —
+since a device-side map re-fit would produce both symptoms and the value is in reading them on one timeline.
+
+### What it did on day one
+
+- **`level.anomaly` fired unprompted at session entry**, before any button press, naming `real_floor_32`
+  (+83 mm) and `real_ceiling_13` (+77 mm) — the right two surfaces, the right room, with nobody looking for
+  it. That was the whole design bet and it paid immediately.
+- **`dev` was validated against physical reality.** It computed +78 mm for `floor_32`; the controller,
+  measuring the actual floor, independently gave ~78 mm. A statistical inference and a physical measurement
+  agreeing to the millimetre is worth more than either alone.
+- **The marker's characteristics, measured:** grip bias ~3–4 cm, gesture repeatability ~1 cm, and 1 mm
+  hysteresis returning to the same spot after walking two rooms away. Comfortably sharp enough for a 10 cm
+  signal.
+- **The `err` sign flip at a room boundary is the sharpest single reading in the log** — it says which room
+  is wrong, which no internal probe can. Worth reaching for first next time.
+
+### Open — what still has to happen
+
+- **A validity guard on the marker.** One press (07:01:25) read `grip_y = −0.173` where the same floor reads
+  ~0.03 — the controller had drifted on IMU while out of camera view. It was caught only by cross-checking
+  three other sources, which will not always be possible. The tell was in the record: head-to-controller
+  distance was **954 mm** against 655–814 mm on the good presses, and the controller sat *below* the
+  rendered floor. Either reject a press whose grip is implausibly far below the local floor, or log a
+  confidence field, so a bad reading announces itself instead of being argued about.
+- **On-device cost A/B — still not run.** The estimate is sub-0.1 ms on a capture that currently runs ~5 ms,
+  and exactly 0 ms on non-capture frames: every probe is in the capture body (0.5 Hz) or on a transition,
+  events are batched rather than one fetch per line, and the only per-frame addition is a rising-edge check
+  on a pointer list `controller-beams` already builds. **That is an estimate, not a measurement.** Run
+  `--debug-jitter` before and after and hold the spec's baseline (31/33 captures ≤6 ms, no per-capture
+  drop). Until then the number in §10 is a claim.
+- **The churn half is still unexercised.** Zero `churn.*` events across both field sessions, so the
+  device-vs-matcher discriminator has never actually run on a real miss. It is tested but unproven.
+- **A `track.reset` burst nobody has explained.** Twelve between 07:09 and 07:24 on 2026-08-31 — including
+  **three inside one second** at 07:11:09, and pairs at 07:11:47, 07:17:21 and 07:24. Each is a recenter or
+  a guardian re-entry, and each re-registers. Walking between three rooms across a boundary drawn round one
+  of them explains the count but not the same-second triples, which look like a jitter in the event rather
+  than three crossings. Every one is an opportunity for identity churn, so it is worth knowing which it is
+  before the churn half is trusted.
+
+### What the build changed about the plan
+
+- **Wall bottoms do not come from `polyY`.** The plan said to reuse Pass A's `polyY` as a wall's world
+  bottom. Wrong: a WebXR plane's polygon is in the plane's own X-Z frame, so `pt.y` is ~0 for every point —
+  `polyY` is not a height at all. `heightCensus` derives the bottom from `_lp.y − extent[1]/2` instead.
+- **Candidate ranking had to be plane-relative.** The first cut of `explainNoMatch` ranked candidates by
+  centroid distance, which is exactly what `matchWall` refuses to do — a wall's centroid slides metres along
+  the wall between captures, so a wall seen from the other end would have been reported as "the device never
+  emitted it", the most misleading answer available. Caught by a unit test; it now ranks by how far through
+  matchWall's gates each candidate gets.
+- **No separate baseline store was needed.** Registration solves yaw about gravity plus x/z and never
+  touches y, so height *differences* are frame-invariant and the existing seed is a valid baseline directly.
+  The plan assumed a new persisted scalar per space.
+- **`styled: true` would have been constant.** The obvious check — does the pruned entity have a material —
+  is true for every real surface, because `_surface_entity` creates one from `_default_surface_material`.
+  The field would have read `true` on every line and answered nothing at the moment it mattered. It now
+  compares against that per-semantic default (a director edit, not a material) and records the actual
+  colour; the client side reports the colour rather than a boolean for the same reason.
+- **`bindings` had one default in two places.** Adding the `mark` action to the dataclass left
+  `get_settings()` serving the old scheme; the literal is now a single `DEFAULT_BINDINGS` constant.
+  Caught only by curling the running server — no test covered the injected value.
+- **Tests write to their own log dir.** `conftest` now points `GEO_LOG_DIR` at `tmp_path` — `conjure.log`
+  already suffers from a test run appending to the live dev log, and it would be worse here.
+
+### Not done, deliberately
+
+- **No per-frame plane re-pose.** That is [Pose smoothing Phase 2](#pose-smoothing-phase-2--per-frame-target-refresh),
+  a different problem with its own trade-off.
+- **No heap sampling** — dead on Oculus Browser, see [GC is not testable on Quest](#gc-is-not-testable-on-quest).
+- **`--debug-registration` was not made the default.** ~6 fetches per capture; it would perturb what it
+  measures, which is the mistake the jitter campaign already paid for once.
 
 ---
 
