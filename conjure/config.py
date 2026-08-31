@@ -336,7 +336,7 @@ class Settings:
     # place we knowingly render something other than the raw capture, so it ships OFF and the value is the
     # minimum displacement (m) that counts as definite. Detection needs the room's floor AND ceiling to have
     # drifted from the seed by the same amount — a rigid room, not a noisy plane fit.
-    fix_floating_rooms: float = 0.0                  # 0 = off; 0.06 is a sane starting value
+    fix_floating_rooms: float = 0.0                  # 0 = off; 0.04 is the field-tested value
     geometry_log: bool = True                        # record surface-churn / height-census events
     geometry_log_days: int = 21                      # retention: delete rotated files older than this (0 = keep all)
     # Co-location robustness (two-headset GUEST tuning). Injected into the client as window.CONJURE_REG /

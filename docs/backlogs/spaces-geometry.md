@@ -220,6 +220,16 @@ remove), and `real_floor_10` is stored 21 mm *below* the living-room floor where
 
 ### Open — what still has to happen
 
+- **The correction has now run clean once, and that is all.** With the seed repaired and spatial membership
+  in, the bedroom reads coherent at 12 mm and corrects by ~91 mm, and it looked right in the headset
+  (2026-08-31). That is a single confirming observation, not a soak — the fault's own headline is that it
+  "goes back and forth every few days", so the thing worth watching is whether the correction still fires,
+  and still fires correctly, the next time the room's displacement changes size.
+- **Two seed heights are still wrong**, both pre-existing rather than from the write-gate fault:
+  `real_floor_32` and `real_floor_8` are stored 9 mm apart though they are one continuous floor (this is the
+  12 mm residual the correction cannot remove), and `real_floor_10` is stored 21 mm *below* the living-room
+  floor where it is physically 25 mm *above* — a ~46 mm sign error. Both want the same ground-truth
+  treatment `real_ceiling_13` got.
 - **A validity guard on the marker.** One press (07:01:25) read `grip_y = −0.173` where the same floor reads
   ~0.03 — the controller had drifted on IMU while out of camera view. It was caught only by cross-checking
   three other sources, which will not always be possible. The tell was in the record: head-to-controller

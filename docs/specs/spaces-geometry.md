@@ -693,6 +693,12 @@ consecutive captures with no detection, matching the surface-removal debounce.
 Measured on the reference capture: two surfaces known to be one continuous physical floor closed from
 **104 mm apart to 12 mm**. The residual is the seed's own error, which no correction can see.
 
+**Choosing the threshold.** It is a trigger, not a gain — the correction applied is the same anywhere in the
+working range. Too low and a second room becomes a candidate, so the detector refuses (you notice: nothing
+happens). Too high and it silently stops seeing a smaller recurrence, which is the failure that bites later.
+On the reference space the innocent rooms sit at ~20 mm and the fault at ~70 mm, so **0.04** sits mid-gap;
+0.06 leaves only 10 mm of headroom and would miss the fault if it returned smaller.
+
 ## 11. Knobs
 
 | Knob | Default | Purpose |
@@ -711,7 +717,7 @@ Measured on the reference capture: two surfaces known to be one continuous physi
 | `--foveation` | 0 | GPU headroom; raising it cut the dropped-frame rate monotonically |
 | `--debug-registration` | off | registration/residual logging |
 | `--debug-jitter` | off | frame-pacing probes (kept decoupled so heavy logging cannot contaminate timings) |
-| `--fix-floating-rooms` | 0 (off) | min displacement (m) to correct a rigidly-displaced room (§10.4); try 0.06 |
+| `--fix-floating-rooms` | 0 (off) | min displacement (m) to correct a rigidly-displaced room (§10.4); **0.04** in the field |
 | `--no-geometry-log` | — | disable the always-on, change-gated geometry event log (§10) |
 | `--geometry-log-days` | 21 | retention for the rotated `temp/geometry-<date>.jsonl`; 0 keeps all |
 

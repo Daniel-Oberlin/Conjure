@@ -32,7 +32,9 @@ def main() -> None:
                  "plane fit cannot fake — and no other room has, that room is lowered back onto the rest of "
                  "the space for RENDERING only (never posted; the seed stays the reference that detects it). "
                  "The value is the minimum displacement in metres that counts as definite; 0 (default) "
-                 "disables. Try 0.06. Fires only with exactly one candidate room and at least one coherent "
+                 "disables. 0.04 is the field-tested value: it must sit above the innocent rooms' spread and "
+                 "below the fault, and too high fails SILENTLY on a smaller recurrence. Fires only with "
+                 "exactly one candidate room and at least one coherent "
                  "reference room, so an ambiguous space is left alone.")
     ap.add_argument("--fix-floating-rooms", type=float, default=0.0, metavar="METERS", help=gate_note)
     ap.add_argument("--geometry-log-days", type=int, default=21, metavar="DAYS",
