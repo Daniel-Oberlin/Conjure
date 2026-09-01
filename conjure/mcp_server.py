@@ -496,6 +496,29 @@ async def style_edges(color: Optional[str] = None, opacity: Optional[float] = No
 
 
 @mcp.tool()
+async def reset_world_frame(what: str = "all") -> str:
+    """Undo the user's manual skybox / world adjustments, putting everything back where the system derives
+    it. Use when they say the sky is turned the wrong way, the world has drifted or been dragged off, they
+    want the skybox back to normal size, or 'put the world back'.
+
+    These adjustments come from the `grab` module's skybox and void modes (the user drags the floor to turn
+    or scale the sky, or to slide a whole outdoor world). Nothing else is affected — placed objects keep
+    their own positions.
+
+    what: 'sky' (skybox orientation + size), 'frame' (a void/outdoor world's orientation + position),
+    or 'all' (both, the default).
+    """
+    if what not in ("sky", "frame", "all"):
+        return f"Unknown target {what!r}. Use sky, frame, or all."
+    out = await _post("/world_frame", {"reset": what})
+    if not out.get("ok"):
+        return f"Couldn't reset: {_reason(out)}."
+    label = {"sky": "The skybox is", "frame": "The world's orientation and position are",
+             "all": "The skybox and the world frame are"}[what]
+    return f"{label} back to normal."
+
+
+@mcp.tool()
 async def add_entity(
     shape: str,
     color: str = "white",

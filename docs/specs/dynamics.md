@@ -120,7 +120,7 @@ change, no restart (`_dynamics_registry()` reloads per request).
   "default_pos": [0.0, 1.4, -1.2], // where it centres when no position is given (metres)
   "actions": ["select"],           // XR actions it consumes (§6) — informational today
   "description": "One line — feeds the director catalog (dynamics://available).",
-  "config_schema": {               // the LLM-facing params: {type, default, desc}
+  "config_schema": {               // the LLM-facing params: {type, default, desc, enum?}
     "damping": { "type": "number", "default": 0.996, "desc": "→1 = long-lived ripples" }
   }
 }
@@ -137,7 +137,7 @@ change, no restart (`_dynamics_registry()` reloads per request).
 | `default_pos` | no (`[0, 1.3, -1.5]`) | — | used when the caller passes no `position` |
 | `actions` | no (`[]`) | **no** | see the note below |
 | `description` | no (`""`) | — | one line, rendered into the director catalog |
-| `config_schema` | no (`{}`) | — | `{param: {type, default, desc}}` |
+| `config_schema` | no (`{}`) | `enum` only | `{param: {type, default, desc, enum?}}` |
 
 Notes:
 
@@ -145,6 +145,12 @@ Notes:
   `name — description; params: k(default), …` (`DynamicModuleDef.catalog_line`). The **authoritative**
   defaults and types still live in the component's own A-Frame `schema` client-side; keep the two
   consistent. A param with no `default` (e.g. `image`) is shown bare.
+
+  A param may declare **`enum`**, and then the choices are rendered in its place
+  (`mode(object|skybox|void)`) and **`/module` refuses any value outside them**, naming the valid ones in
+  the error so a caller can correct itself on the next call. Use it for any param with a fixed vocabulary:
+  prose in `desc` is not sufficient on its own, because an unvalidated enum makes a caller's wrong guess
+  indistinguishable from success. `type` and numeric range are **not** yet enforced (see the backlog).
 - **`actions`** declares which semantic XR actions the module consumes, in the same declarative spirit as
   `config_schema`. It is parsed into `DynamicModuleDef.actions` (`dynamics.py:152`) and **nothing reads it
   yet** — it is not validated against known action names, not in the catalog, and never reaches the
@@ -190,6 +196,7 @@ registration and no-op when A-Frame is absent:
 | `window.ConjureBus` | the cross-client event bus (§6) |
 | `window.ConjurePointers` | the XR input reader + action bindings + pointer arbitration (§6) |
 | `window.ConjureFrames` | frame conversion for tier-C commits (§8) |
+| `window.ConjureWorldFrame` | the derived-frame deltas — skybox pose/scale and a void world's parking (§8b) |
 | placement + facing | the server positions the entity before the component runs (§7) |
 
 ### Required
@@ -463,6 +470,171 @@ because you must see them as you drag; a server-commit snap would hop after rele
 
 ---
 
+## 8b. Tier-C modes: adjusting a derived frame
+
+`grab` has three **modes**. `object` is §8 above and the default. `skybox` and `void` adjust things with no
+entity to grab: the skybox's relative orientation and scale, and a void world's content orientation and
+horizontal position.
+
+### Why these cannot commit a transform
+
+Object mode has no competitor — nothing else writes a placed entity's transform. Both new targets are
+**rewritten from the derived frame on every capture**:
+
+| Target | Written by | Derived from |
+|---|---|---|
+| skybox pose | `_pinSky` | `_Tmat⁻¹` — registration in a room, `canonicalFrame` in a void world |
+| `#world-root` parking (void) | `_updateWorldFrame` | the same, inverted |
+
+A gesture that wrote either transform would be erased within about two seconds. So what persists is a
+**delta the writer composes**, never a pose. This is the whole shape of the feature; the gesture is the
+cheap half.
+
+All four deltas live under **`environment.frame`** and are reached through `POST /world_frame` (owner-gated).
+The request groups them as `sky` and `frame` because that reads naturally and matches the mode names;
+storage keeps them together:
+
+| Stored path | Request | Meaning | Range |
+|---|---|---|---|
+| `frame.skyYaw` | `sky.yaw` | degrees about gravity, turning the panorama relative to its world | unbounded (mod 360) |
+| `frame.skyScale` | `sky.scale` | uniform factor on the live sky | clamped client-side by effective metres |
+| `frame.yaw` | `frame.yaw` | degrees about gravity — moves the world **and its sky**, void only | unbounded |
+| `frame.offset` | `frame.offset` | `[x, z]` metres, void only — **never y** | unbounded, by decision |
+
+**Nothing is stored under `environment.sky`, and every write uses a dotted path.** Both rules are scar
+tissue from the same afternoon. Writing a whole `sky` object erased `sky.src` — turning the sky one degree
+threw the image away. Dotted paths fixed the document, but the *broadcast* patch still carried
+`{sky: {yaw, scale}}`, and `applyEnv` reads an `env.sky` object as a complete description of the sky, so no
+`src` meant no panorama and it tore the dome down on release.
+
+`applyEnv` was right. Sharing the key was the mistake: every reader of `sky` would have had to know it might
+be a fragment. The panorama and the user's adjustment are different kinds of thing, so they are different
+keys — which makes the invariant structural rather than a rule anyone has to remember.
+
+`window.ConjureWorldFrame` is the client surface. `setSky`/`setFrame` are local-only and mutate the very
+fields that get persisted, so a preview cannot disagree with its commit; `commit` POSTs on release, and
+`applyEnv` folds the echo back into the same fields — idempotent, so no pop.
+
+### The gestures
+
+Both modes grab the **floor**, which is what lets them reuse the grounded-object drag rather than needing a
+new pick target. For a grounded skybox the floor genuinely *is* the dome's lower projection, so dragging a
+ground point outward stretches the dome. Engaging requires pointing downward (`dir.y < 0`), so aiming at the
+sky does nothing.
+
+- **`skybox`** — the floor drag decomposed in **polar** coordinates about the sky's centre: radial → scale,
+  tangential → yaw, a diagonal does both. Measured absolutely from the grab, so the grabbed point tracks
+  the hand exactly and a long gesture cannot drift — safe because neither the floor plane nor the sky's
+  centre moves when yaw or scale changes.
+- **`void`** — a plain horizontal slide of `#world-root`, so all content *and* avatars move together, which
+  is what keeps co-presence intact. Accumulated rather than absolute, because stick yaw and drag mix.
+- **`yaw` on the stick**, same control and sign as object mode — but **with no grip required**. There is no
+  object to be holding, and demanding a grip on the floor first is a step with nothing behind it. Applied
+  once per tick rather than per pointer, because a hand-qualified binding like `right.stickX` resolves
+  globally (§6), so every pointer reports the same value and a per-pointer loop would double it. A stick has
+  no release event, so the commit fires when it returns to neutral.
+
+**A void world's sky moves with its content.** `frame.yaw`/`frame.offset` are applied by `_pinSky` as well as
+`_updateWorldFrame`, so turning or sliding a world carries its backdrop along — they are one frame, which is
+the whole point of pinning the sky to it. `skyYaw` is then an *additional* turn of the panorama relative to
+that world, which is what skybox mode adjusts.
+
+Scale is inherently multiplicative (`r_now / r_grab`), which is what makes a 500 m plain-sky radius
+reachable at all — an additive `reel` at 1.5 m/s would take 5½ minutes to walk it down. `reel` is unused in
+both modes.
+
+**Sensitivity is deliberately non-uniform.** Tangential yaw is ill-conditioned near the centre: a 0.2 m hand
+movement at 0.2 m radius is ~45° of yaw and ~2° at 5 m. A minimum engage radius was considered and rejected
+— you learn a turntable's feel faster than a rule about where you may touch it, and grab-far-for-fine is
+self-teaching. What *is* required is an epsilon floor on the grab radius **for the arithmetic only**:
+`r_now/r_grab` at zero is `Infinity`, and a non-finite value reaching a transform blanks that branch of the
+scene graph and stays blanked.
+
+`WM.yawAboutPivot` and `WM.polarDrag` hold the planar maths, extracted to `world-model.js` so they can be
+unit-tested — XR interaction cannot be, and these two identities are exactly where a sign error hides.
+
+### Modes are hybrid
+
+A hit on an object still grabs the object in **any** mode, so object nudging stays available while
+positioning a world; anything else engages the mode's target. Focus uses the same `_pick` → `_boxPick` stack
+everywhere — only `_softHandle` is object-only, since it exists to reach corner handles and those are not
+drawn elsewhere.
+
+The **box is drawn in every mode**; the corner handles only in object mode, where resize is reachable. The
+box was briefly suppressed outside object mode as noise, which missed that it is not decoration but the
+focus *region*: without it you must strike the mesh triangles exactly, and a model a few metres away is a
+small target — objects went from easy to effectively unmovable.
+
+Gripping empty space is safe here in a way it would not be as default behaviour: pointing at nothing is a
+controller's resting state, so this only ever fires inside a mode the user deliberately entered and that is
+named on screen.
+
+### What is blocked in a captured room
+
+Only skybox **yaw** works there. Scale would shrink the sky's opaque sphere — which `applyImmersion` keeps
+visible precisely to occlude passthrough — until it intersects the real walls; because it writes depth, that
+reads as a hard edge slicing across the room. Void mode is meaningless there at all: local-first forces
+`#world-root` to identity, so a move is reverted at the next capture and desynchronises content from the
+real walls in between. The radial term simply goes inert, so the same gesture still yaws.
+
+### The sky is pinned in position, not only rotation
+
+`_pinSky` sets position as well as quaternion (horizontal only — `y` is forced to 0, because a grounded
+dome's projected ground lands at the entity's `y`). Before this the sky was the one thing in the scene not
+anchored to the space: content was parked on the frame while the sky sat at the raw refSpace origin. Two
+faults followed — across sessions a dome's ground centre returned to a different physical spot than content
+did, and a Meta-button recenter (the refSpace `reset` listener) slid the sky's centre out from under content
+that stayed put. Pinning position fixes both and gives the radial drag one unambiguous centre.
+
+**Grounded scale needs no geometry rebuild.** Scaling every vertex by *k* yields sphere radius `k·radius` and
+threshold `y1' = k·y1` while the warp factor `f = −height/tmp.y` is unchanged, so a uniform `object3D` scale
+is *precisely* a rebuild at `(k·height, k·radius)`. A rebuild would be ~33k vertices per drag frame.
+
+**`height` is where the horizon sits, not how tall the dome is.** Every vertex below `y1 = −1.5h` lands at
+local `y = −h`, which `mesh.position.y = h` puts at world 0 — while the equator stays at local 0, i.e. world
+`h`. So `height` is the panorama's implied capture height, and the dome's **apex is at `height + radius`**.
+The indicator therefore reports **radius** as the size (plus the horizon height when grounded): calling a
+dome with a 3.95 m ceiling "0.2 m" read as a broken gesture when only the label was wrong. The scale bounds
+are on radius too, so a value at the limit reads as being at the limit.
+
+**The grounded dome writes depth**, so content outside it is hidden behind it. It was `depthWrite: false` —
+defensible while radius was fixed at 30 m and everything was inside — but once radius became a live control
+you can shrink the dome around you, and objects left outside drew straight through it. A backdrop at
+infinity is a special case of correct depth, not a substitute for it. `polygonOffset` biases the dome back in
+depth rather than moving its ground, because the projected ground sits at world `y = 0` exactly where
+floor-standing content rests, and coplanar surfaces z-fight.
+
+**A plain sky's scale is a clipping control, not a size control.** From the centre of the sphere the view is
+identical at any radius — the texture subtends the same angles. What changes is occlusion (content beyond
+the radius hides behind the sky) and parallax (at 500 m, walking 2 m shifts the image 0.4%; at 5 m, ~40%,
+and the panorama swims). The metres readout is the only feedback it has.
+
+### Switching modes, and the indicator
+
+Modes are set by **voice or CLI, never a button**. `/module` on a singleton reuses and reconfigures its one
+live instance, so `conjure_module(module="grab", config={"mode": "skybox"})` reconfigures the running
+component — no new endpoint, no binding spent. Modes **persist until changed**; these are rare, deliberate,
+setup-time acts, so voice latency is right where a constantly-toggled control would not be.
+
+Outside object mode a head-locked indicator is **always on** (`#grab-hud`, same `overlay` pattern as
+`#coloc-hud`), reporting the mode, the yaw, and the effective size in metres. In object mode it is absent,
+so normal use gains no clutter.
+
+This is a safety mechanism rather than decoration. The director sometimes reports success without calling
+the tool, and here that failure is silent and expensive — you would grip expecting to turn the sky and
+instead fling a chair across the room. **The indicator appearing is the confirmation the tool fired**,
+available before you touch anything.
+
+### Reset
+
+`reset_world_frame` (voice) and `conjure-ctl world-frame --reset` clear the deltas so the derived frame
+stands alone — `sky` (`skyYaw`/`skyScale`), `frame` (`yaw`/`offset`), or `all`. This is the **only** recovery path, by design: with no minimum engage radius one twitch near
+the centre can apply a large yaw, a symmetric panorama gives no way to tell yaw 0 from yaw 180 by eye, and
+an unbounded void offset can put the world — including the floor point you would need to grab to drag it
+back — out of reach.
+
+---
+
 ## 9. Discovery, scoping, and conjuring
 
 Modules are **scoped to an agent**. An agent declares what it may conjure in `agent.json`:
@@ -549,7 +721,8 @@ follow the viewer. `remove` disposes render targets, geometry, materials, and un
 ### `grab` — tier C
 
 A singleton, `anchor: "ambient"` module that repositions, rotates, and resizes **other** placed objects.
-Fully described in §8.
+Fully described in §8. Its `mode` config switches it to adjusting the skybox or a whole void world instead
+(§8b) — the only module that writes `environment` rather than an entity.
 
 ### Not a module: `controller-beams`
 

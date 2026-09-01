@@ -33,8 +33,21 @@
     }
     pos.needsUpdate = true;
 
-    var mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: map, depthWrite: false }));
-    mesh.renderOrder = -1;     // draw as a backdrop, behind scene content
+    // The dome WRITES DEPTH, so content outside it is properly hidden behind it.
+    //
+    // This was `depthWrite: false` — a reasonable "it's a backdrop, it can never occlude" while the radius
+    // was fixed at 30 m and everything was inside it anyway. Once `grab`'s skybox mode made radius a live
+    // control you can shrink the dome down around you, and objects left outside kept drawing straight
+    // through it (2026-09-01). A backdrop at infinity is a special case of correct depth, not a substitute
+    // for it.
+    //
+    // polygonOffset rather than moving the ground: the projected ground lands at world y = 0, exactly where
+    // floor-standing content rests, and coplanar surfaces z-fight. This biases the dome's fragments back in
+    // depth only — no geometry change, and it covers any other near-coincident surface too (a real floor
+    // under passthrough, say).
+    var mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+      map: map, depthWrite: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }));
+    mesh.renderOrder = -1;     // still drawn FIRST — fills depth cheaply before content tests against it
     return mesh;
   }
 

@@ -3,6 +3,16 @@
 // A singleton, ambient module that lets you reposition/rotate/resize OTHER placed objects with the
 // controllers. It's the first module that reads + writes scene entities beyond its own node.
 //
+// THREE MODES, set by config (voice/CLI, never a button — see §8b). `object` is everything described below
+// and the default. `skybox` and `void` adjust things that have no entity to grab, so they grab the FLOOR
+// instead and reuse the grounded-object drag:
+//   • `skybox` → the floor drag decomposed in POLAR coordinates about the sky's centre: radial = scale,
+//                tangential = yaw, a diagonal does both. Plus `yaw` on the stick, as in object mode.
+//   • `void`   → a plain horizontal slide of #world-root, so ALL content (and avatars) moves together.
+//                Plus `yaw` on the stick, pivoting about the viewer.
+// Neither commits a transform: both write a DELTA that the client's per-capture frame writers compose, or it
+// would be erased within about two seconds. See the `_beginFrame` block for the full reasoning.
+//
 // Controls are ACTIONS, never buttons: this module asks ConjurePointers whether `grab` / `resize` / `reel`
 // are engaged, and the control→action map is config (window.CONJURE_BINDINGS). With the defaults:
 //   • hover (pointer visible) → an oriented highlight box + corner handles on the pointed-at object
@@ -44,6 +54,13 @@
   var SCALE_DEAD = 0.02;                       // corner drag (m) ignored before a resize starts
   var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
   var ONE = null;   // set once AFRAME.THREE exists
+  // Arithmetic floor on the grab radius in the skybox mode's polar drag (metres). NOT an engage minimum —
+  // a minimum engage radius was considered and rejected (you learn the feel of a turntable faster than you
+  // learn a rule about where you may touch it), so sensitivity is deliberately non-uniform: grab far out for
+  // fine control, near the centre for coarse. This exists only so the arithmetic stays finite. `r_now/r_grab`
+  // at r_grab ≈ 0 is Infinity, and this file already carries two hard-won notes (_nearest, _boxPick) about a
+  // non-finite value entering an accumulator and pinning it there permanently. Same hazard, same guard.
+  var R_EPS = 0.05;
 
   // Diagnostics → console + the world server's /client_log (same temp/conjure.log as [water]/[room]), gated
   // by CONJURE_DEBUG_LOG. XR interaction can't be unit-tested, so on-device tracing is the only way to see
@@ -61,7 +78,8 @@
 
   AFRAME.registerComponent("grab", {
     schema: { reelSpeed: { type: "number", default: 1.5 },
-              rotateSpeed: { type: "number", default: 90 } },   // deg/sec at full deflection
+              rotateSpeed: { type: "number", default: 90 },     // deg/sec at full deflection
+              mode: { type: "string", default: "object" } },    // object | skybox | void — see §8b
 
     init: function () {
       var THREE = AFRAME.THREE; ONE = new THREE.Vector3(1, 1, 1);
@@ -70,7 +88,58 @@
       this._hud = { el: null, group: null, handles: [] };
       this._hinted = 0;
       this._seen = {};                       // one-shot diagnostic latches (see _once)
-      glog("init — owner=" + amOwner() + " (point at an object and squeeze GRIP to move it)");
+      this._modeHudTxt = null;               // last text written to the mode indicator (write-gated)
+      this._stickDirty = null;               // mode whose standalone stick yaw is awaiting a commit
+      glog("init — owner=" + amOwner() + " mode=" + this._mode()
+        + " (point at an object and squeeze GRIP to move it)");
+    },
+
+    // A mode switch arrives as a CONFIG update: /module on a singleton reuses and reconfigures its one live
+    // instance, so the director's `conjure_module(module="grab", config={mode:"skybox"})` lands here rather
+    // than building a second entity. Any gesture in flight is abandoned — committing it under the new mode's
+    // rules would be wrong, and the pointer must go back or the next mode cannot claim it.
+    update: function (old) {
+      if (!old || old.mode === this.data.mode) return;
+      var CP = window.ConjurePointers;
+      var self = this;
+      Object.keys(this._ctrl).forEach(function (key) {
+        var st = self._ctrl[key];
+        if (st.mode !== "idle" && CP) CP.release(key, "grab");
+        self._ctrl[key] = { mode: "idle", target: null };
+      });
+      this._clearHud();
+      this._modeHudTxt = null;
+      // A pending standalone stick yaw belongs to the mode that produced it; commit it before switching
+      // rather than dropping the turn the user already saw happen.
+      if (this._stickDirty && window.ConjureWorldFrame) {
+        window.ConjureWorldFrame.commit(this._stickDirty === "void" ? "frame" : "sky");
+        this._stickDirty = null;
+      }
+      // Log the RAW requested value beside the resolved one. Printing only the resolved mode actively hid a
+      // real failure: a switch to the invalid "sky" logged as "→ object", which reads like a switch BACK to
+      // object rather than a rejected value (2026-09-01).
+      glog("mode " + (old.mode || "object") + " → " + this._mode()
+        + (this._badMode() ? " (REJECTED raw value " + JSON.stringify(this.data.mode) + ")" : ""));
+    },
+
+    // The active mode. An unrecognised string resolves to `object` — but see _badMode: it must not do so
+    // SILENTLY, which is the whole lesson of 2026-09-01.
+    _mode: function () {
+      var m = (this.data.mode || "object").toLowerCase();
+      return (m === "skybox" || m === "void") ? m : "object";
+    },
+
+    // The raw config value if it was asked for and we could not honour it, else "".
+    //
+    // /module now rejects an out-of-enum value at conjure time, so this should be unreachable in practice.
+    // It stays as the last line of defence because the failure it guards is the expensive kind: the caller
+    // is told the mode changed, says so out loud, and the headset silently behaves as though nothing was
+    // asked. Degrading quietly to `object` is the wrong default for a mode nobody can see.
+    _badMode: function () {
+      var raw = this.data.mode;
+      if (!raw) return "";
+      var m = String(raw).toLowerCase();
+      return (m === "object" || m === "skybox" || m === "void") ? "" : String(raw);
     },
 
     // Log `msg` the FIRST time this `key` fires — a per-frame trace would flood the log.
@@ -218,8 +287,13 @@
       return box.isEmpty() ? null : box;
     },
 
-    _setHud: function (el) {
-      if (this._hud.el === el) return;
+    // `handles` draws the eight corner spheres. Outside object mode they're omitted — resize is unreachable
+    // there (it needs a handle to grab), so drawing them would advertise a control that does nothing. The
+    // BOX is still drawn in every mode: it tells you what a grip would take, and it is also the focus region
+    // (see the _boxPick note in tick).
+    _setHud: function (el, withHandles) {
+      withHandles = withHandles !== false;
+      if (this._hud.el === el && this._hud.withHandles === withHandles) return;
       this._clearHud();
       if (!el || !el.object3D) return;
       var THREE = AFRAME.THREE, box = this._boxFor(el);   // same box focus is tested against
@@ -255,16 +329,20 @@
       var cap = dims.length ? Math.min.apply(null, dims) * 0.25 : Infinity;
       var r = Math.min(HANDLE_R / s, cap);
       var xs = [box.min.x, box.max.x], ys = [box.min.y, box.max.y], zs = [box.min.z, box.max.z];
-      for (var a = 0; a < 2; a++) for (var b = 0; b < 2; b++) for (var c = 0; c < 2; c++) {
-        var h = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 8), hmat);
-        h.position.set(xs[a], ys[b], zs[c]);
-        h.renderOrder = 999;
-        h.userData.grabHud = true;            // never measured as part of the object (see _localBox)
-        group.add(h); handles.push(h);
+      if (withHandles) {
+        for (var a = 0; a < 2; a++) for (var b = 0; b < 2; b++) for (var c = 0; c < 2; c++) {
+          var h = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 8), hmat);
+          h.position.set(xs[a], ys[b], zs[c]);
+          h.renderOrder = 999;
+          h.userData.grabHud = true;          // never measured as part of the object (see _localBox)
+          group.add(h); handles.push(h);
+        }
+      } else {
+        hmat.dispose();                       // no handles drawn → nothing will ever reference this material
       }
       helper.renderOrder = 999;
       el.object3D.add(group);                 // child of the target → oriented + scaled with it
-      this._hud = { el: el, group: group, handles: handles };
+      this._hud = { el: el, group: group, handles: handles, withHandles: withHandles };
     },
 
     _clearHud: function () {
@@ -497,6 +575,201 @@
       }
     },
 
+    // ---- frame gestures: skybox + void modes (docs/specs/dynamics.md §8b) -------------------------
+    // Both modes grab the FLOOR rather than a scene object, which is what lets them reuse the grounded-object
+    // drag above instead of needing a new pick target. For a grounded skybox the floor genuinely IS the
+    // dome's lower projection, so dragging a ground point outward stretches the dome — the gesture is
+    // physically honest. For a plain sky it is an implied plane, the same maths.
+    //
+    // Neither mode writes a transform. `_pinSky` and `_updateWorldFrame` rewrite the skybox pose and a void
+    // world's #world-root parking from the derived frame on EVERY capture, so a direct write would be gone
+    // within about two seconds. What we mutate is the DELTA those writers compose, via ConjureWorldFrame —
+    // the same fields that get persisted, so the preview cannot disagree with the commit.
+
+    // Where the beam meets the floor, or null. Requires pointing DOWNWARD (dir.y < 0): the same guard the
+    // grounded-object branch uses, and it means aiming at the sky engages nothing.
+    _floorPoint: function (origin, dir) {
+      var WF = window.ConjureWorldFrame;
+      if (!WF) return null;
+      if (dir.y > -1e-5) return null;                     // parallel or upward → never meets the floor
+      var y = WF.floorY(), t = (y - origin.y) / dir.y;
+      if (!(t > 0) || !isFinite(t)) return null;
+      var p = origin.clone().add(dir.clone().multiplyScalar(t));
+      p.y = y;
+      return p;
+    },
+
+    _beginFrame: function (st, origin, dir, mode) {
+      var WF = window.ConjureWorldFrame;
+      var f = this._floorPoint(origin, dir);
+      if (!f) return false;
+      if (mode === "void" && !WF.isVoid()) {
+        this._once("novoid", "refusing void mode — this world has a captured room, where #world-root is "
+          + "forced to identity (local-first) and any move is reverted at the next capture");
+        return false;
+      }
+      st.mode = "frame"; st.fmode = mode; st.stickYaw = 0;
+      if (mode === "skybox") {
+        var sky = WF.sky();
+        // Polar about the sky's CENTRE, projected to the floor. The centre is now pinned to the frame origin
+        // (_pinSky), so it is the same physical point every visit and survives a recenter — without that this
+        // measurement would drift with wherever `local-floor` happened to land.
+        st.centre = [sky.centre.x, sky.centre.z];
+        st.grab = [f.x, f.z];
+        st.scale0 = sky.scale; st.yaw0 = sky.yaw;
+        // Scale is blocked in a captured room: shrinking the sky's opaque sphere — which applyImmersion keeps
+        // visible precisely to occlude passthrough — walks it into the real walls, and because it writes
+        // depth that reads as a hard edge slicing across the room. The radial term simply goes inert, so the
+        // same gesture still yaws rather than becoming a special case.
+        st.canScale = WF.isVoid();
+      } else {
+        var fr = WF.frame();
+        // Accumulated in place (st.yaw/st.off), not derived from a start value, because yawAboutPivot folds a
+        // translation into the offset on every stick nudge — the two terms are not separable after the fact.
+        st.yaw = fr.yaw; st.off = fr.offset.slice(); st.fPrev = f.clone();
+      }
+      return true;
+    },
+
+    _updateFrame: function (st, origin, dir, p, dt) {
+      var WF = window.ConjureWorldFrame, WM = window.WorldModel;
+      var f = this._floorPoint(origin, dir);
+      var rate = (this.data.rotateSpeed || 90) * (dt / 1000);          // degrees this frame at full stick
+      var sv = p.value("yaw");
+      var stick = Math.abs(sv) < STICK_DEAD ? 0 : -sv * rate;          // push right → clockwise from above
+
+      if (st.fmode === "skybox") {
+        // Drag is measured ABSOLUTELY from the grab, not accumulated: the grabbed point tracks the hand
+        // exactly, and there is no drift over a long gesture. Safe because neither the floor plane nor the
+        // sky's centre moves when we change yaw or scale, so there is no feedback loop. Stick yaw is the one
+        // accumulated term, since it has no absolute reference to be measured from.
+        //
+        // Recomputing scale from st.scale0 each frame also means a clamp inside setSky cannot accumulate:
+        // drag past the limit and back, and you come back to where you were rather than to the limit.
+        st.stickYaw = (st.stickYaw || 0) + stick;
+        var yaw = st.yaw0 + st.stickYaw, scale = st.scale0;
+        if (f) {
+          var d = WM.polarDrag(st.centre, st.grab, [f.x, f.z], R_EPS);
+          yaw += d.dYaw;
+          if (st.canScale) scale = st.scale0 * d.scale;
+        }
+        WF.setSky({ yaw: yaw, scale: scale });
+        return;
+      }
+      // Void: a rigid horizontal transform. Accumulated rather than absolute because stick yaw and drag mix
+      // — a rotation about the viewer contributes its own translation term, so the two cannot be composed
+      // independently from the gesture start.
+      if (f) {
+        st.off[0] += f.x - st.fPrev.x; st.off[1] += f.z - st.fPrev.z;
+        st.fPrev.copy(f);
+      }
+      if (stick) {
+        // Yaw about the VIEWER, so stick and drag stay independent instead of every nudge swinging you
+        // through an arc you then have to drag back out. WM.yawAboutPivot resolves the pivot into the offset
+        // (see there for why a stored pivot would make content drift as you walked).
+        var cam = this.el.sceneEl && this.el.sceneEl.camera;
+        var v = cam ? cam.getWorldPosition(new AFRAME.THREE.Vector3()) : new AFRAME.THREE.Vector3();
+        var next = WM.yawAboutPivot(st.yaw, st.off, stick, [v.x, v.z]);
+        st.yaw = next.yaw; st.off = next.offset;
+      }
+      WF.setFrame({ yaw: st.yaw, offset: st.off });
+    },
+
+    // STANDALONE stick yaw, outside any grab. In skybox/void mode the stick turns the sky or the world with
+    // no grip at all — there is no object to be "holding", and needing to grip the floor first to use the
+    // stick is a step with nothing behind it.
+    //
+    // Called ONCE PER TICK rather than per pointer: a hand-qualified binding like `right.stickX` resolves
+    // globally (conjure-pointers.js — so you can hold with one hand and shape with the other's stick), which
+    // means every pointer returns the SAME value and a per-pointer loop would apply it twice.
+    //
+    // A stick has no release event, so the commit fires when it returns to neutral — the analogue of letting
+    // go of a grip, and it keeps a long slow turn to a single POST.
+    _stickYaw: function (pointers, mode, dt) {
+      var WF = window.ConjureWorldFrame, WM = window.WorldModel;
+      if (!WF || !pointers.length) return;
+      for (var k in this._ctrl) {                      // a held gesture already folds the stick in
+        if (this._ctrl[k] && this._ctrl[k].mode === "frame") return;
+      }
+      var sv = pointers[0].value("yaw");
+      var d = Math.abs(sv) < STICK_DEAD ? 0 : -sv * (this.data.rotateSpeed || 90) * (dt / 1000);
+      if (d) {
+        if (!amOwner()) { this._hint(); return; }
+        if (mode === "skybox") {
+          WF.setSky({ yaw: WF.sky().yaw + d });
+        } else {
+          if (!WF.isVoid()) return;
+          var cam = this.el.sceneEl && this.el.sceneEl.camera;
+          var v = cam ? cam.getWorldPosition(new AFRAME.THREE.Vector3()) : new AFRAME.THREE.Vector3();
+          var fr = WF.frame();
+          var next = WM.yawAboutPivot(fr.yaw, fr.offset, d, [v.x, v.z]);
+          WF.setFrame({ yaw: next.yaw, offset: next.offset });
+        }
+        this._stickDirty = mode;
+      } else if (this._stickDirty) {
+        glog("stick yaw settled → commit " + this._stickDirty);
+        WF.commit(this._stickDirty === "void" ? "frame" : "sky");
+        this._stickDirty = null;
+      }
+    },
+
+    _commitFrame: function (st) {
+      var WF = window.ConjureWorldFrame;
+      var what = st.fmode === "void" ? "frame" : "sky";
+      glog("commit " + st.fmode + " " + JSON.stringify(what === "frame" ? WF.frame() : {
+        yaw: +WF.sky().yaw.toFixed(1), scale: +WF.sky().scale.toFixed(4) }));
+      WF.commit(what);
+    },
+
+    // ---- mode indicator --------------------------------------------------------------------------
+    // Head-locked text, same pattern as the client's #coloc-hud: `overlay` so passthrough never hides it.
+    // ALWAYS ON in skybox/void mode and absent entirely in object mode, so normal use gains no clutter.
+    //
+    // This is a safety mechanism, not decoration. Modes are set by voice, and the director sometimes reports
+    // success without actually calling the tool — a failure that is silent here and expensive: you would grip
+    // expecting to turn the sky and instead fling a chair across the room. The indicator APPEARING is the
+    // confirmation that the tool fired, available before you touch anything.
+    _modeHud: function (text) {
+      if (text === this._modeHudTxt) return;              // setAttribute on a text component is not free
+      this._modeHudTxt = text;
+      var el = document.getElementById("grab-hud");
+      if (!text) { if (el && el.parentNode) el.parentNode.removeChild(el); return; }
+      if (!el) {
+        var cam = document.querySelector("a-camera") || document.querySelector("[camera]");
+        if (!cam) { this._modeHudTxt = null; return; }    // retry next tick rather than latch a miss
+        el = document.createElement("a-entity");
+        el.id = "grab-hud";
+        el.setAttribute("position", "0 -0.45 -1");        // below the coloc HUD, so both can show at once
+        el.setAttribute("text", { value: "", align: "center", color: "#66ccff", width: 1.2,
+                                  baseline: "center" });
+        el.setAttribute("overlay", "");
+        cam.appendChild(el);
+      }
+      el.setAttribute("text", "value", text);
+    },
+
+    // What the indicator says. Reports the EFFECTIVE size in metres — the readout is the only feedback a
+    // plain sky's scale has, since scaling it changes occlusion and parallax rather than apparent size.
+    _modeLine: function (mode) {
+      var WF = window.ConjureWorldFrame;
+      if (!WF) return mode.toUpperCase() + "  — world frame unavailable";
+      if (mode === "void") {
+        if (!WF.isVoid()) return "VOID  — not available in a captured room";
+        var fr = WF.frame();
+        return "VOID        yaw " + Math.round(fr.yaw) + "°"
+          + "   offset " + fr.offset[0].toFixed(2) + ", " + fr.offset[1].toFixed(2) + " m";
+      }
+      var sky = WF.sky();
+      var line = "SKYBOX" + (sky.grounded ? " ⏚" : "") + "      yaw " + Math.round(sky.yaw) + "°";
+      if (!sky.active) return line + "   — no skybox set";
+      if (!WF.isVoid()) return line + "   — scale locked (room)";
+      var m = function (v) { return v.toFixed(v < 10 ? 1 : 0) + " m"; };
+      // RADIUS, not the dome's `height` parameter — that is where the horizon line sits, not how big the
+      // world is, and reporting it as the size made a 3.95 m ceiling read as "0.2 m".
+      return line + "   radius " + m(sky.radius)
+        + (sky.horizon != null ? "   horizon " + m(sky.horizon) : "");
+    },
+
     _commit: function (st) {
       var THREE = AFRAME.THREE, obj = st.target && st.target.object3D;
       if (!obj) return;
@@ -549,6 +822,12 @@
         // Input comes from the shared reader, in ACTIONS not buttons (see client/conjure-pointers.js), so
         // the control scheme is config (window.CONJURE_BINDINGS) rather than something baked in here.
         var CP = window.ConjurePointers;
+        var mode = this._mode(), bad = this._badMode();
+        // Always on outside object mode, and gone in it — see _modeHud on why this is load-bearing. A mode we
+        // were asked for but cannot honour shows too, naming the value: the indicator's job is to make the
+        // headset's actual state visible, and "I was asked for something I don't understand" is part of that.
+        this._modeHud(bad ? "GRAB  — unknown mode " + JSON.stringify(bad) + "; using object"
+                          : (mode === "object" ? null : this._modeLine(mode)));
         var pointers = CP ? CP.controllers(this.el.sceneEl) : [];
         if (!pointers.length) { this._setHud(null); return; }
         this._once("xr", "XR session live — " + this._manipulables().length + " manipulable object(s) in world-root");
@@ -563,10 +842,21 @@
             // No visible pointer, no highlight: a selection box appearing with no beam aimed at it reads
             // as the scene reacting to nothing.
             if (!p.armed()) continue;
+            // MODES ARE HYBRID: a hit on an object still grabs the object whatever the mode, so you keep
+            // object nudging available while positioning a world; anything else engages the mode's target.
+            //
             // Exact hit (mesh or handle) → what you grab. Else the selection BOX keeps focus across the gap
             // between silhouette and corner. Else a near-miss right at a corner, which only works because
             // the box kept the HUD alive long enough to get there.
-            var hit = this._pick(origin, dir) || this._boxPick(origin, dir) || this._softHandle(origin, dir);
+            //
+            // _boxPick runs in EVERY mode. It was briefly restricted to object mode, on the grounds that the
+            // box was visual noise where you cannot resize — which missed that the box is not decoration, it
+            // is the focus REGION. Without it you must strike the mesh triangles exactly, and a model a few
+            // metres away is a small target: objects went from easy to effectively unmovable in the new
+            // modes. Only _softHandle stays object-only, since it exists to reach corner handles and those
+            // are not drawn here.
+            var hit = this._pick(origin, dir) || this._boxPick(origin, dir)
+              || (mode === "object" ? this._softHandle(origin, dir) : null);
             if (hit) { hover = hit.el; this._once("hover", "first hover: " + hit.el.id + " at " + hit.dist.toFixed(2) + " m"); }
             // Reserve the pointer while the beam is on one of OUR corner handles, so a `resize` bound to
             // the same control as `select` goes to us here and to the content module everywhere else.
@@ -586,6 +876,26 @@
                 hover = st.target;
                 glog("grab " + hit.el.id + " mode=" + st.mode + " via " + st.action);
               }
+            } else if (!hit && mode !== "object" && p.active("grab")) {
+              // Nothing under the beam, and we are in a mode the user deliberately entered: grab the FLOOR
+              // and adjust the sky or the world. Safe here in a way it would not be as default behaviour —
+              // pointing at nothing is the resting state of a controller, so this only ever fires inside a
+              // mode that is named on screen.
+              if (!amOwner()) this._hint();
+              else if (this._beginFrame(st, origin, dir, mode)) {
+                st.action = "grab";
+                CP.claim(p.key, "grab");
+                glog("grab frame mode=" + mode);
+              }
+            }
+          } else if (st.mode === "frame") {
+            if (!p.active(st.action || "grab")) {
+              glog("release frame " + st.fmode + " → commit");
+              this._commitFrame(st);
+              this._ctrl[p.key] = { mode: "idle", target: null };
+              CP.release(p.key, "grab");
+            } else {
+              this._updateFrame(st, origin, dir, p, dt);
             }
           } else {
             hover = st.target;
@@ -604,7 +914,10 @@
         // were picked by proximity — aiming at a corner un-hovered the object and deleted the very handles
         // you were reaching for. Handles are children of the target and picked by identity now, so the beam
         // still hits the entity when it's on a corner and focus holds where it should.
-        this._setHud(hover);
+        // The box shows in every mode (it is what tells you a grip would take the object rather than the
+        // world); the corner handles only in object mode, where resize is reachable.
+        this._setHud(hover, mode === "object");
+        if (mode !== "object") this._stickYaw(pointers, mode, dt);
       } catch (e) {
         // Never break the render loop over a manipulation — but SAY SO once. Swallowing silently makes a
         // broken module look identical to one that was never conjured.
@@ -612,6 +925,6 @@
       }
     },
 
-    remove: function () { this._clearHud(); this._ctrl = {}; }
+    remove: function () { this._clearHud(); this._modeHud(null); this._ctrl = {}; }
   });
 })();

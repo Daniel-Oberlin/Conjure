@@ -667,18 +667,58 @@
     el._surfaceOffset = meta.surface_offset || null;  // §7c-B2: on-surface content's host-local offset {p,q} to ride
   }
 
+  // Apply skyDelta.scale to whichever sky is live, as a uniform object3D scale.
+  //
+  // For the GROUNDED dome this is exact rather than an approximation, which is why no geometry rebuild is
+  // needed: work through the warp in grounded-skybox.js and scaling every vertex by k yields sphere radius
+  // k·radius and threshold y1' = k·y1, while the warp factor f = -height/tmp.y comes out UNCHANGED. So a
+  // uniform scale by k is precisely a rebuild at (k·height, k·radius) — and `mesh.position.y = height`
+  // scales with it because it lives inside this entity's object3D. A rebuild would be ~33k vertices plus a
+  // per-vertex loop, impossible per drag-frame; this is free.
+  //
+  // SIGN IS PRESERVED per axis because <a-sky>'s primitive default is `scale: -1 1 1` — the x flip is what
+  // renders the panorama the right way round from inside the sphere. setScalar would mirror it. Magnitudes
+  // are 1 in that default, so setting the absolute value is correct and idempotent across repeated calls.
+  function pinSkyScale() {
+    var k = skyDelta.scale > 0 && isFinite(skyDelta.scale) ? skyDelta.scale : 1;
+    ["sky", "grounded-sky"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el || !el.object3D) return;
+      var s = el.object3D.scale;
+      s.set(s.x < 0 ? -k : k, s.y < 0 ? -k : k, s.z < 0 ? -k : k);
+    });
+  }
+
   function applyEnv(env) {
     env = env || {};
     var sky = document.getElementById("sky");
     var groundedSky = document.getElementById("grounded-sky");
+    // User adjustments to the derived frames, echoed back from the server (or on a fresh snapshot). ALL of
+    // them live under `env.frame` — including the sky's — and deliberately NOT under `env.sky`.
+    //
+    // The sky's delta did live under `env.sky` for one afternoon, and the branch immediately below is why it
+    // cannot: `applyEnv` reads an `env.sky` object as a COMPLETE description of the sky, so a patch carrying
+    // only {yaw, scale} has no `src`, falls through to the "no panorama" case, and tears the dome down. That
+    // is a correct reading of `env.sky` — the fault was making the delta share a key whose every reader
+    // would then have to know it might be a fragment. Two different kinds of thing, two different keys.
+    if (env.frame) {
+      numFields(frameDelta, env.frame, ["yaw"]);
+      numFields(skyDelta, { yaw: env.frame.skyYaw, scale: env.frame.skyScale }, ["yaw", "scale"]);
+      var off = env.frame.offset;
+      if (off && off.length >= 2 && isFinite(+off[0]) && isFinite(+off[1])) {
+        frameDelta.offset = [+off[0], +off[1]];
+      }
+    }
     if (sky && (env.sky || env.background)) {
       if (env.sky && env.sky.src && env.sky.grounded) {
         // Grounded skybox: a ground-projected dome (see grounded-skybox.js) replaces the plain sphere
         // so you stand on the scene's floor. Drive the component; immersion hides the sphere for it.
+        groundedH = +env.sky.height > 0 ? +env.sky.height : 1.6;   // horizon height, and the dome radius:
+        groundedR = +env.sky.radius > 0 ? +env.sky.radius : 30;    // bases for the indicator + clampSky
         if (groundedSky) groundedSky.setAttribute("grounded-sky", {
           src: env.sky.src,
-          height: env.sky.height || 1.6,
-          radius: env.sky.radius || 30,
+          height: groundedH,
+          radius: groundedR,
         });
         presentation.skybox = true;
         presentation.grounded = true;
@@ -698,6 +738,12 @@
         presentation.grounded = false;
       }
     }
+    // Both AFTER the branch above: clampSky reads presentation.grounded to know which bounds apply, and the
+    // grounded path may have just rebuilt the dome (setAttribute resets the entity's object3D scale to its
+    // authored value). pinSkyScale also runs from _pinSky, so a headset re-asserts it every frame; calling it
+    // here is what lets a DESKTOP viewer — which never enters the XR frame loop — honour a committed scale.
+    clampSky();
+    pinSkyScale();
     if (env.fog) document.querySelector("a-scene").setAttribute("fog", env.fog);
     // room / immersion (merge — patches may carry only one field)
     if ("passthrough" in env) presentation.passthrough = !!env.passthrough;
@@ -734,6 +780,84 @@
   // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
   // instead of registering against stored geometry. Set from each snapshot.
   var VOID_SPACE = "<void>", isVoidWorld = false;
+  // USER ADJUSTMENTS to the two derived frames (specs/dynamics.md §8b — `grab`'s skybox/void modes).
+  //
+  // Both the skybox pose (_pinSky) and a void world's #world-root parking (_updateWorldFrame) are rewritten
+  // from the derived frame on EVERY capture. A gesture that wrote either transform directly would therefore
+  // be erased within about two seconds. So an adjustment is never a transform — it is a DELTA that the
+  // per-capture writer composes on top of what it derives, and these two objects are that delta.
+  //
+  // The same objects serve the live gesture and the persisted value, which is the point: `grab` mutates them
+  // through ConjureWorldFrame.set* for a zero-cost exact preview, then POSTs an `env` patch on release, and
+  // applyEnv writes the echo back to the same fields. Preview and commit cannot disagree because there is
+  // only one representation.
+  //
+  // skyYaw/skyScale are relative to the sky's derived pose; frameYaw/frameOffset are a rigid horizontal
+  // transform in the canonical frame. Note frameOffset ABSORBS the pivot: "yaw about the viewer" is resolved
+  // to an equivalent origin-rotation-plus-translation at gesture time (see grab.js `_worldYaw`), because a
+  // live viewer pivot would make content drift as you walked.
+  var skyDelta = { yaw: 0, scale: 1 };            // degrees about gravity; uniform scale factor
+  var frameDelta = { yaw: 0, offset: [0, 0] };    // degrees about gravity; [x, z] metres — never y
+  // A-Frame's <a-sky> primitive geometry radius, and the grounded dome's authored radius + height (tracked
+  // from the last env that set it). All BASE values; scale multiplies them.
+  //
+  // RADIUS is the number that describes what you see. `height` is not a height in any sense a user means:
+  // work through the warp in grounded-skybox.js and every vertex below y1 = −1.5h lands at local y = −h,
+  // which `mesh.position.y = h` puts at world 0 — while the equator stays at local 0, i.e. world `h`. So
+  // `height` is where the HORIZON sits (the panorama's implied capture height), and the dome's apex is at
+  // h + radius. Reporting "height 0.2 m" for a dome whose ceiling is 3.95 m up read as a broken scale
+  // gesture when it was only a broken label (2026-09-01).
+  var PLAIN_SKY_R = 500, groundedH = 1.6, groundedR = 30;
+  // Ergonomic bounds on the effective RADIUS — the same quantity the indicator reports, so a value at the
+  // limit reads as being at the limit. Client-side rather than server-side so the numbers live with the
+  // gesture that produces them and the readout beside it.
+  //
+  // Grounded: 3 m is a small room, 300 m a landscape. Plain: the floor has to clear your content, since for
+  // a plain sphere occlusion is the only thing scaling it actually changes.
+  var GROUNDED_M = [3, 300], PLAIN_M = [5, 1000];
+
+  // Compose the void world's frameDelta onto a derived pose, in place: p' = R(yaw)·p + offset, q' = R·q,
+  // with R a yaw about gravity and the offset horizontal. Shared by #world-root's parking and the SKYBOX,
+  // because they have to be one frame.
+  //
+  // The sky rode only its own delta at first, so rotating a void world turned the content and left the
+  // backdrop behind — which defeats the point of pinning the sky to the frame at all. If a world moves, the
+  // sky it sits under moves with it; `skyYaw` is then an ADDITIONAL turn of the panorama relative to that
+  // world, which is what skybox mode is for.
+  function applyFrameDelta(THREE, pos, quat) {
+    if (frameDelta.yaw) {
+      var R = new THREE.Quaternion()
+        .setFromAxisAngle(new THREE.Vector3(0, 1, 0), frameDelta.yaw * Math.PI / 180);
+      pos.applyQuaternion(R);
+      quat.premultiply(R);
+    }
+    pos.x += frameDelta.offset[0];
+    pos.z += frameDelta.offset[1];   // never y — see specs/spaces-geometry §4
+  }
+
+  // Clamp skyDelta.scale so the EFFECTIVE metres stay in range for whichever sky is live, and reject a
+  // non-finite or non-positive scale outright (zero would collapse the sphere to a point).
+  function clampSky() {
+    if (!isFinite(skyDelta.yaw)) skyDelta.yaw = 0;
+    var base = presentation.grounded ? groundedR : PLAIN_SKY_R;
+    var lim = presentation.grounded ? GROUNDED_M : PLAIN_M;
+    var k = skyDelta.scale;
+    if (!isFinite(k) || k <= 0) k = 1;
+    if (base > 0) k = Math.min(lim[1] / base, Math.max(lim[0] / base, k));
+    skyDelta.scale = k;
+  }
+
+  // Read `dst` <- `src` for the keys present, coercing to finite numbers. A malformed env value must not
+  // reach the frame writers: NaN in a quaternion or a position silently blanks the whole scene graph branch,
+  // and it persists (see grab.js `_nearest` for the same hazard in an accumulator).
+  function numFields(dst, src, keys) {
+    if (!src) return;
+    keys.forEach(function (k) {
+      if (!(k in src)) return;
+      var v = +src[k];
+      if (isFinite(v)) dst[k] = v;
+    });
+  }
   // Two-stage space selection (specs/spaces.md §6). On entering AR we report our coarse location and get
   // back the geo-near candidate spaces; room-capture then votes its live geometry against them
   // (RoomSnap.selectSpace) and commits the verdict via /space/select. `pendingSelect` holds the candidates
@@ -1169,6 +1293,70 @@
     }
   };
 
+  // The DERIVED-FRAME adjustment surface, for `grab`'s skybox and void modes (specs/dynamics.md §8b).
+  //
+  // Why a module can't just write these transforms: _pinSky and _updateWorldFrame rewrite the skybox pose and
+  // a void world's #world-root parking from the derived frame on EVERY capture, so a direct write is erased
+  // within about two seconds. A module therefore mutates the DELTA those writers compose, which is what
+  // `setSky`/`setFrame` do — the live gesture and the persisted value share one representation, so a preview
+  // can never disagree with what gets committed.
+  //
+  // set* are LOCAL ONLY. Nothing is broadcast mid-gesture (tier-C sync, §8): `commit` POSTs on release, the
+  // server authorizes and persists, and applyEnv writes the echo back into the same fields — idempotent,
+  // so there is no pop.
+  window.ConjureWorldFrame = {
+    // Void/outdoor world (no captured room). Void mode is meaningless anywhere else: local-first forces
+    // #world-root to identity in a captured room, so a move there is reverted at the next capture AND
+    // desynchronises content from the real walls in between.
+    isVoid: function () { return isVoidWorld; },
+    // Where the drag plane sits. refSpace is `local-floor`, so the floor is y=0 by construction — and it is
+    // also where a grounded dome's projected ground lands, which is what makes "grab the floor" honest.
+    floorY: function () { return 0; },
+    // The sky's pinned centre in scene (refSpace) coords, what kind of sky is live, and the current delta
+    // with its effective size. `centre` is the point a radial scale drag is measured from.
+    //
+    // `radius` is the honest size: for a grounded dome it is how far away the horizon stands, and the apex
+    // is radius + horizon above the floor. `horizon` is the height that line sits at — the other tunable,
+    // and only meaningful when grounded (a plain sphere has no projected ground).
+    sky: function () {
+      var THREE = AFRAME.THREE, el = document.getElementById(presentation.grounded ? "grounded-sky" : "sky");
+      var base = presentation.grounded ? groundedR : PLAIN_SKY_R;
+      return {
+        centre: el && el.object3D ? el.object3D.position.clone() : new THREE.Vector3(),
+        grounded: presentation.grounded, active: presentation.skybox,
+        yaw: skyDelta.yaw, scale: skyDelta.scale,
+        radius: base * skyDelta.scale,
+        horizon: presentation.grounded ? groundedH * skyDelta.scale : null
+      };
+    },
+    frame: function () { return { yaw: frameDelta.yaw, offset: frameDelta.offset.slice() }; },
+    // Live preview. Clamped on the way in, so a gesture cannot drive the sky out of range and the caller can
+    // read back what actually took effect (grab's indicator reports the clamped value, not the requested one).
+    setSky: function (d) {
+      numFields(skyDelta, d, ["yaw", "scale"]);
+      clampSky();
+      pinSkyScale();
+      return { yaw: skyDelta.yaw, scale: skyDelta.scale };
+    },
+    setFrame: function (d) {
+      numFields(frameDelta, d, ["yaw"]);
+      if (d && d.offset && d.offset.length >= 2 && isFinite(+d.offset[0]) && isFinite(+d.offset[1])) {
+        frameDelta.offset = [+d.offset[0], +d.offset[1]];
+      }
+      if (!isFinite(frameDelta.yaw)) frameDelta.yaw = 0;
+      return { yaw: frameDelta.yaw, offset: frameDelta.offset.slice() };
+    },
+    // Persist. `what` is "sky" | "frame"; the server re-broadcasts and applyEnv folds the echo back in.
+    commit: function (what) {
+      var body = what === "frame"
+        ? { frame: { yaw: frameDelta.yaw, offset: frameDelta.offset } }
+        : { sky: { yaw: skyDelta.yaw, scale: skyDelta.scale } };
+      return fetch("/world_frame", { method: "POST",
+        headers: { "Content-Type": "application/json", "X-Conjure-User": currentUser() || "" },
+        body: JSON.stringify(body) }).catch(function () { /* local state stands; a snapshot reconciles */ });
+    }
+  };
+
   window.ConjureBus = {
     _subs: {},
     on: function (event, fn) { (this._subs[event] = this._subs[event] || []).push(fn); },
@@ -1519,6 +1707,15 @@
           var inv = this._Tmat.clone().invert();
           var ip = new THREE.Vector3(), iq = new THREE.Quaternion(), is = new THREE.Vector3();
           inv.decompose(ip, iq, is);
+          // The USER's frameDelta rides on top (specs/dynamics.md §8b — `grab`'s void mode). Applied here
+          // rather than written onto #world-root by the gesture because this function runs every capture and
+          // would otherwise erase it. _pinSky applies the SAME delta, so the sky stays in this frame.
+          //
+          // The offset is applied AFTER the rotation and is stored resolved, not as a pivot: rotating about
+          // a point v equals rotating about the origin plus a translation (v − R·v), and `grab` folds that
+          // into the offset when the gesture happens. Storing the pivot instead would mean re-deriving it
+          // from the LIVE viewer position every frame, so content would drift as you walked.
+          applyFrameDelta(THREE, ip, iq);
           wr.object3D.position.copy(ip); wr.object3D.quaternion.copy(iq);
         }
       },
@@ -2029,22 +2226,49 @@
         debugLog("coloc", line, window.CONJURE_DEBUG_REGISTRATION);   // gated by --debug-registration, not debug_log
         this._diagHud(line);
       },
-      // Orient the skybox consistently relative to the ROOM (§5d — wall-relative yaw). The <a-sky>/
-      // #grounded-sky live as scene children (not inside #world-root, which applySnapshot clears), so left
-      // alone they'd hold the arbitrary per-session tracking yaw and spin between visits. #world-root is
-      // identity in a captured room now, so instead of reading it we apply the registration transform's
-      // INVERSE rotation (F_ref → F_track) directly — the same yaw #world-root used to carry — so the sky
-      // rides the persistent room frame and keeps its orientation across sessions. Rotation only (a pure
-      // gravity yaw from the register vote): a plain sky sphere stays viewer-centered; a grounded dome spins
-      // about vertical, ground flat. Identity before the first lock.
+      // Pin the skybox to the ROOM's frame (§5d — wall-relative yaw), in BOTH rotation and horizontal
+      // position. The <a-sky>/#grounded-sky live as scene children (not inside #world-root, which
+      // applySnapshot clears), so left alone they'd hold the arbitrary per-session tracking pose and spin
+      // between visits. #world-root is identity in a captured room now, so instead of reading it we apply
+      // the registration transform's INVERSE (F_ref → F_track) directly — the same pose #world-root used to
+      // carry — so the sky rides the persistent room frame across sessions. Identity before the first lock.
+      //
+      // POSITION was rotation-only until 2026-09-01, which left the sky the one thing in the scene not
+      // anchored to the space: content is parked on the frame, the sky sat at the raw refSpace origin
+      // (wherever `local-floor` established this session). Two visible faults came from that. Across
+      // sessions a grounded dome's ground centre returned to a different physical spot than the content did.
+      // And a Meta-button recenter fires the refSpace `reset` listener: content re-derives and stays put
+      // while the sky's centre SLID OUT FROM UNDER IT. Pinning position fixes both, and gives `grab`'s
+      // skybox mode a single unambiguous centre to scale about (its radial drag is measured from here).
+      //
+      // HORIZONTAL ONLY — y is forced to 0, for the same reason canonicalFrame flattens its centroid: the
+      // grounded dome's projected ground lands at the ENTITY's y, so a non-zero y floats or sinks the ground
+      // you stand on. Registration solves yaw + x/z and never y (specs/spaces-geometry §4), so this should
+      // already be ~0; forcing it makes that a property of this code rather than a trusted invariant.
+      // The USER's skyYaw is composed on top (specs/dynamics.md §8b). Both rotations are pure yaws about
+      // gravity — the derived one is a gravity yaw from the register vote / canonicalFrame's
+      // setFromAxisAngle(UP, -theta) — so they are coaxial and commute; order is presentation, not maths.
+      // Rotation is about the entity's own origin, which IS its pinned position, so a yaw never moves the
+      // sky's centre and `grab`'s radial scale keeps measuring from the same point.
       _pinSky: function () {
-        var THREE = AFRAME.THREE, q = new THREE.Quaternion();
+        var THREE = AFRAME.THREE, q = new THREE.Quaternion(), p = new THREE.Vector3();
         if (this._haveT && this._Tmat) {
-          var p = new THREE.Vector3(), s = new THREE.Vector3();
+          var s = new THREE.Vector3();
           this._Tmat.clone().invert().decompose(p, q, s);
         }
-        var sky = document.getElementById("sky"); if (sky) sky.object3D.quaternion.copy(q);
-        var g = document.getElementById("grounded-sky"); if (g) g.object3D.quaternion.copy(q);
+        // In a VOID world the sky rides the same frameDelta as #world-root, so turning or sliding the world
+        // carries its backdrop along — they are one frame. Then skyYaw turns the panorama relative to that.
+        if (isVoidWorld) applyFrameDelta(THREE, p, q);
+        p.y = 0;                                   // after the delta: the offset is horizontal, but be sure
+        if (skyDelta.yaw) {
+          q.premultiply(new THREE.Quaternion()
+            .setFromAxisAngle(new THREE.Vector3(0, 1, 0), skyDelta.yaw * Math.PI / 180));
+        }
+        var sky = document.getElementById("sky");
+        if (sky) { sky.object3D.quaternion.copy(q); sky.object3D.position.copy(p); }
+        var g = document.getElementById("grounded-sky");
+        if (g) { g.object3D.quaternion.copy(q); g.object3D.position.copy(p); }
+        pinSkyScale();
       },
       _diagHud: function (text) {
         var el = document.getElementById("coloc-hud");

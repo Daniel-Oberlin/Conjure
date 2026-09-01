@@ -89,10 +89,21 @@ class DynamicModuleDef:
 
     def catalog_line(self) -> str:
         """One director-catalog row: `name — description; params: k(default)…` (decision 1). Params come
-        from `config_schema`; a param with no default is shown bare. Empty schema → no params clause."""
+        from `config_schema`; a param with no default is shown bare. Empty schema → no params clause.
+
+        A param with an `enum` renders its CHOICES instead of just its default — `mode(object|skybox|void)`.
+        Prose in `desc` is not enough on its own: `grab`'s description spelled the values out and the
+        director still guessed `sky` and `frame` from field names it had seen elsewhere, was told `ok`, and
+        reported success while nothing happened (2026-09-01). The choices belong where it reads the params,
+        and /module rejects anything outside them.
+        """
         params = []
         for key, spec in (self.config_schema or {}).items():
             spec = spec if isinstance(spec, dict) else {}
+            choices = spec.get("enum")
+            if isinstance(choices, list) and choices:
+                params.append(f"{key}({'|'.join(str(c) for c in choices)})")
+                continue
             default = spec.get("default")
             params.append(f"{key}({default})" if default is not None else key)
         head = f"{self.name} — {self.description}".rstrip(" —") if self.description else self.name

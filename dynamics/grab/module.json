@@ -17,8 +17,14 @@
     0.0,
     0.0
   ],
-  "description": "Move, rotate, and resize placed objects with the controllers: point to highlight, GRIP to grab (free objects move/rotate in full 3D; surface-attached objects slide on their surface), GRIP a corner handle to resize. Owner-only; changes commit when you release.",
+  "description": "Move, rotate, and resize placed objects with the controllers: point to highlight, GRIP to grab (free objects move/rotate in full 3D; surface-attached objects slide on their surface), GRIP a corner handle to resize. Owner-only; changes commit when you release. Set `mode` to adjust the skybox or a whole void world instead — re-conjuring with a new mode switches the live instance.",
   "config_schema": {
+    "mode": {
+      "type": "string",
+      "default": "object",
+      "enum": ["object", "skybox", "void"],
+      "desc": "what GRIP on empty space adjusts. Use exactly one of: 'object' (default — only placed objects), 'skybox' (grab the floor and drag: away from centre grows the sky, sideways spins it), 'void' (grab the floor and drag to move ALL content in an outdoor/void world together). Objects stay grabbable in every mode. Skybox scale and void mode need a void/outdoor world; skybox yaw works anywhere."
+    },
     "reelSpeed": {
       "type": "number",
       "default": 1.5,

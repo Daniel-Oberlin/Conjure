@@ -719,7 +719,7 @@ _OWNER_ONLY_PATHS = {
     "/reset", "/patch", "/space/capture", "/space/realign", "/texture_surface", "/style_surface",
     "/place_asset", "/place_cached_asset", "/place_image", "/set_skybox", "/set_grounded_skybox",
     "/edit_image", "/outpaint_image", "/skybox_from_image",
-    "/module", "/module/dismiss", "/manipulate",
+    "/module", "/module/dismiss", "/manipulate", "/world_frame",
 }
 
 
@@ -4558,6 +4558,20 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
         if err:
             return {"ok": False, "error": err}
         config["src"] = rec.url
+    # Reject a config value outside its schema's `enum` — with the valid choices in the message, so a caller
+    # that guessed can correct itself on the next call.
+    #
+    # This exists because of a silent failure worth not repeating (2026-09-01): the director conjured `grab`
+    # with mode="sky" and then mode="frame" — plausible guesses, taken from internal field names — got
+    # {"ok": true} both times, and told the user each mode was active while the client, seeing a value it did
+    # not recognise, quietly stayed in `object` mode. Nothing anywhere said no. An unvalidated enum makes a
+    # caller's wrong guess indistinguishable from success, and the user pays for it in confusion.
+    for key, val in list(config.items()):
+        cs = (spec.config_schema or {}).get(key)
+        choices = cs.get("enum") if isinstance(cs, dict) else None
+        if isinstance(choices, list) and choices and val not in choices:
+            return {"ok": False, "error": f"{req.module}: {key}={val!r} is not valid; "
+                    f"use one of: {', '.join(str(c) for c in choices)}"}
     comp = spec.component
     pos = req.position or list(spec.default_pos or [0.0, 1.3, -1.5])
     rotation = None
@@ -4724,6 +4738,109 @@ async def manipulate_entity(req: ManipulateRequest) -> dict:
                    "ops": applied["ops"] + extra["ops"], "inverse": extra["inverse"] + applied["inverse"]}
     await _broadcast({"type": "patch", "patch": applied})
     return {"ok": True, "id": req.id}
+
+
+class WorldFrameRequest(BaseModel):
+    """A `grab` skybox/void-mode commit, or a reset of either (docs/specs/dynamics.md §8b)."""
+
+    sky: dict | None = None      # {"yaw": deg, "scale": factor} — relative to the sky's derived pose
+    frame: dict | None = None    # {"yaw": deg, "offset": [x, z]} — rigid horizontal, void worlds only
+    reset: str | None = None     # "sky" | "frame" | "all" — back to the derived frame
+
+
+# Defaults a reset returns to: no rotation, no offset, unit scale — i.e. the derived frame standing alone.
+# Keyed by DOTTED PATH for the same reason every write below is: see the docstring.
+_FRAME_DEFAULTS = {
+    "sky": {"frame.skyYaw": 0.0, "frame.skyScale": 1.0},
+    "frame": {"frame.yaw": 0.0, "frame.offset": [0.0, 0.0]},
+}
+# Caller-facing group/key → the stored dotted path. The caller says `sky: {yaw}`, which reads naturally and
+# matches the mode names; storage keeps EVERYTHING under `environment.frame` — see the docstring for why the
+# sky's delta must not live under `environment.sky`.
+_FRAME_PATHS = {
+    ("sky", "yaw"): "frame.skyYaw", ("sky", "scale"): "frame.skyScale",
+    ("frame", "yaw"): "frame.yaw", ("frame", "offset"): "frame.offset",
+}
+
+
+@app.post("/world_frame")
+async def set_world_frame(req: WorldFrameRequest) -> dict:
+    """Persist a user adjustment to a DERIVED frame — the skybox's relative orientation/scale, or a void
+    world's content orientation/position. Owner-gated like every world write.
+
+    These are not entity transforms, which is why they live in `environment` rather than going through
+    /manipulate: the client rewrites both the skybox pose and a void world's `#world-root` parking from the
+    derived frame on every capture, so what persists is a DELTA the client composes on top, never a pose.
+
+    Everything is stored under `environment.frame`, INCLUDING the sky's delta, and every write uses a dotted
+    path. Both of those are scar tissue from the same afternoon (2026-09-01):
+
+    - Writing a whole `sky` dict erased `sky.src` — turning the sky one degree threw the image away. Same
+      failure the seed's write-gate exists to prevent (docs/investigations/raised-floor.md): write the aspect
+      that changed, never the record it lives in. Caught by a test.
+    - Dotted paths fixed the *document*, but the broadcast patch still carried `{sky: {yaw, scale}}`, and the
+      client's `applyEnv` reasonably reads any `sky` object as a full description of the sky — no `src` means
+      no panorama, so it tore the dome down on every release. Caught in the headset.
+
+    The second one is the real lesson: as long as the delta lived under `sky`, every reader of `sky` had to
+    know it might be a fragment. Moving it to `frame` means the panorama and the user's adjustment are
+    simply different keys, and no image tool and no reader can confuse them.
+
+    Validated here for structural safety only (finite, and a positive scale — a zero would collapse the sky
+    sphere). The ergonomic bounds live client-side with the gesture that produces them and the metres
+    readout that reports them, so there is one home for those numbers rather than two that can disagree.
+    """
+    sets: dict = {}
+    if req.reset in ("sky", "all"):
+        sets.update(_FRAME_DEFAULTS["sky"])
+    if req.reset in ("frame", "all"):
+        sets.update(_FRAME_DEFAULTS["frame"])
+    if req.reset and not sets:
+        return {"ok": False, "error": f"unknown reset {req.reset!r}; use sky, frame, or all"}
+
+    def _num(container: dict, key: str, label: str) -> float | dict:
+        try:
+            val = float(container[key])
+        except (TypeError, ValueError):
+            return {"error": f"{label} must be a number"}
+        if val != val or val in (float("inf"), float("-inf")):
+            return {"error": f"{label} must be finite"}
+        return val
+
+    if req.sky is not None:
+        for key in ("yaw", "scale"):
+            if key not in req.sky:
+                continue
+            val = _num(req.sky, key, f"sky.{key}")
+            if isinstance(val, dict):
+                return {"ok": False, **val}
+            if key == "scale" and val <= 0:
+                return {"ok": False, "error": "sky.scale must be > 0"}
+            sets[_FRAME_PATHS[("sky", key)]] = val
+
+    if req.frame is not None:
+        if "yaw" in req.frame:
+            val = _num(req.frame, "yaw", "frame.yaw")
+            if isinstance(val, dict):
+                return {"ok": False, **val}
+            sets[_FRAME_PATHS[("frame", "yaw")]] = val
+        if "offset" in req.frame:
+            off = req.frame["offset"]
+            if not isinstance(off, (list, tuple)) or len(off) != 2:
+                return {"ok": False, "error": "frame.offset must be [x, z]"}
+            pair = []
+            for i in (0, 1):
+                val = _num({"v": off[i]}, "v", "frame.offset")
+                if isinstance(val, dict):
+                    return {"ok": False, **val}
+                pair.append(val)
+            sets[_FRAME_PATHS[("frame", "offset")]] = pair
+
+    if not sets:
+        return {"ok": False, "error": "nothing to change"}
+    applied = store.apply_patch([{"op": "env", "set": sets}], origin="world_frame")
+    await _broadcast({"type": "patch", "patch": applied})
+    return {"ok": True, "set": sets}
 
 
 class SetSkyboxRequest(BaseModel):

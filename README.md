@@ -19,7 +19,8 @@ You stand in a holodeck (black void, 1 m white grid) and talk. Conjure can:
   wider. Image *procurement* is decoupled from *placement* — it makes/fetches an image
   (Gemini or OpenAI, picked by capability — e.g. transparency → OpenAI) and then hangs it.
 - **Set the scene** — generate a high-res 360° **skybox** that wraps the whole environment, or
-  turn any in-world image into the surrounding sky.
+  turn any in-world image into the surrounding sky. Then reach out and adjust it: grab the floor and
+  drag to turn the sky or scale it around you, or to slide a whole outdoor world into place.
 - **Talk to more than one AI** — a roster of named LLMs (Claude + Gemini + "Chat"/OpenAI + Grok) shares
   one conversation; switch mid-stream with a shell command (`llm gemini`, or spoken "conjure talk to
   gemini") and the newly-active LLM picks up the whole conversation seamlessly. Switching is

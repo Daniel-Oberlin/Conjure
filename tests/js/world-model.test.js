@@ -456,3 +456,90 @@ test("loadGate gives up rather than deadlocking on a room that genuinely shrank"
   assert.strictEqual(WM.loadGate(20, 58, 14), "hold");
   assert.strictEqual(WM.loadGate(20, 58, 15), "forced", "…and reports that it was forced, not healthy");
 });
+
+// ---- derived-frame gestures (grab's skybox/void modes, specs/dynamics.md §8b) --------------------
+// These two identities are where a sign error hides, and a sign error sends the sky or the whole world
+// the wrong way with no clue which term was wrong. The rotation convention is checked against three
+// itself rather than against a hand-derived formula, so the test can't inherit the same mistake.
+
+test("rotXZ matches three's applyAxisAngle about +Y", () => {
+  const cases = [[1, 0], [0, 1], [2, -3], [-0.5, 0.25]];
+  for (const a of [0.3, -1.1, Math.PI / 2, Math.PI]) {
+    for (const [x, z] of cases) {
+      const want = new THREE.Vector3(x, 0, z).applyAxisAngle(new THREE.Vector3(0, 1, 0), a);
+      const got = WM.rotXZ(x, z, a);
+      assert.ok(Math.abs(got[0] - want.x) < 1e-12 && Math.abs(got[1] - want.z) < 1e-12,
+        `rotXZ(${x},${z},${a}) → ${got} want ${[want.x, want.z]}`);
+    }
+  }
+});
+
+test("yawAboutPivot leaves the pivot fixed — the property that defines it", () => {
+  // Content that currently RENDERS at the pivot must still render there afterwards. Note the property is
+  // about the p′ → p″ mapping, not p → p″: so take the point whose current image is the pivot, and check
+  // its image under the new transform is the pivot too. If the (v − R·v) term has the wrong sign, or is
+  // rotated when it should not be, this is the assertion that fails.
+  const yaw0 = 30, off0 = [0.4, 0.9], pivot = [1.5, -2.25];
+  const pre = WM.rotXZ(pivot[0] - off0[0], pivot[1] - off0[1], -yaw0 * Math.PI / 180);
+  const r = WM.yawAboutPivot(yaw0, off0, 40, pivot);
+  const post = WM.rotXZ(pre[0], pre[1], r.yaw * Math.PI / 180);
+  assert.ok(Math.abs(post[0] + r.offset[0] - pivot[0]) < 1e-9, `x ${post[0] + r.offset[0]}`);
+  assert.ok(Math.abs(post[1] + r.offset[1] - pivot[1]) < 1e-9, `z ${post[1] + r.offset[1]}`);
+});
+
+test("yawAboutPivot composes: two nudges equal one of the summed angle", () => {
+  const pivot = [0.8, 1.2];
+  const one = WM.yawAboutPivot(0, [0, 0], 25, pivot);
+  const two = WM.yawAboutPivot(one.yaw, one.offset, 15, pivot);
+  const once = WM.yawAboutPivot(0, [0, 0], 40, pivot);
+  assert.strictEqual(two.yaw, once.yaw);
+  assert.ok(Math.abs(two.offset[0] - once.offset[0]) < 1e-12);
+  assert.ok(Math.abs(two.offset[1] - once.offset[1]) < 1e-12);
+});
+
+test("yawAboutPivot about the origin is a plain rotation of the offset", () => {
+  const r = WM.yawAboutPivot(10, [3, 0], 90, [0, 0]);
+  assert.strictEqual(r.yaw, 100);
+  assert.ok(Math.abs(r.offset[0] - 0) < 1e-12 && Math.abs(r.offset[1] + 3) < 1e-12);
+});
+
+test("polarDrag: radial motion scales and does not yaw", () => {
+  const d = WM.polarDrag([0, 0], [2, 0], [4, 0], 0.05);
+  assert.ok(Math.abs(d.scale - 2) < 1e-12);
+  assert.ok(Math.abs(d.dYaw) < 1e-12);
+});
+
+test("polarDrag: tangential motion yaws and does not scale", () => {
+  const d = WM.polarDrag([0, 0], [2, 0], [0, 2], 0.05);
+  assert.ok(Math.abs(d.scale - 1) < 1e-12);
+  // The grabbed feature must FOLLOW the hand: turning the sky by dYaw has to carry the grab point onto the
+  // new point, which is what this checks — not merely that the magnitude is 90°. A sky yaw of Y puts a
+  // feature at local angle φ at world angle φ − Y, so applying +dYaw through rotXZ is the world-angle shift.
+  const moved = WM.rotXZ(2, 0, d.dYaw * Math.PI / 180);
+  assert.ok(Math.abs(moved[0] - 0) < 1e-9 && Math.abs(moved[1] - 2) < 1e-9, `moved to ${moved}`);
+});
+
+test("polarDrag is measured about the CENTRE, not the origin", () => {
+  const d = WM.polarDrag([10, 10], [12, 10], [14, 10], 0.05);
+  assert.ok(Math.abs(d.scale - 2) < 1e-12);
+  assert.ok(Math.abs(d.dYaw) < 1e-12);
+});
+
+test("polarDrag floors both radii so a grab at the centre can't yield Infinity", () => {
+  // Not an engage minimum (deliberately rejected) — purely so the arithmetic stays finite. A non-finite
+  // value reaching a transform blanks that scene branch and stays blanked.
+  const d = WM.polarDrag([0, 0], [0, 0], [1, 0], 0.05);
+  assert.ok(isFinite(d.scale) && isFinite(d.dYaw));
+  assert.ok(Math.abs(d.scale - 20) < 1e-9);            // 1 / 0.05
+  const z = WM.polarDrag([0, 0], [1, 0], [0, 0], 0.05);
+  assert.ok(isFinite(z.scale) && Math.abs(z.scale - 0.05) < 1e-12);
+});
+
+test("polarDrag: a diagonal drag does both, and each term is independent of the other", () => {
+  // Same tangential swing, two different radial ratios ⇒ identical dYaw. This is what makes the two
+  // controls feel separable in the hand despite coming from one drag.
+  const a = WM.polarDrag([0, 0], [2, 0], [0, 3], 0.05);
+  const b = WM.polarDrag([0, 0], [2, 0], [0, 8], 0.05);
+  assert.ok(Math.abs(a.dYaw - b.dYaw) < 1e-12);
+  assert.ok(Math.abs(a.scale - 1.5) < 1e-12 && Math.abs(b.scale - 4) < 1e-12);
+});

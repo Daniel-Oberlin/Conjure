@@ -260,6 +260,38 @@ def cmd_edges(s: Settings, a) -> None:
     print(f"edges {a.state} (rev {r['rev']})")
 
 
+def cmd_grabmode(s: Settings, a) -> None:
+    """Switch `grab`'s mode. A singleton module reuses and reconfigures its one live instance, so this is a
+    plain re-conjure rather than a second entity — the running component sees a config update."""
+    r = _post(s, "/module", {"module": "grab", "config": {"mode": a.mode}})
+    if not r.get("ok"):
+        print(f"grab mode: {r.get('error', 'failed')}")
+        return
+    print(f"grab mode → {a.mode}")
+
+
+def cmd_worldframe(s: Settings, a) -> None:
+    """Adjust or reset the user's skybox / void-world frame deltas (docs/specs/dynamics.md §8b)."""
+    if a.reset:
+        r = _post(s, "/world_frame", {"reset": a.reset})
+        print(f"world frame reset: {a.reset}" if r.get("ok") else f"reset: {r.get('error', 'failed')}")
+        return
+    body: dict = {}
+    sky = {k: v for k, v in (("yaw", a.sky_yaw), ("scale", a.sky_scale)) if v is not None}
+    if sky:
+        body["sky"] = sky
+    frame = {k: v for k, v in (("yaw", a.void_yaw),) if v is not None}
+    if a.void_offset is not None:
+        frame["offset"] = list(a.void_offset)
+    if frame:
+        body["frame"] = frame
+    if not body:
+        print("nothing to change — pass --sky-yaw/--sky-scale/--void-yaw/--void-offset or --reset")
+        return
+    r = _post(s, "/world_frame", body)
+    print(f"world frame {r['set']}" if r.get("ok") else f"world frame: {r.get('error', 'failed')}")
+
+
 # --------------------------------------------------------------------------- library maintenance
 
 def cmd_reindex(s: Settings, a) -> None:
@@ -316,6 +348,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("env", help="set sky/fog"); a.set_defaults(fn=cmd_env)
     a.add_argument("--sky-color"); a.add_argument("--fog-color"); a.add_argument("--fog-density", type=float)
+
+    a = sub.add_parser("grab-mode", help="set what GRIP on empty space adjusts")
+    a.set_defaults(fn=cmd_grabmode)
+    a.add_argument("mode", choices=("object", "skybox", "void"))
+
+    a = sub.add_parser("world-frame", help="adjust/reset the skybox or void-world frame")
+    a.set_defaults(fn=cmd_worldframe)
+    a.add_argument("--sky-yaw", type=float, help="degrees, relative to the derived frame")
+    a.add_argument("--sky-scale", type=float, help="uniform scale factor (>0)")
+    a.add_argument("--void-yaw", type=float, help="degrees, void worlds only")
+    a.add_argument("--void-offset", nargs=2, type=float, metavar=("X", "Z"), help="metres, horizontal only")
+    a.add_argument("--reset", choices=("sky", "frame", "all"), help="back to the derived frame")
 
     a = sub.add_parser("asset", help="place a real 3D model (Poly Pizza)"); a.set_defaults(fn=cmd_asset)
     a.add_argument("query"); a.add_argument("--size", type=float, default=1.0, help="real-world size, meters"); _pos(a)

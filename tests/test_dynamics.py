@@ -44,6 +44,16 @@ def test_catalog_line_renders_params_with_defaults():
     assert "image" in load_module("water").catalog_line()
 
 
+def test_catalog_line_renders_enum_choices_instead_of_the_default():
+    """The director reads this line to pick config values. Prose in `desc` is not enough on its own: with
+    grab's values spelled out only in prose it guessed `sky` and then `frame`, was told ok, and announced
+    each mode as active while the headset stayed in `object` (2026-09-01)."""
+    line = load_module("grab").catalog_line()
+    assert "mode(object|skybox|void)" in line, line
+    # A default-only param is unaffected — enums are additive, not a change of format.
+    assert "reelSpeed(1.5)" in line
+
+
 # ── search path: user shadows bundled (mirror agents) ─────────────────────────────────────────────
 def test_search_path_user_shadows_bundled(tmp_path):
     user = tmp_path / "user"; bundled = tmp_path / "bundled"

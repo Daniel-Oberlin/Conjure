@@ -444,10 +444,25 @@ physical room canonicalizes to the same orientation each visit (invariance unit-
 **Refinements left:**
 1. **Symmetric-room ambiguity (inherent):** no unique largest wall ⇒ no unique canonical orientation
    (same 180° flip as `register()`). Low-stakes for a void world (only the skybox yaw moves, nothing pinned
-   to real walls), but worth a tiebreaker (a door/opening, an L-shape corner) when one exists.
+   to real walls), but worth a tiebreaker (a door/opening, an L-shape corner) when one exists. The origin is
+   unaffected — the wall centroid is the same point at any θ — but note that once
+   [`grab` void mode](./dynamics.md) stores a user offset in frame coordinates, a flip reverses that
+   offset's direction, so the stakes stop being only cosmetic.
 2. **Partial-capture stability:** a sparse capture (few walls) can pick a different frame than a full one.
    Prefer a fuller view (weight by covered wall area / require ≥N walls before locking; hysteresis so it
    doesn't hop once locked).
+
+   **The load gate does not cover this** (found 2026-09-01). `loadGate` derives `expect` from the world
+   doc's surfaces, and a void world has none — so `expect = 0`, the `expect >= minSeed` test fails, and it
+   returns `"go"` immediately. The protection built for
+   [`surface-churn`](../investigations/surface-churn.md) therefore does not apply here: the canonical frame
+   can still be derived from however many walls happened to have loaded, which is the same fault landing on
+   the *world frame* instead of on identity. Both the origin (mean of wall centres) and θ (largest wall)
+   can shift. A void-world analogue of the gate needs a different `expect` — the count from the previous
+   good capture in this session, or an absolute wall floor — since there is no seed to compare against.
+
+   Raised in priority by [`dynamics` → `grab` modes](./dynamics.md): void mode stores a user offset against
+   this frame and pins the skybox's *position* to its origin, so a frame shift moves both.
 3. **Optional space tie:** let an outdoor world *optionally* bind to a stored space (robust registration)
    instead of canonicalizing — for rooms you revisit a lot and want rock-solid.
 4. **Immersion polish:** a void world currently shows whatever skybox is set (or the void color until one

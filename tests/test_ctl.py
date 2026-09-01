@@ -22,7 +22,7 @@ def test_every_subcommand_binds_a_handler():
             "asset": ["asset", "tree"], "image": ["image", "a dragon"], "skybox": ["skybox", "pines"],
             "grounded-skybox": ["grounded-skybox", "a meadow"], "texture": ["texture", "floor", "wood"],
             "style": ["style", "wall"], "edit": ["edit", "e1", "brighter"], "outpaint": ["outpaint", "e1"],
-            "skybox-from": ["skybox-from", "e1"],
+            "skybox-from": ["skybox-from", "e1"], "grab-mode": ["grab-mode", "skybox"],
         }.get(name, [name])
         assert callable(getattr(p.parse_args(args), "fn", None)), name
 

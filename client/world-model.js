@@ -422,7 +422,62 @@
     return held >= patience ? "forced" : "hold";
   }
 
+  // ---- derived-frame gestures (docs/specs/dynamics.md §8b — `grab`'s skybox/void modes) ------------
+  // Pure planar maths, extracted here rather than left in grab.js so it can be tested: XR interaction can't
+  // be exercised in a unit test, but the two identities below are exactly where a sign error hides, and a
+  // sign error in either one sends the sky or the whole world the wrong way with no clue as to which term
+  // was wrong.
+
+  // Rotate a horizontal [x, z] pair by `a` radians about gravity (+Y), matching Vector3.applyAxisAngle:
+  // Rodrigues with k = (0,1,0) gives (x·cos + z·sin, y, z·cos − x·sin).
+  /** @param {number} x  @param {number} z  @param {number} a  @returns {number[]} */
+  function rotXZ(x, z, a) {
+    var c = Math.cos(a), s = Math.sin(a);
+    return [x * c + z * s, -x * s + z * c];
+  }
+
+  // A void world's content rides a rigid horizontal transform, p' = R(yaw)·p + offset. Apply an additional
+  // yaw of `dDeg` about the horizontal point `pivot` ([x, z]) and return the equivalent transform.
+  //
+  // The pivot is RESOLVED INTO THE OFFSET rather than stored: rotating about v equals rotating about the
+  // origin plus a translation (v − R·v). Storing the pivot would mean re-deriving it from the LIVE viewer
+  // position on every capture, so content would drift as you walked around. Composing:
+  //   p'' = v + R_d(p' − v) = R_d·R·p + R_d·T + (v − R_d·v)
+  /**
+   * @param {number} yawDeg  @param {number[]} offset  @param {number} dDeg  @param {number[]} pivot
+   * @returns {{yaw: number, offset: number[]}}
+   */
+  function yawAboutPivot(yawDeg, offset, dDeg, pivot) {
+    var a = dDeg * Math.PI / 180;
+    var t = rotXZ(offset[0], offset[1], a), v = rotXZ(pivot[0], pivot[1], a);
+    return { yaw: yawDeg + dDeg, offset: [t[0] + pivot[0] - v[0], t[1] + pivot[1] - v[1]] };
+  }
+
+  // The skybox mode's floor drag, decomposed in POLAR coordinates about the sky's centre: how far the
+  // grabbed point moved radially is a SCALE ratio, how far it swung is a YAW. A diagonal drag does both.
+  //
+  // `eps` floors both radii for the ARITHMETIC only — it is not a minimum engage radius (deliberately
+  // rejected: you learn a turntable's feel faster than a rule about where you may touch it). Without it
+  // r/r0 at r0 ≈ 0 is Infinity, and a non-finite value that reaches a transform blanks the scene branch and
+  // stays blanked.
+  //
+  // dYaw is (a0 − a) because a +Y rotation by θ carries a direction at atan2(z, x) = a to a − θ, so to drag
+  // the grabbed feature from a0 round to a the sky must turn by a0 − a.
+  /**
+   * @param {number[]} centre  @param {number[]} grab  @param {number[]} now  @param {number} [eps]
+   * @returns {{dYaw: number, scale: number}}
+   */
+  function polarDrag(centre, grab, now, eps) {
+    var e = typeof eps === "number" && eps > 0 ? eps : 1e-6;
+    var r0 = Math.max(e, Math.hypot(grab[0] - centre[0], grab[1] - centre[1]));
+    var r = Math.max(e, Math.hypot(now[0] - centre[0], now[1] - centre[1]));
+    var a0 = Math.atan2(grab[1] - centre[1], grab[0] - centre[0]);
+    var a = Math.atan2(now[1] - centre[1], now[0] - centre[0]);
+    return { dYaw: (a0 - a) * 180 / Math.PI, scale: r / r0 };
+  }
+
   return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, loadGate: loadGate,
+           rotXZ: rotXZ, yawAboutPivot: yawAboutPivot, polarDrag: polarDrag,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,
            relocInit: relocInit, relocStep: relocStep,

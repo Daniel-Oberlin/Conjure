@@ -1301,6 +1301,30 @@ def test_time_endpoint_returns_epoch_ms(client):
     assert before - 1000.0 <= t <= after + 1000.0
 
 
+def test_a_config_value_outside_its_enum_is_refused(client):
+    """Regression, 2026-09-01. The director conjured `grab` with mode="sky", then mode="frame" — plausible
+    guesses taken from internal field names — got ok:true both times, and told the user each mode was live
+    while the client, seeing a value it didn't recognise, silently stayed in `object`. Nothing said no.
+
+    An unvalidated enum makes a caller's wrong guess indistinguishable from success. The error has to name
+    the valid choices, because the caller correcting itself on the next call is the whole recovery path."""
+    for bad in ("sky", "frame", "Skybox ", "world"):
+        r = client.post("/module", json={"module": "grab", "config": {"mode": bad}}).json()
+        assert r["ok"] is False, bad
+        assert "skybox" in r["error"] and "void" in r["error"], r["error"]
+    # …and nothing was conjured by the refused calls.
+    assert not [x for x in _entities(client) if (x.get("meta") or {}).get("module") == "grab"]
+    # Every valid choice is accepted, so the guard can't be over-tight.
+    for good in ("object", "skybox", "void"):
+        r = client.post("/module", json={"module": "grab", "config": {"mode": good}}).json()
+        assert r["ok"] is True, good
+        e = next(x for x in _entities(client) if x["id"] == r["id"])
+        assert e["components"]["grab"]["mode"] == good
+    # A param with no enum still takes any value — the guard is per-key, not a whitelist on the whole config.
+    assert client.post("/module", json={"module": "grab",
+                                        "config": {"mode": "void", "reelSpeed": 9.5}}).json()["ok"] is True
+
+
 def test_conjure_and_dismiss_module(client):
     # conjure fireflies → an entity carrying the fireflies component + module meta, config passed through.
     r = client.post("/module", json={"module": "fireflies", "config": {"count": 20, "seed": 3}}).json()
