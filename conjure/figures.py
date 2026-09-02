@@ -61,17 +61,17 @@ def _mul(a: list[float], b: list[float]) -> list[float]:
             for c in range(4) for r in range(4)]
 
 
-def node_world_positions(doc: dict) -> dict[int, tuple[float, float, float]]:
-    """Bind-pose world position of every node, by node index."""
+def node_world_matrices(doc: dict) -> dict[int, list[float]]:
+    """Bind-pose world matrix of every node (column-major 4x4), by node index."""
     nodes = doc.get("nodes") or []
-    out: dict[int, tuple[float, float, float]] = {}
+    out: dict[int, list[float]] = {}
     ident = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
 
     def walk(idx: int, parent: list[float]) -> None:
         if idx in out or idx >= len(nodes):
             return
         world = _mul(parent, _local_matrix(nodes[idx]))
-        out[idx] = (world[12], world[13], world[14])
+        out[idx] = world
         for child in nodes[idx].get("children", []):
             walk(child, world)
 
@@ -82,6 +82,11 @@ def node_world_positions(doc: dict) -> dict[int, tuple[float, float, float]]:
     for i in range(len(nodes)):          # nodes outside the active scene still get a position
         walk(i, ident)
     return out
+
+
+def node_world_positions(doc: dict) -> dict[int, tuple[float, float, float]]:
+    """Bind-pose world position of every node, by node index."""
+    return {i: (m[12], m[13], m[14]) for i, m in node_world_matrices(doc).items()}
 
 
 def parent_map(doc: dict) -> dict[int, int]:
@@ -668,3 +673,274 @@ def score(inferred: dict[str, str], stated: dict[str, str]) -> dict:
         "wrong": {b: {"inferred": inferred[b], "stated": stated[b]}
                   for b in sorted(set(shared) - set(hits))},
     }
+
+
+# ---------------------------------------------------------------- the anatomical frame
+#
+# Semantic bone NAMES were the first half of the vocabulary; semantic AXES are the second, and without
+# them the first is nearly useless. Posing took euler degrees in each bone's OWN local space, and a
+# bone's rest orientation is whatever its rigger chose — measured across the three figures on disk,
+# `leftUpperLeg` rests 177 degrees from identity on Grace and Yuffie and 6 degrees on Saka. So one
+# number meant three different motions, and "raise her legs" put them behind her.
+#
+# The fix is the move that solved names: measure the structure instead of assuming a convention. A
+# bone's rest DIRECTION is computable from the joint positions the map already gives us, and with the
+# body's own forward and up that yields three anatomical axes per bone:
+#
+#     bend    flexion/extension   — the far end of the bone swings FORWARD (+) / backward (-)
+#     spread  abduction/adduction — the far end swings OUTWARD, away from the midline (+)
+#     turn    axial rotation      — the bone twists about its own length, + inward (medial)
+#
+# All three are mirror-symmetric by construction: the same numbers on `leftUpperArm` and `rightUpperArm`
+# produce mirrored motion, which is what lets `{"leftUpperLeg": {"bend": 45}}` mean the same thing on
+# every rig — the point of the whole exercise.
+
+# The skeleton read as chains rather than a tree, which is what makes "the far end of this bone" a
+# question with an answer. A bone's direction is the vector to the next MAPPED joint down its chain, so
+# a rig missing `chest` or `leftToes` falls through to the one after it rather than losing the bone.
+_CHAINS: list[tuple[str, ...]] = [("hips", "spine", "chest", "upperChest", "neck", "head")]
+for _side in ("left", "right"):
+    _CHAINS.append((f"{_side}UpperLeg", f"{_side}LowerLeg", f"{_side}Foot", f"{_side}Toes"))
+    _CHAINS.append((f"{_side}Shoulder", f"{_side}UpperArm", f"{_side}LowerArm", f"{_side}Hand"))
+    # Fingers, for the rigs that state them (VRM names all fifteen). Not inferred by this module, but a
+    # stated map carries them and "make a fist" should not need a second mechanism.
+    #
+    # MIDDLE FIRST, and that ordering is load-bearing: the hand heads all five finger chains, so the
+    # first one listed is what gives the hand its own direction. Through the middle finger is the hand's
+    # anatomical axis; through the thumb — which points sideways — it is not.
+    for _finger, _joints in (("Middle", ("Proximal", "Intermediate", "Distal")),
+                             ("Thumb", ("Metacarpal", "Proximal", "Distal")),
+                             ("Index", ("Proximal", "Intermediate", "Distal")),
+                             ("Ring", ("Proximal", "Intermediate", "Distal")),
+                             ("Little", ("Proximal", "Intermediate", "Distal"))):
+        _CHAINS.append((f"{_side}Hand",) + tuple(f"{_side}{_finger}{j}" for j in _joints))
+
+#: bone -> (candidates below it in its chain, candidates above it) — both nearest-first.
+_ALONG: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+for _chain in _CHAINS:
+    for _k, _bone in enumerate(_chain):
+        _down, _up = _chain[_k + 1:], tuple(reversed(_chain[:_k]))
+        _prev = _ALONG.get(_bone)
+        # A bone can sit on several chains (a hand heads five finger chains); keep the first non-empty
+        # answer in each direction so the arm's own chain wins for the hand and the fingers still resolve.
+        _ALONG[_bone] = ((_prev[0] or _down, _prev[1] or _up) if _prev else (_down, _up))
+
+
+def _sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _unit(v, eps: float = 1e-9):
+    n = math.sqrt(_dot(v, v))
+    return None if n < eps else (v[0] / n, v[1] / n, v[2] / n)
+
+
+def _scaled(v, k: float):
+    return (v[0] * k, v[1] * k, v[2] * k)
+
+
+def _perp(direction, reference, floor: float = 0.15):
+    """A unit axis perpendicular to both, or None when the two are too nearly parallel to trust.
+
+    `floor` is a sine: below ~8.6 degrees of separation the cross product's DIRECTION is noise, not just
+    its length, so the caller falls back to a different reference rather than normalizing a rounding
+    error into an axis. That case is real — a foot points forward, so its bend cannot be defined against
+    the body's forward.
+    """
+    c = _cross(direction, reference)
+    return _unit(c) if math.sqrt(_dot(c, c)) >= floor else None
+
+
+def body_frame(doc: dict, mapping: dict[str, str]) -> dict[str, tuple[float, float, float]]:
+    """The figure's own `up`, `left` and `forward`, measured from its bind pose.
+
+    Not assumed. `up` is hips to head, `left` is the vector between the paired joints (hips, then
+    shoulders, then hands), and forward is their cross product — which for every sample model comes out
+    as glTF's +Z, the facing convention already recorded in docs/backlogs/spaces-geometry.md. Measuring
+    it costs three subtractions and means a rig baked a few degrees off vertical poses correctly rather
+    than approximately.
+    """
+    nodes = doc.get("nodes") or []
+    by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
+    pos = node_world_positions(doc)
+
+    def at(bone: str):
+        i = by_name.get(mapping.get(bone, ""))
+        return pos.get(i) if i is not None else None
+
+    up = None
+    lo, hi = at("hips"), at("head")
+    if lo and hi:
+        up = _unit(_sub(hi, lo))
+    up = up or (0.0, 1.0, 0.0)
+
+    left = None
+    for l, r in (("leftUpperLeg", "rightUpperLeg"), ("leftShoulder", "rightShoulder"),
+                 ("leftUpperArm", "rightUpperArm"), ("leftHand", "rightHand")):
+        a, b = at(l), at(r)
+        if a and b:
+            left = _unit(_sub(a, b))
+            if left:
+                break
+    left = left or (1.0, 0.0, 0.0)
+    # Gram-Schmidt: a hip line is never exactly horizontal, and an `up` that is not exactly vertical is
+    # the whole reason for measuring. Orthogonalizing against `up` keeps the frame square.
+    left = _unit(_sub(left, _scaled(up, _dot(left, up)))) or (1.0, 0.0, 0.0)
+    forward = _unit(_cross(left, up)) or (0.0, 0.0, 1.0)
+    return {"up": up, "left": left, "forward": forward}
+
+
+def bone_directions(doc: dict, mapping: dict[str, str]) -> dict[str, tuple[float, float, float]]:
+    """`{bone: unit vector along it}` in model space — from each joint toward the far end of its bone.
+
+    The far end is the next mapped joint down the chain (`leftUpperLeg` -> `leftLowerLeg`). A bone at the
+    END of a chain has no joint beyond it, so it CONTINUES the direction it arrived on: a hand points the
+    way the forearm did, a head the way the neck did. Both are anatomically right and neither needs the
+    node tree, which conversion rewrites.
+    """
+    nodes = doc.get("nodes") or []
+    by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
+    pos = node_world_positions(doc)
+
+    def at(bone: str):
+        i = by_name.get(mapping.get(bone, ""))
+        return pos.get(i) if i is not None else None
+
+    out: dict[str, tuple[float, float, float]] = {}
+    for bone in mapping:
+        here = at(bone)
+        if here is None:
+            continue
+        down, up = _ALONG.get(bone, ((), ()))
+        axis = None
+        for nxt in down:
+            there = at(nxt)
+            if there:
+                axis = _unit(_sub(there, here))
+                if axis:
+                    break
+        if axis is None:
+            for prev in up:
+                there = at(prev)
+                if there:
+                    axis = _unit(_sub(here, there))
+                    if axis:
+                        break
+        if axis:
+            out[bone] = axis
+    return out
+
+
+def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
+                    places: int = 5) -> dict[str, dict[str, list[float]]]:
+    """`{bone: {"bend": [x,y,z], "spread": [...], "turn": [...]}}` — the axes to rotate each bone about.
+
+    `space="parent"` (the default) returns each axis in the frame the bone's own local rotation lives in,
+    i.e. its glTF PARENT's. That is the form a runtime wants, because applying it is one multiplication
+    onto the bone's rest quaternion and the result rides the parent chain: bending a hip and then the
+    knee does what a leg does, with no re-derivation. `space="world"` returns model space, which is what
+    an offline check (scripts/pose_test.py) needs.
+
+    Each axis is chosen so that a POSITIVE angle produces the named motion, on either side of the body:
+
+    * `bend`   rotates the far end forward — cross(direction, forward). Degenerate for a bone that
+               already points forward (a foot), which falls back to `up` so bend lifts the toes.
+    * `spread` rotates the far end outward — cross(direction, outward), where outward is the body's left
+               for left bones and its right for right ones. Degenerate for a bone that already points
+               outward (a T-posed arm), which falls back to `up` so spread keeps raising it.
+    * `turn`   is the bone's own direction, negated on the right so both sides rotate inward together.
+    """
+    nodes = doc.get("nodes") or []
+    by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
+    frame = body_frame(doc, mapping)
+    up, left, forward = frame["up"], frame["left"], frame["forward"]
+    directions = bone_directions(doc, mapping)
+    mats = node_world_matrices(doc) if space == "parent" else {}
+    parent = parent_map(doc) if space == "parent" else {}
+
+    def to_parent(i: int, v):
+        """A model-space axis in node `i`'s parent frame — R_parent transposed, columns normalized.
+
+        Normalizing rather than inverting is deliberate: a rig can carry scale on a parent node, and a
+        rotation axis must stay a unit direction through it. Shear would defeat this, and no exporter
+        emits it for a skeleton.
+        """
+        p = parent.get(i)
+        m = mats.get(p) if p is not None else None
+        if not m:
+            return v
+        cols = [_unit((m[0], m[1], m[2])), _unit((m[4], m[5], m[6])), _unit((m[8], m[9], m[10]))]
+        if not all(cols):
+            return v
+        return (_dot(v, cols[0]), _dot(v, cols[1]), _dot(v, cols[2]))
+
+    out: dict[str, dict[str, list[float]]] = {}
+    for bone, direction in directions.items():
+        i = by_name.get(mapping.get(bone, ""))
+        if i is None:
+            continue
+        sign = -1.0 if bone.startswith("right") else 1.0
+        outward = _scaled(left, sign)
+        bend = _perp(direction, forward) or _perp(direction, up)
+        spread = _perp(direction, outward) or _perp(direction, up)
+        turn = _scaled(direction, sign)
+        axes = {"bend": bend, "spread": spread, "turn": turn}
+        if not all(axes.values()):
+            continue                                    # a bone we cannot frame is better left unposable
+        if space == "parent":
+            axes = {k: to_parent(i, v) for k, v in axes.items()}
+        out[bone] = {k: [round(c, places) + 0.0 for c in v] for k, v in axes.items()}
+    return out
+
+
+#: The rotation names `anatomical_axes` produces, in the order they compose (see `resolve_pose`).
+POSE_AXES = ("turn", "bend", "spread")
+
+
+def resolve_pose(axes: dict, pose: dict) -> dict[str, list[float]]:
+    """`{bone: [x, y, z, w]}` — one delta quaternion per posed bone, in whatever space `axes` are in.
+
+    `pose` is `{bone: {"bend": degrees, ...}}`. Missing axes are zero, so a one-axis request stays a
+    one-axis rotation.
+
+    Composition order is turn, then bend, then spread — twist innermost, swings outermost. That is the
+    swing-twist decomposition every animation system uses, and it is what makes a twist mean the same
+    thing regardless of how the limb is currently swung. The reverse order would make "turn 20" describe
+    a different motion depending on the bend that happened to accompany it.
+    """
+    out: dict[str, list[float]] = {}
+    for bone, request in (pose or {}).items():
+        frame = axes.get(bone)
+        if not frame or not isinstance(request, dict):
+            continue
+        q = [0.0, 0.0, 0.0, 1.0]
+        for name in POSE_AXES:
+            deg = request.get(name)
+            if deg in (None, 0) or not isinstance(deg, (int, float)):
+                continue
+            axis = frame.get(name)
+            if not axis:
+                continue
+            half = math.radians(float(deg)) / 2.0
+            s = math.sin(half)
+            q = _quat_mul([axis[0] * s, axis[1] * s, axis[2] * s, math.cos(half)], q)
+        out[bone] = q
+    return out
+
+
+def _quat_mul(a: list[float], b: list[float]) -> list[float]:
+    """a then b, in the a*b convention three.js and glTF use (b applied first)."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return [aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz]

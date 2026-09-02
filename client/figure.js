@@ -1,12 +1,25 @@
-/* global AFRAME */
-// `figure` — pose a rigged humanoid through its SEMANTIC bone map (docs/backlogs/figures.md).
+/* global AFRAME, THREE */
+// `figure` — pose a rigged humanoid in ANATOMICAL terms (docs/backlogs/figures.md).
 //
-// The entity already carries `gltf-model`; this rides alongside it and rotates named bones. The map
-// ({leftUpperArm: "upper_arm.L", …}) is resolved server-side and handed over in the component config, so
-// a caller says "leftUpperArm" and this file never needs to know that Grace's rig calls it `upper_arm.L`,
-// Saka's `J_Bip_L_UpperArm`, and a Daz figure `lShldrBend`.
+// The entity already carries `gltf-model`; this rides alongside it and rotates named bones. Three JSON
+// strings arrive from the server, and each answers a different question:
 //
-// Both fields are JSON strings rather than A-Frame schema objects: the map is arbitrary key/value data
+//   humanoid  WHICH node is this bone      {leftUpperArm: "upper_arm.fk.L"}
+//   axes      WHICH WAY does it rotate     {leftUpperArm: {bend: [x,y,z], spread: […], turn: […]}}
+//   pose      HOW FAR, in degrees          {leftUpperArm: {bend: 45}}
+//
+// So a caller says "bend her left elbow 45" and neither it nor this file needs to know that Grace's rig
+// calls that bone `forearm.fk.L`, Saka's `J_Bip_L_LowerArm`, and that the two disagree by 137 degrees
+// about which way its local X points. The axes are measured from the bind pose at import
+// (conjure/figures.py) and are model-space-free: each is already expressed in the frame the bone's own
+// local rotation lives in, so applying one is a single multiplication.
+//
+// **A pose composes ONTO the rest rotation, never replaces it.** Writing `bone.rotation.set(...)`
+// discards whatever the rigger authored — measured at 177 degrees on Grace's `thigh.fk.L` — so the leg
+// went upside-down before the requested angle was even added, and "clear" left it there. That is the
+// other half of why posing looked so wrong on device.
+//
+// The fields are JSON strings rather than A-Frame schema objects: they are arbitrary key/value data
 // whose keys differ per model, which A-Frame's flat schema types cannot express.
 //
 // Not a dynamic module — it has no independent existence, it decorates a placed model. It is ordinary
@@ -56,10 +69,33 @@
     try { return JSON.parse(s); } catch (e) { return null; }
   }
 
+  // Composition order is turn, then bend, then spread — twist innermost, swings outermost, which is the
+  // swing-twist decomposition every animation system uses and what keeps "turn 20" meaning the same
+  // motion whatever bend accompanies it. Mirrored exactly by figures.resolve_pose on the Python side,
+  // which is what scripts/pose_test.py renders, so a headset and a Blender render agree.
+  var AXIS_ORDER = ["turn", "bend", "spread"];
+
+  function rotation(frame, request) {
+    if (!frame || !request) return null;
+    var q = null, tmp = new THREE.Quaternion(), axis = new THREE.Vector3();
+    AXIS_ORDER.forEach(function (name) {
+      var deg = +request[name], a = frame[name];
+      if (!deg || !isFinite(deg) || !a || a.length !== 3) return;
+      // A non-finite angle blanks that branch of the scene graph and STAYS blanked — the same hazard
+      // the server guards, guarded again here because a stale snapshot can carry one in.
+      axis.set(a[0], a[1], a[2]);
+      if (!axis.lengthSq()) return;
+      tmp.setFromAxisAngle(axis.normalize(), deg * Math.PI / 180);
+      q = q ? q.premultiply(tmp) : tmp.clone();
+    });
+    return q;
+  }
+
   AFRAME.registerComponent("figure", {
     schema: {
       humanoid: { type: "string", default: "" },   // {semanticBone: nodeName}
-      pose: { type: "string", default: "" }        // {semanticBone: [x, y, z]} euler DEGREES
+      axes: { type: "string", default: "" },       // {semanticBone: {bend|spread|turn: [x, y, z]}}
+      pose: { type: "string", default: "" }        // {semanticBone: {bend|spread|turn: DEGREES}}
     },
 
     init: function () {
@@ -76,13 +112,19 @@
 
     // Bone objects by name, collected once per loaded model. three names bones after the glTF nodes,
     // which is exactly what the humanoid map stores — that is why the map holds NAMES not indices.
+    //
+    // Each bone's REST quaternion is captured here, on the first pass over a freshly loaded model,
+    // because it is the only moment it is guaranteed untouched. Every pose is a delta onto it. Kept in
+    // a Map of our own rather than on the bone: three deep-copies `userData` through JSON when it
+    // clones an object, which would quietly turn a Quaternion into a plain bag of `_x`/`_y` fields.
     _collect: function () {
       if (this._bones) return this._bones;
       var obj = this.el.getObject3D("mesh");
       if (!obj) return null;
-      var bones = {};
+      var bones = {}, rest = this._rest = new Map();
       var put = function (n) {
         if (!n || !n.name) return;
+        if (!rest.has(n)) rest.set(n, n.quaternion.clone());
         bones[n.name] = n;
         variants(n.name).forEach(function (k) {   // raw name wins; the rest are fallback spellings
           if (k && !bones[k]) bones[k] = n;
@@ -102,37 +144,41 @@
 
     apply: function () {
       var map = parse(this.data.humanoid) || {};
+      var axes = parse(this.data.axes) || {};
       var pose = parse(this.data.pose) || {};
       var bones = this._collect();
       if (!bones) return;                              // model not loaded yet; model-loaded retries
 
       // Reset anything previously posed but absent now, so clearing a pose really restores the figure
-      // rather than leaving the last rotation stuck.
-      var prev = this._applied || {};
+      // rather than leaving the last rotation stuck. Restoring means the REST quaternion, not identity.
+      var prev = this._applied || {}, rest = this._rest;
       Object.keys(prev).forEach(function (bone) {
         if (pose[bone]) return;
         var b = lookup(bones, map[bone]);
-        if (b) b.rotation.set(0, 0, 0);
+        if (b && rest.has(b)) b.quaternion.copy(rest.get(b));
       });
 
       var applied = {}, missing = [];
       Object.keys(pose).forEach(function (bone) {
-        var node = map[bone], b = node && lookup(bones, node);
-        if (!b) { missing.push(bone); return; }
-        var e = pose[bone];
-        if (!e || e.length !== 3) return;
-        var x = +e[0], y = +e[1], z = +e[2];
-        // A non-finite angle blanks that branch of the scene graph and STAYS blanked — the same hazard
-        // the server guards, guarded again here because a stale snapshot can carry one in.
-        if (!isFinite(x) || !isFinite(y) || !isFinite(z)) return;
-        b.rotation.set(x * Math.PI / 180, y * Math.PI / 180, z * Math.PI / 180);
+        var node = map[bone], b = node && lookup(bones, node), frame = axes[bone];
+        if (!b || !frame || !rest.has(b)) { missing.push(bone); return; }
+        // Rest first, then the delta — so a request that works out to no rotation at all lands the bone
+        // back on its rest pose rather than leaving the last one stuck there.
+        //
+        // delta * rest: the axes are in the bone's PARENT frame, which is the frame its own local
+        // quaternion lives in, so the delta pre-multiplies. Doing it the other way round would apply
+        // the rotation in the bone's own twisted space and put us back where we started.
+        var q = rotation(frame, pose[bone]);
+        b.quaternion.copy(rest.get(b));
+        if (!q) return;
+        b.quaternion.premultiply(q);
         applied[bone] = true;
       });
       this._applied = applied;
       if (missing.length) {
-        log("NO BONE for " + missing.join(", ") + " on " + (this.el.id || "?")
-            + " — map has " + Object.keys(map).length + " entries, model has "
-            + Object.keys(bones).length + " bones");
+        log("NO BONE OR AXES for " + missing.join(", ") + " on " + (this.el.id || "?")
+            + " — map has " + Object.keys(map).length + " entries, axes " + Object.keys(axes).length
+            + ", model has " + Object.keys(bones).length + " bones");
       }
       this._once = this._once || (log("posed " + Object.keys(applied).length + " bone(s) on "
                                      + (this.el.id || "?")) || true);
@@ -141,9 +187,10 @@
     remove: function () {
       this.el.removeEventListener("model-loaded", this._onLoad);
       var map = parse(this.data.humanoid) || {}, bones = this._bones || {};
+      var rest = this._rest || new Map();
       Object.keys(this._applied || {}).forEach(function (bone) {
         var b = lookup(bones, map[bone]);
-        if (b) b.rotation.set(0, 0, 0);
+        if (b && rest.has(b)) b.quaternion.copy(rest.get(b));
       });
     }
   });

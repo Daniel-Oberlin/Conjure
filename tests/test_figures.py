@@ -8,7 +8,12 @@ as the inference. docs/backlogs/figures.md
 
 import pytest
 
-from conjure.figures import CORE_BONES, infer_humanoid, node_world_positions, score, validate
+import math
+
+from conjure.figures import (CORE_BONES, POSE_AXES, anatomical_axes, body_frame, infer_humanoid,
+                             node_world_matrices, node_world_positions, parent_map, resolve_pose,
+                             score, validate)
+from conjure.figures import _ancestors, _local_matrix, _mul, _quat_mul, _sub
 
 
 def _skeleton():
@@ -143,3 +148,176 @@ def test_score_separates_misses_from_disagreements():
 def test_core_bones_are_the_documented_set():
     assert "hips" in CORE_BONES and "leftUpperArm" in CORE_BONES
     assert not any(b.endswith("Distal") for b in CORE_BONES), "fingers are not inferable from topology"
+
+
+# ---------------------------------------------------------------- the anatomical frame
+#
+# Semantic bone names say WHICH joint; these say WHICH WAY. The tests below all take the same shape,
+# and it is the only shape that can catch a wrong axis: pose a bone, then look at where the joint BELOW
+# it actually ended up. An axis that is plausible, unit-length and wrong passes every structural check
+# there is — which is exactly how the previous round of this feature shipped legs that raised backwards.
+
+
+def _quaternion_matrix(q):
+    x, y, z, w = q
+    return [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0,
+            2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0,
+            2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0,
+            0, 0, 0, 1]
+
+
+def _moved(doc, bone_node, delta, watch_node):
+    """Where `watch_node` lands after `delta` (a parent-space quaternion) is applied to `bone_node`.
+
+    Forward kinematics in eight lines, and it has to be here rather than in the module: this is the
+    runtime's job, and a test that reused the runtime's own arithmetic could only prove it consistent
+    with itself. `delta * rest` is what the client does with the axes it is sent.
+    """
+    mats, parent = node_world_matrices(doc), parent_map(doc)
+    node = doc["nodes"][bone_node]
+    q = _quat_mul(delta, node.get("rotation", [0.0, 0.0, 0.0, 1.0]))
+    t, sc, m = node.get("translation", [0, 0, 0]), node.get("scale", [1, 1, 1]), _quaternion_matrix(q)
+    local = [m[0] * sc[0], m[1] * sc[0], m[2] * sc[0], 0, m[4] * sc[1], m[5] * sc[1], m[6] * sc[1], 0,
+             m[8] * sc[2], m[9] * sc[2], m[10] * sc[2], 0, t[0], t[1], t[2], 1]
+    p = parent.get(bone_node)
+    world = _mul(mats[p], local) if p is not None else local
+    chain = _ancestors(watch_node, parent)
+    for c in reversed(chain[:chain.index(bone_node)]):
+        world = _mul(world, _local_matrix(doc["nodes"][c]))
+    return (world[12], world[13], world[14])
+
+
+def _travel(doc, mapping, axes, bone, watch, request):
+    """The world-space displacement of `watch` when `bone` is posed by `request`."""
+    by_name = {n["name"]: i for i, n in enumerate(doc["nodes"])}
+    before = node_world_positions(doc)[by_name[mapping[watch]]]
+    delta = resolve_pose(axes, {bone: request})[bone]
+    after = _moved(doc, by_name[mapping[bone]], delta, by_name[mapping[watch]])
+    return _sub(after, before)
+
+
+def _posed(doc=None):
+    doc = doc or _skeleton()[0]
+    mapping = infer_humanoid(doc)
+    return doc, mapping, anatomical_axes(doc, mapping)
+
+
+def test_the_body_frame_is_measured_not_assumed():
+    doc, mapping, _ = _posed()
+    frame = body_frame(doc, mapping)
+    assert frame["up"] == pytest.approx((0, 1, 0), abs=1e-6)
+    assert frame["left"] == pytest.approx((1, 0, 0), abs=1e-6)
+    # +X left and +Y up make forward +Z — the facing convention every sample model follows, arrived at
+    # by cross product rather than by assertion, so a rig standing off-axis still gets a square frame.
+    assert frame["forward"] == pytest.approx((0, 0, 1), abs=1e-6)
+
+
+def test_bend_swings_a_limb_forward_on_both_sides():
+    """The bug this whole layer exists for: "raise her legs" put them BEHIND her."""
+    doc, mapping, axes = _posed()
+    for side in ("left", "right"):
+        d = _travel(doc, mapping, axes, f"{side}UpperLeg", f"{side}Foot", {"bend": 45})
+        assert d[2] > 0.3, f"{side} foot should swing forward, went {d}"
+        assert abs(d[0]) < 1e-6, "and straight forward, not out to the side"
+    # Both sides by the SAME sign, because flexing both hips moves both knees the same way. Only the
+    # lateral rotations mirror.
+    left = _travel(doc, mapping, axes, "leftUpperLeg", "leftFoot", {"bend": 45})
+    right = _travel(doc, mapping, axes, "rightUpperLeg", "rightFoot", {"bend": 45})
+    assert left == pytest.approx(right, abs=1e-6)
+
+
+def test_spread_swings_a_limb_outward_on_both_sides():
+    doc, mapping, axes = _posed()
+    left = _travel(doc, mapping, axes, "leftUpperLeg", "leftFoot", {"spread": 45})
+    right = _travel(doc, mapping, axes, "rightUpperLeg", "rightFoot", {"spread": 45})
+    assert left[0] > 0.3 and right[0] < -0.3, "feet should part, not both go the same way"
+    assert left[0] == pytest.approx(-right[0], abs=1e-6), "and mirror each other exactly"
+
+
+def test_spread_raises_an_arm_that_already_points_outward():
+    """The degenerate case that a fixed body axis cannot handle.
+
+    A T-posed arm already points along the direction "outward" means, so the cross product that defines
+    spread everywhere else collapses. Falling back to the body's up axis keeps the motion continuous:
+    an arm at 90 degrees keeps rising rather than stopping dead or spinning about its own length.
+    """
+    doc, mapping, axes = _posed()
+    for side in ("left", "right"):
+        d = _travel(doc, mapping, axes, f"{side}UpperArm", f"{side}Hand", {"spread": 45})
+        assert d[1] > 0.3, f"{side} hand should rise, went {d}"
+
+
+def test_bend_lifts_the_toes_of_a_forward_pointing_foot():
+    """The other degenerate case: a foot points the way `bend` would swing it, so bend means the ankle."""
+    doc, mapping, axes = _posed()
+    d = _travel(doc, mapping, axes, "leftFoot", "leftToes", {"bend": 45})
+    assert d[1] > 0.05 and abs(d[2]) < 0.02, f"toes should lift, went {d}"
+
+
+def test_turn_rotates_a_limb_about_its_own_length_inward_on_both_sides():
+    doc, mapping, axes = _posed()
+    left = _travel(doc, mapping, axes, "leftLowerLeg", "leftToes", {"turn": 90})
+    right = _travel(doc, mapping, axes, "rightLowerLeg", "rightToes", {"turn": 90})
+    assert left[0] < -0.05 and right[0] > 0.05, "both toes should turn toward the midline"
+    assert left[1] == pytest.approx(0, abs=1e-6), "a twist does not raise the joint below it"
+
+
+def test_the_head_turns_about_the_body_up_axis():
+    doc, mapping, axes = _posed()
+    assert axes["head"]["turn"] == pytest.approx([0, 1, 0], abs=1e-6)
+
+
+def test_axes_ride_the_bones_own_parent_frame():
+    """Why the axes are stored in parent space rather than model space.
+
+    Turning the whole figure 90 degrees changes every axis in the world, and changes NONE of them in the
+    frame each bone's local rotation actually lives in. Storing them that way is what makes applying one
+    a single multiplication onto the rest quaternion — and what makes a pose survive the figure being
+    rotated, which is otherwise a whole class of bug nobody would see until the headset.
+    """
+    doc, mapping, axes = _posed()
+    turned, _ = _skeleton()
+    root = len(turned["nodes"])
+    half = math.sqrt(0.5)
+    turned["nodes"].append({"name": "root", "rotation": [0, half, 0, half],   # +90 degrees about Y
+                            "children": [turned["scenes"][0]["nodes"][0]]})
+    turned["scenes"][0]["nodes"] = [root]
+    spun = anatomical_axes(turned, mapping)
+    assert spun["leftUpperLeg"]["bend"] == pytest.approx(axes["leftUpperLeg"]["bend"], abs=1e-5)
+    # ...and in model space they differ, which is the thing being avoided.
+    world = anatomical_axes(turned, mapping, space="world")["leftUpperLeg"]["bend"]
+    assert world != pytest.approx(axes["leftUpperLeg"]["bend"], abs=1e-3)
+    # The motion is what matters, and it is unchanged in the FIGURE's own terms: her forward is now +X.
+    d = _travel(turned, mapping, spun, "leftUpperLeg", "leftFoot", {"bend": 45})
+    assert d[0] > 0.3 and abs(d[2]) < 1e-5
+
+
+def test_a_bone_with_nothing_to_point_at_gets_no_axes():
+    """No frame is better than a made-up one — /figure refuses to pose what it cannot aim."""
+    doc, _ = _skeleton()
+    assert anatomical_axes(doc, {"hips": "hips"}) == {}
+
+
+def test_resolve_pose_composes_twist_innermost():
+    doc, mapping, axes = _posed()
+    both = resolve_pose(axes, {"leftUpperArm": {"bend": 30, "turn": 20}})["leftUpperArm"]
+    bend = resolve_pose(axes, {"leftUpperArm": {"bend": 30}})["leftUpperArm"]
+    turn = resolve_pose(axes, {"leftUpperArm": {"turn": 20}})["leftUpperArm"]
+    assert both == pytest.approx(_quat_mul(bend, turn), abs=1e-9)
+    assert POSE_AXES.index("turn") < POSE_AXES.index("bend") < POSE_AXES.index("spread")
+
+
+def test_resolve_pose_treats_a_missing_axis_as_zero():
+    doc, mapping, axes = _posed()
+    assert resolve_pose(axes, {"head": {}})["head"] == pytest.approx([0, 0, 0, 1])
+    assert resolve_pose(axes, {"head": {"bend": 0}})["head"] == pytest.approx([0, 0, 0, 1])
+    assert resolve_pose(axes, {"nosuchbone": {"bend": 10}}) == {}
+
+
+def test_every_mapped_bone_of_a_humanoid_gets_a_full_frame():
+    doc, mapping, axes = _posed()
+    assert set(axes) == set(mapping)
+    for bone, frame in axes.items():
+        assert set(frame) == set(POSE_AXES), bone
+        for name, axis in frame.items():
+            assert math.isclose(math.dist(axis, (0, 0, 0)), 1.0, abs_tol=1e-4), f"{bone}.{name} not unit"

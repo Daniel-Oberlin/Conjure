@@ -469,22 +469,101 @@ the failure modes were consistent enough to name:
 
 ### The axis problem — posing needs an anatomical frame
 
-Separate from the above and true even for Saka, whose bones move correctly. `pose_figure` takes euler
+Separate from the above and true even for Saka, whose bones move correctly. `pose_figure` took euler
 degrees in each bone's OWN local space, and a bone's rest orientation is whatever its rigger chose. So
-`[0, 0, -70]` flexes one figure's hip and swings another's leg backward, and "raise her legs" put them
+`[0, 0, -70]` flexed one figure's hip and swung another's leg backward, and "raise her legs" put them
 behind her.
 
-Semantic bone NAMES are solved; semantic AXES are not. The fix is the same move that solved names —
-measure the structure instead of assuming a convention. Every bone's rest direction is computable from the
-joint positions already extracted (bone → child), and with the body's forward and up that gives each bone
-a canonical basis: *twist* along the limb, *swing* perpendicular. The vocabulary then becomes anatomical
-(`{"leftUpperLeg": {"lift": 45}}`) and means the same thing on every rig.
+Semantic bone NAMES were solved; semantic AXES were not. The fix is the same move that solved names —
+measure the structure instead of assuming a convention.
 
-**On using a multimodal model for this** (asked 2026-09-02): the right role is *verification*, not search.
-Trigonometry gives the axes exactly; vision would be a slow, fragile way to hunt for them. But rendering a
-posed figure and asking "is this a raised arm or a dislocated shoulder?" is precisely the check that caught
-the head-mapped-to-a-hair-bone error, which `validate()` had passed as clean. Worth building once the
-anatomical frame exists and there is something to verify.
+### Resolved: the anatomical frame, and a second bug hiding behind it (2026-09-02)
+
+**Verified in render across all three rigs: the same request produces the same motion on Saka (VRM),
+Grace (Daz Genesis 8) and Yuffie (Genesis 8.1).** `{"leftUpperLeg": {"bend": 45}}` raises the knee
+forward on each; `{"spread": 60}` on both upper arms raises them symmetrically; `bend: +40` and `-40` on
+the two legs gives a stride.
+
+**There were two defects, and only one of them was the axis convention.** The other is the more
+instructive:
+
+> **A pose was REPLACING each bone's rest rotation, not composing onto it.** `bone.rotation.set(x,y,z)`
+> discards whatever the rigger authored. Measured: `thigh.fk.L` rests **177 degrees** from identity on
+> Grace and Yuffie, `upper_arm.fk.L` **137**, `foot.fk.L` **72** — against **6** on Saka. So the leg was
+> flipped upside-down *before* the requested angle was added, and `clear` left it flipped.
+
+That spread explains why the symptom read as an axis-convention problem: Saka's rest rotations are small
+enough that only the axes looked wrong, while on the Daz rigs the rest pose was being thrown away
+wholesale. One measurement — print the rest quaternion of every mapped bone — would have separated them
+on day one, and it is the same lesson as the black hands: **measure the artifact, do not reason about
+the pipeline.**
+
+**The frame itself.** Three rotations per bone, measured from the bind pose (`figures.anatomical_axes`),
+each an axis chosen so a POSITIVE angle produces the named motion on either side of the body:
+
+| | Motion | Axis | Degenerate when |
+|---|---|---|---|
+| `bend` | the far end swings **forward** — lift a knee, bend an elbow, bow the spine | `direction × forward` | the bone already points forward (a foot) — falls back to `direction × up`, so bend lifts the toes |
+| `spread` | the far end swings **outward**, away from the midline | `direction × outward` | the bone already points outward (a T-posed arm) — falls back to `direction × up`, so spread keeps raising it |
+| `turn` | the bone twists about its own length, **inward** | the bone's own direction, negated on the right | never |
+
+`direction` is the vector to the next mapped joint down the chain, and a bone at the end of a chain
+CONTINUES the direction it arrived on — a hand points the way the forearm did. `forward` and `up` come
+from `body_frame()`, which measures them (hips→head, and the vector between the paired hip joints)
+rather than assuming glTF's +Z. Every sample model comes out at +Z anyway, which is the point: measuring
+costs three subtractions and cannot be wrong about a rig that stands a few degrees off axis.
+
+Three properties fall out of this, and each is load-bearing:
+
+- **Mirror symmetry is by construction**, from one sign per side. The same numbers on `leftUpperArm` and
+  `rightUpperArm` produce mirrored motion, so a symmetric pose is symmetric without a caller thinking
+  about it. `bend` is deliberately NOT mirrored — flexing both hips moves both knees the same way.
+- **The axes are stored in each bone's PARENT frame**, which is the frame its own local rotation lives
+  in. Applying one is then a single multiplication onto the rest quaternion (`delta * rest`) and the
+  result rides the parent chain for free: bend a hip and then a knee and you get a leg. Model-space axes
+  would need re-deriving against a live scene graph, which is the class of mistake that produced the
+  double-counted selection box.
+- **The durable state stays semantic.** The `figure` component persists `{"leftUpperArm": {"bend": 45}}`,
+  never quaternions, because that is what a reload replays and what a persona will later reason about
+  (§ *Keep the state semantic*). The axes ride alongside as derived data, measured once at import.
+
+**Where it lives.** `importer` → `attributes.humanoid_axes` (a property of the file, measured beside the
+map) → `meta.humanoid_axes` at placement → the `figure` component's `axes`, which the client resolves
+against. A model catalogued before the field existed gets its axes measured on first placement and
+written back, so nothing needs re-converting. Composition order is turn, then bend, then spread — twist
+innermost, the swing-twist decomposition — mirrored exactly in `figures.resolve_pose` and `figure.js` so
+a Blender render and a headset agree.
+
+**Verification.** `scripts/pose_test.py` now takes the anatomical vocabulary and drives it through the
+real `anatomical_axes`/`resolve_pose`, so what it renders is what a headset is sent rather than a second
+implementation that could agree by luck. It writes **front and side** views, always: a front view cannot
+tell a raised knee from a leg swung backwards, which is the exact error this exists to catch.
+
+```
+$B --background --python scripts/pose_test.py -- out.glb outdir/ \
+   '{"leftUpperLeg": {"bend": 45}, "rightUpperArm": {"spread": 70}}'
+```
+
+Raw euler on a named rig bone still works as an escape hatch (`{"upper_arm.fk.L": [0,0,-60]}`) — it is
+how several wrong maps were caught — but it is no longer a pose the tool surface accepts, because it
+meant a different motion on every figure.
+
+Tests: `tests/test_figures.py` (+12, forward-kinematics checks that a posed bone moves the joint below
+it in the named direction), `tests/test_server.py` (the posing block rewritten in the new vocabulary),
+`tests/js/figure.test.js` (+8, new — the rest-composition claim, on a bone with a deliberately
+non-identity rest rotation, since an identity one lets the broken version pass).
+
+**Still to verify on device**, since a render is not a headset: that a pose survives a reload and a late
+joiner, and that the axes riding the component are not too chunky in practice (6 KB for Saka's 52 bones,
+1.5 KB for Grace's 21).
+
+**On using a multimodal model for this** (asked 2026-09-02): the right role is *verification*, not
+search. Trigonometry gives the axes exactly, and vision would be a slow, fragile way to hunt for them.
+But rendering a posed figure and asking "is this a raised arm or a dislocated shoulder?" is precisely
+the check that caught the head-mapped-to-a-hair-bone error, which `validate()` had passed as clean —
+and now that the frame exists there is something concrete to verify: drive a fixed set of poses
+(`bend 45` on each limb, in turn) and ask whether each looks like the motion it names. That is a
+buildable pass, and it is what the two remaining known-wrong cases below would have been caught by.
 
 ### Still open from Phase 0
 
@@ -590,7 +669,8 @@ python -m conjure.importer temp/3d-model-examples/Saka.vrm
 
 # render checks
 $B --background --python scripts/glb_preview.py -- out.glb outdir/ --size 640
-$B --background --python scripts/pose_test.py  -- out.glb outdir/ '{"upper_arm.L":[0,0,-60]}'
+$B --background --python scripts/pose_test.py  -- out.glb outdir/ '{"leftUpperArm":{"bend":60}}'
+#  raw escape hatch, a rig bone by its own name:  '{"upper_arm.fk.L":[0,0,-60]}'
 ```
 
 `--max-texture 1024 --bake 1024` are the settings every conversion has used: 1 K textures are the single
@@ -1025,7 +1105,7 @@ One coherent family rather than a tool per capability — the way `conjure_modul
 |---|---|
 | `inspect_model(id)` | the "navigate the tree" request: groups, meshes, morphs, clips, bone map |
 | `set_model_parts(id, show=[], hide=[])` | outfits |
-| `pose_model(id, {bone: [x,y,z]})` | **semantic** bone names only |
+| `pose_model(id, {bone: {bend, spread, turn}})` | **semantic** bone names AND semantic axes |
 | `animate_model(id, clip=, speed=, loop=)` | clip playback |
 
 **`inspect_model` must summarize, not dump.** A two-hundred-node tree wrecks the director's context window.
@@ -1086,16 +1166,16 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
 
 ## Where to pick up
 
-**Bone selection is solved and verified on device. The next piece is the axis problem**, described under
-*The axis problem* above. It is well-defined: every bone's rest direction is computable from the joint
-positions `figures.node_world_positions` already returns, and with the body's forward and up that yields a
-canonical per-bone basis — twist along the limb, swing perpendicular. The pose vocabulary then becomes
-anatomical (`{"leftUpperLeg": {"lift": 45}}`) and means the same on every rig, exactly as the bone NAMES
-now do.
+**Posing works: the right bones move, and they now move the right way.** Bone selection was confirmed on
+device; the anatomical frame is confirmed in render on all three rigs (see *Resolved: the anatomical
+frame*). The next move is to **drive it from the headset** — place Grace, Saka and Yuffie, pose them
+through the director, and check the three things a Blender render cannot: that a pose survives a reload
+and a late joiner, that it composes with `grab` (a posed figure that is then picked up), and that it
+looks right in stereo at human scale rather than in a 512-pixel orthographic view.
 
-Verify it the way bone selection was verified, because structural checks cannot catch a semantic error:
-`scripts/pose_test.py` renders a posed figure, and a lift of +45 must raise the knee forward on all three.
-`validate()` passed several maps that were badly wrong; only driving a pose exposed them.
+After that, the next real slice is **outfits** (Phase 2) — the easiest genuine capability in the feature
+and the one the collection structure already hands us, or **clips**, which need an animation source and
+a retargeting step and are therefore much larger (open question 3).
 
 State to be aware of when resuming:
 
@@ -1103,10 +1183,15 @@ State to be aware of when resuming:
   diagnosis; re-adding clothing is a `--collections` change, see the recipes above.
 - Yuffie's boots, shoulder guard, eyes and eyebrows render flat grey — 22 of her 26 baked materials fail,
   and the neutral fallback papers over it. Recorded under the black-bake limitation, not chased.
-- `leftHand` resolves to a fingertip on the re-parented Daz rigs. Arms and legs were the reported problem
-  and are fixed; the hand was deliberately not chased after the head rule showed what iterating on a
-  secondary defect costs.
-- The branch is `feat/figures-phase0`, not merged.
+- `leftHand` resolves to a fingertip on the re-parented Daz rigs, so a hand rotation hinges in the wrong
+  place there (Saka is correct). Arms and legs were the reported problem and are fixed; the hand was
+  deliberately not chased after the head rule showed what iterating on a secondary defect costs.
+- `validate()` checks the bone MAP and knows nothing about the axes. Nothing would catch a frame that is
+  self-consistent and wrong — which is what the multimodal verification pass above is for.
+- Figures placed before 2026-09-02 have no `humanoid_axes`. They gain one on the next placement (the
+  server measures and writes it back); the entity already in a world does not, so re-place it.
+- Figures work landed on `feat/figures-phase0` and is now in `main`; this slice sits on
+  `fix/void-frame-and-surface-overlay`.
 
 ## Phasing
 

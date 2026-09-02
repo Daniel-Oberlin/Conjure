@@ -178,6 +178,31 @@ def test_a_plain_glb_has_no_humanoid_map():
     assert vrm_humanoid(_figure_doc(skinned=True)) is None
 
 
+def test_a_stated_map_also_gets_its_anatomical_frame_measured():
+    """The bone map says which node; the frame says which way to rotate it. Both are properties of the
+    FILE, measured once here so no consumer has to re-derive them (docs/backlogs/figures.md)."""
+    doc = _vrm_doc()
+    doc["nodes"] = [{"mesh": 0, "skin": 0},
+                    {"name": "J_Bip_C_Hips", "translation": [0, 1.0, 0], "children": [3]},
+                    {"name": "J_Bip_L_UpperArm", "translation": [0.2, 0.4, 0], "children": [4]},
+                    {"name": "J_Bip_C_Head", "translation": [0, 0.6, 0]},
+                    {"name": "J_Bip_L_LowerArm", "translation": [0.3, 0, 0]}]
+    doc["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"].update(
+        {"head": {"node": 3}, "leftLowerArm": {"node": 4}})
+    doc["scenes"] = [{"nodes": [0, 1, 2]}]
+    a = plan_import("figure.vrm", _glb(doc), {}).attributes
+    assert a["humanoid_source"] == "vrm"
+    frame = a["humanoid_axes"]["leftUpperArm"]
+    assert sorted(frame) == ["bend", "spread", "turn"]
+    # The arm points along +X, so its twist axis is its own length — the one axis that is unambiguous
+    # whatever the rig, and a cheap check that the frame belongs to THIS bone and not to the body.
+    assert frame["turn"] == pytest.approx([1, 0, 0], abs=1e-4)
+
+
+def test_an_unrigged_model_gets_no_anatomical_frame():
+    assert "humanoid_axes" not in plan_import("prop.glb", _glb(_figure_doc(skinned=False)), {}).attributes
+
+
 def test_a_vrm_imports_as_a_model_and_records_its_humanoid_map():
     plan = plan_import("saka.vrm", _glb(_vrm_doc()), {})
     assert plan.kind == "model"

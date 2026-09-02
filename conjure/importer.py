@@ -296,6 +296,18 @@ class ModelImporter(AssetImporter):
                         # bug be attributed rather than guessed at.
                         attributes["humanoid"] = humanoid
                         attributes["humanoid_source"] = "vrm"
+                    if attributes.get("humanoid"):
+                        # The anatomical frame: which way to rotate each bone so that "bend 45" means
+                        # the same motion on every rig. Derived from the bind pose, so it is a property
+                        # of the FILE and belongs here beside the map rather than being re-measured by
+                        # every consumer (docs/backlogs/figures.md, the axis problem).
+                        try:
+                            from .figures import anatomical_axes
+                            axes = anatomical_axes(doc, attributes["humanoid"])
+                            if axes:
+                                attributes["humanoid_axes"] = axes
+                        except Exception as exc:  # noqa: BLE001 — a map without axes still places
+                            print(f"[conjure] anatomical axes failed for {filename}: {exc}")
                     used = doc.get("extensionsUsed") or []
                     if "VRMC_springBone" in used or "VRM" in (doc.get("extensions") or {}):
                         attributes["spring_bones"] = "VRMC_springBone" in used

@@ -519,8 +519,9 @@ async def reset_world_frame(what: str = "all") -> str:
 
 
 # ---- figures: posing a rigged humanoid ------------------------------------------------------------
-# The point of the humanoid map is that the director speaks ONE vocabulary. It says "leftUpperArm" and
-# never learns that this rig calls it `upper_arm.L` and the next calls it `J_Bip_L_UpperArm`.
+# The point of the humanoid map is that the director speaks ONE vocabulary — for the bone AND for the
+# direction. It says "bend her left elbow" and never learns that this rig calls that bone `forearm.fk.L`
+# and the next `J_Bip_L_LowerArm`, nor which way each one's local X happens to point.
 
 @mcp.tool()
 async def inspect_figure(id: str) -> str:
@@ -535,13 +536,23 @@ async def inspect_figure(id: str) -> str:
     meta = ent.get("meta") or {}
     if not meta.get("rigged"):
         return f"{id!r} is not a posable figure — it has no skeleton."
-    bones = sorted(meta.get("humanoid") or {})
+    bones = sorted(meta.get("humanoid_axes") or {})
     bbox = meta.get("bbox")
     height = f"{bbox[1][1] - bbox[0][1]:.2f} m tall" if bbox else "unknown height"
     posed = ((ent.get("components") or {}).get("figure") or {}).get("pose")
     lines = [f"{meta.get('title') or id} — {height}, {meta.get('tris') or '?'} triangles."]
-    lines.append(f"Posable bones ({len(bones)}): {', '.join(bones)}" if bones
-                 else "No humanoid bone map, so it cannot be posed.")
+    if bones:
+        lines.append(f"Posable bones ({len(bones)}): {', '.join(bones)}")
+    elif meta.get("humanoid"):
+        # A map but no measured frame: the figure was placed before poses had one. Say which it is —
+        # "cannot be posed" would send the caller looking for a missing skeleton.
+        lines.append("Bones are named but this figure has no anatomical frame — place it again to "
+                     "measure one, then it can be posed.")
+    else:
+        lines.append("No humanoid bone map, so it cannot be posed.")
+    if bones:
+        lines.append("Each takes bend (forward +/back -), spread (out from the body +) and "
+                     "turn (inward +), in degrees.")
     if posed and posed != "{}":
         import json as _json
         try:
@@ -553,22 +564,33 @@ async def inspect_figure(id: str) -> str:
 
 @mcp.tool()
 async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
-    """Pose a human figure by rotating named body parts. Use for "raise her left arm", "turn his head",
+    """Pose a human figure by moving named body parts. Use for "raise her left arm", "turn his head",
     "have her bend a knee".
 
-    pose: a mapping of bone name to [x, y, z] rotation in DEGREES, e.g. {"leftUpperArm": [0, 0, -60]}.
+    pose maps a bone name to the rotations you want, in DEGREES — for example
+    {"leftUpperArm": {"bend": 60}, "leftLowerArm": {"bend": 90}} raises the arm forward and bends the
+    elbow. Three rotations, and they mean the same thing on every figure and on both sides of the body:
+
+      bend    swings the far end of the bone FORWARD (+) or backward (-) — lift a knee, bow the spine,
+              nod the head, bend an elbow. For a foot, + lifts the toes.
+      spread  swings it OUT away from the body (+) or in across it (-) — an arm out to the side, feet
+              apart. For the spine, neck and head, + leans toward the figure's own left.
+      turn    twists the bone about its own length: + inward (a knee turning toward the other knee).
+              For the spine, neck and head, + turns toward the figure's own left.
+
     Bone names are semantic and the same for every figure — leftUpperArm, rightLowerLeg, head, spine and
     so on. Call inspect_figure first if unsure which this figure has.
 
-    Rotations replace whatever that bone had; bones you do not mention keep their current pose, so you can
-    move one arm without disturbing the rest. Pass clear=true to return the whole figure to its rest pose.
+    A bone you mention is replaced outright, so pass every rotation you want it to keep; bones you do not
+    mention keep their current pose, so you can move one arm without disturbing the rest. An empty {}
+    returns just that bone to rest. Pass clear=true to return the whole figure to its rest pose.
     """
     body: dict = {"id": id}
     if clear:
         body["clear"] = True
     else:
         if not isinstance(pose, dict) or not pose:
-            return "Give me a pose like {\"leftUpperArm\": [0, 0, -60]}, or clear=true to reset."
+            return "Give me a pose like {\"leftUpperArm\": {\"bend\": 60}}, or clear=true to reset."
         body["pose"] = pose
     out = await _post("/figure", body)
     if not out.get("ok"):
