@@ -136,3 +136,56 @@ def test_a_rigged_model_records_what_a_figure_needs():
 def test_an_unrigged_model_carries_no_figure_fields():
     a = plan_import("prop.glb", _glb(_figure_doc(skinned=False)), {}).attributes
     assert "rigged" not in a and "height_m" not in a and "clips" not in a
+
+
+# ---- VRM: a humanoid map stated outright ---------------------------------------------------------
+# A .vrm IS a GLB with extra extension blocks, and its humanoid map is the artifact the whole figures
+# pipeline exists to manufacture — posing, retargeting and "raise her left arm" all need a per-model
+# translation from a semantic bone name to that model's own node. VRM states it; everything else must
+# be inferred (docs/backlogs/figures.md, discovery layers).
+
+from conjure.importer import vrm_humanoid
+
+
+def _vrm_doc(version="1.0"):
+    doc = _figure_doc(skinned=True)
+    doc["nodes"] = [{"mesh": 0, "skin": 0}, {"name": "J_Bip_C_Hips"}, {"name": "J_Bip_L_UpperArm"}]
+    if version == "1.0":
+        doc["extensions"] = {"VRMC_vrm": {"humanoid": {"humanBones": {
+            "hips": {"node": 1}, "leftUpperArm": {"node": 2}}}}}
+        doc["extensionsUsed"] = ["VRMC_vrm", "VRMC_springBone"]
+    else:
+        doc["extensions"] = {"VRM": {"humanoid": {"humanBones": [
+            {"bone": "hips", "node": 1}, {"bone": "leftUpperArm", "node": 2}]}}}
+    return doc
+
+
+def test_vrm_1_0_humanoid_map_is_read():
+    assert vrm_humanoid(_vrm_doc("1.0")) == {"hips": "J_Bip_C_Hips", "leftUpperArm": "J_Bip_L_UpperArm"}
+
+
+def test_vrm_0_x_humanoid_map_is_read():
+    # 0.x stores humanBones as a LIST of {bone, node} rather than a dict — both are in the wild.
+    assert vrm_humanoid(_vrm_doc("0.x")) == {"hips": "J_Bip_C_Hips", "leftUpperArm": "J_Bip_L_UpperArm"}
+
+
+def test_humanoid_map_stores_node_NAMES_not_indices():
+    # Names survive a re-export that reorders nodes; indices silently point at the wrong bone.
+    assert all(isinstance(v, str) for v in vrm_humanoid(_vrm_doc()).values())
+
+
+def test_a_plain_glb_has_no_humanoid_map():
+    assert vrm_humanoid(_figure_doc(skinned=True)) is None
+
+
+def test_a_vrm_imports_as_a_model_and_records_its_humanoid_map():
+    plan = plan_import("saka.vrm", _glb(_vrm_doc()), {})
+    assert plan.kind == "model"
+    assert plan.ext == ".glb", "a .vrm is stored as .glb so the client needs no special case"
+    a = plan.attributes
+    assert a["humanoid_source"] == "vrm" and a["humanoid"]["hips"] == "J_Bip_C_Hips"
+    assert a["spring_bones"] is True
+
+
+def test_vrm_extension_is_importable():
+    assert ".vrm" in importable_extensions()

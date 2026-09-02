@@ -209,17 +209,49 @@ def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
     return lo, hi, rigged
 
 
+#: VRM's humanoid bone vocabulary, keyed by the standard names the extension defines. Recording this
+#: map is the whole point of the figures pipeline: every later capability — posing, retargeting an
+#: animation, "raise her left arm" — needs a per-model translation from a semantic name to that model's
+#: own node. VRM is the one source that states it outright (docs/backlogs/figures.md, discovery layer 1).
+def vrm_humanoid(doc: dict) -> Optional[dict]:
+    """`{semanticBone: nodeName}` from a VRM's humanoid map, or None if this isn't a VRM.
+
+    Handles both VRM 1.0 (`VRMC_vrm`, `humanBones` as `{name: {node: i}}`) and VRM 0.x (`VRM`, a
+    `humanBones` LIST of `{bone, node}`). Node *names* are stored rather than indices so the map stays
+    meaningful if the file is ever re-exported with a different node order.
+    """
+    ext = (doc.get("extensions") or {})
+    nodes = doc.get("nodes") or []
+
+    def name_of(i):
+        return nodes[i].get("name") if isinstance(i, int) and 0 <= i < len(nodes) else None
+
+    raw = ((ext.get("VRMC_vrm") or {}).get("humanoid") or {}).get("humanBones")
+    if isinstance(raw, dict):                                       # VRM 1.0
+        out = {k: name_of(v.get("node")) for k, v in raw.items() if isinstance(v, dict)}
+    elif isinstance((ext.get("VRM") or {}).get("humanoid"), dict):   # VRM 0.x
+        legacy = (ext["VRM"]["humanoid"] or {}).get("humanBones") or []
+        out = {b.get("bone"): name_of(b.get("node")) for b in legacy if isinstance(b, dict)}
+    else:
+        return None
+    out = {k: v for k, v in out.items() if k and v}
+    return out or None
+
+
 class ModelImporter(AssetImporter):
-    """glTF-binary (.glb) 3D models — e.g. exported from Blender. Validated by magic bytes.
+    """glTF-binary 3D models — `.glb` from Blender, or `.vrm`, which IS a GLB with extra extension
+    blocks. Validated by magic bytes, and a `.vrm` is stored as `.glb` so the client's `gltf-model`
+    loads it with no special case.
 
     Bounds come from the GLB's own JSON chunk (`glb_bounds`), NOT trimesh, because trimesh mis-sizes
     every rigged model — see that function. trimesh is still used for the triangle count, which it gets
-    right. Rigged models additionally record what a figure needs: joint counts, clips, morph targets."""
+    right. Rigged models additionally record what a figure needs: joint counts, clips, morph targets,
+    and — when the file states it — the humanoid bone map."""
     kind = "model"
-    extensions = (".glb",)
+    extensions = (".glb", ".vrm")
 
     def sniff(self, filename: str, data: bytes) -> bool:
-        return data[:4] == b"glTF"                      # binary-glTF magic
+        return data[:4] == b"glTF"                      # binary-glTF magic (a .vrm is one too)
 
     def extract(self, filename: str, data: bytes, hints: dict) -> ImportResult:
         attributes: dict = {}
@@ -241,6 +273,16 @@ class ModelImporter(AssetImporter):
                                              for m in doc.get("meshes", [])
                                              for p in m.get("primitives", [])),
                     })
+                    humanoid = vrm_humanoid(doc)
+                    if humanoid:
+                        # Discovery layer 1, for free. `humanoid_source` is recorded because a stated
+                        # map and an inferred one warrant different trust, and it is what lets a later
+                        # bug be attributed rather than guessed at.
+                        attributes["humanoid"] = humanoid
+                        attributes["humanoid_source"] = "vrm"
+                    used = doc.get("extensionsUsed") or []
+                    if "VRMC_springBone" in used or "VRM" in (doc.get("extensions") or {}):
+                        attributes["spring_bones"] = "VRMC_springBone" in used
         try:
             import trimesh
             scene = trimesh.load(io.BytesIO(data), file_type="glb", force="scene")
