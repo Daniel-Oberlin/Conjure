@@ -274,6 +274,22 @@ class ModelImporter(AssetImporter):
                                              for p in m.get("primitives", [])),
                     })
                     humanoid = vrm_humanoid(doc)
+                    if not humanoid:
+                        # Layer 2: no stated map, so recover one from skeleton SHAPE. Only kept if it
+                        # validates — an inferred map that is plausible but wrong is worse than none,
+                        # because posing and retargeting both inherit it silently.
+                        try:
+                            from .figures import infer_humanoid, split_glb, validate
+                            # the BIN chunk, not the whole file — accessor offsets are relative to it
+                            _, blob = split_glb(data)
+                            guess = infer_humanoid(doc, blob)
+                            if guess and not validate(doc, guess):
+                                attributes["humanoid"] = guess
+                                attributes["humanoid_source"] = "inferred"
+                        except Exception as exc:  # noqa: BLE001 — never fail an import over this
+                            # Reported, not swallowed: a silent guard here hid a wrong argument and made
+                            # inference look like it simply found nothing on every non-VRM model.
+                            print(f"[conjure] humanoid inference failed for {filename}: {exc}")
                     if humanoid:
                         # Discovery layer 1, for free. `humanoid_source` is recorded because a stated
                         # map and an inferred one warrant different trust, and it is what lets a later
