@@ -28,6 +28,25 @@ import bpy
 out_path = sys.argv[sys.argv.index("--") + 1] if "--" in sys.argv else "/dev/stdout"
 
 
+
+def _channels(action):
+    """F-curve count, across both Action APIs.
+
+    Blender 4.4+/5.x moved to SLOTTED actions: curves live in layers -> strips -> channelbags, and
+    `Action.fcurves` is gone. This path never ran on the first four sample models because none of them
+    contained a single animation — Yuffie is the first that does, and it broke the inspector outright.
+    """
+    try:
+        return len(action.fcurves)
+    except AttributeError:
+        n = 0
+        for layer in getattr(action, "layers", []):
+            for strip in getattr(layer, "strips", []):
+                for bag in getattr(strip, "channelbags", []):
+                    n += len(getattr(bag, "fcurves", []))
+        return n
+
+
 def bone_tree(arm):
     """Bone name -> parent name, plus head/tail in armature space (bind pose)."""
     return [{
@@ -86,7 +105,7 @@ report = {
                "materials": len(bpy.data.materials), "images": len(bpy.data.images),
                "actions": len(bpy.data.actions), "collections": len(bpy.data.collections)},
     "actions": [{"name": a.name, "range": [round(v, 2) for v in a.frame_range],
-                 "channels": len(a.fcurves)} for a in bpy.data.actions],
+                 "channels": _channels(a)} for a in bpy.data.actions],
     "collections": [{"name": c.name, "objects": len(c.objects),
                      "children": [x.name for x in c.children]} for c in bpy.data.collections],
     "armatures": armatures,

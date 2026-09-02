@@ -114,10 +114,12 @@ for ob in bpy.data.objects:
     if ob.type == "MESH":
         if ob in widgets:
             continue
-        # Naming a collection is an explicit choice and OVERRIDES its hidden flag — an outfit you
-        # asked for by name is one you want, and Grace's alternates are all collection-hidden. With
-        # no --collections, fall back to "whatever the porter left visible".
-        picked = any(c.name in WANT for c in ob.users_collection) if WANT else visible(ob)
+        # Naming a collection overrides ITS hidden flag — Grace's outfit alternates are all
+        # collection-hidden, so an explicit "Default" must still select them. It does NOT override
+        # per-object hiding: Yuffie's `Hair` holds two variants with one switched off, and "give me the
+        # hair" plainly means the one she wears, not both stacked (136k wasted verts).
+        picked = (any(c.name in WANT for c in ob.users_collection)
+                  and not (ob.hide_viewport or ob.hide_render)) if WANT else visible(ob)
         if not len(ob.data.vertices):
             dropped["empty"] += 1
         elif not picked:
@@ -233,6 +235,35 @@ def select_for_export():
 #
 # Scoped to materials that actually need it — a material already rooted in a Principled BSDF exports
 # correctly and is left completely alone.
+def is_translucent(mat):
+    """Does this material physically transmit light? The signal for the black-bake fallback.
+
+    A material that bakes black has no view-independent colour, but that has TWO causes: it is glass
+    (a lens, a watch crystal, eye moisture) or its shader is merely too complex to resolve (Grace's
+    fingernails, Yuffie's boots). The right fallback is opposite in each case, and getting it wrong is
+    visible — ghostly white boots on one model, frosted spectacle lenses on the other.
+
+    `Transmission Weight` separates them, and it is physically meaningful rather than a heuristic:
+    measured 1.0 on every lens/glass/moisture material and 0.0 on fingernails. glTF's alphaMode does
+    NOT work — Grace's lens exports OPAQUE, same as boots.
+
+    No Principled BSDF at all (Yuffie's materials) means we cannot tell, and opaque is the safer default:
+    a slightly-wrong solid surface reads as untextured, a wrongly-transparent one reads as broken.
+    """
+    if not mat or not mat.use_nodes or not mat.node_tree:
+        return False
+    for n in mat.node_tree.nodes:
+        if n.type != "BSDF_PRINCIPLED":
+            continue
+        t = n.inputs.get("Transmission Weight")
+        if t is not None and not t.links and t.default_value > 0.5:
+            return True
+        a = n.inputs.get("Alpha")
+        if a is not None and not a.links and a.default_value < 0.5:
+            return True
+    return False
+
+
 def bake_materials(objs, size, only):
     """Bake the named materials on `objs` to a diffuse image and rebuild each as Principled.
     `only` comes from unresolved_base_colours() — never from guessing at the node tree."""
@@ -248,7 +279,7 @@ def bake_materials(objs, size, only):
     scene.render.bake.use_pass_indirect = False
     scene.render.bake.margin = 4
 
-    made = {}
+    made, translucent = {}, {}
     for ob, _slot, mat in targets:
         if mat.name in made:
             continue
@@ -257,6 +288,7 @@ def bake_materials(objs, size, only):
         node.image = img
         mat.node_tree.nodes.active = node       # `active` node per material is the bake destination
         made[mat.name] = (img, node)
+        translucent[mat.name] = is_translucent(mat)
 
     # CRITICAL: `bake` writes into the active image node of EVERY material on the baked object, not just
     # the ones we asked for. Any bystander material whose active node happens to be its own diffuse
@@ -352,11 +384,14 @@ def bake_materials(objs, size, only):
             # (reported on device 2026-09-01). Faint grey rather than fully clear so the surface still
             # catches a highlight and the glasses read as glass instead of as empty frames.
             dark += 1
-            bsdf.inputs["Base Color"].default_value = (0.85, 0.85, 0.9, 1.0)
-            bsdf.inputs["Alpha"].default_value = 0.14
-            mat.blend_method = "BLEND"                       # ≤4.1
-            if hasattr(mat, "surface_render_method"):
-                mat.surface_render_method = "BLENDED"        # 4.2+ — drives glTF alphaMode: BLEND
+            if translucent.get(name):
+                bsdf.inputs["Base Color"].default_value = (0.85, 0.85, 0.9, 1.0)
+                bsdf.inputs["Alpha"].default_value = 0.14
+                mat.blend_method = "BLEND"                   # ≤4.1
+                if hasattr(mat, "surface_render_method"):
+                    mat.surface_render_method = "BLENDED"    # 4.2+ — drives glTF alphaMode: BLEND
+            else:
+                bsdf.inputs["Base Color"].default_value = (0.62, 0.60, 0.58, 1.0)   # neutral, OPAQUE
         else:
             tex = nt.nodes.new("ShaderNodeTexImage"); tex.image = img
             # Point the rebuilt material at the SAME layer the bake wrote into. Without this the
