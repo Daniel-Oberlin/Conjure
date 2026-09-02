@@ -457,17 +457,54 @@ def prefer_deform(mapping: dict, doc: dict, blob: bytes, tol: float = 0.002) -> 
         for c in n.get("children") or []:
             kids.setdefault(i, []).append(c)
 
-    def moves_geometry(i):
-        stack, seen = [i], set()
+    def deform_reach(i):
+        """How many deform bones this one drives — the size of its deform subtree.
+
+        Depth and deform-ness are both PROXIES and each picks a different wrong bone. Measured on Grace,
+        three co-located candidates for the upper leg:
+
+            thigh.fk.L    drives only the foot   (FK chain; the thigh deformers are not under it)
+            thigh.bend.L  drives only itself     (one segment — this is the zig-zag)
+            thigh.L       drives the whole leg   (thigh deformers as children, shin chain below)
+
+        What posing wants is the bone that moves the most of the limb, so count that directly instead of
+        guessing at a correlate of it.
+        """
+        stack, seen, n = [i], {i}, 0
         while stack:
             cur = stack.pop()
-            if cur in seen:
-                continue
-            seen.add(cur)
             if cur in deform:
-                return True
-            stack.extend(kids.get(cur, []))
-        return False
+                n += 1
+            for c in kids.get(cur, []):
+                if c not in seen:
+                    seen.add(c)
+                    stack.append(c)
+        return n
+
+    def deform_depth(i, limit=4):
+        """How far below `i` the nearest deform bone is, or None. DEPTH, not mere presence.
+
+        Rigify carries two parallel chains that diverge high up: an FK chain
+        (`thigh.fk.L -> shin.fk.L -> foot.fk.L`) and an ORG chain (`thigh.L -> shin.L`) that the thigh
+        and shin deformers actually hang from. Only the FOOT deformer hangs off the FK chain. So
+        `thigh.fk.L` has a deform descendant and is still the wrong bone — rotating it moved Grace's
+        foot and nothing else, reported as feet disconnected from ankles.
+
+        The bone worth rotating is the one the deformers hang from CLOSELY, so depth is the tiebreak.
+        """
+        frontier, seen, depth = [i], {i}, 0
+        while frontier and depth <= limit:
+            if any(j in deform for j in frontier):
+                return depth
+            nxt = []
+            for cur in frontier:
+                for c in kids.get(cur, []):
+                    if c not in seen:
+                        seen.add(c)
+                        nxt.append(c)
+            frontier = nxt
+            depth += 1
+        return None
 
     taken = set(mapping.values())
     out = dict(mapping)
@@ -479,15 +516,20 @@ def prefer_deform(mapping: dict, doc: dict, blob: bytes, tol: float = 0.002) -> 
     for bone in order:
         node_name = mapping[bone]
         i = by_name.get(node_name)
-        if i is None or i not in pos or moves_geometry(i):
+        if i is None or i not in pos:
             continue
-        best, best_d = None, tol
-        for j in deform:
-            if j not in pos:
+        mine = deform_reach(i)
+        # Prefer a CO-LOCATED node that drives MORE of the limb, breaking ties toward the shallower one.
+        best, best_reach, best_depth = None, mine, deform_depth(i)
+        for j, pj in pos.items():
+            if j == i or nodes[j].get("name") in taken or not nodes[j].get("name"):
                 continue
-            d = math.dist(pos[i], pos[j])
-            if d <= best_d and nodes[j].get("name") not in taken:
-                best, best_d = j, d
+            if math.dist(pos[i], pj) > tol:
+                continue
+            rj, dj = deform_reach(j), deform_depth(j)
+            if rj > best_reach or (rj == best_reach and dj is not None
+                                   and (best_depth is None or dj < best_depth)):
+                best, best_reach, best_depth = j, rj, dj
         if best is not None:
             taken.discard(node_name)
             out[bone] = nodes[best].get("name")
