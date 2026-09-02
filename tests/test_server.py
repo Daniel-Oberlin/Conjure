@@ -1,6 +1,10 @@
 """Integration tests for the world-server endpoints (the seams our MCP tools + client depend on),
 with external services faked. No network, no keys, no LLM."""
 
+import base64
+import json
+import struct
+
 import pytest
 
 from conftest import ASSET_RECORD, FakeAssetResolver
@@ -510,6 +514,60 @@ def test_place_cached_asset_reuses_a_model(srv, client, tmp_path):
     ent = next(e for e in _entities(client) if e["id"] == r["id"])
     assert ent["components"]["gltf-model"] == f"/assets/{ASSET_RECORD.hash}.glb"
     assert ent["transform"]["scale"] == [0.5, 0.5, 0.5]          # bbox 4 tall, size_m 2 → scale 0.5
+
+
+# ---- figures: a rigged model is placed at LIFE SIZE, not normalized -----------------------------
+# Field finding 2026-09-01 (docs/backlogs/figures.md). Normalizing every human to TARGET_SIZE_M erases
+# the one dimension that carries meaning — a child, an adult and a giant all arrive the same height.
+
+def _rigged_glb(height=1.757):
+    """A minimal but valid GLB carrying one SKINNED primitive `height` metres tall."""
+    doc = {"scenes": [{"nodes": [0]}], "scene": 0,
+           "nodes": [{"mesh": 0, "skin": 0}], "skins": [{"joints": [0]}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+           "accessors": [{"min": [-0.6, -0.013, -0.17], "max": [0.6, height - 0.013, 0.23]}]}
+    body = json.dumps(doc).encode()
+    body += b" " * (-len(body) % 4)
+    return (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body))
+            + struct.pack("<II", len(body), 0x4E4F534A) + body)
+
+
+def _catalog_figure(srv, client, tmp_path, height=1.757):
+    """Import a rigged GLB through the real ingest path and return its asset id."""
+    r = client.post("/library/import", json={"items": [
+        {"filename": "grace.glb",
+         "data_b64": base64.b64encode(_rigged_glb(height)).decode(), "hints": {}}]}).json()
+    assert r["results"][0]["ok"] is True, r
+    return r["results"][0]["id"]
+
+
+def test_a_rigged_model_keeps_its_authored_life_size(srv, client, tmp_path):
+    aid = _catalog_figure(srv, client, tmp_path)
+    r = client.post("/place_cached_asset", json={"id": aid, "position": [0, 0, -2.5]}).json()
+    assert r["ok"] is True
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert ent["transform"]["scale"] == [1.0, 1.0, 1.0], "a figure must not be rescaled"
+    assert ent["transform"]["position"][1] == pytest.approx(0.013)   # feet land on the floor
+    assert ent["meta"]["rigged"] is True
+
+
+def test_an_explicit_size_on_a_figure_means_HEIGHT_not_largest_extent(srv, client, tmp_path):
+    """A T-posed figure's arm span rivals its height and a seated one's exceeds it, so max(size) sizes
+    by the wrong axis. Asking for 3.5 m means 3.5 m TALL."""
+    aid = _catalog_figure(srv, client, tmp_path)
+    r = client.post("/place_cached_asset", json={"id": aid, "size_m": 3.514}).json()
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert ent["transform"]["scale"][1] == pytest.approx(2.0, rel=1e-3)
+
+
+def test_an_unrigged_model_still_normalizes(srv, client, tmp_path):
+    # The complement — props keep the old behaviour exactly.
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    client.post("/place_asset", json={"query": "oak tree", "size_m": 2})
+    (tmp_path / f"{ASSET_RECORD.hash}.glb").write_bytes(b"glTF" + bytes(8))
+    r = client.post("/place_cached_asset", json={"id": f"{ASSET_RECORD.hash}.glb"}).json()
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert ent["transform"]["scale"] == [0.45, 0.45, 0.45]   # bbox 4 tall, default TARGET_SIZE_M 1.8
 
 
 def test_place_cached_asset_rejects_non_model(srv, client):

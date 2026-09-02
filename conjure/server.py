@@ -945,16 +945,28 @@ async def _autosave_loop() -> None:
 
 
 
-def _normalize(record, pos: list[float], target_m: float) -> tuple[list[float], list[float]]:
+def _normalize(record, pos: list[float], target_m: Optional[float],
+               *, rigged: bool = False) -> tuple[list[float], list[float]]:
     """Scale a model so its largest dimension is `target_m` meters and its base sits at pos.y,
     centered at pos.x/z. Returns (position, scale); native scale if the bounding box is unknown.
+
+    **A rigged model (a figure) is different in two ways** (docs/backlogs/figures.md):
+
+    - It is authored at *life size*, and that size is meaningful in a way a prop's is not — normalizing
+      every human to the same height erases the difference between a child and a giant. With no explicit
+      `target_m` a figure therefore keeps its native scale.
+    - Its meaningful dimension is **height**, not the largest extent: a T-posed figure's arm span rivals
+      its height, and a seated one's exceeds it, so `max(size)` sizes by the wrong axis. When a caller
+      *does* ask for a specific size, that means height.
     """
     if not record.bbox_min or not record.bbox_max:
         return pos, [1.0, 1.0, 1.0]
     mn, mx = record.bbox_min, record.bbox_max
     size = [mx[i] - mn[i] for i in range(3)]
-    max_dim = max(size) or 1.0
-    s = target_m / max_dim
+    if rigged:
+        s = 1.0 if target_m is None else target_m / (size[1] or 1.0)     # by HEIGHT, and native by default
+    else:
+        s = (target_m or TARGET_SIZE_M) / (max(size) or 1.0)
     cx, cz = (mn[0] + mx[0]) / 2, (mn[2] + mx[2]) / 2
     position = [pos[0] - s * cx, pos[1] - s * mn[1], pos[2] - s * cz]
     return position, [s, s, s]
@@ -1041,17 +1053,22 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
 
 
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
-                     bbox_min, bbox_max, pos, size_m, placement="grounded") -> dict:
+                     bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False) -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
-    authored 3-D pose, so it can float / rest at any height)."""
+    authored 3-D pose, so it can float / rest at any height).
+
+    `rigged` marks a FIGURE: placed at life size rather than normalized, and flagged in `meta` so the
+    client can treat it as one (docs/backlogs/figures.md)."""
     rec = SimpleNamespace(bbox_min=bbox_min, bbox_max=bbox_max)
-    model_pos, model_scale = _normalize(rec, pos, size_m or TARGET_SIZE_M)
+    model_pos, model_scale = _normalize(rec, pos, size_m, rigged=rigged)
     mode = placement if placement in ("grounded", "free") else "grounded"
     transform = {"position": model_pos, "scale": model_scale}
     meta = {"title": title, "license": licence, "attribution": attribution, "creator": creator,
             "source": source, "tris": tris, "generated": False, "placement": mode}
+    if rigged:
+        meta["rigged"] = True
     # Step 7c: author + persist the plane-relative anchor now (server-side, once) so the client can SOLVE it
     # rather than re-author from the F_ref pose against its docSurfaces copy every capture. Client ignores it
     # until step 7b/c flips it to consume it; None (too few seed walls) leaves the entity on its F_ref pose.
@@ -3668,7 +3685,8 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
     op = _model_entity_op(eid, req.id, title=rec["label"], licence=rec["licence"],
                           attribution=rec["attribution"], creator=rec["creator"],
                           tris=attrs.get("tris"), source="library", bbox_min=attrs.get("bbox_min"),
-                          bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m, placement=req.placement)
+                          bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m,
+                          placement=req.placement, rigged=bool(attrs.get("rigged")))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},

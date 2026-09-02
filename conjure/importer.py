@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import base64
 import io
+import json
+import struct
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,9 +119,102 @@ class StereoImageImporter(ImageImporter):
         return res
 
 
+def read_glb_json(data: bytes) -> Optional[dict]:
+    """The JSON chunk of a GLB, or None if it isn't one. Pure stdlib — a GLB is a 12-byte header then
+    length-prefixed chunks, so the node tree, skins, animations and materials are all reachable without
+    a glTF library (docs/backlogs/figures.md)."""
+    if len(data) < 20 or data[:4] != b"glTF":
+        return None
+    try:
+        length, _ = struct.unpack_from("<II", data, 12)     # first chunk: length, type
+        return json.loads(data[20:20 + length])
+    except Exception:  # noqa: BLE001 — a truncated/odd GLB just yields no metadata
+        return None
+
+
+def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
+    """`(bbox_min, bbox_max, rigged)` in metres, or None. `rigged` = the file contains a skin.
+
+    Why this exists rather than trusting trimesh: **a skinned mesh's vertices are already in the skin's
+    space**, so the node transform must NOT be applied to them. trimesh applies it anyway and reported
+    Grace at 3.369 m against a true 1.757 m — and `_normalize` divides by that, so she placed at 53 %
+    scale, a child-sized doll. The error is invisible on static props, which is why it survived this long.
+
+    So: skinned primitives use their POSITION accessor min/max verbatim (glTF *requires* those on
+    POSITION); unskinned ones get the node's world transform applied to the box corners.
+    """
+    accessors, meshes, nodes = doc.get("accessors"), doc.get("meshes"), doc.get("nodes")
+    if not accessors or not meshes or not nodes:
+        return None
+    rigged = bool(doc.get("skins"))
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+
+    def mat_of(node: dict) -> list[float]:
+        if "matrix" in node:                              # column-major 4x4
+            return [float(x) for x in node["matrix"]]
+        t = node.get("translation", [0.0, 0.0, 0.0])
+        s = node.get("scale", [1.0, 1.0, 1.0])
+        x, y, z, w = node.get("rotation", [0.0, 0.0, 0.0, 1.0])
+        # quaternion → 3x3, then scale columns and set translation (column-major, like glTF)
+        r = [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w),
+             2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w),
+             2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]
+        return [r[0] * s[0], r[1] * s[0], r[2] * s[0], 0.0,
+                r[3] * s[1], r[4] * s[1], r[5] * s[1], 0.0,
+                r[6] * s[2], r[7] * s[2], r[8] * s[2], 0.0,
+                float(t[0]), float(t[1]), float(t[2]), 1.0]
+
+    def mul(a: list[float], b: list[float]) -> list[float]:
+        return [sum(a[k * 4 + r] * b[c * 4 + k] for k in range(4))
+                for c in range(4) for r in range(4)]
+
+    def walk(idx: int, parent: list[float]) -> None:
+        node = nodes[idx]
+        world = mul(parent, mat_of(node))
+        mi = node.get("mesh")
+        if mi is not None and 0 <= mi < len(meshes):
+            skinned = "skin" in node
+            for prim in meshes[mi].get("primitives", []):
+                ai = prim.get("attributes", {}).get("POSITION")
+                if ai is None or ai >= len(accessors):
+                    continue
+                acc = accessors[ai]
+                amin, amax = acc.get("min"), acc.get("max")
+                if not amin or not amax or len(amin) < 3:
+                    continue
+                if skinned:                               # already in skin space — do NOT transform
+                    corners = [amin, amax]
+                else:
+                    corners = [[amin[0] if i & 1 else amax[0],
+                                amin[1] if i & 2 else amax[1],
+                                amin[2] if i & 4 else amax[2]] for i in range(8)]
+                    corners = [[world[0] * c[0] + world[4] * c[1] + world[8] * c[2] + world[12],
+                                world[1] * c[0] + world[5] * c[1] + world[9] * c[2] + world[13],
+                                world[2] * c[0] + world[6] * c[1] + world[10] * c[2] + world[14]]
+                               for c in corners]
+                for c in corners:
+                    for k in range(3):
+                        lo[k] = min(lo[k], float(c[k])); hi[k] = max(hi[k], float(c[k]))
+        for child in node.get("children", []):
+            walk(child, world)
+
+    ident = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
+    scenes = doc.get("scenes") or []
+    roots = scenes[doc.get("scene", 0)].get("nodes", []) if scenes else range(len(nodes))
+    for r in roots:
+        walk(r, ident)
+    if any(x == float("inf") for x in lo):
+        return None
+    return lo, hi, rigged
+
+
 class ModelImporter(AssetImporter):
-    """glTF-binary (.glb) 3D models — e.g. exported from Blender. Validated by magic bytes; tris/bbox
-    read best-effort via trimesh (mirrors conjure/assets.py) into `attributes` for later placement."""
+    """glTF-binary (.glb) 3D models — e.g. exported from Blender. Validated by magic bytes.
+
+    Bounds come from the GLB's own JSON chunk (`glb_bounds`), NOT trimesh, because trimesh mis-sizes
+    every rigged model — see that function. trimesh is still used for the triangle count, which it gets
+    right. Rigged models additionally record what a figure needs: joint counts, clips, morph targets."""
     kind = "model"
     extensions = (".glb",)
 
@@ -128,13 +223,33 @@ class ModelImporter(AssetImporter):
 
     def extract(self, filename: str, data: bytes, hints: dict) -> ImportResult:
         attributes: dict = {}
+        doc = read_glb_json(data)
+        if doc:
+            bounds = glb_bounds(doc)
+            if bounds:
+                lo, hi, rigged = bounds
+                attributes.update({"bbox_min": lo, "bbox_max": hi})
+                if rigged:
+                    # A rigged model is a FIGURE: authored at life size and placed without normalization
+                    # (docs/backlogs/figures.md). Height is the Y extent — glTF is Y-up.
+                    attributes.update({
+                        "rigged": True,
+                        "height_m": round(hi[1] - lo[1], 4),
+                        "joints": [len(s.get("joints", [])) for s in doc.get("skins", [])],
+                        "clips": [a.get("name") for a in doc.get("animations", [])],
+                        "morph_targets": sum(len(p.get("targets", []))
+                                             for m in doc.get("meshes", [])
+                                             for p in m.get("primitives", [])),
+                    })
         try:
             import trimesh
             scene = trimesh.load(io.BytesIO(data), file_type="glb", force="scene")
-            lo, hi = scene.bounds
-            attributes = {"bbox_min": [float(x) for x in lo], "bbox_max": [float(x) for x in hi],
-                          "tris": int(sum(len(g.faces) for g in scene.geometry.values()))}
-        except Exception:  # noqa: BLE001 — bbox is a nicety; still catalog the model without it
+            attributes["tris"] = int(sum(len(g.faces) for g in scene.geometry.values()))
+            if "bbox_min" not in attributes:             # unrigged fallback if the JSON walk found nothing
+                lo, hi = scene.bounds
+                attributes["bbox_min"] = [float(x) for x in lo]
+                attributes["bbox_max"] = [float(x) for x in hi]
+        except Exception:  # noqa: BLE001 — tri count is a nicety; still catalog the model without it
             pass
         return ImportResult(kind=self.kind, ext=".glb", label=hints.get("label") or Path(filename).stem,
                             attributes=attributes, licence=hints.get("licence"),
