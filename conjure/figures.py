@@ -417,10 +417,60 @@ def infer_humanoid(doc: dict, blob: bytes = b"") -> Optional[dict[str, str]]:
         put(f"{side}Shoulder", _pick_by_reach(branch, pos, 0.0))
         put(f"{side}UpperArm", _pick_by_reach(branch, pos, 0.15))
         put(f"{side}LowerArm", _pick_by_reach(branch, pos, 0.55))
-    return out or None
+    return (prefer_deform(out, doc, blob) if out else None) or None
 
 
 # ---------------------------------------------------------------- validation
+
+
+def prefer_deform(mapping: dict, doc: dict, blob: bytes, tol: float = 0.002) -> dict:
+    """Swap any mapped bone that deforms NOTHING for the co-located bone that does.
+
+    Structure identifies the right *joint*; it does not guarantee the right *bone to rotate*. Rigify and
+    Daz rigs split every joint in two — an FK control (`upper_arm.L`, `thigh.L`) that a human poses, and
+    the deform bones (`upper_arm.bend.L`, `thigh.bend.L`) that actually carry vertex weights. In Blender
+    a constraint links them. **glTF drops constraints**, so rotating the control moves nothing at all:
+    reported from the headset as Grace's arms and legs being immovable while her head — which happens to
+    be a deform bone itself — worked fine.
+
+    The rigs place the deformer at exactly the same point as its control (measured distance 0.000), so
+    the substitution is unambiguous: same joint, but the half of it that moves geometry.
+
+    Skipped when the target is already taken, since two bones mapped to one node is precisely the
+    degenerate map `validate()` exists to reject.
+    """
+    if not blob or not mapping:
+        return mapping
+    deform = deform_joints(doc, blob)
+    if not deform:
+        return mapping
+    nodes = doc.get("nodes") or []
+    pos = node_world_positions(doc)
+    by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
+    taken = set(mapping.values())
+    out = dict(mapping)
+    # Claim order matters: a shoulder and an upper arm are often CO-LOCATED (Grace's `arm_parent.L` sits
+    # exactly on `upper_arm.L`), so whichever is processed first takes the single nearby deformer. The
+    # upper arm is the one worth moving — a shoulder rotation is a subtlety, an arm rotation is the
+    # gesture — so shoulders claim last.
+    order = sorted(mapping, key=lambda b: ("Shoulder" in b, b))
+    for bone in order:
+        node_name = mapping[bone]
+        i = by_name.get(node_name)
+        if i is None or i in deform or i not in pos:
+            continue
+        best, best_d = None, tol
+        for j in deform:
+            if j not in pos:
+                continue
+            d = math.dist(pos[i], pos[j])
+            if d <= best_d and nodes[j].get("name") not in taken:
+                best, best_d = j, d
+        if best is not None:
+            taken.discard(node_name)
+            out[bone] = nodes[best].get("name")
+            taken.add(out[bone])
+    return out
 
 
 def validate(doc: dict, mapping: dict[str, str]) -> list[str]:
