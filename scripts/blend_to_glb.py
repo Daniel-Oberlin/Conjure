@@ -197,9 +197,24 @@ def reparent_deform_bones(arms):
     """
     total = 0
     for arm in arms:
+        # Re-parent any bone that deforms OR carries deformers beneath it. Rigs nest this to different
+        # depths: Grace is control -> deformer (two levels), Yuffie is
+        # `upper_arm.L -> upper_arm.bend.L -> upper_arm.bend.twk.L` (three, and only the last deforms).
+        # Fixing just the deform level left Yuffie's intermediate bone hanging off the wrong parent, so
+        # rotating her upper arm carried the forearm and hand but not the upper arm itself — reported as
+        # a forearm disconnected from its elbow.
+        def carries_deform(bone):
+            stack = [bone]
+            while stack:
+                b = stack.pop()
+                if b.use_deform:
+                    return True
+                stack.extend(b.children)
+            return False
+
         links = {}
         for pb in arm.pose.bones:
-            if not pb.bone.use_deform:
+            if not carries_deform(pb.bone):
                 continue
             for c in pb.constraints:
                 tgt = getattr(c, "subtarget", "") or ""

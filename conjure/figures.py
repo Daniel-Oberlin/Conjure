@@ -446,6 +446,7 @@ def prefer_deform(mapping: dict, doc: dict, blob: bytes, tol: float = 0.002) -> 
         return mapping
     nodes = doc.get("nodes") or []
     pos = node_world_positions(doc)
+    parent = parent_map(doc)
     by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
     # A bone with deform DESCENDANTS already moves geometry when rotated — substituting is not just
     # unnecessary there, it is harmful: it swaps a control that drives a whole limb for one segment of
@@ -521,10 +522,17 @@ def prefer_deform(mapping: dict, doc: dict, blob: bytes, tol: float = 0.002) -> 
         mine = deform_reach(i)
         # Prefer a CO-LOCATED node that drives MORE of the limb, breaking ties toward the shallower one.
         best, best_reach, best_depth = None, mine, deform_depth(i)
+        ancestors_of_i = set(_ancestors(i, parent))
         for j, pj in pos.items():
             if j == i or nodes[j].get("name") in taken or not nodes[j].get("name"):
                 continue
             if math.dist(pos[i], pj) > tol:
+                continue
+            # Never substitute UPWARD. An ancestor always drives more of the body by definition, so a
+            # reach metric alone happily replaces an upper arm with the armature root. Moving up the
+            # tree can only lose specificity: it is a different, larger joint, not a better spelling of
+            # the same one.
+            if j in ancestors_of_i:
                 continue
             rj, dj = deform_reach(j), deform_depth(j)
             if rj > best_reach or (rj == best_reach and dj is not None
