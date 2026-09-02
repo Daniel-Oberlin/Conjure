@@ -326,14 +326,32 @@ def infer_humanoid(doc: dict, blob: bytes = b"") -> Optional[dict[str, str]]:
                     stack.append(c)
     trunk_joints = [j for j in joints if j not in excluded] or joints
     highest = max(trunk_joints, key=lambda j: pos[j][1])
-    head_top = highest
-    upper_body = pos[hips][1] + 0.5 * (pos[highest][1] - pos[hips][1])
-    for a in _ancestors(highest, parent)[1:]:
-        if a not in jset or pos[a][1] < upper_body:
-            break
-        if len(children.get(a, [])) >= 2:
-            head_top = a
-            break
+    trunk_joints = [j for j in joints if j not in excluded] or joints
+    highest = max(trunk_joints, key=lambda j: pos[j][1])
+    # The head is the COMMON ANCESTOR of the tallest joints: hair strands, eye bones and face-rig
+    # controls all attach to the skull, so whatever they share IS the skull, whatever they are named.
+    #
+    # KNOWN WEAK POINT — correct on 2 of 3 real rigs. Four rules were tried and each failed on a
+    # different model, which is the signature of fitting noise rather than finding structure:
+    #   - first branch point walking up  -> stopped at `upperFaceRig` (Grace), `hair right upper 3a`
+    #     (Yuffie); hair chains branch among themselves.
+    #   - common ancestor of the top 8%  -> correct on Saka and Grace, one joint too deep on Yuffie,
+    #     whose tallest joints all sit under a single hair group.
+    #   - the same with a wider cut      -> collapses to the hips; the usable window differs per model.
+    #   - highest CENTRED ancestor       -> the tallest joint is itself centred on Saka, so it stops
+    #     immediately on a hair bone.
+    # Every failing variant still validated CLEAN, because a hair bone above the neck is plausible
+    # geometry. Only driving the map in an actual POSE exposed any of it — which is the real lesson.
+    span = pos[highest][1] - pos[hips][1]
+    cut = pos[highest][1] - max(0.08 * span, 1e-4)
+    top = [j for j in trunk_joints if pos[j][1] >= cut] or [highest]
+    common_chain = _ancestors(top[0], parent)
+    for j in top[1:]:
+        anc = set(_ancestors(j, parent))
+        common_chain = [a for a in common_chain if a in anc]
+    head_top = common_chain[0] if common_chain else highest
+    if head_top == hips and highest != hips:      # a rig with no hair or face bones yields itself
+        head_top = highest
 
     out: dict[str, str] = {}
 
