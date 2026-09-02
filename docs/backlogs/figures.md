@@ -417,6 +417,56 @@ hierarchy. Three ways forward, none built:
    Loses arbitrary posing; gains everything the (still absent) animation path needs anyway.
 3. **Accept the split.** Pose VRM-class figures; treat Daz figures as static, dressed props.
 
+### Resolved: option 1 works, and the right bones now move (2026-09-02)
+
+**Confirmed on device across all three figures: the correct arms and legs move, and the head turns
+correctly, on Saka (VRM), Grace (Daz Genesis 8) and Yuffie (Genesis 8.1).** Angles are still wrong — that
+is the separate axis problem below — but bone *selection* is solved.
+
+Two fixes did it, and the second is the transferable one.
+
+**Conversion rebuilds the deform hierarchy from the constraint graph.** A constraint states exactly the
+relationship glTF cannot carry, so it is converted into one glTF can: parenting. Every bone that deforms
+**or carries deformers beneath it** is re-parented onto its constraint target — 185 bones on Grace, 206 on
+Yuffie. Filtering on `use_deform` alone was not enough: rigs nest the split to different depths (Grace
+control→deformer, Yuffie `upper_arm.L → upper_arm.bend.L → upper_arm.bend.twk.L`), and fixing only the
+deepest level left the intermediate hanging off the wrong parent — a disconnected elbow.
+
+This also unified Grace's two parallel chains. `thigh.fk.L` now drives the thigh deformers via `thigh.L`,
+the shin via `shin.fk.L`, and the foot below that: one master chain with the deform chains hanging off it.
+**The legs became correct with no inference change at all.**
+
+**Inference now uses anatomical boundaries, not topological ones.** Every remaining failure was the same
+mistake — defining a boundary by where nodes sit in the tree, when the tree is exactly what conversion
+rewrites:
+
+| Boundary | Was | Now |
+|---|---|---|
+| where an arm ends | "walk up to the spine path" — collapsed both Daz arms to the armature root once re-parenting moved the shoulder off it. A laterality threshold was worse: any fraction keeping a shoulder on one rig cuts above it on another. | **where the two arms meet.** The common ancestor of the hands is the upper torso by definition. Exact, no threshold. |
+| where the spine starts | strict `hips → head` path — returned nothing after re-parenting and silently dropped spine, chest, neck AND head together | the lowest joint hips and head share |
+| `validate()`'s hips check | required hips to be an ancestor of the head — a legitimate casualty of re-parenting, so it was **rejecting correct maps** | ancestry of the FEET, which is what makes hips the root of a body |
+
+> **The through-line, after four rounds of getting it wrong: prefer boundaries anatomy defines over
+> boundaries the skeleton graph happens to have.** Conversion rewrites the graph; it does not rewrite the
+> anatomy. This is the same insight that made the naming layer work, relearned for topology.
+
+**What it cost, recorded because the pattern repeats.** Bone selection took roughly a dozen attempts, and
+the failure modes were consistent enough to name:
+
+- **A rule right for identifying a bone was wrong for using one, four separate times.** Deform weights are
+  the correct filter for picking extremes, the wrong filter for walking a path, and the correct filter
+  again for choosing what to rotate. Structure tells you *which joint*; it never tells you *what to do
+  with it*.
+- **Four selection criteria in a row each fixed one limb and broke another** (deform-ness, depth, subtree
+  reach, ancestor-guarded reach). That oscillation is the signature of fitting noise, and the answer was
+  never a fifth criterion — it was to stop using graph statistics as a proxy.
+- **Three fixes shipped that the headset never ran**, because `figure.js` had no cache-bust stamp. The
+  signal was there and misread: after the first fix the client logs went *completely silent*, which is
+  not neutral — a component that runs and fails says so. Now every `/static/*.js` is stamped by one regex.
+- **The bug that finally mattered was found by reading three's source rule**, not by inferring it from
+  behaviour: `sanitizeNodeName` REMOVES `[ ] . : /` rather than replacing them, so `upper_arm.bend.L`
+  becomes `upper_armbendL`. The first guess was plausible, and plausible is what kept it alive two rounds.
+
 ### The axis problem — posing needs an anatomical frame
 
 Separate from the above and true even for Saka, whose bones move correctly. `pose_figure` takes euler
