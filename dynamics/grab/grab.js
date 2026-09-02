@@ -167,14 +167,45 @@
     // Nearest manipulable the ray hits → { el, point, dist, obj } or null. `obj` is the exact child that was
     // hit — the model's mesh, or one of our HUD corner handles (they're children of the target), which is
     // how _begin tells a RESIZE from a body grab.
+    // Does the ray cross an element's cached selection box? Tested in the object's own space, so the box
+    // is ORIENTED rather than axis-aligned. Shared by the _pick gate and _boxPick.
+    _hitsBox: function (origin, dir, el, box) {
+      var THREE = AFRAME.THREE;
+      this._bpRay = this._bpRay || new THREE.Ray();
+      this._bpInv = this._bpInv || new THREE.Matrix4();
+      this._bpAt = this._bpAt || new THREE.Vector3();
+      el.object3D.updateWorldMatrix(true, false);
+      this._bpInv.copy(el.object3D.matrixWorld).invert();
+      this._bpRay.set(origin, dir).applyMatrix4(this._bpInv);
+      if (!this._bpRay.intersectBox(box, this._bpAt)) return null;
+      return this._bpAt.clone().applyMatrix4(el.object3D.matrixWorld);
+    },
+
     _pick: function (origin, dir) {
       var best = null;
       this._ray.set(origin, dir);
       var els = this._manipulables();
       for (var i = 0; i < els.length; i++) {
-        var h = this._nearest(this._ray.intersectObject(els[i].object3D, true));
+        var el = els[i], target = el.object3D;
+        // Two cost guards, both added after a 348k-triangle rigged figure made this stutter on device
+        // (2026-09-01). `intersectObject(…, true)` is CPU triangle work with no upper bound, and three's
+        // SkinnedMesh raycast applies bone transforms PER VERTEX on top — so cost scales with the model,
+        // every frame, for every armed pointer. Fine at a prop's ~5k triangles; a cliff at a figure's.
+        var box = this._boxFor(el);
+        // 1. Cheap gate. If the ray misses the (cached, oriented) box it cannot hit a triangle inside it,
+        //    so the exact test is pure waste. This is most of the win when you are aimed at nothing.
+        if (box && !this._hitsBox(origin, dir, el, box)) continue;
+        // 2. A FIGURE's body is never triangle-tested. Its box IS the grab affordance — and that is the
+        //    better affordance anyway: at arm's length, "did I catch her sleeve or her forearm" is not a
+        //    distinction worth paying for, let alone paying for every frame. _boxPick then supplies the
+        //    hit. The HUD is still tested exactly, because resize must land on an actual corner handle.
+        if (el.dataset.rigged) {
+          if (this._hud.el !== el || !this._hud.group) continue;
+          target = this._hud.group;
+        }
+        var h = this._nearest(this._ray.intersectObject(target, true));
         if (h && (!best || h.distance < best.dist)) {
-          best = { el: els[i], point: h.point.clone(), dist: h.distance, obj: h.object };
+          best = { el: el, point: h.point.clone(), dist: h.distance, obj: h.object };
         }
       }
       return best;
@@ -218,17 +249,12 @@
     // focus region: track along it to a corner and focus never breaks. Mesh/handle hits still win, so what
     // you GRAB stays exact. Tested in the object's own space, so the box is oriented, not axis-aligned.
     _boxPick: function (origin, dir) {
-      var THREE = AFRAME.THREE, els = this._manipulables(), best = null;
-      var ray = new THREE.Ray(origin, dir), inv = new THREE.Matrix4();
-      var local = new THREE.Ray(), at = new THREE.Vector3();
+      var els = this._manipulables(), best = null;
       for (var i = 0; i < els.length; i++) {
         var el = els[i], box = this._boxFor(el);
         if (!box) continue;
-        el.object3D.updateWorldMatrix(true, false);
-        inv.copy(el.object3D.matrixWorld).invert();
-        local.copy(ray).applyMatrix4(inv);
-        if (!local.intersectBox(box, at)) continue;
-        var world = at.clone().applyMatrix4(el.object3D.matrixWorld);
+        var world = this._hitsBox(origin, dir, el, box);
+        if (!world) continue;
         var d = origin.distanceTo(world);
         if (!isFinite(d)) continue;        // same accumulator hazard as _pick — an image's box is FLAT, and
         //                                    a ray along its zero-depth axis takes intersectBox through
@@ -277,7 +303,11 @@
         // Skip our own HUD: it's a CHILD of the target, so measuring with it attached (which _begin does
         // on a resize grab) would inflate the box by the handle spheres and mis-seat the model.
         if (!n.isMesh || !n.geometry || n.userData.grabHud) return;
-        n.geometry.computeBoundingBox();
+        // computeBoundingBox() re-walks EVERY vertex each call and does not check for a cached result,
+        // so recomputing per refresh cost a 235k-vertex pass twice a second on a rigged figure. A
+        // geometry's local box cannot change unless the geometry itself does — and a resized image gets
+        // a NEW geometry, whose boundingBox is null and is therefore computed here on its first sight.
+        if (!n.geometry.boundingBox) n.geometry.computeBoundingBox();
         var gb = n.geometry.boundingBox; if (!gb) return;
         var m = new THREE.Matrix4().multiplyMatrices(inv, n.matrixWorld);
         var xs = [gb.min.x, gb.max.x], ys = [gb.min.y, gb.max.y], zs = [gb.min.z, gb.max.z];

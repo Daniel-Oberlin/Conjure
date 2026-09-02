@@ -653,6 +653,10 @@
     // the floor — a 6DOF drag of a grounded model would just be undone by the next solve.
     if (meta.on_surface) el.dataset.onSurface = meta.on_surface; else delete el.dataset.onSurface;
     if (meta.placement) el.dataset.placement = meta.placement; else delete el.dataset.placement;
+    // A FIGURE (rigged model). Consumers need this for cost reasons, not cosmetics: a skinned model is
+    // hundreds of thousands of triangles, and anything doing per-frame geometry work against it has to
+    // opt out (see grab's _pick). docs/backlogs/figures.md.
+    if (meta.rigged) el.dataset.rigged = "1"; else delete el.dataset.rigged;
     if (t.position) el.setAttribute("position", v3(t.position));
     if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
     if (t.scale) el.setAttribute("scale", v3(t.scale));
