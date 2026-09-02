@@ -439,6 +439,12 @@ def do_export(path):
         export_yup=True,                # Blender Z-up → glTF Y-up
         export_apply=False,             # applying modifiers would collapse the armature binding
         export_skins=True,
+        # TRIED AND REJECTED: export_def_bones=True, meant to fix zig-zag limbs by emitting only the
+        # deformation bones "and needed bones for hierarchy". It makes things worse. Grace's limb
+        # deformers are driven by CONSTRAINTS, not parenting, so Blender has no hierarchy to preserve
+        # and flattens them all to the armature root (`upper_arm.bend.L <- Grace_RIG`). The spine, which
+        # is genuinely parented, survives. Measured: 482 joints -> 175, limbs unusable.
+        export_def_bones=False,
         export_morph=KEEP_MORPHS,       # the ~90M-delta decision
         export_animations=False,        # the samples ship none; sourced separately (backlog)
         export_cameras=False,

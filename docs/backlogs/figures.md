@@ -384,6 +384,58 @@ sibling job and should be the first move on any "is this wrong?" question:
   character has dark hair was wrong.
 - **Saka's grey fingernails** are visible in VRoid Studio too.
 
+### glTF cannot carry a constraint-driven control rig (2026-09-02)
+
+**The most consequential finding of Phase 2, and it constrains what "posing" can mean per model.**
+
+Rigify and Daz rigs separate every joint into an FK **control** a human grabs (`upper_arm.L`, `thigh.L`)
+and **deform** bones that carry the vertex weights (`upper_arm.bend.L`, `upper_arm.twist.L`). In Blender a
+CONSTRAINT links them. glTF has no constraints, so after export:
+
+- rotating the **control** moves nothing — its link to the deformers is gone;
+- rotating **one deformer** moves only its own segment — reported from the headset as zig-zag arms and
+  hips twisting toward the knees, because `forearm.bend.L`'s parent is `upper_arm.L`, a control nobody
+  is rotating. The deform chain is broken at every joint.
+
+`export_def_bones=True` ("deformation bones only, and needed bones for hierarchy") looked like the fix and
+is worse. Blender can only preserve a hierarchy that exists, and these deformers are related by
+constraints rather than parenting — so it flattens every limb deformer to the armature root
+(`upper_arm.bend.L <- Grace_RIG`). Measured: 482 joints → 175, spine intact, limbs unusable. Reverted,
+with the reasoning kept in place so it is not retried.
+
+**Saka poses correctly because VRM rigs are a plain FK hierarchy** — no control/deform split, so every
+bone both poses and deforms. That is not a coincidence of one model; it is what the format requires.
+
+This is a **sourcing consequence**, and it sharpens the earlier survey: a VRM or Mixamo-class rig is
+posable through glTF; a Daz/Rigify control rig is not, without a conversion step that rebuilds the deform
+hierarchy. Three ways forward, none built:
+
+1. **Rebuild the hierarchy at conversion.** Walk each deform bone's constraint targets in Blender and
+   re-parent the deformers into a real chain before export. Tractable — the constraint graph is right
+   there in `pose.bones[].constraints` — and it would make Daz figures posable like any other.
+2. **Bake poses as animation clips.** Pose in Blender, export clips, and "posing" becomes clip playback.
+   Loses arbitrary posing; gains everything the (still absent) animation path needs anyway.
+3. **Accept the split.** Pose VRM-class figures; treat Daz figures as static, dressed props.
+
+### The axis problem — posing needs an anatomical frame
+
+Separate from the above and true even for Saka, whose bones move correctly. `pose_figure` takes euler
+degrees in each bone's OWN local space, and a bone's rest orientation is whatever its rigger chose. So
+`[0, 0, -70]` flexes one figure's hip and swings another's leg backward, and "raise her legs" put them
+behind her.
+
+Semantic bone NAMES are solved; semantic AXES are not. The fix is the same move that solved names —
+measure the structure instead of assuming a convention. Every bone's rest direction is computable from the
+joint positions already extracted (bone → child), and with the body's forward and up that gives each bone
+a canonical basis: *twist* along the limb, *swing* perpendicular. The vocabulary then becomes anatomical
+(`{"leftUpperLeg": {"lift": 45}}`) and means the same thing on every rig.
+
+**On using a multimodal model for this** (asked 2026-09-02): the right role is *verification*, not search.
+Trigonometry gives the axes exactly; vision would be a slow, fragile way to hunt for them. But rendering a
+posed figure and asking "is this a raised arm or a dislocated shoulder?" is precisely the check that caught
+the head-mapped-to-a-hair-bone error, which `validate()` had passed as clean. Worth building once the
+anatomical frame exists and there is something to verify.
+
 ### Still open from Phase 0
 
 - ~~Dark, pointed hands.~~ **Fixed 2026-09-02** — see above. (The "pointed silhouette" was an artifact of
