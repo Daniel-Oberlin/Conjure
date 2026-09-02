@@ -264,8 +264,7 @@ def infer_humanoid(doc: dict, blob: bytes = b"") -> Optional[dict[str, str]]:
     if not left or not right:
         return None
     # glTF is Y-up and +X is the model's LEFT when it faces +Z (the convention every sample follows).
-    children = {i: [c for c in (n.get("children") or []) if c in jset]
-                for i, n in enumerate(nodes)}
+    children = {i: list(n.get("children") or []) for i, n in enumerate(nodes)}
 
     def branch_up(idx: int, want: int) -> int:
         """Walk up from `idx` to the highest ancestor with at least `want` children, else `idx`.
@@ -379,7 +378,15 @@ def infer_humanoid(doc: dict, blob: bytes = b"") -> Optional[dict[str, str]]:
             put(f"{side}Toes", toe)
 
     # Spine: hips → head. Named stops by height fraction, same reasoning as the legs.
+    # The spine runs from hips to head — but conversion can re-parent the head chain so that hips is no
+    # longer its ancestor, and a strict path lookup then returns nothing and silently drops spine, chest,
+    # neck AND head. Fall back to the lowest joint the two share, which is the spine's base either way.
     spine = _path(hips, head_top, parent)
+    if not spine:
+        anc_head = _ancestors(head_top, parent)
+        anc_hips = set(_ancestors(hips, parent))
+        base = next((a for a in anc_head if a in anc_hips), None)
+        spine = _path(base, head_top, parent) if base is not None else None
     if spine and len(spine) >= 3:
         body = spine[1:]
         put("spine", _pick_by_height(body, pos, 1.0))       # lowest of the rising chain
@@ -392,13 +399,26 @@ def infer_humanoid(doc: dict, blob: bytes = b"") -> Optional[dict[str, str]]:
         if below_head:
             put("neck", max(below_head, key=lambda j: pos[j][1]))
 
-    # Arms: the chain from the spine out to each hand. Its top is where it leaves the trunk.
+    # Arms: the chain out to each hand, ending where the two arms meet.
+    _al, _ar = _ancestors(hand_l, parent), set(_ancestors(hand_r, parent))
+    shared_torso = set()
+    for a in _al:
+        if a in _ar:
+            shared_torso = set(_ancestors(a, parent))     # that joint and everything above it
+            break
     for side, hand in (("left", hand_l), ("right", hand_r)):
+        # An arm ends where the two arms MEET. The common ancestor of the left and right hands is the
+        # upper torso by definition, so everything below it on each side is that arm — exact, and with
+        # no threshold to tune.
+        #
+        # "Walk up to the spine path" was used first and broke once conversion re-parented the shoulder
+        # off the hips->head chain, collapsing both Daz arms to the armature root. A laterality
+        # threshold replaced it and was worse: any fraction that keeps a shoulder on one rig cuts above
+        # it on another.
         chain = _ancestors(hand, parent)
-        trunk = set(spine or []) | {hips}
         branch = []
         for j in chain:
-            if j in trunk:
+            if j == hips or j in shared_torso:
                 break
             branch.append(j)
         branch = list(reversed(branch))                     # shoulder-most first
@@ -607,9 +627,12 @@ def validate(doc: dict, mapping: dict[str, str]) -> list[str]:
             problems.append(f"{upper} sits below {lower} ({yu:+.3f} < {yl:+.3f})")
 
     # 3. Hips must be an ancestor of the feet and the head — the definition of the root of a body.
+    # Hips must be an ancestor of the FEET — that is what makes it the root of the body. NOT of the
+    # head: conversion re-parents the head chain onto a torso control, so hips legitimately stops being
+    # its ancestor while the map stays correct. Keeping that check turned a good map into a rejected one.
     hips_i = idx("hips")
     if hips_i is not None:
-        for bone in ("leftFoot", "rightFoot", "head"):
+        for bone in ("leftFoot", "rightFoot"):
             i = idx(bone)
             if i is not None and hips_i not in _ancestors(i, parent):
                 problems.append(f"hips is not an ancestor of {bone}")
