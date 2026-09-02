@@ -33,7 +33,23 @@
   // This failed silently and looked like success: the server resolved the bone fine, the client found
   // nothing, and nobody reported it. Saka worked only because VRM names (`J_Bip_L_UpperArm`) happen to
   // contain no punctuation.
-  function norm(s) { return String(s).replace(/[\s.:]/g, "_"); }
+  // three's PropertyBinding.sanitizeNodeName: whitespace becomes "_", and the reserved characters
+  // [ ] . : / are REMOVED — not replaced. Getting that backwards is why this looked fixed and was not:
+  // `upper_arm.bend.L` becomes `upper_armbendL`, and a search for `upper_arm_bend_L` finds nothing.
+  // Every candidate spelling is tried, since the exact rule has shifted between three releases.
+  function variants(s) {
+    var raw = String(s);
+    return [raw,
+            raw.replace(/\s/g, "_").replace(/[\[\]./:]/g, ""),   // three's actual rule
+            raw.replace(/[\s.:]/g, "_"),                          // underscore-substitution variant
+            raw.replace(/[\[\]./:\s]/g, "")];                    // strip everything reserved
+  }
+
+  function lookup(bones, name) {
+    var v = variants(name);
+    for (var i = 0; i < v.length; i++) if (bones[v[i]]) return bones[v[i]];
+    return null;
+  }
 
   function parse(s) {
     if (!s) return null;
@@ -68,8 +84,9 @@
       var put = function (n) {
         if (!n || !n.name) return;
         bones[n.name] = n;
-        var k = norm(n.name);
-        if (!bones[k]) bones[k] = n;          // raw name wins; sanitized is the fallback spelling
+        variants(n.name).forEach(function (k) {   // raw name wins; the rest are fallback spellings
+          if (k && !bones[k]) bones[k] = n;
+        });
       };
       obj.traverse(function (n) { if (n.isBone) put(n); });
       // A skeleton can also be reached through a SkinnedMesh whose bones are not in this subtree.
@@ -94,13 +111,13 @@
       var prev = this._applied || {};
       Object.keys(prev).forEach(function (bone) {
         if (pose[bone]) return;
-        var b = bones[map[bone]] || bones[norm(map[bone])];
+        var b = lookup(bones, map[bone]);
         if (b) b.rotation.set(0, 0, 0);
       });
 
       var applied = {}, missing = [];
       Object.keys(pose).forEach(function (bone) {
-        var node = map[bone], b = node && (bones[node] || bones[norm(node)]);
+        var node = map[bone], b = node && lookup(bones, node);
         if (!b) { missing.push(bone); return; }
         var e = pose[bone];
         if (!e || e.length !== 3) return;
@@ -125,7 +142,7 @@
       this.el.removeEventListener("model-loaded", this._onLoad);
       var map = parse(this.data.humanoid) || {}, bones = this._bones || {};
       Object.keys(this._applied || {}).forEach(function (bone) {
-        var b = bones[map[bone]] || bones[norm(map[bone])];
+        var b = lookup(bones, map[bone]);
         if (b) b.rotation.set(0, 0, 0);
       });
     }
