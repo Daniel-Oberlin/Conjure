@@ -31,6 +31,7 @@ bone reduction needs the humanoid map to know what is safe to remove — see the
 
 Prints a before/after report to stdout so a conversion is auditable without opening the result.
 """
+import math
 import os
 import sys
 
@@ -59,6 +60,8 @@ WANT = [c.strip() for c in (opt("collections") or "").split(",") if c.strip()]
 MAX_TEX = int(opt("max-texture", "2048"))          # 0 disables; see the texture pass below
 IMG_FMT = opt("image-format", "AUTO")              # AUTO | JPEG | WEBP
 BAKE = int(opt("bake", "0"))                       # px; bake non-Principled materials (0 = off)
+STRIP_CONSTRAINTS = "--strip-constraints" in argv      # opt-in; see strip_constraints()
+FIX_UDIM = "--fix-udim" in argv                        # opt-in; see normalize_udim_uvs()
 
 # ---- what is a widget: referenced as a bone's custom shape, whatever it is called -----------------
 widgets = {pb.custom_shape for ob in bpy.data.objects if ob.type == "ARMATURE"
@@ -168,6 +171,43 @@ for ob in keep:
         except RuntimeError:
             pass                                     # already linked somewhere in the scene tree
 
+def strip_constraints(arms):
+    """Bake each armature's constraint-resolved pose into its bones, then remove the constraints.
+
+    glTF carries no constraints, so they are lost either way — but LOSING them is not the same as
+    RESOLVING them first. Grace's rig has circular constraint dependencies on `forearm.L/R` and
+    `hand.fk.L/R` (Blender reports the cycle 40 times per load). Blender resolves the cycle well enough
+    to draw; the exporter evaluates it differently and writes garbage for those bones, which collapsed
+    her fingers into cones. The source renders correctly, so the geometry was never the problem.
+
+    `visual_transform_apply` writes the resolved result into the pose channels, so appearance is
+    preserved and the exported skeleton is plain FK with no cycles left to misevaluate.
+    """
+    done = 0
+    for arm in arms:
+        n = sum(len(pb.constraints) for pb in arm.pose.bones)
+        if not n:
+            continue
+        bpy.ops.object.select_all(action="DESELECT")
+        arm.hide_viewport = False
+        arm.hide_set(False)
+        arm.select_set(True)
+        bpy.context.view_layer.objects.active = arm
+        try:
+            bpy.ops.object.mode_set(mode="POSE")
+            bpy.ops.pose.select_all(action="SELECT")
+            bpy.ops.pose.visual_transform_apply()
+            for pb in arm.pose.bones:
+                for c in list(pb.constraints):
+                    pb.constraints.remove(c)
+            bpy.ops.object.mode_set(mode="OBJECT")
+            done += n
+        except Exception as exc:  # noqa: BLE001 — never lose the export over this
+            print(f"    ! {arm.name}: could not strip constraints ({exc})")
+    if done:
+        print(f"  constraints   resolved and removed {done} bone constraint(s)")
+
+
 def select_for_export():
     """Select exactly `keep` and make an armature active. Called AFTER the bake, never before: baking
     is per-object and does its own select_all(DESELECT), so running this first leaves only the last
@@ -218,10 +258,56 @@ def bake_materials(objs, size, only):
         mat.node_tree.nodes.active = node       # `active` node per material is the bake destination
         made[mat.name] = (img, node)
 
+    # CRITICAL: `bake` writes into the active image node of EVERY material on the baked object, not just
+    # the ones we asked for. Any bystander material whose active node happens to be its own diffuse
+    # texture gets that texture OVERWRITTEN with the bake result — which is how baking `FACE` silently
+    # replaced `Grace Arms D` with solid black and turned her hands black for six export attempts.
+    # (Proof: the same texture is correct in an otherwise identical export with baking off.)
+    # Give every bystander a throwaway destination so the bake has somewhere harmless to land.
+    scratch = []
+    for ob in {t[0] for t in targets}:
+        for sl in ob.material_slots:
+            m = sl.material
+            if not m or m.name in made or not m.use_nodes or not m.node_tree:
+                continue
+            junk = bpy.data.images.new(f"scratch_{m.name}", 4, 4, alpha=True)
+            node = m.node_tree.nodes.new("ShaderNodeTexImage")
+            node.image = junk
+            m.node_tree.nodes.active = node
+            scratch.append((m, node, junk))
+
+    def bake_uv_layer(ob):
+        """A UV layer whose coordinates lie inside 0..1 — the bake writes into the ACTIVE layer, so if
+        that is the UDIM atlas (Grace's `Base Female` spans u 0..7) every texel lands outside the image
+        and the bake silently produces black. Prefer the render layer, else the first one that fits."""
+        uvs = ob.data.uv_layers
+        cands = [uvs.active] if uvs.active else []
+        cands += [l for l in uvs if getattr(l, "active_render", False)]
+        cands += list(uvs)
+        for layer in cands:
+            if layer is None:
+                continue
+            lo_ = hi_ = None
+            for d in layer.data:
+                u, v = d.uv
+                lo_ = min(u, v) if lo_ is None else min(lo_, u, v)
+                hi_ = max(u, v) if hi_ is None else max(hi_, u, v)
+            if lo_ is not None and lo_ >= -0.001 and hi_ <= 1.001:
+                return layer
+        return None
+
     baked = failed = 0
+    bake_uv = {}
     for ob in {t[0] for t in targets}:
         if not ob.data.uv_layers:
             print(f"    ! {ob.name}: no UV map — cannot bake"); failed += 1; continue
+        layer = ob.data.uv_layers.active
+        if layer is None or FIX_UDIM:
+            layer = bake_uv_layer(ob)
+        if layer is None:
+            print(f"    ! {ob.name}: every UV layer spans outside 0..1 — cannot bake"); failed += 1; continue
+        ob.data.uv_layers.active = layer
+        bake_uv[ob.name] = layer.name
         bpy.ops.object.select_all(action="DESELECT")
         # hide_render blocks baking outright ("not enabled for rendering"), and these files
         # ship unworn pieces hidden — so clear BOTH flags, not just the viewport one.
@@ -233,6 +319,11 @@ def bake_materials(objs, size, only):
             baked += 1
         except Exception as exc:                # noqa: BLE001 — one bad mesh must not lose the export
             print(f"    ! {ob.name}: bake failed ({exc})"); failed += 1
+
+    # Remove the throwaway nodes; the bystander materials are otherwise untouched.
+    for m, node, junk in scratch:
+        m.node_tree.nodes.remove(node)
+        bpy.data.images.remove(junk)
 
     # Rebuild each baked material as a minimal Principled BSDF the exporter can read directly —
     # UNLESS the bake came out black, which means it captured nothing useful.
@@ -268,6 +359,14 @@ def bake_materials(objs, size, only):
                 mat.surface_render_method = "BLENDED"        # 4.2+ — drives glTF alphaMode: BLEND
         else:
             tex = nt.nodes.new("ShaderNodeTexImage"); tex.image = img
+            # Point the rebuilt material at the SAME layer the bake wrote into. Without this the
+            # exporter picks a UV set by default and can land back on the UDIM atlas the bake existed
+            # to escape — the texture would be correct and sampled in the wrong place.
+            layer = next((bake_uv[o.name] for o, _i, m2 in targets
+                          if m2 and m2.name == name and o.name in bake_uv), None)
+            if layer:
+                uvn = nt.nodes.new("ShaderNodeUVMap"); uvn.uv_map = layer
+                nt.links.new(uvn.outputs["UV"], tex.inputs["Vector"])
             nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
         nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
     print(f"  bake          {len(made)} materials on {baked} objects at {size}px"
@@ -337,22 +436,156 @@ def unresolved_base_colours(path):
         if pbr.get("baseColorTexture"):
             continue
         f = pbr.get("baseColorFactor")
-        if f is None or (len(f) >= 3 and f[0] == f[1] == f[2] == 0):
+        # Not just exactly-black: Grace's fingernails exported [0.01, 0.04, 0.11] with no texture — a
+        # near-black blue that the scene lights lift to a bluish grey, and visibly wrong on a hand. An
+        # equality test missed it. Anything this dark with no texture is a base colour the exporter
+        # failed to resolve, whatever the exact value.
+        if f is None or (len(f) >= 3 and max(f[:3]) < 0.15):
+            # NOTE: detecting these is right; the FALLBACK for them is not yet. Grace's fingernails land
+            # here, bake black (like a lens), and so get the transparent fallback — but a nail is opaque.
+            # "No diffuse colour" genuinely means transparent for a lens and merely means "shader too
+            # complex" for a nail, and nothing measured here separates the two. Left detected-but-
+            # imperfect rather than reverted, since a near-black factor IS a failure worth surfacing.
             bad.add(m.get("name"))
     return bad
 
 
+def udim_materials(objs, texcoord_of):
+    """Materials whose exported UVs fall outside 0..1 — i.e. they rely on UDIM tiling.
+
+    **glTF has no UDIM concept at all.** Daz figures lay the body out as a UV atlas spanning many tiles
+    in one set — Grace's is u 0..1 face, 1..2 torso, 2..3 legs, 3..4 arms, out to 6..7 — and a client
+    given u=3.5 has no way to know which tile image that means. Her arms exported from that set and
+    rendered black; her torso happened to export from a second, cleanly-unwrapped set and was fine.
+
+    Baking fixes it because the bake resolves the material *in Blender*, where UDIM works, into a flat
+    texture in the mesh's own 0..1 layout. `texcoord_of` maps material name -> the TEXCOORD index the
+    probe export chose, so we test the set the exporter actually used rather than guessing.
+    """
+    bad = set()
+    for ob in objs:
+        uvs = ob.data.uv_layers
+        if not uvs:
+            continue
+        slots = [s.material.name if s.material else None for s in ob.material_slots]
+        span = {}
+        for p in ob.data.polygons:
+            name = slots[p.material_index] if p.material_index < len(slots) else None
+            if name is None or name in bad:
+                continue
+            n = texcoord_of.get(name, 0)
+            if n >= len(uvs):
+                bad.add(name)                            # samples a set that does not exist
+                continue
+            layer = uvs[n].data
+            for li in p.loop_indices:
+                u, v = layer[li].uv
+                lo_, hi_ = span.setdefault(name, [9e9, -9e9])
+                span[name] = [min(lo_, u, v), max(hi_, u, v)]
+        for name, (a, b) in span.items():
+            if a < -0.001 or b > 1.001:
+                bad.add(name)
+    return bad
+
+
+
+def normalize_udim_uvs(objs, texcoord_of, only):
+    """Shift each UDIM material's UVs back into 0..1 by subtracting its integer tile offset.
+
+    A UDIM tile number encodes an offset: 1001 is u 0..1, 1002 is u 1..2, and Grace's arms at 1004 sit
+    at u 3..4. The image assigned to that material is already the tile's own image, so the only thing
+    wrong for glTF is the offset. Subtract it and the existing texture samples correctly — no bake, no
+    resampling, no quality loss.
+
+    Per material rather than per layer: each material occupies its own tile, so each moves independently.
+    They end up overlapping in UV space, which is fine — every one carries its own image.
+    """
+    moved = 0
+    for ob in objs:
+        uvs = ob.data.uv_layers
+        if not uvs:
+            continue
+        slots = [sl.material.name if sl.material else None for sl in ob.material_slots]
+        # Per (material index, uv layer): the integer tile the faces sit in.
+        tiles = {}
+        for p in ob.data.polygons:
+            name = slots[p.material_index] if p.material_index < len(slots) else None
+            if name is None or name not in only:
+                continue
+            n = texcoord_of.get(name, 0)
+            if n >= len(uvs):
+                continue
+            layer = uvs[n].data
+            for li in p.loop_indices:
+                u, v = layer[li].uv
+                key = (p.material_index, n)
+                cur = tiles.get(key)
+                tu, tv = math.floor(u + 1e-6), math.floor(v + 1e-6)
+                if cur is None:
+                    tiles[key] = [tu, tv, True]
+                elif cur[0] != tu or cur[1] != tv:
+                    cur[2] = False            # spans more than one tile — cannot be a simple offset
+        usable = {k: v for k, v in tiles.items() if v[2] and (v[0] or v[1])}
+        if not usable:
+            continue
+        for p in ob.data.polygons:
+            key0 = p.material_index
+            for n in {texcoord_of.get(slots[key0] if key0 < len(slots) else "", 0)}:
+                off = usable.get((key0, n))
+                if not off or n >= len(uvs):
+                    continue
+                layer = uvs[n].data
+                for li in p.loop_indices:
+                    uv = layer[li].uv
+                    uv[0] -= off[0]
+                    uv[1] -= off[1]
+        moved += len({k[0] for k in usable})
+    return moved
+
+
+def texcoords_from(path):
+    """material name -> the TEXCOORD index its baseColorTexture samples, per the probe export."""
+    import json as _json
+    import struct as _struct
+    with open(path, "rb") as fh:
+        blob = fh.read()
+    jl, _ = _struct.unpack_from("<II", blob, 12)
+    doc = _json.loads(blob[20:20 + jl])
+    out = {}
+    for m in doc.get("materials", []):
+        t = (m.get("pbrMetallicRoughness") or {}).get("baseColorTexture")
+        if m.get("name") and isinstance(t, dict):
+            out[m["name"]] = t.get("texCoord", 0)
+    return out
+
+
+if STRIP_CONSTRAINTS:
+    strip_constraints(armatures)
+    select_for_export()
+
 if BAKE:
-    # Probe first, bake only what genuinely failed, then export for real.
+    # Probe first, bake only what genuinely needs it, then export for real.
     probe = out_path + ".probe.glb"
     do_export(probe)
     failed = unresolved_base_colours(probe)
+    tc = texcoords_from(probe)
+    udim = udim_materials(meshes, tc)
     os.remove(probe)
-    print(f"  probe         {len(failed)} material(s) with no resolvable base colour: "
-          f"{', '.join(sorted(failed)[:6]) or '—'}")
+    print(f"  probe         no base colour: {', '.join(sorted(failed)[:5]) or '—'}"
+          f"  ({len(failed)})")
+    print(f"                UV outside 0..1 (UDIM): {', '.join(sorted(udim)[:5]) or '—'}"
+          f"  ({len(udim)})")
+    # UDIM is fixed by MOVING THE UVs, not by baking. A tile is just an integer offset — a material at
+    # u 3..4 is tile 1004, and its assigned image IS that tile — so subtracting the offset puts the
+    # coordinates back in 0..1 where glTF can use them. Exact, instant, and lossless, where baking these
+    # Daz node graphs produced black 15 times out of 17. Baking is kept only for materials whose base
+    # colour the exporter genuinely cannot resolve at all.
+    moved = normalize_udim_uvs(meshes, tc, udim) if FIX_UDIM else 0
+    if moved:
+        print(f"  udim          shifted {moved} material(s) back into 0..1 (no baking needed)")
     if failed:
         bake_materials(meshes, BAKE, only=failed)
-        select_for_export()
+    select_for_export()
 
 do_export(out_path)
 print(f"\n  WROTE {out_path}  ({os.path.getsize(out_path)/1e6:.1f} MB)\n")

@@ -322,17 +322,121 @@ usefully (`FACE`), 7 given a neutral fallback — face correct, hair correct, le
 The general shape, worth carrying into the discovery pipeline: *where a cheap measurement exists, measure;
 a heuristic over the input is a guess that fails silently on the next model.*
 
+### The black hands: six wrong answers and one right one (2026-09-02)
+
+Resolved, and the resolution is a lesson rather than a line of code.
+
+**Root cause: `bpy.ops.object.bake()` writes into the active image node of EVERY material on the baked
+object**, not only the targeted ones. Grace's body mesh carries 15 materials; baking `FACE` therefore
+overwrote `Grace Arms D` — whose active node was its own diffuse texture — with solid black. Every baked
+export since the second was silently corrupting bystander textures. The fix is to hand every non-target
+material a throwaway 4×4 destination so the bake has somewhere harmless to land.
+
+The proof took one command and should have been the *second* thing tried, not the eighth:
+
+| Export | Arms texture | Mean RGB |
+|---|---|---|
+| no downscale, no bake | 4096² | (147, 121, 112) — correct skin |
+| downscaled, no bake | 1024² | (147, 121, 112) — still correct |
+| downscaled **+ baked** | 1024² | **(0, 0, 0)** |
+
+**Four hypotheses were pursued and all four were false**, each with real supporting evidence:
+
+| Hypothesis | Why it was believable | Why it was wrong |
+|---|---|---|
+| the probe oracle missed the material | the hair *was* mis-detected earlier | `BODY---arms` exported a correct `Grace Arms D` reference all along |
+| the bake wrote to the wrong UV layer | the active layer genuinely was the UDIM atlas | forcing a 0..1 layer changed nothing, and broke the FACE bake |
+| **UDIM tiling** | the atlas is real — u 0..1 face, 1..2 torso, 3..4 arms — and arms really did sample it | glTF's default REPEAT wrapping already handles a *single-tile* material; `grace1k` rendered correct arms at u 3–4 |
+| constraint dependency cycles | Blender reports them 40× per load, on `forearm.L/R` and `hand.fk.L/R` **exactly** | resolving and removing all 609 constraints changed nothing |
+
+The UDIM one is the instructive one. Every step of the reasoning was true — the tiles exist, the material
+samples them, glTF has no UDIM — and the conclusion was still wrong, because a true premise chain says
+nothing about whether *this* is the cause. **A mechanism that could explain the symptom is not evidence
+that it did.**
+
+What broke the loop was comparing one artifact across three builds instead of reasoning about the
+pipeline. The rule to carry forward, which is the same one that made the probe oracle work and was
+abandoned exactly when it mattered most: **measure the artifact, do not reason about the pipeline.**
+
+The UDIM shift (`--fix-udim`) and constraint stripping (`--strip-constraints`) are kept but default
+**off**. Both are sound if a genuine multi-tile or cyclic case appears; neither should run speculatively,
+since each perturbed the bake and cost a cycle of confusion.
+
+### Known limitation: the black-bake fallback cannot tell a lens from a fingernail
+
+A material that bakes black has no view-independent colour. For a spectacle lens or an eye-moisture layer
+that means *transparent*, and the transparent fallback is right. For Grace's **fingernails** it means only
+"the shader is too complex to resolve", and they are opaque — so the same fallback makes them see-through,
+which is worse than the near-black blue they had before.
+
+Detection is right and is kept (a near-black `baseColorFactor` with no texture is a real failure, and an
+exact-zero test missed it). The *fallback* needs a signal that separates the two cases — likely the
+material's actual alpha/transmission in Blender rather than the bake result alone. Not built; the shipped
+conversion leaves nails faintly blue-grey and opaque, which is unobtrusive.
+
+### Not faults at all
+
+Two of the four things reported on device turned out to be correct behaviour, and both were confirmed by
+rendering the **source** `.blend` with full material evaluation — which is now `scripts/glb_preview.py`'s
+sibling job and should be the first move on any "is this wrong?" question:
+
+- **Grace's hair is authored blonde.** The pale ash-blonde is right; only the assumption that the
+  character has dark hair was wrong.
+- **Saka's grey fingernails** are visible in VRoid Studio too.
+
 ### Still open from Phase 0
 
-- **Dark, pointed hands.** Present in *every* export including the pre-bake one, and **not** a material
-  fault: `BODY---arms` resolves a `baseColorTexture` normally and was never baked. The silhouette tapers
-  to a point, which reads as fingers collapsing — a bind-pose or skinning-weight problem, plausibly
-  related to the 482-bone rig's IK/constraint apparatus not surviving export. Needs its own look;
-  comparing a Blender render of the source against the GLB would localize it to export vs. source.
-- **Whether the raycast change removes the stutter on device.** The walking-vs-aiming test confirmed the
-  *diagnosis* (smooth while walking, stutters only when aimed ⇒ CPU raycast, not GPU); the fix is
-  untested in the headset.
+- ~~Dark, pointed hands.~~ **Fixed 2026-09-02** — see above. (The "pointed silhouette" was an artifact of
+  reading shape into a black mass; the geometry was never wrong.)
+- ~~Whether the raycast change removes the stutter.~~ **Confirmed fixed on device 2026-09-02.** Grabbing a
+  348 k-triangle figure is now smooth. **Decimation is therefore unnecessary** — the cost was never the
+  GPU, so the quality/size trade never has to be made.
 - Baking costs ~3 min per conversion, most of it Cycles. Fine at this cadence, worth noting.
+
+### VRM: discovery layer 1, working (2026-09-02)
+
+A VRoid Studio export (`Saka.vrm`, 16 MB) imported with **no conversion at all** — a `.vrm` *is* a GLB, so
+it is now a first-class import extension, stored as `.glb` so the client needs no special case.
+
+It carries `VRMC_vrm` with **54 humanBones stated outright** — `hips → J_Bip_C_Hips`, `leftUpperArm →
+J_Bip_L_UpperArm`, down to every finger joint — plus `VRMC_springBone`. `vrm_humanoid()` extracts it
+(both 1.0's dict form and 0.x's list form), storing node **names** rather than indices so the map survives
+a re-export that reorders nodes, alongside `humanoid_source: "vrm"` so a stated map and an inferred one
+can be trusted differently.
+
+| | Grace | Saka |
+|---|---|---|
+| tris | 348,027 | **27,266** |
+| joints | 482 | 83 |
+| height | 1.757 m | 1.545 m |
+| humanoid map | must be inferred | **stated** |
+| conversion | ~3 min Blender pipeline | none |
+
+**Saka is now the pipeline's control**, and that is worth more than the model itself: she came through
+clean, which is what proved Grace's black hands were a conversion fault rather than an importer or client
+one. She also gives Phase 1 a **labelled example** — inference (layer 2) can be built and checked bone-by-
+bone against a known-correct 54-entry answer before being pointed at Grace's 482-bone rig, where nothing
+states the truth.
+
+Caveat: VRM materials are **MToon** (`VRMC_materials_mtoon`, all 12 of Saka's carry it). A-Frame's plain
+glTF loader ignores that and falls back to `KHR_materials_unlit`, so she renders flatter than in VRoid
+Studio. The MToon data is already in the file — shade colours, rim lighting, outline, matcap — so toon
+rendering is reachable later without re-exporting anything. Re-importing the `.vroid` project would gain
+nothing: it is a ZIP holding a protobuf *recipe* (base model `N00`, slider values) and **no geometry at
+all**, cookable only by VRoid Studio.
+
+### The selection box was the same bug as the bbox, on the client
+
+Reported as "about twice as tall as she is". `_localBox` folded `mesh.matrixWorld` into each geometry's
+bind-space bounding box — but a skinned mesh's *node* frequently hangs off a bone (Grace's hair is
+parented to `head`, ten bones up the spine) while its vertices are already in skin space, so the whole
+skeleton chain got counted twice.
+
+Rather than fight three's bind matrices client-side, the server ships the bounds it already computes
+correctly at import as `meta.bbox` → `data-bbox`, and `grab` uses them directly. Exactly the same
+insight as `glb_bounds()` on the Python side, arrived at independently a day later — which suggests the
+underlying rule deserves stating once, loudly: **never derive a skinned mesh's extent from the scene
+graph.**
 
 ### Is any of this Grace-specific?
 
