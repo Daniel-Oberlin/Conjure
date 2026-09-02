@@ -384,8 +384,77 @@
    * @param {RefSurface[]} cur
    * @returns {{Tmat: Mat4|null, stat: string}}
    */
-  function canonicalFrame(THREE, cur) {
+  // The structural corner points of a room, from WALL-PLANE PAIRS — the origin basis for `canonicalFrame`
+  // when `origin: "corners"`. Distinct from `wallCorners` in exactly one way that matters here: it does NOT
+  // require each wall's nearest END to reach the crossing. That end-reach gate is right for anchoring an
+  // inset (a corner an inset measures from must be a corner that physically exists) and wrong for a global
+  // origin, because it makes MEMBERSHIP depend on how much of each wall was scanned — and a mean over a
+  // churning set moves even when every member of it is exact.
+  //
+  // Measured on the golden room under a re-scan model (walls slid along their own length, widths changed,
+  // planes untouched): with the end-reach gate the corner set went 36 → 28 members at ±25 cm and the mean
+  // moved 0.30 m; plane-pair membership held 29.4/29 and the mean moved 0.043 m. Corners that survive in
+  // both sets move exactly 0.000 m — the individual points are perfect, the set is the whole error term.
+  //
+  // MEMBERSHIP IS THE WHOLE DESIGN, and it must not depend on scan extent. An earlier cut bounded each
+  // crossing by `hw + 0.6 m` from both wall centres — reasonable-looking, and it silently reintroduced the
+  // exact artifact corners exist to dodge, because `hw` IS the scan extent. Measured on the golden room
+  // with every wall present and extents re-scanned by ±25 cm: that bound drifted the origin 4.1 cm, while
+  // dropping it entirely drifted it **exactly zero**, because membership then depends only on
+  // which walls exist and how they face — neither of which a re-scan changes.
+  //
+  // So the only bound left is an ABSOLUTE radius about the room's rough centre, which exists to stop two
+  // walls in far-apart rooms placing the origin outside the building. That matters because content
+  // displacement scales with (θ error × distance from the origin), so a runaway origin amplifies any later
+  // yaw error. The centre it measures from is the wall-centre mean, which itself moves only ~3 cm under a
+  // ±25 cm re-scan — so a crossing would have to sit within 3 cm of the radius for membership to flip.
+  //
+  // Spurious crossings inside the radius are FINE and are deliberately kept: the canonical origin is
+  // arbitrary, so it needs to be *reproducible*, not meaningful. A consistently-included phantom corner
+  // costs nothing; an inconsistently-included real one costs everything.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {RefSurface[]} cur
+   * @param {number} [radius]   absolute metres from the wall-centre mean; default 25
+   * @returns {{x: number, z: number}[]}
+   */
+  function planeCorners(THREE, cur, radius) {
+    var R = radius != null ? radius : 25;
+    var W = cur.filter(function (c) { return c.orient === "vertical" && c.sem === "wall"; })
+      .map(function (c) {
+        return { cx: c.pos.x, cz: c.pos.z, cy: c.pos.y,
+                 nx: Math.sin(c.nyaw), nz: Math.cos(c.nyaw) };
+      });
+    if (!W.length) return [];
+    var mx = 0, mz = 0;
+    W.forEach(function (w) { mx += w.cx; mz += w.cz; });
+    mx /= W.length; mz /= W.length;
+    var out = [];
+    for (var i = 0; i < W.length; i++) {
+      for (var j = i + 1; j < W.length; j++) {
+        var a = W[i], b = W[j];
+        if (Math.abs(a.cy - b.cy) > 0.5) continue;                 // different wall band (a knee wall, another storey)
+        if (Math.abs(a.nx * b.nx + a.nz * b.nz) > 0.3) continue;   // not ⟂ ⇒ not a corner
+        var det = a.nx * b.nz - a.nz * b.nx;
+        if (Math.abs(det) < 1e-3) continue;
+        var da = a.cx * a.nx + a.cz * a.nz, db = b.cx * b.nx + b.cz * b.nz;
+        var px = (da * b.nz - db * a.nz) / det, pz = (a.nx * db - b.nx * da) / det;
+        if (Math.hypot(px - mx, pz - mz) > R) continue;            // absolute, so it is extent-independent
+        out.push({ x: px, z: pz });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * @param {THREE_NS} THREE
+   * @param {RefSurface[]} cur
+   * @param {{origin?: string, cornerBound?: number}} [opts]
+   * @returns {{Tmat: Mat4|null, stat: string}}
+   */
+  function canonicalFrame(THREE, cur, opts) {
     var UP = new THREE.Vector3(0, 1, 0);
+    var useCorners = !!(opts && opts.origin === "corners");
     var walls = cur.filter(function (c) { return c.orient === "vertical"; });
     if (walls.length < 2) return { Tmat: null, stat: "walls=" + walls.length };
     // Wall-grid axis (mod 90°), area-weighted so big/accurate walls dominate — the 4θ sum handles the 90° wrap.
@@ -398,9 +467,30 @@
     var big = walls[0];
     walls.forEach(function (w) { if (w.ext[0] * w.ext[1] > big.ext[0] * big.ext[1]) big = w; });
     var HALF_PI = Math.PI / 2, theta = grid + Math.round((big.nyaw - grid) / HALF_PI) * HALF_PI;
-    var c = new THREE.Vector3();
-    walls.forEach(function (w) { c.add(w.pos); });
-    c.multiplyScalar(1 / walls.length);
+    // ORIGIN. Two bases, and which is better is not obvious — spaces-geometry.md §4.1.3 has the numbers.
+    //  centres (default) — the mean of every vertical plane's centre. A wall's centre IS a scan artifact
+    //    (§4.2), but the artifact is unbiased and there are ~30 of them, so it averages down: 2.5 cm of
+    //    origin drift under a ±25 cm re-scan model on the golden room, and 0.8 cm under ±9 cm plane drift.
+    //  corners — the mean of wall-plane intersections. EXACTLY invariant to how much of each wall was
+    //    scanned (0.0000 m, not approximately), which is §4.2's reasoning holding perfectly. Against §1's
+    //    non-rigid PLANE drift it is ~2.6x worse (2.1 vs 0.8 cm at ±9 cm), since a corner inherits error
+    //    from two planes where a centre inherits it from one and thirty of them average.
+    //  Default is centres because the drift is what actually differs between sessions: detectedPlanes is
+    //    the PERSISTED Room Setup, so extents are the same stored numbers every visit unless the user
+    //    re-scans. Every figure here is 1-3 cm — the metre-scale fault was re-deriving the frame at all
+    //    (§4.1.2) — so this is a flag, settled properly only by two real sessions in one room.
+    var c = new THREE.Vector3(), originStat = "centres";
+    var ks = useCorners ? planeCorners(THREE, cur, opts && opts.cornerBound) : [];
+    if (useCorners && ks.length >= 3) {
+      ks.forEach(function (k) { c.x += k.x; c.z += k.z; });
+      c.multiplyScalar(1 / ks.length);
+      originStat = "corners=" + ks.length;
+    } else {
+      walls.forEach(function (w) { c.add(w.pos); });
+      c.multiplyScalar(1 / walls.length);
+      // Below 3 corners the mean IS one or two points and swings metres, so fall back rather than trust it.
+      if (useCorners) originStat = "centres(corners=" + ks.length + ")";
+    }
     c.y = 0;   // canonicalize the HORIZONTAL center + yaw only (like register) — keep the FLOOR at the floor;
                // wall positions sit at mid-height, so translating by their y would float the world ~1.2 m up
     // Tmat: rotate refSpace by -theta about gravity (the forward wall's normal → +Z), then bring the
@@ -408,7 +498,7 @@
     var R = new THREE.Quaternion().setFromAxisAngle(UP, -theta);
     var Tmat = new THREE.Matrix4().compose(c.clone().applyQuaternion(R).negate(), R, new THREE.Vector3(1, 1, 1));
     return { Tmat: Tmat, stat: "walls=" + walls.length + " grid=" + Math.round(grid * 180 / Math.PI)
-      + "° theta=" + Math.round(theta * 180 / Math.PI) + "°" };
+      + "° theta=" + Math.round(theta * 180 / Math.PI) + "° org=" + originStat };
   }
 
   // Build the plan-view (X-Z) segment for each wall: centre, unit horizontal normal, half-width, the two
@@ -996,8 +1086,49 @@
     return best;
   }
 
+  // How well does the RECTANGLE we derive from a captured plane fit the polygon the device actually
+  // reported? Pass A reduces `plane.polygon` to an axis-aligned bounding box in the plane's own X-Z frame
+  // and keeps only its two spans as `extent` (conjure-client Pass A) — the polygon itself is then discarded
+  // and never stored, posted or rendered. Everything downstream (the local render, the posted seed,
+  // registration, every anchor) is built on that rectangle, so if the reduction is lossy the loss is
+  // invisible precisely because it is applied consistently. This measures it.
+  //
+  // Two independent quantities, because two different things can be wrong:
+  //
+  //   off  — how far the AABB's own centre sits from the plane's pose origin. The rendered rectangle takes
+  //          the AABB's DIMENSIONS but is centred at the pose origin, so a non-zero `off` means every
+  //          rendered surface is displaced from its true position by exactly this vector. (cx displaces
+  //          along the plane's local X, cz along its local Z — for a wall, along it and up it.) Expected
+  //          to be ~0 if the Quest centres a plane's pose on its polygon; nothing has ever checked.
+  //   fill — polygon area over AABB area. Exactly 1 for a rectangle. Below 1 means the true surface is not
+  //          a rectangle (an L-shaped wall, an angled corner) and we are drawing surface where there is
+  //          none — and posting that phantom extent into the shared seed.
+  //
+  // Shoelace in X-Z, |area| so winding doesn't matter. Returns null below 3 points (no polygon: Pass A
+  // already falls back to a 1x1 extent there, which this cannot say anything useful about).
+  /**
+   * @param {{x:number, z:number}[]} poly   the plane's polygon in its OWN local X-Z frame (y is ~0 there)
+   * @returns {{cx:number, cz:number, off:number, fill:number, n:number}|null}
+   */
+  function polyFit(poly) {
+    if (!poly || poly.length < 3) return null;
+    var minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity, area2 = 0;
+    for (var i = 0; i < poly.length; i++) {
+      var p = poly[i], q = poly[(i + 1) % poly.length];
+      if (p.x < minx) minx = p.x;
+      if (p.x > maxx) maxx = p.x;
+      if (p.z < minz) minz = p.z;
+      if (p.z > maxz) maxz = p.z;
+      area2 += p.x * q.z - q.x * p.z;
+    }
+    var cx = (minx + maxx) / 2, cz = (minz + maxz) / 2, box = (maxx - minx) * (maxz - minz);
+    return { cx: cx, cz: cz, off: Math.hypot(cx, cz),
+             fill: box > 1e-9 ? Math.abs(area2 / 2) / box : 1, n: poly.length };
+  }
+
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
            heightCensus: heightCensus, explainNoMatch: explainNoMatch, floorUnder: floorUnder,
+           polyFit: polyFit, planeCorners: planeCorners,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,
            wallCorners: wallCorners, authorInsetAnchor: authorInsetAnchor, reconstructInset: reconstructInset,

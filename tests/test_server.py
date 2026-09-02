@@ -3411,6 +3411,26 @@ def test_index_injects_pointer_bindings_and_the_shared_reader(srv, client):
         srv.settings = old
 
 
+def test_index_injects_the_surface_overlay_flag_script_and_binding(srv, client):
+    """The surface debug overlay needs three separate things to line up, and two of them have broken
+    before. `bindings` carried its default in two places and adding `mark` left the running server serving
+    the old scheme (docs/backlogs/spaces-geometry.md), and `figure.js` shipped with no mtime stamp so the
+    Quest served a frozen copy through several reloads. So assert the script tag IS stamped, the flag is
+    injected, and the `surfaces` action reaches the client — none of which any other test covers."""
+    import dataclasses
+
+    html = client.get("/").text
+    assert '<script src="/static/surface-overlay.js?v=' in html      # stamped ⇒ a code change busts the cache
+    assert "window.CONJURE_DEBUG_SURFACE_OVERLAY=false;" in html     # off by default
+    assert '"surfaces":"a"' in html                                  # the layer-cycle binding
+    on = dataclasses.replace(srv.settings, debug_surface_overlay=True)
+    srv.settings, old = on, srv.settings
+    try:
+        assert "window.CONJURE_DEBUG_SURFACE_OVERLAY=true;" in client.get("/").text
+    finally:
+        srv.settings = old
+
+
 # ---- rename: identity is the id, so a name change moves nothing --------------------------------------
 
 def test_renaming_a_world_keeps_its_id_and_every_pointer(srv, client):

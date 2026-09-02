@@ -24,7 +24,8 @@ PROJECT_CACHE = ROOT / ".cache"
 # both read this. They used to carry the literal separately, and adding an action to one silently left the
 # other behind — the running server kept serving the old scheme.
 DEFAULT_BINDINGS = ('{"select":"trigger","grab":"grip","resize":"trigger","reel":"right.stickY",'
-                    '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX","mark":"b"}')
+                    '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX","mark":"b",'
+                    '"surfaces":"a"}')
 
 # The default logged-in user when none is specified (--user / the /tunnel/<user> route).
 # No security — users are identity only (docs/specs/spaces.md).
@@ -324,6 +325,19 @@ class Settings:
     debug_log: bool = True                           # append client diagnostics to temp/conjure.log
     debug_registration: bool = False                 # co-location registration HUD + per-capture log (opt-in)
     debug_jitter: bool = False                        # frame-pacing/jitter probes only (clean cost measurement)
+    # Surface debug overlay (client/surface-overlay.js): draws the persisted SEED, the live device
+    # rectangles and the device's raw POLYGONS as three wireframes in the viewer's own frame, so the
+    # shared model can be compared against what the headset is reporting right now — the seed is never
+    # rendered otherwise (docs/specs/spaces-geometry.md §5.4), so that gap has only ever been visible as a
+    # solver residual. Off by default; the `surfaces` binding cycles the layers in-headset.
+    debug_surface_overlay: bool = False              # seed / device-rect / device-polygon wireframes (opt-in)
+    # Which basis a VOID/outdoor world's canonical frame takes its ORIGIN from (docs/specs/spaces-geometry.md
+    # §4.1.3). "centres" = the mean of every vertical plane's centre; "corners" = the mean of wall-plane
+    # intersections. Corners are EXACTLY invariant to scan extent (0.0000 m) and ~2.6x worse against the
+    # non-rigid plane drift that actually differs between sessions (2.1 vs 0.8 cm) — and since
+    # detectedPlanes is the PERSISTED Room Setup, extents only change on a re-scan, so drift dominates and
+    # centres is the default. All 1-3 cm; the metre-scale fault was re-deriving the frame (§4.1.2).
+    void_origin: str = "centres"                     # "centres" | "corners"
     # Geometry EVENT log (docs/backlogs/spaces-geometry.md — "Instrumentation"). Always-on and
     # CHANGE-gated: a settled room emits nothing, so this is affordable to leave on for weeks. Its whole
     # purpose is that the two field symptoms — a surface dropping out and returning uncoloured, and one
@@ -475,6 +489,9 @@ def get_settings() -> Settings:
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
         debug_jitter=os.environ.get("CONJURE_DEBUG_JITTER", "").strip().lower() in ("1", "true", "yes", "on"),
+        debug_surface_overlay=os.environ.get("CONJURE_DEBUG_SURFACE_OVERLAY", "").strip().lower()
+        in ("1", "true", "yes", "on"),
+        void_origin=(os.environ.get("CONJURE_VOID_ORIGIN", "centres").strip().lower() or "centres"),
         geometry_log=os.environ.get("CONJURE_GEOMETRY_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         geometry_log_days=int(os.environ.get("CONJURE_GEOMETRY_LOG_DAYS", "21") or 21),
         reg_min_cov=int(os.environ.get("CONJURE_REG_MIN_COV", "4")),

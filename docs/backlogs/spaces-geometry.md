@@ -321,6 +321,96 @@ room is displaced — not a per-surface edit.**
 
 ---
 
+## Instrumentation — the surface overlay
+
+**Status:** **shipped 2026-09-02**, unexercised on device. The design and how to read it live in
+[`specs/spaces-geometry.md` §10.4](../specs/spaces-geometry.md); this entry keeps what the build changed
+about the plan and what is still open.
+
+Three wireframe layers drawn together **in the viewer's own frame (F_track)**, so the seed, the live device
+capture, and our rectangle approximation of it can be read against each other and against passthrough. The
+question it answers is the one §1 makes unanswerable by inspection: the seed is never rendered, so nobody
+has ever *looked* at how far the persisted shared model sits from the geometry the headset is reporting
+right now.
+
+### What the build changed about the plan
+
+- **The polygon does not survive Pass A, and the seed has none.** `plane.polygon` is read once
+  (`conjure-client.js:2539`), swept for an AABB, and discarded — never stored, posted, or passed to
+  `RoomSnap`. The server *accepts* a `polygon` field (`server.py:2991`, written at `:3023` / `:3354`) that
+  the client has never sent; it is `None` on every surface in every space file. `joinCorners`/`sealWalls`
+  work on position-plus-extent rectangles and have no polygon to join even in principle. So **only the raw
+  layer can be a true outline** and part of any green-vs-magenta shape mismatch is representation rather
+  than error. Worth knowing before reading the display.
+- **The colours are three distinct hues, not two shades of green.** Grouping the device layers as
+  light/dark green reads better on paper and worse in the headset: passthrough is low-contrast grey-brown
+  and a desaturated line disappears into it. Green / amber / magenta, with cyan already taken.
+- **Both device layers are built in the plane's own frame, not through `eulerYXZ`.** Not in the plan, and it
+  changes what the display means: the rect is now independent of the render's euler conversion, so
+  green↔amber isolates *only* the AABB reduction and amber↔cyan isolates the conversion plus
+  `joinCorners`/`sealWalls`. Routing the rect through `eulerYXZ` (the obvious "match the render exactly"
+  choice) would have folded those together and made a conversion bug invisible in the one tool built to see
+  geometry faults.
+- **Seed vertices rebuild every capture**, not on a change signature as planned. Measured: 58 rects is ~460
+  vertex writes, and the signature costs more code than it saves work. Correctness lives on the matrix,
+  which has to be rewritten every capture regardless.
+- **The `[aabb]` probe is the cheaper half and shipped alongside.** `RoomSnap.polyFit` + one
+  `--debug-registration` line per capture answers the displacement question with no overlay at all. It
+  should be read **first**; if `off` is 0 everywhere the overlay is still worth having for the seed
+  comparison, but the urgency drops a lot.
+- **One test was added for a convention, not a feature.** `room-snap.test.js` now pins the seed→F_track
+  round-trip through `Tmat⁻¹` at boundary-flip magnitude (167°) on both an upright and a tilted plane. It
+  was written because the first attempt at verifying the overlay by hand got the composition wrong in
+  exactly the plausible way — applying the −90° X plane→a-plane rotation twice — and a small-angle,
+  upright-only check would have passed anyway. Mutation-checked: reconstructing the stored euler as XYZ
+  fails it.
+
+### The two hypotheses it exists to test — both still open
+
+Both live in the AABB reduction (`conjure-client.js:2540-2552`), neither was checked anywhere before, and
+the `[aabb]` probe now measures both. **Nothing has been read on device yet.**
+
+1. **The polygon is not a rectangle** (`fill` < 1). An L-shaped wall, or one with an angled corner, is
+   rendered as its bounding box — so we draw surface where there is none, and post that phantom extent into
+   the seed.
+2. **The polygon is not centred on the plane origin** (`off` > 0). We take the AABB's *dimensions*
+   (`maxx-minx`, `maxz-minz`) but keep `c.pos` — the plane's own pose origin — as the centre. If the AABB
+   midpoint is not `(0,0)` in plane-local X-Z, every rendered rect is displaced from its true surface by
+   exactly that vector. (Plane-local X-Z maps to the rendered rect's X-Y via the −90° X rotation of §2.2, so
+   the x term displaces along the wall and the z term up it.)
+
+The second is the higher-value one and the reason any of this was built: a systematic centring offset would
+propagate **identically** into the local render, the posted seed, registration and every anchor — the class
+of fault that is invisible precisely because everything downstream agrees with it. It also needs no overlay,
+so read the `[aabb]` line before looking at wireframes. If `off` is 0 everywhere, hypothesis 2 dies and the
+overlay's remaining value is hypothesis 1 plus the seed comparison.
+
+### Seed, not `_ref` — a decision worth not re-litigating
+
+They differ, and §6.1 records a real bug born of that difference. `_ref` lerps 0.3 toward live geometry every
+capture, so its offset from the device layer is **artificially small** — it would understate exactly the
+quantity being measured. The seed is the honest persisted model and carries full rotations, where a `_ref`
+entry keeps only `nyaw` and would need orientation rebuilt by yaw extraction (which §5.2 avoids everywhere
+else). `_ref` as a second, opt-in layer is still reasonable — matcher misses are explained against it — but
+it is a different question from "how far is the shared model from what I see".
+
+### Open — not built
+
+- **Nothing has been read on device.** The whole feature is unexercised: no `[aabb]` line has been seen, and
+  the overlay has never been looked at in a headset. Both are cheap, and until then the two hypotheses above
+  are hypotheses.
+- **Hole cuts.** No outline layer shows them; the cyan edges draw the outer loop only.
+- **Multi-room culling.** The seed spans the whole space, so ~58 magenta rects draw at once including rooms
+  you are not standing in. `RoomSnap.floorUnder` (already used by `_markProbe`) is the room-scoped cull if it
+  turns out to be a thicket — but a cull is a rule that can itself mislead, so it ships without one.
+- **Seed↔device pairing.** Highlighting seed surfaces with no live plane behind them is nearly free from Pass
+  B's `claimed` set, and is arguably the more interesting half of the signal — a missing partner says more
+  than a displaced one. Deliberately deferred until the basic view is known to be legible.
+- **Per-surface delta labels.** The wireframes say *where*, the HUD residuals say *how much* in aggregate;
+  a per-surface number is the obvious next increment if the aggregate turns out to be too coarse.
+
+---
+
 ## Scaling — what the frame-budget work does not cover
 
 The worker and the slice pump both apply one principle: cap per-frame cost, absorb load as latency,
@@ -448,21 +538,38 @@ physical room canonicalizes to the same orientation each visit (invariance unit-
    unaffected — the wall centroid is the same point at any θ — but note that once
    [`grab` void mode](./dynamics.md) stores a user offset in frame coordinates, a flip reverses that
    offset's direction, so the stakes stop being only cosmetic.
-2. **Partial-capture stability:** a sparse capture (few walls) can pick a different frame than a full one.
-   Prefer a fuller view (weight by covered wall area / require ≥N walls before locking; hysteresis so it
-   doesn't hop once locked).
+2. **Partial-capture stability — FIXED 2026-09-02.** Reported from the field as "in a void world, every
+   time I press the Meta button to reset the view, I jump a meter or two in a different direction." The
+   design and the measurements are now [`specs/spaces-geometry.md` §4.1.2/§4.1.3](../specs/spaces-geometry.md);
+   what this entry keeps is what the investigation changed about the plan.
 
-   **The load gate does not cover this** (found 2026-09-01). `loadGate` derives `expect` from the world
-   doc's surfaces, and a void world has none — so `expect = 0`, the `expect >= minSeed` test fails, and it
-   returns `"go"` immediately. The protection built for
-   [`surface-churn`](../investigations/surface-churn.md) therefore does not apply here: the canonical frame
-   can still be derived from however many walls happened to have loaded, which is the same fault landing on
-   the *world frame* instead of on identity. Both the origin (mean of wall centres) and θ (largest wall)
-   can shift. A void-world analogue of the gate needs a different `expect` — the count from the previous
-   good capture in this session, or an absolute wall floor — since there is no seed to compare against.
+   **The fault was bigger than this entry said, and in a different term.** It read "both the origin (mean of
+   wall centres) and θ (largest wall) can shift", implying comparable stakes. Measured on the golden room:
+   every subset from 3 to 12 of 30 verticals flipped **θ by 180°**, moving content **4.5–5.1 m** at 2.2 m
+   from the origin, while the centroid contributed 0.2–1.8 m. θ is the fault; the centroid rides along. A
+   recenter triggers it because `_onReset` sets `lastPost = 0`, forcing a capture on the very next frame —
+   the moment the Quest has restored least of the room.
+
+   **Fixed by `WM.voidFrameGate` plus establish-once-and-hold**, not by making the derivation more robust.
+   Holding is the larger half: the walls do not move within a session, so re-deriving every capture only
+   creates fresh opportunities to pick a different largest wall. `_onReset` invalidates the held frame
+   (refSpace was re-origined, so it is stale by the recenter delta) and the gate decides when the fresh
+   capture is good enough.
+
+   **Two ideas from this entry were tried and rejected on measurement:**
+   - *"Weight by covered wall area"* for θ — generalised to an area-weighted **vote** over all walls
+     instead of the single largest. **Far worse: 12/18 single-wall drops flipped θ, against 1/18 for the
+     largest-wall rule**, because opposite walls cancel in the sum. The largest-wall tiebreak is actually
+     stable; it is only partial captures that break it, which is what the gate handles.
+   - *Hysteresis on the derived value* — unnecessary once the frame is simply held. Hysteresis would have
+     been a threshold to tune; holding has none.
+
+   **Still open:** the symmetric-room ambiguity (1 above) is untouched, and nothing has been confirmed on
+   device — the numbers are all from `fixtures/golden-room.json` plus a perturbation model.
 
    Raised in priority by [`dynamics` → `grab` modes](./dynamics.md): void mode stores a user offset against
-   this frame and pins the skybox's *position* to its origin, so a frame shift moves both.
+   this frame and pins the skybox's *position* to its origin, so a frame shift moves both. Holding the frame
+   removes the within-session case entirely.
 3. **Optional space tie:** let an outdoor world *optionally* bind to a stored space (robust registration)
    instead of canonicalizing — for rooms you revisit a lot and want rock-solid.
 4. **Immersion polish:** a void world currently shows whatever skybox is set (or the void color until one

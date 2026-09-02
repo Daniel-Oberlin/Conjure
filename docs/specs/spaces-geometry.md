@@ -202,6 +202,107 @@ Two rules make that trigger reliable (`WM.relocStep`):
   and the hint comes quickly; while still acquiring it stays long, so a cold start doesn't nag someone
   who is simply walking in.
 
+### 4.1.2 The void world's canonical frame — established once, then held
+
+A void/outdoor world is tied to no stored space, so there is nothing to register against. `canonicalFrame`
+derives a deterministic frame from the live walls instead — gravity for up, the area-weighted wall grid for
+the axis, the **largest wall** for the canonical forward, and a centroid for the origin — so the same
+physical room canonicalizes to the same arbitrary-but-consistent pose every visit. `#world-root` parks at
+`Tmat⁻¹` (§2.1 item 4), which means *the entire scene hangs off this one frame*.
+
+That is why it is **established once per tracking epoch and then held**, rather than re-derived every
+capture. The walls do not move within a session, so re-deriving buys nothing and costs everything: each
+derivation is a fresh opportunity to pick a different largest wall or a different centroid, and a void
+world has no passthrough geometry to contradict the result.
+
+**What the re-derivation actually cost** (measured on `fixtures/golden-room.json`, a real 45-surface
+two-room capture, for content 2.2 m from the frame origin):
+
+| Capture holds | Δθ | Content moves |
+|---|---|---|
+| 3–12 of 30 verticals | **180°** | **4.5–5.1 m** |
+| 16, 24 of 30 | 0° | 0.48 m, 0.07 m |
+| all 30 | 0° | 0 |
+
+The θ flip dominates and comes from the largest-wall tiebreak: on a partial capture a different wall is
+biggest. The centroid shift rides on top. At a full capture both are exactly zero, so **the whole fault is
+acting on a partial capture** — and a Meta-button recenter is precisely that, because the reset handler
+forces a capture on the very next frame, when the Quest has restored least of the room.
+
+**`WM.voidFrameGate`** decides when a capture may establish. `loadGate` cannot: it derives `expect` from
+the world doc's surfaces and a void world has none, so it returns `go` immediately. Two modes:
+
+- **Never established** — no expectation exists, so wait for the vertical-plane count to **stop growing**.
+  Rides out an arrival sequence like 4 → 16 → 30 without acting on the first two.
+- **Established before** — the room did not change when a button was pressed, so the count at the last
+  establish is a real expectation and `frac` (0.6) of it is enough. This is what makes recovery from a
+  recenter one or two captures rather than a second plateau wait.
+
+`minWalls` (6) is an absolute floor under both, and `forced` is the same deadlock escape `loadGate` has,
+for a room that genuinely shrank — it re-baselines the expectation **downward**, since leaving it high
+would deadlock the next reset too. A healthy establish only ever ratchets it **up**, so a run of thin
+captures cannot walk the gate open one capture at a time.
+
+While the gate holds, the **previous** frame stays in force and the relocalizing fallback is deliberately
+*not* triggered: that fallback reveals passthrough, whose remedy ("step out of the play area") addresses a
+wrong *room*, and in a void world it would show you your real room instead of the void for the 1.2 s grace
+while we merely wait for planes. With no frame at all there is nothing to hold, so the original
+hold-and-mark-lost behaviour stands. `void.establish` records each establish, its wall count, and whether
+it was forced.
+
+### 4.1.3 Origin: wall centres or corners
+
+`--void-origin` selects the origin basis. The interesting part is that the comparison has to be made
+**with every wall present**, because that is the regime §4.1.2's gate exists to guarantee — and measuring
+it in the missing-wall regime instead gets the answer wrong.
+
+Two things differ between two visits to the same room, and they favour opposite bases:
+
+| Perturbation (all walls present) | wall centres | plane corners |
+|---|---|---|
+| **extents re-scanned ±25 cm**, planes fixed | 0.025 m | **0.0000 m** |
+| **planes drift ±9 cm** (§1's non-rigidity), extents fixed | **0.008 m** | 0.021 m |
+| both | 0.026 m | **0.023 m** |
+
+(Each basis measured as the code actually computes it: `centres` over all 30 vertical planes, `corners`
+over the 81 crossings of the 18 walls. Every vertical's rectangle is perturbed, not just the walls' —
+sparing the insets would hand the centres basis a dozen free clean samples.)
+
+The corner origin is **exactly** invariant to how much of each wall was scanned — not approximately, zero —
+because a plane crossing does not know either wall's extent. That is §4.2's reasoning holding perfectly.
+Against plane drift it is ~2.6× worse, because a corner inherits error from *two* planes while a wall
+centre inherits it from one and thirty of them average.
+
+**Which dominates decides the default, and it is the drift.** `detectedPlanes` is the *persisted* Room
+Setup, so extents are the same stored numbers on every visit unless the user re-scans; what does change
+between sessions is where those planes sit, non-rigidly, by centimetres. So `centres` is the default. If a
+re-scan does happen and finds the same walls, `corners` is strictly better — and if it finds a *different*
+set of walls, neither basis saves you (0.14–0.25 m for centres, 0.20–0.42 m for corners) because that is
+the missing-wall regime again.
+
+Worth keeping in proportion: every number above is **1–3 cm**. The metre-scale fault was re-deriving the
+frame at all (§4.1.2), and it is fixed. This is a flag rather than a decision because settling it properly
+needs two real sessions in one room, and a perturbation model is only a model.
+
+**`planeCorners` vs `wallCorners`.** Two differences, both about membership, which is the entire design:
+
+- It does **not** require each wall's nearest *end* to reach the crossing. That gate is right for an inset
+  anchor (a corner an inset measures from must physically exist) and fatal here, since it makes membership
+  a function of scan extent.
+- Its only bound is an **absolute radius** (25 m) about the wall-centre mean, never a multiple of a wall's
+  own half-width. An earlier cut bounded by `hw + 0.6 m` and looked reasonable while leaking exactly the
+  dependence corners are meant to remove — that version drifted 0.041 m where the absolute one drifts
+  exactly 0.
+
+The radius exists because content displacement scales with (θ error × distance from the origin), so an
+origin dragged outside the building amplifies any later yaw error. **Spurious crossings inside it are kept
+deliberately**: the canonical origin is arbitrary, so it must be *reproducible*, not meaningful — a phantom
+corner that is always there costs nothing, an inconsistently-present real one costs everything. On the
+golden room this yields 81 crossings from 18 walls and an origin 3 cm from the wall-centre one.
+
+Below 3 corners it falls back to centres and says so in the stat, since a mean over one or two points
+swings metres.
+
 ### 4.2 Multi-user: one space, different Quest data
 
 Two headsets scanning one physical space produce **different plane sets** — missing surfaces, extra
@@ -612,6 +713,7 @@ it now confirms a measurement rather than an argument.
 | `churn.restyle_lost` | an id that used to render with a material now renders bare |
 | `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
+| `void.establish` | a void world's canonical frame was established — wall count, held captures, `forced` (§4.1.2) |
 | `seed.add` / `.update` / `.prune` | the server's own view — a prune is where a surface's material is destroyed |
 | `mark` | the controller-button ground-truth probe (§10.3) |
 
@@ -666,6 +768,60 @@ continuous: the room whose `err` is positive is the one whose planes are displac
 say that, because internally the space is self-consistent either way. Two presses, one per room, settle it. Input arrives through `ConjurePointers`, already read and cached per `XRFrame`
 by `controller-beams`, so the per-frame cost is a rising-edge check.
 
+### 10.4 The surface overlay — looking at the seed for the first time
+
+`--debug-surface-overlay` draws three wireframe layers **together in the viewer's own frame (F_track)**.
+Everything in §10 so far reports numbers; this is the one probe that lets the geometry be *seen*, and it
+exists because §5.4 means the seed is **never rendered** — its offset from live geometry has only ever
+been observable as a residual inside the solver.
+
+| Layer | Source | Container | Colour |
+|---|---|---|---|
+| device polygon | `plane.polygon` at the raw pose | identity | green |
+| device rect | the AABB derived from that polygon | identity | amber |
+| seed rect | the stored F_ref pose | **`Tmat⁻¹`** | magenta |
+| joined + sealed | `surface-edges` — *already drawn* | under `#world-root` | cyan |
+
+Read pairwise, each adjacent pair isolates one stage: **green↔amber** is the bounding-box reduction,
+**amber↔cyan** is the euler conversion plus `joinCorners`/`sealWalls`, **magenta↔amber** is registration
+error plus the map's non-rigidity. The fourth layer needed no code — the existing outline *is* the
+joined+sealed geometry, though it is post-deadband and post-slew (what is on screen, not what this capture
+computed) and draws no hole cuts.
+
+Three structural decisions, each of which was the alternative being wrong:
+
+- **The layers hang off the scene, not `#world-root`.** Scene space *is* F_track (`#rig` at the origin,
+  world-root at identity), so the device layers need no transform. Under world-root they would vanish when
+  a lock fails (§4.1.1) and double-transform in a void world — the two states most worth inspecting.
+- **The seed converts once, on its container's matrix.** Vertices are baked from the stored numbers
+  untouched; the entire F_ref→F_track conversion is `Tmat⁻¹` on the group. One transform in play, one
+  matrix — rather than the same conversion smeared across ~60 vertex computations.
+- **Both device layers are built in the plane's own frame**, not through `eulerYXZ`. Routing the rect
+  through the render's conversion would have folded the euler step in with the AABB reduction and made a
+  conversion bug invisible here, which matters given §2.2. The cost is that the *polygon* layer is then the
+  only evidence about the device itself; the round-trip both rely on is unit-tested.
+
+**What it cannot tell you.** Per §1 the map is non-rigid by up to ~9 cm and no rigid transform reconciles
+the frames, so the magenta↔amber gap is registration error **plus** genuine non-rigidity, not separable by
+eye. It localises disagreement; it does not attribute it. The HUD therefore carries `_regStat` and the
+residual μ/max as part of the feature — a gap read without them is uninterpretable, and a held (unlocked)
+frame draws flagged `STALE-T` because after a boundary flip the seed sits ~167° off.
+
+Hooked at **Pass A** (device layers, *before* the trust and load gates, so a held room still shows what the
+device is reporting — at the cost of the planes being anonymous, since identity is assigned in Pass B) and
+in **`finish`** (the seed matrix). Cost is two buffer rewrites and one matrix write per capture, one
+preallocated `LineSegments` per layer rather than an object per surface, and nothing when the flag is off.
+`surfaces` (**A**) cycles all → seed → device → polygon → off; solo layers are not a nicety, because a good
+lock puts all four within millimetres and they read as one line.
+
+**The `[aabb]` probe, separately.** Under `--debug-registration`, one line per capture measures the
+rectangle reduction directly — `RoomSnap.polyFit` per plane, reported as `off` (distance from the AABB's own
+centre to the plane's pose origin) and `fill` (polygon area over box area). These are the two ways the
+reduction can be lossy and they are independent: `off` displaces every rendered surface by that vector,
+identically in the render, the seed, registration and every anchor — invisible *because* it is consistent —
+while `fill` below 1 means a non-rectangular wall is drawn and posted as its bounding box. Neither was
+checked anywhere before. The probe needs no overlay and settles the displacement question in one capture.
+
 ## 11. Knobs
 
 | Knob | Default | Purpose |
@@ -682,7 +838,9 @@ by `controller-beams`, so the per-frame cost is a rising-edge check.
 | `--wall-perp-tol` / `--wall-yaw-tol` / `--wall-overlap-slop` | — | `matchWall` identity tolerances |
 | `--drop-surface` | — | pretend a surface was not captured (exercise recovery solo) |
 | `--foveation` | 0 | GPU headroom; raising it cut the dropped-frame rate monotonically |
-| `--debug-registration` | off | registration/residual logging |
+| `--void-origin` | `centres` | a void world's canonical-frame origin basis (§4.1.3): wall centres or plane corners |
+| `--debug-surface-overlay` | off | the three-layer surface wireframe overlay (§10.4); `surfaces` (**A**) cycles layers |
+| `--debug-registration` | off | registration/residual logging — also emits the `[aabb]` rectangle-fit probe (§10.4) |
 | `--debug-jitter` | off | frame-pacing probes (kept decoupled so heavy logging cannot contaminate timings) |
 | `--no-geometry-log` | — | disable the always-on, change-gated geometry event log (§10) |
 | `--geometry-log-days` | 21 | retention for the rotated `temp/geometry-<date>.jsonl`; 0 keeps all |
@@ -711,14 +869,18 @@ with a golden test like `plane_anchor`'s.
 `register`, `selectSpace`, `canonicalFrame`, `surfaceToRef`, `matchRef`, `matchWall`, `matchInset`,
 `dupInsetIds`, `wallCorners`, `authorInsetAnchor`, `reconstructInset`, `insetAlong`, `hostWallFor`,
 `joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`, `yawOf`, `heightCensus`, `explainNoMatch`,
-`floorUnder`.
+`floorUnder`, `polyFit`, `planeCorners`.
+
+**`client/surface-overlay.js`** — the three-layer debug overlay (§10.4): `setDevice`, `setSeed`,
+`clearSeed`, `poll`, `hud`. DOM/A-Frame-side, so not in the typechecked set; the geometry claims it rests
+on are pinned in `room-snap.test.js` instead (the `Tmat⁻¹` round-trip).
 
 **`client/plane-anchor.js`** — `authorAnchor`, `solveAnchor`; internals `wallFrame`, `averageQuat`,
 `twistAbout`, `solveSym3`, `cond2`.
 
 **`client/world-model.js`** — `surfaceSig`, `surfaceMoved`, `surfacePoseMoved`, `surfaceShapeChanged`,
 `advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`,
-`loadGate`,
+`loadGate`, `voidFrameGate`, `voidGateAdvance`, `voidGateInit`,
 `levelDeviation`.
 
 **`client/room-worker.js`** — the off-thread `register` host.
@@ -733,6 +895,7 @@ with a golden test like `plane_anchor`'s.
 | server-side anchor authoring | `conjure/server.py` `_content_anchor` |
 | pose-relative queries | `conjure/server.py:3898` `/view_relative` |
 | local render + world-root identity | `client/conjure-client.js:1396` |
+| void frame establish + hold | `client/conjure-client.js` the `isVoidWorld` branch; `_onReset` invalidates it |
 | content placement | `client/conjure-client.js` `_placeContent` |
 | recovery | `client/conjure-client.js` `_recoverMissing` |
 | geometry event log — client | `client/conjure-client.js` `geoLog` / `_logChurn` / `_logLevel` / `_markProbe` |

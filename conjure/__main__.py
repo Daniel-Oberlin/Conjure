@@ -15,6 +15,31 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=int(os.environ.get("CONJURE_PORT", "8080")))
     ap.add_argument("--debug-registration", action="store_true",
                     help="show the co-location registration HUD + per-capture log in the headset (off by default)")
+    ap.add_argument("--debug-surface-overlay", action="store_true",
+                    help="draw three wireframe layers together in the viewer's own frame so the shared "
+                         "model can be compared against what the headset is reporting RIGHT NOW: the "
+                         "persisted SEED (magenta, carried in by the registration transform's inverse), the "
+                         "device RECTANGLES we derive from each detected plane (amber), and the device's raw "
+                         "POLYGONS (green). The existing cyan surface outline is the fourth layer — the "
+                         "joined+sealed geometry you are actually looking at. The seed is never rendered "
+                         "otherwise, so its offset from live geometry has only ever been visible as a solver "
+                         "residual. Reading it: green-vs-amber isolates our bounding-box reduction of the "
+                         "polygon; amber-vs-cyan isolates the euler conversion plus joinCorners/sealWalls; "
+                         "magenta-vs-amber is registration error PLUS the map's genuine non-rigidity (up to "
+                         "~9 cm, and NOT separable by eye — read it against the HUD's residual summary). The "
+                         "`surfaces` binding (default A) cycles all/seed/device/polygon/off, which matters "
+                         "because a good lock puts all four layers within millimetres of each other.")
+    ap.add_argument("--void-origin", choices=["centres", "corners"], default="centres",
+                    help="which basis a VOID/outdoor world's canonical frame takes its ORIGIN from "
+                         "(default: centres). 'centres' = the mean of every vertical plane's centre; "
+                         "'corners' = the mean of wall-plane intersections. Corners are EXACTLY invariant "
+                         "to how much of each wall was scanned (0.0000 m), which is what they were wanted "
+                         "for; wall centres drift ~2.5 cm under that. But corners are ~2.6x worse against the "
+                         "non-rigid PLANE drift that actually differs between sessions (2.1 vs 0.8 cm), "
+                         "since a corner inherits error from two planes and there is no averaging to damp "
+                         "it — and detectedPlanes is the PERSISTED Room Setup, so extents only change if "
+                         "you re-scan. Hence centres by default. Everything here is 1-3 cm; the "
+                         "metre-scale fault was re-deriving the frame every capture, which is fixed.")
     ap.add_argument("--no-geometry-log", action="store_true",
                     help="disable the always-on geometry event log (temp/geometry-<date>.jsonl). It is ON by "
                          "default and CHANGE-gated — a settled room writes nothing — because the symptoms it "
@@ -166,6 +191,9 @@ def main() -> None:
         os.environ["CONJURE_DEBUG_REGISTRATION"] = "1"
     if args.debug_jitter:
         os.environ["CONJURE_DEBUG_JITTER"] = "1"
+    if args.debug_surface_overlay:
+        os.environ["CONJURE_DEBUG_SURFACE_OVERLAY"] = "1"
+    os.environ["CONJURE_VOID_ORIGIN"] = args.void_origin
     if args.no_geometry_log:
         os.environ["CONJURE_GEOMETRY_LOG"] = "0"
     os.environ["CONJURE_GEOMETRY_LOG_DAYS"] = str(args.geometry_log_days)

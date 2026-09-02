@@ -934,3 +934,292 @@ test("floorUnder attributes a point to the room whose FOOTPRINT covers it, not t
   assert.strictEqual(RS.floorUnder(THREE, [a, b], 0, 0.5).id, "floor_A");
   assert.strictEqual(RS.floorUnder(THREE, [a, b], 40, 0), null, "outside every room ⇒ no attribution");
 });
+
+// polyFit measures the ONE reduction the whole geometry pipeline is built on and nothing else checks:
+// Pass A throws away `plane.polygon` and keeps only the two spans of its bounding box. These tests pin
+// both quantities, including the sign-free cases that would otherwise pass by accident.
+
+test("polyFit reports a centred rectangle as a perfect fit", () => {
+  // The expected shape of a Quest wall plane: 4 points, symmetric about the pose origin.
+  const rect = [{ x: -2, z: -1.2 }, { x: 2, z: -1.2 }, { x: 2, z: 1.2 }, { x: -2, z: 1.2 }];
+  const f = RS.polyFit(rect);
+  assert.ok(Math.abs(f.off) < 1e-9, "AABB centre sits on the pose origin ⇒ the rendered rect is not displaced");
+  assert.ok(Math.abs(f.fill - 1) < 1e-9, "a rectangle fills its own bounding box exactly");
+  assert.strictEqual(f.n, 4);
+});
+
+test("polyFit reports the offset when the polygon is not centred on the pose origin", () => {
+  // The untested hypothesis this exists for: we take the AABB's DIMENSIONS but keep the plane's pose
+  // origin as the rect's centre, so an off-centre polygon displaces every rendered surface by (cx, cz) —
+  // identically in the render, the posted seed, registration and every anchor, which is exactly why it
+  // would never be noticed. 0.3 along local X, 0.1 along local Z.
+  const shifted = [{ x: -1.7, z: -1.1 }, { x: 2.3, z: -1.1 }, { x: 2.3, z: 1.3 }, { x: -1.7, z: 1.3 }];
+  const f = RS.polyFit(shifted);
+  assert.ok(Math.abs(f.cx - 0.3) < 1e-9 && Math.abs(f.cz - 0.1) < 1e-9);
+  assert.ok(Math.abs(f.off - Math.hypot(0.3, 0.1)) < 1e-9);
+  assert.ok(Math.abs(f.fill - 1) < 1e-9, "still a rectangle — displacement and shape are independent faults");
+});
+
+test("polyFit reports fill below 1 for a wall that is not a rectangle", () => {
+  // An L-shaped wall: the bounding box is 4x4 (area 16) and the polygon is that box minus a 2x2 bite
+  // (area 12), so a quarter of what we render and POST into the seed is surface that does not exist.
+  const ell = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: 2 }, { x: 2, z: 2 }, { x: 2, z: 4 }, { x: 0, z: 4 }];
+  const f = RS.polyFit(ell);
+  assert.ok(Math.abs(f.fill - 0.75) < 1e-9);
+  assert.strictEqual(f.n, 6);
+});
+
+test("polyFit is winding-independent and declines a degenerate polygon", () => {
+  // Shoelace is signed, so a clockwise polygon would report a NEGATIVE fill and read as a fully broken
+  // surface rather than a fine one. The Quest's winding is not something we control.
+  const ccw = [{ x: -1, z: -1 }, { x: 1, z: -1 }, { x: 1, z: 1 }, { x: -1, z: 1 }];
+  const cw = ccw.slice().reverse();
+  assert.ok(Math.abs(RS.polyFit(ccw).fill - RS.polyFit(cw).fill) < 1e-12);
+  assert.ok(RS.polyFit(ccw).fill > 0);
+  // Below 3 points there is no polygon; Pass A already substitutes a 1x1 extent there, and reporting a
+  // fit for it would be inventing a measurement.
+  assert.strictEqual(RS.polyFit([{ x: 0, z: 0 }, { x: 1, z: 0 }]), null);
+  assert.strictEqual(RS.polyFit(undefined), null);
+});
+
+test("polyFit on the golden room: the real device's planes are centred rectangles", () => {
+  // The synthetic tests above encode what we EXPECT of the hardware; this asks the hardware. The golden
+  // fixture is a posted capture, so it carries no polygons — reconstruct each surface's polygon from its
+  // stored extent (the rectangle Pass A derived) and assert the fit is exact. That makes this a guard on
+  // polyFit's arithmetic against real extents rather than evidence about the device: the on-device answer
+  // comes from the [aabb] probe line, and if it ever disagrees with this, the polygon is the thing that
+  // differs and the hypothesis is confirmed.
+  const golden = require("./fixtures/golden-room.json");
+  const list = golden.surfaces || golden;
+  let checked = 0;
+  list.forEach((e) => {
+    const ext = (e.components && e.components.surface && e.components.surface.extent) || e.extent;
+    if (!ext) return;
+    const hw = ext[0] / 2, hh = ext[1] / 2;
+    const f = RS.polyFit([{ x: -hw, z: -hh }, { x: hw, z: -hh }, { x: hw, z: hh }, { x: -hw, z: hh }]);
+    assert.ok(Math.abs(f.off) < 1e-9 && Math.abs(f.fill - 1) < 1e-9, `${e.id} round-trips its extent`);
+    checked++;
+  });
+  assert.ok(checked > 30, `expected the golden room's surfaces, got ${checked}`);
+});
+
+test("a seed surface carried back through Tmat⁻¹ lands exactly on its F_track plane", () => {
+  // The round-trip the local-first architecture rests on, and the one the surface debug overlay draws:
+  // the owner posts each plane at Tmat·plane and stores eulerYXZ() of that pose, and any client wanting
+  // the seed in its OWN frame applies Tmat⁻¹. If the two halves disagree, the seed is silently stored in a
+  // frame nothing can undo — which would look like registration error and be a convention bug.
+  //
+  // Pinned at the BOUNDARY-FLIP magnitude (167° yaw + 3 m, docs/specs/spaces-geometry.md §4.1) rather
+  // than a gentle offset, and on a TILTED plane as well as an upright one, because the -90° X conversion
+  // inside eulerYXZ is order-sensitive and a small-angle test passes on the wrong composition.
+  const flip = new THREE.Matrix4().compose(
+    new THREE.Vector3(4.1, 0, -1.9),
+    new THREE.Quaternion().setFromAxisAngle(UP, 167 * D2R),
+    new THREE.Vector3(1, 1, 1));
+
+  for (const [name, s] of [["upright", vert("w", "wall", [1.3, 1.05, -2.7], 37, [3.2, 2.4])],
+                           ["tilted", vert("a", "wall art", [-0.4, 1.6, 2.2], -114, [0.6, 0.9])]]) {
+    if (name === "tilted") {   // multi-axis: the case that exposes a wrong euler ORDER
+      s._lq.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 11 * D2R));
+    }
+    // Author: the F_ref pose the owner posts, stored as YXZ euler degrees.
+    const refM = flip.clone().multiply(
+      new THREE.Matrix4().compose(s._lp, s._lq, new THREE.Vector3(1, 1, 1)));
+    const rp = new THREE.Vector3(), rq = new THREE.Quaternion(), rs = new THREE.Vector3();
+    refM.decompose(rp, rq, rs);
+    const stored = RS.eulerYXZ(THREE, rq);
+
+    // Solve: read it back in F_track. Reconstruct the a-plane quaternion from the stored YXZ degrees,
+    // then undo the frame — exactly what the overlay's seed group does with Tmat⁻¹ on its matrix.
+    const back = new THREE.Matrix4()
+      .compose(rp, new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(stored[0] * D2R, stored[1] * D2R, stored[2] * D2R, "YXZ")),
+        new THREE.Vector3(1, 1, 1))
+      .premultiply(flip.clone().invert());
+    const bp = new THREE.Vector3(), bq = new THREE.Quaternion(), bs = new THREE.Vector3();
+    back.decompose(bp, bq, bs);
+
+    // The local render draws the same surface from eulerYXZ() of its raw F_track plane quaternion.
+    const localRot = RS.eulerYXZ(THREE, s._lq);
+    const lq = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(localRot[0] * D2R, localRot[1] * D2R, localRot[2] * D2R, "YXZ"));
+
+    assert.ok(bp.distanceTo(s._lp) < 1e-9, `${name}: position round-trips (${bp.distanceTo(s._lp)})`);
+    assert.ok(Math.min(bq.angleTo(lq), bq.angleTo(lq.clone().set(-lq.x, -lq.y, -lq.z, -lq.w))) < 1e-7,
+      `${name}: orientation round-trips`);
+  }
+});
+
+// planeCorners + canonicalFrame's origin option. The measurement behind the DEFAULT is in the spec (§4.1.3);
+// these tests pin the behaviour either choice must have, and the fallback that keeps a two-corner room
+// from getting a frame built on a single point.
+
+test("planeCorners finds a rectangular room's four corners from the wall PLANES", () => {
+  // A 6x4 room. Each corner is the intersection of two perpendicular wall planes, so it is exact and
+  // independent of how much of either wall was scanned — the §4.2 property.
+  const room = [vert("n", "wall", [0, 1.2, -2], 180, [6, 2.4]),
+                vert("s", "wall", [0, 1.2, 2], 0, [6, 2.4]),
+                vert("e", "wall", [3, 1.2, 0], 90, [4, 2.4]),
+                vert("w", "wall", [-3, 1.2, 0], 270, [4, 2.4])];
+  const cur = room.map((s) => ({ id: s.id, sem: s.semantic, orient: "vertical", ext: s.extent,
+                                 pos: s._lp, nyaw: RS.yawOf(normalOf(s)) }));
+  const k = RS.planeCorners(THREE, cur);
+  assert.strictEqual(k.length, 4);
+  const got = k.map((p) => `${p.x.toFixed(2)},${p.z.toFixed(2)}`).sort();
+  assert.deepStrictEqual(got, ["-3.00,-2.00", "-3.00,2.00", "3.00,-2.00", "3.00,2.00"].sort());
+  // The mean of the four corners is the room's true centre — and unlike the wall-centre mean it does not
+  // care that (say) the north wall was only half scanned.
+  const mx = k.reduce((a, p) => a + p.x, 0) / 4, mz = k.reduce((a, p) => a + p.z, 0) / 4;
+  assert.ok(Math.abs(mx) < 1e-9 && Math.abs(mz) < 1e-9);
+});
+
+test("planeCorners tolerates a wall ending short of its corner, where wallCorners does not", () => {
+  // The ONE difference that matters here. wallCorners requires both walls' nearest ENDS within 25 cm of
+  // the crossing — right for anchoring an inset (a corner an inset measures from must physically exist)
+  // and wrong for a global origin, because it makes membership depend on scan extent and a mean over a
+  // churning set moves even though every member of it is exact.
+  //
+  // Note the property is WEAKER than "extent-independent": planeCorners still bounds the crossing by
+  // hw + 0.6 m from each wall's centre, so a wall scanned down to a stub far from the corner still drops
+  // out. planeCorners' own bound is an ABSOLUTE radius for exactly this reason — see the bound test
+  // below and §4.1.3.
+  const north = vert("n", "wall", [0, 1.2, -2], 180, [5, 2.4]);   // right end at x=2.5 → 0.5 m short
+  const east = vert("e", "wall", [3, 1.2, 0], 90, [4, 2.4]);
+  const cur = [north, east].map((s) => ({ id: s.id, sem: s.semantic, orient: "vertical",
+    ext: s.extent, pos: s._lp, nyaw: RS.yawOf(normalOf(s)) }));
+
+  const k = RS.planeCorners(THREE, cur);
+  assert.strictEqual(k.length, 1, "the plane crossing is found despite the 0.5 m shortfall");
+  assert.ok(Math.abs(k[0].x - 3) < 1e-9 && Math.abs(k[0].z + 2) < 1e-9, "and it is the true corner");
+
+  // The same geometry through wallCorners: 0.5 m is past its 25 cm gap, so it reports no corner at all.
+  const viaWallCorners = RS.wallCorners(THREE, [north, east]);
+  const total = [...viaWallCorners.values()].reduce((n, arr) => n + arr.length, 0);
+  assert.strictEqual(total, 0, "wallCorners declines it — the behaviour planeCorners exists to differ from");
+});
+
+test("planeCorners bounds crossings by an ABSOLUTE radius, not by scan extent", () => {
+  // The bound is the only place membership can leak scan-dependence back in, and an earlier cut leaked it
+  // badly: bounding by `hw + 0.6 m` from each wall centre made membership a function of the scan extent,
+  // which is the artifact corners exist to be immune to. Measured on the golden room with every wall
+  // present and extents re-scanned ±25 cm, that bound drifted the origin 4.1 cm; an absolute radius
+  // drifts it 0.0000 m.
+  //
+  // Spurious crossings inside the radius are kept ON PURPOSE. The canonical origin is arbitrary, so it
+  // must be REPRODUCIBLE, not meaningful — a phantom corner that is always there costs nothing, while a
+  // real one that comes and goes costs everything.
+  const near = [vert("a", "wall", [0, 1.2, 0], 0, [3, 2.4]),
+                vert("b", "wall", [20, 1.2, 20], 90, [3, 2.4])];
+  const asCur = (list) => list.map((s) => ({ id: s.id, sem: s.semantic, orient: "vertical",
+    ext: s.extent, pos: s._lp, nyaw: RS.yawOf(normalOf(s)) }));
+  assert.strictEqual(RS.planeCorners(THREE, asCur(near)).length, 1,
+    "20 m apart is still within a building — kept, because consistency beats meaningfulness");
+
+  // Far enough out that the crossing would drag the origin outside the building. That matters beyond
+  // tidiness: content displacement scales with (theta error x distance from the origin), so a runaway
+  // origin amplifies any later yaw error.
+  const far = [vert("a", "wall", [0, 1.2, 0], 0, [3, 2.4]),
+               vert("b", "wall", [90, 1.2, 90], 90, [3, 2.4])];
+  assert.strictEqual(RS.planeCorners(THREE, asCur(far)).length, 0);
+
+  // And the radius really is absolute: re-scanning both walls to a tenth of their length changes no
+  // membership, where an extent-derived bound would have dropped the corner entirely.
+  const stubs = [vert("a", "wall", [0, 1.2, 0], 0, [0.3, 2.4]),
+                 vert("b", "wall", [20, 1.2, 20], 90, [0.3, 2.4])];
+  assert.strictEqual(RS.planeCorners(THREE, asCur(stubs)).length, 1);
+});
+
+test("canonicalFrame with origin:corners uses them, and falls back below three", () => {
+  const mkCur = (surfaces) => surfaces.map((s) => ({ id: s.id, sem: s.semantic, orient: "vertical",
+    ext: s.extent, pos: s._lp, nyaw: RS.yawOf(normalOf(s)) }));
+  const room = mkCur([vert("n", "wall", [0, 1.2, -2], 180, [6, 2.4]),
+                      vert("s", "wall", [0, 1.2, 2], 0, [6, 2.4]),
+                      vert("e", "wall", [3, 1.2, 0], 90, [4, 2.4]),
+                      vert("w", "wall", [-3, 1.2, 0], 270, [4, 2.4])]);
+  const byCorners = RS.canonicalFrame(THREE, room, { origin: "corners" });
+  assert.ok(/org=corners=4/.test(byCorners.stat), byCorners.stat);
+  assert.ok(RS.canonicalFrame(THREE, room).stat.includes("org=centres"), "centres is the default");
+
+  // Two walls give ONE corner, and "the mean of one corner" is that corner — which for an L of two walls
+  // sits at their crossing, metres from the room. Falling back is not a nicety: a frame built on a single
+  // point is exactly the metre-scale error this whole change exists to remove. The stat says which was
+  // used, so a fallback is never silent.
+  const two = mkCur([vert("n", "wall", [0, 1.2, -2], 180, [6, 2.4]),
+                     vert("e", "wall", [3, 1.2, 0], 90, [4, 2.4])]);
+  const f2 = RS.canonicalFrame(THREE, two, { origin: "corners" });
+  assert.ok(f2.Tmat, "still produces a frame");
+  assert.ok(/org=centres\(corners=1\)/.test(f2.stat), f2.stat);
+});
+
+test("canonicalFrame stays invariant to the session's tracking origin under BOTH origin bases", () => {
+  // The property canonicalFrame exists for: the same physical room must canonicalize to the same frame
+  // whatever arbitrary yaw/offset `local-floor` happened to establish. This is what a recenter changes,
+  // and it must not move content — the invariance has to hold for whichever origin basis is selected.
+  const base = [vert("n", "wall", [0, 1.2, -2], 180, [6, 2.4]),
+                vert("s", "wall", [0, 1.2, 2], 0, [6, 2.4]),
+                vert("e", "wall", [3, 1.2, 0], 90, [4, 2.4]),
+                vert("w", "wall", [-3, 1.2, 0], 270, [4, 2.4])];
+  const toCur = (surfaces) => surfaces.map((s) => ({ id: s.id, sem: s.semantic, orient: "vertical",
+    ext: s.extent, pos: s._lp, nyaw: RS.yawOf(normalOf(s)) }));
+
+  // Re-express the same room in a session frame rotated 137° and shifted 5 m — a recenter, in effect.
+  const yaw = 137 * D2R;
+  const R = new THREE.Quaternion().setFromAxisAngle(UP, yaw);
+  const shift = new THREE.Vector3(5, 0, -3);
+  const moved = base.map((s) => {
+    const lq = R.clone().multiply(s._lq);
+    return { id: s.id, semantic: s.semantic, extent: s.extent,
+             _lp: s._lp.clone().applyQuaternion(R).add(shift), _lq: lq };
+  });
+
+  ["centres", "corners"].forEach((origin) => {
+    const a = RS.canonicalFrame(THREE, toCur(base), { origin });
+    const b = RS.canonicalFrame(THREE, toCur(moved), { origin });
+    // A point of content at fixed CANONICAL coords must land on the same PHYSICAL spot either way, i.e.
+    // Tmat⁻¹·K differs exactly by the session transform. Probe off the rotation axis, or a theta change
+    // would be invisible.
+    const K = new THREE.Vector3(2, 1.6, 1);
+    const pa = K.clone().applyMatrix4(a.Tmat.clone().invert());
+    const pb = K.clone().applyMatrix4(b.Tmat.clone().invert());
+    const expect = pa.clone().applyQuaternion(R).add(shift);
+    assert.ok(pb.distanceTo(expect) < 1e-6,
+      `${origin}: frame is not invariant to the session origin (off by ${pb.distanceTo(expect)})`);
+  });
+});
+
+test("the corner origin is EXACTLY invariant to how much of each wall was scanned", () => {
+  // This is the property corners were wanted for, and the one an earlier extent-derived bound quietly
+  // destroyed. Same room, same wall planes, every wall re-scanned to a different length and slid along
+  // itself — which is precisely what "a wall's centre is a scan artifact" (§4.2) describes. The corner
+  // origin must not move AT ALL, because a plane crossing does not know how much of either wall was seen.
+  //
+  // The wall-centre origin does move, and is measured here alongside so the trade is explicit rather than
+  // asserted: on the golden room the same perturbation moves it ~2.5 cm.
+  const mk = (spec) => spec.map(([id, pos, yaw, ext]) =>
+    vert(id, "wall", pos, yaw, ext));
+  const asCur = (list) => list.map((s) => ({ id: s.id, sem: s.semantic, orient: "vertical",
+    ext: s.extent, pos: s._lp, nyaw: RS.yawOf(normalOf(s)) }));
+  const originOf = (pts) => pts.length
+    ? { x: pts.reduce((a, p) => a + p.x, 0) / pts.length, z: pts.reduce((a, p) => a + p.z, 0) / pts.length }
+    : null;
+
+  // A 6x4 room, fully scanned.
+  const full = asCur(mk([["n", [0, 1.2, -2], 180, [6, 2.4]], ["s", [0, 1.2, 2], 0, [6, 2.4]],
+                         ["e", [3, 1.2, 0], 90, [4, 2.4]], ["w", [-3, 1.2, 0], 270, [4, 2.4]]]));
+  // The same room, each wall seen partially and from a different part of its length. The PLANES are
+  // untouched — only the centre-plus-extent description of each wall differs.
+  const rescanned = asCur(mk([["n", [-1.5, 1.2, -2], 180, [3, 2.4]], ["s", [2, 1.2, 2], 0, [2, 2.4]],
+                              ["e", [3, 1.2, 1], 90, [2, 2.4]], ["w", [-3, 1.2, -0.5], 270, [3, 2.4]]]));
+
+  const kA = originOf(RS.planeCorners(THREE, full)), kB = originOf(RS.planeCorners(THREE, rescanned));
+  assert.strictEqual(RS.planeCorners(THREE, full).length, 4);
+  assert.strictEqual(RS.planeCorners(THREE, rescanned).length, 4, "membership is unchanged by the re-scan");
+  assert.ok(Math.hypot(kA.x - kB.x, kA.z - kB.z) < 1e-12,
+    `corner origin must be exactly invariant, moved ${Math.hypot(kA.x - kB.x, kA.z - kB.z)}`);
+
+  // The contrast, for the record: the wall-centre origin follows the scan.
+  const cA = originOf(full.map((c) => ({ x: c.pos.x, z: c.pos.z })));
+  const cB = originOf(rescanned.map((c) => ({ x: c.pos.x, z: c.pos.z })));
+  assert.ok(Math.hypot(cA.x - cB.x, cA.z - cB.z) > 0.1,
+    "the wall-centre origin does move — that is the trade --void-origin selects");
+});
