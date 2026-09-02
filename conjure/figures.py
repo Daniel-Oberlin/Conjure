@@ -447,6 +447,28 @@ def prefer_deform(mapping: dict, doc: dict, blob: bytes, tol: float = 0.002) -> 
     nodes = doc.get("nodes") or []
     pos = node_world_positions(doc)
     by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
+    # A bone with deform DESCENDANTS already moves geometry when rotated — substituting is not just
+    # unnecessary there, it is harmful: it swaps a control that drives a whole limb for one segment of
+    # it (`leftLowerArm` -> `upper_arm.twist.L`, still inside the upper arm). Only bones that move
+    # nothing at all need replacing. Which of the two applies depends on whether the conversion rebuilt
+    # the deform hierarchy, so it must be checked rather than assumed.
+    kids: dict = {}
+    for i, n in enumerate(nodes):
+        for c in n.get("children") or []:
+            kids.setdefault(i, []).append(c)
+
+    def moves_geometry(i):
+        stack, seen = [i], set()
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            if cur in deform:
+                return True
+            stack.extend(kids.get(cur, []))
+        return False
+
     taken = set(mapping.values())
     out = dict(mapping)
     # Claim order matters: a shoulder and an upper arm are often CO-LOCATED (Grace's `arm_parent.L` sits
@@ -457,7 +479,7 @@ def prefer_deform(mapping: dict, doc: dict, blob: bytes, tol: float = 0.002) -> 
     for bone in order:
         node_name = mapping[bone]
         i = by_name.get(node_name)
-        if i is None or i in deform or i not in pos:
+        if i is None or i not in pos or moves_geometry(i):
             continue
         best, best_d = None, tol
         for j in deform:

@@ -61,6 +61,7 @@ MAX_TEX = int(opt("max-texture", "2048"))          # 0 disables; see the texture
 IMG_FMT = opt("image-format", "AUTO")              # AUTO | JPEG | WEBP
 BAKE = int(opt("bake", "0"))                       # px; bake non-Principled materials (0 = off)
 STRIP_CONSTRAINTS = "--strip-constraints" in argv      # opt-in; see strip_constraints()
+REPARENT = "--no-reparent" not in argv                 # default ON; see reparent_deform_bones()
 FIX_UDIM = "--fix-udim" in argv                        # opt-in; see normalize_udim_uvs()
 
 # ---- what is a widget: referenced as a bone's custom shape, whatever it is called -----------------
@@ -172,6 +173,71 @@ for ob in keep:
             scene.collection.objects.link(ob)
         except RuntimeError:
             pass                                     # already linked somewhere in the scene tree
+
+def reparent_deform_bones(arms):
+    """Re-parent each deform bone to the control its CONSTRAINT names, rebuilding the deform chain.
+
+    Rigify and Daz separate a joint into an FK control a human grabs (`upper_arm.L`) and deform bones
+    carrying the vertex weights (`upper_arm.bend.L`), linked by a constraint. glTF drops constraints, so
+    the exported skeleton has deformers hanging off the WRONG bone and the chain breaks at every joint —
+    zig-zag arms and hips twisting toward the knees. Measured on Grace:
+
+        upper_arm.bend.L   constraint -> upper_arm.L    but parented to arm_parent.L
+        forearm.bend.L     constraint -> forearm.L      but parented to upper_arm.L
+        thigh.bend.L       constraint -> thigh.L        but parented to leg_parent.L
+
+    The constraint states the relationship the format cannot carry, so we convert it into one the format
+    CAN carry: parenting. Afterwards, rotating a control moves its own deformer and everything below it,
+    which is what posing needs.
+
+    Not `export_def_bones=True`, which was tried and is worse: Blender can only preserve a hierarchy that
+    already exists, so it flattens these to the armature root.
+
+    Re-parenting happens in EDIT mode, where head/tail are absolute — the bones do not move.
+    """
+    total = 0
+    for arm in arms:
+        links = {}
+        for pb in arm.pose.bones:
+            if not pb.bone.use_deform:
+                continue
+            for c in pb.constraints:
+                tgt = getattr(c, "subtarget", "") or ""
+                if tgt and tgt in arm.pose.bones and tgt != pb.name:
+                    links[pb.name] = tgt
+                    break                                 # first constraint wins; they agree in practice
+        if not links:
+            continue
+        bpy.ops.object.select_all(action="DESELECT")
+        arm.hide_viewport = False
+        arm.hide_set(False)
+        arm.select_set(True)
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.mode_set(mode="EDIT")
+        eb = arm.data.edit_bones
+        done = 0
+        for name, target in links.items():
+            b, t = eb.get(name), eb.get(target)
+            if not b or not t or b.parent is t:
+                continue
+            # Never parent a bone to something already beneath it — that is a cycle, and Blender will
+            # either refuse or silently produce a broken skeleton.
+            anc, cyc = t, False
+            while anc is not None:
+                if anc is b:
+                    cyc = True
+                    break
+                anc = anc.parent
+            if cyc:
+                continue
+            b.parent = t
+            b.use_connect = False
+            done += 1
+        bpy.ops.object.mode_set(mode="OBJECT")
+        total += done
+        print(f"  reparent      {done} deform bone(s) onto their constraint target ({arm.name})")
+    return total
+
 
 def strip_constraints(arms):
     """Bake each armature's constraint-resolved pose into its bones, then remove the constraints.
@@ -599,6 +665,10 @@ def texcoords_from(path):
             out[m["name"]] = t.get("texCoord", 0)
     return out
 
+
+if REPARENT:
+    reparent_deform_bones(armatures)
+    select_for_export()
 
 if STRIP_CONSTRAINTS:
     strip_constraints(armatures)
