@@ -3857,3 +3857,104 @@ def test_refusing_the_anchor_does_not_block_the_move(srv, client):
                                      "anchor": {"mode": "free", "refs": []}})
     e = next(x for x in _entities(client) if x["id"] == eid)
     assert e["transform"]["position"] == [4, 0.5, -1] and e["transform"]["rotation"] == [0, 90, 0]
+
+
+# ---- figures: posing through the humanoid map ----------------------------------------------------
+# The point of the map is that ONE vocabulary works on every rig: a caller says "leftUpperArm" and never
+# learns that Grace's rig calls it `upper_arm.L` and Saka's `J_Bip_L_UpperArm`. Resolution happens
+# server-side so the client needs no per-rig knowledge (docs/backlogs/figures.md).
+
+def _place_figure(srv, client, tmp_path):
+    """Import a rigged GLB that STATES its humanoid map (a VRM), then place it — the real path, so the
+    test covers extraction, placement and posing rather than a hand-seeded catalog row."""
+    doc = {"scenes": [{"nodes": [0]}], "scene": 0,
+           "nodes": [{"mesh": 0, "skin": 0}, {"name": "hip_node"}, {"name": "upper_arm.L"},
+                     {"name": "head_node"}],
+           "skins": [{"joints": [1, 2, 3]}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+           "accessors": [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}],
+           "extensions": {"VRMC_vrm": {"humanoid": {"humanBones": {
+               "hips": {"node": 1}, "leftUpperArm": {"node": 2}, "head": {"node": 3}}}}}}
+    body = json.dumps(doc).encode()
+    body += b" " * (-len(body) % 4)
+    blob = (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body))
+            + struct.pack("<II", len(body), 0x4E4F534A) + body)
+    r = client.post("/library/import", json={"items": [
+        {"filename": "fig.vrm", "data_b64": base64.b64encode(blob).decode(), "hints": {}}]}).json()
+    aid = r["results"][0]["id"]
+    return client.post("/place_cached_asset", json={"id": aid, "name": "fig"}).json()["id"]
+
+
+def _ent(client, eid):
+    return next(e for e in _entities(client) if e["id"] == eid)
+
+
+def test_a_figure_carries_its_bone_vocabulary(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    assert _ent(client, eid)["meta"]["humanoid"]["leftUpperArm"] == "upper_arm.L"
+
+
+def test_posing_resolves_a_semantic_bone_to_this_rigs_node(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": [0, 0, -60]}}).json()
+    assert r["ok"] is True and r["posed"] == ["leftUpperArm"]
+    fig = _ent(client, eid)["components"]["figure"]
+    assert json.loads(fig["pose"]) == {"leftUpperArm": [0.0, 0.0, -60.0]}
+    assert json.loads(fig["humanoid"])["leftUpperArm"] == "upper_arm.L"
+
+
+def test_a_second_pose_merges_rather_than_replacing(srv, client, tmp_path):
+    # "Raise her left arm" then "turn her head" must not drop the arm.
+    eid = _place_figure(srv, client, tmp_path)
+    client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": [0, 0, -60]}})
+    client.post("/figure", json={"id": eid, "pose": {"head": [0, 30, 0]}})
+    pose = json.loads(_ent(client, eid)["components"]["figure"]["pose"])
+    assert sorted(pose) == ["head", "leftUpperArm"]
+
+
+def test_clear_returns_to_the_rest_pose(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": [0, 0, -60]}})
+    assert client.post("/figure", json={"id": eid, "clear": True}).json()["cleared"] is True
+    assert _ent(client, eid)["components"]["figure"]["pose"] == ""
+
+
+def test_an_unknown_bone_is_refused_and_names_what_is_available(srv, client, tmp_path):
+    # A silent no-op would look identical to a working pose the user simply cannot see — the same
+    # failure that made grab's modes unreachable (specs/dynamics.md §8b).
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"tail": [0, 0, 10]}}).json()
+    assert r["ok"] is False
+    assert "tail" in r["error"] and "leftUpperArm" in r["error"]
+
+
+def test_a_non_finite_angle_is_refused(srv, client, tmp_path):
+    # Sent raw: json.dumps refuses inf, but json.loads accepts the bare literal. A non-finite rotation
+    # blanks that branch of the scene graph and a persisted one comes back on every reload.
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", content='{"id": "%s", "pose": {"head": [0, Infinity, 0]}}' % eid,
+                    headers={"Content-Type": "application/json"}).json()
+    assert r["ok"] is False and "finite" in r["error"]
+
+
+def test_a_malformed_rotation_is_refused(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    for bad in ([0, 0], "sideways", [0, "x", 0]):
+        r = client.post("/figure", json={"id": eid, "pose": {"head": bad}}).json()
+        assert r["ok"] is False, bad
+
+
+def test_posing_a_non_figure_is_refused(srv, client, tmp_path):
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    client.post("/place_asset", json={"query": "oak tree", "size_m": 2})
+    prop = next(e["id"] for e in _entities(client) if e["id"].startswith("ent_asset"))
+    r = client.post("/figure", json={"id": prop, "pose": {"head": [0, 10, 0]}}).json()
+    assert r["ok"] is False and "not a rigged figure" in r["error"]
+
+
+def test_figure_is_owner_gated(srv, client, tmp_path):
+    assert "/figure" in srv._OWNER_ONLY_PATHS
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"head": [0, 10, 0]}},
+                    headers={"X-Conjure-User": "someone-else"})
+    assert r.status_code == 403

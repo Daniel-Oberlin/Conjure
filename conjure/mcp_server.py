@@ -518,6 +518,66 @@ async def reset_world_frame(what: str = "all") -> str:
     return f"{label} back to normal."
 
 
+# ---- figures: posing a rigged humanoid ------------------------------------------------------------
+# The point of the humanoid map is that the director speaks ONE vocabulary. It says "leftUpperArm" and
+# never learns that this rig calls it `upper_arm.L` and the next calls it `J_Bip_L_UpperArm`.
+
+@mcp.tool()
+async def inspect_figure(id: str) -> str:
+    """Describe a placed human figure — how tall it is, and which body parts you can pose by name.
+
+    Use before posing so you know the exact bone names this figure has. Not every figure has every bone.
+    """
+    world = await _get("/world")
+    ent = next((e for e in (world.get("entities") or []) if e.get("id") == id), None)
+    if ent is None:
+        return f"There's no object called {id!r} in the world."
+    meta = ent.get("meta") or {}
+    if not meta.get("rigged"):
+        return f"{id!r} is not a posable figure — it has no skeleton."
+    bones = sorted(meta.get("humanoid") or {})
+    bbox = meta.get("bbox")
+    height = f"{bbox[1][1] - bbox[0][1]:.2f} m tall" if bbox else "unknown height"
+    posed = ((ent.get("components") or {}).get("figure") or {}).get("pose")
+    lines = [f"{meta.get('title') or id} — {height}, {meta.get('tris') or '?'} triangles."]
+    lines.append(f"Posable bones ({len(bones)}): {', '.join(bones)}" if bones
+                 else "No humanoid bone map, so it cannot be posed.")
+    if posed and posed != "{}":
+        import json as _json
+        try:
+            lines.append(f"Currently posed: {', '.join(sorted(_json.loads(posed)))}")
+        except ValueError:
+            pass
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
+    """Pose a human figure by rotating named body parts. Use for "raise her left arm", "turn his head",
+    "have her bend a knee".
+
+    pose: a mapping of bone name to [x, y, z] rotation in DEGREES, e.g. {"leftUpperArm": [0, 0, -60]}.
+    Bone names are semantic and the same for every figure — leftUpperArm, rightLowerLeg, head, spine and
+    so on. Call inspect_figure first if unsure which this figure has.
+
+    Rotations replace whatever that bone had; bones you do not mention keep their current pose, so you can
+    move one arm without disturbing the rest. Pass clear=true to return the whole figure to its rest pose.
+    """
+    body: dict = {"id": id}
+    if clear:
+        body["clear"] = True
+    else:
+        if not isinstance(pose, dict) or not pose:
+            return "Give me a pose like {\"leftUpperArm\": [0, 0, -60]}, or clear=true to reset."
+        body["pose"] = pose
+    out = await _post("/figure", body)
+    if not out.get("ok"):
+        return f"Couldn't pose that: {_reason(out)}."
+    if out.get("cleared"):
+        return "Back to a neutral stance."
+    return f"Moved {', '.join(out.get('posed') or [])}."
+
+
 @mcp.tool()
 async def add_entity(
     shape: str,

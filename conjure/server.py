@@ -719,7 +719,7 @@ _OWNER_ONLY_PATHS = {
     "/reset", "/patch", "/space/capture", "/space/realign", "/texture_surface", "/style_surface",
     "/place_asset", "/place_cached_asset", "/place_image", "/set_skybox", "/set_grounded_skybox",
     "/edit_image", "/outpaint_image", "/skybox_from_image",
-    "/module", "/module/dismiss", "/manipulate", "/world_frame",
+    "/module", "/module/dismiss", "/manipulate", "/world_frame", "/figure",
 }
 
 
@@ -1053,7 +1053,8 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
 
 
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
-                     bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False) -> dict:
+                     bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
+                     humanoid=None) -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
@@ -1076,6 +1077,10 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
         # sending it removes the guesswork rather than re-deriving it against three's bind matrices.
         if bbox_min and bbox_max:
             meta["bbox"] = [list(bbox_min), list(bbox_max)]
+        if humanoid:
+            # The semantic bone vocabulary travels WITH the entity, so /figure can resolve
+            # "leftUpperArm" without a catalog lookup and the client needs no per-rig knowledge.
+            meta["humanoid"] = dict(humanoid)
     # Step 7c: author + persist the plane-relative anchor now (server-side, once) so the client can SOLVE it
     # rather than re-author from the F_ref pose against its docSurfaces copy every capture. Client ignores it
     # until step 7b/c flips it to consume it; None (too few seed walls) leaves the entity on its F_ref pose.
@@ -3693,7 +3698,8 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           attribution=rec["attribution"], creator=rec["creator"],
                           tris=attrs.get("tris"), source="library", bbox_min=attrs.get("bbox_min"),
                           bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m,
-                          placement=req.placement, rigged=bool(attrs.get("rigged")))
+                          placement=req.placement, rigged=bool(attrs.get("rigged")),
+                          humanoid=attrs.get("humanoid"))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
@@ -4658,6 +4664,79 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
                 "components": components, "meta": meta}}]
     await _broadcast({"type": "patch", "patch": store.apply_patch(ops, origin="module")})
     return {"ok": True, "id": eid, "module": req.module}
+
+
+# --- figures: pose a rigged model through its humanoid bone map (docs/backlogs/figures.md) ---------
+class FigureRequest(BaseModel):
+    id: str                                       # entity id of a placed rigged model
+    pose: Optional[dict] = None                   # {semanticBone: [x, y, z]} euler DEGREES
+    clear: bool = False                           # drop the pose and return to the bind pose
+
+
+@app.post("/figure")
+async def figure(req: FigureRequest) -> dict:
+    """Set a figure's pose using SEMANTIC bone names ("leftUpperArm"), not the model's own node names.
+
+    That indirection is the whole point of the humanoid map: a caller — the director, a future persona —
+    says "raise her left arm" without knowing whether this particular rig calls it `J_Bip_L_UpperArm`,
+    `upper_arm.L` or `lShldrBend`. The map is resolved HERE, server-side, so the vocabulary is uniform
+    and the client never needs per-rig knowledge.
+
+    The pose is stored on the entity's `figure` component, so it is ordinary world state: shared,
+    persisted, and replayed on reload like any other component (specs/dynamics.md §1)."""
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+    if not (ent.get("meta") or {}).get("rigged"):
+        return {"ok": False, "error": f"{req.id!r} is not a rigged figure"}
+
+    humanoid = (ent.get("meta") or {}).get("humanoid") or {}
+    if not humanoid:
+        return {"ok": False, "error": f"{req.id!r} has no humanoid bone map, so it cannot be posed"}
+
+    if req.clear:
+        sets = {"components.figure": {"humanoid": json.dumps(humanoid), "pose": ""}}
+        await _broadcast({"type": "patch",
+                          "patch": store.apply_patch([{"op": "update", "id": req.id, "set": sets}],
+                                                     origin="figure")})
+        return {"ok": True, "id": req.id, "cleared": True}
+
+    pose = req.pose or {}
+    if not isinstance(pose, dict) or not pose:
+        return {"ok": False, "error": "pass a pose {bone: [x, y, z]} in degrees, or clear=true"}
+
+    unknown = [b for b in pose if b not in humanoid]
+    if unknown:
+        return {"ok": False, "error": f"unknown bone(s) {', '.join(sorted(unknown))}; "
+                f"this figure has: {', '.join(sorted(humanoid))}"}
+    clean: dict = {}
+    for bone, euler in pose.items():
+        if not isinstance(euler, (list, tuple)) or len(euler) != 3:
+            return {"ok": False, "error": f"{bone}: expected [x, y, z] degrees"}
+        try:
+            vals = [float(v) for v in euler]
+        except (TypeError, ValueError):
+            return {"ok": False, "error": f"{bone}: expected three numbers"}
+        if not all(math.isfinite(v) for v in vals):
+            # Same hazard as /world_frame: a non-finite angle blanks that branch of the scene graph and
+            # stays blanked, and a persisted one comes back on every reload.
+            return {"ok": False, "error": f"{bone}: angles must be finite"}
+        clean[bone] = vals
+
+    # Merge onto any existing pose so a caller can move one arm without resetting the rest.
+    prior = ((ent.get("components") or {}).get("figure") or {}).get("pose") or ""
+    merged = {}
+    if prior:
+        try:
+            merged = json.loads(prior)
+        except ValueError:
+            merged = {}
+    merged.update(clean)
+    sets = {"components.figure": {"humanoid": json.dumps(humanoid), "pose": json.dumps(merged)}}
+    await _broadcast({"type": "patch",
+                      "patch": store.apply_patch([{"op": "update", "id": req.id, "set": sets}],
+                                                 origin="figure")})
+    return {"ok": True, "id": req.id, "posed": sorted(clean), "bones": len(merged)}
 
 
 class DismissModuleRequest(BaseModel):
