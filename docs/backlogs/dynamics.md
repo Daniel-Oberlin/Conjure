@@ -388,7 +388,13 @@ parity bugs: YXZ order, quat→euler, the boundary frame-flip, normals-outward.
   dynamic content and the existing asset system, and a genuine tier-C case (shared "which photo are we
   looking at").
 - **Solar system**, **spirographs** — tier-A, exercise `f(clock, seed, config)` at larger scale.
-- **Model articulations** — tier-B, touch-triggered.
+- **Model articulations** — tier-B, touch-triggered. Now designed as part of a larger feature:
+  [`backlogs/figures.md`](./figures.md) covers rigged humanoids end to end (import, outfits, poses,
+  motion, touch). Two notes from that design belong to *this* contract. It splits across tiers rather
+  than sitting in one — a dance is **A** (`f(clock, clip, t0)`), touch response is **B**, and a walk is
+  **A** if the path is scripted but **C** once it is driven by live input, because a late joiner has to
+  find the figure where it actually is. And it needs a component on an *existing* entity, which `/module`
+  cannot do today (it always creates or reuses its own).
 
 ## Generated modules
 

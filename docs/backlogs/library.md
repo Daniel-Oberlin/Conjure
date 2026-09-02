@@ -148,6 +148,25 @@ text-derived vectors dominate text queries and bury the images (measured: model 
 and image-similarity-searchable, render each GLB to a thumbnail and embed **that**, so models join the
 image space at a consistent scale. Needs a GLB→PNG renderer (trimesh/pyrender).
 
+### Rigged humanoid import — see `backlogs/figures.md`
+
+Bringing in **figures** (rigged human models from Blender, Open3DLAB and similar) puts most of its weight
+on *this* subsystem rather than on the runtime, because the hard part is manufacturing a vocabulary — a
+per-model map from semantic names ("left upper arm", "the jacket") to that model's own nodes. Designed in
+full at [`backlogs/figures.md`](./figures.md); what touches the library specifically:
+
+- A **conversion step in front of import** — headless Blender as a universal front door (`.blend`, `.fbx`,
+  `.dae`, `.vrm` → GLB). Deliberately *separate* from import, so the world server never depends on Blender
+  and a machine without it can still import GLBs. `trimesh` cannot substitute: it carries no skeletons.
+- An **LLM- and vision-assisted extraction pass** whose output — bone map, outfit slots, clips, height,
+  facing, and the *provenance* of each — rides the existing JSON `attributes` bag, so **no schema change**.
+  Affordable because figures are never imported in bulk.
+- **Licence capture at conversion time**, while the source page is still in hand; for these sources it is
+  the only place attribution exists.
+
+It also builds the **headless GLB→PNG renderer** that *Visual model embedding via rendered thumbnails*
+(below) needs and does not have.
+
 ### Better model fetch — let the director pick
 
 `AssetResolver` takes Poly Pizza's `results[0]` verbatim: no relevance gate, no LLM in the loop. That is
