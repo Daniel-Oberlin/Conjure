@@ -657,6 +657,10 @@
     // hundreds of thousands of triangles, and anything doing per-frame geometry work against it has to
     // opt out (see grab's _pick). docs/backlogs/figures.md.
     if (meta.rigged) el.dataset.rigged = "1"; else delete el.dataset.rigged;
+    // The authored model-local bounds, "minx,miny,minz,maxx,maxy,maxz". Only sent for figures, where
+    // deriving a box from the scene graph is wrong (see the note on meta.bbox in server.py).
+    if (meta.bbox && meta.bbox.length === 2) el.dataset.bbox = meta.bbox[0].concat(meta.bbox[1]).join(",");
+    else delete el.dataset.bbox;
     if (t.position) el.setAttribute("position", v3(t.position));
     if (t.rotation) el.setAttribute("rotation", v3(t.rotation));
     if (t.scale) el.setAttribute("scale", v3(t.scale));

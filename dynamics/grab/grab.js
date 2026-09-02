@@ -230,7 +230,26 @@
 
     // The object's local box, cached on the element (the traverse + bounding-box work is wasted per frame).
     // Only a real box is cached, so a glTF that hasn't finished loading is retried rather than pinned null.
+    // The AUTHORED bounds a figure carries on `data-bbox`, or null. Preferred over measuring the scene
+    // graph, because a skinned mesh's node commonly hangs off a bone (Grace's hair is parented to `head`,
+    // ten bones up the spine) while its vertices are already in skin space — so folding in matrixWorld
+    // double-counts the skeleton and drew a box twice her height. The server computed the right answer at
+    // import; this just uses it. Same reasoning as glb_bounds() on the Python side.
+    _authoredBox: function (el) {
+      var s = el.dataset.bbox;
+      if (!s) return null;
+      var n = s.split(",");
+      if (n.length !== 6) return null;
+      for (var i = 0; i < 6; i++) { n[i] = parseFloat(n[i]); if (!isFinite(n[i])) return null; }
+      var THREE = AFRAME.THREE;
+      return new THREE.Box3(new THREE.Vector3(n[0], n[1], n[2]), new THREE.Vector3(n[3], n[4], n[5]));
+    },
+
     _boxFor: function (el) {
+      if (el.dataset.bbox) {
+        if (!el._grabLocalBox) el._grabLocalBox = this._authoredBox(el);   // fixed; never needs refresh
+        if (el._grabLocalBox) return el._grabLocalBox;
+      }
       var t = (window.performance && performance.now) ? performance.now() : Date.now();
       // Short TTL rather than a permanent cache: an image's geometry changes when it's resized or re-fitted
       // to its surface, and a glTF's box only exists once the model has loaded. Recomputing a few boxes

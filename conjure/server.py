@@ -1069,6 +1069,13 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
             "source": source, "tris": tris, "generated": False, "placement": mode}
     if rigged:
         meta["rigged"] = True
+        # Ship the authored bounds to the client. A skinned mesh's NODE often sits under the bone chain
+        # (Grace's hair hangs off `head`, ten bones up the spine), while its vertices are already in skin
+        # space — so anything deriving a box from `mesh.matrixWorld` double-counts the whole skeleton.
+        # grab's selection box came out twice her height that way. We computed the right answer at import;
+        # sending it removes the guesswork rather than re-deriving it against three's bind matrices.
+        if bbox_min and bbox_max:
+            meta["bbox"] = [list(bbox_min), list(bbox_max)]
     # Step 7c: author + persist the plane-relative anchor now (server-side, once) so the client can SOLVE it
     # rather than re-author from the F_ref pose against its docSurfaces copy every capture. Client ignores it
     # until step 7b/c flips it to consume it; None (too few seed walls) leaves the entity on its F_ref pose.
