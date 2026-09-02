@@ -1302,31 +1302,30 @@ async def index() -> HTMLResponse:
     # Stamp the client script URL with its mtime so a code change always busts the cache. The Quest
     # Browser caches /static across reloads even with no-store, which left headsets running stale JS.
     html = (CLIENT_DIR / "index.html").read_text()
-    cm = int((CLIENT_DIR / "conjure-client.js").stat().st_mtime)
-    sm = int((CLIENT_DIR / "room-snap.js").stat().st_mtime)
-    gm = int((CLIENT_DIR / "grounded-skybox.js").stat().st_mtime)
-    wm = int((CLIENT_DIR / "world-model.js").stat().st_mtime)
-    pm = int((CLIENT_DIR / "plane-anchor.js").stat().st_mtime)
     rwm = int((CLIENT_DIR / "room-worker.js").stat().st_mtime)   # geometry worker (fix/pops-and-jitters)
     tmm = int((CLIENT_DIR / "three.module.min.js").stat().st_mtime)  # worker's standalone three (ESM)
-    om = int((CLIENT_DIR / "occlusion.js").stat().st_mtime)      # real-world depth occlusion (--occlusion)
-    ckm = int((CLIENT_DIR / "conjure-clock.js").stat().st_mtime)  # shared clock (dynamic-content spine)
-    bmm = int((CLIENT_DIR / "controller-beams.js").stat().st_mtime)  # controller pointer beams
-    ptm = int((CLIENT_DIR / "conjure-pointers.js").stat().st_mtime)  # unified XR input + action bindings
-    # Dynamic modules are now discovered + scoped to the ACTIVE agent (docs/specs/dynamics.md §9):
-    # inject a <script> per module from its folder, mtime-stamped so a code change busts the cache.
+    # Dynamic modules are discovered + scoped to the ACTIVE agent (docs/specs/dynamics.md §9): inject a
+    # <script> per module from its folder, mtime-stamped so a code change busts the cache.
     dyn_tags, dyn_mtimes = _dynamic_module_tags()
-    v = max(cm, sm, gm, wm, pm, rwm, tmm, om, ckm, bmm, ptm, *dyn_mtimes)  # badge reflects the newest of the scripts
+
+    # Stamp EVERY /static/*.js reference with its file mtime. This was nine hand-written replace() lines,
+    # one per script, and adding a tenth is how the next one gets forgotten — `figure.js` shipped without
+    # a stamp and the Quest served a stale copy through several reloads, so a fixed component looked like
+    # a broken one. The cache is stubborn enough that an unstamped script is effectively frozen at
+    # whatever the headset saw first.
+    mtimes = []
+
+    def _stamp(m):
+        f = CLIENT_DIR / m.group(1)
+        if not f.exists():
+            return m.group(0)
+        t = int(f.stat().st_mtime)
+        mtimes.append(t)
+        return f'/static/{m.group(1)}?v={t}'
+
+    html = re.sub(r"/static/([A-Za-z0-9._-]+\.js)(?!\?)", _stamp, html)
+    v = max(mtimes + [rwm, tmm, *dyn_mtimes])    # badge reflects the newest of the scripts
     build = datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
-    html = html.replace("/static/conjure-client.js", f"/static/conjure-client.js?v={cm}")
-    html = html.replace("/static/room-snap.js", f"/static/room-snap.js?v={sm}")
-    html = html.replace("/static/plane-anchor.js", f"/static/plane-anchor.js?v={pm}")
-    html = html.replace("/static/grounded-skybox.js", f"/static/grounded-skybox.js?v={gm}")
-    html = html.replace("/static/world-model.js", f"/static/world-model.js?v={wm}")
-    html = html.replace("/static/occlusion.js", f"/static/occlusion.js?v={om}")
-    html = html.replace("/static/conjure-clock.js", f"/static/conjure-clock.js?v={ckm}")
-    html = html.replace("/static/controller-beams.js", f"/static/controller-beams.js?v={bmm}")
-    html = html.replace("/static/conjure-pointers.js", f"/static/conjure-pointers.js?v={ptm}")
     html = html.replace("    <!-- __DYNAMIC_MODULES__", dyn_tags + "    <!-- __DYNAMIC_MODULES__")
     html = html.replace("__CLIENT_VERSION__", f"{build} (v{v})")
     # Tell the client which diagnostics are on so it doesn't POST/HUD when off. debug_log gates general
