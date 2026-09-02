@@ -562,6 +562,46 @@ way to learn whether these generalize or are overfitted to one network's habits.
 
 ---
 
+## Conversion recipes for the sample models
+
+The `--collections` argument is per-model and is the one piece of genuinely manual input in the pipeline
+(choosing it automatically is what the discovery layers exist for). Recorded so it need not be
+rediscovered. Run `--list` first on anything new.
+
+```
+B=/Applications/Blender.app/Contents/MacOS/Blender
+S=temp/3d-model-examples
+
+# what a file offers, before choosing
+$B --background "<file>.blend" --python scripts/blend_to_glb.py -- --list
+
+# Grace Ashcroft (Daz Genesis 8) — dressed, then body-only for joint work
+$B --background "$S/Grace_Ashcroft_-_1_3a_New_Wetness_Lightweight_wTextures/Grace Ashcroft - Gen Rig.blend" \
+   --python scripts/blend_to_glb.py -- out.glb --max-texture 1024 --bake 1024 \
+   --collections "Grace_Ashcroft_APPEND,Eyes,Default,Hair 2,Accessories"
+   #  body only:  --collections "Grace_Ashcroft_APPEND,Eyes"
+
+# Yuffie (Daz Genesis 8.1)
+   --collections "Yuffie,Hair,Original Clothing"      # dressed
+   --collections "Yuffie"                             # body only
+
+# Saka (VRoid) — .vrm needs NO conversion; import it directly
+python -m conjure.importer temp/3d-model-examples/Saka.vrm
+
+# render checks
+$B --background --python scripts/glb_preview.py -- out.glb outdir/ --size 640
+$B --background --python scripts/pose_test.py  -- out.glb outdir/ '{"upper_arm.L":[0,0,-60]}'
+```
+
+`--max-texture 1024 --bake 1024` are the settings every conversion has used: 1 K textures are the single
+biggest size lever (229 MB → 37 MB on Grace), and baking is what recovers materials whose base colour the
+exporter cannot resolve. `--fix-udim` and `--strip-constraints` exist and default OFF — both were fixes
+for problems that turned out not to exist, kept only for a genuine future case.
+
+Eve, Hitomi and Leifang were inspected but never converted. Eve is Rigify (a third convention);
+Hitomi and Leifang share a custom DOA scheme with space-separated bone names and 14/11 outfit
+collections each — the best available test of outfit switching when that lands.
+
 ## Sourcing figures
 
 *Surveyed 2026-09-01. Prices, licences and URLs change — re-verify before relying on any of it.*
@@ -1043,6 +1083,30 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
     secondary motion. Relates to the open physics-vs-parametric question ([`decisions.md`](../decisions.md) #12).
 
 ---
+
+## Where to pick up
+
+**Bone selection is solved and verified on device. The next piece is the axis problem**, described under
+*The axis problem* above. It is well-defined: every bone's rest direction is computable from the joint
+positions `figures.node_world_positions` already returns, and with the body's forward and up that yields a
+canonical per-bone basis — twist along the limb, swing perpendicular. The pose vocabulary then becomes
+anatomical (`{"leftUpperLeg": {"lift": 45}}`) and means the same on every rig, exactly as the bone NAMES
+now do.
+
+Verify it the way bone selection was verified, because structural checks cannot catch a semantic error:
+`scripts/pose_test.py` renders a posed figure, and a lift of +45 must raise the knee forward on all three.
+`validate()` passed several maps that were badly wrong; only driving a pose exposed them.
+
+State to be aware of when resuming:
+
+- Grace and Yuffie in the world are the **body-only** exports (no clothing). That was for joint
+  diagnosis; re-adding clothing is a `--collections` change, see the recipes above.
+- Yuffie's boots, shoulder guard, eyes and eyebrows render flat grey — 22 of her 26 baked materials fail,
+  and the neutral fallback papers over it. Recorded under the black-bake limitation, not chased.
+- `leftHand` resolves to a fingertip on the re-parented Daz rigs. Arms and legs were the reported problem
+  and are fixed; the hand was deliberately not chased after the head rule showed what iterating on a
+  secondary defect costs.
+- The branch is `feat/figures-phase0`, not merged.
 
 ## Phasing
 

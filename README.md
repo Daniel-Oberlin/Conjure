@@ -148,7 +148,7 @@ conjure-ctl image "an oil painting of a red dragon"
 conjure-ctl skybox "a misty pine forest"
 conjure-ctl reindex                        # library maintenance
 
-conjure-import ~/Photos/vr --recursive     # import files into the library (images, .glb models, …)
+conjure-import ~/Photos/vr --recursive     # import files into the library (images, .glb/.vrm models, …)
 conjure-import beach_SBS.jpg --stereo sbs  # import a side-by-side 3D photo (viewable in-headset per-eye)
 ```
 
