@@ -25,6 +25,16 @@
     } catch (e) {}
   }
 
+  // three sanitizes glTF node names when it builds the scene graph (PropertyBinding.sanitizeNodeName):
+  // dots, spaces and colons become underscores. So a Daz/Rigify rig's `upper_arm.L` is `upper_arm_L` by
+  // the time we look it up, and a DOA rig's `arm left shoulder` becomes `arm_left_shoulder`. The humanoid
+  // map holds the names as the FILE spells them, so both spellings have to be tried.
+  //
+  // This failed silently and looked like success: the server resolved the bone fine, the client found
+  // nothing, and nobody reported it. Saka worked only because VRM names (`J_Bip_L_UpperArm`) happen to
+  // contain no punctuation.
+  function norm(s) { return String(s).replace(/[\s.:]/g, "_"); }
+
   function parse(s) {
     if (!s) return null;
     try { return JSON.parse(s); } catch (e) { return null; }
@@ -55,11 +65,17 @@
       var obj = this.el.getObject3D("mesh");
       if (!obj) return null;
       var bones = {};
-      obj.traverse(function (n) { if (n.isBone && n.name) bones[n.name] = n; });
+      var put = function (n) {
+        if (!n || !n.name) return;
+        bones[n.name] = n;
+        var k = norm(n.name);
+        if (!bones[k]) bones[k] = n;          // raw name wins; sanitized is the fallback spelling
+      };
+      obj.traverse(function (n) { if (n.isBone) put(n); });
       // A skeleton can also be reached through a SkinnedMesh whose bones are not in this subtree.
       obj.traverse(function (n) {
         if (n.isSkinnedMesh && n.skeleton) {
-          n.skeleton.bones.forEach(function (b) { if (b && b.name) bones[b.name] = b; });
+          n.skeleton.bones.forEach(put);
         }
       });
       if (!Object.keys(bones).length) return null;
@@ -78,13 +94,13 @@
       var prev = this._applied || {};
       Object.keys(prev).forEach(function (bone) {
         if (pose[bone]) return;
-        var b = bones[map[bone]];
+        var b = bones[map[bone]] || bones[norm(map[bone])];
         if (b) b.rotation.set(0, 0, 0);
       });
 
       var applied = {}, missing = [];
       Object.keys(pose).forEach(function (bone) {
-        var node = map[bone], b = node && bones[node];
+        var node = map[bone], b = node && (bones[node] || bones[norm(node)]);
         if (!b) { missing.push(bone); return; }
         var e = pose[bone];
         if (!e || e.length !== 3) return;
@@ -96,7 +112,11 @@
         applied[bone] = true;
       });
       this._applied = applied;
-      if (missing.length) log("no bone for: " + missing.join(", "));
+      if (missing.length) {
+        log("NO BONE for " + missing.join(", ") + " on " + (this.el.id || "?")
+            + " — map has " + Object.keys(map).length + " entries, model has "
+            + Object.keys(bones).length + " bones");
+      }
       this._once = this._once || (log("posed " + Object.keys(applied).length + " bone(s) on "
                                      + (this.el.id || "?")) || true);
     },
@@ -105,7 +125,7 @@
       this.el.removeEventListener("model-loaded", this._onLoad);
       var map = parse(this.data.humanoid) || {}, bones = this._bones || {};
       Object.keys(this._applied || {}).forEach(function (bone) {
-        var b = bones[map[bone]];
+        var b = bones[map[bone]] || bones[norm(map[bone])];
         if (b) b.rotation.set(0, 0, 0);
       });
     }
