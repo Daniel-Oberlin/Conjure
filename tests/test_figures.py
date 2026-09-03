@@ -10,7 +10,9 @@ import pytest
 
 import math
 
-from conjure.figures import (CORE_BONES, FRAME_VECTORS, POSE_AXES, TRUNK_BONES, joint_limits,
+from conjure.figures import (CONVENTIONS, CORE_BONES, FRAME_VECTORS, POSE_AXES, REQUIRED_BONES,
+                             TRUNK_BONES, best_humanoid, convention_humanoid, joint_limits,
+                             prune_map,
                              anatomical_axes, body_frame, infer_humanoid,
                              node_world_matrices, node_world_positions, parent_map, resolve_pose,
                              score, validate)
@@ -558,3 +560,123 @@ def test_limits_ride_with_the_frame_so_a_runtime_needs_no_table():
     # than clamped against a guess.
     bare = {"b": {k: v for k, v in axes["leftLowerLeg"].items() if k != "limits"}}
     assert resolve_pose(bare, {"b": {"bend": 300}})["b"] != pytest.approx([0, 0, 0, 1])
+
+
+# ---------------------------------------------------------------- layer 1: known conventions
+#
+# Names are free and exact where they hit, and they work on a rig whose BIND POSE defeats geometry.
+# That is not hypothetical: three characters in the dev library stand with their arms at their sides,
+# so the hands are no wider than the feet and layer 2's "the widest joints are the hands" collapses.
+
+
+def _named_skeleton(scheme="mixamo", arms_down=True):
+    """The fixture's shape, renamed to a convention — and by default posed with the arms DOWN, which is
+    exactly the bind pose geometry cannot read."""
+    doc, idx = _skeleton()
+    table = CONVENTIONS[scheme]
+    rename = {}
+    for slot, candidates in table.items():
+        sides = (("left", "Left", "L", "l"), ("right", "Right", "R", "r")) if "{s}" in slot else ((None,) * 4,)
+        for side, S, X, short in sides:
+            fixture = {"hips": "hips", "spine": "spine", "chest": "chest", "neck": "neck", "head": "head",
+                       "{s}Shoulder": f"{short}_shoulder", "{s}UpperArm": f"{short}_upperarm",
+                       "{s}LowerArm": f"{short}_lowerarm", "{s}Hand": f"{short}_hand",
+                       "{s}UpperLeg": f"{short}_thigh", "{s}LowerLeg": f"{short}_shin",
+                       "{s}Foot": f"{short}_foot", "{s}Toes": f"{short}_toes"}.get(slot)
+            if fixture and fixture in idx:
+                rename[idx[fixture]] = candidates.split("|")[0].format(S=S, X=X) if side \
+                    else candidates.split("|")[0]
+    for node_index, name in rename.items():
+        doc["nodes"][node_index]["name"] = name
+    if arms_down:
+        for side in ("l", "r"):
+            for bone in (f"{side}_upperarm", f"{side}_lowerarm", f"{side}_hand"):
+                x, y, z = doc["nodes"][idx[bone]]["translation"]
+                doc["nodes"][idx[bone]]["translation"] = [x * 0.3, -abs(x) * 0.95, z]
+    return doc, idx
+
+
+def test_a_convention_is_recognised_by_name_alone():
+    doc, _ = _named_skeleton("mixamo")
+    mapping, scheme = convention_humanoid(doc)
+    assert scheme == "mixamo"
+    assert mapping["leftUpperArm"] == "LeftArm" and mapping["leftLowerLeg"] == "LeftLeg"
+
+
+def test_a_prefixed_export_still_matches():
+    # Mixamo usually ships `mixamorig:Hips`; some exporters emit `Armature|Hips`. Both are the same rig.
+    doc, _ = _named_skeleton("mixamo")
+    for node in doc["nodes"]:
+        if node.get("name"):
+            node["name"] = "mixamorig:" + node["name"]
+    mapping, scheme = convention_humanoid(doc)
+    assert scheme == "mixamo"
+    # ...and the map holds the name as the FILE spells it, or nothing downstream could look it up.
+    assert mapping["hips"] == "mixamorig:Hips"
+
+
+def test_a_name_reads_the_same_whatever_the_bind_pose():
+    """Why layer 1 is not just a shortcut. Shape inference reads a skeleton's PROPORTIONS, so a bind
+    pose with the arms at the sides — where the hands are no wider than the feet — defeats it; that is
+    measured, on three characters in the dev library. Names are indifferent to how a rig was posed when
+    it was saved."""
+    up, _ = _named_skeleton("mixamo", arms_down=False)
+    down, _ = _named_skeleton("mixamo", arms_down=True)
+    assert convention_humanoid(up) == convention_humanoid(down)
+
+
+def test_names_are_tried_before_shape():
+    # Both layers can answer for this fixture; the cheap exact one wins, and inference — which reads
+    # every vertex weight in the file — is not even run.
+    doc, _ = _named_skeleton("mixamo", arms_down=False)
+    mapping, source = best_humanoid(doc)
+    assert source == "convention:mixamo" and not validate(doc, mapping)
+
+
+def test_an_unknown_rig_falls_through_to_shape():
+    doc, _ = _skeleton()                                    # `l_thigh`, `r_lowerarm`: no convention
+    assert convention_humanoid(doc) == (None, None)
+    mapping, source = best_humanoid(doc)
+    assert source == "inferred" and mapping["leftUpperArm"] == "l_upperarm"
+
+
+def test_a_convention_that_only_half_matches_is_not_claimed():
+    doc, _ = _named_skeleton("mixamo")
+    for node in doc["nodes"]:                               # break both arms
+        if node.get("name", "").endswith("ForeArm"):
+            node["name"] = "elbow_thing"
+    assert convention_humanoid(doc) == (None, None)
+
+
+# ---------------------------------------------------------------- partial maps
+#
+# A rig often names a bone that is not the one it looks like: both `Animated Woman` models and `Steve`
+# have a `Foot.L` that is an IK TARGET parented to the armature root, beside a `PoleTarget.L`. Before
+# pruning, one such bone cost the whole map — a figure lost its arms, legs and spine over its ankle.
+
+
+def test_a_bone_that_cannot_be_posed_is_dropped_not_the_whole_map():
+    doc, idx = _skeleton()
+    mapping = infer_humanoid(doc)
+    doc["nodes"][idx["l_shin"]]["children"] = []                       # foot off the leg...
+    doc["nodes"][idx["hips"]]["children"].append(idx["l_foot"])        # ...and onto the root, as an IK target
+    pruned = prune_map(doc, mapping)
+    assert "leftFoot" not in pruned and "leftToes" not in pruned, "the foot and what hangs off it go"
+    assert pruned["leftLowerLeg"] == "l_shin" and pruned["leftUpperArm"] == "l_upperarm"
+    assert not validate(doc, pruned), "and what is left is a map that poses everything it claims"
+
+
+def test_missing_optional_bones_do_not_reject_a_map():
+    """Plenty of rigs have no toes, no clavicle, no separate chest. Requiring them threw away figures
+    that would have posed perfectly well."""
+    doc, _ = _skeleton()
+    mapping = {b: n for b, n in infer_humanoid(doc).items()
+               if b not in ("leftToes", "rightToes", "leftShoulder", "rightShoulder", "chest")}
+    assert not validate(doc, mapping)
+    assert set(REQUIRED_BONES) <= set(CORE_BONES)
+
+
+def test_a_missing_required_bone_still_rejects():
+    doc, _ = _skeleton()
+    mapping = {b: n for b, n in infer_humanoid(doc).items() if b != "leftLowerLeg"}
+    assert any("required" in p for p in validate(doc, mapping))

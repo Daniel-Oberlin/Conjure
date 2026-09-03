@@ -28,6 +28,13 @@ from typing import Optional
 
 # The core set worth inferring. Deliberately not all 54 of VRM's — fingers and eyes are not recoverable
 # from topology with any confidence, and a map is more useful honest than complete.
+#: The bones a map must have to be worth keeping. Everything else in CORE_BONES is a bonus: plenty of
+#: rigs have no toes, no separate clavicle and no distinct chest, and rejecting an otherwise-good
+#: skeleton over a missing toe bone throws away a figure that could have posed perfectly well.
+REQUIRED_BONES = ("hips", "spine", "head",
+                  "leftUpperArm", "leftLowerArm", "rightUpperArm", "rightLowerArm",
+                  "leftUpperLeg", "leftLowerLeg", "rightUpperLeg", "rightLowerLeg")
+
 CORE_BONES = (
     "hips", "spine", "chest", "neck", "head",
     "leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes",
@@ -176,6 +183,79 @@ def split_glb(data: bytes):
         bl, _ = struct.unpack_from("<II", data, off)
         return doc, data[off + 8:off + 8 + bl]
     return doc, b""
+
+
+# ---------------------------------------------------------------- layer 1: known conventions
+#
+# Names are free and exact where they hit, and they work on a rig whose BIND POSE defeats geometry —
+# which is not hypothetical: three characters in the dev library stand with their arms at their sides,
+# so the hands are no wider than the feet and layer 2's "the widest joints are the hands" collapses.
+# One of them is bone-for-bone Mixamo.
+#
+# Only conventions verified against a real file live here. A speculative row is worse than none: it
+# cannot be checked, and a name that happens to match is exactly how a control bone gets mapped over
+# the deform bone it drives. `validate()` is what makes trying names safe at all.
+#
+# `{S}` is Left/Right, `{X}` is L/R, `|` separates alternatives tried in order.
+CONVENTIONS: dict[str, dict[str, str]] = {
+    # Mixamo, and everything that copies it (ReadyPlayerMe, most auto-riggers). Often exported with a
+    # `mixamorig:` prefix, which `_bare` strips before matching.
+    "mixamo": {
+        "hips": "Hips", "spine": "Spine", "chest": "Spine1", "upperChest": "Spine2",
+        "neck": "Neck", "head": "Head",
+        "{s}Shoulder": "{S}Shoulder", "{s}UpperArm": "{S}Arm", "{s}LowerArm": "{S}ForeArm",
+        "{s}Hand": "{S}Hand",
+        "{s}UpperLeg": "{S}UpLeg", "{s}LowerLeg": "{S}Leg", "{s}Foot": "{S}Foot",
+        "{s}Toes": "{S}ToeBase",
+    },
+    # The Blender-side-suffix scheme used across several free asset packs (both `Animated Woman` models
+    # and `Steve` in the dev library). Torso/Abdomen rather than Spine1/Spine2, and the side is a suffix.
+    "dot-side": {
+        "hips": "Hips", "spine": "Abdomen", "chest": "Torso", "upperChest": "Chest",
+        "neck": "Neck", "head": "Head",
+        "{s}Shoulder": "Shoulder.{X}", "{s}UpperArm": "UpperArm.{X}", "{s}LowerArm": "LowerArm.{X}",
+        "{s}Hand": "Wrist.{X}|Hand.{X}|Fist.{X}",
+        "{s}UpperLeg": "UpperLeg.{X}", "{s}LowerLeg": "LowerLeg.{X}", "{s}Foot": "Foot.{X}",
+        "{s}Toes": "Toe.{X}|ToeBase.{X}",
+    },
+}
+
+
+def _bare(name: str) -> str:
+    """A node name without the prefix exporters bolt on — `mixamorig:Hips`, `Armature|Hips`."""
+    for sep in (":", "|"):
+        if sep in name:
+            name = name.rsplit(sep, 1)[1]
+    return name
+
+
+def convention_humanoid(doc: dict) -> tuple[Optional[dict[str, str]], Optional[str]]:
+    """`({semanticBone: nodeName}, conventionName)` from a known naming scheme, or `(None, None)`.
+
+    Returns the map as the FILE spells each node, not as the table does, so a prefixed export still
+    hands downstream code a name it can look up.
+    """
+    lookup: dict[str, str] = {}
+    for node in doc.get("nodes") or []:
+        name = node.get("name")
+        if name:
+            lookup.setdefault(_bare(name), name)      # first spelling wins; ties are vanishingly rare
+    best: tuple[int, Optional[dict], Optional[str]] = (0, None, None)
+    for scheme, table in CONVENTIONS.items():
+        found: dict[str, str] = {}
+        for slot, candidates in table.items():
+            sides = (("left", "Left", "L"), ("right", "Right", "R")) if "{s}" in slot else ((None,) * 3,)
+            for side, S, X in sides:
+                key = slot.format(s=side) if side else slot
+                for candidate in candidates.split("|"):
+                    node = candidate.format(S=S, X=X) if side else candidate
+                    if node in lookup:
+                        found[key] = lookup[node]
+                        break
+        score = sum(1 for b in REQUIRED_BONES if b in found)
+        if score > best[0]:
+            best = (score, found, scheme)
+    return (best[1], best[2]) if best[0] == len(REQUIRED_BONES) else (None, None)
 
 
 # ---------------------------------------------------------------- inference
@@ -570,6 +650,64 @@ def prefer_deform(mapping: dict, doc: dict, blob: bytes, tol: float = 0.002) -> 
     return out
 
 
+#: The limb chains, top-down. `validate` checks each link is a real parent-child relationship and
+#: `prune_map` drops what fails, so both have to be reading the same list.
+LIMB_CHAINS = (("leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand"),
+               ("rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand"),
+               ("leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes"),
+               ("rightUpperLeg", "rightLowerLeg", "rightFoot", "rightToes"))
+
+
+def prune_map(doc: dict, mapping: dict[str, str]) -> dict[str, str]:
+    """A map with the entries that cannot be posed removed, rather than the whole map thrown away.
+
+    A rig often names a bone that is not the one it looks like. Both `Animated Woman` models and `Steve`
+    have a `Foot.L` — an IK TARGET parented to the armature root, sitting beside a `PoleTarget.L` — so
+    rotating the shin would leave it behind. Before this, one such bonefailing the whole map and cost a
+    figure its arms, legs and spine along with its ankle.
+
+    So a broken link drops the DISTAL bone and everything below it on that chain, which is the
+    conservative direction: you lose a bone rather than gain a lie. What survives is a map that poses
+    everything it claims to.
+    """
+    nodes = doc.get("nodes") or []
+    by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
+    parent = parent_map(doc)
+    out = {b: n for b, n in mapping.items() if n in by_name}
+    for chain in LIMB_CHAINS:
+        present = [b for b in chain if b in out]
+        for upper, lower in zip(present, present[1:]):
+            iu, il = by_name[out[upper]], by_name[out[lower]]
+            if iu != il and iu not in _ancestors(il, parent):
+                for b in chain[chain.index(lower):]:
+                    out.pop(b, None)
+                break
+    return out
+
+
+def best_humanoid(doc: dict, blob: bytes = b"") -> tuple[Optional[dict[str, str]], Optional[str]]:
+    """`(map, source)` — the discovery pipeline's cheap layers, in order, each gated by `validate()`.
+
+    Layer 1 (names) is free and exact where it hits, and works on a bind pose that defeats geometry.
+    Layer 2 (shape) works on names that mean nothing. They fail on opposite inputs, which is the whole
+    argument for having both. A stated map (VRM) is read before either — that is the caller's job, since
+    it needs no doc-level guessing at all.
+    """
+    named, scheme = convention_humanoid(doc)
+    if named:
+        pruned = prune_map(doc, named)
+        if not validate(doc, pruned):
+            return pruned, f"convention:{scheme}"
+    # Only now: inference reads every vertex weight in the file, which is not work to do speculatively
+    # when a name table has already answered.
+    guess = infer_humanoid(doc, blob)
+    if guess:
+        pruned = prune_map(doc, guess)
+        if not validate(doc, pruned):
+            return pruned, "inferred"
+    return None, None
+
+
 def validate(doc: dict, mapping: dict[str, str]) -> list[str]:
     """Geometric problems with a bone map — empty means it is self-consistent.
 
@@ -609,9 +747,9 @@ def validate(doc: dict, mapping: dict[str, str]) -> list[str]:
             problems.append(f"{bone} and {seen[node]} are both mapped to {node!r}")
         else:
             seen[node] = bone
-    missing = [b for b in CORE_BONES if not mapping.get(b)]
+    missing = [b for b in REQUIRED_BONES if not mapping.get(b)]
     if missing:
-        problems.append(f"{len(missing)} core bone(s) unmapped: {', '.join(missing[:6])}"
+        problems.append(f"{len(missing)} required bone(s) unmapped: {', '.join(missing[:6])}"
                         + (" …" if len(missing) > 6 else ""))
 
     # 1. Sides. +X is the model's left in every sample; a swap here inverts every later pose.
@@ -655,10 +793,7 @@ def validate(doc: dict, mapping: dict[str, str]) -> list[str]:
     #     trunk onto a torso control, so `spine` legitimately stops being a child of `hips` on both Daz
     #     rigs while the map stays correct and poses correctly on device. Including the trunk here would
     #     reject two maps that work, which is the same mistake the hips-ancestor-of-head check made.
-    for chain in (("leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand"),
-                  ("rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand"),
-                  ("leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes"),
-                  ("rightUpperLeg", "rightLowerLeg", "rightFoot", "rightToes")):
+    for chain in LIMB_CHAINS:
         for upper, lower in zip(chain, chain[1:]):
             iu, il = idx(upper), idx(lower)
             if iu is None or il is None or iu == il:
@@ -953,7 +1088,7 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 4
+FRAME_REV = 5
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")

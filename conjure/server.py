@@ -947,6 +947,12 @@ async def _autosave_loop() -> None:
 
 
 
+#: The authored heights a figure may keep. Outside it, the file is not in metres and "life size" would
+#: be a doll or a five-metre giant — a child is ~0.9 m and the tallest recorded human was 2.7 m, so this
+#: is wide enough to be about units rather than about taste.
+HUMAN_HEIGHT_M = (0.5, 3.0)
+
+
 def _normalize(record, pos: list[float], target_m: Optional[float],
                *, rigged: bool = False) -> tuple[list[float], list[float]]:
     """Scale a model so its largest dimension is `target_m` meters and its base sits at pos.y,
@@ -960,13 +966,21 @@ def _normalize(record, pos: list[float], target_m: Optional[float],
     - Its meaningful dimension is **height**, not the largest extent: a T-posed figure's arm span rivals
       its height, and a seated one's exceeds it, so `max(size)` sizes by the wrong axis. When a caller
       *does* ask for a specific size, that means height.
+
+    Life size is honoured only when the authored height is one a person could have. Not every rigged
+    model is authored metric: measured in the library, `Animated Woman` comes out at 4.8 m and another
+    at 0.37 m — units artifacts, not authored choices, and "keep native size" would place a doll or a
+    giant. Outside the plausible range a figure is normalized like anything else, by height. Open
+    question 6 called for this clamp before a source needing it turned up; one has.
     """
     if not record.bbox_min or not record.bbox_max:
         return pos, [1.0, 1.0, 1.0]
     mn, mx = record.bbox_min, record.bbox_max
     size = [mx[i] - mn[i] for i in range(3)]
-    if rigged:
+    if rigged and (target_m is not None or HUMAN_HEIGHT_M[0] <= size[1] <= HUMAN_HEIGHT_M[1]):
         s = 1.0 if target_m is None else target_m / (size[1] or 1.0)     # by HEIGHT, and native by default
+    elif rigged:
+        s = TARGET_SIZE_M / (size[1] or 1.0)             # not authored metric: normalize, still by height
     else:
         s = (target_m or TARGET_SIZE_M) / (max(size) or 1.0)
     cx, cz = (mn[0] + mx[0]) / 2, (mn[2] + mx[2]) / 2

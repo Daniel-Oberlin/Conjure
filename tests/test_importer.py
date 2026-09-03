@@ -77,8 +77,13 @@ def _glb(doc: dict) -> bytes:
             + struct.pack("<II", len(body), 0x4E4F534A) + body)
 
 
-def _figure_doc(*, skinned: bool, node_scale=None):
-    """A one-primitive model 1.75 m tall, optionally skinned, optionally under a scaled node."""
+def _figure_doc(*, skinned: bool, node_scale=None, joint_scale=None):
+    """A one-primitive model 1.75 m tall, optionally skinned, optionally under a scaled node.
+
+    The joints are their OWN nodes, as in a real file — an armature beside the mesh rather than the mesh
+    node doubling as its own joint. That distinction is the whole subject of the two tests below: a scale
+    on the MESH node must not reach a skinned vertex, and a scale on the JOINTS must.
+    """
     node = {"mesh": 0}
     if skinned:
         node["skin"] = 0
@@ -90,7 +95,12 @@ def _figure_doc(*, skinned: bool, node_scale=None):
         "accessors": [{"min": [-0.5, 0.0, -0.2], "max": [0.5, 1.75, 0.2]}],
     }
     if skinned:
-        doc["skins"] = [{"joints": [0, 0, 0]}]
+        armature = {"name": "armature", "children": [2, 3, 4]}
+        if joint_scale:
+            armature["scale"] = joint_scale
+        doc["nodes"] += [armature] + [{"name": f"joint{i}"} for i in range(3)]
+        doc["scenes"][0]["nodes"].append(1)
+        doc["skins"] = [{"joints": [2, 3, 4]}]
     return doc
 
 
@@ -110,6 +120,15 @@ def test_a_skinned_mesh_ignores_its_node_transform():
     lo, hi, rigged = glb_bounds(_figure_doc(skinned=True, node_scale=[2.0, 2.0, 2.0]))
     assert rigged is True
     assert hi[1] - lo[1] == pytest.approx(1.75)           # NOT 3.5
+
+
+def test_a_scale_on_the_ARMATURE_does_reach_a_skinned_mesh():
+    """The complement, and a real file: `Steve` carries a `CharacterArmature` scaled x100, so his
+    vertices reach the world a hundred times bigger than the accessor says. He was catalogued at 1.3
+    CENTIMETRES — and, now that the fetch path marks him as a figure, would have been placed at it."""
+    lo, hi, rigged = glb_bounds(_figure_doc(skinned=True, joint_scale=[100.0, 100.0, 100.0]))
+    assert rigged is True
+    assert hi[1] - lo[1] == pytest.approx(175.0)
 
 
 def test_an_unskinned_mesh_does_apply_its_node_transform():

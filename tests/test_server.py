@@ -560,6 +560,21 @@ def test_an_explicit_size_on_a_figure_means_HEIGHT_not_largest_extent(srv, clien
     assert ent["transform"]["scale"][1] == pytest.approx(2.0, rel=1e-3)
 
 
+def test_a_figure_whose_height_is_not_metric_is_normalized_anyway(srv, client, tmp_path):
+    """Life size is only meaningful when the file is authored in metres. Measured in the library: one
+    `Animated Woman` comes out 4.8 m and another 0.37 m — units artifacts, not authored choices, and
+    "keep native size" would place a giant and a doll."""
+    aid = _catalog_figure(srv, client, tmp_path, height=4.82)
+    r = client.post("/place_cached_asset", json={"id": aid}).json()
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert ent["meta"]["rigged"] is True
+    assert ent["transform"]["scale"][1] == pytest.approx(1.8 / 4.82, rel=1e-3), "normalized by HEIGHT"
+    # ...and an explicit size still wins, as it does for a figure that is authored metric.
+    r2 = client.post("/place_cached_asset", json={"id": aid, "size_m": 2.0}).json()
+    ent2 = next(e for e in _entities(client) if e["id"] == r2["id"])
+    assert ent2["transform"]["scale"][1] == pytest.approx(2.0 / 4.82, rel=1e-3)
+
+
 def test_an_unrigged_model_still_normalizes(srv, client, tmp_path):
     # The complement — props keep the old behaviour exactly.
     srv.resolver = FakeAssetResolver(record=ASSET_RECORD)

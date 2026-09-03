@@ -19,6 +19,7 @@ import argparse
 import base64
 import io
 import json
+import math
 import struct
 import sys
 from dataclasses import dataclass, field
@@ -132,7 +133,7 @@ def read_glb_json(data: bytes) -> Optional[dict]:
         return None
 
 
-def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
+def glb_bounds(doc: dict, blob: bytes = b"") -> Optional[tuple[list[float], list[float], bool]]:
     """`(bbox_min, bbox_max, rigged)` in metres, or None. `rigged` = the file contains a skin.
 
     Why this exists rather than trusting trimesh: **a skinned mesh's vertices are already in the skin's
@@ -142,6 +143,13 @@ def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
 
     So: skinned primitives use their POSITION accessor min/max verbatim (glTF *requires* those on
     POSITION); unskinned ones get the node's world transform applied to the box corners.
+
+    **But skin space is not always model space.** The vertices reach the world through the joints, so a
+    scale on the ARMATURE — or baked into the inverse bind matrices — scales the figure even though the
+    mesh node's transform is rightly ignored. Measured: `Steve` carries a `CharacterArmature` scaled
+    ×100 and `Animated Woman` a ×100 inverse bind, so both were recorded at a couple of CENTIMETRES.
+    The correction needs the BIN chunk for the bind matrices; without `blob` the joint scale alone is
+    used, which is right for every file that keeps its bind at unit scale.
     """
     accessors, meshes, nodes = doc.get("accessors"), doc.get("meshes"), doc.get("nodes")
     if not accessors or not meshes or not nodes:
@@ -169,10 +177,35 @@ def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
         return [sum(a[k * 4 + r] * b[c * 4 + k] for k in range(4))
                 for c in range(4) for r in range(4)]
 
-    def walk(idx: int, parent: list[float]) -> None:
+    def skin_scale(skin_index: int) -> float:
+        """How much the skin's joints scale their skin-space vertices on the way to the world."""
+        skins = doc.get("skins") or []
+        if not (0 <= skin_index < len(skins)):
+            return 1.0
+        skin = skins[skin_index]
+        joints = skin.get("joints") or []
+        scale = 1.0
+        if joints:
+            m = joint_world.get(joints[0])
+            if m:
+                scale *= math.sqrt(m[0] ** 2 + m[1] ** 2 + m[2] ** 2)
+        acc_i = skin.get("inverseBindMatrices")
+        if blob and acc_i is not None and 0 <= acc_i < len(accessors):
+            acc = accessors[acc_i]
+            views = doc.get("bufferViews") or []
+            bv = views[acc["bufferView"]] if "bufferView" in acc and acc["bufferView"] < len(views) else None
+            if bv is not None:
+                off = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+                if off + 64 <= len(blob):
+                    m = struct.unpack_from("<16f", blob, off)
+                    scale *= math.sqrt(m[0] ** 2 + m[1] ** 2 + m[2] ** 2)
+        return scale or 1.0
+
+    def walk(idx: int, parent: list[float], meshes_too: bool = True) -> None:
         node = nodes[idx]
         world = mul(parent, mat_of(node))
-        mi = node.get("mesh")
+        joint_world[idx] = world
+        mi = node.get("mesh") if meshes_too else None
         if mi is not None and 0 <= mi < len(meshes):
             skinned = "skin" in node
             for prim in meshes[mi].get("primitives", []):
@@ -183,8 +216,9 @@ def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
                 amin, amax = acc.get("min"), acc.get("max")
                 if not amin or not amax or len(amin) < 3:
                     continue
-                if skinned:                               # already in skin space — do NOT transform
-                    corners = [amin, amax]
+                if skinned:                               # already in skin space — do NOT transform,
+                    k = skin_scale(node["skin"])          # but DO carry the skeleton's own scale
+                    corners = [[v * k for v in amin], [v * k for v in amax]]
                 else:
                     corners = [[amin[0] if i & 1 else amax[0],
                                 amin[1] if i & 2 else amax[1],
@@ -197,11 +231,16 @@ def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
                     for k in range(3):
                         lo[k] = min(lo[k], float(c[k])); hi[k] = max(hi[k], float(c[k]))
         for child in node.get("children", []):
-            walk(child, world)
+            walk(child, world, meshes_too)
 
+    joint_world: dict[int, list[float]] = {}
     ident = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
     scenes = doc.get("scenes") or []
     roots = scenes[doc.get("scene", 0)].get("nodes", []) if scenes else range(len(nodes))
+    # Two passes: the joints have to be placed before a skinned mesh can be scaled by them, and a mesh
+    # node is not necessarily visited after the armature it is bound to.
+    for r in roots:
+        walk(r, ident, meshes_too=False)
     for r in roots:
         walk(r, ident)
     if any(x == float("inf") for x in lo):
@@ -257,7 +296,9 @@ class ModelImporter(AssetImporter):
         attributes: dict = {}
         doc = read_glb_json(data)
         if doc:
-            bounds = glb_bounds(doc)
+            from .figures import split_glb                        # BIN chunk: bind matrices, weights
+            blob = split_glb(data)[1] if doc.get("skins") else b""
+            bounds = glb_bounds(doc, blob)
             if bounds:
                 lo, hi, rigged = bounds
                 attributes.update({"bbox_min": lo, "bbox_max": hi})
@@ -275,21 +316,21 @@ class ModelImporter(AssetImporter):
                     })
                     humanoid = vrm_humanoid(doc)
                     if not humanoid:
-                        # Layer 2: no stated map, so recover one from skeleton SHAPE. Only kept if it
-                        # validates — an inferred map that is plausible but wrong is worse than none,
-                        # because posing and retargeting both inherit it silently.
+                        # No stated map, so work down the discovery layers: a known naming convention
+                        # first (free and exact, and it survives a bind pose that defeats geometry),
+                        # then skeleton SHAPE. Whatever comes back is pruned and must validate — a map
+                        # that is plausible but wrong is worse than none, because posing and retargeting
+                        # both inherit it silently.
                         try:
-                            from .figures import infer_humanoid, split_glb, validate
-                            # the BIN chunk, not the whole file — accessor offsets are relative to it
-                            _, blob = split_glb(data)
-                            guess = infer_humanoid(doc, blob)
-                            if guess and not validate(doc, guess):
+                            from .figures import best_humanoid
+                            guess, source = best_humanoid(doc, blob)
+                            if guess:
                                 attributes["humanoid"] = guess
-                                attributes["humanoid_source"] = "inferred"
+                                attributes["humanoid_source"] = source
                         except Exception as exc:  # noqa: BLE001 — never fail an import over this
                             # Reported, not swallowed: a silent guard here hid a wrong argument and made
                             # inference look like it simply found nothing on every non-VRM model.
-                            print(f"[conjure] humanoid inference failed for {filename}: {exc}")
+                            print(f"[conjure] humanoid discovery failed for {filename}: {exc}")
                     if humanoid:
                         # Discovery layer 1, for free. `humanoid_source` is recorded because a stated
                         # map and an inferred one warrant different trust, and it is what lets a later

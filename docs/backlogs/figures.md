@@ -810,6 +810,44 @@ is made public, not before.
   lightly rigged. Not a fit.
 - **Reallusion Character Creator, Human Generator** — paid; not evaluated.
 
+### FBX: not importable today, and it is the road to Mixamo (checked 2026-09-03)
+
+**Direct import: no.** `ModelImporter` accepts `.glb` and `.vrm` and sniffs the glTF magic bytes, so an
+FBX is refused at the door — deliberately, since `importer.py` must never need Blender or the world
+server would.
+
+**Through Blender: the pieces are all present, unwired.** `bpy.ops.import_scene.fbx` exists in the
+installed Blender 5.2 (alongside `obj`, `usd`, `alembic`, `ply`, `stl`), and everything in
+`blend_to_glb.py` past the front door works on the loaded scene and does not care where it came from.
+Three things stand in the way:
+
+1. **The script never imports anything.** Blender opens the `.blend` itself
+   (`$B --background file.blend --python …`); an FBX needs Blender started empty and the script doing
+   `import_scene.fbx`.
+2. **`export_animations=False`** is hard-coded, reasoning that "the samples ship none". For Mixamo that
+   is exactly backwards — the animation IS the download.
+3. **`--collections`** is a `.blend`-only concept and has to no-op, selecting everything instead.
+
+Most of the pipeline's hard-won complexity — widget detection, the constraint-graph rebuild, JCM
+stripping — is Daz and Rigify work that a Mixamo rig simply does not need.
+
+**Why it matters: Mixamo exports FBX and Collada, never glTF.** So both halves of the Mixamo story run
+through FBX — the character rigs, and more importantly the CLIPS, which are [open question
+3](#open-questions) and the largest unbuilt piece in this feature. No FBX path, no Mixamo clips.
+
+Unknowns worth budgeting for, none of them code:
+
+- **Units.** Mixamo exports in centimetres, so a figure arrives 100× too big. `height_m` would catch a
+  miss loudly (a 175 m woman), and `glb_bounds` now carries a skeleton's own scale — see below.
+- **Textures.** Mixamo embeds them; other sources reference files sitting next to the `.fbx`, which a
+  single-file upload would not have.
+- **A character and its clips are separate downloads.** One GLB with several named animations means
+  importing the character, then each clip, and merging — a standard Blender workflow, but a workflow.
+
+The runtime half is further out regardless: `attributes["clips"]` is recorded at import already, but
+`animate_model`, the mixer component and the pose/clip composition decision ([open question
+8](#open-questions)) do not exist.
+
 ### Animation sources — a separate problem
 
 Finding 2: the models ship none. Clips must be sourced and retargeted.
@@ -961,8 +999,11 @@ when present we have simply been handed the answer. Then Mixamo (`mixamorig:Hips
 **Measured hit rate on the samples: two of four.** Rigify catches Eve, Daz Genesis catches Grace; the two
 DOA ports match nothing. Worth building — it is a lookup table — but it is the cheap win, not the plan.
 
-Still not built, and now with a case waiting: a Mixamo-named character in the dev library that layer 2
-cannot infer because its bind pose has the arms down (see *Ingest paths that disagree*).
+**Built 2026-09-03** (`figures.CONVENTIONS`), with two rows: Mixamo, and the `.L`/`.R` suffixed scheme
+two free asset-pack characters share. Deliberately only conventions verified against a file on disk —
+Rigify and Daz rows are NOT included even though this document names them, because layer 2 already
+handles Grace and Yuffie correctly and an unverified table row could only make that worse. Adding a row
+is the extension point; adding one blind is how a control bone gets mapped over its deform bone.
 
 ### 2 — Topology and geometry (free, needs no names)
 
@@ -1307,6 +1348,51 @@ only an `aim` — which arrives as a direction, not an angle — goes through th
 > The general shape, and it is the third time in this document: **a value recovered from a
 > representation is not the value that was supplied.** Keep the caller's own number where you have it.
 
+### Layer 1 built, and three models joined the cast (2026-09-03f)
+
+The convention table finally has a reason to exist, and it took twenty minutes once there was a case.
+`Animated Woman` is bone-for-bone Mixamo; `Animated Woman` (the other one) and `Steve` share a
+`.L`/`.R` suffixed scheme from some free asset pack. Only conventions **verified against a real file**
+are in the table — a speculative row cannot be checked, and a name that happens to match is exactly how
+a control bone gets mapped over the deform bone it drives.
+
+| model | layer | result |
+|---|---|---|
+| Animated Woman | `convention:mixamo` | 22 bones |
+| Animated Woman (2) | `convention:dot-side` | 18 bones |
+| Steve | `convention:dot-side` | 17 bones |
+| Grace, Yuffie | `inferred` (layer 2, unchanged) | 21 bones |
+| Saka | `vrm` (stated, unchanged) | 54 bones |
+
+Names are tried first and inference is not even run when they hit — it reads every vertex weight in the
+file, which is not work to do speculatively. Layer 2 still owns everything the table has never seen.
+
+**Two changes were needed to make the table pay, and the second is the more valuable.**
+
+**A map may now be partial.** Both `Animated Woman` models and `Steve` have a `Foot.L` that is an IK
+TARGET parented to the armature root, sitting beside a `PoleTarget.L` — rotating the shin would leave it
+behind. `validate()` caught it (the chain check, one day old), but the whole map was then thrown away
+over an ankle. `prune_map` now drops the offending bone and everything below it on that chain — the
+conservative direction, losing a bone rather than gaining a lie — and completeness is judged against
+`REQUIRED_BONES` rather than all of `CORE_BONES`, because plenty of rigs have no toes, no clavicle and
+no separate chest. What survives is a map that poses everything it claims to.
+
+**And a scale bug in `glb_bounds`, which is the trimesh bug wearing the opposite coat.** A skinned
+mesh's vertices are in skin space and must not take the mesh node's transform — that was the fix in
+Phase 0. But they reach the world THROUGH THE JOINTS, so a scale on the armature, or baked into the
+inverse bind matrices, does apply. `Steve` carries a `CharacterArmature` scaled ×100 and `Animated
+Woman` a ×100 inverse bind, and both were recorded at a couple of centimetres. Now that the fetch path
+marks them as figures, "keep life size" would have placed a 1.3 cm man.
+
+> The rule stated once, since a version of it has now been wrong twice: **a skinned mesh's extent comes
+> from neither its node nor its vertices alone — it is the vertices as the JOINTS place them.**
+
+**Which exposed the last assumption: not every rigged model is authored metric.** Corrected, the three
+come out at 4.82 m, 0.37 m and 1.31 m. Those are units artifacts, not authored choices, so life size is
+now honoured only within a plausible human range (`HUMAN_HEIGHT_M`, 0.5–3 m); outside it a figure is
+normalized like anything else, but still by HEIGHT. [Open question 6](#open-questions) asked for exactly
+this clamp before a source needing it turned up. One did.
+
 ## Aiming, evaluation and named poses
 
 The three slices the 2026-09-03 device run calls for, in order. Designed here before any of it is built,
@@ -1553,9 +1639,9 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
    plus chosen alternates", which makes outfit selection partly a conversion-time decision.
 5. **Decimation policy and bone reduction.** One Grace (526 k verts) exceeds `Budget.maxTris` for the whole
    world. What target, and driven by what — a fixed budget, or measured frame time on device?
-6. **Life size vs. normalized height.** Finding 8: these arrive correct and metric, and `TARGET_SIZE_M`
-   would damage them. Confirms life-size — but placement needs a path that *skips* normalization for
-   figures, plus a sanity clamp for a future source that does ship centimetre scaling.
+6. ~~**Life size vs. normalized height.**~~ **Settled 2026-09-03.** Figures keep their authored height,
+   and the sanity clamp asked for here is built (`HUMAN_HEIGHT_M`, 0.5–3 m) — a source needing it turned
+   up on the first day the library held a figure nobody had converted by hand.
 7. **JCM stripping cost.** Removing driver-fired corrective morphs is required for size; how bad the
    joints look without them is a device question.
 8. **Pose composition** — additive-after-mixer, or mutually exclusive. Decide before building.
