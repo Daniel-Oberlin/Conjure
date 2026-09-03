@@ -208,6 +208,26 @@ CONVENTIONS: dict[str, dict[str, str]] = {
         "{s}UpperLeg": "{S}UpLeg", "{s}LowerLeg": "{S}Leg", "{s}Foot": "{S}Foot",
         "{s}Toes": "{S}ToeBase",
     },
+    # The Rigify-derived FK naming that Daz ports carry and that `scripts/blend_to_glb.py` preserves.
+    # Verified identical across three files — Grace, Yuffie and Trish — and it is worth a row even
+    # though layer 2 already maps two of them: inference put Trish's whole arm on `hand.ik.L`, and on
+    # all three it picked a FINGERTIP for the hand, which the names get right for free.
+    # Rigify spells its FK controls two ways depending on version — `upper_arm.fk.L` on the Daz ports,
+    # `upper_arm_fk.L` on a stock modern rig — and both turn up in the same library, so both are listed.
+    "rigify-fk": {
+        "hips": "pelvis|hip|hips", "spine": "spine|chestLower|torso",
+        "chest": "chest-1|chestUpper|chest",
+        "neck": "neckhead|neck",              # `neckhead` PARENTS the head; `neck` is a sibling control
+        "head": "head",
+        "{s}Shoulder": "clavicle.{X}|shoulder.{X}",
+        "{s}UpperArm": "upper_arm.fk.{X}|upper_arm_fk.{X}",
+        "{s}LowerArm": "forearm.fk.{X}|forearm_fk.{X}",
+        "{s}Hand": "hand.fk.{X}|hand_fk.{X}|hand.{X}",
+        "{s}UpperLeg": "thigh.fk.{X}|thigh_fk.{X}",
+        "{s}LowerLeg": "shin.fk.{X}|shin_fk.{X}",
+        "{s}Foot": "foot.fk.{X}|foot_fk.{X}",
+        "{s}Toes": "toe.fk.{X}|toe_fk.{X}|toe.{X}",
+    },
     # The Blender-side-suffix scheme used across several free asset packs (both `Animated Woman` models
     # and `Steve` in the dev library). Torso/Abdomen rather than Spine1/Spine2, and the side is a suffix.
     "dot-side": {
@@ -236,10 +256,12 @@ def convention_humanoid(doc: dict) -> tuple[Optional[dict[str, str]], Optional[s
     hands downstream code a name it can look up.
     """
     lookup: dict[str, str] = {}
-    for node in doc.get("nodes") or []:
+    by_index: dict[str, int] = {}
+    for i, node in enumerate(doc.get("nodes") or []):
         name = node.get("name")
         if name:
             lookup.setdefault(_bare(name), name)      # first spelling wins; ties are vanishingly rare
+            by_index.setdefault(name, i)
     best: tuple[int, Optional[dict], Optional[str]] = (0, None, None)
     for scheme, table in CONVENTIONS.items():
         found: dict[str, str] = {}
@@ -252,6 +274,20 @@ def convention_humanoid(doc: dict) -> tuple[Optional[dict[str, str]], Optional[s
                     if node in lookup:
                         found[key] = lookup[node]
                         break
+        # The hips slot is chosen by ANATOMY where the names are ambiguous: a rig may carry `pelvis`,
+        # `hip`, `hips` and `torso`, and only one of them is the root of the legs. Tamaki's `pelvis` is
+        # a tweak bone off to one side; her `hips` is what the thighs actually hang from. This is the
+        # same definition `validate` uses — ancestry of the FEET is what makes a bone the hips.
+        feet = [by_index.get(found.get(b)) for b in ("leftFoot", "rightFoot")]
+        feet = [f for f in feet if f is not None]
+        if feet and "hips" in table:
+            parent = parent_map(doc)
+            for candidate in table["hips"].split("|"):
+                node = lookup.get(candidate)
+                i = by_index.get(node)
+                if i is not None and all(i in _ancestors(f, parent) for f in feet):
+                    found["hips"] = node
+                    break
         score = sum(1 for b in REQUIRED_BONES if b in found)
         if score > best[0]:
             best = (score, found, scheme)
@@ -259,6 +295,40 @@ def convention_humanoid(doc: dict) -> tuple[Optional[dict[str, str]], Optional[s
 
 
 # ---------------------------------------------------------------- inference
+
+
+def humanoid_skin(doc: dict) -> dict:
+    """The skin that deforms the BODY, when a file ships several.
+
+    Picked by how much geometry each skin carries, not by how many joints it has. Joint count was the
+    first heuristic and it is wrong in the wild: `Trish` ships a 679-joint HAIR-AND-CLOTH rig beside a
+    362-joint body rig, so "the biggest skeleton is the body" mapped her whole skeleton onto
+    `B_HairCloth03_*` and inference returned an elbow and a knee on the same strand of hair. The backlog
+    predicted the opposite (Hitomi's four hair rigs are all small) — which is the point: a rule about
+    which skeleton is BIGGER is a rule about the rigger's habits, and vertex count is a rule about what
+    the mesh actually is.
+
+    Ordered by how many MESHES each skin deforms, which is only a hint: `best_humanoid` tries each in
+    turn and keeps the first whose skeleton actually validates as a humanoid, because the one reliable
+    test of "is this the body rig" is whether it looks like a body. Vertex count was tried and is no
+    better than joint count — Trish's single hair mesh outweighs her body and all her clothes together.
+    """
+    skins = doc.get("skins") or []
+    if len(skins) < 2:
+        return skins[0] if skins else {}
+    return humanoid_skin_order(doc)[0]
+
+
+def humanoid_skin_order(doc: dict) -> list[dict]:
+    """Every skin, most-likely-to-be-the-body first: by mesh count, then by joint count."""
+    skins = doc.get("skins") or []
+    meshes = [0] * len(skins)
+    for node in doc.get("nodes") or []:
+        si = node.get("skin")
+        if node.get("mesh") is not None and si is not None and 0 <= si < len(skins):
+            meshes[si] += 1
+    return sorted(skins, key=lambda sk: (meshes[skins.index(sk)], len(sk.get("joints") or [])),
+                  reverse=True)
 
 
 def _ancestors(idx: int, parent: dict[int, int]) -> list[int]:
@@ -312,7 +382,7 @@ def _pick_by_reach(chain: list[int], pos: dict, frac: float) -> int:
     return chain[min(range(len(chain)), key=lambda i: abs(acc[i] - target))]
 
 
-def infer_humanoid(doc: dict, blob: bytes = b"") -> Optional[dict[str, str]]:
+def infer_humanoid(doc: dict, blob: bytes = b"", skin: Optional[dict] = None) -> Optional[dict[str, str]]:
     """`{semanticBone: nodeName}` inferred from skeleton shape, or None if it does not look humanoid.
 
     The identification order matters: extremities first, because they are unambiguous geometric extremes,
@@ -323,9 +393,7 @@ def infer_humanoid(doc: dict, blob: bytes = b"") -> Optional[dict[str, str]]:
     skins = doc.get("skins") or []
     if not nodes or not skins:
         return None
-    # The humanoid skin is the one with the most joints — hair and cloth rigs are separate and smaller
-    # (Hitomi ships five skins, four of them hair).
-    joints = max((s.get("joints") or [] for s in skins), key=len)
+    joints = (skin if skin is not None else humanoid_skin(doc)).get("joints") or []
     if len(joints) < 8:
         return None
     pos = node_world_positions(doc)
@@ -737,16 +805,27 @@ def best_humanoid(doc: dict, blob: bytes = b"") -> tuple[Optional[dict], Optiona
             raw, scheme = candidate
             source = f"convention:{scheme}" if raw else None
         else:
-            raw = infer_humanoid(doc, blob)               # reads every vertex weight: not speculative
+            # Every skin in turn, likeliest first. Which one is the BODY cannot be told from joint count
+            # (Trish's hair rig has 679 to her body's 362) or from vertex count (her hair mesh outweighs
+            # everything else), and the one test that does not depend on a rigger's habits is whether
+            # the skeleton validates as a humanoid. So: try, and let the validator answer.
+            for candidate_skin in humanoid_skin_order(doc) or [{}]:
+                raw = infer_humanoid(doc, blob, candidate_skin)   # reads that skin's vertex weights
+                if not raw:
+                    continue
+                pruned = prune_map(doc, raw)
+                if not validate(doc, pruned, blob):
+                    return pruned, "inferred", follow_bones(doc, raw, blob)
+            continue
         if not raw:
             continue
         pruned = prune_map(doc, raw)
-        if not validate(doc, pruned):
+        if not validate(doc, pruned, blob):
             return pruned, source, follow_bones(doc, raw, blob)
     return None, None, {}
 
 
-def validate(doc: dict, mapping: dict[str, str]) -> list[str]:
+def validate(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> list[str]:
     """Geometric problems with a bone map — empty means it is self-consistent.
 
     **This is the load-bearing half.** An inferred map that is plausible but wrong is worse than none,
@@ -839,6 +918,38 @@ def validate(doc: dict, mapping: dict[str, str]) -> list[str]:
             if iu not in _ancestors(il, parent):
                 problems.append(f"{lower} is not below {upper} in the skeleton — rotating {upper} "
                                 f"would leave it behind")
+
+    # 3c. A mapped limb bone must MOVE something. Positions and parenting can all be right while the
+    #     bone drives no vertices at all: Tamaki's `upper_arm_fk.L` sits exactly where an upper arm
+    #     belongs, in a proper chain, and her deform bones are linked to it by CONSTRAINTS that glTF
+    #     drops — so the map validated clean and posing her did nothing whatsoever. That is the original
+    #     Phase-2 finding, reaching the validator two conventions later.
+    #
+    #     Needs the BIN chunk to read weights, so it is skipped without one rather than guessed at.
+    if blob:
+        deform = deform_joints(doc, blob)
+        if deform:
+            kids: dict = {}
+            for i, n in enumerate(nodes):
+                for c in n.get("children") or []:
+                    kids.setdefault(i, []).append(c)
+
+            def moves_anything(i: int) -> bool:
+                stack, seen = [i], {i}
+                while stack:
+                    cur = stack.pop()
+                    if cur in deform:
+                        return True
+                    for c in kids.get(cur, []):
+                        if c not in seen:
+                            seen.add(c)
+                            stack.append(c)
+                return False
+
+            inert = [b for b in ("leftUpperArm", "rightUpperArm", "leftUpperLeg", "rightUpperLeg")
+                     if idx(b) is not None and not moves_anything(idx(b))]
+            if inert:
+                problems.append(f"{', '.join(inert)} drive no geometry — rotating them would do nothing")
 
     # 4. Limb proportions. Upper and lower segments of a limb are within ~2.5x of each other on a human;
     #    a wild ratio means a twist/helper bone was mistaken for a joint.

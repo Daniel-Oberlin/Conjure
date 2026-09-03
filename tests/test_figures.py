@@ -9,6 +9,7 @@ as the inference. docs/backlogs/figures.md
 import pytest
 
 import math
+import struct
 
 from conjure.figures import (CONVENTIONS, CORE_BONES, FRAME_VECTORS, POSE_AXES, REQUIRED_BONES,
                              TRUNK_BONES, best_humanoid, convention_humanoid, follow_bones,
@@ -707,3 +708,27 @@ def test_a_bone_that_moves_no_geometry_is_left_where_it_is():
     assert follow_bones(doc, mapping, blob=b"") == {"l_foot": "l_shin"}   # no weights known: assume it does
     empty_weights = {**doc, "meshes": [], "skins": [{"joints": doc["skins"][0]["joints"]}]}
     assert follow_bones(empty_weights, mapping, blob=b"x") == {}
+
+
+def test_a_map_whose_limbs_drive_nothing_is_rejected():
+    """Positions and parenting can all be right while a bone moves no vertices at all. Tamaki's
+    `upper_arm_fk.L` sits exactly where an upper arm belongs, in a proper chain, and her deform bones
+    are linked to it by CONSTRAINTS that glTF drops — so the map validated clean and posing her did
+    nothing whatsoever. The original Phase-2 finding, reaching the validator two conventions later."""
+    doc, idx = _skeleton()
+    mapping = infer_humanoid(doc)
+    assert not validate(doc, mapping), "clean without weights to check against"
+    # A skin whose weights touch only the trunk: every limb bone is then inert.
+    doc["meshes"] = [{"primitives": [{"attributes": {"JOINTS_0": 0, "WEIGHTS_0": 1}}]}]
+    doc["nodes"].append({"mesh": 0, "skin": 0})
+    doc["scenes"][0]["nodes"].append(len(doc["nodes"]) - 1)
+    joints = doc["skins"][0]["joints"]
+    spine_slot = joints.index(idx["spine"])
+    blob = (struct.pack("<4H", spine_slot, spine_slot, spine_slot, spine_slot)
+            + struct.pack("<4f", 1.0, 0.0, 0.0, 0.0))
+    doc["accessors"] = [{"bufferView": 0, "componentType": 5123, "count": 1, "type": "VEC4"},
+                        {"bufferView": 1, "componentType": 5126, "count": 1, "type": "VEC4"}]
+    doc["bufferViews"] = [{"buffer": 0, "byteOffset": 0, "byteLength": 8},
+                          {"buffer": 0, "byteOffset": 8, "byteLength": 16}]
+    problems = validate(doc, mapping, blob)
+    assert any("drive no geometry" in p for p in problems), problems
