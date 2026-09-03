@@ -1680,6 +1680,63 @@ grown a fifth criterion at the primitive layer it has been fitting noise; that i
 request that genuinely cannot be said in tier 1 is a signal that it belongs in a different tier, not that
 tier 1 is missing a word.
 
+## Animation — the long-term plan
+
+Sequenced **after** aiming (built), the eval harness, named poses and outfits. Written down now because
+the ordering decision below is cheap to make and expensive to discover, and because the ground shifted:
+the library turned out to contain 52 clips.
+
+### The idea the rest of it hangs on
+
+> Store a clip **in the anatomical frame** — per-bone `bend`/`spread`/`turn` over time — and it plays on
+> any rig with a humanoid map. That is rotation-retargeting, and the frame already exists.
+
+A clip stored as node names is welded to one skeleton. A clip stored as semantic bone names but
+BONE-LOCAL rotations still does not transfer: a T-posed Mixamo rig and an A-posed Daz rig disagree by 48
+degrees, which is the exact problem `aim` was built for and the exact reason a relative pose vocabulary
+failed on device. The anatomical frame is measured per figure against its own rest, so a clip expressed
+in it means the same motion on every one — and joint limits come along free, clamping a clip that asks a
+knee for more than it has instead of snapping it.
+
+What this does NOT solve is **proportions**. Different limb lengths mean foot sliding and missed hand
+contacts; that residual is what IK is for, in stage 4, and not before.
+
+### The stages
+
+**1 — Play what a file already has.** Three characters in the library ship 10, 24 and 18 clips against
+their own rigs. Import records duration, keyframe count, which SEMANTIC bones a clip touches and whether
+its root translates; the `figure` component gains `clip`, `startTime`, `speed`; the client gets a small
+component over `THREE.AnimationMixer` (A-Frame has none, `aframe-extras` is not vendored, and it would
+need customising anyway). Tier A: `f(sharedClock, clip, startTime)`, no per-frame sync, and a late
+joiner computes the same phase from the same clock. Demonstrable today, with no Mixamo, no FBX and no
+retargeting — which usefully de-risks the runtime BEFORE the hard part, the reverse of the original plan.
+
+**2 — Clips as catalog assets.** `kind: "animation"`, imported from a clip-only file, stored in the
+anatomical frame per above, discoverable by the director the way `dynamics://available` is. A clip is
+cheap in a way a mesh is not — one measured here is 21 channels, 51 keyframes, 2.08 s, a few KB — so a
+figure can carry dozens without a budget conversation.
+
+**3 — Sourcing.** Once a clip is an asset, every source is "import a clip": the library's own 52,
+**Mixamo** through the FBX front door (§ *FBX: not importable today*), **VRMA** directly since it is
+glTF, and hand-authored Blender exports. Mixamo is the volume, and the FBX work is its only prerequisite.
+
+**4 — Locomotion, blending, contact.** A walk along a path is tier A again — the PATH is the shared
+state and position is `f(clock, path)`. Then idle↔walk blending, foot planting via IK, touch reactions.
+Root motion and the physics-vs-parametric question ([`decisions.md`](../decisions.md) #12) live here.
+
+### Decide before stage 1 ships, not in the headset
+
+1. **Pose vs clip composition** — [open question 8](#open-questions), still open. The mixer rewrites
+   bones every frame, so a pose either composes additively after `mixer.update()` or the two are
+   mutually exclusive by construction.
+2. **What `follows` does while a clip plays.** Those IK feet are animated BY the clip, so the constraint
+   must stand down or it will fight the animation on the one bone it cares most about. (This is why the
+   constraint is applied at pose time rather than by re-parenting the file.)
+3. **Root motion**, measured per clip at import: an in-place clip with the entity driven separately, or
+   the clip's translation drives the entity. A baked-in root makes the entity lie about where it is —
+   `grab` grabs the wrong place and a peer sees it somewhere else. One clip measured here has a
+   translation channel on `Body`, so this is not hypothetical.
+
 ## The tool surface
 
 One coherent family rather than a tool per capability — the way `conjure_module` is one generic tool — with
@@ -1724,9 +1781,9 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
 3. **Where does motion come from?** Finding 2 measured the five `.blend` ports and found **no animations
    at all**, making sourcing-and-retargeting the price of admission. **Partly answered 2026-09-03:** three
    characters in the library ship 10, 24 and 18 clips against their own rigs, so a first `animate_model`
-   needs neither Mixamo nor retargeting. The general problem stands — a clip authored for one skeleton
-   still has to be retargeted to play on Grace — and retargeting quality (foot sliding, proportion
-   mismatch, hand contact) is its own problem.
+   needs neither Mixamo nor retargeting. Planned in § *Animation — the long-term plan*; what remains open
+   is retargeting QUALITY (foot sliding, proportion mismatch, hand contact), which rotation-only transfer
+   does not address.
 4. **Export granularity** — one GLB per outfit, or one GLB with everything and runtime visibility?
    The outfit feature wants the latter; 117–526 k verts per figure wants the former. Probably "worn set
    plus chosen alternates", which makes outfit selection partly a conversion-time decision.
@@ -1783,9 +1840,11 @@ than protects:
    a sentence of English did what it was supposed to.
 3. **Named poses + re-grounding** — "kneel", "sit". Data, not code, because tier 1 is rig-independent;
    and the re-grounding rule is what stops a kneeling figure standing in the floor.
+4. **Outfits** (Phase 2) — deferred by choice; also wants a re-conversion with clothing.
+5. **Animation** — § *Animation — the long-term plan*. Stage 1 plays the 52 clips already in the
+   library; everything past that waits on the FBX front door and a decision about composition.
 
-**Outfits (Phase 2) are deliberately deferred** — simpler, and they also want a re-conversion with
-clothing, so nothing is lost by waiting.
+
 
 State to be aware of when resuming:
 
@@ -1819,6 +1878,6 @@ State to be aware of when resuming:
 | **1** | Conversion + discovery pipeline: headless Blender, GLB JSON extraction, convention table, topology inference, LLM labeling, visual verification, validator, one human confirm. | The heart, and the largest piece. Mostly pure Python ⇒ mostly testable. |
 | **2** | `figure` component + endpoint + tools. Outfits and clips. | First user-visible payoff: *"change her jacket"*, *"have her wave"*. |
 | **3** | Posing, with the composition question already settled. | **Under way.** The anatomical frame shipped 2026-09-02; `aim`, the eval harness and named poses are designed and next. |
-| **4** | Locomotion (A for scripted, C for reactive) and touch (B). | |
+| **4** | Clips, then locomotion (A for scripted, C for reactive) and touch (B). | Planned in § *Animation — the long-term plan*. Stage 1 is playable on library content today; Mixamo waits on the FBX front door. |
 
 Phase 0 should start as soon as a real model file exists, and does not depend on any decision above.
