@@ -302,17 +302,21 @@ class ModelImporter(AssetImporter):
                         # of the FILE and belongs here beside the map rather than being re-measured by
                         # every consumer (docs/backlogs/figures.md, the axis problem).
                         try:
-                            from .figures import FRAME_REV, anatomical_axes
+                            from .figures import anatomical_axes
                             axes = anatomical_axes(doc, attributes["humanoid"])
                             if axes:
                                 attributes["humanoid_axes"] = axes
-                                # Stamped so a later build knows whether to re-measure (server._figure_frame).
-                                attributes["frame_rev"] = FRAME_REV
                         except Exception as exc:  # noqa: BLE001 — a map without axes still places
                             print(f"[conjure] anatomical axes failed for {filename}: {exc}")
                     used = doc.get("extensionsUsed") or []
                     if "VRMC_springBone" in used or "VRM" in (doc.get("extensions") or {}):
                         attributes["spring_bones"] = "VRMC_springBone" in used
+        # Stamped on EVERY model, not only the ones that turn out to be figures. The stamp records which
+        # build looked at this file, and "we looked and it is a prop" is exactly as much worth recording
+        # as a bone map — three rigged characters sat in the catalog as props because an earlier ingest
+        # path never looked at all (docs/backlogs/figures.md).
+        from .figures import FRAME_REV
+        attributes["frame_rev"] = FRAME_REV
         try:
             import trimesh
             scene = trimesh.load(io.BytesIO(data), file_type="glb", force="scene")

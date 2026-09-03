@@ -1054,45 +1054,59 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
     return author_anchor(entity, planes)
 
 
-def _figure_frame(asset_id: str, attrs: dict) -> tuple[Optional[dict], Optional[dict]]:
-    """`(humanoid map, anatomical axes)` for a figure — re-measured from the GLB when what the catalog
-    holds was produced by older code.
+#: Everything about a model that is DERIVED from its bytes. Extraction owns these outright — a stale one
+#: is not worth keeping, since it was computed from the same file by older code.
+_DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
+                        "humanoid", "humanoid_source", "humanoid_axes", "spring_bones", "tris")
 
-    Both are derived from the bind pose and never change for a given file, so import writes them once.
-    But the CODE that derives them changes, and a catalog row is not a snapshot of a model so much as a
-    snapshot of what we understood about it. Measured on this machine's catalog: three figures predate
-    inference entirely and carry no map; two carry maps that today's `validate()` rejects, because they
-    were inferred before conversion rebuilt the deform hierarchy and their forearms hang off the
-    armature root — the zig-zag arm, cached. Re-importing a 37 MB conversion to fix a derived field
-    would be a silly tax, so the first placement after a version bump re-measures and writes back.
 
-    A map STATED by the file (VRM) is never second-guessed; only an inferred one is re-derived, and a
-    re-derivation that fails validation clears the map rather than keeping a plausible wrong one — no
-    map at all is an honest error message, and a bad one is a figure whose elbow bends backwards.
-    """
-    if attrs.get("frame_rev") == FRAME_REV or not attrs.get("rigged"):
-        return attrs.get("humanoid"), attrs.get("humanoid_axes")
-    humanoid = attrs.get("humanoid")
+def _extracted_model_attrs(asset_id: str) -> dict:
+    """Everything `/library/import` learns from a model's bytes, for a path that fetched them instead."""
+    path = ASSET_CACHE / asset_id
+    if not path.exists():
+        return {}
     try:
-        from .figures import anatomical_axes, infer_humanoid, split_glb, validate
-        doc, blob = split_glb((ASSET_CACHE / asset_id).read_bytes())
-        if doc is None:
-            return humanoid, attrs.get("humanoid_axes")
-        if attrs.get("humanoid_source") != "vrm" and (not humanoid or validate(doc, humanoid)):
-            guess = infer_humanoid(doc, blob)
-            was, humanoid = humanoid, (guess if guess and not validate(doc, guess) else None)
-            _slog("figure", f"{asset_id}: bone map "
-                            f"{'re-inferred' if was else 'inferred'} → "
-                            f"{len(humanoid) if humanoid else 0} bones")
-        axes = anatomical_axes(doc, humanoid) if humanoid else None
-        # {} rather than None: the catalog merges attributes and skips None, so an empty map is how a
-        # rejected one is actually cleared.
-        library.upsert(asset_id, attributes={"humanoid": humanoid or {}, "humanoid_axes": axes or {},
-                                             "frame_rev": FRAME_REV})
-        return humanoid, axes
-    except Exception as exc:  # noqa: BLE001 — a figure with no frame still places; it just cannot pose
-        _slog("figure", f"frame measurement failed for {asset_id}: {exc}")
-        return humanoid, attrs.get("humanoid_axes")
+        from .importer import plan_import
+        return dict(plan_import(asset_id, path.read_bytes(), {}).attributes)
+    except Exception as exc:  # noqa: BLE001 — cataloguing a model must never fail over its metadata
+        _slog("figure", f"extraction failed for {asset_id}: {exc}")
+        return {}
+
+
+def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dict:
+    """A model's catalog attributes, re-derived from its bytes when the stored ones predate this build.
+
+    **A catalog row is a snapshot of what we UNDERSTOOD about a model, not of the model.** Understanding
+    keeps changing and the rows do not, so this is where the two are reconciled: on the first placement
+    after a version bump, extraction runs again and the row is written back. Measured occasions for it,
+    all real: figures catalogued before inference existed; bone maps inferred before conversion rebuilt
+    the deform hierarchy, which today's `validate()` rejects; frames measured before aiming or joint
+    limits; and three rigged characters catalogued as PROPS because the Poly Pizza fetch path recorded a
+    triangle count and never looked at the skeleton at all.
+
+    Extraction is authoritative for everything derived — including CLEARING a bone map it can no longer
+    justify, since no map is an honest error message and a plausible wrong one is an elbow that bends
+    backwards three weeks later. Curation (label, tags, licence, rating) is untouched.
+    """
+    if not force and attrs.get("frame_rev") == FRAME_REV:
+        return attrs
+    path = ASSET_CACHE / asset_id
+    if not path.exists():
+        return attrs
+    fresh = _extracted_model_attrs(asset_id)
+    if not fresh:
+        return attrs
+    # `{}` rather than absent: the catalog MERGES attributes and skips None, so an empty map is how a
+    # rejected one is actually cleared.
+    write = {k: fresh.get(k) for k in _DERIVED_MODEL_ATTRS if fresh.get(k) is not None}
+    for k in ("humanoid", "humanoid_axes"):
+        write[k] = fresh.get(k) or {}
+    write["frame_rev"] = FRAME_REV
+    library.upsert(asset_id, attributes=write)
+    if bool(attrs.get("rigged")) != bool(fresh.get("rigged")) or attrs.get("humanoid") != fresh.get("humanoid"):
+        _slog("figure", f"{asset_id}: re-extracted — rigged={bool(fresh.get('rigged'))} "
+                        f"map={len(fresh.get('humanoid') or {})} bones")
+    return {**attrs, **write}
 
 
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
@@ -1231,6 +1245,13 @@ def _catalog_asset(asset_id: str, *, kind: str, label: str | None = None, prompt
     that applies the invariants — caller scope, `cache://` source, inherited world visibility (spaces-
     and-users-plan §4: made private ⇒ private), and, for a visual kind with bytes, a vector embedding.
     Only-non-None merge in `library.upsert` means a later partial write never clobbers creation data."""
+    if kind == "model" and not (attributes or {}).get("frame_rev"):
+        # The Poly Pizza fetch path recorded a triangle count and a bounding box and stopped there, so
+        # three rigged characters were catalogued as props: normalized to 1.8 m instead of life size, and
+        # unposable, because nobody had looked at their skeletons. Ingest paths that disagree about how
+        # hard they look at a file is the same bug twice now, so the look happens HERE — the one write
+        # every path already shares — rather than in each of them.
+        attributes = {**(attributes or {}), **_extracted_model_attrs(asset_id)}
     library.upsert(asset_id, kind=kind, scope=scope if scope is not None else _caller_scope.get(),
                    source=f"cache://{asset_id}", filename=asset_id, label=label, prompt=prompt,
                    query=query, params=params, attributes=attributes, provider=provider, model=model,
@@ -3738,8 +3759,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                 "use place_image (images) or set_skybox (skyboxes)"}
     if not (ASSET_CACHE / req.id).exists():
         return {"ok": False, "error": f"bytes for {req.id!r} are missing from the cache"}
-    attrs = json.loads(rec["attributes"] or "{}")
-    humanoid, axes = _figure_frame(req.id, attrs)   # measured now if the catalog's predate this build
+    attrs = _refresh_model_attrs(req.id, json.loads(rec["attributes"] or "{}"))
     eid = req.name or f"ent_asset_{uuid4().hex[:6]}"
     pos = req.position or [0.0, 0.0, -3.0]
     op = _model_entity_op(eid, req.id, title=rec["label"], licence=rec["licence"],
@@ -3747,7 +3767,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           tris=attrs.get("tris"), source="library", bbox_min=attrs.get("bbox_min"),
                           bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m,
                           placement=req.placement, rigged=bool(attrs.get("rigged")),
-                          humanoid=humanoid, humanoid_axes=axes)
+                          humanoid=attrs.get("humanoid"), humanoid_axes=attrs.get("humanoid_axes"))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
@@ -3809,6 +3829,27 @@ async def delete_asset(req: DeleteAssetRequest) -> dict:
     """Remove an asset from the catalog (row + aliases/relations/vector; bytes kept). Scope-checked."""
     ok, err = library.delete(req.id, scope=req.scope)
     return {"ok": True, "id": req.id} if ok else {"ok": False, "error": err}
+
+
+class RefreshModelsRequest(BaseModel):
+    force: bool = False              # re-extract even rows already stamped at the current revision
+
+
+@app.post("/library/refresh-models")
+async def library_refresh_models(req: RefreshModelsRequest) -> dict:
+    """Re-derive every model row's attributes from its bytes — the batch form of what placement does one
+    model at a time. Use after a build that changes what extraction knows (a new inference rule, joint
+    limits) so the whole library catches up at once instead of a figure at a time."""
+    rows = library.search(kind="model", limit=10000, scope=_caller_scope.get())
+    changed = []
+    for row in rows:
+        before = json.loads(row["attributes"] or "{}")
+        after = _refresh_model_attrs(row["id"], before, force=req.force)
+        if after is not before and after != before:
+            changed.append({"id": row["id"], "label": row["label"],
+                            "rigged": bool(after.get("rigged")),
+                            "bones": len(after.get("humanoid") or {})})
+    return {"ok": True, "checked": len(rows), "updated": changed}
 
 
 class RetagSkyboxesRequest(BaseModel):

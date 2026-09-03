@@ -961,6 +961,9 @@ when present we have simply been handed the answer. Then Mixamo (`mixamorig:Hips
 **Measured hit rate on the samples: two of four.** Rigify catches Eve, Daz Genesis catches Grace; the two
 DOA ports match nothing. Worth building — it is a lookup table — but it is the cheap win, not the plan.
 
+Still not built, and now with a case waiting: a Mixamo-named character in the dev library that layer 2
+cannot infer because its bind pose has the arms down (see *Ingest paths that disagree*).
+
 ### 2 — Topology and geometry (free, needs no names)
 
 A humanoid skeleton has an unmistakable graph shape: one root; a chain rising to a leaf at the top
@@ -1242,6 +1245,31 @@ Two things this cost, both worth recording because both were invisible until the
 Also: **aim the limb, not every bone in it.** The tool description now says so outright, since aiming
 both bones of an arm is what produced the fold. That is the third description change made to steer the
 director, and — still — nothing measures whether any of them worked. See slice 2.
+
+### Ingest paths that disagree about how hard they look (2026-09-03d)
+
+Three rigged characters sat in the catalog as **props** — `Animated Woman` twice (41 and 62 joints) and
+`Steve` (32). Not a figures bug: they arrived through the **Poly Pizza fetch path**, which recorded a
+triangle count and a bounding box and never looked at the skeleton. So they were normalized to 1.8 m
+instead of kept at life size, unmarked in search, and unposable.
+
+That is the same shape as the catalog-revision finding earlier the same day — two paths into the library
+that know different amounts about a file — so the fix goes in the **one write-through they share**
+(`_catalog_asset`): any model catalogued without extraction gets extracted there, once, whatever fetched
+it. Plus `ctl refresh-models`, the batch form of what placement already does one model at a time, for
+after a build that changes what extraction knows.
+
+**And the interesting half: inference refused all three, correctly.** It produced obvious nonsense —
+`leftFoot` and `leftLowerLeg` both on `RightToeBase` — and `validate()` threw it out, which is the
+validator doing exactly its job. The cause is layer 2's stated weakness, met for the first time in the
+wild: these characters are bound with their **arms at their sides**, so the hands are no wider than the
+feet (±0.69 against ±0.61) and "the widest joints are the hands" collapses. Every sample so far had been
+T- or A-posed.
+
+> **`Animated Woman` is bone-for-bone Mixamo** — `Hips`, `Spine`, `LeftArm`, `LeftForeArm`, `LeftHand`.
+> [Layer 1](#1--known-conventions-free-exact), the convention table, has never been built, and it would
+> map that model exactly and for free. Two of the three would probably still need layer 2 or 3, but the
+> cheapest layer in the pipeline is now the one with a concrete case waiting for it.
 
 ## Aiming, evaluation and named poses
 

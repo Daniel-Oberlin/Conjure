@@ -4087,6 +4087,36 @@ def _catalog_skeleton(client):
     return r["results"][0]["id"]
 
 
+def test_a_fetched_model_is_examined_as_closely_as_an_imported_one(srv, client, tmp_path):
+    """Three rigged characters sat in the dev catalog as PROPS — normalized to 1.8 m and unposable —
+    because the Poly Pizza path recorded a triangle count and never looked at the skeleton. Two ingest
+    paths that disagree about how hard they look at a file is now the same bug twice, so the look
+    happens in the one write-through they share."""
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    (tmp_path / f"{ASSET_RECORD.hash}.glb").write_bytes(_skeleton_glb())   # the fetch lands real bytes
+    r = client.post("/place_asset", json={"query": "a woman", "size_m": 2}).json()
+    assert r["ok"] is True
+    attrs = json.loads(srv.library.get(f"{ASSET_RECORD.hash}.glb")["attributes"])
+    assert attrs["rigged"] is True, "a skeleton in the file must reach the catalog"
+    assert attrs["humanoid"]["leftUpperArm"] == "l_upperarm"
+    assert attrs["humanoid_axes"]["leftUpperArm"]["limits"]
+
+
+def test_refresh_models_brings_the_whole_library_up_to_the_current_build(srv, client, tmp_path):
+    """The batch form of what placement does one model at a time — for after a build that changes what
+    extraction knows, so the library catches up at once rather than a figure at a time."""
+    aid = _catalog_skeleton(client)
+    srv.library.upsert(aid, attributes={"humanoid": {}, "humanoid_axes": {}, "rigged": None,
+                                        "frame_rev": 0})
+    out = client.post("/library/refresh-models", json={}).json()
+    assert out["ok"] is True and out["checked"] >= 1
+    assert [u["bones"] for u in out["updated"] if u["id"] == aid] == [21]
+    assert json.loads(srv.library.get(aid)["attributes"])["frame_rev"] == srv.FRAME_REV
+    # Idempotent: a second run finds nothing to do, because the stamp says so.
+    assert client.post("/library/refresh-models", json={}).json()["updated"] == []
+    assert client.post("/library/refresh-models", json={"force": True}).json()["updated"] == []
+
+
 def test_a_figure_catalogued_before_inference_existed_gains_a_map_when_placed(srv, client, tmp_path):
     aid = _catalog_skeleton(client)
     srv.library.upsert(aid, attributes={"humanoid": {}, "humanoid_axes": {}, "frame_rev": 0})
