@@ -1602,6 +1602,25 @@ reads all zeros** until it is decoded, which made a pixel test quietly answer "f
 texture in the file. Sample a 64px `img.copy()` instead — reading a 4K buffer into Python is half a
 gigabyte.
 
+**The pelvic patch is a third fault, and not swappable content** (checked 2026-09-03, on the hypothesis
+that these are alternates you have to pick between). On both models the genital materials sit **on the
+main body mesh**, not on an alternate object with a visibility flag — there is nothing to select:
+
+```
+Trish   Genitalia-1, Anus-2    images: Lara_Torso_B.jpg, Lara_Torso_S.jpg, Puspa 1002 NM.jpg
+                               ...i.e. the torso's bump, spec and normal, and NO colour map
+Grace   GENS---torso, .Anus    images: none at all
+```
+
+In Daz a genital geograft samples the TORSO's diffuse; these ports never assigned one, so the material
+reaches the exporter with no base colour, the bake gives black, and the fallback fills it with grey.
+
+That suggests a third rung, and a measured one rather than a named one: **a material with no colour image
+of its own can borrow from a material on the same mesh that shares its OTHER maps.** Trish's genitalia
+share all three of the torso's non-colour maps exactly, which is proof they are one texture set — no name
+matching needed. Grace has nothing to compare, so she would need the weaker fallback of "the dominant
+colour image on this mesh", which for a body mesh is the torso map. Not built.
+
 **Two ways forward, neither taken:**
 
 1. **Name affinity within the material.** `BODY---legs` sits beside `BODY---legs.S.jpg` and
