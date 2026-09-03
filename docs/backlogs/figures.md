@@ -1537,6 +1537,81 @@ Two more bugs found on the way, both the same kind of assumption:
   armatures sit at **scale 100**, so the inverse was wrong by ten thousand and the render came out blank.
   A general affine inverse, and the local transform written as a `matrix` rather than TRS.
 
+### Two new models, and what each one broke (2026-09-03i)
+
+`Trish_model.blend` (Genesis 8, 155 MB → 30 MB in 48 s) and `DOA_-_Tamaki.blend` (293 MB → 14 MB in
+30 s). Recipes, since the `--collections` argument is the one manual input:
+
+```
+Trish   --collections "Genesis 8 Female Meshes,Suit"     # dressed;  body only: drop ",Suit"
+Tamaki  --collections "Kasumi,Collection 2"              # the rig is named Kasumi_rig; 232 widgets dropped
+```
+
+**Trish mapped to nothing at first, for two reasons**, both now fixed and both general:
+
+- She ships a **679-joint hair-and-cloth rig beside her 362-joint body rig**, and inference took "the
+  skin with the most joints" as the body — putting her elbow and knee on the same strand of hair. That
+  is [open question 12](#open-questions), and the answer is that there is no heuristic: `best_humanoid`
+  tries each skin, likeliest first, and keeps the one whose skeleton VALIDATES as a humanoid. Vertex
+  count is no better than joint count — her single hair mesh outweighs her body and all her clothes.
+- Her bones are named exactly as Grace's and Yuffie's are, because that is what OUR conversion emits, so
+  layer 1 gained a `rigify-fk` row. It also fixed a defect that had been open since Phase 2: all three
+  now map `leftHand` to `hand.fk.L` rather than to the FINGERTIP shape inference kept choosing.
+
+**Tamaki imports, displays, and cannot be posed**, honestly. She is a stock modern Rigify rig, so the row
+learned the second spelling (`upper_arm_fk.L`), her map validated clean — and posing her did nothing,
+because her FK controls have a **deform reach of zero**. Her DEF bones are linked to them by constraints
+glTF drops, and this conversion did not rebuild that hierarchy the way it does for the Daz ports. The
+validator now catches exactly this (a mapped limb bone must move some geometry), so she reports no usable
+map rather than accepting poses and ignoring them.
+
+> **Making Tamaki posable is conversion-side work**: find why `blend_to_glb`'s constraint-graph rebuild
+> fires for Grace and Trish and not for her. Hitomi and Leifang are the same DOA family and probably sit
+> behind the same fix.
+
+### The materials that are still wrong, and why (2026-09-03j)
+
+The colour-image rule fixed Trish outright (13 unresolved materials → 3). It did **not** fix two others,
+and the reason is worth recording because it is a different fault wearing the same face:
+
+| | material | texture the exporter chose | mean |
+|---|---|---|---|
+| Grace | `BODY---legs` | `feet pressed fix5 clip` | **0.98** — a white clip mask |
+| Yuffie | `Body-1.002`, `Torso`, `Head` | `TextureBakeMask` | **0.05** |
+| Yuffie | `Legs-1.002` | `Sole_Blusher` | **0.11** |
+
+These materials **do** export a base colour; the exporter simply reached a MASK first. So they never
+enter the unresolved set, and the colour-space rule cannot rescue them either: `BODY---legs` carries
+**17 distinct sRGB images** (sweat, dirt, condensation, skin detail) and Yuffie's torso 12. There is no
+unique answer to pick.
+
+Two detections were tried and **both rejected**:
+
+- **Flatness.** Does not separate them: the white clip mask has soft edges (variance 0.013) while
+  Grace's perfectly good eyebrow texture is nearly uniform (0.002). It would flag the good one and miss
+  the bad.
+- **Brightness.** Detects correctly — 0.98 and 0.05 against 0.26–0.64 for every real diffuse measured —
+  but routing the flagged materials to the bake fixes nothing, because those bakes come out black (9 of
+  9 on Yuffie). White becomes grey; black stays black. And it would flag genuinely dark or light
+  materials, so Grace's black leather trousers (~0.05) would bake, fail, and turn grey — a regression on
+  a conversion that currently works. Reverted for no measured gain.
+
+Also learned, both of which cost a cycle: **the exporter strips the extension** from image names
+(`feet pressed fix5 clip` for a datablock called `…clip.png`), and **`img.pixels` on a file-backed image
+reads all zeros** until it is decoded, which made a pixel test quietly answer "flat black" for every
+texture in the file. Sample a 64px `img.copy()` instead — reading a 4K buffer into Python is half a
+gigabyte.
+
+**Two ways forward, neither taken:**
+
+1. **Name affinity within the material.** `BODY---legs` sits beside `BODY---legs.S.jpg` and
+   `BODY---legs__sweat.B.jpg` — the material's own stem appears in its images, so preferring the sRGB
+   image that shares it would likely land correctly. A name heuristic, which this document avoids on
+   principle, but a WITHIN-material correspondence rather than a cross-rig convention, which is a much
+   safer kind. Half an hour to try.
+2. **Fix it at source** — one texture assignment per material in the `.blend`. Two models, ten minutes
+   each in Blender, permanently correct, and it teaches nothing.
+
 ## Aiming, evaluation and named poses
 
 The three slices the 2026-09-03 device run calls for, in order. Designed here before any of it is built,
@@ -1901,27 +1976,33 @@ than protects:
 
 State to be aware of when resuming:
 
-- Grace and Yuffie in the world are the **body-only** exports (no clothing). That was for joint
-  diagnosis; re-adding clothing is a `--collections` change, see the recipes above. This now blocks
-  slice 2 as well, if a hosted vision model declines to judge an undressed render.
-- Yuffie's boots, shoulder guard, eyes and eyebrows render flat grey — 22 of her 26 baked materials fail,
-  and the neutral fallback papers over it. Recorded under the black-bake limitation, not chased.
-- `leftHand` resolves to a fingertip on the re-parented Daz rigs, so a hand rotation hinges in the wrong
-  place there (Saka is correct). Arms and legs were the reported problem and are fixed; the hand was
-  deliberately not chased after the head rule showed what iterating on a secondary defect costs. It is
-  the obvious first catch for slice 2's per-bone battery.
-- `validate()` checks the bone MAP and knows nothing about the axes, and nothing at all checks the
-  utterance layer. Those are slice 2's two jobs, in that order of difficulty.
-- A figure's map and frame are re-measured on the next placement whenever the catalog's are stamped
-  older than `figures.FRAME_REV` — so a fix reaches the library without re-importing, but an entity
-  ALREADY in a world keeps whatever it was placed with. Re-place it.
-- The dev library holds six Graces and five Yuffies from different eras of this code. They all work now,
-  but `grace_c` / `yuffie_c` (body-only, ~73 k and ~57 k tris) are the current conversions and the
-  cheapest; `saka` is the VRM control. The rest are worth deleting when convenient.
-- The anatomical frame and `aim` are on `feat/figures-anatomical-pose`, branched from `main`, not merged.
-- Aiming is refused for the trunk (`hips`, `spine`, `chest`, `upperChest`, `neck`, `head`) and for a
-  bone whose frame was measured before aiming existed — the latter re-measures itself on the next
-  placement, so it is a "place it again", not a re-import.
+**The library** (after the 2026-09-03 work; `ctl refresh-models` after any restart, `FRAME_REV` is 9):
+
+| figure | source | map | notes |
+|---|---|---|---|
+| Grace | Daz Genesis 8 | `convention:rigify-fk`, 21 | body-only in the catalog; **legs and pelvis pale** (below) |
+| Yuffie | Daz Genesis 8.1 | `convention:rigify-fk`, 21 | **torso black**; arms and face correct after the colour fix |
+| Trish | Daz Genesis 8 | `convention:rigify-fk`, 21 | materials fully correct; hands ride `hand.fk` |
+| Saka | VRoid | `vrm`, 54 | the control — clean through every stage |
+| Animated Woman ×2, Steve | asset packs | `convention:mixamo` / `dot-side` | clothed, 2–3 k tris, **ship 10–24 clips each** |
+| Tamaki | DOA / Rigify | none | validates as inert; needs the conversion rebuild |
+
+Converted files not yet imported live at `/tmp/`: `trish_nude.glb` (fixed skin),
+`yuffie_nude.glb` (arms/face fixed), plus the dressed `grace2/yuffie2/trish2.glb`. Grace's body-only
+export is byte-identical to the `c8421e03…` already catalogued — the colour fix changed nothing for her.
+
+**Known defects, in the order I would take them:**
+
+- **Grace's legs, Yuffie's torso** — the exporter picks a mask as base colour; see § *The materials that
+  are still wrong*. Two candidate fixes recorded there.
+- **Tamaki cannot be posed** — the constraint-graph rebuild does not fire on her rig; likely unblocks
+  Hitomi and Leifang too.
+- **`leftHand` on a Daz rig** now resolves to `hand.fk.L` via layer 1, so the old fingertip defect is
+  gone — but rigs that fall through to layer 2 can still hit it.
+- **`validate()` checks the bone map, the axes and now deform reach. Nothing checks the utterance
+  layer** — that is the eval harness, still the next slice.
+- Figures already placed in a world hold the meta they were placed with. Re-place after any refresh.
+- The anatomical-pose work and the void-frame branch are both merged to `main` and pushed.
 
 ## Phasing
 
