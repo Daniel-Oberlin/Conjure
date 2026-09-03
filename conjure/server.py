@@ -1426,6 +1426,7 @@ async def index() -> HTMLResponse:
     rflag = "true" if settings.debug_registration else "false"
     jflag = "true" if settings.debug_jitter else "false"   # jitter probes only (clean, no registration diag)
     gflag = "true" if settings.geometry_log else "false"   # always-on, change-gated geometry event log
+    soflag = "true" if settings.debug_surface_overlay else "false"   # seed/device wireframe overlay (opt-in)
     # Co-location robustness knobs (two-headset guest tuning) — read by RoomSnap.register/selectSpace and the
     # capture throttle in conjure-client.js. Omitting a field falls back to the client's built-in default.
     reg = (f"{{minCov:{settings.reg_min_cov},minCovFrac:{settings.reg_min_cov_frac},"
@@ -1446,6 +1447,8 @@ async def index() -> HTMLResponse:
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
                         f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_DEBUG_JITTER={jflag};"
                         f"window.CONJURE_GEOMETRY_LOG={gflag};"
+                        f"window.CONJURE_DEBUG_SURFACE_OVERLAY={soflag};"
+                        f'window.CONJURE_VOID_ORIGIN="{settings.void_origin}";' 
                         f"window.CONJURE_FORCE_GEO={fg};"
                         f"window.CONJURE_DROP_SURFACE={ds};"
                         f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};"

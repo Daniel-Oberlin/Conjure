@@ -74,6 +74,14 @@
   // patience is a deadlock escape, not a tuning knob — see the LOAD GATE.
   var LOAD_FRAC = 0.6, LOAD_PATIENCE = 15;
 
+  // The VOID-world sibling (WM.voidFrameGate). Same 0.6 fraction, but a shorter patience and an absolute
+  // wall floor. Patience is shorter because a void world holds the PREVIOUS frame while it waits — content
+  // sits displaced, which is worse to sit in than the captured-space case (which shows honest passthrough)
+  // — and 8 captures is already ~14 s. minWalls=6 comes from the measurement: at 4 of 30 verticals the
+  // golden room's frame was 180° out, at 16 it was right, and 6 is the floor below which no amount of
+  // apparent stability should be believed.
+  var VOID_GATE = { frac: 0.6, minWalls: 6, patience: 8 };
+
   // Compact wire form for the geometry worker (fix/pops-and-jitters): send only the fields RoomSnap.register
   // reads, as plain numbers, so a capture's planes + reference constellation cross to the worker in a few KB.
   function serCur(c) { var p = c.pos; return { p: [p.x, p.y, p.z], nyaw: c.nyaw, sem: c.sem, orient: c.orient, ext: [c.ext[0], c.ext[1]] }; }
@@ -1588,6 +1596,8 @@
         this._levelAlarm = {};      // surface id → 1 while its height deviation is being reported (edge-only)
         this._churnRing = [];       // recent churn events, replayed into a [mark] dump for context
         this._loading = 0;          // consecutive captures held by the LOAD GATE (0 = not holding)
+        this._voidFrame = null;     // ESTABLISHED canonical frame for a void world; null = derive one
+        this._voidGate = WM.voidGateInit();   // its gate's state (session memory of how big the room is)
         // --- JITTER PROBES (branch fix/pops-and-jitters) ------------------------------------------------
         // Diagnose the ~cm "flick out and back" seen while WALKING (not while standing + looking around).
         // Leading hypothesis: the ~0.5 Hz capture frame is heavy → a dropped frame → the compositor
@@ -1661,7 +1671,17 @@
         // relocalizes the whole tracking frame (spec §4.1, ~167° + ~3 m), which is precisely the event that
         // can re-fit a floor plane or break a wall's identity. Without this line the churn and the cause
         // land in the file with nothing connecting them.
-        this._onReset = function () { self.lastPost = 0; geoLog("track.reset", {}); };
+        // A recenter re-origins refSpace, so any frame derived in the OLD one is stale by the recenter
+        // delta. For a captured space that self-heals (every surface re-poses from the new refSpace and
+        // world-root is identity), but a void world's whole scene hangs off the derived frame, so the
+        // established frame must be dropped and re-established — gated, since `lastPost = 0` makes the very
+        // next frame capture and that is when the plane set is least likely to be complete.
+        this._onReset = function () {
+          self.lastPost = 0;
+          self._voidFrame = null;                       // re-establish in the NEW refSpace
+          self._voidGate.prev = 0; self._voidGate.held = 0;   // fresh attempt; keep max/everGo (same room)
+          geoLog("track.reset", {});
+        };
       },
       // Force an immediate re-capture (manual realign — see the /space/realign signal below).
       recapture: function () { this.lastPost = 0; },
@@ -1680,6 +1700,10 @@
         this._miss = {}; this._everClaimed = {}; this._wasStyled = {};
         this._lastLevel = null; this._levelAlarm = {}; this._census = null; this._censusFloors = null;
         this._churnRing = []; this._loading = 0;
+        // The void frame AND the gate's session memory: a world switch may be a switch to a different
+        // physical room, so how many walls the last room had is no longer an expectation (unlike a
+        // recenter, where the room provably did not change).
+        this._voidFrame = null; this._voidGate = WM.voidGateInit();
       },
       // Has surface `k` (a fresh record) changed STRUCTURALLY vs `p` (its last-posted snapshot)? Mirrors the
       // server's _surface_structural_change (0.5 m / 20° / opening-count / semantic) so the client only POSTs
@@ -2479,6 +2503,7 @@
         pumpGeo();                                           // EVERY frame: drain a few deferred mesh rebuilds (time-sliced)
         slewPoses((timeDelta || 0) / 1000);                  // EVERY frame: ease surfaces/content toward their targets (pose-smoothing; no-op when disabled)
         this._markProbe(frame, refSpace, sceneEl);           // EVERY frame: rising edge of the `mark` control (see _markProbe)
+        if (window.SurfaceOverlay) window.SurfaceOverlay.poll(sceneEl);   // EVERY frame: rising edge of `surfaces` (layer cycle)
         // Apply the configured foveated-rendering level once the XR session exists — OVERRIDES index.html's
         // hardcoded foveationLevel (docs: GPU-bound dropped frames while walking). Higher = periphery drawn
         // at lower resolution = less GPU (fewer drops) at the cost of peripheral sharpness/moiré; 0 = full-res
@@ -2555,6 +2580,13 @@
         if (!cur.length) return;
         if (JIT) this._jMark("passA");                      // read all detectedPlanes → cur
 
+        // Surface debug overlay (--debug-surface-overlay): draw the device's polygons and the rectangles we
+        // derive from them, both in F_track. Hooked HERE, before the trust and load gates, deliberately —
+        // both of those hold the render and return, and a held room is exactly when you most want to see
+        // what the device is actually reporting. The cost is that these planes are ANONYMOUS at this point:
+        // identity is assigned in Pass B, so the overlay has `semanticLabel` but no friendly id.
+        if (window.SurfaceOverlay) window.SurfaceOverlay.setDevice(THREE, cur);
+
         // Fragmentation probe (--debug-registration): how many detected planes carry each semantic THIS
         // capture, and how many spatial CLUSTERS they form (planes within 0.25 m are one physical thing).
         // "wall art=9/3cl" ⇒ 9 planes but only 3 real pictures = the Quest emits ~3 planes per picture
@@ -2588,6 +2620,38 @@
             });
             debugLog("normals", Object.keys(dir).sort().map(function (sem) {
               return sem + "=" + dir[sem].out + "out/" + dir[sem].in + "in"; }).join("  "), true);
+          }
+
+          // AABB-FIT probe: does the rectangle we derive above actually describe the polygon the device
+          // reported? Pass A keeps only the polygon's two spans and throws the polygon away, so the whole
+          // system downstream — the local render, the posted seed, registration, every anchor — is built on
+          // that rectangle, and a lossy reduction is invisible precisely because it is applied
+          // consistently. Two numbers, two different faults (RoomSnap.polyFit holds the reasoning):
+          //   off  — distance from the AABB's own centre to the plane's pose origin. The rect takes the
+          //          AABB's DIMENSIONS but is centred on the origin, so a non-zero off displaces every
+          //          rendered surface by exactly that much. Expected ~0; never checked until now.
+          //   fill — polygon area / box area. 1.0 = a true rectangle; below 1 = an L-shaped or angled wall
+          //          drawn as its bounding box, i.e. surface rendered and posted where there is none.
+          // ONE line per capture, not one per plane: debugLog does a fetch per line, which is the mistake
+          // the jitter campaign already paid for once (§9/§10).
+          var offMax = 0, offSem = "", offSum = 0, offN = 0, offBig = 0, fillMin = 1, fillSem = "", verts = {};
+          cur.forEach(function (c) {
+            var f = window.RoomSnap.polyFit(c.poly);
+            if (!f) return;
+            offN++; offSum += f.off;
+            if (f.off > offMax) { offMax = f.off; offSem = c.sem; }
+            if (f.off > 0.001) offBig++;
+            if (f.fill < fillMin) { fillMin = f.fill; fillSem = c.sem; }
+            verts[f.n] = (verts[f.n] || 0) + 1;
+          });
+          if (offN) {
+            debugLog("aabb", "n=" + offN
+              + " off_max=" + offMax.toFixed(3) + "m(" + offSem + ")"
+              + " off_mu=" + (offSum / offN).toFixed(3) + "m"
+              + " off>1mm=" + offBig + "/" + offN
+              + " fill_min=" + fillMin.toFixed(2) + (fillMin < 0.999 ? "(" + fillSem + ")" : "")
+              + " verts=" + Object.keys(verts).sort(function (a, b) { return +a - +b; })
+                  .map(function (k) { return k + "x" + verts[k]; }).join(","), true);
           }
         }
 
@@ -2726,13 +2790,55 @@
         // canonicalizes identically. Hold if there aren't enough walls yet.
         if (isVoidWorld) {
           this._localPlanes = null;   // void world: no shared seed walls → avatars fall back to the F_ref pose
-          var cf = window.RoomSnap.canonicalFrame(THREE, cur);
-          this._regStat = cf.stat;
+          if (window.SurfaceOverlay) window.SurfaceOverlay.clearSeed();   // no seed here to compare against
+
+          // ESTABLISH ONCE, THEN HOLD — do not re-derive the frame every capture.
+          //
+          // The frame is a function of the walls, and the walls do not move within a session
+          // (`detectedPlanes` is the persisted Room Setup), so re-deriving it every 2 s buys nothing and
+          // costs everything: each derivation is a fresh chance to pick a different largest wall or a
+          // different centroid, and a void world has no passthrough walls to contradict it. Measured on
+          // the golden room, a capture holding 3–12 of 30 verticals flips theta by 180° and moves content
+          // 4.5–5.1 m. Held, the frame simply cannot drift.
+          //
+          // A recenter (Meta button) is the one thing that MUST invalidate it: the reset re-origins
+          // refSpace, so a held Tmat is stale by the recenter delta and content would sit wrong
+          // permanently. `_onReset` clears `_voidFrame`, and the gate then decides when the fresh capture
+          // is good enough to establish from — which is the whole fix, because `_onReset` also forces a
+          // capture on the very NEXT frame, i.e. at the worst possible moment for plane completeness.
+          var vWalls = 0;
+          cur.forEach(function (c) { if (c.orient === "vertical") vWalls++; });
+          if (!this._voidFrame) {
+            var vg = WM.voidFrameGate(vWalls, this._voidGate, VOID_GATE);
+            this._voidGate = WM.voidGateAdvance(this._voidGate, vWalls, vg);
+            if (vg === "hold") {
+              this._regStat = "void-loading " + vWalls + "/" + (this._voidGate.max || "?");
+              if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, null);
+              // Deliberately NOT _markLost when we still have a frame to hold. The relocalizing fallback
+              // reveals passthrough, whose remedy ("step out of the play area") applies to a wrong ROOM;
+              // in a void world it would show you your real room instead of the void for the 1.2 s grace
+              // while we simply wait for planes. With no frame at all there IS nothing to show, so the
+              // original behaviour stands.
+              if (!this._haveT) this._markLost(time);
+              this.lastPost = time - RETRY_MS; return;
+            }
+            var cf = window.RoomSnap.canonicalFrame(THREE, cur, { origin: window.CONJURE_VOID_ORIGIN });
+            if (!cf.Tmat) {                                   // fewer than 2 walls → no frame to derive
+              this._regStat = cf.stat;
+              if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, null);
+              this._markLost(time); this.lastPost = time - RETRY_MS; return;
+            }
+            this._voidFrame = cf;
+            geoLog("void.establish", { walls: vWalls, held: this._voidGate.held, stat: cf.stat,
+                                       forced: vg === "forced" || undefined });
+            debugLog("void", "canonical frame established from " + vWalls + " walls — " + cf.stat
+              + (vg === "forced" ? " (FORCED — room may have shrunk)" : ""), true);
+          }
+          this._regStat = this._voidFrame.stat;
           this._regRes = null;   // canonicalFrame doesn't register against a reference → no residuals
-          if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, cf.Tmat);
-          if (!cf.Tmat) { this._markLost(time); this.lastPost = time - RETRY_MS; return; }   // too few walls → hold
+          if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, this._voidFrame.Tmat);
           this._markLocked(time);
-          this._Tmat = cf.Tmat; this._haveT = true; this._anchorInv = cf.Tmat;
+          this._Tmat = this._voidFrame.Tmat; this._haveT = true; this._anchorInv = this._voidFrame.Tmat;
           this.lastPost = time;
           return;
         }
@@ -2754,6 +2860,20 @@
         if (reg) { Tmat = this._Tmat = reg; this._haveT = true; }
         else { Tmat = this._anchorInv || new THREE.Matrix4(); this._Tmat = Tmat; this._haveT = true; }  // establish fresh
         this._anchorInv = Tmat;
+        // Surface debug overlay: the SEED layer, carried into F_track by Tmat⁻¹ on its container — the one
+        // and only transform in the comparison (see surface-overlay.js, frame rule 2). `registered` says
+        // whether this capture actually locked; a HELD frame still draws, flagged stale, because after a
+        // boundary flip the seed sits ~167° off and that is real information rather than a fault. The HUD
+        // carries the registration status and residual summary for the same reason: §1's non-rigidity means
+        // a gap read without them is uninterpretable.
+        if (window.SurfaceOverlay && window.SurfaceOverlay.armed()) {
+          window.SurfaceOverlay.setSeed(THREE, docSurfaces, Tmat, registered);
+          var oRes = this._regRes || [], oSum = 0, oMax = 0;
+          oRes.forEach(function (w) { oSum += w.res; if (w.res > oMax) oMax = w.res; });
+          window.SurfaceOverlay.hud((this._regStat || "?") + (registered ? " LOCK" : " hold")
+            + (oRes.length ? "  res mu=" + Math.round(oSum / oRes.length * 100)
+                             + "cm max=" + Math.round(oMax * 100) + "cm" : ""));
+        }
         if (JIT) this._jMark("applyReg");                   // on-main apply begins (register itself is off-thread)
         // Pass B — assign each plane a STABLE id via matchRef, and build TWO views of it: `localSurfaces`
         // (its raw F_track pose — what we RENDER, matching THIS headset's passthrough) and `surfaces` (the

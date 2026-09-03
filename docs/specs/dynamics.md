@@ -271,12 +271,19 @@ module asks "is `resize` active?" and never names a button.
 | `stickX` / `stickY` | axes 2 / 3 |
 
 **Bindings** map control → action. They are config (`Settings.bindings`, injected as
-`window.CONJURE_BINDINGS`), never hard-coded in a module. Defaults (`config.py:339`):
+`window.CONJURE_BINDINGS`), never hard-coded in a module. Defaults (`config.py` `DEFAULT_BINDINGS`, a
+single constant that both the dataclass default and `get_settings()` read — they used to carry the literal
+separately, and adding an action to one left the running server serving the old scheme):
 
 ```json
 {"select": "trigger", "grab": "grip", "resize": "trigger", "reel": "right.stickY",
- "yaw": "right.stickX", "pitch": "left.stickY", "bank": "left.stickX"}
+ "yaw": "right.stickX", "pitch": "left.stickY", "bank": "left.stickX",
+ "mark": "b", "surfaces": "a"}
 ```
+
+The last two are diagnostics rather than interaction: `mark` writes the geometry ground-truth probe
+([`spaces-geometry.md` §10.3](./spaces-geometry.md)) and `surfaces` cycles the surface debug overlay's
+layers (§11 there).
 
 A control may be **hand-qualified** (`"left.stickY"`), so one hand can hold an object while the other
 shapes it. Re-binding is a config change, not an edit in every module.

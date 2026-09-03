@@ -1,10 +1,22 @@
 > **Private notes from your human collaborator — LLMs disregard.**
 
-# Bugs
-- shell: we are inconsistent when showing names vs. slugs in the shell, for example, the worlds command shows the space of a world as the slug, but spaces shows the names of the spaces without the slugs.  IMO, slugs should be hidden from the user, only the names which can be changed should be shown - these should also be in the paths which are shown and navigated.  If someone needs to know the actual filename/path of a world, session, space, etc., there should be a file directive or command or something that makes the disk file visible.  Otherwise, it should be all names.
-- fix floating floors feature - default on
-
 # Move this file underneath config-conjure
+
+# Bugs
+  - Surfaces
+    - Still see occasional disappearance of some surfaces
+    - The bedroom floor is occasionally elevated for periods of time
+      - This is a quest thing!  How to compensate for it?
+    - Add a debug capability for seeing the quest surfaces
+  - Pressing home in void world gives unexpected behavior
+  - Should grab be able to orient with sticks without holding grab button (which moves also)?
+
+# CLI and Shell
+  - shell: we are inconsistent when showing names vs. slugs in the shell, for example, the worlds command shows the space of a world as the slug, but spaces shows the names of the spaces without the slugs.  IMO, slugs should be hidden from the user, only the names which can be changed should be shown - these should also be in the paths which are shown and navigated.  If someone needs to know the actual filename/path of a world, session, space, etc., there should be a file directive or command or something that makes the disk file visible.  Otherwise, it should be all names.
+  - Set variables with shell
+    - General rework of variable scoping
+      - Settable via command-line, env, shell
+      - Scope: user, session, world?
 
 # Big ideas
 - Separation of concerns architecturally
@@ -15,29 +27,19 @@
 - Allow for Claude Code to "inhabit" Conjure
   - Tooling and awareness to allow devloping dynamic and server modules using repos
 
-# Quick improvements
-- Grab tool option: rotate and move void world (floor locked)
-- Grab tool option: rotate and scale skybox
-- LLM routing - tool scoping to different LLMs
-
-# LLM consensus
-- Post same thing to all LLMs, record anwsers
-- Have each LLM evaluate best response
-- Look at distribution
-
-# Surfaces
-- Still see occasional disappearance of some surfaces
-- The bedroom floor is occasionally elevated for periods of time
-
-# CLI and Shell
-- Set variables with shell
-  - General rework of variable scoping
-    - Settable via command-line, env, shell
-    - Scope: user, session, world?
+# Architectural decoupling
+  - Can the agent server be formally separated from the world server so it could serve other purposes?
+    - Do we need a session mediator to decouple from the world server?
+  - VOX
+    - Decoupled from Conjure specifically; separate project, works with other projects too
+    - Different wake words for different connections
+      - Connections persist until terminated with another wake word "all set" or "we're done", etc.
+  - Can the world server operate separately with another app to facilitate shared experience?
 
 # Graphics
   - Lighting
-  - Water reflection lighting
+    - Water reflection lighting
+    - Torch flickering lighting
   - Panoramic photo
   - What does "mesh detection" look like? (see occlusion backlog)
   - Picture frames and groups of frames that can be repopulated
@@ -67,6 +69,14 @@
 - Decouppled from Conjure specifically; separate project, works with other projects too
 - Different wake words for different connections
   - Connections persist until terminated with another wake word "all set" or "we're done", etc.
+
+# Agent & Director
+- LLM routing - tool scoping to different LLMs
+
+# LLM consensus
+  - Post same thing to all LLMs, record anwsers
+  - Have each LLM evaluate best response
+  - Look at distribution
 
 # Web
   - Perform web requests

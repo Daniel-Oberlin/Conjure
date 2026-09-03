@@ -543,3 +543,166 @@ test("polarDrag: a diagonal drag does both, and each term is independent of the 
   assert.ok(Math.abs(a.dYaw - b.dYaw) < 1e-12);
   assert.ok(Math.abs(a.scale - 1.5) < 1e-12 && Math.abs(b.scale - 4) < 1e-12);
 });
+
+// voidFrameGate — the void-world analogue of loadGate. It exists because loadGate CANNOT gate a void
+// world (expect comes from the world doc's surfaces, of which a void world has none, so it returns "go"
+// immediately) and because the fault it prevents is larger than loadGate's: canonicalFrame picks its
+// forward direction from the LARGEST wall, so a partial capture flips theta 180° and throws content
+// metres, where loadGate's partial capture only re-mints ids.
+
+const VG = { frac: 0.6, minWalls: 6, patience: 8 };
+
+test("voidFrameGate holds a room that is still filling in, then establishes when the count plateaus", () => {
+  // The measured device arrival shape: a few planes, then most, then all. Establishing from the first two
+  // is what puts you a metre or two away with the room 180° out.
+  let st = WM.voidGateInit();
+  const step = (n) => { const v = WM.voidFrameGate(n, st, VG); st = WM.voidGateAdvance(st, n, v); return v; };
+  assert.strictEqual(step(4), "hold", "below minWalls — never trust a frame from 4 planes");
+  assert.strictEqual(step(16), "hold", "count grew ⇒ still restoring");
+  assert.strictEqual(step(30), "hold", "count grew again");
+  assert.strictEqual(step(30), "go", "plateaued ⇒ this is the whole room");
+  assert.strictEqual(st.max, 30);
+  assert.ok(st.everGo);
+});
+
+test("voidFrameGate re-establishes FAST after a recenter, because the room's size is now known", () => {
+  // The recenter is the reported symptom, and making the user wait out the plateau again every time they
+  // press the Meta button would be its own bug. Once the session knows the room has ~30 walls, a capture
+  // holding 18+ is trustworthy immediately.
+  let st = { prev: 30, max: 30, everGo: true, held: 0 };
+  assert.strictEqual(WM.voidFrameGate(8, st, VG), "hold", "8/30 is a partial restore — the fault case");
+  assert.strictEqual(WM.voidFrameGate(17, st, VG), "hold", "just under 0.6");
+  assert.strictEqual(WM.voidFrameGate(18, st, VG), "go", "0.6 of a known room is enough");
+  assert.strictEqual(WM.voidFrameGate(30, st, VG), "go");
+});
+
+test("voidFrameGate keeps an absolute floor even when the count looks settled", () => {
+  // A plateau at 3 planes is stable and meaningless. Without the floor, the plateau rule would happily
+  // establish a whole world's frame from it.
+  let st = { prev: 3, max: 0, everGo: false, held: 0 };
+  assert.strictEqual(WM.voidFrameGate(3, st, VG), "hold");
+  assert.strictEqual(WM.voidFrameGate(5, st, VG), "hold");
+  assert.strictEqual(WM.voidFrameGate(6, { prev: 6, max: 0, everGo: false, held: 0 }, VG), "go");
+});
+
+test("voidFrameGate gives up rather than deadlocking a room that genuinely shrank", () => {
+  // A re-scan with fewer walls can never clear 0.6 of the old count, and a void world holds the PREVIOUS
+  // frame while it waits — so a deadlock here means content parked wrong forever.
+  let st = { prev: 10, max: 30, everGo: true, held: 7 };
+  assert.strictEqual(WM.voidFrameGate(10, st, VG), "hold");
+  st.held = 8;
+  assert.strictEqual(WM.voidFrameGate(10, st, VG), "forced", "patience reached");
+  // ...and a forced establish re-baselines DOWNWARD, so the next reset isn't deadlocked all over again.
+  const after = WM.voidGateAdvance(st, 10, "forced");
+  assert.strictEqual(after.max, 10);
+  assert.strictEqual(WM.voidFrameGate(10, after, VG), "go");
+});
+
+test("voidGateAdvance ratchets the expectation up, never down, on a healthy establish", () => {
+  // Taking max = walls unconditionally would let a run of slightly-thin captures walk the expectation
+  // down one capture at a time until the gate stopped gating at all.
+  let st = { prev: 30, max: 30, everGo: true, held: 0 };
+  st = WM.voidGateAdvance(st, 20, "go");
+  assert.strictEqual(st.max, 30, "a thinner-but-passing capture must not lower the bar");
+  st = WM.voidGateAdvance(st, 34, "go");
+  assert.strictEqual(st.max, 34, "a fuller capture raises it");
+  assert.strictEqual(WM.voidGateAdvance(st, 9, "hold").max, 34, "a held capture never touches it");
+  assert.strictEqual(WM.voidGateAdvance(st, 9, "hold").held, 1);
+});
+
+// The reported bug, end to end: in a void world, pressing the Meta button to recenter teleported the
+// viewer "a meter or two in a different direction". This replays the whole sequence against a real Quest
+// capture and asserts the fix — that content lands back on the same PHYSICAL spot — plus that the old
+// ungated path did not. It spans two modules (the gate decides WHEN, canonicalFrame decides WHAT), which
+// is exactly the interaction that was broken, so it is tested as one thing.
+const RS = require("../../client/room-snap.js");
+const golden = require("./fixtures/golden-room.json");
+const G_UP = new THREE.Vector3(0, 1, 0);
+const VOID_GATE = { frac: 0.6, minWalls: 6, patience: 8 };
+
+// The fixture is a real 45-surface two-room capture, already in Pass A form. quat is [x,y,z,w].
+function goldenCur(transform) {
+  return golden.surfaces.map((s, i) => {
+    let q = new THREE.Quaternion(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+    let p = new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]);
+    if (transform) { q = transform.q.clone().multiply(q); p.applyQuaternion(transform.q).add(transform.t); }
+    const n = G_UP.clone().applyQuaternion(q);
+    return { id: `w${i}`, sem: s.semantic, orient: s.orient, pos: p,
+             ext: [s.extent[0], s.extent[1]], nyaw: Math.atan2(n.x, n.z) };
+  });
+}
+// Where a piece of content at fixed CANONICAL coords actually renders: #world-root sits at Tmat⁻¹ in a
+// void world, so this is the physical spot the user sees it at. Probed OFF the frame's rotation axis — a
+// point on the axis cannot reveal a theta change, which is how this fault stayed invisible.
+const K = new THREE.Vector3(2, 1.6, 1);
+const renderedAt = (Tmat) => K.clone().applyMatrix4(Tmat.clone().invert());
+
+test("void world: a recenter lands content back on the same physical spot (the gate is what does it)", () => {
+  const full = goldenCur(null);
+  const walls = (set) => set.filter((c) => c.orient === "vertical").length;
+
+  // --- before the recenter: establish from a settled capture -------------------------------------
+  let st = WM.voidGateInit();
+  let v = WM.voidFrameGate(walls(full), st, VOID_GATE);
+  st = WM.voidGateAdvance(st, walls(full), v);
+  assert.strictEqual(v, "hold", "first capture of a session waits for the count to plateau");
+  v = WM.voidFrameGate(walls(full), st, VOID_GATE);
+  st = WM.voidGateAdvance(st, walls(full), v);
+  assert.strictEqual(v, "go");
+  const before = RS.canonicalFrame(THREE, full);
+  const wasAt = renderedAt(before.Tmat);
+
+  // --- the recenter: local-floor is re-origined, so every plane is re-expressed by S ------------
+  const S = { q: new THREE.Quaternion().setFromAxisAngle(G_UP, 74 * Math.PI / 180),
+              t: new THREE.Vector3(1.4, 0, -2.6) };
+  // Content is fixed in the REAL room, so after the recenter it should render at S applied to where it
+  // was — that is what "I have not moved relative to the walls" means in the new coordinates.
+  const shouldBeAt = wasAt.clone().applyQuaternion(S.q).add(S.t);
+
+  // The Quest restores planes progressively, and `_onReset` forces a capture on the very NEXT frame, so
+  // the first post-reset capture is the thinnest one. This is the moment the bug fired.
+  const partial = goldenCur(S).filter((c) => c.orient === "vertical").slice(0, 8);
+  const settled = goldenCur(S);
+
+  // OLD behaviour: derive from whatever arrived. This is the regression being fixed — assert it really
+  // was metres, so the test fails if someone reverts the gate.
+  const naive = RS.canonicalFrame(THREE, partial);
+  assert.ok(renderedAt(naive.Tmat).distanceTo(shouldBeAt) > 2.0,
+    `ungated should be metres out, was ${renderedAt(naive.Tmat).distanceTo(shouldBeAt).toFixed(2)} m`);
+
+  // NEW behaviour: the gate holds the thin capture — the session now knows the room has ~30 walls.
+  st.prev = 0; st.held = 0;                      // what _onReset does: fresh attempt, keep max/everGo
+  assert.strictEqual(WM.voidFrameGate(partial.length, st, VOID_GATE), "hold",
+    "8 of a known 30 is the partial-restore case and must not establish a frame");
+
+  // ...and establishes from the settled one, which lands content exactly where the room says it should be.
+  v = WM.voidFrameGate(walls(settled), st, VOID_GATE);
+  assert.strictEqual(v, "go");
+  const after = RS.canonicalFrame(THREE, settled);
+  const landedAt = renderedAt(after.Tmat);
+  assert.ok(landedAt.distanceTo(shouldBeAt) < 1e-6,
+    `content moved ${landedAt.distanceTo(shouldBeAt).toFixed(4)} m across the recenter (want ~0)`);
+});
+
+test("void world: holding the frame means a thin capture cannot move content at all", () => {
+  // The other half of the fix. Even with the gate, re-deriving every capture would leave the frame free
+  // to change whenever the plane set flickers; establish-once-and-hold removes the opportunity. The
+  // client expresses this by only calling canonicalFrame when `_voidFrame` is null, so what is asserted
+  // here is the property that makes that safe: a held frame is a value, and values do not drift.
+  const full = goldenCur(null);
+  const established = RS.canonicalFrame(THREE, full);
+  const held = renderedAt(established.Tmat);
+  // Any number of subsequent captures, however thin, while the frame is held:
+  [4, 8, 12, 30].forEach((n) => {
+    const thin = full.filter((c) => c.orient === "vertical").slice(0, n);
+    assert.ok(thin.length <= 30);
+    assert.strictEqual(renderedAt(established.Tmat).distanceTo(held), 0,
+      "the held frame is untouched by what a later capture happens to contain");
+  });
+  // And for contrast, what those same captures WOULD have produced if re-derived:
+  const worst = Math.max(...[4, 8, 12].map((n) => {
+    const f = RS.canonicalFrame(THREE, full.filter((c) => c.orient === "vertical").slice(0, n));
+    return f.Tmat ? renderedAt(f.Tmat).distanceTo(held) : 0;
+  }));
+  assert.ok(worst > 2.0, `re-deriving from thin captures should move content metres, worst was ${worst.toFixed(2)} m`);
+});

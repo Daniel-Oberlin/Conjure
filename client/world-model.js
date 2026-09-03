@@ -422,6 +422,86 @@
     return held >= patience ? "forced" : "hold";
   }
 
+  /**
+   * @typedef {Object} VoidGateState
+   * @property {number} prev     vertical-plane count at the previous capture
+   * @property {number} max      count at the last successful establish (0 = never established)
+   * @property {boolean} everGo  has this session ever established a frame
+   * @property {number} held     consecutive captures already held by this gate
+   */
+
+  /**
+   * The void-world sibling of `loadGate`: is this capture complete enough to ESTABLISH the canonical frame
+   * from? `loadGate` cannot answer it — it derives `expect` from the world doc's surfaces and a void world
+   * has none, so `expect = 0` and it returns "go" immediately, which is why the protection built for
+   * surface-churn never applied here.
+   *
+   * The fault it prevents is bigger than the identity churn `loadGate` guards. `canonicalFrame` picks its
+   * forward direction as the grid direction nearest the LARGEST wall's normal, and on a partial capture a
+   * different wall is largest — measured on the golden room, every subset from 3 to 12 of 30 verticals
+   * flipped theta by 180°, displacing content 4.5–5.1 m at 2.2 m from the frame origin. The centroid shift
+   * (0.2–1.8 m) rides on top. At the full 30 both are exactly 0, so the whole fault is acting on a partial
+   * capture — which is what a Meta-button recenter causes, since the reset forces a capture on the very
+   * next frame.
+   *
+   * Two modes, because the right test depends on whether the session knows anything yet:
+   *
+   * - **Never established** — there is no expectation to compare against, so wait for the count to STOP
+   *   GROWING (`walls <= prev`). Costs one extra capture in the steady case and rides out an arrival
+   *   sequence like 4 → 16 → 30 without acting on the first two.
+   * - **Established before** — the room did not change when you pressed a button, so the count at the last
+   *   establish is a real expectation and a fraction of it is enough. This is what makes recovery after a
+   *   recenter fast (usually one or two captures) rather than making you wait out the plateau again.
+   *
+   * `minWalls` is an absolute floor under both: two or three planes cannot pin a room's frame however
+   * settled they look. `"forced"` is the same deadlock escape `loadGate` has, for a room that genuinely
+   * shrank (a re-scan with fewer walls would otherwise never clear the fraction test), and it reports
+   * itself so a forced establish is never mistaken for a healthy one.
+   *
+   * Pure: the caller owns the state and advances it (`voidGateAdvance`).
+   *
+   * @param {number} walls   vertical planes in this capture
+   * @param {VoidGateState} st
+   * @param {{frac?: number, minWalls?: number, patience?: number}} [opts]
+   * @returns {"go"|"hold"|"forced"}
+   */
+  function voidFrameGate(walls, st, opts) {
+    opts = opts || {};
+    var frac = opts.frac != null ? opts.frac : 0.6;
+    var minWalls = opts.minWalls != null ? opts.minWalls : 6;
+    var patience = opts.patience != null ? opts.patience : 8;
+    var no = /** @type {"forced"|"hold"} */ (st.held >= patience ? "forced" : "hold");
+    if (walls < minWalls) return no;                       // too few to pin a frame, however stable
+    if (st.everGo) return walls >= frac * st.max ? "go" : no;
+    return walls <= st.prev ? "go" : no;                   // still filling in ⇒ the count is still growing
+  }
+
+  /**
+   * Advance the gate's state after a verdict. `prev` and `held` track the current attempt; `max`/`everGo`
+   * are the session's memory and deliberately SURVIVE a tracking reset — the room does not change when you
+   * press the recenter button, so what the room looked like is still the right expectation. They are
+   * cleared on a world switch instead (`resetFrame`), where the room genuinely may be a different one.
+   *
+   * @param {VoidGateState} st
+   * @param {number} walls
+   * @param {"go"|"hold"|"forced"} verdict
+   * @returns {VoidGateState}
+   */
+  function voidGateAdvance(st, walls, verdict) {
+    if (verdict === "hold") return { prev: walls, max: st.max, everGo: st.everGo, held: st.held + 1 };
+    // A healthy establish RATCHETS UP only: taking `max = walls` unconditionally would let a run of
+    // slightly-thin captures walk the expectation down one capture at a time until the gate stopped
+    // gating. A FORCED establish is the one case that re-baselines downward, because that is precisely
+    // the "the room genuinely shrank" escape and leaving `max` high would deadlock the next reset too.
+    return { prev: walls,
+             max: verdict === "forced" ? walls : Math.max(st.max, walls),
+             everGo: true,
+             held: 0 };
+  }
+
+  /** @returns {VoidGateState} */
+  function voidGateInit() { return { prev: 0, max: 0, everGo: false, held: 0 }; }
+
   // ---- derived-frame gestures (docs/specs/dynamics.md §8b — `grab`'s skybox/void modes) ------------
   // Pure planar maths, extracted here rather than left in grab.js so it can be tested: XR interaction can't
   // be exercised in a unit test, but the two identities below are exactly where a sign error hides, and a
@@ -483,5 +563,6 @@
            relocInit: relocInit, relocStep: relocStep,
            surfaceSig: surfaceSig, surfaceMoved: surfaceMoved,
            surfacePoseMoved: surfacePoseMoved, surfaceShapeChanged: surfaceShapeChanged,
-           advanceSig: advanceSig, slewAlpha: slewAlpha, slewSettled: slewSettled };
+           advanceSig: advanceSig, slewAlpha: slewAlpha, slewSettled: slewSettled,
+           voidFrameGate: voidFrameGate, voidGateAdvance: voidGateAdvance, voidGateInit: voidGateInit };
 });
