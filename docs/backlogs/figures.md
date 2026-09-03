@@ -565,6 +565,53 @@ and now that the frame exists there is something concrete to verify: drive a fix
 (`bend 45` on each limb, in turn) and ask whether each looks like the motion it names. That is a
 buildable pass, and it is what the two remaining known-wrong cases below would have been caught by.
 
+### Device run 2026-09-03 — the geometry is right and the vocabulary is not
+
+All three figures re-imported to their neutral poses, are posable through the director, survive a late
+joiner, and still `grab` correctly once posed. **"Turn her head right" and "raise her left/right leg" are
+correct on Saka, Grace and Yuffie.** The arms are not: *"raise her right arm up"* points the arm **behind
+her** on all three.
+
+The cause is not in the axes. It is in the layer above them, and the log says so outright:
+
+```
+"raise yuffi's right arm up"    -> rightUpperArm {bend: -90, spread: -90}
+"raise grace's right arm up"    -> rightUpperArm {bend: -60}
+"raise saka's right arm up"     -> rightUpperArm {bend: -80}
+"point Grace's right arm down"  -> rightUpperArm {bend: -90}
+"point Saka's left arm up"      -> leftUpperArm  {bend: -90}      <- identical, opposite intents
+```
+
+`bend: -90` **means** "swing the far end backward", so the figures did exactly as told. The fifth line is
+the finding: the director emitted the same numbers for *up* and for *down*. It is guessing, and it cannot
+do otherwise, because **a relative vocabulary asks the caller to know the rest pose**:
+
+| rest direction of… | Saka | Grace | Yuffie |
+|---|---|---|---|
+| upper **leg** | −89° | −81° | −82° |
+| upper **arm** | **0°** (a true T-pose) | **−48°** | **−46°** |
+
+The three rigs agree about where a leg starts to within 8°, so `bend: +80` reads as "raised" on all of
+them — **the legs worked by luck, not by correctness.** The arms differ by 48°, and "up" is 90° away from
+rest on Saka and 138° on Grace. No single relative number can mean "up" for an arm.
+
+A second failure sits in the same log, unreported because it was buried in a busy pose. Asked to *"spread
+Grace's legs slightly apart"*, the director first called `inspect_figure`, **read** the line saying
+`spread` is positive outward, and then emitted `spread: +20` on the left and `-20` on the right — both
+legs toward her left. The mirror-by-negating reflex beat the description it had just read.
+
+> **The vocabulary is the product — and "the vocabulary" now means the mapping from an utterance to
+> numbers, which is the one layer in this feature with no test at all.** Bone names are checked by
+> `validate()`, axes by rendering. What the director does with them is checked by a person in a headset,
+> once, by hand.
+
+Also worth recording, because it shapes the fix: the deterministic path (`curl /figure` with an explicit
+pose) exists and **goes unused** — it is too clumsy in practice. So the guard on this layer has to be
+automated; it will not be a habit.
+
+The three slices that follow from this are designed under
+[*Aiming, evaluation and named poses*](#aiming-evaluation-and-named-poses).
+
 ### Still open from Phase 0
 
 - ~~Dark, pointed hands.~~ **Fixed 2026-09-02** — see above. (The "pointed silhouette" was an artifact of
@@ -1096,6 +1143,167 @@ has to be custom anyway to handle the clip/pose composition above.
 
 ---
 
+## Aiming, evaluation and named poses
+
+The three slices the 2026-09-03 device run calls for, in order. Designed here before any of it is built,
+because the first two are cheap only if their scope stays honest and the third has a structural gap in it
+that is easy to paper over badly.
+
+Read them as one argument: **1** removes the guessing, **2** is the only way to know it stayed removed,
+and **3** is the first capability the rig-independent vocabulary actually buys — as opposed to the bugs it
+prevents.
+
+### 1 — `aim`: absolute directions, because rest poses differ
+
+`bend`/`spread`/`turn` are **relative to rest**, which is right for an adjustment ("bend the elbow a bit
+more") and wrong for a destination ("arm up"). `aim` is the destination form:
+
+```jsonc
+{"rightUpperArm": {"aim": "up"}}       // up | down | forward | back | out | in
+{"leftUpperArm":  {"aim": [0, 1, 1]}}  // or a body-space vector, for anything between
+```
+
+The vocabulary is **fixed and model-independent** — the same six words on every figure and every limb.
+What varies per model is arithmetic the director never sees: each bone's rest direction is already
+measured (`bone_directions`), and the delta is the shortest arc from it to the requested direction. Saka's
+arm rotates 90°, Grace's 138°, from the identical request. That is the same move the bone names made, one
+level up: one word for every rig, with the per-rig fact hidden in metadata no LLM reads.
+
+Details that have to be decided now rather than discovered:
+
+- **The 180° case is degenerate and must be resolved deliberately.** A hanging arm aimed `up` is a
+  half-turn with no unique axis, so the shortest arc is undefined. Resolve it in the **frontal plane** —
+  rotate about the body's forward axis, i.e. raise through the side, the way a person does. Falling into
+  an arbitrary axis here would produce an arm swung through the torso, which is exactly the kind of
+  plausible-looking wrongness this feature keeps producing.
+- **`out` and `in` are side-aware**, like `spread`, so a symmetric request stays symmetric with no signs
+  for the director to get wrong — the failure measured above.
+- **Aim is relative to the parent chain.** Aiming the upper arm swings the whole arm rigidly with the
+  elbow straight, which is what "raise her arm" means. Aiming a forearm means "relative to the upper
+  arm", not to the world. Worth stating in the tool description, since it is the one place the mental
+  model can break.
+- **It sets direction, not twist.** `{"aim": "up", "turn": 30}` is the full expression.
+- **Limbs only.** `aim` points a bone along its own length; on a head that would mean aiming the top of
+  the skull, which is not what "have her look left" means. Head, neck and spine keep the relative axes —
+  and head `turn` is already confirmed correct on all three rigs.
+- **Not world-space targeting.** "Reach for that chair" is tier 3 below.
+
+What ships: the per-bone axes payload gains the bone's **rest direction** and the **body frame**, both in
+parent space, so the client can resolve an aim itself. The stored state stays semantic — `{"aim": "up"}`,
+not a quaternion.
+
+And the tool description gains **worked examples**, including a symmetric pair carrying the *same* sign on
+both sides. A one-line statement of the convention demonstrably lost to the model's mirror-by-negating
+reflex; an example of the exact shape it gets wrong is the cheapest counter. Whether that works is not
+knowable without slice 2, which is the point of slice 2.
+
+### 2 — the eval harness: verify the utterance, not the axis
+
+The verification pass sketched under [*discovery layer 4*](#4--multimodal-verification) would have
+**passed clean** on the arms bug, because the axes are correct — the words above them were not. So the
+target moves up one layer:
+
+| | Verify the frame | Verify the tool surface |
+|---|---|---|
+| Input | `{"leftUpperArm": {"bend": 45}}` | *"raise her right arm up"* |
+| Runs | per model, at import | per phrase × 3 rigs, on demand / in CI |
+| Catches | a bone mapped to a fingertip, a limb through the torso, an axis that is self-consistently wrong | the director picking the wrong axis or sign — **the measured bug** |
+| Would have caught the arms | no | yes, in an afternoon, with no headset |
+
+Both are worth having and they share all their machinery. Build the second first.
+
+**The harness is a regression net, not a debugger.** The arms took thirty seconds to diagnose by reading
+the log, and no rendering pass would have beaten that. Its actual value is that a change to a *tool
+description* is otherwise entirely unfalsifiable: there is no test that fails when a sentence of English
+stops steering an LLM correctly, and that is now the layer most likely to be wrong.
+
+**Geometry judges first; the model judges what geometry cannot name.** Where a joint ends up is already
+computable — `tests/test_figures.py` does exactly this — so "is the wrist above the shoulder" is an
+assertion, not a question for a vision model. What no assertion expresses: *is that a raised arm or a
+dislocated shoulder; is the hand hinging at the wrist or at a fingertip; is the elbow inside the ribcage.*
+That is the same discipline as [layer 5](#5--the-validator-llm-proposes-geometry-disposes), pointed at
+pictures instead of bone maps.
+
+The shape of one check:
+
+1. Blender renders **front and side** of the rest pose and the posed figure (built, <1 s each, free).
+2. Both go up **side by side** with a **multiple-choice** question — *"compared to the first image, the
+   right arm has moved: (a) up and out to the side (b) forward (c) backward (d) down (e) barely moved."*
+3. A second question for sanity — *"does this look like a person doing this, or is a joint bent in a way
+   a body cannot?"*
+
+Constrained choice against a reference render, from fixed viewpoints. **Never free-form spatial
+description**: VLMs are unreliable at 3-D spatial reasoning and reliable at recognition, so the job is to
+turn the former into the latter.
+
+**Which model.** The seam exists — `conjure/captioner.py` is a `Captioner` protocol over Gemini with a
+`FakeCaptioner` for tests — but the return type here is a *structured verdict*, not a caption, so this
+wants **its own protocol beside it** rather than an extension (open question 11, answered). Default to
+**Gemini 2.5 Flash** for the bulk battery: already wired, already keyed, cheap enough to run every mapped
+bone at import, where the budget is explicitly generous. Use **Claude** — already the roster's default
+director, so no new key — where the judgment is rubric-heavy and instruction-following matters more than
+cost. A `FakeJudge` keeps the harness testable offline.
+
+**A trap to check before building around it:** Grace and Saka's current exports are **undressed**, and a
+hosted vision model may decline to judge those renders at all. Either verify against the clothed
+conversions or render the battery in clay/matcap. Cheaper to learn now than after the harness assumes an
+answer.
+
+### 3 — named poses, and the root problem they expose
+
+Three tiers, and the extension point is deliberately only the middle one:
+
+| | What it is | How it extends | Example |
+|---|---|---|---|
+| **1. Axes** | per-bone rotations: `bend`, `spread`, `turn`, `aim` | **it does not** — closed by design | "bend her elbow", "spread her legs" |
+| **2. Named poses** | multi-bone configurations, stored as **data** in tier-1 terms | add an entry | "kneel", "sit", "hands on hips" |
+| **3. Solved poses** | constraints against the world — wants a solver, not a vocabulary | not yet | "reach for that chair", "hand flat on the table" |
+
+A pose is a dict in the vocabulary that already exists:
+
+```jsonc
+"kneel": {
+  "leftUpperLeg":  {"bend": -75}, "leftLowerLeg":  {"bend": 105}, "leftFoot":  {"bend": -20},
+  "rightUpperLeg": {"bend": -75}, "rightLowerLeg": {"bend": 105}, "rightFoot": {"bend": -20},
+  "spine": {"bend": 5}
+}
+```
+
+**Because tier 1 is rig-independent, one authored pose works on every figure.** That is the first thing
+the axis work *buys* rather than merely protects, and it is why poses are data: adding "sit" is an entry,
+not code. The component stores `{"pose": "kneel"}` plus any per-bone overrides, so the durable state stays
+semantic and small, and the director learns what exists the way it learns what dynamics modules exist
+(`dynamics://available`) rather than by being told in a prompt.
+
+**The gap kneeling exposes: rotations cannot ground a figure.** Rotate a standing figure into a kneel and
+her hips stay where they were, so her knees go through the floor. `grounded` placement will not save her —
+it snaps the entity by its **bind-pose** bounds, which is the same stale-box problem `grab` had.
+
+Fix it with a measurement rather than a per-pose fudge: **re-ground after posing.** Find the lowest
+contact joint in the posed skeleton and settle the figure so it rests on the floor. One rule covers the
+cases, including poses nobody authored:
+
+- raise one leg → the lowest point is still the standing foot → she does not move
+- kneel → the lowest point becomes the knees → she settles onto them
+- sit → onto the pelvis, once there is something to sit on (a seat is tier 3)
+
+It is approximate by construction — joint positions plus a small contact radius, not skinned vertices —
+and that is the right trade: exact would mean posing the mesh server-side, and the error is millimetres
+against a decision measured in tens of centimetres.
+
+**Authoring loop, and it is one this document already defines.** An LLM proposes the numbers, Blender
+renders front and side, the judge from slice 2 says whether that is a kneel, and a human confirms once
+before it is frozen into the library — *propose → render → verify → freeze*, exactly the discipline
+[layers 5 and 6](#5--the-validator-llm-proposes-geometry-disposes) apply to bone maps. A new pose then
+costs a call and a glance.
+
+**What stays closed: the axis words.** Four rotations cover every single-bone request, and both examples
+that prompted this were already expressible — "spread her legs apart" is `spread` on both sides (the
+director simply got the sign wrong), and "knees in" is negative `spread`. Every time this feature has
+grown a fifth criterion at the primitive layer it has been fitting noise; that is recorded twice above. A
+request that genuinely cannot be said in tier 1 is a signal that it belongs in a different tier, not that
+tier 1 is missing a word.
+
 ## The tool surface
 
 One coherent family rather than a tool per capability — the way `conjure_module` is one generic tool — with
@@ -1105,7 +1313,9 @@ One coherent family rather than a tool per capability — the way `conjure_modul
 |---|---|
 | `inspect_model(id)` | the "navigate the tree" request: groups, meshes, morphs, clips, bone map |
 | `set_model_parts(id, show=[], hide=[])` | outfits |
-| `pose_model(id, {bone: {bend, spread, turn}})` | **semantic** bone names AND semantic axes |
+| `pose_model(id, {bone: {bend, spread, turn}})` | **semantic** bone names AND semantic axes (relative) |
+| `pose_model(id, {bone: {aim: "up"}})` | the same tool, absolute — see § *Aiming, evaluation and named poses* |
+| `pose_model(id, pose="kneel")` | a named multi-bone pose, resolved from the library |
 | `animate_model(id, clip=, speed=, loop=)` | clip playback |
 
 **`inspect_model` must summarize, not dump.** A two-hundred-node tree wrecks the director's context window.
@@ -1154,44 +1364,63 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
 10. **Facing normalization** — bake the correction into the GLB at conversion (one canonical forward for
     every figure), or record `facing` in `attributes` and correct at placement? Baking is simpler downstream
     and destroys information; recording is reversible and pushes the concern into every consumer.
-11. **Which multimodal model** for the verification passes, and whether it extends `Captioner` or wants its
-    own protocol (the return type is structured, not a caption).
+11. ~~**Which multimodal model** for the verification passes, and whether it extends `Captioner`?~~
+    **Proposed 2026-09-03** — Gemini 2.5 Flash for the bulk battery (the seam and the key exist), Claude
+    for rubric-heavy judging (already the default director), and its **own** protocol beside `Captioner`
+    because the return type is a structured verdict. Unresolved sub-question: whether a hosted model will
+    judge renders of the undressed exports at all.
 12. **Which armature is the humanoid one** when a file ships several (Hitomi has five). Body-mesh binding
     cross-checked against bone count is the obvious heuristic; the hair rigs are separate skeletons and are
     exactly what spring-bone secondary motion would drive later.
 13. **Touch response mechanism** — canned reaction clip, IK reach toward the contact point, or spring-bone
     secondary motion. Relates to the open physics-vs-parametric question ([`decisions.md`](../decisions.md) #12).
+14. **Where the pose library lives** — shipped with the repo like the bundled dynamics modules, per-user
+    under the data dir, or in the catalog beside the figures. It is data either way; the question is who
+    can add one and whether a pose can be world- or user-scoped.
+15. **Re-grounding vs. an authored root offset** for poses that change where the body's base is. Measuring
+    the lowest contact joint generalizes to poses nobody authored, which is the argument for it; an
+    authored offset is exact for the poses we do author and silent for the rest.
+16. **Does a re-grounded pose fight `grab` or the plane anchor?** Both write the entity transform, and a
+    pose that moves it is a third writer — the derived-frame hazard the rest of this document keeps
+    hitting. Likely wants the drop to live on a wrapper node inside the entity rather than on the entity.
 
 ---
 
 ## Where to pick up
 
-**Posing works: the right bones move, and they now move the right way.** Bone selection was confirmed on
-device; the anatomical frame is confirmed in render on all three rigs (see *Resolved: the anatomical
-frame*). The next move is to **drive it from the headset** — place Grace, Saka and Yuffie, pose them
-through the director, and check the three things a Blender render cannot: that a pose survives a reload
-and a late joiner, that it composes with `grab` (a posed figure that is then picked up), and that it
-looks right in stereo at human scale rather than in a 512-pixel orthographic view.
+**Posing works end to end on device, and the next three slices are designed** under
+[*Aiming, evaluation and named poses*](#aiming-evaluation-and-named-poses). Build them in that order —
+the second exists to keep the first true, and the third is the first thing the vocabulary buys rather
+than protects:
 
-After that, the next real slice is **outfits** (Phase 2) — the easiest genuine capability in the feature
-and the one the collection structure already hands us, or **clips**, which need an animation source and
-a retargeting step and are therefore much larger (open question 3).
+1. **`aim`** — absolute directions, plus worked examples in the tool description. Fixes the measured
+   failure: "raise her arm up" points it backwards on all three rigs because a relative vocabulary asks
+   the caller to know a rest pose that differs by 48° between them.
+2. **The eval harness at the utterance layer** — ~20 phrases × 3 rigs, rendered and judged. The only
+   guard on the one layer of this feature that has no test, and the only way to know whether a change to
+   a sentence of English did what it was supposed to.
+3. **Named poses + re-grounding** — "kneel", "sit". Data, not code, because tier 1 is rig-independent;
+   and the re-grounding rule is what stops a kneeling figure standing in the floor.
+
+**Outfits (Phase 2) are deliberately deferred** — simpler, and they also want a re-conversion with
+clothing, so nothing is lost by waiting.
 
 State to be aware of when resuming:
 
 - Grace and Yuffie in the world are the **body-only** exports (no clothing). That was for joint
-  diagnosis; re-adding clothing is a `--collections` change, see the recipes above.
+  diagnosis; re-adding clothing is a `--collections` change, see the recipes above. This now blocks
+  slice 2 as well, if a hosted vision model declines to judge an undressed render.
 - Yuffie's boots, shoulder guard, eyes and eyebrows render flat grey — 22 of her 26 baked materials fail,
   and the neutral fallback papers over it. Recorded under the black-bake limitation, not chased.
 - `leftHand` resolves to a fingertip on the re-parented Daz rigs, so a hand rotation hinges in the wrong
   place there (Saka is correct). Arms and legs were the reported problem and are fixed; the hand was
-  deliberately not chased after the head rule showed what iterating on a secondary defect costs.
-- `validate()` checks the bone MAP and knows nothing about the axes. Nothing would catch a frame that is
-  self-consistent and wrong — which is what the multimodal verification pass above is for.
+  deliberately not chased after the head rule showed what iterating on a secondary defect costs. It is
+  the obvious first catch for slice 2's per-bone battery.
+- `validate()` checks the bone MAP and knows nothing about the axes, and nothing at all checks the
+  utterance layer. Those are slice 2's two jobs, in that order of difficulty.
 - Figures placed before 2026-09-02 have no `humanoid_axes`. They gain one on the next placement (the
-  server measures and writes it back); the entity already in a world does not, so re-place it.
-- Figures work landed on `feat/figures-phase0` and is now in `main`; this slice sits on
-  `fix/void-frame-and-surface-overlay`.
+  server measures and writes it back); an entity already in a world does not, so re-place it.
+- The anatomical frame is on `feat/figures-anatomical-pose`, branched from `main`, not merged.
 
 ## Phasing
 
@@ -1200,7 +1429,7 @@ State to be aware of when resuming:
 | **0** | One model, end to end, **no new abstractions.** Convert by hand, import, place, look. | Answers what design cannot: life size, facing, feet on floor, frame cost, and whether `grab` behaves on a skinned mesh. Almost every remaining uncertainty is empirical. |
 | **1** | Conversion + discovery pipeline: headless Blender, GLB JSON extraction, convention table, topology inference, LLM labeling, visual verification, validator, one human confirm. | The heart, and the largest piece. Mostly pure Python ⇒ mostly testable. |
 | **2** | `figure` component + endpoint + tools. Outfits and clips. | First user-visible payoff: *"change her jacket"*, *"have her wave"*. |
-| **3** | Posing, with the composition question already settled. | |
+| **3** | Posing, with the composition question already settled. | **Under way.** The anatomical frame shipped 2026-09-02; `aim`, the eval harness and named poses are designed and next. |
 | **4** | Locomotion (A for scripted, C for reactive) and touch (B). | |
 
 Phase 0 should start as soon as a real model file exists, and does not depend on any decision above.
