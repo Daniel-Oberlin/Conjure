@@ -119,6 +119,16 @@
   // own length, the swing resolved into its bend and spread components, each clamped, the three rebuilt.
   // When nothing is out of range the original is returned untouched — the decomposition is exact but a
   // round trip through it would still rewrite a legal pose in the last decimal.
+  // One requested rotation, reduced to what the joint allows. Numbers are clamped as NUMBERS wherever
+  // the caller gave one: 200 degrees of knee bend and -160 are the same quaternion, so recovering the
+  // request from the rotation reads it back as "160 the wrong way" and clamps to nearly straight — the
+  // opposite of what was asked. Only an aim, which arrives as a direction, needs the decomposition.
+  function clampAngle(frame, name, degrees) {
+    var range = frame.limits && frame.limits[name];
+    if (!range || range.length !== 2) return degrees;
+    return Math.max(range[0], Math.min(range[1], degrees));
+  }
+
   function clampToJoint(q, frame) {
     var lim = frame.limits;
     var b = vec(frame.bend), sp = vec(frame.spread), t = vec(frame.turn);
@@ -127,6 +137,7 @@
     var d = xyz.dot(t);
     var tw = new THREE.Quaternion(t.x * d, t.y * d, t.z * d, q.w);
     if (tw.lengthSq() < 1e-18) tw.set(0, 0, 0, 1); else tw.normalize();
+    if (tw.w < 0) tw.set(-tw.x, -tw.y, -tw.z, -tw.w);   // q and -q are one rotation; atan2 needs +w
     var swing = q.clone().multiply(tw.clone().conjugate());
     if (swing.w < 0) { swing.set(-swing.x, -swing.y, -swing.z, -swing.w); }
     var turnDeg = 2 * Math.atan2(new THREE.Vector3(tw.x, tw.y, tw.z).dot(t), tw.w) * 180 / Math.PI;
@@ -139,9 +150,7 @@
 
     var hit = false;
     function cap(name, value) {
-      var range = lim[name];
-      if (!range || range.length !== 2) return value;
-      var capped = Math.max(range[0], Math.min(range[1], value));
+      var capped = clampAngle(frame, name, value);
       if (Math.abs(capped - value) > 0.5) hit = true;
       return capped;
     }
@@ -171,14 +180,21 @@
       // the server guards, guarded again here because a stale snapshot can carry one in.
       axis.set(a[0], a[1], a[2]);
       if (!axis.lengthSq()) return;
-      tmp.setFromAxisAngle(axis.normalize(), deg * Math.PI / 180);
+      var capped = clampAngle(frame, name, deg);
+      if (!capped) return;
+      tmp.setFromAxisAngle(axis.normalize(), capped * Math.PI / 180);
       q = q ? q.premultiply(tmp) : tmp.clone();
     });
     if (aiming) {
+      // An aim names a destination, not an angle, so what it asks of the joint is only legible once
+      // resolved — this is the one path that needs the decomposition.
       var swing = aimQuat(frame, request.aim);
-      if (swing) q = q ? q.premultiply(swing) : swing;
+      if (swing) {
+        swing = clampToJoint(swing, frame);
+        q = q ? q.premultiply(swing) : swing;
+      }
     }
-    return q ? clampToJoint(q, frame) : q;
+    return q;
   }
 
   AFRAME.registerComponent("figure", {

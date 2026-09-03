@@ -493,16 +493,27 @@ def test_limits_fold_the_two_sides_together():
     assert joint_limits("nosuchbone") == {}
 
 
+def test_a_positive_bend_flexes_a_knee_because_that_is_the_way_a_knee_folds():
+    """`bend` means FLEXION, not "the far end goes forward" — those coincide at the hip, the elbow and
+    the spine, and are opposite at the knee. Measured on device: with the geometric reading, the
+    director asked to bend a knee with the obvious positive number, got hyperextension clamped to 5
+    degrees, and talked itself into believing knees could not bend."""
+    doc, mapping, axes = _posed()
+    notes = []
+    heel = _direction(doc, mapping, axes, "leftLowerLeg", {"bend": 90})
+    assert heel[2] < -0.9, f"the shin should swing BACK when a knee bends, went {heel}"
+    resolve_pose(axes, {"leftLowerLeg": {"bend": 90}}, notes)
+    assert notes == [], "and 90 degrees of it is perfectly ordinary"
+
+
 def test_a_knee_bends_one_way_only():
     doc, mapping, axes = _posed()
     notes = []
-    forward = resolve_pose(axes, {"leftLowerLeg": {"bend": 90}}, notes)["leftLowerLeg"]
-    assert notes and "leftLowerLeg.bend" in notes[0]
-    assert _direction(doc, mapping, axes, "leftLowerLeg", {"bend": 90})[2] < 0.15, "barely moved"
-    # ...and the way it does bend is untouched.
-    back = resolve_pose(axes, {"leftLowerLeg": {"bend": -90}})["leftLowerLeg"]
-    assert back == pytest.approx(resolve_pose(axes, {"leftLowerLeg": {"bend": -90}}, [])["leftLowerLeg"])
-    assert forward != pytest.approx(back)
+    resolve_pose(axes, {"leftLowerLeg": {"bend": -90}}, notes)
+    # ...and the message says WHICH WAY, because "→ -5°" alone reads as "nearly at its limit" — which is
+    # exactly what the director concluded before deciding knees do not bend.
+    assert notes == ["leftLowerLeg.bend -90° → -5° (it folds the other way)"]
+    assert _direction(doc, mapping, axes, "leftLowerLeg", {"bend": -90})[2] > -0.15, "barely moved"
 
 
 def test_an_elbow_does_not_bend_sideways():
@@ -516,9 +527,9 @@ def test_an_elbow_does_not_bend_sideways():
 
 
 def test_a_legal_pose_passes_through_untouched():
-    """Not approximately untouched. Two perpendicular swings compose into a little twist, so a round
-    trip through the decomposition would rewrite a pose nobody asked to change — the clamp returns the
-    ORIGINAL quaternion when nothing is out of range."""
+    """Relative angles are clamped as NUMBERS, so a legal one never goes near the decomposition — and
+    an `aim` that is within range gets its ORIGINAL quaternion back, since a round trip would otherwise
+    rewrite a pose nobody asked to change."""
     doc, mapping, axes = _posed()
     notes = []
     for request in ({"bend": 45}, {"spread": 30}, {"bend": 30, "spread": 20, "turn": 10}):
@@ -542,7 +553,7 @@ def test_the_shoulder_is_deliberately_barely_limited():
 
 def test_limits_ride_with_the_frame_so_a_runtime_needs_no_table():
     doc, mapping, axes = _posed()
-    assert axes["leftLowerLeg"]["limits"]["bend"] == [-155.0, 5.0]
+    assert axes["leftLowerLeg"]["limits"]["bend"] == [-5.0, 155.0]
     # A frame with none (an older figure, or one we have no anatomy for) is simply not clamped, rather
     # than clamped against a guess.
     bare = {"b": {k: v for k, v in axes["leftLowerLeg"].items() if k != "limits"}}

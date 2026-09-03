@@ -503,7 +503,7 @@ each an axis chosen so a POSITIVE angle produces the named motion on either side
 
 | | Motion | Axis | Degenerate when |
 |---|---|---|---|
-| `bend` | the far end swings **forward** — lift a knee, bend an elbow, bow the spine | `direction × forward` | the bone already points forward (a foot) — falls back to `direction × up`, so bend lifts the toes |
+| `bend` | the joint **folds the way it folds** — hip and elbow forward, knee back, spine and neck forward (see *`bend` means flexion*) | `direction × forward`, negated for the knee | the bone already points forward (a foot) — falls back to `direction × up`, so bend lifts the toes |
 | `spread` | the far end swings **outward**, away from the midline | `direction × outward` | the bone already points outward (a T-posed arm) — falls back to `direction × up`, so spread keeps raising it |
 | `turn` | the bone twists about its own length, **inward** | the bone's own direction, negated on the right | never |
 
@@ -1270,6 +1270,42 @@ T- or A-posed.
 > [Layer 1](#1--known-conventions-free-exact), the convention table, has never been built, and it would
 > map that model exactly and for free. Two of the three would probably still need layer 2 or 3, but the
 > cheapest layer in the pipeline is now the one with a concrete case waiting for it.
+
+### `bend` means flexion, not "forward" (2026-09-03e)
+
+With limits in, the director walked straight into the one joint where the geometric rule and the English
+word disagree:
+
+```
+"bend her left knee"  -> {leftLowerLeg: {bend: 90}}   -> clamped to +5°
+builder: "the knee is already at its limit in that direction — it can't bend much further back from rest"
+"bend her knee back"  -> refused again
+builder: "Knees anatomically only bend one way, so the system is enforcing that."
+```
+
+Both statements are true and the conclusion was wrong: it had asked for **hyperextension** and read the
+clamp as "this knee is out of travel". `bend` was defined as *the far end swings forward*, which is a
+geometric rule — and it coincides with flexion at the hip, the elbow, the spine and the neck, and is
+exactly backwards at the knee. The tool description even listed "bend a knee" under *forward (+)*.
+
+So `bend` now means **the way the joint folds**: elbow forward, knee backward, hip forward, spine
+forward. One bone needs the axis negated to make that true (`_FOLDS_BACK`), and that is the anatomical
+definition of flexion rather than a special case bolted on. Same principle as `spread` being side-aware —
+**the mirroring belongs in the frame, not in the caller's head.**
+
+The clamp message also says which way now: `bend -90° → -5° (it folds the other way)`. "→ +5°" on its own
+reads as *nearly at its limit*, which is precisely the sentence the director talked itself into.
+
+**And a real bug came out of the fix.** Asked for `bend: 200`, the clamp reported `+200° → -160° → -5°`
+and invented a phantom `turn +360°`. Two causes, both from recovering a request out of the rotation it
+produced: 200 degrees and −160 are the *same quaternion*, so the decomposition read the request back
+inverted and clamped it to nearly straight; and the twist quaternion was left with a negative w, which
+`2·atan2` reports as a full turn. Numbers are now clamped as NUMBERS wherever the caller gave one, and
+only an `aim` — which arrives as a direction, not an angle — goes through the decomposition at all.
+`bend: 200` clamps to `+155°`, which is what was meant.
+
+> The general shape, and it is the third time in this document: **a value recovered from a
+> representation is not the value that was supplied.** Keep the caller's own number where you have it.
 
 ## Aiming, evaluation and named poses
 

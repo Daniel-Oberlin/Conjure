@@ -329,9 +329,9 @@
         0.0
       ],
       "bend": [
-        -1.0,
-        0.0,
-        0.0
+        1.0,
+        -0.0,
+        -0.0
       ],
       "spread": [
         0.0,
@@ -345,8 +345,8 @@
       ],
       "limits": {
         "bend": [
-          -155.0,
-          5.0
+          -5.0,
+          155.0
         ],
         "spread": [
           -5.0,
@@ -576,6 +576,35 @@
       ]
     },
     {
+      "name": "a knee FOLDS BACK, so a positive bend flexes it \u2014 the plain reading of the word",
+      "frame": "left_shin",
+      "request": {
+        "bend": 90
+      },
+      "quat": [
+        0.707106781187,
+        0.0,
+        0.0,
+        0.707106781187
+      ]
+    },
+    {
+      "name": "LIMIT: and the other way is where a knee stops",
+      "frame": "left_shin",
+      "request": {
+        "bend": -90
+      },
+      "quat": [
+        -0.043619387365,
+        0.0,
+        0.0,
+        0.999048221582
+      ],
+      "limited": [
+        "bend -90\u00b0 \u2192 -5\u00b0 (it folds the other way)"
+      ]
+    },
+    {
       "name": "LIMIT: an elbow does not bend sideways \u2014 aiming a forearm up is clamped to 8 degrees of spread",
       "frame": "left_forearm",
       "request": {
@@ -605,22 +634,6 @@
       ],
       "limited": [
         "bend -90\u00b0 \u2192 -35\u00b0"
-      ]
-    },
-    {
-      "name": "LIMIT: a knee bends one way only",
-      "frame": "left_shin",
-      "request": {
-        "bend": 90
-      },
-      "quat": [
-        -0.043619387365,
-        0.0,
-        0.0,
-        0.999048221582
-      ],
-      "limited": [
-        "bend +90\u00b0 \u2192 +5\u00b0"
       ]
     },
     {
@@ -663,6 +676,39 @@
         0.0,
         0.0,
         0.965925826289
+      ]
+    },
+    {
+      "name": "a bend past the limit clamps to the limit, not to its wrapped equivalent",
+      "frame": "left_shin",
+      "request": {
+        "bend": 200
+      },
+      "quat": [
+        0.97629600712,
+        0.0,
+        0.0,
+        0.216439613938
+      ],
+      "limited": [
+        "bend +200\u00b0 \u2192 +155\u00b0"
+      ]
+    },
+    {
+      "name": "a twist past the limit, alongside a legal bend",
+      "frame": "left_shin",
+      "request": {
+        "bend": 90,
+        "turn": 40
+      },
+      "quat": [
+        0.70105738465,
+        -0.092295955641,
+        -0.092295955641,
+        0.70105738465
+      ],
+      "limited": [
+        "turn +40\u00b0 \u2192 +15\u00b0"
       ]
     }
   ]

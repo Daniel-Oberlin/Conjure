@@ -917,6 +917,8 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
         bend = _perp(direction, forward) or _perp(direction, up)
         spread = _perp(direction, outward) or _perp(direction, up)
         turn = _scaled(direction, sign)
+        if bend and bone.removeprefix("left").removeprefix("right") in _FOLDS_BACK:
+            bend = _scaled(bend, -1.0)                  # positive bend = the way this joint folds
         if bend and spread:
             # Square the two swings against each other. Both are already perpendicular to the bone, but
             # not necessarily to EACH OTHER: an A-posed forearm rests slightly forward, which tilts them
@@ -951,7 +953,7 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 3
+FRAME_REV = 4
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")
@@ -1043,7 +1045,7 @@ _LIMITS = {
     "LowerArm":  {"bend": (-5, 155), "spread": (-8, 8), "turn": (-95, 95)},     # elbow: one way only
     "Hand":      {"bend": (-75, 85), "spread": (-25, 35), "turn": (-35, 35)},
     "UpperLeg":  {"bend": (-35, 130), "spread": (-30, 75), "turn": (-50, 50)},
-    "LowerLeg":  {"bend": (-155, 5), "spread": (-5, 5), "turn": (-15, 15)},     # knee: the other way
+    "LowerLeg":  {"bend": (-5, 155), "spread": (-5, 5), "turn": (-15, 15)},     # knee: see _FOLDS_BACK
     "Foot":      {"bend": (-55, 30), "spread": (-18, 18), "turn": (-25, 25)},
     "Toes":      {"bend": (-35, 65), "spread": (-10, 10), "turn": (-10, 10)},
     "hips":      {"bend": (-45, 45), "spread": (-45, 45), "turn": (-45, 45)},
@@ -1054,6 +1056,20 @@ _LIMITS = {
     "head":      {"bend": (-35, 35), "spread": (-30, 30), "turn": (-50, 50)},
 }
 _FINGER = {"bend": (-15, 95), "spread": (-18, 18), "turn": (-12, 12)}
+
+
+#: Joints whose flexion carries the far end BACKWARD, so `bend` is negated for them when the frame is
+#: measured. There is exactly one on a human: the knee.
+#:
+#: `bend` is otherwise "the far end swings forward", which is a geometric rule and reads correctly at the
+#: hip, the elbow, the spine and the neck — everywhere the two happen to coincide. At the knee they do
+#: not, and the geometric rule made "bend her knee" mean hyperextension: measured, the director asked
+#: with the obvious positive number, was clamped to 5 degrees, and reasoned itself into a corner about
+#: why a knee could not bend. Flipping the axis makes `bend` mean FLEXION — the way the joint actually
+#: folds — on every joint that has one, which is both the anatomical definition and the plain English
+#: reading of the word. Same principle as `spread` being side-aware: the mirroring belongs in the frame,
+#: not in the caller's head.
+_FOLDS_BACK = ("LowerLeg",)
 
 
 def joint_limits(bone: str) -> dict[str, tuple[float, float]]:
@@ -1081,6 +1097,28 @@ def _axis_angle(axis, radians: float) -> list[float]:
     return [axis[0] * s, axis[1] * s, axis[2] * s, math.cos(h)]
 
 
+def clamp_angle(bone: str, name: str, degrees: float, frame: dict,
+                notes: Optional[list] = None) -> float:
+    """One requested rotation, reduced to what the joint allows.
+
+    Numbers are clamped as NUMBERS wherever the caller gave one, rather than by decomposing the
+    resulting rotation: 200 degrees of knee bend and -160 are the same quaternion, so a decomposition
+    reads the request back as "160 the wrong way" and clamps it to nearly straight — the opposite of
+    what was asked. Only an `aim`, which arrives as a direction rather than an angle, has to be
+    recovered from its rotation (`clamp_to_joint`).
+    """
+    limits = frame.get("limits") or joint_limits(bone)
+    lo, hi = (limits.get(name) or (-360.0, 360.0))
+    capped = max(lo, min(hi, degrees))
+    if abs(capped - degrees) > 0.5 and notes is not None:
+        # Name the direction when a joint is asymmetric: hitting the 5-degree end of a knee means the
+        # request was the wrong way round, and "→ +5°" alone reads as "nearly at its limit", which is
+        # how a caller talks itself into believing a knee cannot bend.
+        other = " (it folds the other way)" if abs(capped) < abs(hi if capped < 0 else lo) / 4 else ""
+        notes.append(f"{bone}.{name} {degrees:+.0f}° → {capped:+.0f}°{other}")
+    return capped
+
+
 def clamp_to_joint(bone: str, q: list[float], frame: dict, notes: Optional[list] = None) -> list[float]:
     """`q` reduced to what this joint can actually do, in the bone's own anatomical frame.
 
@@ -1101,6 +1139,8 @@ def clamp_to_joint(bone: str, q: list[float], frame: dict, notes: Optional[list]
     twist = [t[0] * twist_dot, t[1] * twist_dot, t[2] * twist_dot, q[3]]
     n = math.sqrt(sum(v * v for v in twist))
     twist = [v / n for v in twist] if n > 1e-9 else [0.0, 0.0, 0.0, 1.0]
+    if twist[3] < 0:                                   # q and -q are the same rotation; +w is the
+        twist = [-v for v in twist]                    # short way round, and 2*atan2 needs it
     swing = _quat_mul(q, _quat_conj(twist))
     if swing[3] < 0:                                   # keep the swing on the short way round
         swing = [-v for v in swing]
@@ -1111,16 +1151,10 @@ def clamp_to_joint(bone: str, q: list[float], frame: dict, notes: Optional[list]
     bend_deg = angle * _dot(axis, b) if axis else 0.0
     spread_deg = angle * _dot(axis, sp) if axis else 0.0
 
-    hit = []
-    def cap(name, value):
-        lo, hi = limits.get(name) or (-360.0, 360.0)
-        capped = max(lo, min(hi, value))
-        if abs(capped - value) > 0.5:
-            hit.append(f"{bone}.{name} {value:+.0f}° → {capped:+.0f}°")
-        return capped
-
-    bend_deg, spread_deg, turn_deg = (cap("bend", bend_deg), cap("spread", spread_deg),
-                                      cap("turn", turn_deg))
+    hit: list = []
+    bend_deg, spread_deg, turn_deg = (clamp_angle(bone, "bend", bend_deg, frame, hit),
+                                      clamp_angle(bone, "spread", spread_deg, frame, hit),
+                                      clamp_angle(bone, "turn", turn_deg, frame, hit))
     if not hit:
         return q
     if notes is not None:
@@ -1166,15 +1200,21 @@ def resolve_pose(axes: dict, pose: dict, notes: Optional[list] = None) -> dict[s
             axis = frame.get(name)
             if not axis:
                 continue
-            half = math.radians(float(deg)) / 2.0
+            deg = clamp_angle(bone, name, float(deg), frame, notes)
+            if not deg:
+                continue
+            half = math.radians(deg) / 2.0
             s = math.sin(half)
             q = _quat_mul([axis[0] * s, axis[1] * s, axis[2] * s, math.cos(half)], q)
         if request.get("aim") is not None:
             target = aim_target(frame, request["aim"])
             rest = frame.get("rest")
             if target and rest:
-                q = _quat_mul(swing(rest, target, frame.get("forward") or (0.0, 0.0, 1.0)), q)
-        out[bone] = clamp_to_joint(bone, q, frame, notes)
+                # An aim names a destination, not an angle, so what it asks of the joint is only
+                # legible once resolved — this is the one path that needs the decomposition.
+                reach = swing(rest, target, frame.get("forward") or (0.0, 0.0, 1.0))
+                q = _quat_mul(clamp_to_joint(bone, reach, frame, notes), q)
+        out[bone] = q
     return out
 
 

@@ -600,12 +600,15 @@ async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
     2. bend / spread / turn — A ROTATION FROM WHERE THE PART CURRENTLY RESTS, in DEGREES. Use these to
        adjust, and for the head and spine, which have no aim:
 
-         bend    forward (+) / backward (-) — bend an elbow or knee, bow the spine, nod the head down
+         bend    FOLD THE JOINT THE WAY IT FOLDS, positive. An elbow bends the hand forward, a knee
+                 bends the heel backward, a hip lifts the thigh forward, the spine and neck bow
+                 forward. Negative is the opposite, which most joints barely allow.
          spread  away from the body (+) / across it (-) — part the legs, arm away from the side
          turn    twist about the part's own length — for the head and spine, + turns to the figure's
                  own LEFT
 
          {"leftLowerArm": {"bend": 90}}                        bend the left elbow
+         {"leftLowerLeg": {"bend": 90}}                        bend the left knee (heel comes up behind)
          {"head": {"turn": -40}}                               look to her right
          {"head": {"bend": -20}}                               tilt the head back to look up
          {"leftUpperLeg": {"spread": 20}, "rightUpperLeg": {"spread": 20}}    stand with feet apart
@@ -619,7 +622,8 @@ async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
 
     Joints have limits and a request past one lands AT the limit, with the reply saying so — an elbow
     does not bend sideways and a hip does not swing 90 degrees backwards. If you get that message, the
-    figure is already as far as it goes; do not retry with a bigger number.
+    figure is already as far as it goes: do not retry with a bigger number, and if you asked a hinge to
+    bend the wrong way, the fix is the opposite sign, not a bigger one.
 
     A bone you mention is replaced outright, so pass everything you want it to keep; bones you do not
     mention keep their current pose, so you can move one arm without disturbing the rest. An empty {}
