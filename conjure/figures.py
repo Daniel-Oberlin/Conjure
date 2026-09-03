@@ -1232,12 +1232,14 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
     return out
 
 
-#: Bump when inference, the axes or `validate()` change in a way that should re-derive a stored frame.
+#: Bump when ANYTHING that changes a derived result changes: inference, the axes, `validate()`, the
+#: convention table, which skin is chosen. Forgotten once already — `humanoid_follows` shipped without a
+#: bump, every row was stamped current, and the fix reached no model at all while the tests stayed green.
 #: A figure's map and axes are cached in the catalog, and the alternative to a version is asking "does
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 7
+FRAME_REV = 8
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")

@@ -4194,7 +4194,7 @@ def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client
     the library was already stamped current, refresh-models found nothing to do, and the fix reached
     nobody — while the code, the tests and the renders all said it worked. If you change either of these
     literals, change the other: a new derived field is exactly the case the stamp exists for."""
-    assert srv.FRAME_REV == 7
+    assert srv.FRAME_REV == 8
     assert srv._DERIVED_MODEL_ATTRS == (
         "bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
         "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris")
