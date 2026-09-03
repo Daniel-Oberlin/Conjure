@@ -4,7 +4,16 @@
 - shell: we are inconsistent when showing names vs. slugs in the shell, for example, the worlds command shows the space of a world as the slug, but spaces shows the names of the spaces without the slugs.  IMO, slugs should be hidden from the user, only the names which can be changed should be shown - these should also be in the paths which are shown and navigated.  If someone needs to know the actual filename/path of a world, session, space, etc., there should be a file directive or command or something that makes the disk file visible.  Otherwise, it should be all names.
 - fix floating floors feature - default on
 
+# Move this file underneath config-conjure
 
+# Big ideas
+- Separation of concerns architecturally
+  - World server and dynamic modules can be used by other apps besides agent server
+    - World server written in TS
+  - Agent server can be used without world server (non-VR)
+    - Have a replaceable session-resolver that decouples world-server from agent server
+- Allow for Claude Code to "inhabit" Conjure
+  - Tooling and awareness to allow devloping dynamic and server modules using repos
 
 # Quick improvements
 - Grab tool option: rotate and move void world (floor locked)
