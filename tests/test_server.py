@@ -4037,17 +4037,77 @@ def test_an_aim_at_a_frame_that_predates_aiming_says_to_place_it_again(srv, clie
                                         "pose": {"leftUpperArm": {"bend": 30}}}).json()["ok"] is True
 
 
-def test_a_frame_measured_before_aiming_is_re_measured_on_the_next_placement(srv, client, tmp_path):
-    """The catalog is not versioned, so the check is whether the stored frame carries what today's code
-    needs — not whether the field exists. Otherwise a figure catalogued yesterday could never aim."""
-    first = _place_figure(srv, client, tmp_path)
-    aid = _ent(client, first)["components"]["gltf-model"].rsplit("/", 1)[1]
-    attrs = json.loads(srv.library.get(aid)["attributes"])
-    stale = {b: {k: v for k, v in f.items() if k not in ("rest", "up", "forward", "out")}
-             for b, f in attrs["humanoid_axes"].items()}
-    srv.library.upsert(aid, attributes={"humanoid_axes": stale})
-    eid = client.post("/place_cached_asset", json={"id": aid, "name": "again"}).json()["id"]
-    assert "rest" in _ent(client, eid)["meta"]["humanoid_axes"]["leftUpperArm"]
+# ---- a catalogued figure is only as good as the code that measured it ----------------------------
+# A catalog row is a snapshot of what we UNDERSTOOD about a model, not of the model, and the
+# understanding keeps changing: three figures in the dev library predate inference entirely and carry no
+# map, and two carry maps today's validate() rejects. Placement re-measures anything stamped older than
+# the current revision, so a fix reaches figures already in the library without re-importing the GLB.
+
+def _skeleton_glb():
+    """A rigged GLB with a full humanoid skeleton and NO stated map, so inference has to do the work.
+    Borrows the anatomically-ordered fixture the figures tests use rather than inventing a second one."""
+    from test_figures import _skeleton
+    doc, _idx = _skeleton()
+    doc["nodes"].append({"mesh": 0, "skin": 0})
+    doc["scenes"][0]["nodes"].append(len(doc["nodes"]) - 1)
+    doc["meshes"] = [{"primitives": [{"attributes": {"POSITION": 0}}]}]
+    doc["accessors"] = [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}]
+    body = json.dumps(doc).encode()
+    body += b" " * (-len(body) % 4)
+    return (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body))
+            + struct.pack("<II", len(body), 0x4E4F534A) + body)
+
+
+def _catalog_skeleton(client):
+    r = client.post("/library/import", json={"items": [
+        {"filename": "old.glb", "data_b64": base64.b64encode(_skeleton_glb()).decode(),
+         "hints": {}}]}).json()
+    assert r["results"][0]["ok"] is True, r
+    return r["results"][0]["id"]
+
+
+def test_a_figure_catalogued_before_inference_existed_gains_a_map_when_placed(srv, client, tmp_path):
+    aid = _catalog_skeleton(client)
+    srv.library.upsert(aid, attributes={"humanoid": {}, "humanoid_axes": {}, "frame_rev": 0})
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    meta = _ent(client, eid)["meta"]
+    assert meta["humanoid"]["leftUpperArm"] == "l_upperarm"
+    assert meta["humanoid_axes"]["leftUpperArm"]["rest"]
+    # ...and written back, so the next placement does not reopen the file.
+    assert json.loads(srv.library.get(aid)["attributes"])["frame_rev"] == srv.FRAME_REV
+
+
+def test_a_stored_map_that_no_longer_validates_is_re_inferred(srv, client, tmp_path):
+    """The measured case: two maps in the dev library were inferred before conversion rebuilt the deform
+    hierarchy, and their forearms hang off the armature root — the zig-zag arm, cached. A map that fails
+    today's validator is not worth keeping merely because it was written down."""
+    aid = _catalog_skeleton(client)
+    broken = dict(json.loads(srv.library.get(aid)["attributes"])["humanoid"])
+    broken["leftLowerArm"] = "r_lowerarm"                      # the other arm: fails side AND chain
+    srv.library.upsert(aid, attributes={"humanoid": broken, "frame_rev": 0})
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    assert _ent(client, eid)["meta"]["humanoid"]["leftLowerArm"] == "l_lowerarm"
+
+
+def test_a_map_that_cannot_be_repaired_is_cleared_rather_than_kept(srv, client, tmp_path):
+    # No map at all is an honest error message the director can relay. A plausible wrong one is a figure
+    # whose elbow bends backwards three weeks later.
+    aid = _catalog_figure(srv, client, tmp_path)      # rigged, but no real skeleton to infer from
+    srv.library.upsert(aid, attributes={"humanoid": {"hips": "nope", "leftHand": "also_nope"},
+                                        "humanoid_source": "inferred", "frame_rev": 0})
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    assert "humanoid" not in _ent(client, eid)["meta"]
+    r = client.post("/figure", json={"id": eid, "pose": {"head": {"bend": 10}}}).json()
+    assert r["ok"] is False and "humanoid" in r["error"]
+
+
+def test_a_frame_at_the_current_revision_is_trusted_without_reopening_the_file(srv, client, tmp_path):
+    # The stamp is what keeps placement from re-parsing a 37 MB GLB every time. Were it ignored, the
+    # sentinel below would be silently replaced by a real inference.
+    aid = _catalog_skeleton(client)
+    srv.library.upsert(aid, attributes={"humanoid": {"hips": "sentinel"}, "frame_rev": srv.FRAME_REV})
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    assert _ent(client, eid)["meta"]["humanoid"] == {"hips": "sentinel"}
 
 
 def test_a_figure_with_no_measurable_frame_says_so(srv, client, tmp_path):

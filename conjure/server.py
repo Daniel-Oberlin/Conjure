@@ -41,7 +41,7 @@ from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
-from .figures import AIM_DIRECTIONS, FRAME_VECTORS, POSE_AXES, TRUNK_BONES
+from .figures import AIM_DIRECTIONS, FRAME_REV, FRAME_VECTORS, POSE_AXES, TRUNK_BONES
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
@@ -1053,33 +1053,45 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
     return author_anchor(entity, planes)
 
 
-def _humanoid_axes(asset_id: str, attrs: dict) -> Optional[dict]:
-    """The figure's anatomical frame from the catalog, measured from the GLB if it predates the field.
+def _figure_frame(asset_id: str, attrs: dict) -> tuple[Optional[dict], Optional[dict]]:
+    """`(humanoid map, anatomical axes)` for a figure — re-measured from the GLB when what the catalog
+    holds was produced by older code.
 
-    Axes are derived from the bind pose and never change, so import writes them once
-    (`figures.anatomical_axes`). Models catalogued BEFORE the axes existed still have a good humanoid
-    map, and re-importing a 37 MB conversion just to gain a derived field would be a silly tax — so the
-    first placement measures them and writes them back. Only the GLB's JSON chunk is parsed.
+    Both are derived from the bind pose and never change for a given file, so import writes them once.
+    But the CODE that derives them changes, and a catalog row is not a snapshot of a model so much as a
+    snapshot of what we understood about it. Measured on this machine's catalog: three figures predate
+    inference entirely and carry no map; two carry maps that today's `validate()` rejects, because they
+    were inferred before conversion rebuilt the deform hierarchy and their forearms hang off the
+    armature root — the zig-zag arm, cached. Re-importing a 37 MB conversion to fix a derived field
+    would be a silly tax, so the first placement after a version bump re-measures and writes back.
 
-    A frame stored by an EARLIER version is re-measured on the same terms: the check is whether it
-    carries what today's code needs, not whether the key exists at all. That distinction is the whole
-    reason a figure placed before `aim` shipped does not quietly refuse to aim forever.
+    A map STATED by the file (VRM) is never second-guessed; only an inferred one is re-derived, and a
+    re-derivation that fails validation clears the map rather than keeping a plausible wrong one — no
+    map at all is an honest error message, and a bad one is a figure whose elbow bends backwards.
     """
-    axes = attrs.get("humanoid_axes")
-    if axes and all(FRAME_VECTORS[0] in (v or {}) for v in axes.values()):
-        return axes                       # already carries the aiming vectors: nothing to do
-    if not attrs.get("humanoid"):
-        return axes
+    if attrs.get("frame_rev") == FRAME_REV or not attrs.get("rigged"):
+        return attrs.get("humanoid"), attrs.get("humanoid_axes")
+    humanoid = attrs.get("humanoid")
     try:
-        from .figures import anatomical_axes, split_glb
-        doc, _ = split_glb((ASSET_CACHE / asset_id).read_bytes())
-        axes = anatomical_axes(doc, attrs["humanoid"]) if doc else None
-        if axes:
-            library.upsert(asset_id, attributes={"humanoid_axes": axes})   # measure once, not per place
+        from .figures import anatomical_axes, infer_humanoid, split_glb, validate
+        doc, blob = split_glb((ASSET_CACHE / asset_id).read_bytes())
+        if doc is None:
+            return humanoid, attrs.get("humanoid_axes")
+        if attrs.get("humanoid_source") != "vrm" and (not humanoid or validate(doc, humanoid)):
+            guess = infer_humanoid(doc, blob)
+            was, humanoid = humanoid, (guess if guess and not validate(doc, guess) else None)
+            _slog("figure", f"{asset_id}: bone map "
+                            f"{'re-inferred' if was else 'inferred'} → "
+                            f"{len(humanoid) if humanoid else 0} bones")
+        axes = anatomical_axes(doc, humanoid) if humanoid else None
+        # {} rather than None: the catalog merges attributes and skips None, so an empty map is how a
+        # rejected one is actually cleared.
+        library.upsert(asset_id, attributes={"humanoid": humanoid or {}, "humanoid_axes": axes or {},
+                                             "frame_rev": FRAME_REV})
+        return humanoid, axes
     except Exception as exc:  # noqa: BLE001 — a figure with no frame still places; it just cannot pose
-        _slog("figure", f"axes backfill failed for {asset_id}: {exc}")
-        return None
-    return axes
+        _slog("figure", f"frame measurement failed for {asset_id}: {exc}")
+        return humanoid, attrs.get("humanoid_axes")
 
 
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
@@ -3726,6 +3738,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
     if not (ASSET_CACHE / req.id).exists():
         return {"ok": False, "error": f"bytes for {req.id!r} are missing from the cache"}
     attrs = json.loads(rec["attributes"] or "{}")
+    humanoid, axes = _figure_frame(req.id, attrs)   # measured now if the catalog's predate this build
     eid = req.name or f"ent_asset_{uuid4().hex[:6]}"
     pos = req.position or [0.0, 0.0, -3.0]
     op = _model_entity_op(eid, req.id, title=rec["label"], licence=rec["licence"],
@@ -3733,8 +3746,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           tris=attrs.get("tris"), source="library", bbox_min=attrs.get("bbox_min"),
                           bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m,
                           placement=req.placement, rigged=bool(attrs.get("rigged")),
-                          humanoid=attrs.get("humanoid"),
-                          humanoid_axes=_humanoid_axes(req.id, attrs))
+                          humanoid=humanoid, humanoid_axes=axes)
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},

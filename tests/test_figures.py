@@ -137,6 +137,34 @@ def test_validate_tolerates_sub_millimetre_noise():
     assert not [p for p in validate(doc, m) if "sits below" in p]
 
 
+def test_validate_catches_a_limb_that_is_not_a_chain():
+    """The zig-zag arm, caught before it ships rather than after.
+
+    Two maps in the dev library passed every other check in `validate()` while their forearms hung off
+    the armature root: rotating the upper arm left the forearm behind, and nothing said so. Every other
+    check asks where joints ARE; this one asks whether moving one moves the next, which is the only
+    question posing actually cares about."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    assert not validate(doc, m)
+    doc["nodes"][idx["l_upperarm"]]["children"] = []                 # forearm off the arm...
+    doc["nodes"][idx["hips"]]["children"].append(idx["l_lowerarm"])  # ...and onto the root
+    assert any("leftLowerArm is not below leftUpperArm" in p for p in validate(doc, m))
+
+
+def test_validate_does_not_require_the_trunk_to_be_a_chain():
+    """Conversion re-parents the trunk onto a torso control, so `spine` legitimately stops being a child
+    of `hips` on both Daz rigs while the map stays correct and poses correctly on device. Requiring a
+    connected trunk would reject two maps that work — the same mistake the hips-ancestor-of-head check
+    made, which is recorded above as a fix."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    doc["nodes"][idx["hips"]]["children"].remove(idx["spine"])
+    doc["nodes"][idx["spine"]]["translation"] = [0, 1.15, 0]         # same place, different parent
+    doc["scenes"][0]["nodes"].append(idx["spine"])
+    assert not [p for p in validate(doc, m) if "in the skeleton" in p]
+
+
 def test_score_separates_misses_from_disagreements():
     stated = {"hips": "hips", "head": "head", "leftHand": "l_hand"}
     inferred = {"hips": "hips", "head": "WRONG"}

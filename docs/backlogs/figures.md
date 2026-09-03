@@ -1143,6 +1143,52 @@ has to be custom anyway to handle the clip/pose composition above.
 
 ---
 
+### Device run 2026-09-03b — "add grace" gives you an unposable Grace
+
+Reported: `add grace in front of me` → `raise her right arm` → *"this Grace model doesn't have a
+poseable humanoid skeleton"*. Three separate things, and only one of them is a bug in posing.
+
+**1. The removal worked; the director lost track of its own placement.** Three `remove_entity` calls, all
+`found=true`. Sixty seconds later it read `query_world`, found the Grace it had *just placed*, concluded
+the placement had failed, and placed a second one. Not a system fault — but a good fixture for the
+utterance-layer harness, which would catch it as "asked for one figure, got two".
+
+**2. `search_library` gives the director no way to choose.** Six near-identical Graces came back as bare
+labels; it took the first. That one, `grace_ashcroft`, is the original 348 k-triangle conversion imported
+*before* inference existed, so it carries no bone map at all. Search hits for rigged models now say
+`[figure 1.76 m, 348k tris]` — the two facts that actually distinguish them.
+
+**3. The real finding: a catalog row is a snapshot of what we UNDERSTOOD about a model, not of the
+model.** The dev library holds thirteen figures and they disagree about which era of this code measured
+them:
+
+| | in the library | what it means |
+|---|---|---|
+| no map at all | 4 | imported before inference existed — **unposable** |
+| a map today's validator REJECTS | 2 | inferred before conversion rebuilt the deform hierarchy: the forearm hangs off the armature root, so rotating the upper arm leaves it behind. **The zig-zag arm, cached.** |
+| a good map, no anatomical frame | 4 | pre-2026-09-02 — poseable, not aimable |
+| current | 3 | |
+
+So placement now **re-measures anything stamped older than the current revision** (`figures.FRAME_REV`)
+and writes the result back: a map is inferred if missing, RE-inferred if the stored one no longer
+validates, and cleared rather than kept if nothing valid can be recovered. A stated (VRM) map is never
+second-guessed. Dry-run over the live catalog: four gain a map, two are repaired, one is kept as stated,
+six are already current. Nothing needs re-converting or re-importing.
+
+> A version stamp rather than "does this row carry the keys today's code needs", because the check that
+> mattered was not a missing field — it was **the validator getting stricter**, which no key can express.
+
+**And the validator gained the check that makes that possible.** `validate()` asked where joints ARE:
+sides, vertical order, ancestry of the feet, limb proportions. It never asked whether **moving one moves
+the next** — so a map whose forearm is not below the upper arm passed as clean, which is exactly how the
+zig-zag shipped. A limb must now be a CHAIN, and the rule separates the two bad maps from the eleven good
+ones with no threshold and no false positives.
+
+Deliberately **limbs only**: conversion re-parents the trunk onto a torso control, so `spine` legitimately
+stops being a child of `hips` on both Daz rigs while the map stays correct and poses correctly on device.
+Including the trunk would have rejected two maps that work — the same mistake the old
+hips-ancestor-of-head check made, recorded above as a fix and nearly repeated here within the hour.
+
 ## Aiming, evaluation and named poses
 
 The three slices the 2026-09-03 device run calls for, in order. Designed here before any of it is built,
@@ -1453,8 +1499,12 @@ State to be aware of when resuming:
   the obvious first catch for slice 2's per-bone battery.
 - `validate()` checks the bone MAP and knows nothing about the axes, and nothing at all checks the
   utterance layer. Those are slice 2's two jobs, in that order of difficulty.
-- Figures placed before 2026-09-02 have no `humanoid_axes`. They gain one on the next placement (the
-  server measures and writes it back); an entity already in a world does not, so re-place it.
+- A figure's map and frame are re-measured on the next placement whenever the catalog's are stamped
+  older than `figures.FRAME_REV` — so a fix reaches the library without re-importing, but an entity
+  ALREADY in a world keeps whatever it was placed with. Re-place it.
+- The dev library holds six Graces and five Yuffies from different eras of this code. They all work now,
+  but `grace_c` / `yuffie_c` (body-only, ~73 k and ~57 k tris) are the current conversions and the
+  cheapest; `saka` is the VRM control. The rest are worth deleting when convenient.
 - The anatomical frame and `aim` are on `feat/figures-anatomical-pose`, branched from `main`, not merged.
 - Aiming is refused for the trunk (`hips`, `spine`, `chest`, `upperChest`, `neck`, `head`) and for a
   bone whose frame was measured before aiming existed — the latter re-measures itself on the next

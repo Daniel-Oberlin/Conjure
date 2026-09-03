@@ -21,6 +21,7 @@ repeat loop (docs/backlogs/agents.md); unproven, but the phrasing costs nothing 
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Literal, Optional
@@ -707,6 +708,23 @@ async def place_asset(
 # Before generating an image / fetching a model, you may search what's already been made. Reuse is
 # always explicit (these tools) — never automatic. See the library policy in the system prompt.
 
+def _asset_note(c: dict) -> str:
+    """The short tail on a search hit. For a FIGURE it carries the two facts that decide which of six
+    near-identical Graces to place — how tall, and how expensive — because a bare list of labels gives
+    the director no way to choose and it will simply take the first (measured, 2026-09-03)."""
+    bits = [c["licence"]] if c.get("licence") else []
+    try:
+        attrs = json.loads(c.get("attributes") or "{}")
+    except (TypeError, ValueError):
+        attrs = {}
+    if attrs.get("rigged"):
+        height = attrs.get("height_m")
+        tris = attrs.get("tris")
+        bits.append("figure" + (f" {height:.2f} m" if isinstance(height, (int, float)) else "")
+                    + (f", {round(tris / 1000)}k tris" if isinstance(tris, int) else ""))
+    return f" [{'; '.join(bits)}]" if bits else ""
+
+
 @mcp.tool()
 async def search_library(
     query: Optional[str] = None,
@@ -732,8 +750,8 @@ async def search_library(
     if not cands:
         return "No matching asset in the library (confidence: none) — generate or fetch a new one."
     lines = [f"- {c['id']} ({c['kind']}, match={c['match']}): "
-             f"{c.get('label') or c.get('prompt') or c.get('query') or '—'}"
-             f"{(' [' + c['licence'] + ']') if c.get('licence') else ''}" for c in cands[:8]]
+             f"{c.get('label') or c.get('prompt') or c.get('query') or '—'}{_asset_note(c)}"
+             for c in cands[:8]]
     return f"Library matches (confidence: {tier}):\n" + "\n".join(lines)
 
 

@@ -642,6 +642,31 @@ def validate(doc: dict, mapping: dict[str, str]) -> list[str]:
             if i is not None and hips_i not in _ancestors(i, parent):
                 problems.append(f"hips is not an ancestor of {bone}")
 
+    # 3b. A limb must be a CHAIN — the forearm's node has to sit UNDER the upper arm's, or rotating the
+    #     upper arm leaves the forearm behind. That is not a hypothetical: it is the zig-zag arm reported
+    #     from the headset, and the maps that produced it validated CLEAN here for a week. Every other
+    #     check in this function looks at where joints ARE; this one asks whether moving one moves the
+    #     next, which is the only question posing actually cares about.
+    #
+    #     Measured on the catalogue: it separates the maps inferred before conversion rebuilt the deform
+    #     hierarchy (forearm parented to the armature root — broken) from every other map, with no
+    #     threshold and no false positives.
+    #     LIMBS ONLY, and that restriction is not caution — it is measured. Conversion re-parents the
+    #     trunk onto a torso control, so `spine` legitimately stops being a child of `hips` on both Daz
+    #     rigs while the map stays correct and poses correctly on device. Including the trunk here would
+    #     reject two maps that work, which is the same mistake the hips-ancestor-of-head check made.
+    for chain in (("leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand"),
+                  ("rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand"),
+                  ("leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes"),
+                  ("rightUpperLeg", "rightLowerLeg", "rightFoot", "rightToes")):
+        for upper, lower in zip(chain, chain[1:]):
+            iu, il = idx(upper), idx(lower)
+            if iu is None or il is None or iu == il:
+                continue
+            if iu not in _ancestors(il, parent):
+                problems.append(f"{lower} is not below {upper} in the skeleton — rotating {upper} "
+                                f"would leave it behind")
+
     # 4. Limb proportions. Upper and lower segments of a limb are within ~2.5x of each other on a human;
     #    a wild ratio means a twist/helper bone was mistaken for a joint.
     for a, b, c in (("leftUpperArm", "leftLowerArm", "leftHand"),
@@ -905,6 +930,13 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
         out[bone] = {k: [round(c, places) + 0.0 for c in v] for k, v in axes.items()}
     return out
 
+
+#: Bump when inference, the axes or `validate()` change in a way that should re-derive a stored frame.
+#: A figure's map and axes are cached in the catalog, and the alternative to a version is asking "does
+#: this stored frame carry the keys today's code needs" — which cannot express "the validator got
+#: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
+#: learned that a limb has to be a chain.
+FRAME_REV = 2
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")
