@@ -194,7 +194,7 @@ def test_a_stated_map_also_gets_its_anatomical_frame_measured():
     assert a["humanoid_source"] == "vrm"
     frame = a["humanoid_axes"]["leftUpperArm"]
     # three rotations to swing about, plus the bind-pose vectors an absolute aim swings FROM
-    assert sorted(frame) == ["bend", "forward", "out", "rest", "spread", "turn", "up"]
+    assert sorted(frame) == ["bend", "forward", "limits", "out", "rest", "spread", "turn", "up"]
     # The arm points along +X, so its rest direction and its twist axis are its own length — the one
     # axis that is unambiguous whatever the rig, and a cheap check that the frame belongs to THIS bone
     # rather than to the body.

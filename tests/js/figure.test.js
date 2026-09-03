@@ -189,3 +189,19 @@ test("a frame with no aiming vectors leaves the bone alone", () => {
   ["rest", "up", "forward", "out"].forEach((k) => delete frame[k]);
   assert.ok(same(delta(frame, { aim: "up" }), new THREE.Quaternion()));
 });
+
+test("a joint limit is applied on the client too, from the frame it was sent", () => {
+  // The limits ride WITH the frame (conjure/figures.py holds the one table), so this file has the
+  // arithmetic and no anatomy — nothing here can drift out of step with the server's idea of a knee.
+  const shin = GOLDEN.frames.left_shin;
+  const bent = delta(shin, { bend: 90 });          // a knee does not bend that way
+  const legal = delta(shin, { bend: -90 });
+  assert.ok(2 * Math.acos(Math.abs(bent.w)) * 180 / Math.PI < 6, "clamped to a few degrees");
+  assert.ok(2 * Math.acos(Math.abs(legal.w)) * 180 / Math.PI > 89, "and the other way is untouched");
+});
+
+test("a frame with no limits is left alone rather than clamped against a guess", () => {
+  const bare = Object.assign({}, GOLDEN.frames.left_shin);
+  delete bare.limits;
+  assert.ok(2 * Math.acos(Math.abs(delta(bare, { bend: 90 }).w)) * 180 / Math.PI > 89);
+});

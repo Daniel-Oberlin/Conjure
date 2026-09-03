@@ -111,6 +111,54 @@
     return new THREE.Quaternion(c.x, c.y, c.z, 1 + d).normalize();
   }
 
+  // A joint's limits arrive WITH its frame (the server measures them; conjure/figures.py holds the one
+  // table), so this is arithmetic only — no anatomy table on the client to drift out of step.
+  //
+  // Clamping works on the RESULT, not the request, so an impossible destination and an impossible angle
+  // are the same thing by the time we get here. The rotation is split twist-from-swing about the bone's
+  // own length, the swing resolved into its bend and spread components, each clamped, the three rebuilt.
+  // When nothing is out of range the original is returned untouched — the decomposition is exact but a
+  // round trip through it would still rewrite a legal pose in the last decimal.
+  function clampToJoint(q, frame) {
+    var lim = frame.limits;
+    var b = vec(frame.bend), sp = vec(frame.spread), t = vec(frame.turn);
+    if (!lim || !b || !sp || !t) return q;
+    var xyz = new THREE.Vector3(q.x, q.y, q.z);
+    var d = xyz.dot(t);
+    var tw = new THREE.Quaternion(t.x * d, t.y * d, t.z * d, q.w);
+    if (tw.lengthSq() < 1e-18) tw.set(0, 0, 0, 1); else tw.normalize();
+    var swing = q.clone().multiply(tw.clone().conjugate());
+    if (swing.w < 0) { swing.set(-swing.x, -swing.y, -swing.z, -swing.w); }
+    var turnDeg = 2 * Math.atan2(new THREE.Vector3(tw.x, tw.y, tw.z).dot(t), tw.w) * 180 / Math.PI;
+    var sxyz = new THREE.Vector3(swing.x, swing.y, swing.z);
+    var len = sxyz.length();
+    var angle = len > 1e-12 ? 2 * Math.atan2(len, swing.w) * 180 / Math.PI : 0;
+    var axis = len > 1e-12 ? sxyz.clone().divideScalar(len) : null;
+    var bendDeg = axis ? angle * axis.dot(b) : 0;
+    var spreadDeg = axis ? angle * axis.dot(sp) : 0;
+
+    var hit = false;
+    function cap(name, value) {
+      var range = lim[name];
+      if (!range || range.length !== 2) return value;
+      var capped = Math.max(range[0], Math.min(range[1], value));
+      if (Math.abs(capped - value) > 0.5) hit = true;
+      return capped;
+    }
+    bendDeg = cap("bend", bendDeg);
+    spreadDeg = cap("spread", spreadDeg);
+    turnDeg = cap("turn", turnDeg);
+    if (!hit) return q;
+
+    var swingAngle = Math.sqrt(bendDeg * bendDeg + spreadDeg * spreadDeg);
+    var out = new THREE.Quaternion();
+    if (swingAngle > 1e-6) {
+      var mix = b.clone().multiplyScalar(bendDeg).addScaledVector(sp, spreadDeg).normalize();
+      out.setFromAxisAngle(mix, swingAngle * Math.PI / 180);
+    }
+    return out.multiply(new THREE.Quaternion().setFromAxisAngle(t, turnDeg * Math.PI / 180));
+  }
+
   function rotation(frame, request) {
     if (!frame || !request) return null;
     var q = null, tmp = new THREE.Quaternion(), axis = new THREE.Vector3();
@@ -130,7 +178,7 @@
       var swing = aimQuat(frame, request.aim);
       if (swing) q = q ? q.premultiply(swing) : swing;
     }
-    return q;
+    return q ? clampToJoint(q, frame) : q;
   }
 
   AFRAME.registerComponent("figure", {

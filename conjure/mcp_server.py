@@ -592,6 +592,11 @@ async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
 
        Use aim for arms, legs, hands and feet. It is not available for the head, neck, spine or hips.
 
+       AIM THE LIMB, NOT EVERY BONE IN IT. "Raise her arm" is ONE call on leftUpperArm — aiming the
+       forearm too folds the elbow, since "point the forearm up" while the upper arm already points up
+       means bend it right back. Aim the shoulder or hip; leave the elbow or knee alone unless the user
+       asked for it bent, and then bend it with `bend` below.
+
     2. bend / spread / turn — A ROTATION FROM WHERE THE PART CURRENTLY RESTS, in DEGREES. Use these to
        adjust, and for the head and spine, which have no aim:
 
@@ -612,6 +617,10 @@ async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
     either. Bone names are semantic and identical on every figure: leftUpperArm, rightLowerLeg, head,
     spine and so on; call inspect_figure if unsure which this one has.
 
+    Joints have limits and a request past one lands AT the limit, with the reply saying so — an elbow
+    does not bend sideways and a hip does not swing 90 degrees backwards. If you get that message, the
+    figure is already as far as it goes; do not retry with a bigger number.
+
     A bone you mention is replaced outright, so pass everything you want it to keep; bones you do not
     mention keep their current pose, so you can move one arm without disturbing the rest. An empty {}
     returns just that bone to rest. Pass clear=true to return the whole figure to its rest pose.
@@ -628,7 +637,12 @@ async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
         return f"Couldn't pose that: {_reason(out)}."
     if out.get("cleared"):
         return "Back to a neutral stance."
-    return f"Moved {', '.join(out.get('posed') or [])}."
+    moved = f"Moved {', '.join(out.get('posed') or [])}."
+    if out.get("limited"):
+        # What a joint refused, said out loud. A body has limits; a request past them lands at the limit
+        # rather than doing nothing, and knowing which one was hit is how the next request gets better.
+        return moved + " Joint limits applied: " + "; ".join(out["limited"]) + "."
+    return moved
 
 
 @mcp.tool()

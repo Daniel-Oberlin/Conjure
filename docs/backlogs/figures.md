@@ -1189,6 +1189,60 @@ stops being a child of `hips` on both Daz rigs while the map stays correct and p
 Including the trunk would have rejected two maps that work — the same mistake the old
 hips-ancestor-of-head check made, recorded above as a fix and nearly repeated here within the hour.
 
+### Device run 2026-09-03c — joint limits, because the vocabulary could ask for the impossible
+
+`aim` works. Two poses looked wrong, and reading the log showed the system had done exactly as it was
+told — the requests were the problem:
+
+```
+"raise grace's left arm"        -> {leftUpperArm: {aim: up}, leftLowerArm: {aim: up}}
+"bend saka's right leg backward"-> {rightUpperLeg: {aim: back}, rightLowerLeg: {bend: 90}}
+```
+
+Aiming the forearm "up" as well as the upper arm folds the elbow 180° behind her head — "point the
+forearm at the sky" while the upper arm already points there means bend it right back. And `aim: back`
+on a thigh is **90 degrees of hip extension**, against the ~20 a person manages, with a knee bend in the
+hyperextension direction on top. Rendered from the logged calls, both reproduce exactly.
+
+> **The vocabulary could express poses a body cannot make, and executed them faithfully.** Nothing in the
+> system knew that an elbow does not bend sideways.
+
+**Limits are per SEMANTIC bone**, which is the dividend a semantic vocabulary keeps paying: one table is
+correct for Saka, Grace, Yuffie and everything after, exactly as one `bend` is. They are generous on
+purpose — they exist to exclude the grotesque, not to enforce realism on a puppet: where a real hip
+extends 20°, this allows 35.
+
+They **ride with the frame** rather than sitting beside it. The runtime clamps client-side and the render
+pipeline clamps in Python, so shipping the numbers means one table instead of two that drift.
+
+And a request past a limit lands AT the limit and **says so** — `/figure` resolves the pose once more
+purely to report it, and the tool relays *"Joint limits applied: rightUpperLeg.bend -86° → -35°"*. A
+clamp nobody is told about is the silent-degradation failure this document keeps warning against; a clamp
+that answers back is feedback the director can act on. Measured on the two reported poses:
+
+| request | before | after |
+|---|---|---|
+| `leftLowerArm aim up` | elbow folded behind her head | `spread +135° → +8°` — arm raised nearly straight |
+| `rightUpperLeg aim back` | thigh horizontal behind her | `bend −86° → −35°` — leg extended behind |
+| `rightLowerLeg bend 90` | knee hyperextended | `bend +90° → +5°` — shin straight |
+
+Two things this cost, both worth recording because both were invisible until the decomposition existed:
+
+- **`bend` and `spread` were not orthogonal.** Both are perpendicular to the bone, but not to each other:
+  an A-posed forearm rests slightly forward, which tilts them ~8° apart. Harmless while the axes are only
+  ever used one at a time — and wrong the moment a rotation is read BACK out of them, which is what
+  clamping does. A legal 90° elbow bend decomposed as 16° of impossible elbow abduction and was clamped.
+  The frame is now orthonormalized at measurement time, so it can be read in both directions.
+- **The shoulder is barely limited, deliberately.** Rest-relative bounds only work where rest IS the
+  anatomical neutral. For hips, knees, ankles and the trunk it is, on every rig measured. At the shoulder
+  it is not, and the rigs disagree by 48° — a T-posed arm brought down to the side is an ordinary −90° of
+  spread that a tight bound would clamp. Only the twist has a neutral all three agree on, so only the
+  twist is really constrained.
+
+Also: **aim the limb, not every bone in it.** The tool description now says so outright, since aiming
+both bones of an arm is what produced the fold. That is the third description change made to steer the
+director, and — still — nothing measures whether any of them worked. See slice 2.
+
 ## Aiming, evaluation and named poses
 
 The three slices the 2026-09-03 device run calls for, in order. Designed here before any of it is built,
@@ -1229,6 +1283,8 @@ Details that have to be decided now rather than discovered:
   arm", not to the world. Worth stating in the tool description, since it is the one place the mental
   model can break.
 - **It sets direction, not twist.** `{"aim": "up", "turn": 30}` is the full expression.
+- **Aim the limb, not every bone in it.** Aiming a forearm as well as an upper arm folds the elbow;
+  measured on device, and now stated in the tool description.
 - **Limbs only.** `aim` points a bone along its own length; on a head that would mean aiming the top of
   the skull, which is not what "have her look left" means. Head, neck and spine keep the relative axes —
   and head `turn` is already confirmed correct on all three rigs.
@@ -1477,6 +1533,8 @@ than protects:
    director correctly is exactly what is not yet known — that is slice 2's job, and the first thing to
    point it at is the three utterances that failed: "raise her arm up", "point her arm down", "spread
    her legs apart".
+1b. ~~**Joint limits**~~ **Built 2026-09-03**, after `aim` made it easy to ask for the impossible. Per
+   semantic bone, shipped with the frame, clamped on both sides of the wire and reported back.
 2. **The eval harness at the utterance layer** — ~20 phrases × 3 rigs, rendered and judged. The only
    guard on the one layer of this feature that has no test, and the only way to know whether a change to
    a sentence of English did what it was supposed to.

@@ -917,6 +917,14 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
         bend = _perp(direction, forward) or _perp(direction, up)
         spread = _perp(direction, outward) or _perp(direction, up)
         turn = _scaled(direction, sign)
+        if bend and spread:
+            # Square the two swings against each other. Both are already perpendicular to the bone, but
+            # not necessarily to EACH OTHER: an A-posed forearm rests slightly forward, which tilts them
+            # about 8 degrees apart. That is invisible while the axes are only ever used one at a time,
+            # and wrong the moment a rotation is decomposed back into them — a legal 90-degree elbow bend
+            # read as 16 degrees of impossible elbow abduction, and the joint limits clamped it. A frame
+            # meant to be read in both directions has to be an orthonormal basis.
+            spread = _unit(_sub(spread, _scaled(bend, _dot(spread, bend)))) or spread
         axes = {"bend": bend, "spread": spread, "turn": turn}
         if not all(axes.values()):
             continue                                    # a bone we cannot frame is better left unposable
@@ -927,7 +935,14 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
         axes.update({"rest": direction, "up": up, "forward": forward, "out": outward})
         if space == "parent":
             axes = {k: to_parent(i, v) for k, v in axes.items()}
-        out[bone] = {k: [round(c, places) + 0.0 for c in v] for k, v in axes.items()}
+        framed = {k: [round(c, places) + 0.0 for c in v] for k, v in axes.items()}
+        # What this joint can actually do, travelling WITH the frame rather than looked up beside it.
+        # The runtime clamps client-side and the render pipeline clamps in Python; shipping the numbers
+        # means one table rather than two that can drift apart silently.
+        limits = joint_limits(bone)
+        if limits:
+            framed["limits"] = {k: [float(lo), float(hi)] for k, (lo, hi) in limits.items()}
+        out[bone] = framed
     return out
 
 
@@ -936,7 +951,7 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 2
+FRAME_REV = 3
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")
@@ -1000,7 +1015,127 @@ def swing(rest, target, fallback) -> list[float]:
     return [v / n for v in q]
 
 
-def resolve_pose(axes: dict, pose: dict) -> dict[str, list[float]]:
+# ---------------------------------------------------------------- joint limits
+#
+# The vocabulary can express poses a body cannot make, and until now it executed them faithfully:
+# measured on device, "raise her left arm" folded the elbow 180 degrees behind her head, and "bend her
+# right leg backward" put 90 degrees of extension through a hip that manages about 20. Both were the
+# director asking for something impossible in perfectly good syntax.
+#
+# Limits are per SEMANTIC bone, which is the whole point of having a semantic vocabulary: one table is
+# correct for Saka, Grace, Yuffie and everything after them, the same way one `bend` is. They are
+# **generous on purpose** — they exist to exclude the grotesque, not to enforce realism on what is, after
+# all, a puppet. Where a real joint manages 20 degrees, these allow 35.
+#
+# Rest-relative, like the rotations they bound. That is exact for the hinges and the trunk, whose rest
+# pose IS the anatomical neutral on every rig measured (a knee is straight, a shin hangs down). It is
+# loosest at the SHOULDER, where rest varies from horizontal on Saka to 48 degrees below on Grace — so
+# the shoulder's limits are wide enough to be right from either, which costs little because a shoulder
+# genuinely does reach nearly everywhere.
+_LIMITS = {
+    "Shoulder":  {"bend": (-20, 20), "spread": (-20, 35), "turn": (-20, 20)},   # the clavicle
+    # The shoulder is barely limited, and deliberately so. Rest-relative bounds only work where rest IS
+    # the anatomical neutral; at the shoulder it is not, and it differs by 48 degrees between the rigs
+    # here — so any tight bound would be wrong on one of them. A T-posed arm brought down to the side is
+    # -90 of spread and completely ordinary; on Grace the same destination is -44. Only the TWIST has a
+    # neutral that every rig agrees on, so only the twist is really constrained.
+    "UpperArm":  {"bend": (-140, 190), "spread": (-100, 190), "turn": (-95, 95)},
+    "LowerArm":  {"bend": (-5, 155), "spread": (-8, 8), "turn": (-95, 95)},     # elbow: one way only
+    "Hand":      {"bend": (-75, 85), "spread": (-25, 35), "turn": (-35, 35)},
+    "UpperLeg":  {"bend": (-35, 130), "spread": (-30, 75), "turn": (-50, 50)},
+    "LowerLeg":  {"bend": (-155, 5), "spread": (-5, 5), "turn": (-15, 15)},     # knee: the other way
+    "Foot":      {"bend": (-55, 30), "spread": (-18, 18), "turn": (-25, 25)},
+    "Toes":      {"bend": (-35, 65), "spread": (-10, 10), "turn": (-10, 10)},
+    "hips":      {"bend": (-45, 45), "spread": (-45, 45), "turn": (-45, 45)},
+    "spine":     {"bend": (-25, 50), "spread": (-30, 30), "turn": (-40, 40)},
+    "chest":     {"bend": (-25, 50), "spread": (-30, 30), "turn": (-40, 40)},
+    "upperChest": {"bend": (-20, 40), "spread": (-25, 25), "turn": (-35, 35)},
+    "neck":      {"bend": (-45, 45), "spread": (-40, 40), "turn": (-65, 65)},
+    "head":      {"bend": (-35, 35), "spread": (-30, 30), "turn": (-50, 50)},
+}
+_FINGER = {"bend": (-15, 95), "spread": (-18, 18), "turn": (-12, 12)}
+
+
+def joint_limits(bone: str) -> dict[str, tuple[float, float]]:
+    """The degree range each rotation of `bone` may take, sides folded together.
+
+    Left and right share a row because the axes are already mirrored: `spread` is outward on both sides
+    and `turn` inward on both, so one range describes the joint rather than the side.
+    """
+    if bone in _LIMITS:
+        return _LIMITS[bone]
+    bare = bone.removeprefix("left").removeprefix("right")
+    if bare in _LIMITS:
+        return _LIMITS[bare]
+    return dict(_FINGER) if any(f in bare for f in
+                                ("Thumb", "Index", "Middle", "Ring", "Little")) else {}
+
+
+def _quat_conj(q):
+    return [-q[0], -q[1], -q[2], q[3]]
+
+
+def _axis_angle(axis, radians: float) -> list[float]:
+    h = radians / 2.0
+    s = math.sin(h)
+    return [axis[0] * s, axis[1] * s, axis[2] * s, math.cos(h)]
+
+
+def clamp_to_joint(bone: str, q: list[float], frame: dict, notes: Optional[list] = None) -> list[float]:
+    """`q` reduced to what this joint can actually do, in the bone's own anatomical frame.
+
+    Works on the RESULT rather than the request, so it does not matter whether the caller said
+    `{"bend": 200}` or `{"aim": "up"}` — an impossible destination and an impossible angle are the same
+    thing once resolved, and there is one place to get it right.
+
+    The rotation is split swing-from-twist about the bone's own length, the swing's axis is resolved into
+    its bend and spread components, each is clamped, and the three are rebuilt. When nothing is out of
+    range the ORIGINAL quaternion is returned untouched — two perpendicular swings compose into a small
+    amount of twist, and a round trip through this decomposition would quietly rewrite a legal pose.
+    """
+    limits = frame.get("limits") or joint_limits(bone)
+    b, sp, t = frame.get("bend"), frame.get("spread"), frame.get("turn")
+    if not limits or not (b and sp and t):
+        return q
+    twist_dot = _dot(q[:3], t)
+    twist = [t[0] * twist_dot, t[1] * twist_dot, t[2] * twist_dot, q[3]]
+    n = math.sqrt(sum(v * v for v in twist))
+    twist = [v / n for v in twist] if n > 1e-9 else [0.0, 0.0, 0.0, 1.0]
+    swing = _quat_mul(q, _quat_conj(twist))
+    if swing[3] < 0:                                   # keep the swing on the short way round
+        swing = [-v for v in swing]
+    turn_deg = math.degrees(2.0 * math.atan2(_dot(twist[:3], t), twist[3]))
+    axis = _unit(swing[:3])
+    angle = math.degrees(2.0 * math.atan2(math.sqrt(_dot(swing[:3], swing[:3])),
+                                          max(-1.0, min(1.0, swing[3])))) if axis else 0.0
+    bend_deg = angle * _dot(axis, b) if axis else 0.0
+    spread_deg = angle * _dot(axis, sp) if axis else 0.0
+
+    hit = []
+    def cap(name, value):
+        lo, hi = limits.get(name) or (-360.0, 360.0)
+        capped = max(lo, min(hi, value))
+        if abs(capped - value) > 0.5:
+            hit.append(f"{bone}.{name} {value:+.0f}° → {capped:+.0f}°")
+        return capped
+
+    bend_deg, spread_deg, turn_deg = (cap("bend", bend_deg), cap("spread", spread_deg),
+                                      cap("turn", turn_deg))
+    if not hit:
+        return q
+    if notes is not None:
+        notes.extend(hit)
+    swing_angle = math.hypot(bend_deg, spread_deg)
+    if swing_angle > 1e-6:
+        mix = _unit((b[0] * bend_deg + sp[0] * spread_deg, b[1] * bend_deg + sp[1] * spread_deg,
+                     b[2] * bend_deg + sp[2] * spread_deg))
+        swing = _axis_angle(mix, math.radians(swing_angle)) if mix else [0.0, 0.0, 0.0, 1.0]
+    else:
+        swing = [0.0, 0.0, 0.0, 1.0]
+    return _quat_mul(swing, _axis_angle(t, math.radians(turn_deg)))
+
+
+def resolve_pose(axes: dict, pose: dict, notes: Optional[list] = None) -> dict[str, list[float]]:
     """`{bone: [x, y, z, w]}` — one delta quaternion per posed bone, in whatever space `axes` are in.
 
     `pose` is `{bone: {"bend": degrees, ...}}`. Missing axes are zero, so a one-axis request stays a
@@ -1039,7 +1174,7 @@ def resolve_pose(axes: dict, pose: dict) -> dict[str, list[float]]:
             rest = frame.get("rest")
             if target and rest:
                 q = _quat_mul(swing(rest, target, frame.get("forward") or (0.0, 0.0, 1.0)), q)
-        out[bone] = q
+        out[bone] = clamp_to_joint(bone, q, frame, notes)
     return out
 
 

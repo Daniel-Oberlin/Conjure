@@ -41,7 +41,8 @@ from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
-from .figures import AIM_DIRECTIONS, FRAME_REV, FRAME_VECTORS, POSE_AXES, TRUNK_BONES
+from .figures import (AIM_DIRECTIONS, FRAME_REV, FRAME_VECTORS, POSE_AXES, TRUNK_BONES,
+                      resolve_pose)
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
@@ -4851,10 +4852,19 @@ async def figure(req: FigureRequest) -> dict:
     merged.update(clean)
     merged = {b: r for b, r in merged.items() if r}          # a cleared bone leaves no trace
     sets = {"components.figure": {**component, "pose": json.dumps(merged)}}
+    # Resolve it once here purely to REPORT what the joints refused. The client resolves it again for
+    # real; this costs a few hundred multiplications and is what turns a silent clamp into feedback the
+    # caller can act on — the director asked for 90 degrees of hip extension twice in one session, and
+    # nothing told it otherwise.
+    limited: list = []
+    resolve_pose(axes, clean, limited)
     await _broadcast({"type": "patch",
                       "patch": store.apply_patch([{"op": "update", "id": req.id, "set": sets}],
                                                  origin="figure")})
-    return {"ok": True, "id": req.id, "posed": sorted(clean), "bones": len(merged)}
+    out = {"ok": True, "id": req.id, "posed": sorted(clean), "bones": len(merged)}
+    if limited:
+        out["limited"] = limited
+    return out
 
 
 class DismissModuleRequest(BaseModel):

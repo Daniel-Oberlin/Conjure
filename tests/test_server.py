@@ -3905,7 +3905,8 @@ def test_a_figure_carries_its_bone_vocabulary(srv, client, tmp_path):
     # Which node is half the answer; which way is the other half — three relative rotations, plus the
     # bind-pose vectors an absolute aim swings from.
     frame = meta["humanoid_axes"]["leftUpperArm"]
-    assert sorted(frame) == ["bend", "forward", "out", "rest", "spread", "turn", "up"]
+    assert sorted(frame) == ["bend", "forward", "limits", "out", "rest", "spread", "turn", "up"]
+    assert frame["limits"]["bend"] == [-140, 190], "a shoulder is barely limited; a knee is not"
 
 
 def test_a_pose_is_stored_in_the_terms_it_was_asked_for(srv, client, tmp_path):
@@ -3944,6 +3945,26 @@ def test_clear_returns_to_the_rest_pose(srv, client, tmp_path):
     client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"bend": 60}}})
     assert client.post("/figure", json={"id": eid, "clear": True}).json()["cleared"] is True
     assert _ent(client, eid)["components"]["figure"]["pose"] == ""
+
+
+def test_a_joint_limit_is_applied_and_reported(srv, client, tmp_path):
+    """A body has limits, so a request past one lands AT the limit rather than doing nothing. Saying so
+    is the point: the director asked for 90 degrees of hip extension twice in one session and nothing
+    told it otherwise."""
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftLowerArm": {"spread": 60}}}).json()
+    assert r["ok"] is True
+    assert r["limited"] == ["leftLowerArm.spread +60° → +8°"]
+    # The pose is stored as ASKED — the limit is a property of the joint, applied when it is resolved,
+    # not a rewrite of what the caller wanted.
+    assert json.loads(_ent(client, eid)["components"]["figure"]["pose"]) == {
+        "leftLowerArm": {"spread": 60.0}}
+
+
+def test_a_pose_within_the_limits_reports_nothing(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up"}}}).json()
+    assert r["ok"] is True and "limited" not in r
 
 
 def test_an_unknown_bone_is_refused_and_names_what_is_available(srv, client, tmp_path):

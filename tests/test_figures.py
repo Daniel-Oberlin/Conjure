@@ -10,7 +10,7 @@ import pytest
 
 import math
 
-from conjure.figures import (CORE_BONES, FRAME_VECTORS, POSE_AXES, TRUNK_BONES,
+from conjure.figures import (CORE_BONES, FRAME_VECTORS, POSE_AXES, TRUNK_BONES, joint_limits,
                              anatomical_axes, body_frame, infer_humanoid,
                              node_world_matrices, node_world_positions, parent_map, resolve_pose,
                              score, validate)
@@ -284,10 +284,12 @@ def test_bend_lifts_the_toes_of_a_forward_pointing_foot():
 
 
 def test_turn_rotates_a_limb_about_its_own_length_inward_on_both_sides():
+    # 15 degrees, not 90: a knee does not rotate 90 degrees and the joint limits now say so, which is
+    # itself worth having a test walk into.
     doc, mapping, axes = _posed()
-    left = _travel(doc, mapping, axes, "leftLowerLeg", "leftToes", {"turn": 90})
-    right = _travel(doc, mapping, axes, "rightLowerLeg", "rightToes", {"turn": 90})
-    assert left[0] < -0.05 and right[0] > 0.05, "both toes should turn toward the midline"
+    left = _travel(doc, mapping, axes, "leftLowerLeg", "leftToes", {"turn": 15})
+    right = _travel(doc, mapping, axes, "rightLowerLeg", "rightToes", {"turn": 15})
+    assert left[0] < -0.005 and right[0] > 0.005, "both toes should turn toward the midline"
     assert left[1] == pytest.approx(0, abs=1e-6), "a twist does not raise the joint below it"
 
 
@@ -347,10 +349,18 @@ def test_every_mapped_bone_of_a_humanoid_gets_a_full_frame():
     doc, mapping, axes = _posed()
     assert set(axes) == set(mapping)
     for bone, frame in axes.items():
-        # three rotations to swing about, and the four bind-pose vectors an absolute aim needs
-        assert set(frame) == set(POSE_AXES) | set(FRAME_VECTORS), bone
+        # three rotations to swing about, the four bind-pose vectors an absolute aim needs, and what the
+        # joint is allowed to do — the frame carries everything needed to resolve a pose, so a runtime
+        # never needs a second table beside it
+        assert set(frame) == set(POSE_AXES) | set(FRAME_VECTORS) | {"limits"}, bone
         for name, axis in frame.items():
+            if name == "limits":
+                continue
             assert math.isclose(math.dist(axis, (0, 0, 0)), 1.0, abs_tol=1e-4), f"{bone}.{name} not unit"
+        # ...and the three swings are an orthonormal basis, so a rotation can be read back OUT of them.
+        assert abs(sum(a * b for a, b in zip(frame["bend"], frame["spread"]))) < 1e-4, bone
+        assert abs(sum(a * b for a, b in zip(frame["bend"], frame["turn"]))) < 1e-4, bone
+        assert abs(sum(a * b for a, b in zip(frame["spread"], frame["turn"]))) < 1e-4, bone
 
 
 # ---------------------------------------------------------------- aiming (absolute directions)
@@ -466,3 +476,74 @@ def test_pose_resolution_matches_the_shared_golden_vectors():
         frame = golden["frames"][case["frame"]]
         got = resolve_pose({"bone": frame}, {"bone": case["request"]})["bone"]
         assert got == pytest.approx(case["quat"], abs=1e-9), case["name"]
+
+
+# ---------------------------------------------------------------- joint limits
+#
+# The vocabulary could express poses a body cannot make, and executed them faithfully: measured on
+# device, "raise her left arm" folded the elbow behind her head and "bend her right leg backward" put 90
+# degrees through a hip that manages about 20. Limits are per SEMANTIC bone, so one table is right for
+# every rig — the same dividend the names and the axes pay.
+
+
+def test_limits_fold_the_two_sides_together():
+    # `spread` is outward on both sides and `turn` inward on both, so one range describes the JOINT.
+    assert joint_limits("leftLowerLeg") == joint_limits("rightLowerLeg")
+    assert joint_limits("leftIndexProximal")["bend"] == joint_limits("rightLittleDistal")["bend"]
+    assert joint_limits("nosuchbone") == {}
+
+
+def test_a_knee_bends_one_way_only():
+    doc, mapping, axes = _posed()
+    notes = []
+    forward = resolve_pose(axes, {"leftLowerLeg": {"bend": 90}}, notes)["leftLowerLeg"]
+    assert notes and "leftLowerLeg.bend" in notes[0]
+    assert _direction(doc, mapping, axes, "leftLowerLeg", {"bend": 90})[2] < 0.15, "barely moved"
+    # ...and the way it does bend is untouched.
+    back = resolve_pose(axes, {"leftLowerLeg": {"bend": -90}})["leftLowerLeg"]
+    assert back == pytest.approx(resolve_pose(axes, {"leftLowerLeg": {"bend": -90}}, [])["leftLowerLeg"])
+    assert forward != pytest.approx(back)
+
+
+def test_an_elbow_does_not_bend_sideways():
+    """The measured failure: aiming a forearm `up` asks the elbow to abduct 135 degrees. It cannot, so
+    the nearest thing it can do is barely move — which leaves a raised arm nearly straight, which is
+    what "raise her arm" meant."""
+    doc, mapping, axes = _posed()
+    notes = []
+    resolve_pose(axes, {"leftLowerArm": {"spread": 60}}, notes)
+    assert notes == ["leftLowerArm.spread +60° → +8°"]
+
+
+def test_a_legal_pose_passes_through_untouched():
+    """Not approximately untouched. Two perpendicular swings compose into a little twist, so a round
+    trip through the decomposition would rewrite a pose nobody asked to change — the clamp returns the
+    ORIGINAL quaternion when nothing is out of range."""
+    doc, mapping, axes = _posed()
+    notes = []
+    for request in ({"bend": 45}, {"spread": 30}, {"bend": 30, "spread": 20, "turn": 10}):
+        before = resolve_pose({"b": dict(axes["leftUpperLeg"], limits={})}, {"b": request})["b"]
+        after = resolve_pose(axes, {"leftUpperLeg": request}, notes)["leftUpperLeg"]
+        assert after == before, request
+    assert notes == []
+
+
+def test_the_shoulder_is_deliberately_barely_limited():
+    """Rest-relative bounds only work where rest IS the anatomical neutral. At the shoulder it is not,
+    and the rigs disagree by 48 degrees — so bringing a T-posed arm down to the side, an ordinary -90 of
+    spread, must not be clamped."""
+    doc, mapping, axes = _posed()
+    notes = []
+    got = _direction(doc, mapping, axes, "leftUpperArm", {"aim": "down"})
+    assert got == pytest.approx((0, -1, 0), abs=DIRECTION_TOL)
+    resolve_pose(axes, {"leftUpperArm": {"aim": "down"}}, notes)
+    assert notes == []
+
+
+def test_limits_ride_with_the_frame_so_a_runtime_needs_no_table():
+    doc, mapping, axes = _posed()
+    assert axes["leftLowerLeg"]["limits"]["bend"] == [-155.0, 5.0]
+    # A frame with none (an older figure, or one we have no anatomy for) is simply not clamped, rather
+    # than clamped against a guess.
+    bare = {"b": {k: v for k, v in axes["leftLowerLeg"].items() if k != "limits"}}
+    assert resolve_pose(bare, {"b": {"bend": 300}})["b"] != pytest.approx([0, 0, 0, 1])
