@@ -10,7 +10,8 @@ import pytest
 
 import math
 
-from conjure.figures import (CORE_BONES, POSE_AXES, anatomical_axes, body_frame, infer_humanoid,
+from conjure.figures import (CORE_BONES, FRAME_VECTORS, POSE_AXES, TRUNK_BONES,
+                             anatomical_axes, body_frame, infer_humanoid,
                              node_world_matrices, node_world_positions, parent_map, resolve_pose,
                              score, validate)
 from conjure.figures import _ancestors, _local_matrix, _mul, _quat_mul, _sub
@@ -318,6 +319,122 @@ def test_every_mapped_bone_of_a_humanoid_gets_a_full_frame():
     doc, mapping, axes = _posed()
     assert set(axes) == set(mapping)
     for bone, frame in axes.items():
-        assert set(frame) == set(POSE_AXES), bone
+        # three rotations to swing about, and the four bind-pose vectors an absolute aim needs
+        assert set(frame) == set(POSE_AXES) | set(FRAME_VECTORS), bone
         for name, axis in frame.items():
             assert math.isclose(math.dist(axis, (0, 0, 0)), 1.0, abs_tol=1e-4), f"{bone}.{name} not unit"
+
+
+# ---------------------------------------------------------------- aiming (absolute directions)
+#
+# The relative rotations ask the caller to know where a bone rests, and the three real rigs disagree by
+# 48 degrees about where an arm does — measured, and the reason "raise her arm up" pointed it backwards
+# on all three. An aim says the destination instead.
+
+
+def _apose(doc, idx, drop=0.5):
+    """The fixture with its arms lowered — an A-pose, so aiming can be tested against two rest poses."""
+    for side, sign in (("l", 1), ("r", -1)):
+        doc["nodes"][idx[f"{side}_upperarm"]]["translation"] = [sign * 0.08, 0, 0]
+        for bone in (f"{side}_lowerarm", f"{side}_hand"):
+            doc["nodes"][idx[bone]]["translation"] = [sign * 0.25 * (1 - drop), -0.25 * drop, 0]
+    return doc
+
+
+#: Axes are rounded to five places on the wire, so a direction lands within ~1e-5 rather than exactly.
+DIRECTION_TOL = 1e-4
+
+
+def _direction(doc, mapping, axes, bone, request):
+    """Where `bone` points after the request — the whole claim of an aim, in one number."""
+    by_name = {n["name"]: i for i, n in enumerate(doc["nodes"])}
+    rest = anatomical_axes(doc, mapping, space="world")[bone]["rest"]
+    delta = resolve_pose(anatomical_axes(doc, mapping, space="world"), {bone: request})[bone]
+    x, y, z, w = delta                                        # rotate the rest direction by the delta
+    t = (2 * (y * rest[2] - z * rest[1]), 2 * (z * rest[0] - x * rest[2]), 2 * (x * rest[1] - y * rest[0]))
+    return (rest[0] + w * t[0] + y * t[2] - z * t[1],
+            rest[1] + w * t[1] + z * t[0] - x * t[2],
+            rest[2] + w * t[2] + x * t[1] - y * t[0])
+
+
+def test_aim_points_the_bone_where_it_was_asked_to():
+    doc, mapping, axes = _posed()
+    for want, expected in (("up", (0, 1, 0)), ("down", (0, -1, 0)),
+                           ("forward", (0, 0, 1)), ("back", (0, 0, -1))):
+        assert _direction(doc, mapping, axes, "leftUpperArm", {"aim": want}) == pytest.approx(
+            expected, abs=DIRECTION_TOL), want
+
+
+def test_out_and_in_are_side_aware():
+    doc, mapping, axes = _posed()
+    assert _direction(doc, mapping, axes, "leftUpperArm", {"aim": "out"})[0] > 0.99
+    assert _direction(doc, mapping, axes, "rightUpperArm", {"aim": "out"})[0] < -0.99
+    # The same word, mirrored by the measured frame rather than by a sign the caller has to supply —
+    # which is the failure the device run recorded: asked to spread both legs, the director negated one.
+    assert _direction(doc, mapping, axes, "leftUpperArm", {"aim": "in"})[0] < -0.99
+
+
+def test_the_same_aim_lands_the_same_way_from_two_different_rest_poses():
+    """The reason aiming exists. Saka rests her arms horizontal and Grace hers 48 degrees below; the
+    same relative number cannot mean "up" for both, and the same aim must."""
+    t_pose, idx = _skeleton()
+    a_pose = _apose(*_skeleton())
+    mapping = infer_humanoid(t_pose)
+    t_rest = anatomical_axes(t_pose, mapping, space="world")["leftUpperArm"]["rest"]
+    a_rest = anatomical_axes(a_pose, mapping, space="world")["leftUpperArm"]["rest"]
+    assert t_rest[1] == pytest.approx(0, abs=1e-6) and a_rest[1] < -0.3, "the fixtures must differ"
+    for doc in (t_pose, a_pose):
+        got = _direction(doc, mapping, anatomical_axes(doc, mapping), "leftUpperArm", {"aim": "up"})
+        assert got == pytest.approx((0, 1, 0), abs=DIRECTION_TOL)
+
+
+def test_a_half_turn_swings_through_the_side_not_through_the_torso():
+    """An arm aimed at its own opposite is antiparallel, and a half-turn has no unique axis. Left to a
+    generic shortest-arc routine it picks an arbitrary perpendicular; here it must be the body's forward,
+    so the arm travels through the frontal plane the way a person raises one."""
+    doc, mapping, axes = _posed()
+    q = resolve_pose(axes, {"leftUpperArm": {"aim": "in"}})["leftUpperArm"]
+    assert q[3] == pytest.approx(0, abs=1e-9), "not a half-turn"
+    assert (abs(q[0]), abs(q[1]), abs(q[2])) == pytest.approx((0, 0, 1), abs=DIRECTION_TOL)
+
+
+def test_an_aim_replaces_the_relative_swing_but_not_the_twist():
+    doc, mapping, axes = _posed()
+    aim = resolve_pose(axes, {"leftUpperArm": {"aim": "up"}})["leftUpperArm"]
+    assert resolve_pose(axes, {"leftUpperArm": {"aim": "up", "bend": 40}})["leftUpperArm"] \
+        == pytest.approx(aim), "bend must not add to an aim — the server refuses the pair outright"
+    turned = resolve_pose(axes, {"leftUpperArm": {"aim": "up", "turn": 30}})["leftUpperArm"]
+    assert turned != pytest.approx(aim), "a twist is orthogonal to where the bone points, so it composes"
+
+
+def test_an_aim_that_is_already_satisfied_is_a_no_op():
+    doc, mapping, axes = _posed()
+    assert resolve_pose(axes, {"leftUpperLeg": {"aim": "down"}})["leftUpperLeg"] \
+        == pytest.approx([0, 0, 0, 1], abs=1e-9)
+
+
+def test_an_unmeasurable_aim_resolves_to_nothing_rather_than_a_guess():
+    doc, mapping, axes = _posed()
+    stale = {"leftUpperArm": {k: v for k, v in axes["leftUpperArm"].items() if k not in FRAME_VECTORS}}
+    assert resolve_pose(stale, {"leftUpperArm": {"aim": "up"}})["leftUpperArm"] == [0, 0, 0, 1]
+    assert resolve_pose(axes, {"leftUpperArm": {"aim": "sideways"}})["leftUpperArm"] == [0, 0, 0, 1]
+
+
+def test_the_trunk_is_not_aimable_and_says_which_bones_are():
+    # Aim points a bone along its LENGTH; the head already points up, so "look up" would be a no-op.
+    assert set(TRUNK_BONES) == {"hips", "spine", "chest", "upperChest", "neck", "head"}
+    assert not any(b.startswith(("left", "right")) for b in TRUNK_BONES)
+
+
+def test_pose_resolution_matches_the_shared_golden_vectors():
+    """The same fixture tests/js/figure.test.js reads. Two implementations of this arithmetic exist —
+    Python renders the verification images, the client drives the headset — and they are only worth
+    having if they agree to the digit. Same discipline as plane-anchor's golden vectors."""
+    import json
+    from pathlib import Path
+    golden = json.loads((Path(__file__).resolve().parent / "js" / "fixtures"
+                         / "figure-pose-golden.json").read_text())
+    for case in golden["cases"]:
+        frame = golden["frames"][case["frame"]]
+        got = resolve_pose({"bone": frame}, {"bone": case["request"]})["bone"]
+        assert got == pytest.approx(case["quat"], abs=1e-9), case["name"]

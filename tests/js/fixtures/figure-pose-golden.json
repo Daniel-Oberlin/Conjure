@@ -1,0 +1,407 @@
+{
+  "note": "Golden vectors for resolving an anatomical pose into a per-bone delta quaternion. conjure/figures.py resolve_pose() and client/figure.js must both reproduce these \u2014 the runtime resolves on the client and scripts/pose_test.py renders through the Python side, so a headset and a Blender render agree only as long as they do. Frames are synthetic and chosen for the cases that matter: a T-posed arm, an A-posed arm 45 degrees below it, and both sides. Quaternions are [x, y, z, w]. Regenerate only on an intentional change.",
+  "frames": {
+    "t_pose_left_arm": {
+      "rest": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "spread": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "turn": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    "a_pose_left_arm": {
+      "rest": [
+        0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        -0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "spread": [
+        -0.0,
+        0.0,
+        1.0
+      ],
+      "turn": [
+        0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ]
+    },
+    "a_pose_right_arm": {
+      "rest": [
+        -0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        -0.7071067811865476,
+        0.7071067811865476,
+        0.0
+      ],
+      "spread": [
+        -0.0,
+        0.0,
+        -1.0
+      ],
+      "turn": [
+        0.7071067811865476,
+        0.7071067811865476,
+        -0.0
+      ]
+    },
+    "left_leg": {
+      "rest": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "spread": [
+        -0.0,
+        0.0,
+        1.0
+      ],
+      "turn": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    "right_leg": {
+      "rest": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "spread": [
+        -0.0,
+        -0.0,
+        -1.0
+      ],
+      "turn": [
+        -0.0,
+        1.0,
+        -0.0
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "leg bend forward",
+      "frame": "left_leg",
+      "request": {
+        "bend": 45
+      },
+      "quat": [
+        -0.382683432365,
+        0.0,
+        0.0,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "leg spread out, left",
+      "frame": "left_leg",
+      "request": {
+        "spread": 45
+      },
+      "quat": [
+        0.0,
+        0.0,
+        0.382683432365,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "leg spread out, right \u2014 mirrored by the frame, not by the caller",
+      "frame": "right_leg",
+      "request": {
+        "spread": 45
+      },
+      "quat": [
+        0.0,
+        0.0,
+        -0.382683432365,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "arm turn about its own length",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "turn": 60
+      },
+      "quat": [
+        0.353553390593,
+        -0.353553390593,
+        0.0,
+        0.866025403784
+      ]
+    },
+    {
+      "name": "two swings compose spread-outermost",
+      "frame": "left_leg",
+      "request": {
+        "bend": 30,
+        "spread": 20
+      },
+      "quat": [
+        -0.254887002244,
+        -0.044943455528,
+        0.167731259497,
+        0.951251242564
+      ]
+    },
+    {
+      "name": "twist composes innermost",
+      "frame": "left_leg",
+      "request": {
+        "bend": 30,
+        "turn": 25
+      },
+      "quat": [
+        -0.2526840003,
+        -0.209064612935,
+        0.056018694202,
+        0.94302952738
+      ]
+    },
+    {
+      "name": "aim up from a T-pose \u2014 90 degrees",
+      "frame": "t_pose_left_arm",
+      "request": {
+        "aim": "up"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        0.707106781187,
+        0.707106781187
+      ]
+    },
+    {
+      "name": "aim up from an A-pose \u2014 135 degrees, same destination",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "aim": "up"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        0.923879532511,
+        0.382683432365
+      ]
+    },
+    {
+      "name": "aim up, right arm",
+      "frame": "a_pose_right_arm",
+      "request": {
+        "aim": "up"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        -0.923879532511,
+        0.382683432365
+      ]
+    },
+    {
+      "name": "aim down from a T-pose",
+      "frame": "t_pose_left_arm",
+      "request": {
+        "aim": "down"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        -0.707106781187,
+        0.707106781187
+      ]
+    },
+    {
+      "name": "aim forward",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "aim": "forward"
+      },
+      "quat": [
+        -0.5,
+        -0.5,
+        0.0,
+        0.707106781187
+      ]
+    },
+    {
+      "name": "aim out \u2014 side-aware, so the right arm goes to the figure's right",
+      "frame": "a_pose_right_arm",
+      "request": {
+        "aim": "out"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        -0.382683432365,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "ANTIPARALLEL: aim in from a T-pose is a half-turn, resolved in the frontal plane",
+      "frame": "t_pose_left_arm",
+      "request": {
+        "aim": "in"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "aim already satisfied is identity",
+      "frame": "left_leg",
+      "request": {
+        "aim": "down"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "aim plus twist",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "aim": "up",
+        "turn": 30
+      },
+      "quat": [
+        0.239117618394,
+        0.099045760541,
+        0.892399100833,
+        0.369643810614
+      ]
+    },
+    {
+      "name": "aim by vector, read as [out, up, forward]",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "aim": [
+          0,
+          1,
+          1
+        ]
+      },
+      "quat": [
+        -0.5,
+        -0.5,
+        0.5,
+        0.5
+      ]
+    }
+  ]
+}

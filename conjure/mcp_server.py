@@ -31,6 +31,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
 from .config import DEFAULT_USER, scope_for
+from .figures import TRUNK_BONES
 
 BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
 # The catalog scope <user>/agents/<agent> — a CAPABILITY injected by the director at MCP-server launch
@@ -542,7 +543,11 @@ async def inspect_figure(id: str) -> str:
     posed = ((ent.get("components") or {}).get("figure") or {}).get("pose")
     lines = [f"{meta.get('title') or id} — {height}, {meta.get('tris') or '?'} triangles."]
     if bones:
+        limbs = [b for b in bones if b not in TRUNK_BONES]
         lines.append(f"Posable bones ({len(bones)}): {', '.join(bones)}")
+        if limbs:
+            lines.append("Arms and legs take aim (up, down, forward, back, out, in) — where the limb "
+                         "should point, which is what you want for \"raise her arm\".")
     elif meta.get("humanoid"):
         # A map but no measured frame: the figure was placed before poses had one. Say which it is —
         # "cannot be posed" would send the caller looking for a missing skeleton.
@@ -551,8 +556,9 @@ async def inspect_figure(id: str) -> str:
     else:
         lines.append("No humanoid bone map, so it cannot be posed.")
     if bones:
-        lines.append("Each takes bend (forward +/back -), spread (out from the body +) and "
-                     "turn (inward +), in degrees.")
+        lines.append("Every bone also takes bend (forward +/back -), spread (out from the body +) and "
+                     "turn (inward +), in degrees, as a rotation from where it rests. out/in and spread "
+                     "are already mirrored: the same sign on both sides gives a symmetric pose.")
     if posed and posed != "{}":
         import json as _json
         try:
@@ -567,21 +573,45 @@ async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
     """Pose a human figure by moving named body parts. Use for "raise her left arm", "turn his head",
     "have her bend a knee".
 
-    pose maps a bone name to the rotations you want, in DEGREES — for example
-    {"leftUpperArm": {"bend": 60}, "leftLowerArm": {"bend": 90}} raises the arm forward and bends the
-    elbow. Three rotations, and they mean the same thing on every figure and on both sides of the body:
+    pose maps a bone name to what you want that body part to do. Two ways to say it, and for arms and
+    legs the FIRST is almost always the right one:
 
-      bend    swings the far end of the bone FORWARD (+) or backward (-) — lift a knee, bow the spine,
-              nod the head, bend an elbow. For a foot, + lifts the toes.
-      spread  swings it OUT away from the body (+) or in across it (-) — an arm out to the side, feet
-              apart. For the spine, neck and head, + leans toward the figure's own left.
-      turn    twists the bone about its own length: + inward (a knee turning toward the other knee).
-              For the spine, neck and head, + turns toward the figure's own left.
+    1. aim — WHERE THE LIMB SHOULD POINT. Absolute, so it does not depend on how this particular figure
+       happens to stand:
 
-    Bone names are semantic and the same for every figure — leftUpperArm, rightLowerLeg, head, spine and
-    so on. Call inspect_figure first if unsure which this figure has.
+         {"rightUpperArm": {"aim": "up"}}                     arm straight up
+         {"rightUpperArm": {"aim": "forward"}}                arm out in front
+         {"leftUpperArm": {"aim": "out"}, "rightUpperArm": {"aim": "out"}}    both arms out sideways
+         {"leftUpperLeg": {"aim": "forward"}}                 left leg lifted out in front
+         {"rightUpperArm": {"aim": [0, 1, 1]}}                halfway between up and forward
 
-    A bone you mention is replaced outright, so pass every rotation you want it to keep; bones you do not
+       Directions: up, down, forward, back, out (away from the body, whichever side that bone is on),
+       in (across the body). "out" and "in" already know left from right, so give BOTH sides the SAME
+       direction for a symmetric pose — never negate one of them.
+
+       Use aim for arms, legs, hands and feet. It is not available for the head, neck, spine or hips.
+
+    2. bend / spread / turn — A ROTATION FROM WHERE THE PART CURRENTLY RESTS, in DEGREES. Use these to
+       adjust, and for the head and spine, which have no aim:
+
+         bend    forward (+) / backward (-) — bend an elbow or knee, bow the spine, nod the head down
+         spread  away from the body (+) / across it (-) — part the legs, arm away from the side
+         turn    twist about the part's own length — for the head and spine, + turns to the figure's
+                 own LEFT
+
+         {"leftLowerArm": {"bend": 90}}                        bend the left elbow
+         {"head": {"turn": -40}}                               look to her right
+         {"head": {"bend": -20}}                               tilt the head back to look up
+         {"leftUpperLeg": {"spread": 20}, "rightUpperLeg": {"spread": 20}}    stand with feet apart
+
+       Note the last one: SAME sign on both sides. spread is already mirrored, so +20 on the left and
+       -20 on the right would swing both legs the same way instead of parting them.
+
+    A bone takes either an aim or a bend/spread, not both — they set the same thing. turn combines with
+    either. Bone names are semantic and identical on every figure: leftUpperArm, rightLowerLeg, head,
+    spine and so on; call inspect_figure if unsure which this one has.
+
+    A bone you mention is replaced outright, so pass everything you want it to keep; bones you do not
     mention keep their current pose, so you can move one arm without disturbing the rest. An empty {}
     returns just that bone to rest. Pass clear=true to return the whole figure to its rest pose.
     """
@@ -590,7 +620,7 @@ async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
         body["clear"] = True
     else:
         if not isinstance(pose, dict) or not pose:
-            return "Give me a pose like {\"leftUpperArm\": {\"bend\": 60}}, or clear=true to reset."
+            return "Give me a pose like {\"leftUpperArm\": {\"aim\": \"up\"}}, or clear=true to reset."
         body["pose"] = pose
     out = await _post("/figure", body)
     if not out.get("ok"):

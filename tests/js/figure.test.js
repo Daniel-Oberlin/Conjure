@@ -26,6 +26,11 @@ const DEF = components.figure;
 // The rest rotation is the whole point — an identity one would let the broken implementation pass.
 const REST = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 3);
 
+// three's angleTo goes through acos, which has a ~3e-8 noise floor near zero even for bit-identical
+// quaternions (the sqrt cliff at dot = 1). Compare by dot instead: exact, and sign-insensitive, since
+// q and -q are the same rotation.
+function same(a, b) { return Math.abs(a.dot(b)) > 1 - 1e-12; }
+
 function figure(data) {
   const shoulder = new THREE.Bone(), elbow = new THREE.Bone(), root = new THREE.Object3D();
   shoulder.name = "upper_arm.L";
@@ -62,18 +67,18 @@ function elbowWorld(root, elbow) {
 
 test("an unposed figure is left exactly as the model authored it", () => {
   const { shoulder } = figure({ humanoid: MAP, axes: AXES });
-  assert.ok(shoulder.quaternion.angleTo(REST) < 1e-9);
+  assert.ok(same(shoulder.quaternion, REST));
 });
 
 test("a pose composes onto the rest rotation instead of replacing it", () => {
   const { shoulder } = figure({ humanoid: MAP, axes: AXES, pose: JSON.stringify({ leftUpperArm: { bend: 0 } }) });
   // Zero degrees about a real axis must be a no-op, not a reset to identity.
-  assert.ok(shoulder.quaternion.angleTo(REST) < 1e-9);
+  assert.ok(same(shoulder.quaternion, REST));
 
   const posed = figure({ humanoid: MAP, axes: AXES, pose: JSON.stringify({ leftUpperArm: { bend: 90 } }) });
   const bend = new THREE.Vector3().fromArray(JSON.parse(AXES).leftUpperArm.bend);
   const expected = new THREE.Quaternion().setFromAxisAngle(bend, Math.PI / 2).multiply(REST);
-  assert.ok(posed.shoulder.quaternion.angleTo(expected) < 1e-9);
+  assert.ok(same(posed.shoulder.quaternion, expected));
 });
 
 test("bend swings the joint below it forward, whatever the rest rotation was", () => {
@@ -90,27 +95,27 @@ test("clearing a pose restores the rest rotation, not identity", () => {
   assert.ok(shoulder.quaternion.angleTo(REST) > 0.5);
   comp.data.pose = "";
   comp.update();
-  assert.ok(shoulder.quaternion.angleTo(REST) < 1e-9);
+  assert.ok(same(shoulder.quaternion, REST));
 });
 
 test("removing the component puts the figure back too", () => {
   const { comp, shoulder } = figure({ humanoid: MAP, axes: AXES,
                                       pose: JSON.stringify({ leftUpperArm: { bend: 45 } }) });
   comp.remove();
-  assert.ok(shoulder.quaternion.angleTo(REST) < 1e-9);
+  assert.ok(same(shoulder.quaternion, REST));
 });
 
 test("a bone with no axes is left alone rather than rotated about a guess", () => {
   const { shoulder } = figure({ humanoid: MAP, axes: JSON.stringify({}),
                                 pose: JSON.stringify({ leftUpperArm: { bend: 90 } }) });
-  assert.ok(shoulder.quaternion.angleTo(REST) < 1e-9);
+  assert.ok(same(shoulder.quaternion, REST));
 });
 
 test("a non-finite angle is ignored, not written into the scene graph", () => {
   // NaN blanks that branch of the scene graph and STAYS blanked; a stale snapshot can carry one in.
   const { shoulder } = figure({ humanoid: MAP, axes: AXES,
                                 pose: '{"leftUpperArm": {"bend": null}}' });
-  assert.ok(shoulder.quaternion.angleTo(REST) < 1e-9);
+  assert.ok(same(shoulder.quaternion, REST));
 });
 
 test("turn twists about the bone's own length and leaves the joint below it where it was", () => {
@@ -128,5 +133,59 @@ test("a pose that works out to no rotation puts the bone back on its rest pose",
                                       pose: JSON.stringify({ leftUpperArm: { bend: 90 } }) });
   comp.data.pose = JSON.stringify({ leftUpperArm: {} });
   comp.update();
-  assert.ok(shoulder.quaternion.angleTo(REST) < 1e-9);
+  assert.ok(same(shoulder.quaternion, REST));
+});
+
+// ---- aiming ---------------------------------------------------------------------------------
+// The absolute half. Resolution happens here, on the client, while scripts/pose_test.py resolves the
+// same request in Python to render the verification images — so the two must agree to the digit. The
+// shared golden fixture is what enforces that; tests/test_figures.py reads the same file.
+const GOLDEN = require("./fixtures/figure-pose-golden.json");
+
+// A bone with an IDENTITY rest rotation, so whatever lands on `bone.quaternion` is the delta itself.
+function delta(frame, request) {
+  const bone = new THREE.Bone(), root = new THREE.Object3D();
+  bone.name = "b";
+  root.add(bone);
+  const comp = Object.create(DEF);
+  comp.el = { id: "f", getObject3D: () => root, addEventListener() {}, removeEventListener() {} };
+  comp.data = { humanoid: JSON.stringify({ bone: "b" }), axes: JSON.stringify({ bone: frame }),
+                pose: JSON.stringify({ bone: request }) };
+  comp.init();
+  return bone.quaternion;
+}
+
+GOLDEN.cases.forEach((c) => {
+  test(`golden: ${c.name}`, () => {
+    const want = new THREE.Quaternion(c.quat[0], c.quat[1], c.quat[2], c.quat[3]).normalize();
+    const got = delta(GOLDEN.frames[c.frame], c.request);
+    assert.ok(same(got, want), `${c.name}: got ${got.toArray()} want ${c.quat}`);
+  });
+});
+
+test("the same aim lands the same way from a T-pose and an A-pose", () => {
+  // 90 degrees of travel on one, 135 on the other, and the arm ends up pointing up on both — which is
+  // the entire reason aiming exists.
+  const up = new THREE.Vector3(0, 1, 0);
+  ["t_pose_left_arm", "a_pose_left_arm"].forEach((key) => {
+    const frame = GOLDEN.frames[key];
+    const rest = new THREE.Vector3().fromArray(frame.rest).normalize();
+    const landed = rest.applyQuaternion(delta(frame, { aim: "up" }));
+    assert.ok(landed.distanceTo(up) < 1e-6, `${key} landed at ${landed.toArray()}`);
+  });
+});
+
+test("an aim replaces bend and spread, and composes with turn", () => {
+  const frame = GOLDEN.frames.a_pose_left_arm;
+  const aim = delta(frame, { aim: "up" }).clone();
+  assert.ok(same(delta(frame, { aim: "up", bend: 40 }), aim));
+  assert.ok(delta(frame, { aim: "up", turn: 30 }).angleTo(aim) > 0.1);
+});
+
+test("a frame with no aiming vectors leaves the bone alone", () => {
+  // Placed before aiming shipped. The server refuses these, but a stale snapshot can still carry one,
+  // and rotating about a guessed axis is worse than not moving.
+  const frame = Object.assign({}, GOLDEN.frames.left_leg);
+  ["rest", "up", "forward", "out"].forEach((k) => delete frame[k]);
+  assert.ok(same(delta(frame, { aim: "up" }), new THREE.Quaternion()));
 });

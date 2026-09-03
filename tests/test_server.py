@@ -3902,8 +3902,10 @@ def test_a_figure_carries_its_bone_vocabulary(srv, client, tmp_path):
     eid = _place_figure(srv, client, tmp_path)
     meta = _ent(client, eid)["meta"]
     assert meta["humanoid"]["leftUpperArm"] == "upper_arm.L"
-    # Which node is half the answer; which way is the other half.
-    assert sorted(meta["humanoid_axes"]["leftUpperArm"]) == ["bend", "spread", "turn"]
+    # Which node is half the answer; which way is the other half — three relative rotations, plus the
+    # bind-pose vectors an absolute aim swings from.
+    frame = meta["humanoid_axes"]["leftUpperArm"]
+    assert sorted(frame) == ["bend", "forward", "out", "rest", "spread", "turn", "up"]
 
 
 def test_a_pose_is_stored_in_the_terms_it_was_asked_for(srv, client, tmp_path):
@@ -3981,6 +3983,71 @@ def test_a_malformed_rotation_is_refused(srv, client, tmp_path):
     for bad in ({"bend": "sideways"}, "sideways", 45, [0, 0, 0]):
         r = client.post("/figure", json={"id": eid, "pose": {"head": bad}}).json()
         assert r["ok"] is False, bad
+
+
+def test_an_aim_is_stored_as_the_direction_it_was_asked_for(srv, client, tmp_path):
+    """The point of aiming: the request survives as a destination. Two rigs whose arms rest 48 degrees
+    apart need different rotations to satisfy it, and neither of those numbers belongs in world state."""
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up"}}}).json()
+    assert r["ok"] is True
+    assert json.loads(_ent(client, eid)["components"]["figure"]["pose"]) == {"leftUpperArm": {"aim": "up"}}
+
+
+def test_an_aim_may_be_a_vector(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": [0, 1, 1]}}}).json()
+    assert r["ok"] is True
+    assert json.loads(_ent(client, eid)["components"]["figure"]["pose"])["leftUpperArm"]["aim"] == [0, 1, 1]
+
+
+def test_an_unknown_direction_names_the_ones_that_exist(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "skyward"}}}).json()
+    assert r["ok"] is False and "skyward" in r["error"] and "up" in r["error"]
+
+
+def test_aiming_the_trunk_is_refused_with_the_reason(srv, client, tmp_path):
+    """`aim` points a bone along its LENGTH, so "head up" would be a no-op — the head already points up.
+    A silent no-op is indistinguishable from a pose the user cannot see, so it fails loudly instead."""
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"head": {"aim": "up"}}}).json()
+    assert r["ok"] is False and "turn" in r["error"]
+
+
+def test_an_aim_and_a_bend_on_one_bone_are_refused(srv, client, tmp_path):
+    # Both set the swing. Silently preferring one would make the other vanish without saying so.
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up", "bend": 30}}}).json()
+    assert r["ok"] is False and "swing" in r["error"]
+    ok = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up", "turn": 30}}}).json()
+    assert ok["ok"] is True, "a twist is orthogonal to where the bone points, so it composes"
+
+
+def test_an_aim_at_a_frame_that_predates_aiming_says_to_place_it_again(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    meta = next(e for e in srv.store.doc["entities"] if e["id"] == eid)["meta"]
+    for frame in meta["humanoid_axes"].values():
+        for k in ("rest", "up", "forward", "out"):
+            frame.pop(k, None)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up"}}}).json()
+    assert r["ok"] is False and "place it again" in r["error"]
+    # ...and the relative rotations still work, because they were never the part that was missing.
+    assert client.post("/figure", json={"id": eid,
+                                        "pose": {"leftUpperArm": {"bend": 30}}}).json()["ok"] is True
+
+
+def test_a_frame_measured_before_aiming_is_re_measured_on_the_next_placement(srv, client, tmp_path):
+    """The catalog is not versioned, so the check is whether the stored frame carries what today's code
+    needs — not whether the field exists. Otherwise a figure catalogued yesterday could never aim."""
+    first = _place_figure(srv, client, tmp_path)
+    aid = _ent(client, first)["components"]["gltf-model"].rsplit("/", 1)[1]
+    attrs = json.loads(srv.library.get(aid)["attributes"])
+    stale = {b: {k: v for k, v in f.items() if k not in ("rest", "up", "forward", "out")}
+             for b, f in attrs["humanoid_axes"].items()}
+    srv.library.upsert(aid, attributes={"humanoid_axes": stale})
+    eid = client.post("/place_cached_asset", json={"id": aid, "name": "again"}).json()["id"]
+    assert "rest" in _ent(client, eid)["meta"]["humanoid_axes"]["leftUpperArm"]
 
 
 def test_a_figure_with_no_measurable_frame_says_so(srv, client, tmp_path):

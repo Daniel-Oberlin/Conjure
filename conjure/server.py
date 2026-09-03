@@ -41,7 +41,7 @@ from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
-from .figures import POSE_AXES
+from .figures import AIM_DIRECTIONS, FRAME_VECTORS, POSE_AXES, TRUNK_BONES
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
@@ -1060,9 +1060,15 @@ def _humanoid_axes(asset_id: str, attrs: dict) -> Optional[dict]:
     (`figures.anatomical_axes`). Models catalogued BEFORE the axes existed still have a good humanoid
     map, and re-importing a 37 MB conversion just to gain a derived field would be a silly tax — so the
     first placement measures them and writes them back. Only the GLB's JSON chunk is parsed.
+
+    A frame stored by an EARLIER version is re-measured on the same terms: the check is whether it
+    carries what today's code needs, not whether the key exists at all. That distinction is the whole
+    reason a figure placed before `aim` shipped does not quietly refuse to aim forever.
     """
     axes = attrs.get("humanoid_axes")
-    if axes or not attrs.get("humanoid"):
+    if axes and all(FRAME_VECTORS[0] in (v or {}) for v in axes.values()):
+        return axes                       # already carries the aiming vectors: nothing to do
+    if not attrs.get("humanoid"):
         return axes
     try:
         from .figures import anatomical_axes, split_glb
@@ -4696,6 +4702,38 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
 
 
 # --- figures: pose a rigged model through its humanoid bone map (docs/backlogs/figures.md) ---------
+def _aim_problem(bone: str, aim, frame: dict, rot: dict) -> Optional[str]:
+    """What is wrong with an `aim` request, or None. Every branch refuses LOUDLY rather than no-op.
+
+    That is not politeness. A pose that silently does nothing is indistinguishable from a pose the user
+    simply cannot see from where they are standing, and this feature has now shipped that failure twice
+    (grab's unreachable modes; three fixes the headset never ran)."""
+    if bone in TRUNK_BONES:
+        return (f"{bone}: aim points a bone along its own LENGTH, so on the trunk it would mean aiming "
+                f"the top of the skull — use bend, spread or turn there")
+    for other in ("bend", "spread"):
+        if other in rot:
+            return f"{bone}: aim and {other} both set the swing — use one or the other"
+    if isinstance(aim, str):
+        if aim not in AIM_DIRECTIONS:
+            return (f"{bone}: unknown direction {aim!r} — use {', '.join(AIM_DIRECTIONS)}, "
+                    "or a vector [out, up, forward]")
+    else:
+        if not isinstance(aim, (list, tuple)) or len(aim) != 3:
+            return (f"{bone}: aim takes a direction ({', '.join(AIM_DIRECTIONS)}) or a vector "
+                    "[out, up, forward]")
+        try:
+            vals = [float(c) for c in aim]
+        except (TypeError, ValueError):
+            return f"{bone}: aim vector must be three numbers"
+        if not all(math.isfinite(v) for v in vals) or not any(vals):
+            return f"{bone}: aim vector must be finite and not all zero"
+    if not all(k in frame for k in FRAME_VECTORS):
+        # The bone map is fine; the FRAME was measured by an older build. Placing again re-measures it.
+        return f"{bone}: this figure's frame predates aiming — place it again to measure one"
+    return None
+
+
 class FigureRequest(BaseModel):
     id: str                                       # entity id of a placed rigged model
     pose: Optional[dict] = None                   # {semanticBone: {bend|spread|turn: DEGREES}}
@@ -4712,6 +4750,13 @@ async def figure(req: FigureRequest) -> dict:
     local axes are whatever its rigger chose — measured, `leftUpperLeg` rests 177 degrees from identity
     on Grace and 6 on Saka — so raw euler angles meant a different motion on every figure. `bend`,
     `spread` and `turn` are measured from the bind pose at import and mean the same thing on all of them.
+
+    Those three are RELATIVE — right for an adjustment, wrong for a destination, because a relative
+    number asks the caller to know where the bone rests and the three rigs disagree by 48 degrees about
+    where an arm does. `aim` is the absolute form: a named body direction, resolved as the swing from
+    wherever that bone rests onto it. Measured on device: asked to raise an arm, the director emitted the
+    same numbers for "up" and for "down", because with only relative words available there was nothing
+    else it could do.
 
     The pose is stored on the entity's `figure` component in exactly the terms it was asked for, because
     that state is durable: it is what a reload replays and what a persona will later reason about. The
@@ -4755,14 +4800,21 @@ async def figure(req: FigureRequest) -> dict:
     clean: dict = {}
     for bone, rot in pose.items():
         if not isinstance(rot, dict):
-            return {"ok": False, "error": f"{bone}: expected {{{', '.join(sorted(POSE_AXES))}}} in degrees, "
-                    "e.g. {\"bend\": 45}"}
-        bad = [k for k in rot if k not in POSE_AXES]
+            return {"ok": False, "error": f"{bone}: expected {{{', '.join(sorted(POSE_AXES))}}} in degrees "
+                    "or {\"aim\": \"up\"}"}
+        bad = [k for k in rot if k not in POSE_AXES and k != "aim"]
         if bad:
             return {"ok": False, "error": f"{bone}: unknown rotation(s) {', '.join(sorted(bad))} — "
-                    f"use {', '.join(sorted(POSE_AXES))}"}
+                    f"use {', '.join(sorted(POSE_AXES))} or aim"}
         vals: dict = {}
+        if rot.get("aim") is not None:
+            problem = _aim_problem(bone, rot["aim"], axes.get(bone) or {}, rot)
+            if problem:
+                return {"ok": False, "error": problem}
+            vals["aim"] = rot["aim"] if isinstance(rot["aim"], str) else [float(c) for c in rot["aim"]]
         for k, v in rot.items():
+            if k == "aim":
+                continue
             try:
                 angle = float(v)
             except (TypeError, ValueError):

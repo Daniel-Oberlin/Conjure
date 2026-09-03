@@ -895,14 +895,77 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
         axes = {"bend": bend, "spread": spread, "turn": turn}
         if not all(axes.values()):
             continue                                    # a bone we cannot frame is better left unposable
+        # The three ROTATION axes above are relative — they say which way to swing from wherever this
+        # bone happens to rest. The four vectors below are what an ABSOLUTE aim needs: where the bone
+        # points now, and where "up", "forward" and "outward" are for this body. Both live in the same
+        # payload because both are properties of the same bind pose, measured in the same pass.
+        axes.update({"rest": direction, "up": up, "forward": forward, "out": outward})
         if space == "parent":
             axes = {k: to_parent(i, v) for k, v in axes.items()}
         out[bone] = {k: [round(c, places) + 0.0 for c in v] for k, v in axes.items()}
     return out
 
 
-#: The rotation names `anatomical_axes` produces, in the order they compose (see `resolve_pose`).
+#: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")
+
+#: The bind-pose vectors that ride alongside them, for absolute aiming.
+FRAME_VECTORS = ("rest", "up", "forward", "out")
+
+#: Bones an `aim` is refused for. Aim points a bone along its own LENGTH, so on a head it would mean
+#: aiming the top of the skull — "look up" would come out as a no-op, since the skull already points up.
+#: A silent no-op on something nobody can see is the failure this feature keeps rediscovering, so the
+#: trunk is refused loudly and keeps the relative rotations, which say what it means there anyway.
+TRUNK_BONES = ("hips", "spine", "chest", "upperChest", "neck", "head")
+
+#: Where each named direction points, as (out, up, forward) components of the body's own frame. `out` is
+#: side-aware — the body's left for a left bone, its right for a right one — so a symmetric request stays
+#: symmetric with no signs for a caller to get wrong. A free vector is read in the same three components.
+AIM_DIRECTIONS = {
+    "up": (0.0, 1.0, 0.0), "down": (0.0, -1.0, 0.0),
+    "forward": (0.0, 0.0, 1.0), "back": (0.0, 0.0, -1.0),
+    "out": (1.0, 0.0, 0.0), "in": (-1.0, 0.0, 0.0),
+}
+
+
+def aim_target(frame: dict, aim) -> Optional[tuple[float, float, float]]:
+    """The unit direction a named (or vector) aim asks for, in the same space as `frame`."""
+    comps = AIM_DIRECTIONS.get(aim) if isinstance(aim, str) else aim
+    if not comps or len(comps) != 3:
+        return None
+    try:
+        o, u, f = (float(c) for c in comps)
+    except (TypeError, ValueError):
+        return None
+    basis = [frame.get(k) for k in ("out", "up", "forward")]
+    if not all(b and len(b) == 3 for b in basis):
+        return None                       # a frame measured before aiming existed; caller reports it
+    return _unit(tuple(o * basis[0][k] + u * basis[1][k] + f * basis[2][k] for k in range(3)))
+
+
+def swing(rest, target, fallback) -> list[float]:
+    """The rotation taking `rest` onto `target` — the shortest arc, except when there isn't one.
+
+    Antiparallel is the case that matters and it is not an edge case here: a hanging arm aimed `up` is
+    a half-turn, and a half-turn has no unique axis. Left to a generic "shortest arc" routine it picks
+    an arbitrary perpendicular, which for an arm means swinging it through the torso as often as not.
+    So the caller names the axis to fall back on — the body's forward, giving a rotation in the FRONTAL
+    plane: the arm goes up through the side, the way a person raises one.
+    """
+    d = max(-1.0, min(1.0, _dot(rest, target)))
+    if d > 1.0 - 1e-9:
+        return [0.0, 0.0, 0.0, 1.0]
+    if d < -1.0 + 1e-9:
+        # Perpendicular component of the fallback, since it need not be square to the bone.
+        axis = _unit(_sub(fallback, _scaled(rest, _dot(fallback, rest))))
+        if axis is None:                        # fallback is parallel to the bone: any perpendicular
+            other = (1.0, 0.0, 0.0) if abs(rest[0]) < 0.9 else (0.0, 1.0, 0.0)
+            axis = _unit(_cross(rest, other)) or (0.0, 1.0, 0.0)
+        return [axis[0], axis[1], axis[2], 0.0]
+    c = _cross(rest, target)
+    q = [c[0], c[1], c[2], 1.0 + d]
+    n = math.sqrt(sum(v * v for v in q))
+    return [v / n for v in q]
 
 
 def resolve_pose(axes: dict, pose: dict) -> dict[str, list[float]]:
@@ -911,10 +974,15 @@ def resolve_pose(axes: dict, pose: dict) -> dict[str, list[float]]:
     `pose` is `{bone: {"bend": degrees, ...}}`. Missing axes are zero, so a one-axis request stays a
     one-axis rotation.
 
-    Composition order is turn, then bend, then spread — twist innermost, swings outermost. That is the
-    swing-twist decomposition every animation system uses, and it is what makes a twist mean the same
-    thing regardless of how the limb is currently swung. The reverse order would make "turn 20" describe
-    a different motion depending on the bend that happened to accompany it.
+    A request may instead carry `aim` — a named body direction or a vector — which is ABSOLUTE: it
+    rotates the bone from wherever it rests onto that direction, so the same request means the same thing
+    on a T-posed rig and an A-posed one. It REPLACES bend and spread, which set the same swing relatively;
+    `turn` still composes, because a twist about the bone's own length is orthogonal to where it points.
+
+    Composition order is turn, then the swing — twist innermost, swings outermost. That is the swing-twist
+    decomposition every animation system uses, and it is what makes a twist mean the same thing regardless
+    of how the limb is currently swung. The reverse order would make "turn 20" describe a different motion
+    depending on the bend that happened to accompany it.
     """
     out: dict[str, list[float]] = {}
     for bone, request in (pose or {}).items():
@@ -923,6 +991,8 @@ def resolve_pose(axes: dict, pose: dict) -> dict[str, list[float]]:
             continue
         q = [0.0, 0.0, 0.0, 1.0]
         for name in POSE_AXES:
+            if name != "turn" and request.get("aim") is not None:
+                continue                                  # an aim sets the swing; bend/spread do not
             deg = request.get(name)
             if deg in (None, 0) or not isinstance(deg, (int, float)):
                 continue
@@ -932,6 +1002,11 @@ def resolve_pose(axes: dict, pose: dict) -> dict[str, list[float]]:
             half = math.radians(float(deg)) / 2.0
             s = math.sin(half)
             q = _quat_mul([axis[0] * s, axis[1] * s, axis[2] * s, math.cos(half)], q)
+        if request.get("aim") is not None:
+            target = aim_target(frame, request["aim"])
+            rest = frame.get("rest")
+            if target and rest:
+                q = _quat_mul(swing(rest, target, frame.get("forward") or (0.0, 0.0, 1.0)), q)
         out[bone] = q
     return out
 

@@ -1197,6 +1197,39 @@ both sides. A one-line statement of the convention demonstrably lost to the mode
 reflex; an example of the exact shape it gets wrong is the cheapest counter. Whether that works is not
 knowable without slice 2, which is the point of slice 2.
 
+#### Built 2026-09-03
+
+Shipped as designed, with one addition worth naming. **Verified in render:** the same
+`{"rightUpperArm": {"aim": "up"}}` puts the arm straight up on Saka and on Grace — 90 degrees of travel on
+one, 138 on the other — and every named direction lands the bone within 0.1° of where it was asked to
+point, on all three rigs.
+
+| | Saka (T-pose) | Grace (A-pose) | Yuffie (A-pose) |
+|---|---|---|---|
+| upper arm rests at | 0° | −48° | −46° |
+| rotation for `aim: "up"` | 90° | 138° | 136° |
+| lands within | 0.0° | 0.0° | 0.0° |
+| axis of that rotation | the body's forward — through the side, not through the torso | | |
+
+The addition: **a shared golden fixture**, `tests/js/fixtures/figure-pose-golden.json`, read by both
+`tests/test_figures.py` and `tests/js/figure.test.js`. Resolving a pose now exists twice — in Python,
+which renders the verification images, and in the client, which drives the headset — and that is only
+safe while the two agree to the digit. It is the same device `plane_anchor` uses for the same reason, and
+it covers the cases that are easy to get subtly different: composition order, side mirroring, and the
+antiparallel half-turn.
+
+Two things learned in passing, both about testing rather than posing:
+
+- **three's `Quaternion.angleTo` has a noise floor of ~3e-8**, even between bit-identical quaternions —
+  `acos` near a dot product of 1 amplifies the last bits. Comparisons are by dot product instead, which
+  is exact and sign-insensitive (`q` and `-q` are the same rotation). An assertion tight enough to be
+  worth writing was failing on arithmetic that was already correct.
+- **The frame payload is now 11.6 KB for Saka's 52 bones** (5.3 KB for Grace's 21), up from 6.4 KB, and
+  it rides every pose patch because it lives in the `figure` component. Still small against a room
+  snapshot and fine at director cadence, but this is the point at which the fix is worth naming: the map
+  and the frame are static per model and belong in `meta` → a `data-` attribute, the way `bbox` already
+  does, leaving the patch to carry only the pose.
+
 ### 2 — the eval harness: verify the utterance, not the axis
 
 The verification pass sketched under [*discovery layer 4*](#4--multimodal-verification) would have
@@ -1393,9 +1426,11 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
 the second exists to keep the first true, and the third is the first thing the vocabulary buys rather
 than protects:
 
-1. **`aim`** — absolute directions, plus worked examples in the tool description. Fixes the measured
-   failure: "raise her arm up" points it backwards on all three rigs because a relative vocabulary asks
-   the caller to know a rest pose that differs by 48° between them.
+1. ~~**`aim`** — absolute directions, plus worked examples in the tool description.~~ **Built
+   2026-09-03**, verified in render on all three rigs. Whether the *tool description* now steers the
+   director correctly is exactly what is not yet known — that is slice 2's job, and the first thing to
+   point it at is the three utterances that failed: "raise her arm up", "point her arm down", "spread
+   her legs apart".
 2. **The eval harness at the utterance layer** — ~20 phrases × 3 rigs, rendered and judged. The only
    guard on the one layer of this feature that has no test, and the only way to know whether a change to
    a sentence of English did what it was supposed to.
@@ -1420,7 +1455,10 @@ State to be aware of when resuming:
   utterance layer. Those are slice 2's two jobs, in that order of difficulty.
 - Figures placed before 2026-09-02 have no `humanoid_axes`. They gain one on the next placement (the
   server measures and writes it back); an entity already in a world does not, so re-place it.
-- The anatomical frame is on `feat/figures-anatomical-pose`, branched from `main`, not merged.
+- The anatomical frame and `aim` are on `feat/figures-anatomical-pose`, branched from `main`, not merged.
+- Aiming is refused for the trunk (`hips`, `spine`, `chest`, `upperChest`, `neck`, `head`) and for a
+  bone whose frame was measured before aiming existed — the latter re-measures itself on the next
+  placement, so it is a "place it again", not a re-import.
 
 ## Phasing
 

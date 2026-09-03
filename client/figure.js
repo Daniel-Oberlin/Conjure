@@ -69,16 +69,54 @@
     try { return JSON.parse(s); } catch (e) { return null; }
   }
 
-  // Composition order is turn, then bend, then spread — twist innermost, swings outermost, which is the
+  // Composition order is turn, then the swing — twist innermost, swings outermost, which is the
   // swing-twist decomposition every animation system uses and what keeps "turn 20" meaning the same
-  // motion whatever bend accompanies it. Mirrored exactly by figures.resolve_pose on the Python side,
+  // motion whatever swing accompanies it. Mirrored exactly by figures.resolve_pose on the Python side,
   // which is what scripts/pose_test.py renders, so a headset and a Blender render agree.
   var AXIS_ORDER = ["turn", "bend", "spread"];
+
+  // Where each named direction points, as (out, up, forward) components of this bone's body frame.
+  // `out` is side-aware — already resolved to the body's left or right when the frame was measured —
+  // so the same word is symmetric on both sides and there is no sign for a caller to get wrong.
+  var AIM = { up: [0, 1, 0], down: [0, -1, 0], forward: [0, 0, 1], back: [0, 0, -1],
+              out: [1, 0, 0], "in": [-1, 0, 0] };
+
+  function vec(a) { return a && a.length === 3 ? new THREE.Vector3(a[0], a[1], a[2]) : null; }
+
+  // The absolute half: swing the bone from where it RESTS onto a direction in the body's own frame, so
+  // the same request means the same thing on a T-posed rig and an A-posed one whose arms differ by 48
+  // degrees. Returns null when the frame predates aiming (the server refuses those before we see them).
+  function aimQuat(frame, aim) {
+    var comps = typeof aim === "string" ? AIM[aim] : aim;
+    var out = vec(frame.out), up = vec(frame.up), fwd = vec(frame.forward), rest = vec(frame.rest);
+    if (!comps || comps.length !== 3 || !out || !up || !fwd || !rest) return null;
+    var target = out.multiplyScalar(+comps[0])
+      .addScaledVector(up, +comps[1]).addScaledVector(fwd, +comps[2]);
+    if (!target.lengthSq() || !isFinite(target.lengthSq())) return null;
+    target.normalize();
+    rest.normalize();
+    var d = Math.max(-1, Math.min(1, rest.dot(target)));
+    if (d > 1 - 1e-9) return new THREE.Quaternion();
+    if (d < -1 + 1e-9) {
+      // A half-turn has no unique axis, and this case is not exotic: a hanging arm aimed `up` IS one.
+      // three's setFromUnitVectors would pick an arbitrary perpendicular, which for an arm means
+      // swinging it through the torso as often as not. Rotate in the FRONTAL plane instead — about the
+      // body's forward — so the arm goes up through the side, the way a person raises one.
+      var axis = fwd.clone().addScaledVector(rest, -fwd.dot(rest));
+      if (axis.lengthSq() < 1e-12) axis.copy(up).addScaledVector(rest, -up.dot(rest));
+      axis.normalize();
+      return new THREE.Quaternion(axis.x, axis.y, axis.z, 0);
+    }
+    var c = new THREE.Vector3().crossVectors(rest, target);
+    return new THREE.Quaternion(c.x, c.y, c.z, 1 + d).normalize();
+  }
 
   function rotation(frame, request) {
     if (!frame || !request) return null;
     var q = null, tmp = new THREE.Quaternion(), axis = new THREE.Vector3();
+    var aiming = request.aim !== undefined && request.aim !== null;
     AXIS_ORDER.forEach(function (name) {
+      if (aiming && name !== "turn") return;          // an aim sets the swing; bend/spread do not
       var deg = +request[name], a = frame[name];
       if (!deg || !isFinite(deg) || !a || a.length !== 3) return;
       // A non-finite angle blanks that branch of the scene graph and STAYS blanked — the same hazard
@@ -88,6 +126,10 @@
       tmp.setFromAxisAngle(axis.normalize(), deg * Math.PI / 180);
       q = q ? q.premultiply(tmp) : tmp.clone();
     });
+    if (aiming) {
+      var swing = aimQuat(frame, request.aim);
+      if (swing) q = q ? q.premultiply(swing) : swing;
+    }
     return q;
   }
 

@@ -193,10 +193,13 @@ def test_a_stated_map_also_gets_its_anatomical_frame_measured():
     a = plan_import("figure.vrm", _glb(doc), {}).attributes
     assert a["humanoid_source"] == "vrm"
     frame = a["humanoid_axes"]["leftUpperArm"]
-    assert sorted(frame) == ["bend", "spread", "turn"]
-    # The arm points along +X, so its twist axis is its own length — the one axis that is unambiguous
-    # whatever the rig, and a cheap check that the frame belongs to THIS bone and not to the body.
+    # three rotations to swing about, plus the bind-pose vectors an absolute aim swings FROM
+    assert sorted(frame) == ["bend", "forward", "out", "rest", "spread", "turn", "up"]
+    # The arm points along +X, so its rest direction and its twist axis are its own length — the one
+    # axis that is unambiguous whatever the rig, and a cheap check that the frame belongs to THIS bone
+    # rather than to the body.
     assert frame["turn"] == pytest.approx([1, 0, 0], abs=1e-4)
+    assert frame["rest"] == pytest.approx([1, 0, 0], abs=1e-4)
 
 
 def test_an_unrigged_model_gets_no_anatomical_frame():
