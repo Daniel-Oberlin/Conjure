@@ -345,9 +345,77 @@ def is_translucent(mat):
     return False
 
 
+def colour_image(mat):
+    """The one COLOUR-DATA image in a material's graph, or None if there is not exactly one.
+
+    A material the exporter could not resolve usually still HAS its diffuse texture sitting in the node
+    tree — it is just behind a shader group the exporter cannot reduce. Trish's arms, legs, torso and
+    teeth each carry four or five images, and in every case exactly one of them is tagged sRGB while the
+    bump, specular, normal and micro-detail maps are tagged Non-Color.
+
+    **That tag is the file telling us which image is colour**, not a guess about filenames — `_B` means
+    bump on this rig and base on the next. Where it answers, no bake is needed at all, which also skips
+    the failure below it: these skin shaders bake to black, and the neutral fallback for that is what
+    turned Trish's arms and Grace's legs into pale grey placeholder.
+    """
+    found, seen = [], set()
+
+    def walk(tree, depth=0):
+        for n in tree.nodes:
+            if n.type == "TEX_IMAGE" and n.image:
+                if n.image.colorspace_settings.name != "Non-Color" and n.image.name not in seen:
+                    seen.add(n.image.name)
+                    found.append(n)
+            elif n.type == "GROUP" and n.node_tree and depth < 4:
+                walk(n.node_tree, depth + 1)
+
+    if mat.use_nodes and mat.node_tree:
+        walk(mat.node_tree)
+    return found[0] if len(found) == 1 else None
+
+
+def use_colour_images(objs, only):
+    """Rebuild every unresolved material that already owns a colour image, and return the rest.
+
+    Runs BEFORE baking, because baking is the fallback and not the plan: it is slow, it is destructive
+    to bystander textures, and on a layered skin shader it produces black. Reaching for the image the
+    author already provided is both cheaper and better.
+    """
+    rebuilt = []
+    for name in sorted(only):
+        mat = bpy.data.materials.get(name)
+        node = colour_image(mat) if mat else None
+        if node is None:
+            continue
+        image = node.image
+        layer = None                                  # keep whatever UV map the original sampled with
+        if node.inputs["Vector"].links:
+            src = node.inputs["Vector"].links[0].from_node
+            layer = getattr(src, "uv_map", None) or None
+        nt = mat.node_tree
+        nt.nodes.clear()
+        out = nt.nodes.new("ShaderNodeOutputMaterial")
+        bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.image = image
+        if layer:
+            uvn = nt.nodes.new("ShaderNodeUVMap")
+            uvn.uv_map = layer
+            nt.links.new(uvn.outputs["UV"], tex.inputs["Vector"])
+        nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+        nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+        rebuilt.append((name, image.name))
+    if rebuilt:
+        print(f"  colour        {len(rebuilt)} material(s) rebuilt from their own texture, no bake needed")
+        for name, image in rebuilt[:6]:
+            print(f"                  {name[:24]:26} <- {image[:36]}")
+    return {n for n in only if n not in {r[0] for r in rebuilt}}
+
+
 def bake_materials(objs, size, only):
     """Bake the named materials on `objs` to a diffuse image and rebuild each as Principled.
     `only` comes from unresolved_base_colours() — never from guessing at the node tree."""
+    only = use_colour_images(objs, only)
     targets = [(ob, i, sl.material) for ob in objs for i, sl in enumerate(ob.material_slots)
                if sl.material and sl.material.name in only]
     if not targets:

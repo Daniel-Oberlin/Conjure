@@ -362,6 +362,47 @@ The UDIM shift (`--fix-udim`) and constraint stripping (`--strip-constraints`) a
 **off**. Both are sound if a genuine multi-tile or cyclic case appears; neither should run speculatively,
 since each perturbed the bake and cost a cycle of confusion.
 
+### Resolved: use the texture the author already provided (2026-09-03)
+
+Reported from the headset: Grace's legs and pelvis white, Trish's arms, hands and teeth white, Yuffie
+dressed in what looked like a black bodysuit with bare arms. All three are the same thing, and it is not
+lighting and not outfits — it is **our neutral fallback**, `[0.62, 0.60, 0.58]`, worn as skin.
+
+| | materials with no base colour, before | after |
+|---|---|---|
+| Trish | **13 of 26** — `Arms-3`, `Legs-3`, `Torso-3`, `Teeth-3`, `Lips-3`, `Ears-3` | 3 of 26 |
+| Grace | 8 of 17 | 10 of 31 (a dressed export; none of them skin) |
+| Yuffie | 15 of 24 | 11 of 37 |
+
+What is left in each case is eye moisture, cornea, lens glass, nails and genitalia — the genuinely
+image-less surfaces the fallback was written for.
+
+**The fix is a rung ABOVE the bake, not a better bake.** These materials all still HAVE their diffuse
+texture; it is simply behind a shader group the exporter cannot reduce (Trish's skin is rooted in a
+"Mustard Skin Shader" whose base colour sits three levels in, past a mix, past a group input). Baking was
+reaching for a photograph of something we already had the original of — and on a layered skin shader the
+photograph comes out black, which is where the pale placeholder came from.
+
+So: before baking, look for the material's own colour image and rebuild it as a plain Principled around
+that. Which image? **The one the file itself tags as colour data.** Every one of these materials carries
+four or five images and exactly one is `sRGB` while the bump, specular, normal and micro-detail maps are
+`Non-Color`:
+
+```
+Arms-3    arms texture        sRGB        <- the diffuse
+          Lara_Arms_B.jpg     Non-Color   <- bump, despite the _B
+          Lara_Arms_S.jpg     Non-Color   <- specular
+          Puspa 1004 NM.jpg   Non-Color   <- normal
+```
+
+> A colour-space tag is **authored metadata**, not a filename heuristic — `_B` means bump on this rig and
+> would mean base on the next. Same discipline as asking the exporter which materials it failed to
+> resolve: prefer the thing the file states over the thing we can infer.
+
+Only materials with no such image, or with more than one, still bake — 2 on Trish against 13 before. That
+also makes conversion markedly faster (Trish: 48 s to 17 s) and sidesteps the bake's own hazards, which
+have cost this document two long debugging sessions.
+
 ### Known limitation: the black-bake fallback cannot tell a lens from a fingernail
 
 A material that bakes black has no view-independent colour. For a spectacle lens or an eye-moisture layer
