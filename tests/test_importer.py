@@ -122,6 +122,50 @@ def test_a_skinned_mesh_ignores_its_node_transform():
     assert hi[1] - lo[1] == pytest.approx(1.75)           # NOT 3.5
 
 
+def _skinned_glb(joint_y: float):
+    """A GLB whose one vertex is bound to a joint standing `joint_y` above the origin — POSITION says
+    the mesh is at the origin, the JOINT says otherwise, and only skinning knows which is true."""
+    # The bind was at the ORIGIN (identity inverse-bind) while the joint now stands at `joint_y`, so the
+    # skinning carries the vertex up with it. That gap between bind pose and rest pose is exactly what
+    # the real files have — and what makes their accessor boxes meaningless.
+    ibm = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    bin_chunk = (struct.pack("<3f", 0.0, 0.0, 0.0) + struct.pack("<3f", 0.1, 0.2, 0.1)  # positions
+                 + struct.pack("<4H", 0, 0, 0, 0) * 2                                   # joints
+                 + struct.pack("<4f", 1.0, 0.0, 0.0, 0.0) * 2                           # weights
+                 + struct.pack("<16f", *ibm))
+    doc = {
+        "scenes": [{"nodes": [0, 1]}], "scene": 0,
+        "nodes": [{"mesh": 0, "skin": 0}, {"name": "joint", "translation": [0.0, joint_y, 0.0]}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}}]}],
+        "skins": [{"joints": [1], "inverseBindMatrices": 3}],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 2, "type": "VEC3",
+             "min": [0.0, 0.0, 0.0], "max": [0.1, 0.2, 0.1]},
+            {"bufferView": 1, "componentType": 5123, "count": 2, "type": "VEC4"},
+            {"bufferView": 2, "componentType": 5126, "count": 2, "type": "VEC4"},
+            {"bufferView": 3, "componentType": 5126, "count": 1, "type": "MAT4"}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 24},
+                        {"buffer": 0, "byteOffset": 24, "byteLength": 16},
+                        {"buffer": 0, "byteOffset": 40, "byteLength": 32},
+                        {"buffer": 0, "byteOffset": 72, "byteLength": 64}],
+        "buffers": [{"byteLength": len(bin_chunk)}],
+    }
+    return doc, bin_chunk
+
+
+def test_bounds_follow_the_joints_not_the_accessor():
+    """The measured failure, and the reason `she's huge` reached the headset. Several rigs author every
+    body part as a cluster near the ORIGIN and let each joint carry it into place: `Steve` and one
+    `Animated Woman` read 1.3 cm and 3.7 mm from their accessors against true heights of 2.7 m and 1.8 m.
+    No scale factor recovers that — the vertices have to be skinned."""
+    doc, blob = _skinned_glb(joint_y=1.75)
+    lo, hi, rigged = glb_bounds(doc, blob)
+    assert rigged is True
+    assert hi[1] == pytest.approx(1.95) and lo[1] == pytest.approx(1.75), "the joint places the vertices"
+    # Without the binary chunk there is nothing to skin with, and the accessor box is all there is.
+    assert glb_bounds(doc)[1][1] == pytest.approx(0.2)
+
+
 def test_a_scale_on_the_ARMATURE_does_reach_a_skinned_mesh():
     """The complement, and a real file: `Steve` carries a `CharacterArmature` scaled x100, so his
     vertices reach the world a hundred times bigger than the accessor says. He was catalogued at 1.3

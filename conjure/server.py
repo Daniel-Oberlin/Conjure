@@ -947,10 +947,12 @@ async def _autosave_loop() -> None:
 
 
 
-#: The authored heights a figure may keep. Outside it, the file is not in metres and "life size" would
-#: be a doll or a five-metre giant — a child is ~0.9 m and the tallest recorded human was 2.7 m, so this
-#: is wide enough to be about units rather than about taste.
-HUMAN_HEIGHT_M = (0.5, 3.0)
+#: The authored heights a figure may keep. Outside it the file is not in metres and "life size" would be
+#: a doll or a five-metre giant. Measured across the library: 1.55–1.70 for the three hand-converted
+#: figures, 5.21 and 1.80 for two asset-pack characters, 2.53 for a deliberately blocky one. The upper
+#: bound sits below that last: a game character authored at two and a half metres is a style, not a
+#: measurement, and `size_m` remains available when a giant is the point.
+HUMAN_HEIGHT_M = (0.5, 2.5)
 
 
 def _normalize(record, pos: list[float], target_m: Optional[float],

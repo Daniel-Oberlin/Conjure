@@ -1377,21 +1377,41 @@ conservative direction, losing a bone rather than gaining a lie — and complete
 `REQUIRED_BONES` rather than all of `CORE_BONES`, because plenty of rigs have no toes, no clavicle and
 no separate chest. What survives is a map that poses everything it claims to.
 
-**And a scale bug in `glb_bounds`, which is the trimesh bug wearing the opposite coat.** A skinned
+**And a bounds bug in `glb_bounds`, which is the trimesh bug wearing the opposite coat.** A skinned
 mesh's vertices are in skin space and must not take the mesh node's transform — that was the fix in
 Phase 0. But they reach the world THROUGH THE JOINTS, so a scale on the armature, or baked into the
 inverse bind matrices, does apply. `Steve` carries a `CharacterArmature` scaled ×100 and `Animated
 Woman` a ×100 inverse bind, and both were recorded at a couple of centimetres. Now that the fetch path
 marks them as figures, "keep life size" would have placed a 1.3 cm man.
 
-> The rule stated once, since a version of it has now been wrong twice: **a skinned mesh's extent comes
-> from neither its node nor its vertices alone — it is the vertices as the JOINTS place them.**
+> The rule stated once, since a version of it has now been wrong three times: **a skinned mesh's extent
+> comes from neither its node nor its vertices alone — it is the vertices as the JOINTS place them.**
 
-**Which exposed the last assumption: not every rigged model is authored metric.** Corrected, the three
-come out at 4.82 m, 0.37 m and 1.31 m. Those are units artifacts, not authored choices, so life size is
-now honoured only within a plausible human range (`HUMAN_HEIGHT_M`, 0.5–3 m); outside it a figure is
-normalized like anything else, but still by HEIGHT. [Open question 6](#open-questions) asked for exactly
-this clamp before a source needing it turned up. One did.
+**And a scale factor is not enough to say that.** Reported from the headset the same afternoon — *"wow,
+she's huge"* — a figure placed at roughly 9 m. Scaling the accessor box by the skeleton's scale fixed
+`Steve` and one `Animated Woman` and was still wrong for the other, because several rigs author every
+body part as a small cluster near the ORIGIN and let each joint carry it into place. Their accessor
+boxes read 3.7 mm and 1.3 cm against true heights of 1.80 m and 2.69 m, and no single factor recovers
+that: the vertices have to actually be skinned. `glb_bounds` now does, sampled to fifty thousand
+vertices, and agrees with a Blender render to within a few per cent on every figure in the library —
+including reproducing Grace, Saka and Yuffie's existing numbers exactly.
+
+| | accessor box | scaled by the skeleton | skinned | Blender says |
+|---|---|---|---|---|
+| Animated Woman | 0.048 | 4.82 | **5.21** | 5.21 |
+| Animated Woman (2) | 0.0037 | 0.37 | **1.80** | 1.80 |
+| Steve | 0.013 | 1.31 | **2.53** | 2.69 |
+| Saka | 1.5455 | 1.5455 | **1.5455** | 1.5455 |
+
+Three wrong answers in a row, each more sophisticated than the last, and the giveaway each time was the
+same: **a number that disagrees with a render is a number, not a measurement.**
+
+**Which exposed the last assumption: not every rigged model is authored metric.** Correctly measured,
+the three come out at 5.21 m, 1.80 m and 2.53 m — one of them right, two a style rather than a
+measurement. So life size is honoured only within a plausible human range (`HUMAN_HEIGHT_M`, 0.5–2.5 m);
+outside it a figure is normalized like anything else, but still by HEIGHT. [Open question
+6](#open-questions) asked for exactly this clamp before a source needing it turned up. One did, then two
+more.
 
 ### The library already contains animation (2026-09-03g)
 

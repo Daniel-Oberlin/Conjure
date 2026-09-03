@@ -177,6 +177,95 @@ def glb_bounds(doc: dict, blob: bytes = b"") -> Optional[tuple[list[float], list
         return [sum(a[k * 4 + r] * b[c * 4 + k] for k in range(4))
                 for c in range(4) for r in range(4)]
 
+    def read_floats(acc_index: int, count_per: int, limit: int, stride_hint: int = 1):
+        """Yield tuples from a float accessor — enough of a glTF reader to skin a bounding box."""
+        acc = accessors[acc_index]
+        views = doc.get("bufferViews") or []
+        if acc.get("componentType") != 5126 or "bufferView" not in acc or acc["bufferView"] >= len(views):
+            return
+        bv = views[acc["bufferView"]]
+        base = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+        step = bv.get("byteStride") or count_per * 4
+        for i in range(0, min(acc.get("count", 0), limit), stride_hint):
+            off = base + i * step
+            if off + count_per * 4 > len(blob):
+                return
+            yield i, struct.unpack_from("<" + "f" * count_per, blob, off)
+
+    def read_ints(acc_index: int, limit: int, stride_hint: int = 1):
+        """Yield VEC4 joint indices, whatever width the file stores them at."""
+        acc = accessors[acc_index]
+        views = doc.get("bufferViews") or []
+        fmt = {5121: "B", 5123: "H", 5125: "I", 5126: "f"}.get(acc.get("componentType"))
+        if not fmt or "bufferView" not in acc or acc["bufferView"] >= len(views):
+            return
+        width = {"B": 1, "H": 2, "I": 4, "f": 4}[fmt]
+        bv = views[acc["bufferView"]]
+        base = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+        step = bv.get("byteStride") or width * 4
+        for i in range(0, min(acc.get("count", 0), limit), stride_hint):
+            off = base + i * step
+            if off + width * 4 > len(blob):
+                return
+            yield i, struct.unpack_from("<" + fmt * 4, blob, off)
+
+    def skinned_corners(prim: dict, skin: dict):
+        """Vertex positions as the JOINTS actually place them, or None if the file will not say.
+
+        The accessor's own min/max describe the mesh in BIND space, and for a good many rigs that is not
+        where the figure ends up: `Steve` and one `Animated Woman` author every body part as a small
+        cluster near the origin and let each joint carry it into place, so their accessor boxes read 1.3
+        cm and 3.7 mm against true heights of 2.7 m and 1.8 m. No single scale factor recovers that —
+        only skinning does. Sampled rather than exhaustive on dense meshes: a bounding box does not get
+        meaningfully better after fifty thousand vertices.
+        """
+        attrs = prim.get("attributes") or {}
+        pi, ji, wi = attrs.get("POSITION"), attrs.get("JOINTS_0"), attrs.get("WEIGHTS_0")
+        if pi is None or ji is None or wi is None:
+            return None
+        count = accessors[pi].get("count", 0)
+        stride = max(1, count // 50000)
+        joints = skin.get("joints") or []
+        mats = []
+        ibm_i = skin.get("inverseBindMatrices")
+        for k, j in enumerate(joints):
+            world = joint_world.get(j)
+            if world is None:
+                mats.append(None)
+                continue
+            ibm = None
+            if ibm_i is not None and 0 <= ibm_i < len(accessors):
+                acc = accessors[ibm_i]
+                views = doc.get("bufferViews") or []
+                if "bufferView" in acc and acc["bufferView"] < len(views):
+                    bv = views[acc["bufferView"]]
+                    off = bv.get("byteOffset", 0) + acc.get("byteOffset", 0) + 64 * k
+                    if off + 64 <= len(blob):
+                        ibm = list(struct.unpack_from("<16f", blob, off))
+            mats.append(mul(world, ibm) if ibm else world)
+        weights = dict(read_floats(wi, 4, count, stride))
+        indices = dict(read_ints(ji, count, stride))
+        norm = {5121: 255.0, 5123: 65535.0}.get(accessors[wi].get("componentType"), 1.0)
+        out = []
+        for i, p in read_floats(pi, 3, count, stride):
+            w, jj = weights.get(i), indices.get(i)
+            if not w or not jj:
+                continue
+            x = y = z = 0.0
+            total = 0.0
+            for k in range(4):
+                wk = w[k] / norm
+                m = mats[int(jj[k])] if 0 <= int(jj[k]) < len(mats) else None
+                if wk <= 0 or m is None:
+                    continue
+                total += wk
+                x += wk * (m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12])
+                y += wk * (m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13])
+                z += wk * (m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14])
+            if total > 0:
+                out.append([x, y, z])
+        return out or None
+
     def skin_scale(skin_index: int) -> float:
         """How much the skin's joints scale their skin-space vertices on the way to the world."""
         skins = doc.get("skins") or []
@@ -216,9 +305,16 @@ def glb_bounds(doc: dict, blob: bytes = b"") -> Optional[tuple[list[float], list
                 amin, amax = acc.get("min"), acc.get("max")
                 if not amin or not amax or len(amin) < 3:
                     continue
-                if skinned:                               # already in skin space — do NOT transform,
-                    k = skin_scale(node["skin"])          # but DO carry the skeleton's own scale
-                    corners = [[v * k for v in amin], [v * k for v in amax]]
+                if skinned:
+                    skins = doc.get("skins") or []
+                    si = node["skin"]
+                    skinned_pts = (skinned_corners(prim, skins[si]) if blob and 0 <= si < len(skins)
+                                   else None)
+                    if skinned_pts is not None:
+                        corners = skinned_pts               # where the joints actually put the vertices
+                    else:                                   # no weights to read: skin space, scaled
+                        k = skin_scale(si)
+                        corners = [[v * k for v in amin], [v * k for v in amax]]
                 else:
                     corners = [[amin[0] if i & 1 else amax[0],
                                 amin[1] if i & 2 else amax[1],
