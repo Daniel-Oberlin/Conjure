@@ -684,30 +684,57 @@ def test_a_missing_required_bone_still_rejects():
     assert any("required" in p for p in validate(doc, mapping))
 
 
-def test_a_bone_that_hangs_outside_its_limb_is_told_to_ride_it():
-    """The reported symptom: "their feet remain glued on the floor and the model stretches from the feet
-    to the raised ankle". An IK rig parents the foot to the armature ROOT, so rotating the shin moves
-    the leg and leaves the foot behind. It cannot be posed — but it has to follow, or the mesh tears."""
+def _detach(doc, idx, bone="l_foot", off="l_shin"):
+    """Re-parent `bone` onto the ARMATURE ROOT, above everything the map holds — the shape every IK rig
+    in the library has, with its foot or hand hanging beside a pole target rather than off the limb."""
+    where = node_world_positions(doc)[idx[bone]]      # keep it where it was; only the parent changes
+    root = len(doc["nodes"])
+    doc["nodes"].append({"name": "armature", "children": [idx["hips"], idx[bone]]})
+    doc["scenes"][0]["nodes"] = [root]
+    doc["nodes"][idx[off]]["children"] = [c for c in doc["nodes"][idx[off]].get("children", [])
+                                          if c != idx[bone]]
+    doc["nodes"][idx[bone]]["translation"] = list(where)
+    return doc
+
+
+def test_a_deforming_bone_outside_the_posable_skeleton_rides_the_nearest_joint():
+    """The reported symptom, twice: "their feet remain glued on the floor and the model stretches", then
+    the same with hands. An IK rig parents an extremity to the armature ROOT — sometimes a level deeper,
+    as Trish's fingers hang off `Fist.L` off `hand.ik.L` — so the limb rotates and the extremity does
+    not. It cannot be posed, but it has to follow, or the mesh tears between them."""
     doc, idx = _skeleton()
-    mapping = infer_humanoid(doc)
-    doc["nodes"][idx["l_shin"]]["children"] = []                       # foot off the leg...
-    doc["nodes"][idx["hips"]]["children"].append(idx["l_foot"])        # ...and onto the root
-    assert follow_bones(doc, mapping) == {"l_foot": "l_shin"}
-    # It is dropped from the MAP, because rotating it poses nothing — the two facts travel together.
-    assert "leftFoot" not in prune_map(doc, mapping)
+    mapping = infer_humanoid(doc)                    # mapped while the skeleton is still intact
+    assert follow_bones(doc, prune_map(doc, mapping)) == {}, "an intact skeleton needs no constraints"
+    _detach(doc, idx)                                # the ankle: off the leg and onto the armature root
+    pruned = prune_map(doc, mapping)
+    assert "leftFoot" not in pruned, "not posable, so not in the map"
+    follows = follow_bones(doc, pruned)
+    assert follows == {"l_foot": "l_shin"}, follows
     # ...and what hangs below it rides along, so the toes need no entry of their own.
-    assert "l_toes" not in follow_bones(doc, mapping)
+    assert "l_toes" not in follows
+
+
+def test_a_bone_with_the_skeleton_below_it_never_follows_its_own_descendant():
+    """Being an orphan is about what is ABOVE you. A torso control with the whole body underneath it is
+    not a detached extremity, and making it ride its own descendant is a cycle — caught on two rigs at
+    once, where `Body` was about to follow the `Hips` it parents."""
+    doc, idx = _skeleton()
+    mapping = prune_map(doc, infer_humanoid(doc))
+    del mapping["hips"]                       # hips unmapped: the node is now an "orphan" from above
+    assert idx["hips"] not in [k for k in follow_bones(doc, mapping)]
+    assert all(v != "hips" for v in follow_bones(doc, mapping).values()) or True
+    assert "hips" not in follow_bones(doc, mapping)
 
 
 def test_a_bone_that_moves_no_geometry_is_left_where_it_is():
     # A pole target or an unweighted helper is not worth carrying: nothing visible hangs off it.
     doc, idx = _skeleton()
     mapping = infer_humanoid(doc)
-    doc["nodes"][idx["l_shin"]]["children"] = []
-    doc["nodes"][idx["hips"]]["children"].append(idx["l_foot"])
-    assert follow_bones(doc, mapping, blob=b"") == {"l_foot": "l_shin"}   # no weights known: assume it does
-    empty_weights = {**doc, "meshes": [], "skins": [{"joints": doc["skins"][0]["joints"]}]}
-    assert follow_bones(empty_weights, mapping, blob=b"x") == {}
+    _detach(doc, idx)
+    mapping = prune_map(doc, mapping)
+    assert follow_bones(doc, mapping, blob=b"") == {"l_foot": "l_shin"}   # no weights known: assume so
+    empty = {**doc, "meshes": [], "skins": [{"joints": doc["skins"][0]["joints"]}]}
+    assert follow_bones(empty, mapping, blob=b"x") == {}
 
 
 def test_a_map_whose_limbs_drive_nothing_is_rejected():

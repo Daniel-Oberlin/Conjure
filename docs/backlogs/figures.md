@@ -1466,6 +1466,18 @@ and re-parenting a bone would silently change what every one of them means. A co
 time costs nothing when no pose is set and leaves the clips playable — which matters now that the clips
 are the library's only animation content.
 
+**Generalised 2026-09-03, after the same symptom arrived on HANDS.** Trish's arms rose and her hands
+stayed put: her fingers hang off `Fist.L` off `hand.ik.L` off `master`, a level deeper than the feet. So
+the rule is no longer about chain links between mapped bones but about ORPHANS — any deform bone that no
+mapped bone can move, walked up to the top of its detached subtree, riding the nearest mapped joint. Two
+guards it needed, both found by measurement:
+
+- **never ride your own descendant.** Being an orphan is about what is above you; a torso control with
+  the whole skeleton below it is not a detached extremity, and `Body` was one step from following the
+  `Hips` it parents on two rigs at once.
+- **not across the body.** Distance alone picked the OTHER foot on a narrow stance, so a left ankle
+  rides a left knee.
+
 **And it reached nobody, because the version stamp was not bumped.** Every row in the library was
 already marked current, `refresh-models` found nothing to do, and the feet stayed glued — while the code,
 the tests and the renders all said the fix worked. `FRAME_REV` exists for exactly this case and adding a

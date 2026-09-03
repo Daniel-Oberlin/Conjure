@@ -4194,7 +4194,7 @@ def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client
     the library was already stamped current, refresh-models found nothing to do, and the fix reached
     nobody — while the code, the tests and the renders all said it worked. If you change either of these
     literals, change the other: a new derived field is exactly the case the stamp exists for."""
-    assert srv.FRAME_REV == 8
+    assert srv.FRAME_REV == 9
     assert srv._DERIVED_MODEL_ATTRS == (
         "bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
         "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris")
@@ -4207,10 +4207,12 @@ def test_a_bone_that_rides_its_limb_reaches_the_entity(srv, client, tmp_path):
     # convention, and their feet hang off the root. Shape inference cannot map a leg whose foot has been
     # taken out of it at all, so a nameless fixture would prove nothing.
     from test_figures import _named_skeleton
-    doc, _idx = _named_skeleton("dot-side", arms_down=False)
-    by = {n["name"]: i for i, n in enumerate(doc["nodes"]) if n.get("name")}
-    doc["nodes"][by["LowerLeg.L"]]["children"] = []                    # the IK foot: off the leg...
-    doc["nodes"][by["Hips"]]["children"].append(by["Foot.L"])          # ...and onto the root
+    from test_figures import _detach
+    doc, idx = _named_skeleton("dot-side", arms_down=False)
+    named = {n["name"]: i for i, n in enumerate(doc["nodes"]) if n.get("name")}
+    # The IK foot: off the leg and onto the armature ROOT, above everything the map holds.
+    _detach(doc, {"hips": named["Hips"], "Foot.L": named["Foot.L"], "LowerLeg.L": named["LowerLeg.L"]},
+            bone="Foot.L", off="LowerLeg.L")
     r = client.post("/library/import", json={"items": [
         {"filename": "ik.glb", "data_b64": base64.b64encode(_skeleton_glb(doc)).decode(),
          "hints": {}}]}).json()

@@ -753,39 +753,82 @@ def prune_map(doc: dict, mapping: dict[str, str]) -> dict[str, str]:
     return out
 
 
-def follow_bones(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> dict[str, str]:
-    """`{node: node it should ride}` — bones that deform the mesh but hang outside their own limb.
+def follow_bones(doc: dict, mapping: dict[str, str], blob: bytes = b"",
+                 reach: float = 0.4) -> dict[str, str]:
+    """`{node: node it should ride}` — bones that deform the mesh but hang outside the posable skeleton.
 
-    An IK rig parents the FOOT to the armature root, beside a pole target, and lets an animation drive
-    both. It is a perfectly good rig for playing clips and a broken one for posing: rotate the shin and
-    the foot stays where it was, so the mesh stretches from a planted foot up to a raised ankle. That is
-    what "her feet remain glued to the floor" looked like on two of three asset-pack characters.
+    An IK rig parents the hand or the foot to the armature ROOT and lets an animation drive it. Perfectly
+    good for playing clips, and for posing it means the limb rotates while the extremity stays where it
+    was, stretching the mesh between them. Reported twice from the headset in the same day: feet glued to
+    the floor on two asset-pack characters, then Trish's hands hanging in the air as her arms went up.
 
-    `prune_map` already refuses to CALL such a bone an ankle, because rotating it poses nothing. This
-    says what to do about the tearing: the bone rides the last joint above it that is in the chain, at
-    the offset it holds in the bind pose — a parent constraint, evaluated wherever the pose is applied.
-    The file's own hierarchy is left alone, so its baked clips still mean what they meant.
+    The rule is about ORPHANS rather than chains, because the second case was a level deeper than the
+    first: Trish's fingers hang off `Fist.L` off `hand.ik.L` off `master`, and only `hand.ik.L` sits
+    where the wrist does. So: find every deform bone that no mapped bone can move, walk up to the top of
+    its detached subtree, and ride the nearest mapped bone — which for that subtree root means the joint
+    it is standing on.
+
+    `reach` bounds it as a fraction of the figure's height: a subtree root further than that from any
+    mapped bone is not an extremity that got detached, it is something else in the file, and moving it
+    would be a guess. Set generously — a detached ankle is a whole shin away from the nearest joint the
+    map still holds, and on stylised proportions that is a third of the figure (0.30 on one asset-pack
+    character, which a tighter bound had just excluded). The failure modes are asymmetric: too generous
+    attaches a stray bone to a nearby joint, which is roughly where it belongs anyway, while too tight
+    leaves a hand hanging in the air.
     """
     nodes = doc.get("nodes") or []
     by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
     parent = parent_map(doc)
+    pos = node_world_positions(doc)
     deform = deform_joints(doc, blob) if blob else None
+    mapped = {by_name[v]: b for b, v in mapping.items() if v in by_name}
+    if not mapped:
+        return {}
+    ys = [pos[i][1] for i in pos]
+    limit = reach * ((max(ys) - min(ys)) if ys else 1.0)
+
+    # Nodes that have a mapped bone somewhere BELOW them: the armature root does, an IK hand does not.
+    # Climbing stops at the first of these, which is what separates "the top of a detached subtree" from
+    # "the root of the whole skeleton" — the two look identical from underneath.
+    above_mapped: set[int] = set()
+    for i in mapped:
+        for a in _ancestors(i, parent)[1:]:
+            above_mapped.add(a)
+
+    def orphan(i: int) -> bool:
+        return not (set(_ancestors(i, parent)) & set(mapped))
+
+    roots: set[int] = set()
+    for i in (deform if deform is not None else set(pos)):
+        if i not in pos or not orphan(i):
+            continue
+        top = i
+        for a in _ancestors(i, parent)[1:]:
+            if a in above_mapped or a not in pos:
+                break
+            top = a
+        # ...and never a bone that has a mapped one BELOW it. Being an orphan is about what is above
+        # you; a torso control with the whole skeleton underneath it is not a detached extremity, and
+        # making it ride its own descendant is a cycle. Caught on two rigs at once: `Body` was about to
+        # follow the `Hips` it parents.
+        if parent.get(top) is not None and top not in above_mapped:
+            roots.add(top)
+
+    # Nearest joint, but not across the body: a left ankle rides a left knee. Distance alone picks the
+    # OTHER foot on a narrow stance — measured on the test skeleton, where the feet are closer to each
+    # other than either is to its own knee.
+    side = 0.02 * ((max(ys) - min(ys)) if ys else 1.0)
+
+    def rank(orphan: int, candidate: int):
+        ox, cx = pos[orphan][0], pos[candidate][0]
+        crossed = abs(ox) > side and abs(cx) > side and (ox > 0) != (cx > 0)
+        return (crossed, math.dist(pos[orphan], pos[candidate]))
+
     out: dict[str, str] = {}
-    for chain in LIMB_CHAINS:
-        present = [b for b in chain if mapping.get(b) in by_name]
-        anchor = None
-        for bone in present:
-            i = by_name[mapping[bone]]
-            if anchor is None:
-                anchor = bone
-                continue
-            ai = by_name[mapping[anchor]]
-            if ai in _ancestors(i, parent):
-                anchor = bone                              # a real link: nothing to do
-            elif deform is None or i in deform:
-                # Detached AND it moves geometry, so leaving it behind is visible.
-                out[mapping[bone]] = mapping[anchor]
-                anchor = bone          # what hangs below it rides along; toes need no entry of their own
+    for top in roots:
+        lead = min(mapped, key=lambda j: rank(top, j))
+        if math.dist(pos[top], pos[lead]) <= limit:
+            out[nodes[top].get("name")] = nodes[lead].get("name")
     return out
 
 
@@ -797,8 +840,8 @@ def best_humanoid(doc: dict, blob: bytes = b"") -> tuple[Optional[dict], Optiona
     argument for having both. A stated map (VRM) is read before either — that is the caller's job, since
     it needs no doc-level guessing at all.
 
-    `follows` is computed from the map BEFORE pruning, because it is precisely about the bones pruning
-    removes: what the map cannot pose, the mesh still has to hang off something.
+    `follows` is computed from the PRUNED map, because it is about exactly the bones pruning removed:
+    what the map cannot pose, the mesh still has to hang off something.
     """
     for candidate, source in ((convention_humanoid(doc), None), (None, "inferred")):
         if candidate is not None:
@@ -815,13 +858,13 @@ def best_humanoid(doc: dict, blob: bytes = b"") -> tuple[Optional[dict], Optiona
                     continue
                 pruned = prune_map(doc, raw)
                 if not validate(doc, pruned, blob):
-                    return pruned, "inferred", follow_bones(doc, raw, blob)
+                    return pruned, "inferred", follow_bones(doc, pruned, blob)
             continue
         if not raw:
             continue
         pruned = prune_map(doc, raw)
         if not validate(doc, pruned, blob):
-            return pruned, source, follow_bones(doc, raw, blob)
+            return pruned, source, follow_bones(doc, pruned, blob)
     return None, None, {}
 
 
@@ -1239,7 +1282,7 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 8
+FRAME_REV = 9
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")
