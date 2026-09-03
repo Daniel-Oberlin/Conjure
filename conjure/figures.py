@@ -1126,7 +1126,7 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 6
+FRAME_REV = 7
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")

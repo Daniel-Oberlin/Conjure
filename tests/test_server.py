@@ -4079,11 +4079,11 @@ def test_an_aim_at_a_frame_that_predates_aiming_says_to_place_it_again(srv, clie
 # map, and two carry maps today's validate() rejects. Placement re-measures anything stamped older than
 # the current revision, so a fix reaches figures already in the library without re-importing the GLB.
 
-def _skeleton_glb():
+def _skeleton_glb(doc=None):
     """A rigged GLB with a full humanoid skeleton and NO stated map, so inference has to do the work.
     Borrows the anatomically-ordered fixture the figures tests use rather than inventing a second one."""
     from test_figures import _skeleton
-    doc, _idx = _skeleton()
+    doc = doc or _skeleton()[0]
     doc["nodes"].append({"mesh": 0, "skin": 0})
     doc["scenes"][0]["nodes"].append(len(doc["nodes"]) - 1)
     doc["meshes"] = [{"primitives": [{"attributes": {"POSITION": 0}}]}]
@@ -4165,6 +4165,44 @@ def test_a_map_that_cannot_be_repaired_is_cleared_rather_than_kept(srv, client, 
     assert "humanoid" not in _ent(client, eid)["meta"]
     r = client.post("/figure", json={"id": eid, "pose": {"head": {"bend": 10}}}).json()
     assert r["ok"] is False and "humanoid" in r["error"]
+
+
+def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client, tmp_path):
+    """A tripwire, and it has already caught one live miss.
+
+    `humanoid_follows` was added to what extraction produces WITHOUT bumping FRAME_REV, so every row in
+    the library was already stamped current, refresh-models found nothing to do, and the fix reached
+    nobody — while the code, the tests and the renders all said it worked. If you change either of these
+    literals, change the other: a new derived field is exactly the case the stamp exists for."""
+    assert srv.FRAME_REV == 7
+    assert srv._DERIVED_MODEL_ATTRS == (
+        "bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
+        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris")
+
+
+def test_a_bone_that_rides_its_limb_reaches_the_entity(srv, client, tmp_path):
+    """The whole path: extraction finds the stray bone, the catalog keeps it, placement puts it on the
+    entity, and the component hands it to the client. Every link was right except the version stamp."""
+    # A NAMED rig, because that is the real shape: the two characters this came from are recognised by
+    # convention, and their feet hang off the root. Shape inference cannot map a leg whose foot has been
+    # taken out of it at all, so a nameless fixture would prove nothing.
+    from test_figures import _named_skeleton
+    doc, _idx = _named_skeleton("dot-side", arms_down=False)
+    by = {n["name"]: i for i, n in enumerate(doc["nodes"]) if n.get("name")}
+    doc["nodes"][by["LowerLeg.L"]]["children"] = []                    # the IK foot: off the leg...
+    doc["nodes"][by["Hips"]]["children"].append(by["Foot.L"])          # ...and onto the root
+    r = client.post("/library/import", json={"items": [
+        {"filename": "ik.glb", "data_b64": base64.b64encode(_skeleton_glb(doc)).decode(),
+         "hints": {}}]}).json()
+    aid = r["results"][0]["id"]
+    attrs = json.loads(srv.library.get(aid)["attributes"])
+    assert attrs["humanoid_source"] == "convention:dot-side"
+    assert attrs["humanoid_follows"] == {"Foot.L": "LowerLeg.L"}
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    ent = _ent(client, eid)
+    assert ent["meta"]["humanoid_follows"] == {"Foot.L": "LowerLeg.L"}
+    client.post("/figure", json={"id": eid, "pose": {"leftLowerLeg": {"bend": 45}}})
+    assert json.loads(_ent(client, eid)["components"]["figure"]["follows"]) == {"Foot.L": "LowerLeg.L"}
 
 
 def test_a_frame_at_the_current_revision_is_trusted_without_reopening_the_file(srv, client, tmp_path):

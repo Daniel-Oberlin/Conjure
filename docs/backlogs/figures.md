@@ -1466,7 +1466,15 @@ and re-parenting a bone would silently change what every one of them means. A co
 time costs nothing when no pose is set and leaves the clips playable — which matters now that the clips
 are the library's only animation content.
 
-Two bugs found on the way, both the same kind of assumption:
+**And it reached nobody, because the version stamp was not bumped.** Every row in the library was
+already marked current, `refresh-models` found nothing to do, and the feet stayed glued — while the code,
+the tests and the renders all said the fix worked. `FRAME_REV` exists for exactly this case and adding a
+derived field is exactly when to touch it; a tripwire test now pins the derived-attribute list and the
+revision to each other so the next one cannot be forgotten quietly.
+
+> **A fix that is not versioned has not shipped.** Everything downstream of a cache believes the cache.
+
+Two more bugs found on the way, both the same kind of assumption:
 
 - **The bind offset must be captured from the BIND pose**, not from the skeleton at the moment the
   constraint first runs. Read live, it measures the offset *after* the limb has moved, and the bone never
