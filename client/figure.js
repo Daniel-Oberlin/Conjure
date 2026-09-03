@@ -5,6 +5,7 @@
 // strings arrive from the server, and each answers a different question:
 //
 //   humanoid  WHICH node is this bone      {leftUpperArm: "upper_arm.fk.L"}
+//   follows   which bones RIDE another     {"Foot.L": "LowerLeg.L"} — an IK foot, see _ride()
 //   axes      WHICH WAY does it rotate     {leftUpperArm: {bend: [x,y,z], spread: […], turn: […]}}
 //   pose      HOW FAR, in degrees          {leftUpperArm: {bend: 45}}
 //
@@ -200,6 +201,7 @@
   AFRAME.registerComponent("figure", {
     schema: {
       humanoid: { type: "string", default: "" },   // {semanticBone: nodeName}
+      follows: { type: "string", default: "" },    // {nodeName: nodeName it rides} — see _ride()
       axes: { type: "string", default: "" },       // {semanticBone: {bend|spread|turn: [x, y, z]}}
       pose: { type: "string", default: "" }        // {semanticBone: {bend|spread|turn: DEGREES}}
     },
@@ -225,12 +227,15 @@
     // clones an object, which would quietly turn a Quaternion into a plain bag of `_x`/`_y` fields.
     _collect: function () {
       if (this._bones) return this._bones;
+      this._offsets = null;
       var obj = this.el.getObject3D("mesh");
       if (!obj) return null;
-      var bones = {}, rest = this._rest = new Map();
+      obj.updateMatrixWorld(true);          // the BIND pose, and the only moment it is guaranteed one
+      var bones = {}, rest = this._rest = new Map(), restWorld = this._restWorld = new Map();
       var put = function (n) {
         if (!n || !n.name) return;
         if (!rest.has(n)) rest.set(n, n.quaternion.clone());
+        if (!restWorld.has(n)) restWorld.set(n, n.matrixWorld.clone());
         bones[n.name] = n;
         variants(n.name).forEach(function (k) {   // raw name wins; the rest are fallback spellings
           if (k && !bones[k]) bones[k] = n;
@@ -280,6 +285,7 @@
         b.quaternion.premultiply(q);
         applied[bone] = true;
       });
+      this._ride(bones, parse(this.data.follows) || {});
       this._applied = applied;
       if (missing.length) {
         log("NO BONE OR AXES for " + missing.join(", ") + " on " + (this.el.id || "?")
@@ -288,6 +294,38 @@
       }
       this._once = this._once || (log("posed " + Object.keys(applied).length + " bone(s) on "
                                      + (this.el.id || "?")) || true);
+    },
+
+    // Carry the bones that deform the mesh but hang outside their own limb. An IK rig parents the FOOT
+    // to the armature root and lets an animation drive it: fine for playing a clip, and for posing it
+    // means the shin rotates while the foot stays planted, stretching the mesh between them — which is
+    // what "her feet remain glued to the floor" looked like on two of three asset-pack characters.
+    //
+    // A parent constraint, evaluated after the pose: put the bone back at the offset it holds from its
+    // limb in the BIND pose. The file's own hierarchy is untouched, so its baked clips still mean what
+    // they meant — worth keeping, since those clips are the only animation content in the library.
+    _ride: function (bones, follows) {
+      var names = Object.keys(follows);
+      if (!names.length) return;
+      var root = this.el.getObject3D("mesh");
+      if (root) root.updateMatrixWorld(true);            // the limbs must be posed before we read them
+      var offsets = this._offsets || (this._offsets = {});
+      var tmp = new THREE.Matrix4(), self = this;
+      names.forEach(function (childName) {
+        var child = lookup(bones, childName), lead = lookup(bones, follows[childName]);
+        if (!child || !lead || !child.parent) return;
+        if (!offsets[childName]) {
+          // From the BIND pose, captured in _collect — reading it from the live skeleton here would
+          // measure the offset AFTER the limb had already moved, and the bone would never budge.
+          var leadRest = self._restWorld.get(lead), childRest = self._restWorld.get(child);
+          if (!leadRest || !childRest) return;
+          offsets[childName] = new THREE.Matrix4().copy(leadRest).invert().multiply(childRest);
+        }
+        tmp.copy(lead.matrixWorld).multiply(offsets[childName]);          // where it should be now
+        child.matrix.copy(child.parent.matrixWorld).invert().multiply(tmp);
+        child.matrix.decompose(child.position, child.quaternion, child.scale);
+        child.updateMatrixWorld(true);
+      });
     },
 
     remove: function () {

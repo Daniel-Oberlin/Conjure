@@ -1073,7 +1073,8 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
 #: Everything about a model that is DERIVED from its bytes. Extraction owns these outright — a stale one
 #: is not worth keeping, since it was computed from the same file by older code.
 _DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
-                        "humanoid", "humanoid_source", "humanoid_axes", "spring_bones", "tris")
+                        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows",
+                        "spring_bones", "tris")
 
 
 def _extracted_model_attrs(asset_id: str) -> dict:
@@ -1115,7 +1116,7 @@ def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dic
     # `{}` rather than absent: the catalog MERGES attributes and skips None, so an empty map is how a
     # rejected one is actually cleared.
     write = {k: fresh.get(k) for k in _DERIVED_MODEL_ATTRS if fresh.get(k) is not None}
-    for k in ("humanoid", "humanoid_axes"):
+    for k in ("humanoid", "humanoid_axes", "humanoid_follows"):
         write[k] = fresh.get(k) or {}
     write["frame_rev"] = FRAME_REV
     library.upsert(asset_id, attributes=write)
@@ -1127,7 +1128,7 @@ def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dic
 
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
                      bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
-                     humanoid=None, humanoid_axes=None) -> dict:
+                     humanoid=None, humanoid_axes=None, humanoid_follows=None) -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
@@ -1154,6 +1155,12 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
             # The semantic bone vocabulary travels WITH the entity, so /figure can resolve
             # "leftUpperArm" without a catalog lookup and the client needs no per-rig knowledge.
             meta["humanoid"] = dict(humanoid)
+        if humanoid_follows:
+            # Bones that deform the mesh but hang outside their own limb (an IK foot parented to the
+            # armature root). They cannot be posed, but they have to RIDE the limb or the mesh stretches
+            # from a planted foot to a raised ankle — reported from the headset on two of three
+            # asset-pack characters.
+            meta["humanoid_follows"] = dict(humanoid_follows)
         if humanoid_axes:
             # And the anatomical frame beside it: which way to rotate each bone so "bend 45" is the
             # same motion on a VRM and on a re-parented Daz rig. Measured from the bind pose at import
@@ -3783,7 +3790,8 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           tris=attrs.get("tris"), source="library", bbox_min=attrs.get("bbox_min"),
                           bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m,
                           placement=req.placement, rigged=bool(attrs.get("rigged")),
-                          humanoid=attrs.get("humanoid"), humanoid_axes=attrs.get("humanoid_axes"))
+                          humanoid=attrs.get("humanoid"), humanoid_axes=attrs.get("humanoid_axes"),
+                          humanoid_follows=attrs.get("humanoid_follows"))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
@@ -4847,6 +4855,9 @@ async def figure(req: FigureRequest) -> dict:
                 "figures could be posed anatomically; place it again to measure one"}
 
     component = {"humanoid": json.dumps(humanoid), "axes": json.dumps(axes, separators=(",", ":"))}
+    follows = meta.get("humanoid_follows")
+    if follows:
+        component["follows"] = json.dumps(follows, separators=(",", ":"))
 
     if req.clear:
         await _broadcast({"type": "patch",

@@ -685,27 +685,65 @@ def prune_map(doc: dict, mapping: dict[str, str]) -> dict[str, str]:
     return out
 
 
-def best_humanoid(doc: dict, blob: bytes = b"") -> tuple[Optional[dict[str, str]], Optional[str]]:
-    """`(map, source)` — the discovery pipeline's cheap layers, in order, each gated by `validate()`.
+def follow_bones(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> dict[str, str]:
+    """`{node: node it should ride}` — bones that deform the mesh but hang outside their own limb.
+
+    An IK rig parents the FOOT to the armature root, beside a pole target, and lets an animation drive
+    both. It is a perfectly good rig for playing clips and a broken one for posing: rotate the shin and
+    the foot stays where it was, so the mesh stretches from a planted foot up to a raised ankle. That is
+    what "her feet remain glued to the floor" looked like on two of three asset-pack characters.
+
+    `prune_map` already refuses to CALL such a bone an ankle, because rotating it poses nothing. This
+    says what to do about the tearing: the bone rides the last joint above it that is in the chain, at
+    the offset it holds in the bind pose — a parent constraint, evaluated wherever the pose is applied.
+    The file's own hierarchy is left alone, so its baked clips still mean what they meant.
+    """
+    nodes = doc.get("nodes") or []
+    by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
+    parent = parent_map(doc)
+    deform = deform_joints(doc, blob) if blob else None
+    out: dict[str, str] = {}
+    for chain in LIMB_CHAINS:
+        present = [b for b in chain if mapping.get(b) in by_name]
+        anchor = None
+        for bone in present:
+            i = by_name[mapping[bone]]
+            if anchor is None:
+                anchor = bone
+                continue
+            ai = by_name[mapping[anchor]]
+            if ai in _ancestors(i, parent):
+                anchor = bone                              # a real link: nothing to do
+            elif deform is None or i in deform:
+                # Detached AND it moves geometry, so leaving it behind is visible.
+                out[mapping[bone]] = mapping[anchor]
+                anchor = bone          # what hangs below it rides along; toes need no entry of their own
+    return out
+
+
+def best_humanoid(doc: dict, blob: bytes = b"") -> tuple[Optional[dict], Optional[str], dict]:
+    """`(map, source, follows)` — the discovery pipeline's cheap layers, in order, gated by `validate()`.
 
     Layer 1 (names) is free and exact where it hits, and works on a bind pose that defeats geometry.
     Layer 2 (shape) works on names that mean nothing. They fail on opposite inputs, which is the whole
     argument for having both. A stated map (VRM) is read before either — that is the caller's job, since
     it needs no doc-level guessing at all.
+
+    `follows` is computed from the map BEFORE pruning, because it is precisely about the bones pruning
+    removes: what the map cannot pose, the mesh still has to hang off something.
     """
-    named, scheme = convention_humanoid(doc)
-    if named:
-        pruned = prune_map(doc, named)
+    for candidate, source in ((convention_humanoid(doc), None), (None, "inferred")):
+        if candidate is not None:
+            raw, scheme = candidate
+            source = f"convention:{scheme}" if raw else None
+        else:
+            raw = infer_humanoid(doc, blob)               # reads every vertex weight: not speculative
+        if not raw:
+            continue
+        pruned = prune_map(doc, raw)
         if not validate(doc, pruned):
-            return pruned, f"convention:{scheme}"
-    # Only now: inference reads every vertex weight in the file, which is not work to do speculatively
-    # when a name table has already answered.
-    guess = infer_humanoid(doc, blob)
-    if guess:
-        pruned = prune_map(doc, guess)
-        if not validate(doc, pruned):
-            return pruned, "inferred"
-    return None, None
+            return pruned, source, follow_bones(doc, raw, blob)
+    return None, None, {}
 
 
 def validate(doc: dict, mapping: dict[str, str]) -> list[str]:

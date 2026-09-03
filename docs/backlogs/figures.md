@@ -1446,6 +1446,36 @@ bounding boxes, which are rest-shaped and cropped the raised arm being checked.
 > time. **When a render and a computation disagree, suspect the renderer's import assumptions before the
 > maths** — the artifact is only evidence once you know what it is an artifact OF.
 
+### An IK foot has to ride the leg (2026-09-03h)
+
+Reported after the three asset-pack characters went in: raise a leg and on two of the three *"their feet
+remain glued on the floor and the model stretches from the feet to the raised ankle"*.
+
+Measured, and unambiguous: on both, `Foot.L` **carries vertex weights and its parent is the armature
+root**, beside a `PoleTarget.L`. It is an IK foot. The third character is Mixamo-named and has her foot
+properly under her shin, which is why she was fine.
+
+`prune_map` already refused to call such a bone an ankle — rotating it poses nothing — but dropping it
+from the map says nothing about the mesh hanging off it. So `follow_bones` now records what to do
+instead: the bone RIDES the last joint above it that is in the chain, at the offset it holds in the bind
+pose. A parent constraint, evaluated wherever the pose is applied — in `figure.js` after the rotations,
+and by re-parenting the copy `pose_test` renders.
+
+**The file's own hierarchy is left alone**, which is deliberate: those characters ship 10–24 baked clips,
+and re-parenting a bone would silently change what every one of them means. A constraint applied at pose
+time costs nothing when no pose is set and leaves the clips playable — which matters now that the clips
+are the library's only animation content.
+
+Two bugs found on the way, both the same kind of assumption:
+
+- **The bind offset must be captured from the BIND pose**, not from the skeleton at the moment the
+  constraint first runs. Read live, it measures the offset *after* the limb has moved, and the bone never
+  budges — it looked exactly like the fix having no effect.
+- **Bones carry scale.** The re-parenting maths used a rigid inverse (transpose the rotation, negate the
+  translation), which is true of every rig converted here and false of the asset-pack ones: their
+  armatures sit at **scale 100**, so the inverse was wrong by ten thousand and the render came out blank.
+  A general affine inverse, and the local transform written as a `matrix` rather than TRS.
+
 ## Aiming, evaluation and named poses
 
 The three slices the 2026-09-03 device run calls for, in order. Designed here before any of it is built,

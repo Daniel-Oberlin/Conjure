@@ -419,10 +419,12 @@ class ModelImporter(AssetImporter):
                         # both inherit it silently.
                         try:
                             from .figures import best_humanoid
-                            guess, source = best_humanoid(doc, blob)
+                            guess, source, follows = best_humanoid(doc, blob)
                             if guess:
                                 attributes["humanoid"] = guess
                                 attributes["humanoid_source"] = source
+                                if follows:
+                                    attributes["humanoid_follows"] = follows
                         except Exception as exc:  # noqa: BLE001 — never fail an import over this
                             # Reported, not swallowed: a silent guard here hid a wrong argument and made
                             # inference look like it simply found nothing on every non-VRM model.
@@ -433,6 +435,14 @@ class ModelImporter(AssetImporter):
                         # bug be attributed rather than guessed at.
                         attributes["humanoid"] = humanoid
                         attributes["humanoid_source"] = "vrm"
+                    if humanoid:                      # a STATED map still gets checked for stray limbs
+                        try:
+                            from .figures import follow_bones
+                            stated_follows = follow_bones(doc, humanoid, blob)
+                            if stated_follows:
+                                attributes["humanoid_follows"] = stated_follows
+                        except Exception:  # noqa: BLE001 — a nicety; never fail an import over it
+                            pass
                     if attributes.get("humanoid"):
                         # The anatomical frame: which way to rotate each bone so that "bend 45" means
                         # the same motion on every rig. Derived from the bind pose, so it is a property

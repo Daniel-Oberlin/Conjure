@@ -32,8 +32,8 @@ import bpy
 import mathutils
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from conjure.figures import (anatomical_axes, best_humanoid,   # noqa: E402 — after the path fix
-                             resolve_pose, split_glb, validate)
+from conjure.figures import (_mul, anatomical_axes, best_humanoid,   # noqa: E402 — after the path fix
+                             follow_bones, node_world_matrices, resolve_pose, split_glb, validate)
 from conjure.importer import vrm_humanoid                       # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -45,7 +45,11 @@ raw = open(glb, "rb").read()
 doc, blob = split_glb(raw)
 # The same discovery order the importer uses — stated map, then a known naming convention, then shape —
 # so what is rendered is what a headset would be sent.
-mapping = ((vrm_humanoid(doc) or best_humanoid(doc, blob)[0]) or {}) if doc else {}
+mapping, _source, follows = best_humanoid(doc, blob) if doc else ({}, None, {})
+stated = vrm_humanoid(doc) if doc else None
+if stated:
+    mapping, follows = stated, follow_bones(doc, stated, blob)
+mapping = mapping or {}
 anatomical = {b: r for b, r in poses.items() if isinstance(r, dict)}
 euler_poses = {b: r for b, r in poses.items() if not isinstance(r, dict)}
 
@@ -58,7 +62,30 @@ else:
     print("  humanoid map: NONE — nothing to pose semantically (raw bone names still work)")
 
 
-def posed_glb(data, doc, blob, mapping, requests):
+def _invert_rigid(m):
+    """Inverse of an affine column-major 4x4 — general, because bones DO carry scale.
+
+    The first version assumed rotation and translation only, which is true of every rig converted here
+    and false of the asset-pack ones: their armatures sit at scale 100, so transposing the rotation part
+    was wrong by a factor of ten thousand and the render came out blank.
+    """
+    a = [[m[0], m[4], m[8]], [m[1], m[5], m[9]], [m[2], m[6], m[10]]]
+    det = (a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+           - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+           + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]))
+    if abs(det) < 1e-20:
+        return [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
+    inv = [[(a[(r + 1) % 3][(c + 1) % 3] * a[(r + 2) % 3][(c + 2) % 3]
+             - a[(r + 1) % 3][(c + 2) % 3] * a[(r + 2) % 3][(c + 1) % 3]) / det
+            for r in range(3)] for c in range(3)]                      # adjugate, transposed
+    t = [-(inv[r][0] * m[12] + inv[r][1] * m[13] + inv[r][2] * m[14]) for r in range(3)]
+    return [inv[0][0], inv[1][0], inv[2][0], 0.0,
+            inv[0][1], inv[1][1], inv[2][1], 0.0,
+            inv[0][2], inv[1][2], inv[2][2], 0.0,
+            t[0], t[1], t[2], 1.0]
+
+
+def posed_glb(data, doc, blob, mapping, requests, follows):
     """The GLB with the pose written into its own node rotations — the artifact, not a reading of it.
 
     **Posing here rather than in Blender is the point.** A pose is a delta on a glTF node's local
@@ -70,6 +97,7 @@ def posed_glb(data, doc, blob, mapping, requests):
     Blender then renders a posed GLB, byte-for-byte the thing a headset would load.
     """
     by_name = {n.get("name"): i for i, n in enumerate(doc.get("nodes") or []) if n.get("name")}
+    world = node_world_matrices(doc)                      # BIND pose, before anything is rotated
     axes = anatomical_axes(doc, mapping)                  # PARENT space: where a node's rotation lives
     notes, posed_nodes = [], {}
     for bone, delta in resolve_pose(axes, requests, notes).items():
@@ -118,6 +146,25 @@ def posed_glb(data, doc, blob, mapping, requests):
         samplers.append({"input": time_acc, "output": out, "interpolation": "STEP"})
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": node_index, "path": "rotation"}})
+    # Bones that ride a limb rather than belonging to it (an IK foot parented to the armature root):
+    # re-parent them in the copy we render, which is the same relationship the runtime maintains as a
+    # constraint. Local TRS is recomputed so the bind pose is unchanged.
+    for child_name, lead_name in (follows or {}).items():
+        ci, li = by_name.get(child_name), by_name.get(lead_name)
+        if ci is None or li is None:
+            continue
+        old_parent = next((k for k, n in enumerate(doc["nodes"]) if ci in (n.get("children") or [])), None)
+        if old_parent is not None:
+            doc["nodes"][old_parent]["children"] = [c for c in doc["nodes"][old_parent]["children"]
+                                                    if c != ci]
+        doc["nodes"][li].setdefault("children", []).append(ci)
+        local = _mul(_invert_rigid(world[li]), world[ci])
+        doc["nodes"][ci].pop("matrix", None)
+        doc["nodes"][ci].pop("translation", None)
+        doc["nodes"][ci].pop("rotation", None)
+        doc["nodes"][ci].pop("scale", None)
+        doc["nodes"][ci]["matrix"] = [round(v, 8) for v in local]      # TRS cannot express shear; this can
+        print(f"    {child_name} now rides {lead_name}")
     doc["animations"] = [{"name": "pose", "samplers": samplers, "channels": channels}]
     blob = bytes(blob) + b"\x00" * (-len(blob) % 4) + bytes(extra)
     buffers[0]["byteLength"] = len(blob)
@@ -134,7 +181,7 @@ def posed_glb(data, doc, blob, mapping, requests):
 source = glb
 if anatomical and mapping:
     source = os.path.join(outdir, "posed.glb")
-    open(source, "wb").write(posed_glb(raw, doc, blob, mapping, anatomical))
+    open(source, "wb").write(posed_glb(raw, doc, blob, mapping, anatomical, follows))
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=source)

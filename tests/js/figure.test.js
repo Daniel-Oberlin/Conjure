@@ -205,3 +205,31 @@ test("a frame with no limits is left alone rather than clamped against a guess",
   delete bare.limits;
   assert.ok(2 * Math.acos(Math.abs(delta(bare, { bend: -90 }).w)) * 180 / Math.PI > 89);
 });
+
+test("a bone that hangs outside its limb rides it instead of staying planted", () => {
+  // An IK foot: parented to the root, weighted to the mesh. Rotate the shin and it stays where it was,
+  // stretching the figure from a planted foot to a raised ankle — reported from the headset.
+  const root = new THREE.Object3D(), shin = new THREE.Bone(), foot = new THREE.Bone();
+  shin.name = "LowerLeg.L"; foot.name = "Foot.L";
+  shin.position.set(0, 1, 0);
+  foot.position.set(0, 0.1, 0);                       // parented to the ROOT, not to the shin
+  root.add(shin); root.add(foot);
+  root.updateMatrixWorld(true);
+  const before = new THREE.Vector3().setFromMatrixPosition(foot.matrixWorld);
+
+  const comp = Object.create(DEF);
+  comp.el = { id: "f", getObject3D: () => root, addEventListener() {}, removeEventListener() {} };
+  comp.data = {
+    humanoid: JSON.stringify({ leftLowerLeg: "LowerLeg.L" }),
+    axes: JSON.stringify({ leftLowerLeg: GOLDEN.frames.left_shin }),
+    follows: JSON.stringify({ "Foot.L": "LowerLeg.L" }),
+    pose: JSON.stringify({ leftLowerLeg: { bend: 90 } }),
+  };
+  comp.init();
+  root.updateMatrixWorld(true);
+  const after = new THREE.Vector3().setFromMatrixPosition(foot.matrixWorld);
+  assert.ok(after.distanceTo(before) > 0.05, `the foot should travel with the shin, moved ${after.distanceTo(before)}`);
+  // ...and it keeps its offset from the shin, rather than being dumped on top of it.
+  const shinPos = new THREE.Vector3().setFromMatrixPosition(shin.matrixWorld);
+  assert.ok(Math.abs(after.distanceTo(shinPos) - before.distanceTo(shinPos)) < 1e-6);
+});

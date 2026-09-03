@@ -11,7 +11,8 @@ import pytest
 import math
 
 from conjure.figures import (CONVENTIONS, CORE_BONES, FRAME_VECTORS, POSE_AXES, REQUIRED_BONES,
-                             TRUNK_BONES, best_humanoid, convention_humanoid, joint_limits,
+                             TRUNK_BONES, best_humanoid, convention_humanoid, follow_bones,
+                             joint_limits,
                              prune_map,
                              anatomical_axes, body_frame, infer_humanoid,
                              node_world_matrices, node_world_positions, parent_map, resolve_pose,
@@ -629,14 +630,14 @@ def test_names_are_tried_before_shape():
     # Both layers can answer for this fixture; the cheap exact one wins, and inference — which reads
     # every vertex weight in the file — is not even run.
     doc, _ = _named_skeleton("mixamo", arms_down=False)
-    mapping, source = best_humanoid(doc)
+    mapping, source, _follows = best_humanoid(doc)
     assert source == "convention:mixamo" and not validate(doc, mapping)
 
 
 def test_an_unknown_rig_falls_through_to_shape():
     doc, _ = _skeleton()                                    # `l_thigh`, `r_lowerarm`: no convention
     assert convention_humanoid(doc) == (None, None)
-    mapping, source = best_humanoid(doc)
+    mapping, source, _follows = best_humanoid(doc)
     assert source == "inferred" and mapping["leftUpperArm"] == "l_upperarm"
 
 
@@ -680,3 +681,29 @@ def test_a_missing_required_bone_still_rejects():
     doc, _ = _skeleton()
     mapping = {b: n for b, n in infer_humanoid(doc).items() if b != "leftLowerLeg"}
     assert any("required" in p for p in validate(doc, mapping))
+
+
+def test_a_bone_that_hangs_outside_its_limb_is_told_to_ride_it():
+    """The reported symptom: "their feet remain glued on the floor and the model stretches from the feet
+    to the raised ankle". An IK rig parents the foot to the armature ROOT, so rotating the shin moves
+    the leg and leaves the foot behind. It cannot be posed — but it has to follow, or the mesh tears."""
+    doc, idx = _skeleton()
+    mapping = infer_humanoid(doc)
+    doc["nodes"][idx["l_shin"]]["children"] = []                       # foot off the leg...
+    doc["nodes"][idx["hips"]]["children"].append(idx["l_foot"])        # ...and onto the root
+    assert follow_bones(doc, mapping) == {"l_foot": "l_shin"}
+    # It is dropped from the MAP, because rotating it poses nothing — the two facts travel together.
+    assert "leftFoot" not in prune_map(doc, mapping)
+    # ...and what hangs below it rides along, so the toes need no entry of their own.
+    assert "l_toes" not in follow_bones(doc, mapping)
+
+
+def test_a_bone_that_moves_no_geometry_is_left_where_it_is():
+    # A pole target or an unweighted helper is not worth carrying: nothing visible hangs off it.
+    doc, idx = _skeleton()
+    mapping = infer_humanoid(doc)
+    doc["nodes"][idx["l_shin"]]["children"] = []
+    doc["nodes"][idx["hips"]]["children"].append(idx["l_foot"])
+    assert follow_bones(doc, mapping, blob=b"") == {"l_foot": "l_shin"}   # no weights known: assume it does
+    empty_weights = {**doc, "meshes": [], "skins": [{"joints": doc["skins"][0]["joints"]}]}
+    assert follow_bones(empty_weights, mapping, blob=b"x") == {}
