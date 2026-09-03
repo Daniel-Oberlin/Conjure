@@ -560,6 +560,21 @@ def test_an_explicit_size_on_a_figure_means_HEIGHT_not_largest_extent(srv, clien
     assert ent["transform"]["scale"][1] == pytest.approx(2.0, rel=1e-3)
 
 
+def test_a_figure_whose_height_is_not_metric_is_normalized_anyway(srv, client, tmp_path):
+    """Life size is only meaningful when the file is authored in metres. Measured in the library: one
+    `Animated Woman` comes out 4.8 m and another 0.37 m — units artifacts, not authored choices, and
+    "keep native size" would place a giant and a doll."""
+    aid = _catalog_figure(srv, client, tmp_path, height=4.82)
+    r = client.post("/place_cached_asset", json={"id": aid}).json()
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert ent["meta"]["rigged"] is True
+    assert ent["transform"]["scale"][1] == pytest.approx(1.8 / 4.82, rel=1e-3), "normalized by HEIGHT"
+    # ...and an explicit size still wins, as it does for a figure that is authored metric.
+    r2 = client.post("/place_cached_asset", json={"id": aid, "size_m": 2.0}).json()
+    ent2 = next(e for e in _entities(client) if e["id"] == r2["id"])
+    assert ent2["transform"]["scale"][1] == pytest.approx(2.0 / 4.82, rel=1e-3)
+
+
 def test_an_unrigged_model_still_normalizes(srv, client, tmp_path):
     # The complement — props keep the old behaviour exactly.
     srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
@@ -3859,22 +3874,31 @@ def test_refusing_the_anchor_does_not_block_the_move(srv, client):
     assert e["transform"]["position"] == [4, 0.5, -1] and e["transform"]["rotation"] == [0, 90, 0]
 
 
-# ---- figures: posing through the humanoid map ----------------------------------------------------
-# The point of the map is that ONE vocabulary works on every rig: a caller says "leftUpperArm" and never
-# learns that Grace's rig calls it `upper_arm.L` and Saka's `J_Bip_L_UpperArm`. Resolution happens
-# server-side so the client needs no per-rig knowledge (docs/backlogs/figures.md).
+# ---- figures: posing in ANATOMICAL terms ---------------------------------------------------------
+# ONE vocabulary works on every rig, and it takes two translations to get there: a caller says
+# "leftUpperArm" and never learns that Grace's rig calls it `upper_arm.fk.L` and Saka's
+# `J_Bip_L_UpperArm`, and it says "bend 45" and never learns that those two disagree by 137 degrees
+# about which way that bone's own axes point. The map and the measured frame both ride the entity, so
+# the client needs no per-rig knowledge (docs/backlogs/figures.md).
 
 def _place_figure(srv, client, tmp_path):
     """Import a rigged GLB that STATES its humanoid map (a VRM), then place it — the real path, so the
-    test covers extraction, placement and posing rather than a hand-seeded catalog row."""
-    doc = {"scenes": [{"nodes": [0]}], "scene": 0,
-           "nodes": [{"mesh": 0, "skin": 0}, {"name": "hip_node"}, {"name": "upper_arm.L"},
-                     {"name": "head_node"}],
-           "skins": [{"joints": [1, 2, 3]}],
+    test covers extraction, placement and posing rather than a hand-seeded catalog row.
+
+    The bones carry POSITIONS, because a skeleton is what the anatomical frame is measured from: three
+    joints all at the origin have no directions and therefore nothing to rotate about."""
+    doc = {"scenes": [{"nodes": [0, 1]}], "scene": 0,
+           "nodes": [{"mesh": 0, "skin": 0},
+                     {"name": "hip_node", "translation": [0, 1.0, 0], "children": [2, 3]},
+                     {"name": "upper_arm.L", "translation": [0.2, 0.4, 0], "children": [4]},
+                     {"name": "head_node", "translation": [0, 0.6, 0]},
+                     {"name": "forearm.L", "translation": [0.3, 0, 0]}],
+           "skins": [{"joints": [1, 2, 3, 4]}],
            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
            "accessors": [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}],
            "extensions": {"VRMC_vrm": {"humanoid": {"humanBones": {
-               "hips": {"node": 1}, "leftUpperArm": {"node": 2}, "head": {"node": 3}}}}}}
+               "hips": {"node": 1}, "leftUpperArm": {"node": 2}, "head": {"node": 3},
+               "leftLowerArm": {"node": 4}}}}}}
     body = json.dumps(doc).encode()
     body += b" " * (-len(body) % 4)
     blob = (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body))
@@ -3891,70 +3915,325 @@ def _ent(client, eid):
 
 def test_a_figure_carries_its_bone_vocabulary(srv, client, tmp_path):
     eid = _place_figure(srv, client, tmp_path)
-    assert _ent(client, eid)["meta"]["humanoid"]["leftUpperArm"] == "upper_arm.L"
+    meta = _ent(client, eid)["meta"]
+    assert meta["humanoid"]["leftUpperArm"] == "upper_arm.L"
+    # Which node is half the answer; which way is the other half — three relative rotations, plus the
+    # bind-pose vectors an absolute aim swings from.
+    frame = meta["humanoid_axes"]["leftUpperArm"]
+    assert sorted(frame) == ["bend", "forward", "limits", "out", "rest", "spread", "turn", "up"]
+    assert frame["limits"]["bend"] == [-140, 190], "a shoulder is barely limited; a knee is not"
 
 
-def test_posing_resolves_a_semantic_bone_to_this_rigs_node(srv, client, tmp_path):
+def test_a_pose_is_stored_in_the_terms_it_was_asked_for(srv, client, tmp_path):
     eid = _place_figure(srv, client, tmp_path)
-    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": [0, 0, -60]}}).json()
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"bend": 60}}}).json()
     assert r["ok"] is True and r["posed"] == ["leftUpperArm"]
     fig = _ent(client, eid)["components"]["figure"]
-    assert json.loads(fig["pose"]) == {"leftUpperArm": [0.0, 0.0, -60.0]}
+    # Semantic, never baked into quaternions: this is durable world state — replayed on reload, and read
+    # by whatever expresses intent later. The client resolves it against the axes shipped alongside.
+    assert json.loads(fig["pose"]) == {"leftUpperArm": {"bend": 60.0}}
     assert json.loads(fig["humanoid"])["leftUpperArm"] == "upper_arm.L"
+    assert json.loads(fig["axes"])["leftUpperArm"]["bend"]
 
 
 def test_a_second_pose_merges_rather_than_replacing(srv, client, tmp_path):
     # "Raise her left arm" then "turn her head" must not drop the arm.
     eid = _place_figure(srv, client, tmp_path)
-    client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": [0, 0, -60]}})
-    client.post("/figure", json={"id": eid, "pose": {"head": [0, 30, 0]}})
+    client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"bend": 60}}})
+    client.post("/figure", json={"id": eid, "pose": {"head": {"turn": 30}}})
     pose = json.loads(_ent(client, eid)["components"]["figure"]["pose"])
     assert sorted(pose) == ["head", "leftUpperArm"]
 
 
+def test_an_empty_rotation_returns_just_that_bone_to_rest(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"bend": 60},
+                                                     "head": {"turn": 30}}})
+    client.post("/figure", json={"id": eid, "pose": {"head": {}}})
+    # Gone, not stored as an empty dict — a cleared bone must leave nothing for the client to re-apply.
+    assert json.loads(_ent(client, eid)["components"]["figure"]["pose"]) == {
+        "leftUpperArm": {"bend": 60.0}}
+
+
 def test_clear_returns_to_the_rest_pose(srv, client, tmp_path):
     eid = _place_figure(srv, client, tmp_path)
-    client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": [0, 0, -60]}})
+    client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"bend": 60}}})
     assert client.post("/figure", json={"id": eid, "clear": True}).json()["cleared"] is True
     assert _ent(client, eid)["components"]["figure"]["pose"] == ""
+
+
+def test_a_joint_limit_is_applied_and_reported(srv, client, tmp_path):
+    """A body has limits, so a request past one lands AT the limit rather than doing nothing. Saying so
+    is the point: the director asked for 90 degrees of hip extension twice in one session and nothing
+    told it otherwise."""
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftLowerArm": {"spread": 60}}}).json()
+    assert r["ok"] is True
+    assert r["limited"] == ["leftLowerArm.spread +60° → +8°"]
+    # The pose is stored as ASKED — the limit is a property of the joint, applied when it is resolved,
+    # not a rewrite of what the caller wanted.
+    assert json.loads(_ent(client, eid)["components"]["figure"]["pose"]) == {
+        "leftLowerArm": {"spread": 60.0}}
+
+
+def test_a_pose_within_the_limits_reports_nothing(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up"}}}).json()
+    assert r["ok"] is True and "limited" not in r
 
 
 def test_an_unknown_bone_is_refused_and_names_what_is_available(srv, client, tmp_path):
     # A silent no-op would look identical to a working pose the user simply cannot see — the same
     # failure that made grab's modes unreachable (specs/dynamics.md §8b).
     eid = _place_figure(srv, client, tmp_path)
-    r = client.post("/figure", json={"id": eid, "pose": {"tail": [0, 0, 10]}}).json()
+    r = client.post("/figure", json={"id": eid, "pose": {"tail": {"bend": 10}}}).json()
     assert r["ok"] is False
     assert "tail" in r["error"] and "leftUpperArm" in r["error"]
+
+
+def test_an_unknown_rotation_names_the_three_that_exist(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"head": {"roll": 10}}}).json()
+    assert r["ok"] is False and "roll" in r["error"] and "spread" in r["error"]
+
+
+def test_a_raw_euler_triple_is_no_longer_a_pose(srv, client, tmp_path):
+    """The vocabulary it replaced. [0, 0, -70] flexed one figure's hip and threw another's leg out
+    behind her, because it was read in the bone's own rest space — whatever the rigger chose."""
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"head": [0, 0, -70]}}).json()
+    assert r["ok"] is False and "bend" in r["error"]
 
 
 def test_a_non_finite_angle_is_refused(srv, client, tmp_path):
     # Sent raw: json.dumps refuses inf, but json.loads accepts the bare literal. A non-finite rotation
     # blanks that branch of the scene graph and a persisted one comes back on every reload.
     eid = _place_figure(srv, client, tmp_path)
-    r = client.post("/figure", content='{"id": "%s", "pose": {"head": [0, Infinity, 0]}}' % eid,
+    r = client.post("/figure", content='{"id": "%s", "pose": {"head": {"bend": Infinity}}}' % eid,
                     headers={"Content-Type": "application/json"}).json()
     assert r["ok"] is False and "finite" in r["error"]
 
 
 def test_a_malformed_rotation_is_refused(srv, client, tmp_path):
     eid = _place_figure(srv, client, tmp_path)
-    for bad in ([0, 0], "sideways", [0, "x", 0]):
+    for bad in ({"bend": "sideways"}, "sideways", 45, [0, 0, 0]):
         r = client.post("/figure", json={"id": eid, "pose": {"head": bad}}).json()
         assert r["ok"] is False, bad
+
+
+def test_an_aim_is_stored_as_the_direction_it_was_asked_for(srv, client, tmp_path):
+    """The point of aiming: the request survives as a destination. Two rigs whose arms rest 48 degrees
+    apart need different rotations to satisfy it, and neither of those numbers belongs in world state."""
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up"}}}).json()
+    assert r["ok"] is True
+    assert json.loads(_ent(client, eid)["components"]["figure"]["pose"]) == {"leftUpperArm": {"aim": "up"}}
+
+
+def test_an_aim_may_be_a_vector(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": [0, 1, 1]}}}).json()
+    assert r["ok"] is True
+    assert json.loads(_ent(client, eid)["components"]["figure"]["pose"])["leftUpperArm"]["aim"] == [0, 1, 1]
+
+
+def test_an_unknown_direction_names_the_ones_that_exist(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "skyward"}}}).json()
+    assert r["ok"] is False and "skyward" in r["error"] and "up" in r["error"]
+
+
+def test_aiming_the_trunk_is_refused_with_the_reason(srv, client, tmp_path):
+    """`aim` points a bone along its LENGTH, so "head up" would be a no-op — the head already points up.
+    A silent no-op is indistinguishable from a pose the user cannot see, so it fails loudly instead."""
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"head": {"aim": "up"}}}).json()
+    assert r["ok"] is False and "turn" in r["error"]
+
+
+def test_an_aim_and_a_bend_on_one_bone_are_refused(srv, client, tmp_path):
+    # Both set the swing. Silently preferring one would make the other vanish without saying so.
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up", "bend": 30}}}).json()
+    assert r["ok"] is False and "swing" in r["error"]
+    ok = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up", "turn": 30}}}).json()
+    assert ok["ok"] is True, "a twist is orthogonal to where the bone points, so it composes"
+
+
+def test_an_aim_at_a_frame_that_predates_aiming_says_to_place_it_again(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    meta = next(e for e in srv.store.doc["entities"] if e["id"] == eid)["meta"]
+    for frame in meta["humanoid_axes"].values():
+        for k in ("rest", "up", "forward", "out"):
+            frame.pop(k, None)
+    r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"aim": "up"}}}).json()
+    assert r["ok"] is False and "place it again" in r["error"]
+    # ...and the relative rotations still work, because they were never the part that was missing.
+    assert client.post("/figure", json={"id": eid,
+                                        "pose": {"leftUpperArm": {"bend": 30}}}).json()["ok"] is True
+
+
+# ---- a catalogued figure is only as good as the code that measured it ----------------------------
+# A catalog row is a snapshot of what we UNDERSTOOD about a model, not of the model, and the
+# understanding keeps changing: three figures in the dev library predate inference entirely and carry no
+# map, and two carry maps today's validate() rejects. Placement re-measures anything stamped older than
+# the current revision, so a fix reaches figures already in the library without re-importing the GLB.
+
+def _skeleton_glb(doc=None):
+    """A rigged GLB with a full humanoid skeleton and NO stated map, so inference has to do the work.
+    Borrows the anatomically-ordered fixture the figures tests use rather than inventing a second one."""
+    from test_figures import _skeleton
+    doc = doc or _skeleton()[0]
+    doc["nodes"].append({"mesh": 0, "skin": 0})
+    doc["scenes"][0]["nodes"].append(len(doc["nodes"]) - 1)
+    doc["meshes"] = [{"primitives": [{"attributes": {"POSITION": 0}}]}]
+    doc["accessors"] = [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}]
+    body = json.dumps(doc).encode()
+    body += b" " * (-len(body) % 4)
+    return (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body))
+            + struct.pack("<II", len(body), 0x4E4F534A) + body)
+
+
+def _catalog_skeleton(client):
+    r = client.post("/library/import", json={"items": [
+        {"filename": "old.glb", "data_b64": base64.b64encode(_skeleton_glb()).decode(),
+         "hints": {}}]}).json()
+    assert r["results"][0]["ok"] is True, r
+    return r["results"][0]["id"]
+
+
+def test_a_fetched_model_is_examined_as_closely_as_an_imported_one(srv, client, tmp_path):
+    """Three rigged characters sat in the dev catalog as PROPS — normalized to 1.8 m and unposable —
+    because the Poly Pizza path recorded a triangle count and never looked at the skeleton. Two ingest
+    paths that disagree about how hard they look at a file is now the same bug twice, so the look
+    happens in the one write-through they share."""
+    srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
+    (tmp_path / f"{ASSET_RECORD.hash}.glb").write_bytes(_skeleton_glb())   # the fetch lands real bytes
+    r = client.post("/place_asset", json={"query": "a woman", "size_m": 2}).json()
+    assert r["ok"] is True
+    attrs = json.loads(srv.library.get(f"{ASSET_RECORD.hash}.glb")["attributes"])
+    assert attrs["rigged"] is True, "a skeleton in the file must reach the catalog"
+    assert attrs["humanoid"]["leftUpperArm"] == "l_upperarm"
+    assert attrs["humanoid_axes"]["leftUpperArm"]["limits"]
+
+
+def test_refresh_models_brings_the_whole_library_up_to_the_current_build(srv, client, tmp_path):
+    """The batch form of what placement does one model at a time — for after a build that changes what
+    extraction knows, so the library catches up at once rather than a figure at a time."""
+    aid = _catalog_skeleton(client)
+    srv.library.upsert(aid, attributes={"humanoid": {}, "humanoid_axes": {}, "rigged": None,
+                                        "frame_rev": 0})
+    out = client.post("/library/refresh-models", json={}).json()
+    assert out["ok"] is True and out["checked"] >= 1
+    assert [u["bones"] for u in out["updated"] if u["id"] == aid] == [21]
+    assert json.loads(srv.library.get(aid)["attributes"])["frame_rev"] == srv.FRAME_REV
+    # Idempotent: a second run finds nothing to do, because the stamp says so.
+    assert client.post("/library/refresh-models", json={}).json()["updated"] == []
+    assert client.post("/library/refresh-models", json={"force": True}).json()["updated"] == []
+
+
+def test_a_figure_catalogued_before_inference_existed_gains_a_map_when_placed(srv, client, tmp_path):
+    aid = _catalog_skeleton(client)
+    srv.library.upsert(aid, attributes={"humanoid": {}, "humanoid_axes": {}, "frame_rev": 0})
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    meta = _ent(client, eid)["meta"]
+    assert meta["humanoid"]["leftUpperArm"] == "l_upperarm"
+    assert meta["humanoid_axes"]["leftUpperArm"]["rest"]
+    # ...and written back, so the next placement does not reopen the file.
+    assert json.loads(srv.library.get(aid)["attributes"])["frame_rev"] == srv.FRAME_REV
+
+
+def test_a_stored_map_that_no_longer_validates_is_re_inferred(srv, client, tmp_path):
+    """The measured case: two maps in the dev library were inferred before conversion rebuilt the deform
+    hierarchy, and their forearms hang off the armature root — the zig-zag arm, cached. A map that fails
+    today's validator is not worth keeping merely because it was written down."""
+    aid = _catalog_skeleton(client)
+    broken = dict(json.loads(srv.library.get(aid)["attributes"])["humanoid"])
+    broken["leftLowerArm"] = "r_lowerarm"                      # the other arm: fails side AND chain
+    srv.library.upsert(aid, attributes={"humanoid": broken, "frame_rev": 0})
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    assert _ent(client, eid)["meta"]["humanoid"]["leftLowerArm"] == "l_lowerarm"
+
+
+def test_a_map_that_cannot_be_repaired_is_cleared_rather_than_kept(srv, client, tmp_path):
+    # No map at all is an honest error message the director can relay. A plausible wrong one is a figure
+    # whose elbow bends backwards three weeks later.
+    aid = _catalog_figure(srv, client, tmp_path)      # rigged, but no real skeleton to infer from
+    srv.library.upsert(aid, attributes={"humanoid": {"hips": "nope", "leftHand": "also_nope"},
+                                        "humanoid_source": "inferred", "frame_rev": 0})
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    assert "humanoid" not in _ent(client, eid)["meta"]
+    r = client.post("/figure", json={"id": eid, "pose": {"head": {"bend": 10}}}).json()
+    assert r["ok"] is False and "humanoid" in r["error"]
+
+
+def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client, tmp_path):
+    """A tripwire, and it has already caught one live miss.
+
+    `humanoid_follows` was added to what extraction produces WITHOUT bumping FRAME_REV, so every row in
+    the library was already stamped current, refresh-models found nothing to do, and the fix reached
+    nobody — while the code, the tests and the renders all said it worked. If you change either of these
+    literals, change the other: a new derived field is exactly the case the stamp exists for."""
+    assert srv.FRAME_REV == 7
+    assert srv._DERIVED_MODEL_ATTRS == (
+        "bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
+        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris")
+
+
+def test_a_bone_that_rides_its_limb_reaches_the_entity(srv, client, tmp_path):
+    """The whole path: extraction finds the stray bone, the catalog keeps it, placement puts it on the
+    entity, and the component hands it to the client. Every link was right except the version stamp."""
+    # A NAMED rig, because that is the real shape: the two characters this came from are recognised by
+    # convention, and their feet hang off the root. Shape inference cannot map a leg whose foot has been
+    # taken out of it at all, so a nameless fixture would prove nothing.
+    from test_figures import _named_skeleton
+    doc, _idx = _named_skeleton("dot-side", arms_down=False)
+    by = {n["name"]: i for i, n in enumerate(doc["nodes"]) if n.get("name")}
+    doc["nodes"][by["LowerLeg.L"]]["children"] = []                    # the IK foot: off the leg...
+    doc["nodes"][by["Hips"]]["children"].append(by["Foot.L"])          # ...and onto the root
+    r = client.post("/library/import", json={"items": [
+        {"filename": "ik.glb", "data_b64": base64.b64encode(_skeleton_glb(doc)).decode(),
+         "hints": {}}]}).json()
+    aid = r["results"][0]["id"]
+    attrs = json.loads(srv.library.get(aid)["attributes"])
+    assert attrs["humanoid_source"] == "convention:dot-side"
+    assert attrs["humanoid_follows"] == {"Foot.L": "LowerLeg.L"}
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    ent = _ent(client, eid)
+    assert ent["meta"]["humanoid_follows"] == {"Foot.L": "LowerLeg.L"}
+    client.post("/figure", json={"id": eid, "pose": {"leftLowerLeg": {"bend": 45}}})
+    assert json.loads(_ent(client, eid)["components"]["figure"]["follows"]) == {"Foot.L": "LowerLeg.L"}
+
+
+def test_a_frame_at_the_current_revision_is_trusted_without_reopening_the_file(srv, client, tmp_path):
+    # The stamp is what keeps placement from re-parsing a 37 MB GLB every time. Were it ignored, the
+    # sentinel below would be silently replaced by a real inference.
+    aid = _catalog_skeleton(client)
+    srv.library.upsert(aid, attributes={"humanoid": {"hips": "sentinel"}, "frame_rev": srv.FRAME_REV})
+    eid = client.post("/place_cached_asset", json={"id": aid}).json()["id"]
+    assert _ent(client, eid)["meta"]["humanoid"] == {"hips": "sentinel"}
+
+
+def test_a_figure_with_no_measurable_frame_says_so(srv, client, tmp_path):
+    """A rig whose joints are all at one point has no directions to rotate about. Refusing beats posing
+    it about a made-up axis, which is unverifiable and looks like a working pose that does nothing."""
+    eid = _place_figure(srv, client, tmp_path)
+    next(e for e in srv.store.doc["entities"] if e["id"] == eid)["meta"].pop("humanoid_axes")
+    r = client.post("/figure", json={"id": eid, "pose": {"head": {"bend": 10}}}).json()
+    assert r["ok"] is False and "anatomical frame" in r["error"]
 
 
 def test_posing_a_non_figure_is_refused(srv, client, tmp_path):
     srv.resolver = FakeAssetResolver(record=ASSET_RECORD)
     client.post("/place_asset", json={"query": "oak tree", "size_m": 2})
     prop = next(e["id"] for e in _entities(client) if e["id"].startswith("ent_asset"))
-    r = client.post("/figure", json={"id": prop, "pose": {"head": [0, 10, 0]}}).json()
+    r = client.post("/figure", json={"id": prop, "pose": {"head": {"bend": 10}}}).json()
     assert r["ok"] is False and "not a rigged figure" in r["error"]
 
 
 def test_figure_is_owner_gated(srv, client, tmp_path):
     assert "/figure" in srv._OWNER_ONLY_PATHS
     eid = _place_figure(srv, client, tmp_path)
-    r = client.post("/figure", json={"id": eid, "pose": {"head": [0, 10, 0]}},
+    r = client.post("/figure", json={"id": eid, "pose": {"head": {"bend": 10}}},
                     headers={"X-Conjure-User": "someone-else"})
     assert r.status_code == 403

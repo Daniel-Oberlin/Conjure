@@ -8,7 +8,16 @@ as the inference. docs/backlogs/figures.md
 
 import pytest
 
-from conjure.figures import CORE_BONES, infer_humanoid, node_world_positions, score, validate
+import math
+
+from conjure.figures import (CONVENTIONS, CORE_BONES, FRAME_VECTORS, POSE_AXES, REQUIRED_BONES,
+                             TRUNK_BONES, best_humanoid, convention_humanoid, follow_bones,
+                             joint_limits,
+                             prune_map,
+                             anatomical_axes, body_frame, infer_humanoid,
+                             node_world_matrices, node_world_positions, parent_map, resolve_pose,
+                             score, validate)
+from conjure.figures import _ancestors, _local_matrix, _mul, _quat_mul, _sub
 
 
 def _skeleton():
@@ -131,6 +140,34 @@ def test_validate_tolerates_sub_millimetre_noise():
     assert not [p for p in validate(doc, m) if "sits below" in p]
 
 
+def test_validate_catches_a_limb_that_is_not_a_chain():
+    """The zig-zag arm, caught before it ships rather than after.
+
+    Two maps in the dev library passed every other check in `validate()` while their forearms hung off
+    the armature root: rotating the upper arm left the forearm behind, and nothing said so. Every other
+    check asks where joints ARE; this one asks whether moving one moves the next, which is the only
+    question posing actually cares about."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    assert not validate(doc, m)
+    doc["nodes"][idx["l_upperarm"]]["children"] = []                 # forearm off the arm...
+    doc["nodes"][idx["hips"]]["children"].append(idx["l_lowerarm"])  # ...and onto the root
+    assert any("leftLowerArm is not below leftUpperArm" in p for p in validate(doc, m))
+
+
+def test_validate_does_not_require_the_trunk_to_be_a_chain():
+    """Conversion re-parents the trunk onto a torso control, so `spine` legitimately stops being a child
+    of `hips` on both Daz rigs while the map stays correct and poses correctly on device. Requiring a
+    connected trunk would reject two maps that work — the same mistake the hips-ancestor-of-head check
+    made, which is recorded above as a fix."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    doc["nodes"][idx["hips"]]["children"].remove(idx["spine"])
+    doc["nodes"][idx["spine"]]["translation"] = [0, 1.15, 0]         # same place, different parent
+    doc["scenes"][0]["nodes"].append(idx["spine"])
+    assert not [p for p in validate(doc, m) if "in the skeleton" in p]
+
+
 def test_score_separates_misses_from_disagreements():
     stated = {"hips": "hips", "head": "head", "leftHand": "l_hand"}
     inferred = {"hips": "hips", "head": "WRONG"}
@@ -143,3 +180,530 @@ def test_score_separates_misses_from_disagreements():
 def test_core_bones_are_the_documented_set():
     assert "hips" in CORE_BONES and "leftUpperArm" in CORE_BONES
     assert not any(b.endswith("Distal") for b in CORE_BONES), "fingers are not inferable from topology"
+
+
+# ---------------------------------------------------------------- the anatomical frame
+#
+# Semantic bone names say WHICH joint; these say WHICH WAY. The tests below all take the same shape,
+# and it is the only shape that can catch a wrong axis: pose a bone, then look at where the joint BELOW
+# it actually ended up. An axis that is plausible, unit-length and wrong passes every structural check
+# there is — which is exactly how the previous round of this feature shipped legs that raised backwards.
+
+
+def _quaternion_matrix(q):
+    x, y, z, w = q
+    return [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0,
+            2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0,
+            2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0,
+            0, 0, 0, 1]
+
+
+def _moved(doc, bone_node, delta, watch_node):
+    """Where `watch_node` lands after `delta` (a parent-space quaternion) is applied to `bone_node`.
+
+    Forward kinematics in eight lines, and it has to be here rather than in the module: this is the
+    runtime's job, and a test that reused the runtime's own arithmetic could only prove it consistent
+    with itself. `delta * rest` is what the client does with the axes it is sent.
+    """
+    mats, parent = node_world_matrices(doc), parent_map(doc)
+    node = doc["nodes"][bone_node]
+    q = _quat_mul(delta, node.get("rotation", [0.0, 0.0, 0.0, 1.0]))
+    t, sc, m = node.get("translation", [0, 0, 0]), node.get("scale", [1, 1, 1]), _quaternion_matrix(q)
+    local = [m[0] * sc[0], m[1] * sc[0], m[2] * sc[0], 0, m[4] * sc[1], m[5] * sc[1], m[6] * sc[1], 0,
+             m[8] * sc[2], m[9] * sc[2], m[10] * sc[2], 0, t[0], t[1], t[2], 1]
+    p = parent.get(bone_node)
+    world = _mul(mats[p], local) if p is not None else local
+    chain = _ancestors(watch_node, parent)
+    for c in reversed(chain[:chain.index(bone_node)]):
+        world = _mul(world, _local_matrix(doc["nodes"][c]))
+    return (world[12], world[13], world[14])
+
+
+def _travel(doc, mapping, axes, bone, watch, request):
+    """The world-space displacement of `watch` when `bone` is posed by `request`."""
+    by_name = {n["name"]: i for i, n in enumerate(doc["nodes"])}
+    before = node_world_positions(doc)[by_name[mapping[watch]]]
+    delta = resolve_pose(axes, {bone: request})[bone]
+    after = _moved(doc, by_name[mapping[bone]], delta, by_name[mapping[watch]])
+    return _sub(after, before)
+
+
+def _posed(doc=None):
+    doc = doc or _skeleton()[0]
+    mapping = infer_humanoid(doc)
+    return doc, mapping, anatomical_axes(doc, mapping)
+
+
+def test_the_body_frame_is_measured_not_assumed():
+    doc, mapping, _ = _posed()
+    frame = body_frame(doc, mapping)
+    assert frame["up"] == pytest.approx((0, 1, 0), abs=1e-6)
+    assert frame["left"] == pytest.approx((1, 0, 0), abs=1e-6)
+    # +X left and +Y up make forward +Z — the facing convention every sample model follows, arrived at
+    # by cross product rather than by assertion, so a rig standing off-axis still gets a square frame.
+    assert frame["forward"] == pytest.approx((0, 0, 1), abs=1e-6)
+
+
+def test_bend_swings_a_limb_forward_on_both_sides():
+    """The bug this whole layer exists for: "raise her legs" put them BEHIND her."""
+    doc, mapping, axes = _posed()
+    for side in ("left", "right"):
+        d = _travel(doc, mapping, axes, f"{side}UpperLeg", f"{side}Foot", {"bend": 45})
+        assert d[2] > 0.3, f"{side} foot should swing forward, went {d}"
+        assert abs(d[0]) < 1e-6, "and straight forward, not out to the side"
+    # Both sides by the SAME sign, because flexing both hips moves both knees the same way. Only the
+    # lateral rotations mirror.
+    left = _travel(doc, mapping, axes, "leftUpperLeg", "leftFoot", {"bend": 45})
+    right = _travel(doc, mapping, axes, "rightUpperLeg", "rightFoot", {"bend": 45})
+    assert left == pytest.approx(right, abs=1e-6)
+
+
+def test_spread_swings_a_limb_outward_on_both_sides():
+    doc, mapping, axes = _posed()
+    left = _travel(doc, mapping, axes, "leftUpperLeg", "leftFoot", {"spread": 45})
+    right = _travel(doc, mapping, axes, "rightUpperLeg", "rightFoot", {"spread": 45})
+    assert left[0] > 0.3 and right[0] < -0.3, "feet should part, not both go the same way"
+    assert left[0] == pytest.approx(-right[0], abs=1e-6), "and mirror each other exactly"
+
+
+def test_spread_raises_an_arm_that_already_points_outward():
+    """The degenerate case that a fixed body axis cannot handle.
+
+    A T-posed arm already points along the direction "outward" means, so the cross product that defines
+    spread everywhere else collapses. Falling back to the body's up axis keeps the motion continuous:
+    an arm at 90 degrees keeps rising rather than stopping dead or spinning about its own length.
+    """
+    doc, mapping, axes = _posed()
+    for side in ("left", "right"):
+        d = _travel(doc, mapping, axes, f"{side}UpperArm", f"{side}Hand", {"spread": 45})
+        assert d[1] > 0.3, f"{side} hand should rise, went {d}"
+
+
+def test_bend_lifts_the_toes_of_a_forward_pointing_foot():
+    """The other degenerate case: a foot points the way `bend` would swing it, so bend means the ankle."""
+    doc, mapping, axes = _posed()
+    d = _travel(doc, mapping, axes, "leftFoot", "leftToes", {"bend": 45})
+    assert d[1] > 0.05 and abs(d[2]) < 0.02, f"toes should lift, went {d}"
+
+
+def test_turn_rotates_a_limb_about_its_own_length_inward_on_both_sides():
+    # 15 degrees, not 90: a knee does not rotate 90 degrees and the joint limits now say so, which is
+    # itself worth having a test walk into.
+    doc, mapping, axes = _posed()
+    left = _travel(doc, mapping, axes, "leftLowerLeg", "leftToes", {"turn": 15})
+    right = _travel(doc, mapping, axes, "rightLowerLeg", "rightToes", {"turn": 15})
+    assert left[0] < -0.005 and right[0] > 0.005, "both toes should turn toward the midline"
+    assert left[1] == pytest.approx(0, abs=1e-6), "a twist does not raise the joint below it"
+
+
+def test_the_head_turns_about_the_body_up_axis():
+    doc, mapping, axes = _posed()
+    assert axes["head"]["turn"] == pytest.approx([0, 1, 0], abs=1e-6)
+
+
+def test_axes_ride_the_bones_own_parent_frame():
+    """Why the axes are stored in parent space rather than model space.
+
+    Turning the whole figure 90 degrees changes every axis in the world, and changes NONE of them in the
+    frame each bone's local rotation actually lives in. Storing them that way is what makes applying one
+    a single multiplication onto the rest quaternion — and what makes a pose survive the figure being
+    rotated, which is otherwise a whole class of bug nobody would see until the headset.
+    """
+    doc, mapping, axes = _posed()
+    turned, _ = _skeleton()
+    root = len(turned["nodes"])
+    half = math.sqrt(0.5)
+    turned["nodes"].append({"name": "root", "rotation": [0, half, 0, half],   # +90 degrees about Y
+                            "children": [turned["scenes"][0]["nodes"][0]]})
+    turned["scenes"][0]["nodes"] = [root]
+    spun = anatomical_axes(turned, mapping)
+    assert spun["leftUpperLeg"]["bend"] == pytest.approx(axes["leftUpperLeg"]["bend"], abs=1e-5)
+    # ...and in model space they differ, which is the thing being avoided.
+    world = anatomical_axes(turned, mapping, space="world")["leftUpperLeg"]["bend"]
+    assert world != pytest.approx(axes["leftUpperLeg"]["bend"], abs=1e-3)
+    # The motion is what matters, and it is unchanged in the FIGURE's own terms: her forward is now +X.
+    d = _travel(turned, mapping, spun, "leftUpperLeg", "leftFoot", {"bend": 45})
+    assert d[0] > 0.3 and abs(d[2]) < 1e-5
+
+
+def test_a_bone_with_nothing_to_point_at_gets_no_axes():
+    """No frame is better than a made-up one — /figure refuses to pose what it cannot aim."""
+    doc, _ = _skeleton()
+    assert anatomical_axes(doc, {"hips": "hips"}) == {}
+
+
+def test_resolve_pose_composes_twist_innermost():
+    doc, mapping, axes = _posed()
+    both = resolve_pose(axes, {"leftUpperArm": {"bend": 30, "turn": 20}})["leftUpperArm"]
+    bend = resolve_pose(axes, {"leftUpperArm": {"bend": 30}})["leftUpperArm"]
+    turn = resolve_pose(axes, {"leftUpperArm": {"turn": 20}})["leftUpperArm"]
+    assert both == pytest.approx(_quat_mul(bend, turn), abs=1e-9)
+    assert POSE_AXES.index("turn") < POSE_AXES.index("bend") < POSE_AXES.index("spread")
+
+
+def test_resolve_pose_treats_a_missing_axis_as_zero():
+    doc, mapping, axes = _posed()
+    assert resolve_pose(axes, {"head": {}})["head"] == pytest.approx([0, 0, 0, 1])
+    assert resolve_pose(axes, {"head": {"bend": 0}})["head"] == pytest.approx([0, 0, 0, 1])
+    assert resolve_pose(axes, {"nosuchbone": {"bend": 10}}) == {}
+
+
+def test_every_mapped_bone_of_a_humanoid_gets_a_full_frame():
+    doc, mapping, axes = _posed()
+    assert set(axes) == set(mapping)
+    for bone, frame in axes.items():
+        # three rotations to swing about, the four bind-pose vectors an absolute aim needs, and what the
+        # joint is allowed to do — the frame carries everything needed to resolve a pose, so a runtime
+        # never needs a second table beside it
+        assert set(frame) == set(POSE_AXES) | set(FRAME_VECTORS) | {"limits"}, bone
+        for name, axis in frame.items():
+            if name == "limits":
+                continue
+            assert math.isclose(math.dist(axis, (0, 0, 0)), 1.0, abs_tol=1e-4), f"{bone}.{name} not unit"
+        # ...and the three swings are an orthonormal basis, so a rotation can be read back OUT of them.
+        assert abs(sum(a * b for a, b in zip(frame["bend"], frame["spread"]))) < 1e-4, bone
+        assert abs(sum(a * b for a, b in zip(frame["bend"], frame["turn"]))) < 1e-4, bone
+        assert abs(sum(a * b for a, b in zip(frame["spread"], frame["turn"]))) < 1e-4, bone
+
+
+# ---------------------------------------------------------------- aiming (absolute directions)
+#
+# The relative rotations ask the caller to know where a bone rests, and the three real rigs disagree by
+# 48 degrees about where an arm does — measured, and the reason "raise her arm up" pointed it backwards
+# on all three. An aim says the destination instead.
+
+
+def _apose(doc, idx, drop=0.5):
+    """The fixture with its arms lowered — an A-pose, so aiming can be tested against two rest poses."""
+    for side, sign in (("l", 1), ("r", -1)):
+        doc["nodes"][idx[f"{side}_upperarm"]]["translation"] = [sign * 0.08, 0, 0]
+        for bone in (f"{side}_lowerarm", f"{side}_hand"):
+            doc["nodes"][idx[bone]]["translation"] = [sign * 0.25 * (1 - drop), -0.25 * drop, 0]
+    return doc
+
+
+#: Axes are rounded to five places on the wire, so a direction lands within ~1e-5 rather than exactly.
+DIRECTION_TOL = 1e-4
+
+
+def _direction(doc, mapping, axes, bone, request):
+    """Where `bone` points after the request — the whole claim of an aim, in one number."""
+    by_name = {n["name"]: i for i, n in enumerate(doc["nodes"])}
+    rest = anatomical_axes(doc, mapping, space="world")[bone]["rest"]
+    delta = resolve_pose(anatomical_axes(doc, mapping, space="world"), {bone: request})[bone]
+    x, y, z, w = delta                                        # rotate the rest direction by the delta
+    t = (2 * (y * rest[2] - z * rest[1]), 2 * (z * rest[0] - x * rest[2]), 2 * (x * rest[1] - y * rest[0]))
+    return (rest[0] + w * t[0] + y * t[2] - z * t[1],
+            rest[1] + w * t[1] + z * t[0] - x * t[2],
+            rest[2] + w * t[2] + x * t[1] - y * t[0])
+
+
+def test_aim_points_the_bone_where_it_was_asked_to():
+    doc, mapping, axes = _posed()
+    for want, expected in (("up", (0, 1, 0)), ("down", (0, -1, 0)),
+                           ("forward", (0, 0, 1)), ("back", (0, 0, -1))):
+        assert _direction(doc, mapping, axes, "leftUpperArm", {"aim": want}) == pytest.approx(
+            expected, abs=DIRECTION_TOL), want
+
+
+def test_out_and_in_are_side_aware():
+    doc, mapping, axes = _posed()
+    assert _direction(doc, mapping, axes, "leftUpperArm", {"aim": "out"})[0] > 0.99
+    assert _direction(doc, mapping, axes, "rightUpperArm", {"aim": "out"})[0] < -0.99
+    # The same word, mirrored by the measured frame rather than by a sign the caller has to supply —
+    # which is the failure the device run recorded: asked to spread both legs, the director negated one.
+    assert _direction(doc, mapping, axes, "leftUpperArm", {"aim": "in"})[0] < -0.99
+
+
+def test_the_same_aim_lands_the_same_way_from_two_different_rest_poses():
+    """The reason aiming exists. Saka rests her arms horizontal and Grace hers 48 degrees below; the
+    same relative number cannot mean "up" for both, and the same aim must."""
+    t_pose, idx = _skeleton()
+    a_pose = _apose(*_skeleton())
+    mapping = infer_humanoid(t_pose)
+    t_rest = anatomical_axes(t_pose, mapping, space="world")["leftUpperArm"]["rest"]
+    a_rest = anatomical_axes(a_pose, mapping, space="world")["leftUpperArm"]["rest"]
+    assert t_rest[1] == pytest.approx(0, abs=1e-6) and a_rest[1] < -0.3, "the fixtures must differ"
+    for doc in (t_pose, a_pose):
+        got = _direction(doc, mapping, anatomical_axes(doc, mapping), "leftUpperArm", {"aim": "up"})
+        assert got == pytest.approx((0, 1, 0), abs=DIRECTION_TOL)
+
+
+def test_a_half_turn_swings_through_the_side_not_through_the_torso():
+    """An arm aimed at its own opposite is antiparallel, and a half-turn has no unique axis. Left to a
+    generic shortest-arc routine it picks an arbitrary perpendicular; here it must be the body's forward,
+    so the arm travels through the frontal plane the way a person raises one."""
+    doc, mapping, axes = _posed()
+    q = resolve_pose(axes, {"leftUpperArm": {"aim": "in"}})["leftUpperArm"]
+    assert q[3] == pytest.approx(0, abs=1e-9), "not a half-turn"
+    assert (abs(q[0]), abs(q[1]), abs(q[2])) == pytest.approx((0, 0, 1), abs=DIRECTION_TOL)
+
+
+def test_an_aim_replaces_the_relative_swing_but_not_the_twist():
+    doc, mapping, axes = _posed()
+    aim = resolve_pose(axes, {"leftUpperArm": {"aim": "up"}})["leftUpperArm"]
+    assert resolve_pose(axes, {"leftUpperArm": {"aim": "up", "bend": 40}})["leftUpperArm"] \
+        == pytest.approx(aim), "bend must not add to an aim — the server refuses the pair outright"
+    turned = resolve_pose(axes, {"leftUpperArm": {"aim": "up", "turn": 30}})["leftUpperArm"]
+    assert turned != pytest.approx(aim), "a twist is orthogonal to where the bone points, so it composes"
+
+
+def test_an_aim_that_is_already_satisfied_is_a_no_op():
+    doc, mapping, axes = _posed()
+    assert resolve_pose(axes, {"leftUpperLeg": {"aim": "down"}})["leftUpperLeg"] \
+        == pytest.approx([0, 0, 0, 1], abs=1e-9)
+
+
+def test_an_unmeasurable_aim_resolves_to_nothing_rather_than_a_guess():
+    doc, mapping, axes = _posed()
+    stale = {"leftUpperArm": {k: v for k, v in axes["leftUpperArm"].items() if k not in FRAME_VECTORS}}
+    assert resolve_pose(stale, {"leftUpperArm": {"aim": "up"}})["leftUpperArm"] == [0, 0, 0, 1]
+    assert resolve_pose(axes, {"leftUpperArm": {"aim": "sideways"}})["leftUpperArm"] == [0, 0, 0, 1]
+
+
+def test_the_trunk_is_not_aimable_and_says_which_bones_are():
+    # Aim points a bone along its LENGTH; the head already points up, so "look up" would be a no-op.
+    assert set(TRUNK_BONES) == {"hips", "spine", "chest", "upperChest", "neck", "head"}
+    assert not any(b.startswith(("left", "right")) for b in TRUNK_BONES)
+
+
+def test_pose_resolution_matches_the_shared_golden_vectors():
+    """The same fixture tests/js/figure.test.js reads. Two implementations of this arithmetic exist —
+    Python renders the verification images, the client drives the headset — and they are only worth
+    having if they agree to the digit. Same discipline as plane-anchor's golden vectors."""
+    import json
+    from pathlib import Path
+    golden = json.loads((Path(__file__).resolve().parent / "js" / "fixtures"
+                         / "figure-pose-golden.json").read_text())
+    for case in golden["cases"]:
+        frame = golden["frames"][case["frame"]]
+        got = resolve_pose({"bone": frame}, {"bone": case["request"]})["bone"]
+        assert got == pytest.approx(case["quat"], abs=1e-9), case["name"]
+
+
+# ---------------------------------------------------------------- joint limits
+#
+# The vocabulary could express poses a body cannot make, and executed them faithfully: measured on
+# device, "raise her left arm" folded the elbow behind her head and "bend her right leg backward" put 90
+# degrees through a hip that manages about 20. Limits are per SEMANTIC bone, so one table is right for
+# every rig — the same dividend the names and the axes pay.
+
+
+def test_limits_fold_the_two_sides_together():
+    # `spread` is outward on both sides and `turn` inward on both, so one range describes the JOINT.
+    assert joint_limits("leftLowerLeg") == joint_limits("rightLowerLeg")
+    assert joint_limits("leftIndexProximal")["bend"] == joint_limits("rightLittleDistal")["bend"]
+    assert joint_limits("nosuchbone") == {}
+
+
+def test_a_positive_bend_flexes_a_knee_because_that_is_the_way_a_knee_folds():
+    """`bend` means FLEXION, not "the far end goes forward" — those coincide at the hip, the elbow and
+    the spine, and are opposite at the knee. Measured on device: with the geometric reading, the
+    director asked to bend a knee with the obvious positive number, got hyperextension clamped to 5
+    degrees, and talked itself into believing knees could not bend."""
+    doc, mapping, axes = _posed()
+    notes = []
+    heel = _direction(doc, mapping, axes, "leftLowerLeg", {"bend": 90})
+    assert heel[2] < -0.9, f"the shin should swing BACK when a knee bends, went {heel}"
+    resolve_pose(axes, {"leftLowerLeg": {"bend": 90}}, notes)
+    assert notes == [], "and 90 degrees of it is perfectly ordinary"
+
+
+def test_a_knee_bends_one_way_only():
+    doc, mapping, axes = _posed()
+    notes = []
+    resolve_pose(axes, {"leftLowerLeg": {"bend": -90}}, notes)
+    # ...and the message says WHICH WAY, because "→ -5°" alone reads as "nearly at its limit" — which is
+    # exactly what the director concluded before deciding knees do not bend.
+    assert notes == ["leftLowerLeg.bend -90° → -5° (it folds the other way)"]
+    assert _direction(doc, mapping, axes, "leftLowerLeg", {"bend": -90})[2] > -0.15, "barely moved"
+
+
+def test_an_elbow_does_not_bend_sideways():
+    """The measured failure: aiming a forearm `up` asks the elbow to abduct 135 degrees. It cannot, so
+    the nearest thing it can do is barely move — which leaves a raised arm nearly straight, which is
+    what "raise her arm" meant."""
+    doc, mapping, axes = _posed()
+    notes = []
+    resolve_pose(axes, {"leftLowerArm": {"spread": 60}}, notes)
+    assert notes == ["leftLowerArm.spread +60° → +8°"]
+
+
+def test_a_legal_pose_passes_through_untouched():
+    """Relative angles are clamped as NUMBERS, so a legal one never goes near the decomposition — and
+    an `aim` that is within range gets its ORIGINAL quaternion back, since a round trip would otherwise
+    rewrite a pose nobody asked to change."""
+    doc, mapping, axes = _posed()
+    notes = []
+    for request in ({"bend": 45}, {"spread": 30}, {"bend": 30, "spread": 20, "turn": 10}):
+        before = resolve_pose({"b": dict(axes["leftUpperLeg"], limits={})}, {"b": request})["b"]
+        after = resolve_pose(axes, {"leftUpperLeg": request}, notes)["leftUpperLeg"]
+        assert after == before, request
+    assert notes == []
+
+
+def test_the_shoulder_is_deliberately_barely_limited():
+    """Rest-relative bounds only work where rest IS the anatomical neutral. At the shoulder it is not,
+    and the rigs disagree by 48 degrees — so bringing a T-posed arm down to the side, an ordinary -90 of
+    spread, must not be clamped."""
+    doc, mapping, axes = _posed()
+    notes = []
+    got = _direction(doc, mapping, axes, "leftUpperArm", {"aim": "down"})
+    assert got == pytest.approx((0, -1, 0), abs=DIRECTION_TOL)
+    resolve_pose(axes, {"leftUpperArm": {"aim": "down"}}, notes)
+    assert notes == []
+
+
+def test_limits_ride_with_the_frame_so_a_runtime_needs_no_table():
+    doc, mapping, axes = _posed()
+    assert axes["leftLowerLeg"]["limits"]["bend"] == [-5.0, 155.0]
+    # A frame with none (an older figure, or one we have no anatomy for) is simply not clamped, rather
+    # than clamped against a guess.
+    bare = {"b": {k: v for k, v in axes["leftLowerLeg"].items() if k != "limits"}}
+    assert resolve_pose(bare, {"b": {"bend": 300}})["b"] != pytest.approx([0, 0, 0, 1])
+
+
+# ---------------------------------------------------------------- layer 1: known conventions
+#
+# Names are free and exact where they hit, and they work on a rig whose BIND POSE defeats geometry.
+# That is not hypothetical: three characters in the dev library stand with their arms at their sides,
+# so the hands are no wider than the feet and layer 2's "the widest joints are the hands" collapses.
+
+
+def _named_skeleton(scheme="mixamo", arms_down=True):
+    """The fixture's shape, renamed to a convention — and by default posed with the arms DOWN, which is
+    exactly the bind pose geometry cannot read."""
+    doc, idx = _skeleton()
+    table = CONVENTIONS[scheme]
+    rename = {}
+    for slot, candidates in table.items():
+        sides = (("left", "Left", "L", "l"), ("right", "Right", "R", "r")) if "{s}" in slot else ((None,) * 4,)
+        for side, S, X, short in sides:
+            fixture = {"hips": "hips", "spine": "spine", "chest": "chest", "neck": "neck", "head": "head",
+                       "{s}Shoulder": f"{short}_shoulder", "{s}UpperArm": f"{short}_upperarm",
+                       "{s}LowerArm": f"{short}_lowerarm", "{s}Hand": f"{short}_hand",
+                       "{s}UpperLeg": f"{short}_thigh", "{s}LowerLeg": f"{short}_shin",
+                       "{s}Foot": f"{short}_foot", "{s}Toes": f"{short}_toes"}.get(slot)
+            if fixture and fixture in idx:
+                rename[idx[fixture]] = candidates.split("|")[0].format(S=S, X=X) if side \
+                    else candidates.split("|")[0]
+    for node_index, name in rename.items():
+        doc["nodes"][node_index]["name"] = name
+    if arms_down:
+        for side in ("l", "r"):
+            for bone in (f"{side}_upperarm", f"{side}_lowerarm", f"{side}_hand"):
+                x, y, z = doc["nodes"][idx[bone]]["translation"]
+                doc["nodes"][idx[bone]]["translation"] = [x * 0.3, -abs(x) * 0.95, z]
+    return doc, idx
+
+
+def test_a_convention_is_recognised_by_name_alone():
+    doc, _ = _named_skeleton("mixamo")
+    mapping, scheme = convention_humanoid(doc)
+    assert scheme == "mixamo"
+    assert mapping["leftUpperArm"] == "LeftArm" and mapping["leftLowerLeg"] == "LeftLeg"
+
+
+def test_a_prefixed_export_still_matches():
+    # Mixamo usually ships `mixamorig:Hips`; some exporters emit `Armature|Hips`. Both are the same rig.
+    doc, _ = _named_skeleton("mixamo")
+    for node in doc["nodes"]:
+        if node.get("name"):
+            node["name"] = "mixamorig:" + node["name"]
+    mapping, scheme = convention_humanoid(doc)
+    assert scheme == "mixamo"
+    # ...and the map holds the name as the FILE spells it, or nothing downstream could look it up.
+    assert mapping["hips"] == "mixamorig:Hips"
+
+
+def test_a_name_reads_the_same_whatever_the_bind_pose():
+    """Why layer 1 is not just a shortcut. Shape inference reads a skeleton's PROPORTIONS, so a bind
+    pose with the arms at the sides — where the hands are no wider than the feet — defeats it; that is
+    measured, on three characters in the dev library. Names are indifferent to how a rig was posed when
+    it was saved."""
+    up, _ = _named_skeleton("mixamo", arms_down=False)
+    down, _ = _named_skeleton("mixamo", arms_down=True)
+    assert convention_humanoid(up) == convention_humanoid(down)
+
+
+def test_names_are_tried_before_shape():
+    # Both layers can answer for this fixture; the cheap exact one wins, and inference — which reads
+    # every vertex weight in the file — is not even run.
+    doc, _ = _named_skeleton("mixamo", arms_down=False)
+    mapping, source, _follows = best_humanoid(doc)
+    assert source == "convention:mixamo" and not validate(doc, mapping)
+
+
+def test_an_unknown_rig_falls_through_to_shape():
+    doc, _ = _skeleton()                                    # `l_thigh`, `r_lowerarm`: no convention
+    assert convention_humanoid(doc) == (None, None)
+    mapping, source, _follows = best_humanoid(doc)
+    assert source == "inferred" and mapping["leftUpperArm"] == "l_upperarm"
+
+
+def test_a_convention_that_only_half_matches_is_not_claimed():
+    doc, _ = _named_skeleton("mixamo")
+    for node in doc["nodes"]:                               # break both arms
+        if node.get("name", "").endswith("ForeArm"):
+            node["name"] = "elbow_thing"
+    assert convention_humanoid(doc) == (None, None)
+
+
+# ---------------------------------------------------------------- partial maps
+#
+# A rig often names a bone that is not the one it looks like: both `Animated Woman` models and `Steve`
+# have a `Foot.L` that is an IK TARGET parented to the armature root, beside a `PoleTarget.L`. Before
+# pruning, one such bone cost the whole map — a figure lost its arms, legs and spine over its ankle.
+
+
+def test_a_bone_that_cannot_be_posed_is_dropped_not_the_whole_map():
+    doc, idx = _skeleton()
+    mapping = infer_humanoid(doc)
+    doc["nodes"][idx["l_shin"]]["children"] = []                       # foot off the leg...
+    doc["nodes"][idx["hips"]]["children"].append(idx["l_foot"])        # ...and onto the root, as an IK target
+    pruned = prune_map(doc, mapping)
+    assert "leftFoot" not in pruned and "leftToes" not in pruned, "the foot and what hangs off it go"
+    assert pruned["leftLowerLeg"] == "l_shin" and pruned["leftUpperArm"] == "l_upperarm"
+    assert not validate(doc, pruned), "and what is left is a map that poses everything it claims"
+
+
+def test_missing_optional_bones_do_not_reject_a_map():
+    """Plenty of rigs have no toes, no clavicle, no separate chest. Requiring them threw away figures
+    that would have posed perfectly well."""
+    doc, _ = _skeleton()
+    mapping = {b: n for b, n in infer_humanoid(doc).items()
+               if b not in ("leftToes", "rightToes", "leftShoulder", "rightShoulder", "chest")}
+    assert not validate(doc, mapping)
+    assert set(REQUIRED_BONES) <= set(CORE_BONES)
+
+
+def test_a_missing_required_bone_still_rejects():
+    doc, _ = _skeleton()
+    mapping = {b: n for b, n in infer_humanoid(doc).items() if b != "leftLowerLeg"}
+    assert any("required" in p for p in validate(doc, mapping))
+
+
+def test_a_bone_that_hangs_outside_its_limb_is_told_to_ride_it():
+    """The reported symptom: "their feet remain glued on the floor and the model stretches from the feet
+    to the raised ankle". An IK rig parents the foot to the armature ROOT, so rotating the shin moves
+    the leg and leaves the foot behind. It cannot be posed — but it has to follow, or the mesh tears."""
+    doc, idx = _skeleton()
+    mapping = infer_humanoid(doc)
+    doc["nodes"][idx["l_shin"]]["children"] = []                       # foot off the leg...
+    doc["nodes"][idx["hips"]]["children"].append(idx["l_foot"])        # ...and onto the root
+    assert follow_bones(doc, mapping) == {"l_foot": "l_shin"}
+    # It is dropped from the MAP, because rotating it poses nothing — the two facts travel together.
+    assert "leftFoot" not in prune_map(doc, mapping)
+    # ...and what hangs below it rides along, so the toes need no entry of their own.
+    assert "l_toes" not in follow_bones(doc, mapping)
+
+
+def test_a_bone_that_moves_no_geometry_is_left_where_it_is():
+    # A pole target or an unweighted helper is not worth carrying: nothing visible hangs off it.
+    doc, idx = _skeleton()
+    mapping = infer_humanoid(doc)
+    doc["nodes"][idx["l_shin"]]["children"] = []
+    doc["nodes"][idx["hips"]]["children"].append(idx["l_foot"])
+    assert follow_bones(doc, mapping, blob=b"") == {"l_foot": "l_shin"}   # no weights known: assume it does
+    empty_weights = {**doc, "meshes": [], "skins": [{"joints": doc["skins"][0]["joints"]}]}
+    assert follow_bones(empty_weights, mapping, blob=b"x") == {}

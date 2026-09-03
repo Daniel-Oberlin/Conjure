@@ -1,12 +1,26 @@
-/* global AFRAME */
-// `figure` — pose a rigged humanoid through its SEMANTIC bone map (docs/backlogs/figures.md).
+/* global AFRAME, THREE */
+// `figure` — pose a rigged humanoid in ANATOMICAL terms (docs/backlogs/figures.md).
 //
-// The entity already carries `gltf-model`; this rides alongside it and rotates named bones. The map
-// ({leftUpperArm: "upper_arm.L", …}) is resolved server-side and handed over in the component config, so
-// a caller says "leftUpperArm" and this file never needs to know that Grace's rig calls it `upper_arm.L`,
-// Saka's `J_Bip_L_UpperArm`, and a Daz figure `lShldrBend`.
+// The entity already carries `gltf-model`; this rides alongside it and rotates named bones. Three JSON
+// strings arrive from the server, and each answers a different question:
 //
-// Both fields are JSON strings rather than A-Frame schema objects: the map is arbitrary key/value data
+//   humanoid  WHICH node is this bone      {leftUpperArm: "upper_arm.fk.L"}
+//   follows   which bones RIDE another     {"Foot.L": "LowerLeg.L"} — an IK foot, see _ride()
+//   axes      WHICH WAY does it rotate     {leftUpperArm: {bend: [x,y,z], spread: […], turn: […]}}
+//   pose      HOW FAR, in degrees          {leftUpperArm: {bend: 45}}
+//
+// So a caller says "bend her left elbow 45" and neither it nor this file needs to know that Grace's rig
+// calls that bone `forearm.fk.L`, Saka's `J_Bip_L_LowerArm`, and that the two disagree by 137 degrees
+// about which way its local X points. The axes are measured from the bind pose at import
+// (conjure/figures.py) and are model-space-free: each is already expressed in the frame the bone's own
+// local rotation lives in, so applying one is a single multiplication.
+//
+// **A pose composes ONTO the rest rotation, never replaces it.** Writing `bone.rotation.set(...)`
+// discards whatever the rigger authored — measured at 177 degrees on Grace's `thigh.fk.L` — so the leg
+// went upside-down before the requested angle was even added, and "clear" left it there. That is the
+// other half of why posing looked so wrong on device.
+//
+// The fields are JSON strings rather than A-Frame schema objects: they are arbitrary key/value data
 // whose keys differ per model, which A-Frame's flat schema types cannot express.
 //
 // Not a dynamic module — it has no independent existence, it decorates a placed model. It is ordinary
@@ -56,10 +70,140 @@
     try { return JSON.parse(s); } catch (e) { return null; }
   }
 
+  // Composition order is turn, then the swing — twist innermost, swings outermost, which is the
+  // swing-twist decomposition every animation system uses and what keeps "turn 20" meaning the same
+  // motion whatever swing accompanies it. Mirrored exactly by figures.resolve_pose on the Python side,
+  // which is what scripts/pose_test.py renders, so a headset and a Blender render agree.
+  var AXIS_ORDER = ["turn", "bend", "spread"];
+
+  // Where each named direction points, as (out, up, forward) components of this bone's body frame.
+  // `out` is side-aware — already resolved to the body's left or right when the frame was measured —
+  // so the same word is symmetric on both sides and there is no sign for a caller to get wrong.
+  var AIM = { up: [0, 1, 0], down: [0, -1, 0], forward: [0, 0, 1], back: [0, 0, -1],
+              out: [1, 0, 0], "in": [-1, 0, 0] };
+
+  function vec(a) { return a && a.length === 3 ? new THREE.Vector3(a[0], a[1], a[2]) : null; }
+
+  // The absolute half: swing the bone from where it RESTS onto a direction in the body's own frame, so
+  // the same request means the same thing on a T-posed rig and an A-posed one whose arms differ by 48
+  // degrees. Returns null when the frame predates aiming (the server refuses those before we see them).
+  function aimQuat(frame, aim) {
+    var comps = typeof aim === "string" ? AIM[aim] : aim;
+    var out = vec(frame.out), up = vec(frame.up), fwd = vec(frame.forward), rest = vec(frame.rest);
+    if (!comps || comps.length !== 3 || !out || !up || !fwd || !rest) return null;
+    var target = out.multiplyScalar(+comps[0])
+      .addScaledVector(up, +comps[1]).addScaledVector(fwd, +comps[2]);
+    if (!target.lengthSq() || !isFinite(target.lengthSq())) return null;
+    target.normalize();
+    rest.normalize();
+    var d = Math.max(-1, Math.min(1, rest.dot(target)));
+    if (d > 1 - 1e-9) return new THREE.Quaternion();
+    if (d < -1 + 1e-9) {
+      // A half-turn has no unique axis, and this case is not exotic: a hanging arm aimed `up` IS one.
+      // three's setFromUnitVectors would pick an arbitrary perpendicular, which for an arm means
+      // swinging it through the torso as often as not. Rotate in the FRONTAL plane instead — about the
+      // body's forward — so the arm goes up through the side, the way a person raises one.
+      var axis = fwd.clone().addScaledVector(rest, -fwd.dot(rest));
+      if (axis.lengthSq() < 1e-12) axis.copy(up).addScaledVector(rest, -up.dot(rest));
+      axis.normalize();
+      return new THREE.Quaternion(axis.x, axis.y, axis.z, 0);
+    }
+    var c = new THREE.Vector3().crossVectors(rest, target);
+    return new THREE.Quaternion(c.x, c.y, c.z, 1 + d).normalize();
+  }
+
+  // A joint's limits arrive WITH its frame (the server measures them; conjure/figures.py holds the one
+  // table), so this is arithmetic only — no anatomy table on the client to drift out of step.
+  //
+  // Clamping works on the RESULT, not the request, so an impossible destination and an impossible angle
+  // are the same thing by the time we get here. The rotation is split twist-from-swing about the bone's
+  // own length, the swing resolved into its bend and spread components, each clamped, the three rebuilt.
+  // When nothing is out of range the original is returned untouched — the decomposition is exact but a
+  // round trip through it would still rewrite a legal pose in the last decimal.
+  // One requested rotation, reduced to what the joint allows. Numbers are clamped as NUMBERS wherever
+  // the caller gave one: 200 degrees of knee bend and -160 are the same quaternion, so recovering the
+  // request from the rotation reads it back as "160 the wrong way" and clamps to nearly straight — the
+  // opposite of what was asked. Only an aim, which arrives as a direction, needs the decomposition.
+  function clampAngle(frame, name, degrees) {
+    var range = frame.limits && frame.limits[name];
+    if (!range || range.length !== 2) return degrees;
+    return Math.max(range[0], Math.min(range[1], degrees));
+  }
+
+  function clampToJoint(q, frame) {
+    var lim = frame.limits;
+    var b = vec(frame.bend), sp = vec(frame.spread), t = vec(frame.turn);
+    if (!lim || !b || !sp || !t) return q;
+    var xyz = new THREE.Vector3(q.x, q.y, q.z);
+    var d = xyz.dot(t);
+    var tw = new THREE.Quaternion(t.x * d, t.y * d, t.z * d, q.w);
+    if (tw.lengthSq() < 1e-18) tw.set(0, 0, 0, 1); else tw.normalize();
+    if (tw.w < 0) tw.set(-tw.x, -tw.y, -tw.z, -tw.w);   // q and -q are one rotation; atan2 needs +w
+    var swing = q.clone().multiply(tw.clone().conjugate());
+    if (swing.w < 0) { swing.set(-swing.x, -swing.y, -swing.z, -swing.w); }
+    var turnDeg = 2 * Math.atan2(new THREE.Vector3(tw.x, tw.y, tw.z).dot(t), tw.w) * 180 / Math.PI;
+    var sxyz = new THREE.Vector3(swing.x, swing.y, swing.z);
+    var len = sxyz.length();
+    var angle = len > 1e-12 ? 2 * Math.atan2(len, swing.w) * 180 / Math.PI : 0;
+    var axis = len > 1e-12 ? sxyz.clone().divideScalar(len) : null;
+    var bendDeg = axis ? angle * axis.dot(b) : 0;
+    var spreadDeg = axis ? angle * axis.dot(sp) : 0;
+
+    var hit = false;
+    function cap(name, value) {
+      var capped = clampAngle(frame, name, value);
+      if (Math.abs(capped - value) > 0.5) hit = true;
+      return capped;
+    }
+    bendDeg = cap("bend", bendDeg);
+    spreadDeg = cap("spread", spreadDeg);
+    turnDeg = cap("turn", turnDeg);
+    if (!hit) return q;
+
+    var swingAngle = Math.sqrt(bendDeg * bendDeg + spreadDeg * spreadDeg);
+    var out = new THREE.Quaternion();
+    if (swingAngle > 1e-6) {
+      var mix = b.clone().multiplyScalar(bendDeg).addScaledVector(sp, spreadDeg).normalize();
+      out.setFromAxisAngle(mix, swingAngle * Math.PI / 180);
+    }
+    return out.multiply(new THREE.Quaternion().setFromAxisAngle(t, turnDeg * Math.PI / 180));
+  }
+
+  function rotation(frame, request) {
+    if (!frame || !request) return null;
+    var q = null, tmp = new THREE.Quaternion(), axis = new THREE.Vector3();
+    var aiming = request.aim !== undefined && request.aim !== null;
+    AXIS_ORDER.forEach(function (name) {
+      if (aiming && name !== "turn") return;          // an aim sets the swing; bend/spread do not
+      var deg = +request[name], a = frame[name];
+      if (!deg || !isFinite(deg) || !a || a.length !== 3) return;
+      // A non-finite angle blanks that branch of the scene graph and STAYS blanked — the same hazard
+      // the server guards, guarded again here because a stale snapshot can carry one in.
+      axis.set(a[0], a[1], a[2]);
+      if (!axis.lengthSq()) return;
+      var capped = clampAngle(frame, name, deg);
+      if (!capped) return;
+      tmp.setFromAxisAngle(axis.normalize(), capped * Math.PI / 180);
+      q = q ? q.premultiply(tmp) : tmp.clone();
+    });
+    if (aiming) {
+      // An aim names a destination, not an angle, so what it asks of the joint is only legible once
+      // resolved — this is the one path that needs the decomposition.
+      var swing = aimQuat(frame, request.aim);
+      if (swing) {
+        swing = clampToJoint(swing, frame);
+        q = q ? q.premultiply(swing) : swing;
+      }
+    }
+    return q;
+  }
+
   AFRAME.registerComponent("figure", {
     schema: {
       humanoid: { type: "string", default: "" },   // {semanticBone: nodeName}
-      pose: { type: "string", default: "" }        // {semanticBone: [x, y, z]} euler DEGREES
+      follows: { type: "string", default: "" },    // {nodeName: nodeName it rides} — see _ride()
+      axes: { type: "string", default: "" },       // {semanticBone: {bend|spread|turn: [x, y, z]}}
+      pose: { type: "string", default: "" }        // {semanticBone: {bend|spread|turn: DEGREES}}
     },
 
     init: function () {
@@ -76,13 +220,22 @@
 
     // Bone objects by name, collected once per loaded model. three names bones after the glTF nodes,
     // which is exactly what the humanoid map stores — that is why the map holds NAMES not indices.
+    //
+    // Each bone's REST quaternion is captured here, on the first pass over a freshly loaded model,
+    // because it is the only moment it is guaranteed untouched. Every pose is a delta onto it. Kept in
+    // a Map of our own rather than on the bone: three deep-copies `userData` through JSON when it
+    // clones an object, which would quietly turn a Quaternion into a plain bag of `_x`/`_y` fields.
     _collect: function () {
       if (this._bones) return this._bones;
+      this._offsets = null;
       var obj = this.el.getObject3D("mesh");
       if (!obj) return null;
-      var bones = {};
+      obj.updateMatrixWorld(true);          // the BIND pose, and the only moment it is guaranteed one
+      var bones = {}, rest = this._rest = new Map(), restWorld = this._restWorld = new Map();
       var put = function (n) {
         if (!n || !n.name) return;
+        if (!rest.has(n)) rest.set(n, n.quaternion.clone());
+        if (!restWorld.has(n)) restWorld.set(n, n.matrixWorld.clone());
         bones[n.name] = n;
         variants(n.name).forEach(function (k) {   // raw name wins; the rest are fallback spellings
           if (k && !bones[k]) bones[k] = n;
@@ -102,48 +255,86 @@
 
     apply: function () {
       var map = parse(this.data.humanoid) || {};
+      var axes = parse(this.data.axes) || {};
       var pose = parse(this.data.pose) || {};
       var bones = this._collect();
       if (!bones) return;                              // model not loaded yet; model-loaded retries
 
       // Reset anything previously posed but absent now, so clearing a pose really restores the figure
-      // rather than leaving the last rotation stuck.
-      var prev = this._applied || {};
+      // rather than leaving the last rotation stuck. Restoring means the REST quaternion, not identity.
+      var prev = this._applied || {}, rest = this._rest;
       Object.keys(prev).forEach(function (bone) {
         if (pose[bone]) return;
         var b = lookup(bones, map[bone]);
-        if (b) b.rotation.set(0, 0, 0);
+        if (b && rest.has(b)) b.quaternion.copy(rest.get(b));
       });
 
       var applied = {}, missing = [];
       Object.keys(pose).forEach(function (bone) {
-        var node = map[bone], b = node && lookup(bones, node);
-        if (!b) { missing.push(bone); return; }
-        var e = pose[bone];
-        if (!e || e.length !== 3) return;
-        var x = +e[0], y = +e[1], z = +e[2];
-        // A non-finite angle blanks that branch of the scene graph and STAYS blanked — the same hazard
-        // the server guards, guarded again here because a stale snapshot can carry one in.
-        if (!isFinite(x) || !isFinite(y) || !isFinite(z)) return;
-        b.rotation.set(x * Math.PI / 180, y * Math.PI / 180, z * Math.PI / 180);
+        var node = map[bone], b = node && lookup(bones, node), frame = axes[bone];
+        if (!b || !frame || !rest.has(b)) { missing.push(bone); return; }
+        // Rest first, then the delta — so a request that works out to no rotation at all lands the bone
+        // back on its rest pose rather than leaving the last one stuck there.
+        //
+        // delta * rest: the axes are in the bone's PARENT frame, which is the frame its own local
+        // quaternion lives in, so the delta pre-multiplies. Doing it the other way round would apply
+        // the rotation in the bone's own twisted space and put us back where we started.
+        var q = rotation(frame, pose[bone]);
+        b.quaternion.copy(rest.get(b));
+        if (!q) return;
+        b.quaternion.premultiply(q);
         applied[bone] = true;
       });
+      this._ride(bones, parse(this.data.follows) || {});
       this._applied = applied;
       if (missing.length) {
-        log("NO BONE for " + missing.join(", ") + " on " + (this.el.id || "?")
-            + " — map has " + Object.keys(map).length + " entries, model has "
-            + Object.keys(bones).length + " bones");
+        log("NO BONE OR AXES for " + missing.join(", ") + " on " + (this.el.id || "?")
+            + " — map has " + Object.keys(map).length + " entries, axes " + Object.keys(axes).length
+            + ", model has " + Object.keys(bones).length + " bones");
       }
       this._once = this._once || (log("posed " + Object.keys(applied).length + " bone(s) on "
                                      + (this.el.id || "?")) || true);
     },
 
+    // Carry the bones that deform the mesh but hang outside their own limb. An IK rig parents the FOOT
+    // to the armature root and lets an animation drive it: fine for playing a clip, and for posing it
+    // means the shin rotates while the foot stays planted, stretching the mesh between them — which is
+    // what "her feet remain glued to the floor" looked like on two of three asset-pack characters.
+    //
+    // A parent constraint, evaluated after the pose: put the bone back at the offset it holds from its
+    // limb in the BIND pose. The file's own hierarchy is untouched, so its baked clips still mean what
+    // they meant — worth keeping, since those clips are the only animation content in the library.
+    _ride: function (bones, follows) {
+      var names = Object.keys(follows);
+      if (!names.length) return;
+      var root = this.el.getObject3D("mesh");
+      if (root) root.updateMatrixWorld(true);            // the limbs must be posed before we read them
+      var offsets = this._offsets || (this._offsets = {});
+      var tmp = new THREE.Matrix4(), self = this;
+      names.forEach(function (childName) {
+        var child = lookup(bones, childName), lead = lookup(bones, follows[childName]);
+        if (!child || !lead || !child.parent) return;
+        if (!offsets[childName]) {
+          // From the BIND pose, captured in _collect — reading it from the live skeleton here would
+          // measure the offset AFTER the limb had already moved, and the bone would never budge.
+          var leadRest = self._restWorld.get(lead), childRest = self._restWorld.get(child);
+          if (!leadRest || !childRest) return;
+          offsets[childName] = new THREE.Matrix4().copy(leadRest).invert().multiply(childRest);
+        }
+        tmp.copy(lead.matrixWorld).multiply(offsets[childName]);          // where it should be now
+        child.matrix.copy(child.parent.matrixWorld).invert().multiply(tmp);
+        child.matrix.decompose(child.position, child.quaternion, child.scale);
+        child.updateMatrixWorld(true);
+      });
+    },
+
     remove: function () {
       this.el.removeEventListener("model-loaded", this._onLoad);
       var map = parse(this.data.humanoid) || {}, bones = this._bones || {};
+      var rest = this._rest || new Map();
       Object.keys(this._applied || {}).forEach(function (bone) {
         var b = lookup(bones, map[bone]);
-        if (b) b.rotation.set(0, 0, 0);
+        if (b && rest.has(b)) b.quaternion.copy(rest.get(b));
       });
     }
   });

@@ -1,0 +1,715 @@
+{
+  "note": "Golden vectors for resolving an anatomical pose into a per-bone delta quaternion. conjure/figures.py resolve_pose() and client/figure.js must both reproduce these \u2014 the runtime resolves on the client and scripts/pose_test.py renders through the Python side, so a headset and a Blender render agree only as long as they do. Frames are synthetic and chosen for the cases that matter: a T-posed arm, an A-posed arm 45 degrees below it, both sides, and the two hinges whose joint limits bite. Quaternions are [x, y, z, w]. Regenerate only on an intentional change.",
+  "frames": {
+    "t_pose_left_arm": {
+      "rest": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "spread": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "turn": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "limits": {
+        "bend": [
+          -140.0,
+          190.0
+        ],
+        "spread": [
+          -100.0,
+          190.0
+        ],
+        "turn": [
+          -95.0,
+          95.0
+        ]
+      }
+    },
+    "a_pose_left_arm": {
+      "rest": [
+        0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        -0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "spread": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "turn": [
+        0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "limits": {
+        "bend": [
+          -140.0,
+          190.0
+        ],
+        "spread": [
+          -100.0,
+          190.0
+        ],
+        "turn": [
+          -95.0,
+          95.0
+        ]
+      }
+    },
+    "a_pose_right_arm": {
+      "rest": [
+        -0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        -0.7071067811865476,
+        0.7071067811865476,
+        0.0
+      ],
+      "spread": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "turn": [
+        0.7071067811865476,
+        0.7071067811865476,
+        -0.0
+      ],
+      "limits": {
+        "bend": [
+          -140.0,
+          190.0
+        ],
+        "spread": [
+          -100.0,
+          190.0
+        ],
+        "turn": [
+          -95.0,
+          95.0
+        ]
+      }
+    },
+    "left_leg": {
+      "rest": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "spread": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "turn": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "limits": {
+        "bend": [
+          -35.0,
+          130.0
+        ],
+        "spread": [
+          -30.0,
+          75.0
+        ],
+        "turn": [
+          -50.0,
+          50.0
+        ]
+      }
+    },
+    "right_leg": {
+      "rest": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "spread": [
+        0.0,
+        -0.0,
+        -1.0
+      ],
+      "turn": [
+        -0.0,
+        1.0,
+        -0.0
+      ],
+      "limits": {
+        "bend": [
+          -35.0,
+          130.0
+        ],
+        "spread": [
+          -30.0,
+          75.0
+        ],
+        "turn": [
+          -50.0,
+          50.0
+        ]
+      }
+    },
+    "left_forearm": {
+      "rest": [
+        0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        -0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "spread": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "turn": [
+        0.7071067811865476,
+        -0.7071067811865476,
+        0.0
+      ],
+      "limits": {
+        "bend": [
+          -5.0,
+          155.0
+        ],
+        "spread": [
+          -8.0,
+          8.0
+        ],
+        "turn": [
+          -95.0,
+          95.0
+        ]
+      }
+    },
+    "left_shin": {
+      "rest": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "forward": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "out": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "bend": [
+        1.0,
+        -0.0,
+        -0.0
+      ],
+      "spread": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "turn": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "limits": {
+        "bend": [
+          -5.0,
+          155.0
+        ],
+        "spread": [
+          -5.0,
+          5.0
+        ],
+        "turn": [
+          -15.0,
+          15.0
+        ]
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "leg bend forward",
+      "frame": "left_leg",
+      "request": {
+        "bend": 45
+      },
+      "quat": [
+        -0.382683432365,
+        0.0,
+        0.0,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "leg spread out, left",
+      "frame": "left_leg",
+      "request": {
+        "spread": 45
+      },
+      "quat": [
+        0.0,
+        0.0,
+        0.382683432365,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "leg spread out, right \u2014 mirrored by the frame, not by the caller",
+      "frame": "right_leg",
+      "request": {
+        "spread": 45
+      },
+      "quat": [
+        0.0,
+        0.0,
+        -0.382683432365,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "arm turn about its own length",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "turn": 60
+      },
+      "quat": [
+        0.353553390593,
+        -0.353553390593,
+        0.0,
+        0.866025403784
+      ]
+    },
+    {
+      "name": "two swings compose spread-outermost",
+      "frame": "left_leg",
+      "request": {
+        "bend": 30,
+        "spread": 20
+      },
+      "quat": [
+        -0.254887002244,
+        -0.044943455528,
+        0.167731259497,
+        0.951251242564
+      ]
+    },
+    {
+      "name": "twist composes innermost",
+      "frame": "left_leg",
+      "request": {
+        "bend": 30,
+        "turn": 25
+      },
+      "quat": [
+        -0.2526840003,
+        -0.209064612935,
+        0.056018694202,
+        0.94302952738
+      ]
+    },
+    {
+      "name": "aim up from a T-pose \u2014 90 degrees",
+      "frame": "t_pose_left_arm",
+      "request": {
+        "aim": "up"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        0.707106781187,
+        0.707106781187
+      ]
+    },
+    {
+      "name": "aim up from an A-pose \u2014 135 degrees, same destination",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "aim": "up"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        0.923879532511,
+        0.382683432365
+      ]
+    },
+    {
+      "name": "aim up, right arm",
+      "frame": "a_pose_right_arm",
+      "request": {
+        "aim": "up"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        -0.923879532511,
+        0.382683432365
+      ]
+    },
+    {
+      "name": "aim down from a T-pose",
+      "frame": "t_pose_left_arm",
+      "request": {
+        "aim": "down"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        -0.707106781187,
+        0.707106781187
+      ]
+    },
+    {
+      "name": "aim forward",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "aim": "forward"
+      },
+      "quat": [
+        -0.5,
+        -0.5,
+        0.0,
+        0.707106781187
+      ]
+    },
+    {
+      "name": "aim out \u2014 side-aware, so the right arm goes to the figure's right",
+      "frame": "a_pose_right_arm",
+      "request": {
+        "aim": "out"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        -0.382683432365,
+        0.923879532511
+      ]
+    },
+    {
+      "name": "ANTIPARALLEL: aim in from a T-pose is a half-turn, resolved in the frontal plane",
+      "frame": "t_pose_left_arm",
+      "request": {
+        "aim": "in"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "aim already satisfied is identity",
+      "frame": "left_leg",
+      "request": {
+        "aim": "down"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "aim plus twist",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "aim": "up",
+        "turn": 30
+      },
+      "quat": [
+        0.239117618394,
+        0.099045760541,
+        0.892399100833,
+        0.369643810614
+      ]
+    },
+    {
+      "name": "aim by vector, read as [out, up, forward]",
+      "frame": "a_pose_left_arm",
+      "request": {
+        "aim": [
+          0,
+          1,
+          1
+        ]
+      },
+      "quat": [
+        -0.5,
+        -0.5,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "name": "a knee FOLDS BACK, so a positive bend flexes it \u2014 the plain reading of the word",
+      "frame": "left_shin",
+      "request": {
+        "bend": 90
+      },
+      "quat": [
+        0.707106781187,
+        0.0,
+        0.0,
+        0.707106781187
+      ]
+    },
+    {
+      "name": "LIMIT: and the other way is where a knee stops",
+      "frame": "left_shin",
+      "request": {
+        "bend": -90
+      },
+      "quat": [
+        -0.043619387365,
+        0.0,
+        0.0,
+        0.999048221582
+      ],
+      "limited": [
+        "bend -90\u00b0 \u2192 -5\u00b0 (it folds the other way)"
+      ]
+    },
+    {
+      "name": "LIMIT: an elbow does not bend sideways \u2014 aiming a forearm up is clamped to 8 degrees of spread",
+      "frame": "left_forearm",
+      "request": {
+        "aim": "up"
+      },
+      "quat": [
+        0.0,
+        0.0,
+        0.069756473744,
+        0.99756405026
+      ],
+      "limited": [
+        "spread +135\u00b0 \u2192 +8\u00b0"
+      ]
+    },
+    {
+      "name": "LIMIT: a hip extends about 35 degrees, not 90",
+      "frame": "right_leg",
+      "request": {
+        "aim": "back"
+      },
+      "quat": [
+        0.300705799504,
+        0.0,
+        0.0,
+        0.953716950748
+      ],
+      "limited": [
+        "bend -90\u00b0 \u2192 -35\u00b0"
+      ]
+    },
+    {
+      "name": "LIMIT: a knee barely twists",
+      "frame": "left_shin",
+      "request": {
+        "turn": 80
+      },
+      "quat": [
+        0.0,
+        -0.13052619222,
+        0.0,
+        0.991444861374
+      ],
+      "limited": [
+        "turn +80\u00b0 \u2192 +15\u00b0"
+      ]
+    },
+    {
+      "name": "a legal elbow bend is left exactly alone",
+      "frame": "left_forearm",
+      "request": {
+        "bend": 90
+      },
+      "quat": [
+        -0.5,
+        -0.5,
+        0.0,
+        0.707106781187
+      ]
+    },
+    {
+      "name": "a legal hip extension is left exactly alone",
+      "frame": "right_leg",
+      "request": {
+        "bend": -30
+      },
+      "quat": [
+        0.258819045103,
+        0.0,
+        0.0,
+        0.965925826289
+      ]
+    },
+    {
+      "name": "a bend past the limit clamps to the limit, not to its wrapped equivalent",
+      "frame": "left_shin",
+      "request": {
+        "bend": 200
+      },
+      "quat": [
+        0.97629600712,
+        0.0,
+        0.0,
+        0.216439613938
+      ],
+      "limited": [
+        "bend +200\u00b0 \u2192 +155\u00b0"
+      ]
+    },
+    {
+      "name": "a twist past the limit, alongside a legal bend",
+      "frame": "left_shin",
+      "request": {
+        "bend": 90,
+        "turn": 40
+      },
+      "quat": [
+        0.70105738465,
+        -0.092295955641,
+        -0.092295955641,
+        0.70105738465
+      ],
+      "limited": [
+        "turn +40\u00b0 \u2192 +15\u00b0"
+      ]
+    }
+  ]
+}

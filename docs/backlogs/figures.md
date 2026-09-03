@@ -469,22 +469,148 @@ the failure modes were consistent enough to name:
 
 ### The axis problem — posing needs an anatomical frame
 
-Separate from the above and true even for Saka, whose bones move correctly. `pose_figure` takes euler
+Separate from the above and true even for Saka, whose bones move correctly. `pose_figure` took euler
 degrees in each bone's OWN local space, and a bone's rest orientation is whatever its rigger chose. So
-`[0, 0, -70]` flexes one figure's hip and swings another's leg backward, and "raise her legs" put them
+`[0, 0, -70]` flexed one figure's hip and swung another's leg backward, and "raise her legs" put them
 behind her.
 
-Semantic bone NAMES are solved; semantic AXES are not. The fix is the same move that solved names —
-measure the structure instead of assuming a convention. Every bone's rest direction is computable from the
-joint positions already extracted (bone → child), and with the body's forward and up that gives each bone
-a canonical basis: *twist* along the limb, *swing* perpendicular. The vocabulary then becomes anatomical
-(`{"leftUpperLeg": {"lift": 45}}`) and means the same thing on every rig.
+Semantic bone NAMES were solved; semantic AXES were not. The fix is the same move that solved names —
+measure the structure instead of assuming a convention.
 
-**On using a multimodal model for this** (asked 2026-09-02): the right role is *verification*, not search.
-Trigonometry gives the axes exactly; vision would be a slow, fragile way to hunt for them. But rendering a
-posed figure and asking "is this a raised arm or a dislocated shoulder?" is precisely the check that caught
-the head-mapped-to-a-hair-bone error, which `validate()` had passed as clean. Worth building once the
-anatomical frame exists and there is something to verify.
+### Resolved: the anatomical frame, and a second bug hiding behind it (2026-09-02)
+
+**Verified in render across all three rigs: the same request produces the same motion on Saka (VRM),
+Grace (Daz Genesis 8) and Yuffie (Genesis 8.1).** `{"leftUpperLeg": {"bend": 45}}` raises the knee
+forward on each; `{"spread": 60}` on both upper arms raises them symmetrically; `bend: +40` and `-40` on
+the two legs gives a stride.
+
+**There were two defects, and only one of them was the axis convention.** The other is the more
+instructive:
+
+> **A pose was REPLACING each bone's rest rotation, not composing onto it.** `bone.rotation.set(x,y,z)`
+> discards whatever the rigger authored. Measured: `thigh.fk.L` rests **177 degrees** from identity on
+> Grace and Yuffie, `upper_arm.fk.L` **137**, `foot.fk.L` **72** — against **6** on Saka. So the leg was
+> flipped upside-down *before* the requested angle was added, and `clear` left it flipped.
+
+That spread explains why the symptom read as an axis-convention problem: Saka's rest rotations are small
+enough that only the axes looked wrong, while on the Daz rigs the rest pose was being thrown away
+wholesale. One measurement — print the rest quaternion of every mapped bone — would have separated them
+on day one, and it is the same lesson as the black hands: **measure the artifact, do not reason about
+the pipeline.**
+
+**The frame itself.** Three rotations per bone, measured from the bind pose (`figures.anatomical_axes`),
+each an axis chosen so a POSITIVE angle produces the named motion on either side of the body:
+
+| | Motion | Axis | Degenerate when |
+|---|---|---|---|
+| `bend` | the joint **folds the way it folds** — hip and elbow forward, knee back, spine and neck forward (see *`bend` means flexion*) | `direction × forward`, negated for the knee | the bone already points forward (a foot) — falls back to `direction × up`, so bend lifts the toes |
+| `spread` | the far end swings **outward**, away from the midline | `direction × outward` | the bone already points outward (a T-posed arm) — falls back to `direction × up`, so spread keeps raising it |
+| `turn` | the bone twists about its own length, **inward** | the bone's own direction, negated on the right | never |
+
+`direction` is the vector to the next mapped joint down the chain, and a bone at the end of a chain
+CONTINUES the direction it arrived on — a hand points the way the forearm did. `forward` and `up` come
+from `body_frame()`, which measures them (hips→head, and the vector between the paired hip joints)
+rather than assuming glTF's +Z. Every sample model comes out at +Z anyway, which is the point: measuring
+costs three subtractions and cannot be wrong about a rig that stands a few degrees off axis.
+
+Three properties fall out of this, and each is load-bearing:
+
+- **Mirror symmetry is by construction**, from one sign per side. The same numbers on `leftUpperArm` and
+  `rightUpperArm` produce mirrored motion, so a symmetric pose is symmetric without a caller thinking
+  about it. `bend` is deliberately NOT mirrored — flexing both hips moves both knees the same way.
+- **The axes are stored in each bone's PARENT frame**, which is the frame its own local rotation lives
+  in. Applying one is then a single multiplication onto the rest quaternion (`delta * rest`) and the
+  result rides the parent chain for free: bend a hip and then a knee and you get a leg. Model-space axes
+  would need re-deriving against a live scene graph, which is the class of mistake that produced the
+  double-counted selection box.
+- **The durable state stays semantic.** The `figure` component persists `{"leftUpperArm": {"bend": 45}}`,
+  never quaternions, because that is what a reload replays and what a persona will later reason about
+  (§ *Keep the state semantic*). The axes ride alongside as derived data, measured once at import.
+
+**Where it lives.** `importer` → `attributes.humanoid_axes` (a property of the file, measured beside the
+map) → `meta.humanoid_axes` at placement → the `figure` component's `axes`, which the client resolves
+against. A model catalogued before the field existed gets its axes measured on first placement and
+written back, so nothing needs re-converting. Composition order is turn, then bend, then spread — twist
+innermost, the swing-twist decomposition — mirrored exactly in `figures.resolve_pose` and `figure.js` so
+a Blender render and a headset agree.
+
+**Verification.** `scripts/pose_test.py` now takes the anatomical vocabulary and drives it through the
+real `anatomical_axes`/`resolve_pose`, so what it renders is what a headset is sent rather than a second
+implementation that could agree by luck. It writes **front and side** views, always: a front view cannot
+tell a raised knee from a leg swung backwards, which is the exact error this exists to catch.
+
+```
+$B --background --python scripts/pose_test.py -- out.glb outdir/ \
+   '{"leftUpperLeg": {"bend": 45}, "rightUpperArm": {"spread": 70}}'
+```
+
+Raw euler on a named rig bone still works as an escape hatch (`{"upper_arm.fk.L": [0,0,-60]}`) — it is
+how several wrong maps were caught — but it is no longer a pose the tool surface accepts, because it
+meant a different motion on every figure.
+
+Tests: `tests/test_figures.py` (+12, forward-kinematics checks that a posed bone moves the joint below
+it in the named direction), `tests/test_server.py` (the posing block rewritten in the new vocabulary),
+`tests/js/figure.test.js` (+8, new — the rest-composition claim, on a bone with a deliberately
+non-identity rest rotation, since an identity one lets the broken version pass).
+
+**Still to verify on device**, since a render is not a headset: that a pose survives a reload and a late
+joiner, and that the axes riding the component are not too chunky in practice (6 KB for Saka's 52 bones,
+1.5 KB for Grace's 21).
+
+**On using a multimodal model for this** (asked 2026-09-02): the right role is *verification*, not
+search. Trigonometry gives the axes exactly, and vision would be a slow, fragile way to hunt for them.
+But rendering a posed figure and asking "is this a raised arm or a dislocated shoulder?" is precisely
+the check that caught the head-mapped-to-a-hair-bone error, which `validate()` had passed as clean —
+and now that the frame exists there is something concrete to verify: drive a fixed set of poses
+(`bend 45` on each limb, in turn) and ask whether each looks like the motion it names. That is a
+buildable pass, and it is what the two remaining known-wrong cases below would have been caught by.
+
+### Device run 2026-09-03 — the geometry is right and the vocabulary is not
+
+All three figures re-imported to their neutral poses, are posable through the director, survive a late
+joiner, and still `grab` correctly once posed. **"Turn her head right" and "raise her left/right leg" are
+correct on Saka, Grace and Yuffie.** The arms are not: *"raise her right arm up"* points the arm **behind
+her** on all three.
+
+The cause is not in the axes. It is in the layer above them, and the log says so outright:
+
+```
+"raise yuffi's right arm up"    -> rightUpperArm {bend: -90, spread: -90}
+"raise grace's right arm up"    -> rightUpperArm {bend: -60}
+"raise saka's right arm up"     -> rightUpperArm {bend: -80}
+"point Grace's right arm down"  -> rightUpperArm {bend: -90}
+"point Saka's left arm up"      -> leftUpperArm  {bend: -90}      <- identical, opposite intents
+```
+
+`bend: -90` **means** "swing the far end backward", so the figures did exactly as told. The fifth line is
+the finding: the director emitted the same numbers for *up* and for *down*. It is guessing, and it cannot
+do otherwise, because **a relative vocabulary asks the caller to know the rest pose**:
+
+| rest direction of… | Saka | Grace | Yuffie |
+|---|---|---|---|
+| upper **leg** | −89° | −81° | −82° |
+| upper **arm** | **0°** (a true T-pose) | **−48°** | **−46°** |
+
+The three rigs agree about where a leg starts to within 8°, so `bend: +80` reads as "raised" on all of
+them — **the legs worked by luck, not by correctness.** The arms differ by 48°, and "up" is 90° away from
+rest on Saka and 138° on Grace. No single relative number can mean "up" for an arm.
+
+A second failure sits in the same log, unreported because it was buried in a busy pose. Asked to *"spread
+Grace's legs slightly apart"*, the director first called `inspect_figure`, **read** the line saying
+`spread` is positive outward, and then emitted `spread: +20` on the left and `-20` on the right — both
+legs toward her left. The mirror-by-negating reflex beat the description it had just read.
+
+> **The vocabulary is the product — and "the vocabulary" now means the mapping from an utterance to
+> numbers, which is the one layer in this feature with no test at all.** Bone names are checked by
+> `validate()`, axes by rendering. What the director does with them is checked by a person in a headset,
+> once, by hand.
+
+Also worth recording, because it shapes the fix: the deterministic path (`curl /figure` with an explicit
+pose) exists and **goes unused** — it is too clumsy in practice. So the guard on this layer has to be
+automated; it will not be a habit.
+
+The three slices that follow from this are designed under
+[*Aiming, evaluation and named poses*](#aiming-evaluation-and-named-poses).
 
 ### Still open from Phase 0
 
@@ -590,7 +716,8 @@ python -m conjure.importer temp/3d-model-examples/Saka.vrm
 
 # render checks
 $B --background --python scripts/glb_preview.py -- out.glb outdir/ --size 640
-$B --background --python scripts/pose_test.py  -- out.glb outdir/ '{"upper_arm.L":[0,0,-60]}'
+$B --background --python scripts/pose_test.py  -- out.glb outdir/ '{"leftUpperArm":{"bend":60}}'
+#  raw escape hatch, a rig bone by its own name:  '{"upper_arm.fk.L":[0,0,-60]}'
 ```
 
 `--max-texture 1024 --bake 1024` are the settings every conversion has used: 1 K textures are the single
@@ -682,6 +809,44 @@ is made public, not before.
 - **Renderpeople / 3D Scan Store** — a few free scanned samples. Photoreal, but clothed and unrigged or
   lightly rigged. Not a fit.
 - **Reallusion Character Creator, Human Generator** — paid; not evaluated.
+
+### FBX: not importable today, and it is the road to Mixamo (checked 2026-09-03)
+
+**Direct import: no.** `ModelImporter` accepts `.glb` and `.vrm` and sniffs the glTF magic bytes, so an
+FBX is refused at the door — deliberately, since `importer.py` must never need Blender or the world
+server would.
+
+**Through Blender: the pieces are all present, unwired.** `bpy.ops.import_scene.fbx` exists in the
+installed Blender 5.2 (alongside `obj`, `usd`, `alembic`, `ply`, `stl`), and everything in
+`blend_to_glb.py` past the front door works on the loaded scene and does not care where it came from.
+Three things stand in the way:
+
+1. **The script never imports anything.** Blender opens the `.blend` itself
+   (`$B --background file.blend --python …`); an FBX needs Blender started empty and the script doing
+   `import_scene.fbx`.
+2. **`export_animations=False`** is hard-coded, reasoning that "the samples ship none". For Mixamo that
+   is exactly backwards — the animation IS the download.
+3. **`--collections`** is a `.blend`-only concept and has to no-op, selecting everything instead.
+
+Most of the pipeline's hard-won complexity — widget detection, the constraint-graph rebuild, JCM
+stripping — is Daz and Rigify work that a Mixamo rig simply does not need.
+
+**Why it matters: Mixamo exports FBX and Collada, never glTF.** So both halves of the Mixamo story run
+through FBX — the character rigs, and more importantly the CLIPS, which are [open question
+3](#open-questions) and the largest unbuilt piece in this feature. No FBX path, no Mixamo clips.
+
+Unknowns worth budgeting for, none of them code:
+
+- **Units.** Mixamo exports in centimetres, so a figure arrives 100× too big. `height_m` would catch a
+  miss loudly (a 175 m woman), and `glb_bounds` now carries a skeleton's own scale — see below.
+- **Textures.** Mixamo embeds them; other sources reference files sitting next to the `.fbx`, which a
+  single-file upload would not have.
+- **A character and its clips are separate downloads.** One GLB with several named animations means
+  importing the character, then each clip, and merging — a standard Blender workflow, but a workflow.
+
+The runtime half is further out regardless: `attributes["clips"]` is recorded at import already, but
+`animate_model`, the mixer component and the pose/clip composition decision ([open question
+8](#open-questions)) do not exist.
 
 ### Animation sources — a separate problem
 
@@ -833,6 +998,12 @@ when present we have simply been handed the answer. Then Mixamo (`mixamorig:Hips
 
 **Measured hit rate on the samples: two of four.** Rigify catches Eve, Daz Genesis catches Grace; the two
 DOA ports match nothing. Worth building — it is a lookup table — but it is the cheap win, not the plan.
+
+**Built 2026-09-03** (`figures.CONVENTIONS`), with two rows: Mixamo, and the `.L`/`.R` suffixed scheme
+two free asset-pack characters share. Deliberately only conventions verified against a file on disk —
+Rigify and Daz rows are NOT included even though this document names them, because layer 2 already
+handles Grace and Yuffie correctly and an unverified table row could only make that worse. Adding a row
+is the extension point; adding one blind is how a control bone gets mapped over its deform bone.
 
 ### 2 — Topology and geometry (free, needs no names)
 
@@ -1016,6 +1187,556 @@ has to be custom anyway to handle the clip/pose composition above.
 
 ---
 
+### Device run 2026-09-03b — "add grace" gives you an unposable Grace
+
+Reported: `add grace in front of me` → `raise her right arm` → *"this Grace model doesn't have a
+poseable humanoid skeleton"*. Three separate things, and only one of them is a bug in posing.
+
+**1. The removal worked; the director lost track of its own placement.** Three `remove_entity` calls, all
+`found=true`. Sixty seconds later it read `query_world`, found the Grace it had *just placed*, concluded
+the placement had failed, and placed a second one. Not a system fault — but a good fixture for the
+utterance-layer harness, which would catch it as "asked for one figure, got two".
+
+**2. `search_library` gives the director no way to choose.** Six near-identical Graces came back as bare
+labels; it took the first. That one, `grace_ashcroft`, is the original 348 k-triangle conversion imported
+*before* inference existed, so it carries no bone map at all. Search hits for rigged models now say
+`[figure 1.76 m, 348k tris]` — the two facts that actually distinguish them.
+
+**3. The real finding: a catalog row is a snapshot of what we UNDERSTOOD about a model, not of the
+model.** The dev library holds thirteen figures and they disagree about which era of this code measured
+them:
+
+| | in the library | what it means |
+|---|---|---|
+| no map at all | 4 | imported before inference existed — **unposable** |
+| a map today's validator REJECTS | 2 | inferred before conversion rebuilt the deform hierarchy: the forearm hangs off the armature root, so rotating the upper arm leaves it behind. **The zig-zag arm, cached.** |
+| a good map, no anatomical frame | 4 | pre-2026-09-02 — poseable, not aimable |
+| current | 3 | |
+
+So placement now **re-measures anything stamped older than the current revision** (`figures.FRAME_REV`)
+and writes the result back: a map is inferred if missing, RE-inferred if the stored one no longer
+validates, and cleared rather than kept if nothing valid can be recovered. A stated (VRM) map is never
+second-guessed. Dry-run over the live catalog: four gain a map, two are repaired, one is kept as stated,
+six are already current. Nothing needs re-converting or re-importing.
+
+> A version stamp rather than "does this row carry the keys today's code needs", because the check that
+> mattered was not a missing field — it was **the validator getting stricter**, which no key can express.
+
+**And the validator gained the check that makes that possible.** `validate()` asked where joints ARE:
+sides, vertical order, ancestry of the feet, limb proportions. It never asked whether **moving one moves
+the next** — so a map whose forearm is not below the upper arm passed as clean, which is exactly how the
+zig-zag shipped. A limb must now be a CHAIN, and the rule separates the two bad maps from the eleven good
+ones with no threshold and no false positives.
+
+Deliberately **limbs only**: conversion re-parents the trunk onto a torso control, so `spine` legitimately
+stops being a child of `hips` on both Daz rigs while the map stays correct and poses correctly on device.
+Including the trunk would have rejected two maps that work — the same mistake the old
+hips-ancestor-of-head check made, recorded above as a fix and nearly repeated here within the hour.
+
+### Device run 2026-09-03c — joint limits, because the vocabulary could ask for the impossible
+
+`aim` works. Two poses looked wrong, and reading the log showed the system had done exactly as it was
+told — the requests were the problem:
+
+```
+"raise grace's left arm"        -> {leftUpperArm: {aim: up}, leftLowerArm: {aim: up}}
+"bend saka's right leg backward"-> {rightUpperLeg: {aim: back}, rightLowerLeg: {bend: 90}}
+```
+
+Aiming the forearm "up" as well as the upper arm folds the elbow 180° behind her head — "point the
+forearm at the sky" while the upper arm already points there means bend it right back. And `aim: back`
+on a thigh is **90 degrees of hip extension**, against the ~20 a person manages, with a knee bend in the
+hyperextension direction on top. Rendered from the logged calls, both reproduce exactly.
+
+> **The vocabulary could express poses a body cannot make, and executed them faithfully.** Nothing in the
+> system knew that an elbow does not bend sideways.
+
+**Limits are per SEMANTIC bone**, which is the dividend a semantic vocabulary keeps paying: one table is
+correct for Saka, Grace, Yuffie and everything after, exactly as one `bend` is. They are generous on
+purpose — they exist to exclude the grotesque, not to enforce realism on a puppet: where a real hip
+extends 20°, this allows 35.
+
+They **ride with the frame** rather than sitting beside it. The runtime clamps client-side and the render
+pipeline clamps in Python, so shipping the numbers means one table instead of two that drift.
+
+And a request past a limit lands AT the limit and **says so** — `/figure` resolves the pose once more
+purely to report it, and the tool relays *"Joint limits applied: rightUpperLeg.bend -86° → -35°"*. A
+clamp nobody is told about is the silent-degradation failure this document keeps warning against; a clamp
+that answers back is feedback the director can act on. Measured on the two reported poses:
+
+| request | before | after |
+|---|---|---|
+| `leftLowerArm aim up` | elbow folded behind her head | `spread +135° → +8°` — arm raised nearly straight |
+| `rightUpperLeg aim back` | thigh horizontal behind her | `bend −86° → −35°` — leg extended behind |
+| `rightLowerLeg bend 90` | knee hyperextended | `bend +90° → +5°` — shin straight |
+
+Two things this cost, both worth recording because both were invisible until the decomposition existed:
+
+- **`bend` and `spread` were not orthogonal.** Both are perpendicular to the bone, but not to each other:
+  an A-posed forearm rests slightly forward, which tilts them ~8° apart. Harmless while the axes are only
+  ever used one at a time — and wrong the moment a rotation is read BACK out of them, which is what
+  clamping does. A legal 90° elbow bend decomposed as 16° of impossible elbow abduction and was clamped.
+  The frame is now orthonormalized at measurement time, so it can be read in both directions.
+- **The shoulder is barely limited, deliberately.** Rest-relative bounds only work where rest IS the
+  anatomical neutral. For hips, knees, ankles and the trunk it is, on every rig measured. At the shoulder
+  it is not, and the rigs disagree by 48° — a T-posed arm brought down to the side is an ordinary −90° of
+  spread that a tight bound would clamp. Only the twist has a neutral all three agree on, so only the
+  twist is really constrained.
+
+Also: **aim the limb, not every bone in it.** The tool description now says so outright, since aiming
+both bones of an arm is what produced the fold. That is the third description change made to steer the
+director, and — still — nothing measures whether any of them worked. See slice 2.
+
+### Ingest paths that disagree about how hard they look (2026-09-03d)
+
+Three rigged characters sat in the catalog as **props** — `Animated Woman` twice (41 and 62 joints) and
+`Steve` (32). Not a figures bug: they arrived through the **Poly Pizza fetch path**, which recorded a
+triangle count and a bounding box and never looked at the skeleton. So they were normalized to 1.8 m
+instead of kept at life size, unmarked in search, and unposable.
+
+That is the same shape as the catalog-revision finding earlier the same day — two paths into the library
+that know different amounts about a file — so the fix goes in the **one write-through they share**
+(`_catalog_asset`): any model catalogued without extraction gets extracted there, once, whatever fetched
+it. Plus `ctl refresh-models`, the batch form of what placement already does one model at a time, for
+after a build that changes what extraction knows.
+
+**And the interesting half: inference refused all three, correctly.** It produced obvious nonsense —
+`leftFoot` and `leftLowerLeg` both on `RightToeBase` — and `validate()` threw it out, which is the
+validator doing exactly its job. The cause is layer 2's stated weakness, met for the first time in the
+wild: these characters are bound with their **arms at their sides**, so the hands are no wider than the
+feet (±0.69 against ±0.61) and "the widest joints are the hands" collapses. Every sample so far had been
+T- or A-posed.
+
+> **`Animated Woman` is bone-for-bone Mixamo** — `Hips`, `Spine`, `LeftArm`, `LeftForeArm`, `LeftHand`.
+> [Layer 1](#1--known-conventions-free-exact), the convention table, has never been built, and it would
+> map that model exactly and for free. Two of the three would probably still need layer 2 or 3, but the
+> cheapest layer in the pipeline is now the one with a concrete case waiting for it.
+
+### `bend` means flexion, not "forward" (2026-09-03e)
+
+With limits in, the director walked straight into the one joint where the geometric rule and the English
+word disagree:
+
+```
+"bend her left knee"  -> {leftLowerLeg: {bend: 90}}   -> clamped to +5°
+builder: "the knee is already at its limit in that direction — it can't bend much further back from rest"
+"bend her knee back"  -> refused again
+builder: "Knees anatomically only bend one way, so the system is enforcing that."
+```
+
+Both statements are true and the conclusion was wrong: it had asked for **hyperextension** and read the
+clamp as "this knee is out of travel". `bend` was defined as *the far end swings forward*, which is a
+geometric rule — and it coincides with flexion at the hip, the elbow, the spine and the neck, and is
+exactly backwards at the knee. The tool description even listed "bend a knee" under *forward (+)*.
+
+So `bend` now means **the way the joint folds**: elbow forward, knee backward, hip forward, spine
+forward. One bone needs the axis negated to make that true (`_FOLDS_BACK`), and that is the anatomical
+definition of flexion rather than a special case bolted on. Same principle as `spread` being side-aware —
+**the mirroring belongs in the frame, not in the caller's head.**
+
+The clamp message also says which way now: `bend -90° → -5° (it folds the other way)`. "→ +5°" on its own
+reads as *nearly at its limit*, which is precisely the sentence the director talked itself into.
+
+**And a real bug came out of the fix.** Asked for `bend: 200`, the clamp reported `+200° → -160° → -5°`
+and invented a phantom `turn +360°`. Two causes, both from recovering a request out of the rotation it
+produced: 200 degrees and −160 are the *same quaternion*, so the decomposition read the request back
+inverted and clamped it to nearly straight; and the twist quaternion was left with a negative w, which
+`2·atan2` reports as a full turn. Numbers are now clamped as NUMBERS wherever the caller gave one, and
+only an `aim` — which arrives as a direction, not an angle — goes through the decomposition at all.
+`bend: 200` clamps to `+155°`, which is what was meant.
+
+> The general shape, and it is the third time in this document: **a value recovered from a
+> representation is not the value that was supplied.** Keep the caller's own number where you have it.
+
+### Layer 1 built, and three models joined the cast (2026-09-03f)
+
+The convention table finally has a reason to exist, and it took twenty minutes once there was a case.
+`Animated Woman` is bone-for-bone Mixamo; `Animated Woman` (the other one) and `Steve` share a
+`.L`/`.R` suffixed scheme from some free asset pack. Only conventions **verified against a real file**
+are in the table — a speculative row cannot be checked, and a name that happens to match is exactly how
+a control bone gets mapped over the deform bone it drives.
+
+| model | layer | result |
+|---|---|---|
+| Animated Woman | `convention:mixamo` | 22 bones |
+| Animated Woman (2) | `convention:dot-side` | 18 bones |
+| Steve | `convention:dot-side` | 17 bones |
+| Grace, Yuffie | `inferred` (layer 2, unchanged) | 21 bones |
+| Saka | `vrm` (stated, unchanged) | 54 bones |
+
+Names are tried first and inference is not even run when they hit — it reads every vertex weight in the
+file, which is not work to do speculatively. Layer 2 still owns everything the table has never seen.
+
+**Two changes were needed to make the table pay, and the second is the more valuable.**
+
+**A map may now be partial.** Both `Animated Woman` models and `Steve` have a `Foot.L` that is an IK
+TARGET parented to the armature root, sitting beside a `PoleTarget.L` — rotating the shin would leave it
+behind. `validate()` caught it (the chain check, one day old), but the whole map was then thrown away
+over an ankle. `prune_map` now drops the offending bone and everything below it on that chain — the
+conservative direction, losing a bone rather than gaining a lie — and completeness is judged against
+`REQUIRED_BONES` rather than all of `CORE_BONES`, because plenty of rigs have no toes, no clavicle and
+no separate chest. What survives is a map that poses everything it claims to.
+
+**And a bounds bug in `glb_bounds`, which is the trimesh bug wearing the opposite coat.** A skinned
+mesh's vertices are in skin space and must not take the mesh node's transform — that was the fix in
+Phase 0. But they reach the world THROUGH THE JOINTS, so a scale on the armature, or baked into the
+inverse bind matrices, does apply. `Steve` carries a `CharacterArmature` scaled ×100 and `Animated
+Woman` a ×100 inverse bind, and both were recorded at a couple of centimetres. Now that the fetch path
+marks them as figures, "keep life size" would have placed a 1.3 cm man.
+
+> The rule stated once, since a version of it has now been wrong three times: **a skinned mesh's extent
+> comes from neither its node nor its vertices alone — it is the vertices as the JOINTS place them.**
+
+**And a scale factor is not enough to say that.** Reported from the headset the same afternoon — *"wow,
+she's huge"* — a figure placed at roughly 9 m. Scaling the accessor box by the skeleton's scale fixed
+`Steve` and one `Animated Woman` and was still wrong for the other, because several rigs author every
+body part as a small cluster near the ORIGIN and let each joint carry it into place. Their accessor
+boxes read 3.7 mm and 1.3 cm against true heights of 1.80 m and 2.69 m, and no single factor recovers
+that: the vertices have to actually be skinned. `glb_bounds` now does, sampled to fifty thousand
+vertices, and agrees with a Blender render to within a few per cent on every figure in the library —
+including reproducing Grace, Saka and Yuffie's existing numbers exactly.
+
+| | accessor box | scaled by the skeleton | skinned | Blender says |
+|---|---|---|---|---|
+| Animated Woman | 0.048 | 4.82 | **5.21** | 5.21 |
+| Animated Woman (2) | 0.0037 | 0.37 | **1.80** | 1.80 |
+| Steve | 0.013 | 1.31 | **2.53** | 2.69 |
+| Saka | 1.5455 | 1.5455 | **1.5455** | 1.5455 |
+
+Three wrong answers in a row, each more sophisticated than the last, and the giveaway each time was the
+same: **a number that disagrees with a render is a number, not a measurement.**
+
+**Which exposed the last assumption: not every rigged model is authored metric.** Correctly measured,
+the three come out at 5.21 m, 1.80 m and 2.53 m — one of them right, two a style rather than a
+measurement. So life size is honoured only within a plausible human range (`HUMAN_HEIGHT_M`, 0.5–2.5 m);
+outside it a figure is normalized like anything else, but still by HEIGHT. [Open question
+6](#open-questions) asked for exactly this clamp before a source needing it turned up. One did, then two
+more.
+
+### The library already contains animation (2026-09-03g)
+
+Discovered while trying to render the three newly-mapped models: **they ship clips.** Ten on `Animated
+Woman`, twenty-four on the other, eighteen on `Steve` — `Idle`, `Walk`, `Run`, `Jump`, `Death`, `Punch`,
+`Duck`, `HitReact`, `Gun_Shoot`.
+
+That is a direct answer to [open question 3](#open-questions), which has read "the models ship no
+animations at all, so clips must be sourced and **retargeted**" since the first measurement — true of the
+five `.blend` ports it was based on, and false of the library as it stands today. These clips are already
+authored against their own skeletons, and those skeletons now have humanoid maps. **A first
+`animate_model` could be built and demonstrated without Mixamo, without FBX, and without retargeting
+anything.** Retargeting remains the hard general problem; it is no longer the price of admission.
+
+It also explains an hour of confusion, and the lesson is one this document keeps relearning. Posing
+`scripts/pose_test.py`'s figure stopped working: the pose was written correctly into the GLB's own node
+rotations — verified by forward kinematics, and the same bytes the runtime consumes — and the render
+came out identical to the unposed one, byte for byte. Two causes stacked:
+
+- **A model's own clip overrides everything.** Blender assigns one on import and it drives the bones
+  over whatever the rest pose says. The figure was standing in frame 1 of `Idle`.
+- **Blender's importer reads a joint node's TRS as the bone's REST**, not as a pose, and reconciles the
+  difference silently. So even with the clips cleared, posing the file the way the runtime poses it
+  renders as if nothing had happened.
+
+The fix is to emit the pose as a one-keyframe **animation** as well as node rotations — an animation
+channel is the one thing the importer applies over everything else, which is exactly what the models'
+own clips had just demonstrated. `pose_test` also frames on the posed skeleton now rather than on mesh
+bounding boxes, which are rest-shaped and cropped the raised arm being checked.
+
+> Three renders in a row were "obviously" wrong about the geometry, and the geometry was right every
+> time. **When a render and a computation disagree, suspect the renderer's import assumptions before the
+> maths** — the artifact is only evidence once you know what it is an artifact OF.
+
+### An IK foot has to ride the leg (2026-09-03h)
+
+Reported after the three asset-pack characters went in: raise a leg and on two of the three *"their feet
+remain glued on the floor and the model stretches from the feet to the raised ankle"*.
+
+Measured, and unambiguous: on both, `Foot.L` **carries vertex weights and its parent is the armature
+root**, beside a `PoleTarget.L`. It is an IK foot. The third character is Mixamo-named and has her foot
+properly under her shin, which is why she was fine.
+
+`prune_map` already refused to call such a bone an ankle — rotating it poses nothing — but dropping it
+from the map says nothing about the mesh hanging off it. So `follow_bones` now records what to do
+instead: the bone RIDES the last joint above it that is in the chain, at the offset it holds in the bind
+pose. A parent constraint, evaluated wherever the pose is applied — in `figure.js` after the rotations,
+and by re-parenting the copy `pose_test` renders.
+
+**The file's own hierarchy is left alone**, which is deliberate: those characters ship 10–24 baked clips,
+and re-parenting a bone would silently change what every one of them means. A constraint applied at pose
+time costs nothing when no pose is set and leaves the clips playable — which matters now that the clips
+are the library's only animation content.
+
+**And it reached nobody, because the version stamp was not bumped.** Every row in the library was
+already marked current, `refresh-models` found nothing to do, and the feet stayed glued — while the code,
+the tests and the renders all said the fix worked. `FRAME_REV` exists for exactly this case and adding a
+derived field is exactly when to touch it; a tripwire test now pins the derived-attribute list and the
+revision to each other so the next one cannot be forgotten quietly.
+
+> **A fix that is not versioned has not shipped.** Everything downstream of a cache believes the cache.
+
+Two more bugs found on the way, both the same kind of assumption:
+
+- **The bind offset must be captured from the BIND pose**, not from the skeleton at the moment the
+  constraint first runs. Read live, it measures the offset *after* the limb has moved, and the bone never
+  budges — it looked exactly like the fix having no effect.
+- **Bones carry scale.** The re-parenting maths used a rigid inverse (transpose the rotation, negate the
+  translation), which is true of every rig converted here and false of the asset-pack ones: their
+  armatures sit at **scale 100**, so the inverse was wrong by ten thousand and the render came out blank.
+  A general affine inverse, and the local transform written as a `matrix` rather than TRS.
+
+## Aiming, evaluation and named poses
+
+The three slices the 2026-09-03 device run calls for, in order. Designed here before any of it is built,
+because the first two are cheap only if their scope stays honest and the third has a structural gap in it
+that is easy to paper over badly.
+
+Read them as one argument: **1** removes the guessing, **2** is the only way to know it stayed removed,
+and **3** is the first capability the rig-independent vocabulary actually buys — as opposed to the bugs it
+prevents.
+
+### 1 — `aim`: absolute directions, because rest poses differ
+
+`bend`/`spread`/`turn` are **relative to rest**, which is right for an adjustment ("bend the elbow a bit
+more") and wrong for a destination ("arm up"). `aim` is the destination form:
+
+```jsonc
+{"rightUpperArm": {"aim": "up"}}       // up | down | forward | back | out | in
+{"leftUpperArm":  {"aim": [0, 1, 1]}}  // or a body-space vector, for anything between
+```
+
+The vocabulary is **fixed and model-independent** — the same six words on every figure and every limb.
+What varies per model is arithmetic the director never sees: each bone's rest direction is already
+measured (`bone_directions`), and the delta is the shortest arc from it to the requested direction. Saka's
+arm rotates 90°, Grace's 138°, from the identical request. That is the same move the bone names made, one
+level up: one word for every rig, with the per-rig fact hidden in metadata no LLM reads.
+
+Details that have to be decided now rather than discovered:
+
+- **The 180° case is degenerate and must be resolved deliberately.** A hanging arm aimed `up` is a
+  half-turn with no unique axis, so the shortest arc is undefined. Resolve it in the **frontal plane** —
+  rotate about the body's forward axis, i.e. raise through the side, the way a person does. Falling into
+  an arbitrary axis here would produce an arm swung through the torso, which is exactly the kind of
+  plausible-looking wrongness this feature keeps producing.
+- **`out` and `in` are side-aware**, like `spread`, so a symmetric request stays symmetric with no signs
+  for the director to get wrong — the failure measured above.
+- **Aim is relative to the parent chain.** Aiming the upper arm swings the whole arm rigidly with the
+  elbow straight, which is what "raise her arm" means. Aiming a forearm means "relative to the upper
+  arm", not to the world. Worth stating in the tool description, since it is the one place the mental
+  model can break.
+- **It sets direction, not twist.** `{"aim": "up", "turn": 30}` is the full expression.
+- **Aim the limb, not every bone in it.** Aiming a forearm as well as an upper arm folds the elbow;
+  measured on device, and now stated in the tool description.
+- **Limbs only.** `aim` points a bone along its own length; on a head that would mean aiming the top of
+  the skull, which is not what "have her look left" means. Head, neck and spine keep the relative axes —
+  and head `turn` is already confirmed correct on all three rigs.
+- **Not world-space targeting.** "Reach for that chair" is tier 3 below.
+
+What ships: the per-bone axes payload gains the bone's **rest direction** and the **body frame**, both in
+parent space, so the client can resolve an aim itself. The stored state stays semantic — `{"aim": "up"}`,
+not a quaternion.
+
+And the tool description gains **worked examples**, including a symmetric pair carrying the *same* sign on
+both sides. A one-line statement of the convention demonstrably lost to the model's mirror-by-negating
+reflex; an example of the exact shape it gets wrong is the cheapest counter. Whether that works is not
+knowable without slice 2, which is the point of slice 2.
+
+#### Built 2026-09-03
+
+Shipped as designed, with one addition worth naming. **Verified in render:** the same
+`{"rightUpperArm": {"aim": "up"}}` puts the arm straight up on Saka and on Grace — 90 degrees of travel on
+one, 138 on the other — and every named direction lands the bone within 0.1° of where it was asked to
+point, on all three rigs.
+
+| | Saka (T-pose) | Grace (A-pose) | Yuffie (A-pose) |
+|---|---|---|---|
+| upper arm rests at | 0° | −48° | −46° |
+| rotation for `aim: "up"` | 90° | 138° | 136° |
+| lands within | 0.0° | 0.0° | 0.0° |
+| axis of that rotation | the body's forward — through the side, not through the torso | | |
+
+The addition: **a shared golden fixture**, `tests/js/fixtures/figure-pose-golden.json`, read by both
+`tests/test_figures.py` and `tests/js/figure.test.js`. Resolving a pose now exists twice — in Python,
+which renders the verification images, and in the client, which drives the headset — and that is only
+safe while the two agree to the digit. It is the same device `plane_anchor` uses for the same reason, and
+it covers the cases that are easy to get subtly different: composition order, side mirroring, and the
+antiparallel half-turn.
+
+Two things learned in passing, both about testing rather than posing:
+
+- **three's `Quaternion.angleTo` has a noise floor of ~3e-8**, even between bit-identical quaternions —
+  `acos` near a dot product of 1 amplifies the last bits. Comparisons are by dot product instead, which
+  is exact and sign-insensitive (`q` and `-q` are the same rotation). An assertion tight enough to be
+  worth writing was failing on arithmetic that was already correct.
+- **The frame payload is now 11.6 KB for Saka's 52 bones** (5.3 KB for Grace's 21), up from 6.4 KB, and
+  it rides every pose patch because it lives in the `figure` component. Still small against a room
+  snapshot and fine at director cadence, but this is the point at which the fix is worth naming: the map
+  and the frame are static per model and belong in `meta` → a `data-` attribute, the way `bbox` already
+  does, leaving the patch to carry only the pose.
+
+### 2 — the eval harness: verify the utterance, not the axis
+
+The verification pass sketched under [*discovery layer 4*](#4--multimodal-verification) would have
+**passed clean** on the arms bug, because the axes are correct — the words above them were not. So the
+target moves up one layer:
+
+| | Verify the frame | Verify the tool surface |
+|---|---|---|
+| Input | `{"leftUpperArm": {"bend": 45}}` | *"raise her right arm up"* |
+| Runs | per model, at import | per phrase × 3 rigs, on demand / in CI |
+| Catches | a bone mapped to a fingertip, a limb through the torso, an axis that is self-consistently wrong | the director picking the wrong axis or sign — **the measured bug** |
+| Would have caught the arms | no | yes, in an afternoon, with no headset |
+
+Both are worth having and they share all their machinery. Build the second first.
+
+**The harness is a regression net, not a debugger.** The arms took thirty seconds to diagnose by reading
+the log, and no rendering pass would have beaten that. Its actual value is that a change to a *tool
+description* is otherwise entirely unfalsifiable: there is no test that fails when a sentence of English
+stops steering an LLM correctly, and that is now the layer most likely to be wrong.
+
+**Geometry judges first; the model judges what geometry cannot name.** Where a joint ends up is already
+computable — `tests/test_figures.py` does exactly this — so "is the wrist above the shoulder" is an
+assertion, not a question for a vision model. What no assertion expresses: *is that a raised arm or a
+dislocated shoulder; is the hand hinging at the wrist or at a fingertip; is the elbow inside the ribcage.*
+That is the same discipline as [layer 5](#5--the-validator-llm-proposes-geometry-disposes), pointed at
+pictures instead of bone maps.
+
+The shape of one check:
+
+1. Blender renders **front and side** of the rest pose and the posed figure (built, <1 s each, free).
+2. Both go up **side by side** with a **multiple-choice** question — *"compared to the first image, the
+   right arm has moved: (a) up and out to the side (b) forward (c) backward (d) down (e) barely moved."*
+3. A second question for sanity — *"does this look like a person doing this, or is a joint bent in a way
+   a body cannot?"*
+
+Constrained choice against a reference render, from fixed viewpoints. **Never free-form spatial
+description**: VLMs are unreliable at 3-D spatial reasoning and reliable at recognition, so the job is to
+turn the former into the latter.
+
+**Which model.** The seam exists — `conjure/captioner.py` is a `Captioner` protocol over Gemini with a
+`FakeCaptioner` for tests — but the return type here is a *structured verdict*, not a caption, so this
+wants **its own protocol beside it** rather than an extension (open question 11, answered). Default to
+**Gemini 2.5 Flash** for the bulk battery: already wired, already keyed, cheap enough to run every mapped
+bone at import, where the budget is explicitly generous. Use **Claude** — already the roster's default
+director, so no new key — where the judgment is rubric-heavy and instruction-following matters more than
+cost. A `FakeJudge` keeps the harness testable offline.
+
+**A trap to check before building around it:** Grace and Saka's current exports are **undressed**, and a
+hosted vision model may decline to judge those renders at all. Either verify against the clothed
+conversions or render the battery in clay/matcap. Cheaper to learn now than after the harness assumes an
+answer.
+
+### 3 — named poses, and the root problem they expose
+
+Three tiers, and the extension point is deliberately only the middle one:
+
+| | What it is | How it extends | Example |
+|---|---|---|---|
+| **1. Axes** | per-bone rotations: `bend`, `spread`, `turn`, `aim` | **it does not** — closed by design | "bend her elbow", "spread her legs" |
+| **2. Named poses** | multi-bone configurations, stored as **data** in tier-1 terms | add an entry | "kneel", "sit", "hands on hips" |
+| **3. Solved poses** | constraints against the world — wants a solver, not a vocabulary | not yet | "reach for that chair", "hand flat on the table" |
+
+A pose is a dict in the vocabulary that already exists:
+
+```jsonc
+"kneel": {
+  "leftUpperLeg":  {"bend": -75}, "leftLowerLeg":  {"bend": 105}, "leftFoot":  {"bend": -20},
+  "rightUpperLeg": {"bend": -75}, "rightLowerLeg": {"bend": 105}, "rightFoot": {"bend": -20},
+  "spine": {"bend": 5}
+}
+```
+
+**Because tier 1 is rig-independent, one authored pose works on every figure.** That is the first thing
+the axis work *buys* rather than merely protects, and it is why poses are data: adding "sit" is an entry,
+not code. The component stores `{"pose": "kneel"}` plus any per-bone overrides, so the durable state stays
+semantic and small, and the director learns what exists the way it learns what dynamics modules exist
+(`dynamics://available`) rather than by being told in a prompt.
+
+**The gap kneeling exposes: rotations cannot ground a figure.** Rotate a standing figure into a kneel and
+her hips stay where they were, so her knees go through the floor. `grounded` placement will not save her —
+it snaps the entity by its **bind-pose** bounds, which is the same stale-box problem `grab` had.
+
+Fix it with a measurement rather than a per-pose fudge: **re-ground after posing.** Find the lowest
+contact joint in the posed skeleton and settle the figure so it rests on the floor. One rule covers the
+cases, including poses nobody authored:
+
+- raise one leg → the lowest point is still the standing foot → she does not move
+- kneel → the lowest point becomes the knees → she settles onto them
+- sit → onto the pelvis, once there is something to sit on (a seat is tier 3)
+
+It is approximate by construction — joint positions plus a small contact radius, not skinned vertices —
+and that is the right trade: exact would mean posing the mesh server-side, and the error is millimetres
+against a decision measured in tens of centimetres.
+
+**Authoring loop, and it is one this document already defines.** An LLM proposes the numbers, Blender
+renders front and side, the judge from slice 2 says whether that is a kneel, and a human confirms once
+before it is frozen into the library — *propose → render → verify → freeze*, exactly the discipline
+[layers 5 and 6](#5--the-validator-llm-proposes-geometry-disposes) apply to bone maps. A new pose then
+costs a call and a glance.
+
+**What stays closed: the axis words.** Four rotations cover every single-bone request, and both examples
+that prompted this were already expressible — "spread her legs apart" is `spread` on both sides (the
+director simply got the sign wrong), and "knees in" is negative `spread`. Every time this feature has
+grown a fifth criterion at the primitive layer it has been fitting noise; that is recorded twice above. A
+request that genuinely cannot be said in tier 1 is a signal that it belongs in a different tier, not that
+tier 1 is missing a word.
+
+## Animation — the long-term plan
+
+Sequenced **after** aiming (built), the eval harness, named poses and outfits. Written down now because
+the ordering decision below is cheap to make and expensive to discover, and because the ground shifted:
+the library turned out to contain 52 clips.
+
+### The idea the rest of it hangs on
+
+> Store a clip **in the anatomical frame** — per-bone `bend`/`spread`/`turn` over time — and it plays on
+> any rig with a humanoid map. That is rotation-retargeting, and the frame already exists.
+
+A clip stored as node names is welded to one skeleton. A clip stored as semantic bone names but
+BONE-LOCAL rotations still does not transfer: a T-posed Mixamo rig and an A-posed Daz rig disagree by 48
+degrees, which is the exact problem `aim` was built for and the exact reason a relative pose vocabulary
+failed on device. The anatomical frame is measured per figure against its own rest, so a clip expressed
+in it means the same motion on every one — and joint limits come along free, clamping a clip that asks a
+knee for more than it has instead of snapping it.
+
+What this does NOT solve is **proportions**. Different limb lengths mean foot sliding and missed hand
+contacts; that residual is what IK is for, in stage 4, and not before.
+
+### The stages
+
+**1 — Play what a file already has.** Three characters in the library ship 10, 24 and 18 clips against
+their own rigs. Import records duration, keyframe count, which SEMANTIC bones a clip touches and whether
+its root translates; the `figure` component gains `clip`, `startTime`, `speed`; the client gets a small
+component over `THREE.AnimationMixer` (A-Frame has none, `aframe-extras` is not vendored, and it would
+need customising anyway). Tier A: `f(sharedClock, clip, startTime)`, no per-frame sync, and a late
+joiner computes the same phase from the same clock. Demonstrable today, with no Mixamo, no FBX and no
+retargeting — which usefully de-risks the runtime BEFORE the hard part, the reverse of the original plan.
+
+**2 — Clips as catalog assets.** `kind: "animation"`, imported from a clip-only file, stored in the
+anatomical frame per above, discoverable by the director the way `dynamics://available` is. A clip is
+cheap in a way a mesh is not — one measured here is 21 channels, 51 keyframes, 2.08 s, a few KB — so a
+figure can carry dozens without a budget conversation.
+
+**3 — Sourcing.** Once a clip is an asset, every source is "import a clip": the library's own 52,
+**Mixamo** through the FBX front door (§ *FBX: not importable today*), **VRMA** directly since it is
+glTF, and hand-authored Blender exports. Mixamo is the volume, and the FBX work is its only prerequisite.
+
+**4 — Locomotion, blending, contact.** A walk along a path is tier A again — the PATH is the shared
+state and position is `f(clock, path)`. Then idle↔walk blending, foot planting via IK, touch reactions.
+Root motion and the physics-vs-parametric question ([`decisions.md`](../decisions.md) #12) live here.
+
+### Decide before stage 1 ships, not in the headset
+
+1. **Pose vs clip composition** — [open question 8](#open-questions), still open. The mixer rewrites
+   bones every frame, so a pose either composes additively after `mixer.update()` or the two are
+   mutually exclusive by construction.
+2. **What `follows` does while a clip plays.** Those IK feet are animated BY the clip, so the constraint
+   must stand down or it will fight the animation on the one bone it cares most about. (This is why the
+   constraint is applied at pose time rather than by re-parenting the file.)
+3. **Root motion**, measured per clip at import: an in-place clip with the entity driven separately, or
+   the clip's translation drives the entity. A baked-in root makes the entity lie about where it is —
+   `grab` grabs the wrong place and a peer sees it somewhere else. One clip measured here has a
+   translation channel on `Body`, so this is not hypothetical.
+
 ## The tool surface
 
 One coherent family rather than a tool per capability — the way `conjure_module` is one generic tool — with
@@ -1025,7 +1746,9 @@ One coherent family rather than a tool per capability — the way `conjure_modul
 |---|---|
 | `inspect_model(id)` | the "navigate the tree" request: groups, meshes, morphs, clips, bone map |
 | `set_model_parts(id, show=[], hide=[])` | outfits |
-| `pose_model(id, {bone: [x,y,z]})` | **semantic** bone names only |
+| `pose_model(id, {bone: {bend, spread, turn}})` | **semantic** bone names AND semantic axes (relative) |
+| `pose_model(id, {bone: {aim: "up"}})` | the same tool, absolute — see § *Aiming, evaluation and named poses* |
+| `pose_model(id, pose="kneel")` | a named multi-bone pose, resolved from the library |
 | `animate_model(id, clip=, speed=, loop=)` | clip playback |
 
 **`inspect_model` must summarize, not dump.** A two-hundred-node tree wrecks the director's context window.
@@ -1055,18 +1778,20 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
    retargeting one-time; ports make each figure a fresh discovery problem but are the only way to get a
    *specific* character. Almost certainly both, but the ratio decides how much the discovery pipeline has
    to earn its keep. The two proposed test fixtures exist to answer the aesthetic half of this.
-3. **Where does motion come from?** Finding 2: the models ship **no animations at all**, so clips must be
-   sourced (Mixamo library, purchased packs, hand-authored) and **retargeted** onto each figure's skeleton.
-   This is now the biggest unplanned piece of work in the feature, and it is what the humanoid bone map is
-   *for*. Retargeting quality — foot sliding, proportion mismatch, hand contact — is its own problem.
+3. **Where does motion come from?** Finding 2 measured the five `.blend` ports and found **no animations
+   at all**, making sourcing-and-retargeting the price of admission. **Partly answered 2026-09-03:** three
+   characters in the library ship 10, 24 and 18 clips against their own rigs, so a first `animate_model`
+   needs neither Mixamo nor retargeting. Planned in § *Animation — the long-term plan*; what remains open
+   is retargeting QUALITY (foot sliding, proportion mismatch, hand contact), which rotation-only transfer
+   does not address.
 4. **Export granularity** — one GLB per outfit, or one GLB with everything and runtime visibility?
    The outfit feature wants the latter; 117–526 k verts per figure wants the former. Probably "worn set
    plus chosen alternates", which makes outfit selection partly a conversion-time decision.
 5. **Decimation policy and bone reduction.** One Grace (526 k verts) exceeds `Budget.maxTris` for the whole
    world. What target, and driven by what — a fixed budget, or measured frame time on device?
-6. **Life size vs. normalized height.** Finding 8: these arrive correct and metric, and `TARGET_SIZE_M`
-   would damage them. Confirms life-size — but placement needs a path that *skips* normalization for
-   figures, plus a sanity clamp for a future source that does ship centimetre scaling.
+6. ~~**Life size vs. normalized height.**~~ **Settled 2026-09-03.** Figures keep their authored height,
+   and the sanity clamp asked for here is built (`HUMAN_HEIGHT_M`, 0.5–3 m) — a source needing it turned
+   up on the first day the library held a figure nobody had converted by hand.
 7. **JCM stripping cost.** Removing driver-fired corrective morphs is required for size; how bad the
    joints look without them is a device question.
 8. **Pose composition** — additive-after-mixer, or mutually exclusive. Decide before building.
@@ -1074,39 +1799,76 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
 10. **Facing normalization** — bake the correction into the GLB at conversion (one canonical forward for
     every figure), or record `facing` in `attributes` and correct at placement? Baking is simpler downstream
     and destroys information; recording is reversible and pushes the concern into every consumer.
-11. **Which multimodal model** for the verification passes, and whether it extends `Captioner` or wants its
-    own protocol (the return type is structured, not a caption).
+11. ~~**Which multimodal model** for the verification passes, and whether it extends `Captioner`?~~
+    **Proposed 2026-09-03** — Gemini 2.5 Flash for the bulk battery (the seam and the key exist), Claude
+    for rubric-heavy judging (already the default director), and its **own** protocol beside `Captioner`
+    because the return type is a structured verdict. Unresolved sub-question: whether a hosted model will
+    judge renders of the undressed exports at all.
 12. **Which armature is the humanoid one** when a file ships several (Hitomi has five). Body-mesh binding
     cross-checked against bone count is the obvious heuristic; the hair rigs are separate skeletons and are
     exactly what spring-bone secondary motion would drive later.
 13. **Touch response mechanism** — canned reaction clip, IK reach toward the contact point, or spring-bone
     secondary motion. Relates to the open physics-vs-parametric question ([`decisions.md`](../decisions.md) #12).
+14. **Where the pose library lives** — shipped with the repo like the bundled dynamics modules, per-user
+    under the data dir, or in the catalog beside the figures. It is data either way; the question is who
+    can add one and whether a pose can be world- or user-scoped.
+15. **Re-grounding vs. an authored root offset** for poses that change where the body's base is. Measuring
+    the lowest contact joint generalizes to poses nobody authored, which is the argument for it; an
+    authored offset is exact for the poses we do author and silent for the rest.
+16. **Does a re-grounded pose fight `grab` or the plane anchor?** Both write the entity transform, and a
+    pose that moves it is a third writer — the derived-frame hazard the rest of this document keeps
+    hitting. Likely wants the drop to live on a wrapper node inside the entity rather than on the entity.
 
 ---
 
 ## Where to pick up
 
-**Bone selection is solved and verified on device. The next piece is the axis problem**, described under
-*The axis problem* above. It is well-defined: every bone's rest direction is computable from the joint
-positions `figures.node_world_positions` already returns, and with the body's forward and up that yields a
-canonical per-bone basis — twist along the limb, swing perpendicular. The pose vocabulary then becomes
-anatomical (`{"leftUpperLeg": {"lift": 45}}`) and means the same on every rig, exactly as the bone NAMES
-now do.
+**Posing works end to end on device, and the next three slices are designed** under
+[*Aiming, evaluation and named poses*](#aiming-evaluation-and-named-poses). Build them in that order —
+the second exists to keep the first true, and the third is the first thing the vocabulary buys rather
+than protects:
 
-Verify it the way bone selection was verified, because structural checks cannot catch a semantic error:
-`scripts/pose_test.py` renders a posed figure, and a lift of +45 must raise the knee forward on all three.
-`validate()` passed several maps that were badly wrong; only driving a pose exposed them.
+1. ~~**`aim`** — absolute directions, plus worked examples in the tool description.~~ **Built
+   2026-09-03**, verified in render on all three rigs. Whether the *tool description* now steers the
+   director correctly is exactly what is not yet known — that is slice 2's job, and the first thing to
+   point it at is the three utterances that failed: "raise her arm up", "point her arm down", "spread
+   her legs apart".
+1b. ~~**Joint limits**~~ **Built 2026-09-03**, after `aim` made it easy to ask for the impossible. Per
+   semantic bone, shipped with the frame, clamped on both sides of the wire and reported back.
+2. **The eval harness at the utterance layer** — ~20 phrases × 3 rigs, rendered and judged. The only
+   guard on the one layer of this feature that has no test, and the only way to know whether a change to
+   a sentence of English did what it was supposed to.
+3. **Named poses + re-grounding** — "kneel", "sit". Data, not code, because tier 1 is rig-independent;
+   and the re-grounding rule is what stops a kneeling figure standing in the floor.
+4. **Outfits** (Phase 2) — deferred by choice; also wants a re-conversion with clothing.
+5. **Animation** — § *Animation — the long-term plan*. Stage 1 plays the 52 clips already in the
+   library; everything past that waits on the FBX front door and a decision about composition.
+
+
 
 State to be aware of when resuming:
 
 - Grace and Yuffie in the world are the **body-only** exports (no clothing). That was for joint
-  diagnosis; re-adding clothing is a `--collections` change, see the recipes above.
+  diagnosis; re-adding clothing is a `--collections` change, see the recipes above. This now blocks
+  slice 2 as well, if a hosted vision model declines to judge an undressed render.
 - Yuffie's boots, shoulder guard, eyes and eyebrows render flat grey — 22 of her 26 baked materials fail,
   and the neutral fallback papers over it. Recorded under the black-bake limitation, not chased.
-- `leftHand` resolves to a fingertip on the re-parented Daz rigs. Arms and legs were the reported problem
-  and are fixed; the hand was deliberately not chased after the head rule showed what iterating on a
-  secondary defect costs.
-- The branch is `feat/figures-phase0`, not merged.
+- `leftHand` resolves to a fingertip on the re-parented Daz rigs, so a hand rotation hinges in the wrong
+  place there (Saka is correct). Arms and legs were the reported problem and are fixed; the hand was
+  deliberately not chased after the head rule showed what iterating on a secondary defect costs. It is
+  the obvious first catch for slice 2's per-bone battery.
+- `validate()` checks the bone MAP and knows nothing about the axes, and nothing at all checks the
+  utterance layer. Those are slice 2's two jobs, in that order of difficulty.
+- A figure's map and frame are re-measured on the next placement whenever the catalog's are stamped
+  older than `figures.FRAME_REV` — so a fix reaches the library without re-importing, but an entity
+  ALREADY in a world keeps whatever it was placed with. Re-place it.
+- The dev library holds six Graces and five Yuffies from different eras of this code. They all work now,
+  but `grace_c` / `yuffie_c` (body-only, ~73 k and ~57 k tris) are the current conversions and the
+  cheapest; `saka` is the VRM control. The rest are worth deleting when convenient.
+- The anatomical frame and `aim` are on `feat/figures-anatomical-pose`, branched from `main`, not merged.
+- Aiming is refused for the trunk (`hips`, `spine`, `chest`, `upperChest`, `neck`, `head`) and for a
+  bone whose frame was measured before aiming existed — the latter re-measures itself on the next
+  placement, so it is a "place it again", not a re-import.
 
 ## Phasing
 
@@ -1115,7 +1877,7 @@ State to be aware of when resuming:
 | **0** | One model, end to end, **no new abstractions.** Convert by hand, import, place, look. | Answers what design cannot: life size, facing, feet on floor, frame cost, and whether `grab` behaves on a skinned mesh. Almost every remaining uncertainty is empirical. |
 | **1** | Conversion + discovery pipeline: headless Blender, GLB JSON extraction, convention table, topology inference, LLM labeling, visual verification, validator, one human confirm. | The heart, and the largest piece. Mostly pure Python ⇒ mostly testable. |
 | **2** | `figure` component + endpoint + tools. Outfits and clips. | First user-visible payoff: *"change her jacket"*, *"have her wave"*. |
-| **3** | Posing, with the composition question already settled. | |
-| **4** | Locomotion (A for scripted, C for reactive) and touch (B). | |
+| **3** | Posing, with the composition question already settled. | **Under way.** The anatomical frame shipped 2026-09-02; `aim`, the eval harness and named poses are designed and next. |
+| **4** | Clips, then locomotion (A for scripted, C for reactive) and touch (B). | Planned in § *Animation — the long-term plan*. Stage 1 is playable on library content today; Mixamo waits on the FBX front door. |
 
 Phase 0 should start as soon as a real model file exists, and does not depend on any decision above.

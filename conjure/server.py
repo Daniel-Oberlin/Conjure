@@ -41,6 +41,8 @@ from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
+from .figures import (AIM_DIRECTIONS, FRAME_REV, FRAME_VECTORS, POSE_AXES, TRUNK_BONES,
+                      resolve_pose)
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
@@ -945,6 +947,14 @@ async def _autosave_loop() -> None:
 
 
 
+#: The authored heights a figure may keep. Outside it the file is not in metres and "life size" would be
+#: a doll or a five-metre giant. Measured across the library: 1.55–1.70 for the three hand-converted
+#: figures, 5.21 and 1.80 for two asset-pack characters, 2.53 for a deliberately blocky one. The upper
+#: bound sits below that last: a game character authored at two and a half metres is a style, not a
+#: measurement, and `size_m` remains available when a giant is the point.
+HUMAN_HEIGHT_M = (0.5, 2.5)
+
+
 def _normalize(record, pos: list[float], target_m: Optional[float],
                *, rigged: bool = False) -> tuple[list[float], list[float]]:
     """Scale a model so its largest dimension is `target_m` meters and its base sits at pos.y,
@@ -958,13 +968,21 @@ def _normalize(record, pos: list[float], target_m: Optional[float],
     - Its meaningful dimension is **height**, not the largest extent: a T-posed figure's arm span rivals
       its height, and a seated one's exceeds it, so `max(size)` sizes by the wrong axis. When a caller
       *does* ask for a specific size, that means height.
+
+    Life size is honoured only when the authored height is one a person could have. Not every rigged
+    model is authored metric: measured in the library, `Animated Woman` comes out at 4.8 m and another
+    at 0.37 m — units artifacts, not authored choices, and "keep native size" would place a doll or a
+    giant. Outside the plausible range a figure is normalized like anything else, by height. Open
+    question 6 called for this clamp before a source needing it turned up; one has.
     """
     if not record.bbox_min or not record.bbox_max:
         return pos, [1.0, 1.0, 1.0]
     mn, mx = record.bbox_min, record.bbox_max
     size = [mx[i] - mn[i] for i in range(3)]
-    if rigged:
+    if rigged and (target_m is not None or HUMAN_HEIGHT_M[0] <= size[1] <= HUMAN_HEIGHT_M[1]):
         s = 1.0 if target_m is None else target_m / (size[1] or 1.0)     # by HEIGHT, and native by default
+    elif rigged:
+        s = TARGET_SIZE_M / (size[1] or 1.0)             # not authored metric: normalize, still by height
     else:
         s = (target_m or TARGET_SIZE_M) / (max(size) or 1.0)
     cx, cz = (mn[0] + mx[0]) / 2, (mn[2] + mx[2]) / 2
@@ -1052,9 +1070,65 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
     return author_anchor(entity, planes)
 
 
+#: Everything about a model that is DERIVED from its bytes. Extraction owns these outright — a stale one
+#: is not worth keeping, since it was computed from the same file by older code.
+_DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
+                        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows",
+                        "spring_bones", "tris")
+
+
+def _extracted_model_attrs(asset_id: str) -> dict:
+    """Everything `/library/import` learns from a model's bytes, for a path that fetched them instead."""
+    path = ASSET_CACHE / asset_id
+    if not path.exists():
+        return {}
+    try:
+        from .importer import plan_import
+        return dict(plan_import(asset_id, path.read_bytes(), {}).attributes)
+    except Exception as exc:  # noqa: BLE001 — cataloguing a model must never fail over its metadata
+        _slog("figure", f"extraction failed for {asset_id}: {exc}")
+        return {}
+
+
+def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dict:
+    """A model's catalog attributes, re-derived from its bytes when the stored ones predate this build.
+
+    **A catalog row is a snapshot of what we UNDERSTOOD about a model, not of the model.** Understanding
+    keeps changing and the rows do not, so this is where the two are reconciled: on the first placement
+    after a version bump, extraction runs again and the row is written back. Measured occasions for it,
+    all real: figures catalogued before inference existed; bone maps inferred before conversion rebuilt
+    the deform hierarchy, which today's `validate()` rejects; frames measured before aiming or joint
+    limits; and three rigged characters catalogued as PROPS because the Poly Pizza fetch path recorded a
+    triangle count and never looked at the skeleton at all.
+
+    Extraction is authoritative for everything derived — including CLEARING a bone map it can no longer
+    justify, since no map is an honest error message and a plausible wrong one is an elbow that bends
+    backwards three weeks later. Curation (label, tags, licence, rating) is untouched.
+    """
+    if not force and attrs.get("frame_rev") == FRAME_REV:
+        return attrs
+    path = ASSET_CACHE / asset_id
+    if not path.exists():
+        return attrs
+    fresh = _extracted_model_attrs(asset_id)
+    if not fresh:
+        return attrs
+    # `{}` rather than absent: the catalog MERGES attributes and skips None, so an empty map is how a
+    # rejected one is actually cleared.
+    write = {k: fresh.get(k) for k in _DERIVED_MODEL_ATTRS if fresh.get(k) is not None}
+    for k in ("humanoid", "humanoid_axes", "humanoid_follows"):
+        write[k] = fresh.get(k) or {}
+    write["frame_rev"] = FRAME_REV
+    library.upsert(asset_id, attributes=write)
+    if bool(attrs.get("rigged")) != bool(fresh.get("rigged")) or attrs.get("humanoid") != fresh.get("humanoid"):
+        _slog("figure", f"{asset_id}: re-extracted — rigged={bool(fresh.get('rigged'))} "
+                        f"map={len(fresh.get('humanoid') or {})} bones")
+    return {**attrs, **write}
+
+
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
                      bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
-                     humanoid=None) -> dict:
+                     humanoid=None, humanoid_axes=None, humanoid_follows=None) -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
@@ -1081,6 +1155,17 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
             # The semantic bone vocabulary travels WITH the entity, so /figure can resolve
             # "leftUpperArm" without a catalog lookup and the client needs no per-rig knowledge.
             meta["humanoid"] = dict(humanoid)
+        if humanoid_follows:
+            # Bones that deform the mesh but hang outside their own limb (an IK foot parented to the
+            # armature root). They cannot be posed, but they have to RIDE the limb or the mesh stretches
+            # from a planted foot to a raised ankle — reported from the headset on two of three
+            # asset-pack characters.
+            meta["humanoid_follows"] = dict(humanoid_follows)
+        if humanoid_axes:
+            # And the anatomical frame beside it: which way to rotate each bone so "bend 45" is the
+            # same motion on a VRM and on a re-parented Daz rig. Measured from the bind pose at import
+            # (figures.anatomical_axes) — a property of the file, so it travels with the entity too.
+            meta["humanoid_axes"] = dict(humanoid_axes)
     # Step 7c: author + persist the plane-relative anchor now (server-side, once) so the client can SOLVE it
     # rather than re-author from the F_ref pose against its docSurfaces copy every capture. Client ignores it
     # until step 7b/c flips it to consume it; None (too few seed walls) leaves the entity on its F_ref pose.
@@ -1183,6 +1268,13 @@ def _catalog_asset(asset_id: str, *, kind: str, label: str | None = None, prompt
     that applies the invariants — caller scope, `cache://` source, inherited world visibility (spaces-
     and-users-plan §4: made private ⇒ private), and, for a visual kind with bytes, a vector embedding.
     Only-non-None merge in `library.upsert` means a later partial write never clobbers creation data."""
+    if kind == "model" and not (attributes or {}).get("frame_rev"):
+        # The Poly Pizza fetch path recorded a triangle count and a bounding box and stopped there, so
+        # three rigged characters were catalogued as props: normalized to 1.8 m instead of life size, and
+        # unposable, because nobody had looked at their skeletons. Ingest paths that disagree about how
+        # hard they look at a file is the same bug twice now, so the look happens HERE — the one write
+        # every path already shares — rather than in each of them.
+        attributes = {**(attributes or {}), **_extracted_model_attrs(asset_id)}
     library.upsert(asset_id, kind=kind, scope=scope if scope is not None else _caller_scope.get(),
                    source=f"cache://{asset_id}", filename=asset_id, label=label, prompt=prompt,
                    query=query, params=params, attributes=attributes, provider=provider, model=model,
@@ -3690,7 +3782,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                 "use place_image (images) or set_skybox (skyboxes)"}
     if not (ASSET_CACHE / req.id).exists():
         return {"ok": False, "error": f"bytes for {req.id!r} are missing from the cache"}
-    attrs = json.loads(rec["attributes"] or "{}")
+    attrs = _refresh_model_attrs(req.id, json.loads(rec["attributes"] or "{}"))
     eid = req.name or f"ent_asset_{uuid4().hex[:6]}"
     pos = req.position or [0.0, 0.0, -3.0]
     op = _model_entity_op(eid, req.id, title=rec["label"], licence=rec["licence"],
@@ -3698,7 +3790,8 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           tris=attrs.get("tris"), source="library", bbox_min=attrs.get("bbox_min"),
                           bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m,
                           placement=req.placement, rigged=bool(attrs.get("rigged")),
-                          humanoid=attrs.get("humanoid"))
+                          humanoid=attrs.get("humanoid"), humanoid_axes=attrs.get("humanoid_axes"),
+                          humanoid_follows=attrs.get("humanoid_follows"))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
@@ -3760,6 +3853,27 @@ async def delete_asset(req: DeleteAssetRequest) -> dict:
     """Remove an asset from the catalog (row + aliases/relations/vector; bytes kept). Scope-checked."""
     ok, err = library.delete(req.id, scope=req.scope)
     return {"ok": True, "id": req.id} if ok else {"ok": False, "error": err}
+
+
+class RefreshModelsRequest(BaseModel):
+    force: bool = False              # re-extract even rows already stamped at the current revision
+
+
+@app.post("/library/refresh-models")
+async def library_refresh_models(req: RefreshModelsRequest) -> dict:
+    """Re-derive every model row's attributes from its bytes — the batch form of what placement does one
+    model at a time. Use after a build that changes what extraction knows (a new inference rule, joint
+    limits) so the whole library catches up at once instead of a figure at a time."""
+    rows = library.search(kind="model", limit=10000, scope=_caller_scope.get())
+    changed = []
+    for row in rows:
+        before = json.loads(row["attributes"] or "{}")
+        after = _refresh_model_attrs(row["id"], before, force=req.force)
+        if after is not before and after != before:
+            changed.append({"id": row["id"], "label": row["label"],
+                            "rigged": bool(after.get("rigged")),
+                            "bones": len(after.get("humanoid") or {})})
+    return {"ok": True, "checked": len(rows), "updated": changed}
 
 
 class RetagSkyboxesRequest(BaseModel):
@@ -4666,63 +4780,136 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
 
 
 # --- figures: pose a rigged model through its humanoid bone map (docs/backlogs/figures.md) ---------
+def _aim_problem(bone: str, aim, frame: dict, rot: dict) -> Optional[str]:
+    """What is wrong with an `aim` request, or None. Every branch refuses LOUDLY rather than no-op.
+
+    That is not politeness. A pose that silently does nothing is indistinguishable from a pose the user
+    simply cannot see from where they are standing, and this feature has now shipped that failure twice
+    (grab's unreachable modes; three fixes the headset never ran)."""
+    if bone in TRUNK_BONES:
+        return (f"{bone}: aim points a bone along its own LENGTH, so on the trunk it would mean aiming "
+                f"the top of the skull — use bend, spread or turn there")
+    for other in ("bend", "spread"):
+        if other in rot:
+            return f"{bone}: aim and {other} both set the swing — use one or the other"
+    if isinstance(aim, str):
+        if aim not in AIM_DIRECTIONS:
+            return (f"{bone}: unknown direction {aim!r} — use {', '.join(AIM_DIRECTIONS)}, "
+                    "or a vector [out, up, forward]")
+    else:
+        if not isinstance(aim, (list, tuple)) or len(aim) != 3:
+            return (f"{bone}: aim takes a direction ({', '.join(AIM_DIRECTIONS)}) or a vector "
+                    "[out, up, forward]")
+        try:
+            vals = [float(c) for c in aim]
+        except (TypeError, ValueError):
+            return f"{bone}: aim vector must be three numbers"
+        if not all(math.isfinite(v) for v in vals) or not any(vals):
+            return f"{bone}: aim vector must be finite and not all zero"
+    if not all(k in frame for k in FRAME_VECTORS):
+        # The bone map is fine; the FRAME was measured by an older build. Placing again re-measures it.
+        return f"{bone}: this figure's frame predates aiming — place it again to measure one"
+    return None
+
+
 class FigureRequest(BaseModel):
     id: str                                       # entity id of a placed rigged model
-    pose: Optional[dict] = None                   # {semanticBone: [x, y, z]} euler DEGREES
+    pose: Optional[dict] = None                   # {semanticBone: {bend|spread|turn: DEGREES}}
     clear: bool = False                           # drop the pose and return to the bind pose
 
 
 @app.post("/figure")
 async def figure(req: FigureRequest) -> dict:
-    """Set a figure's pose using SEMANTIC bone names ("leftUpperArm"), not the model's own node names.
+    """Pose a figure in ANATOMICAL terms — semantic bone names, and semantic axes to rotate them about.
 
-    That indirection is the whole point of the humanoid map: a caller — the director, a future persona —
-    says "raise her left arm" without knowing whether this particular rig calls it `J_Bip_L_UpperArm`,
-    `upper_arm.L` or `lShldrBend`. The map is resolved HERE, server-side, so the vocabulary is uniform
-    and the client never needs per-rig knowledge.
+    Two indirections, and the feature needs both. The bone map answers *which* node to rotate, so a
+    caller says "leftUpperArm" without knowing that this rig calls it `upper_arm.fk.L`, the next
+    `J_Bip_L_UpperArm` and a third `lShldrBend`. The anatomical frame answers *which way*: a bone's own
+    local axes are whatever its rigger chose — measured, `leftUpperLeg` rests 177 degrees from identity
+    on Grace and 6 on Saka — so raw euler angles meant a different motion on every figure. `bend`,
+    `spread` and `turn` are measured from the bind pose at import and mean the same thing on all of them.
 
-    The pose is stored on the entity's `figure` component, so it is ordinary world state: shared,
-    persisted, and replayed on reload like any other component (specs/dynamics.md §1)."""
+    Those three are RELATIVE — right for an adjustment, wrong for a destination, because a relative
+    number asks the caller to know where the bone rests and the three rigs disagree by 48 degrees about
+    where an arm does. `aim` is the absolute form: a named body direction, resolved as the swing from
+    wherever that bone rests onto it. Measured on device: asked to raise an arm, the director emitted the
+    same numbers for "up" and for "down", because with only relative words available there was nothing
+    else it could do.
+
+    The pose is stored on the entity's `figure` component in exactly the terms it was asked for, because
+    that state is durable: it is what a reload replays and what a persona will later reason about. The
+    client resolves it against the axes shipped alongside (specs/dynamics.md §1)."""
     ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
     if ent is None:
         return {"ok": False, "error": f"no entity {req.id!r}"}
-    if not (ent.get("meta") or {}).get("rigged"):
+    meta = ent.get("meta") or {}
+    if not meta.get("rigged"):
         return {"ok": False, "error": f"{req.id!r} is not a rigged figure"}
 
-    humanoid = (ent.get("meta") or {}).get("humanoid") or {}
+    humanoid = meta.get("humanoid") or {}
     if not humanoid:
         return {"ok": False, "error": f"{req.id!r} has no humanoid bone map, so it cannot be posed"}
+    axes = meta.get("humanoid_axes") or {}
+    if not axes:
+        return {"ok": False, "error": f"{req.id!r} has no anatomical frame — it was placed before "
+                "figures could be posed anatomically; place it again to measure one"}
+
+    component = {"humanoid": json.dumps(humanoid), "axes": json.dumps(axes, separators=(",", ":"))}
+    follows = meta.get("humanoid_follows")
+    if follows:
+        component["follows"] = json.dumps(follows, separators=(",", ":"))
 
     if req.clear:
-        sets = {"components.figure": {"humanoid": json.dumps(humanoid), "pose": ""}}
         await _broadcast({"type": "patch",
-                          "patch": store.apply_patch([{"op": "update", "id": req.id, "set": sets}],
+                          "patch": store.apply_patch([{"op": "update", "id": req.id,
+                                                       "set": {"components.figure": {**component,
+                                                                                     "pose": ""}}}],
                                                      origin="figure")})
         return {"ok": True, "id": req.id, "cleared": True}
 
     pose = req.pose or {}
     if not isinstance(pose, dict) or not pose:
-        return {"ok": False, "error": "pass a pose {bone: [x, y, z]} in degrees, or clear=true"}
+        return {"ok": False, "error": "pass a pose like {\"leftUpperArm\": {\"bend\": 45}}, or clear=true"}
 
-    unknown = [b for b in pose if b not in humanoid]
+    # A bone with a name but no frame is not posable: two of Saka's 54 have no measurable direction.
+    # Saying so is the point — a silent no-op on something nobody can see is the failure mode this
+    # feature keeps rediscovering (docs/backlogs/figures.md, grab's mode fiasco).
+    unknown = [b for b in pose if b not in axes]
     if unknown:
         return {"ok": False, "error": f"unknown bone(s) {', '.join(sorted(unknown))}; "
-                f"this figure has: {', '.join(sorted(humanoid))}"}
+                f"this figure has: {', '.join(sorted(axes))}"}
     clean: dict = {}
-    for bone, euler in pose.items():
-        if not isinstance(euler, (list, tuple)) or len(euler) != 3:
-            return {"ok": False, "error": f"{bone}: expected [x, y, z] degrees"}
-        try:
-            vals = [float(v) for v in euler]
-        except (TypeError, ValueError):
-            return {"ok": False, "error": f"{bone}: expected three numbers"}
-        if not all(math.isfinite(v) for v in vals):
-            # Same hazard as /world_frame: a non-finite angle blanks that branch of the scene graph and
-            # stays blanked, and a persisted one comes back on every reload.
-            return {"ok": False, "error": f"{bone}: angles must be finite"}
-        clean[bone] = vals
+    for bone, rot in pose.items():
+        if not isinstance(rot, dict):
+            return {"ok": False, "error": f"{bone}: expected {{{', '.join(sorted(POSE_AXES))}}} in degrees "
+                    "or {\"aim\": \"up\"}"}
+        bad = [k for k in rot if k not in POSE_AXES and k != "aim"]
+        if bad:
+            return {"ok": False, "error": f"{bone}: unknown rotation(s) {', '.join(sorted(bad))} — "
+                    f"use {', '.join(sorted(POSE_AXES))} or aim"}
+        vals: dict = {}
+        if rot.get("aim") is not None:
+            problem = _aim_problem(bone, rot["aim"], axes.get(bone) or {}, rot)
+            if problem:
+                return {"ok": False, "error": problem}
+            vals["aim"] = rot["aim"] if isinstance(rot["aim"], str) else [float(c) for c in rot["aim"]]
+        for k, v in rot.items():
+            if k == "aim":
+                continue
+            try:
+                angle = float(v)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": f"{bone}.{k}: expected degrees, got {v!r}"}
+            if not math.isfinite(angle):
+                # Same hazard as /world_frame: a non-finite angle blanks that branch of the scene graph
+                # and stays blanked, and a persisted one comes back on every reload.
+                return {"ok": False, "error": f"{bone}.{k}: angles must be finite"}
+            vals[k] = angle
+        clean[bone] = vals                      # an empty {} is legal: it returns that bone to rest
 
-    # Merge onto any existing pose so a caller can move one arm without resetting the rest.
+    # Merge onto any existing pose so a caller can move one arm without resetting the rest. Per BONE,
+    # not per axis: "bend her elbow" after "turn her elbow" replaces the elbow, which is what a reader
+    # of the second instruction expects.
     prior = ((ent.get("components") or {}).get("figure") or {}).get("pose") or ""
     merged = {}
     if prior:
@@ -4731,11 +4918,21 @@ async def figure(req: FigureRequest) -> dict:
         except ValueError:
             merged = {}
     merged.update(clean)
-    sets = {"components.figure": {"humanoid": json.dumps(humanoid), "pose": json.dumps(merged)}}
+    merged = {b: r for b, r in merged.items() if r}          # a cleared bone leaves no trace
+    sets = {"components.figure": {**component, "pose": json.dumps(merged)}}
+    # Resolve it once here purely to REPORT what the joints refused. The client resolves it again for
+    # real; this costs a few hundred multiplications and is what turns a silent clamp into feedback the
+    # caller can act on — the director asked for 90 degrees of hip extension twice in one session, and
+    # nothing told it otherwise.
+    limited: list = []
+    resolve_pose(axes, clean, limited)
     await _broadcast({"type": "patch",
                       "patch": store.apply_patch([{"op": "update", "id": req.id, "set": sets}],
                                                  origin="figure")})
-    return {"ok": True, "id": req.id, "posed": sorted(clean), "bones": len(merged)}
+    out = {"ok": True, "id": req.id, "posed": sorted(clean), "bones": len(merged)}
+    if limited:
+        out["limited"] = limited
+    return out
 
 
 class DismissModuleRequest(BaseModel):

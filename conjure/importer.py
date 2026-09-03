@@ -19,6 +19,7 @@ import argparse
 import base64
 import io
 import json
+import math
 import struct
 import sys
 from dataclasses import dataclass, field
@@ -132,7 +133,7 @@ def read_glb_json(data: bytes) -> Optional[dict]:
         return None
 
 
-def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
+def glb_bounds(doc: dict, blob: bytes = b"") -> Optional[tuple[list[float], list[float], bool]]:
     """`(bbox_min, bbox_max, rigged)` in metres, or None. `rigged` = the file contains a skin.
 
     Why this exists rather than trusting trimesh: **a skinned mesh's vertices are already in the skin's
@@ -142,6 +143,13 @@ def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
 
     So: skinned primitives use their POSITION accessor min/max verbatim (glTF *requires* those on
     POSITION); unskinned ones get the node's world transform applied to the box corners.
+
+    **But skin space is not always model space.** The vertices reach the world through the joints, so a
+    scale on the ARMATURE — or baked into the inverse bind matrices — scales the figure even though the
+    mesh node's transform is rightly ignored. Measured: `Steve` carries a `CharacterArmature` scaled
+    ×100 and `Animated Woman` a ×100 inverse bind, so both were recorded at a couple of CENTIMETRES.
+    The correction needs the BIN chunk for the bind matrices; without `blob` the joint scale alone is
+    used, which is right for every file that keeps its bind at unit scale.
     """
     accessors, meshes, nodes = doc.get("accessors"), doc.get("meshes"), doc.get("nodes")
     if not accessors or not meshes or not nodes:
@@ -169,10 +177,124 @@ def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
         return [sum(a[k * 4 + r] * b[c * 4 + k] for k in range(4))
                 for c in range(4) for r in range(4)]
 
-    def walk(idx: int, parent: list[float]) -> None:
+    def read_floats(acc_index: int, count_per: int, limit: int, stride_hint: int = 1):
+        """Yield tuples from a float accessor — enough of a glTF reader to skin a bounding box."""
+        acc = accessors[acc_index]
+        views = doc.get("bufferViews") or []
+        if acc.get("componentType") != 5126 or "bufferView" not in acc or acc["bufferView"] >= len(views):
+            return
+        bv = views[acc["bufferView"]]
+        base = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+        step = bv.get("byteStride") or count_per * 4
+        for i in range(0, min(acc.get("count", 0), limit), stride_hint):
+            off = base + i * step
+            if off + count_per * 4 > len(blob):
+                return
+            yield i, struct.unpack_from("<" + "f" * count_per, blob, off)
+
+    def read_ints(acc_index: int, limit: int, stride_hint: int = 1):
+        """Yield VEC4 joint indices, whatever width the file stores them at."""
+        acc = accessors[acc_index]
+        views = doc.get("bufferViews") or []
+        fmt = {5121: "B", 5123: "H", 5125: "I", 5126: "f"}.get(acc.get("componentType"))
+        if not fmt or "bufferView" not in acc or acc["bufferView"] >= len(views):
+            return
+        width = {"B": 1, "H": 2, "I": 4, "f": 4}[fmt]
+        bv = views[acc["bufferView"]]
+        base = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+        step = bv.get("byteStride") or width * 4
+        for i in range(0, min(acc.get("count", 0), limit), stride_hint):
+            off = base + i * step
+            if off + width * 4 > len(blob):
+                return
+            yield i, struct.unpack_from("<" + fmt * 4, blob, off)
+
+    def skinned_corners(prim: dict, skin: dict):
+        """Vertex positions as the JOINTS actually place them, or None if the file will not say.
+
+        The accessor's own min/max describe the mesh in BIND space, and for a good many rigs that is not
+        where the figure ends up: `Steve` and one `Animated Woman` author every body part as a small
+        cluster near the origin and let each joint carry it into place, so their accessor boxes read 1.3
+        cm and 3.7 mm against true heights of 2.7 m and 1.8 m. No single scale factor recovers that —
+        only skinning does. Sampled rather than exhaustive on dense meshes: a bounding box does not get
+        meaningfully better after fifty thousand vertices.
+        """
+        attrs = prim.get("attributes") or {}
+        pi, ji, wi = attrs.get("POSITION"), attrs.get("JOINTS_0"), attrs.get("WEIGHTS_0")
+        if pi is None or ji is None or wi is None:
+            return None
+        count = accessors[pi].get("count", 0)
+        stride = max(1, count // 50000)
+        joints = skin.get("joints") or []
+        mats = []
+        ibm_i = skin.get("inverseBindMatrices")
+        for k, j in enumerate(joints):
+            world = joint_world.get(j)
+            if world is None:
+                mats.append(None)
+                continue
+            ibm = None
+            if ibm_i is not None and 0 <= ibm_i < len(accessors):
+                acc = accessors[ibm_i]
+                views = doc.get("bufferViews") or []
+                if "bufferView" in acc and acc["bufferView"] < len(views):
+                    bv = views[acc["bufferView"]]
+                    off = bv.get("byteOffset", 0) + acc.get("byteOffset", 0) + 64 * k
+                    if off + 64 <= len(blob):
+                        ibm = list(struct.unpack_from("<16f", blob, off))
+            mats.append(mul(world, ibm) if ibm else world)
+        weights = dict(read_floats(wi, 4, count, stride))
+        indices = dict(read_ints(ji, count, stride))
+        norm = {5121: 255.0, 5123: 65535.0}.get(accessors[wi].get("componentType"), 1.0)
+        out = []
+        for i, p in read_floats(pi, 3, count, stride):
+            w, jj = weights.get(i), indices.get(i)
+            if not w or not jj:
+                continue
+            x = y = z = 0.0
+            total = 0.0
+            for k in range(4):
+                wk = w[k] / norm
+                m = mats[int(jj[k])] if 0 <= int(jj[k]) < len(mats) else None
+                if wk <= 0 or m is None:
+                    continue
+                total += wk
+                x += wk * (m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12])
+                y += wk * (m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13])
+                z += wk * (m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14])
+            if total > 0:
+                out.append([x, y, z])
+        return out or None
+
+    def skin_scale(skin_index: int) -> float:
+        """How much the skin's joints scale their skin-space vertices on the way to the world."""
+        skins = doc.get("skins") or []
+        if not (0 <= skin_index < len(skins)):
+            return 1.0
+        skin = skins[skin_index]
+        joints = skin.get("joints") or []
+        scale = 1.0
+        if joints:
+            m = joint_world.get(joints[0])
+            if m:
+                scale *= math.sqrt(m[0] ** 2 + m[1] ** 2 + m[2] ** 2)
+        acc_i = skin.get("inverseBindMatrices")
+        if blob and acc_i is not None and 0 <= acc_i < len(accessors):
+            acc = accessors[acc_i]
+            views = doc.get("bufferViews") or []
+            bv = views[acc["bufferView"]] if "bufferView" in acc and acc["bufferView"] < len(views) else None
+            if bv is not None:
+                off = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+                if off + 64 <= len(blob):
+                    m = struct.unpack_from("<16f", blob, off)
+                    scale *= math.sqrt(m[0] ** 2 + m[1] ** 2 + m[2] ** 2)
+        return scale or 1.0
+
+    def walk(idx: int, parent: list[float], meshes_too: bool = True) -> None:
         node = nodes[idx]
         world = mul(parent, mat_of(node))
-        mi = node.get("mesh")
+        joint_world[idx] = world
+        mi = node.get("mesh") if meshes_too else None
         if mi is not None and 0 <= mi < len(meshes):
             skinned = "skin" in node
             for prim in meshes[mi].get("primitives", []):
@@ -183,8 +305,16 @@ def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
                 amin, amax = acc.get("min"), acc.get("max")
                 if not amin or not amax or len(amin) < 3:
                     continue
-                if skinned:                               # already in skin space — do NOT transform
-                    corners = [amin, amax]
+                if skinned:
+                    skins = doc.get("skins") or []
+                    si = node["skin"]
+                    skinned_pts = (skinned_corners(prim, skins[si]) if blob and 0 <= si < len(skins)
+                                   else None)
+                    if skinned_pts is not None:
+                        corners = skinned_pts               # where the joints actually put the vertices
+                    else:                                   # no weights to read: skin space, scaled
+                        k = skin_scale(si)
+                        corners = [[v * k for v in amin], [v * k for v in amax]]
                 else:
                     corners = [[amin[0] if i & 1 else amax[0],
                                 amin[1] if i & 2 else amax[1],
@@ -197,11 +327,16 @@ def glb_bounds(doc: dict) -> Optional[tuple[list[float], list[float], bool]]:
                     for k in range(3):
                         lo[k] = min(lo[k], float(c[k])); hi[k] = max(hi[k], float(c[k]))
         for child in node.get("children", []):
-            walk(child, world)
+            walk(child, world, meshes_too)
 
+    joint_world: dict[int, list[float]] = {}
     ident = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
     scenes = doc.get("scenes") or []
     roots = scenes[doc.get("scene", 0)].get("nodes", []) if scenes else range(len(nodes))
+    # Two passes: the joints have to be placed before a skinned mesh can be scaled by them, and a mesh
+    # node is not necessarily visited after the armature it is bound to.
+    for r in roots:
+        walk(r, ident, meshes_too=False)
     for r in roots:
         walk(r, ident)
     if any(x == float("inf") for x in lo):
@@ -257,7 +392,9 @@ class ModelImporter(AssetImporter):
         attributes: dict = {}
         doc = read_glb_json(data)
         if doc:
-            bounds = glb_bounds(doc)
+            from .figures import split_glb                        # BIN chunk: bind matrices, weights
+            blob = split_glb(data)[1] if doc.get("skins") else b""
+            bounds = glb_bounds(doc, blob)
             if bounds:
                 lo, hi, rigged = bounds
                 attributes.update({"bbox_min": lo, "bbox_max": hi})
@@ -275,30 +412,58 @@ class ModelImporter(AssetImporter):
                     })
                     humanoid = vrm_humanoid(doc)
                     if not humanoid:
-                        # Layer 2: no stated map, so recover one from skeleton SHAPE. Only kept if it
-                        # validates — an inferred map that is plausible but wrong is worse than none,
-                        # because posing and retargeting both inherit it silently.
+                        # No stated map, so work down the discovery layers: a known naming convention
+                        # first (free and exact, and it survives a bind pose that defeats geometry),
+                        # then skeleton SHAPE. Whatever comes back is pruned and must validate — a map
+                        # that is plausible but wrong is worse than none, because posing and retargeting
+                        # both inherit it silently.
                         try:
-                            from .figures import infer_humanoid, split_glb, validate
-                            # the BIN chunk, not the whole file — accessor offsets are relative to it
-                            _, blob = split_glb(data)
-                            guess = infer_humanoid(doc, blob)
-                            if guess and not validate(doc, guess):
+                            from .figures import best_humanoid
+                            guess, source, follows = best_humanoid(doc, blob)
+                            if guess:
                                 attributes["humanoid"] = guess
-                                attributes["humanoid_source"] = "inferred"
+                                attributes["humanoid_source"] = source
+                                if follows:
+                                    attributes["humanoid_follows"] = follows
                         except Exception as exc:  # noqa: BLE001 — never fail an import over this
                             # Reported, not swallowed: a silent guard here hid a wrong argument and made
                             # inference look like it simply found nothing on every non-VRM model.
-                            print(f"[conjure] humanoid inference failed for {filename}: {exc}")
+                            print(f"[conjure] humanoid discovery failed for {filename}: {exc}")
                     if humanoid:
                         # Discovery layer 1, for free. `humanoid_source` is recorded because a stated
                         # map and an inferred one warrant different trust, and it is what lets a later
                         # bug be attributed rather than guessed at.
                         attributes["humanoid"] = humanoid
                         attributes["humanoid_source"] = "vrm"
+                    if humanoid:                      # a STATED map still gets checked for stray limbs
+                        try:
+                            from .figures import follow_bones
+                            stated_follows = follow_bones(doc, humanoid, blob)
+                            if stated_follows:
+                                attributes["humanoid_follows"] = stated_follows
+                        except Exception:  # noqa: BLE001 — a nicety; never fail an import over it
+                            pass
+                    if attributes.get("humanoid"):
+                        # The anatomical frame: which way to rotate each bone so that "bend 45" means
+                        # the same motion on every rig. Derived from the bind pose, so it is a property
+                        # of the FILE and belongs here beside the map rather than being re-measured by
+                        # every consumer (docs/backlogs/figures.md, the axis problem).
+                        try:
+                            from .figures import anatomical_axes
+                            axes = anatomical_axes(doc, attributes["humanoid"])
+                            if axes:
+                                attributes["humanoid_axes"] = axes
+                        except Exception as exc:  # noqa: BLE001 — a map without axes still places
+                            print(f"[conjure] anatomical axes failed for {filename}: {exc}")
                     used = doc.get("extensionsUsed") or []
                     if "VRMC_springBone" in used or "VRM" in (doc.get("extensions") or {}):
                         attributes["spring_bones"] = "VRMC_springBone" in used
+        # Stamped on EVERY model, not only the ones that turn out to be figures. The stamp records which
+        # build looked at this file, and "we looked and it is a prop" is exactly as much worth recording
+        # as a bone map — three rigged characters sat in the catalog as props because an earlier ingest
+        # path never looked at all (docs/backlogs/figures.md).
+        from .figures import FRAME_REV
+        attributes["frame_rev"] = FRAME_REV
         try:
             import trimesh
             scene = trimesh.load(io.BytesIO(data), file_type="glb", force="scene")

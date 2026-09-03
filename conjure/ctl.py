@@ -314,6 +314,18 @@ def cmd_caption(s: Settings, a) -> None:
           "(runs in the background on the server)")
 
 
+def cmd_refresh_models(s: Settings, a) -> None:
+    """Re-derive every model's catalog attributes from its bytes — bone map, frame, joint limits, and
+    whether it is a figure at all. Placement does this one model at a time; this is the batch form, for
+    after a build that changes what extraction knows."""
+    _working("re-extracting models…")
+    out = _post(s, "/library/refresh-models", {"force": bool(a.force)})
+    updated = out.get("updated") or []
+    for row in updated:
+        print(f"  {row['label'] or row['id']}: rigged={row['rigged']} bones={row['bones']}")
+    _say(out, a.verbose, f"{len(updated)} of {out.get('checked', 0)} model(s) updated.")
+
+
 def cmd_retag_skyboxes(s: Settings, a) -> None:
     body = {"min_aspect": a.min_aspect} if a.min_aspect is not None else {}
     r = _post(s, "/library/retag-skyboxes", body)
@@ -415,6 +427,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("caption", help="backfill labels for assets with none (image→text via Gemini)") \
         .set_defaults(fn=cmd_caption)
+
+    a = sub.add_parser("refresh-models", help="re-derive model attributes (figures, bone maps, limits)")
+    a.set_defaults(fn=cmd_refresh_models)
+    a.add_argument("--force", action="store_true", help="re-extract even rows already up to date")
 
     a = sub.add_parser("retag-skyboxes", help="re-tag wide backfilled images as skyboxes")
     a.set_defaults(fn=cmd_retag_skyboxes)
