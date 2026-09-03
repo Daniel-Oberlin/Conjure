@@ -1393,6 +1393,39 @@ now honoured only within a plausible human range (`HUMAN_HEIGHT_M`, 0.5–3 m); 
 normalized like anything else, but still by HEIGHT. [Open question 6](#open-questions) asked for exactly
 this clamp before a source needing it turned up. One did.
 
+### The library already contains animation (2026-09-03g)
+
+Discovered while trying to render the three newly-mapped models: **they ship clips.** Ten on `Animated
+Woman`, twenty-four on the other, eighteen on `Steve` — `Idle`, `Walk`, `Run`, `Jump`, `Death`, `Punch`,
+`Duck`, `HitReact`, `Gun_Shoot`.
+
+That is a direct answer to [open question 3](#open-questions), which has read "the models ship no
+animations at all, so clips must be sourced and **retargeted**" since the first measurement — true of the
+five `.blend` ports it was based on, and false of the library as it stands today. These clips are already
+authored against their own skeletons, and those skeletons now have humanoid maps. **A first
+`animate_model` could be built and demonstrated without Mixamo, without FBX, and without retargeting
+anything.** Retargeting remains the hard general problem; it is no longer the price of admission.
+
+It also explains an hour of confusion, and the lesson is one this document keeps relearning. Posing
+`scripts/pose_test.py`'s figure stopped working: the pose was written correctly into the GLB's own node
+rotations — verified by forward kinematics, and the same bytes the runtime consumes — and the render
+came out identical to the unposed one, byte for byte. Two causes stacked:
+
+- **A model's own clip overrides everything.** Blender assigns one on import and it drives the bones
+  over whatever the rest pose says. The figure was standing in frame 1 of `Idle`.
+- **Blender's importer reads a joint node's TRS as the bone's REST**, not as a pose, and reconciles the
+  difference silently. So even with the clips cleared, posing the file the way the runtime poses it
+  renders as if nothing had happened.
+
+The fix is to emit the pose as a one-keyframe **animation** as well as node rotations — an animation
+channel is the one thing the importer applies over everything else, which is exactly what the models'
+own clips had just demonstrated. `pose_test` also frames on the posed skeleton now rather than on mesh
+bounding boxes, which are rest-shaped and cropped the raised arm being checked.
+
+> Three renders in a row were "obviously" wrong about the geometry, and the geometry was right every
+> time. **When a render and a computation disagree, suspect the renderer's import assumptions before the
+> maths** — the artifact is only evidence once you know what it is an artifact OF.
+
 ## Aiming, evaluation and named poses
 
 The three slices the 2026-09-03 device run calls for, in order. Designed here before any of it is built,
@@ -1630,10 +1663,12 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
    retargeting one-time; ports make each figure a fresh discovery problem but are the only way to get a
    *specific* character. Almost certainly both, but the ratio decides how much the discovery pipeline has
    to earn its keep. The two proposed test fixtures exist to answer the aesthetic half of this.
-3. **Where does motion come from?** Finding 2: the models ship **no animations at all**, so clips must be
-   sourced (Mixamo library, purchased packs, hand-authored) and **retargeted** onto each figure's skeleton.
-   This is now the biggest unplanned piece of work in the feature, and it is what the humanoid bone map is
-   *for*. Retargeting quality — foot sliding, proportion mismatch, hand contact — is its own problem.
+3. **Where does motion come from?** Finding 2 measured the five `.blend` ports and found **no animations
+   at all**, making sourcing-and-retargeting the price of admission. **Partly answered 2026-09-03:** three
+   characters in the library ship 10, 24 and 18 clips against their own rigs, so a first `animate_model`
+   needs neither Mixamo nor retargeting. The general problem stands — a clip authored for one skeleton
+   still has to be retargeted to play on Grace — and retargeting quality (foot sliding, proportion
+   mismatch, hand contact) is its own problem.
 4. **Export granularity** — one GLB per outfit, or one GLB with everything and runtime visibility?
    The outfit feature wants the latter; 117–526 k verts per figure wants the former. Probably "worn set
    plus chosen alternates", which makes outfit selection partly a conversion-time decision.

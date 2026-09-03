@@ -25,13 +25,14 @@ Two pose vocabularies are accepted:
 import json
 import math
 import os
+import struct
 import sys
 
 import bpy
 import mathutils
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from conjure.figures import (anatomical_axes, infer_humanoid,   # noqa: E402 — after the path fix
+from conjure.figures import (anatomical_axes, best_humanoid,   # noqa: E402 — after the path fix
                              resolve_pose, split_glb, validate)
 from conjure.importer import vrm_humanoid                       # noqa: E402
 
@@ -40,58 +41,124 @@ glb, outdir = argv[0], argv[1]
 poses = json.loads(argv[2]) if len(argv) > 2 else {}
 os.makedirs(outdir, exist_ok=True)
 
-# The map and the axes come from the GLB by the same route the importer takes, so what is rendered is
-# what a headset would be sent — not a second implementation that could agree by luck.
 raw = open(glb, "rb").read()
 doc, blob = split_glb(raw)
-mapping = (vrm_humanoid(doc) or infer_humanoid(doc, blob) or {}) if doc else {}
+# The same discovery order the importer uses — stated map, then a known naming convention, then shape —
+# so what is rendered is what a headset would be sent.
+mapping = ((vrm_humanoid(doc) or best_humanoid(doc, blob)[0]) or {}) if doc else {}
 anatomical = {b: r for b, r in poses.items() if isinstance(r, dict)}
 euler_poses = {b: r for b, r in poses.items() if not isinstance(r, dict)}
 
+print(f"\n=== pose_test: {os.path.basename(glb)} ===")
+if mapping:
+    problems = validate(doc, mapping)
+    print(f"  humanoid map: {len(mapping)} bones, "
+          + ("clean" if not problems else f"{len(problems)} problem(s): {problems[0]}"))
+else:
+    print("  humanoid map: NONE — nothing to pose semantically (raw bone names still work)")
+
+
+def posed_glb(data, doc, blob, mapping, requests):
+    """The GLB with the pose written into its own node rotations — the artifact, not a reading of it.
+
+    **Posing here rather than in Blender is the point.** A pose is a delta on a glTF node's local
+    rotation, and that is precisely what the runtime applies; Blender's pose bones live in a different
+    frame (Y-along-bone), reached through an armature object that the importer sometimes carries the
+    up-axis conversion on and sometimes bakes into the bones. Converting between the two took three
+    chained frame changes and was wrong on half the library — silently, since a wrong-space rotation
+    still produces a plausible-looking figure. Writing the rotations into the file removes the question:
+    Blender then renders a posed GLB, byte-for-byte the thing a headset would load.
+    """
+    by_name = {n.get("name"): i for i, n in enumerate(doc.get("nodes") or []) if n.get("name")}
+    axes = anatomical_axes(doc, mapping)                  # PARENT space: where a node's rotation lives
+    notes, posed_nodes = [], {}
+    for bone, delta in resolve_pose(axes, requests, notes).items():
+        i = by_name.get(mapping.get(bone, ""))
+        if i is None:
+            print(f"    ! {bone!r} -> {mapping.get(bone)!r} not in this file"); continue
+        node = doc["nodes"][i]
+        rest = node.get("rotation", [0.0, 0.0, 0.0, 1.0])
+        x, y, z, w = delta
+        rx, ry, rz, rw = rest
+        node["rotation"] = [w * rx + x * rw + y * rz - z * ry,
+                            w * ry - x * rz + y * rw + z * rx,
+                            w * rz + x * ry - y * rx + z * rw,
+                            w * rw - x * rx - y * ry - z * rz]
+        posed_nodes[bone] = i
+        print(f"    posed {bone:<16} ({node['name']:<24}) by {requests[bone]}")
+    for note in notes:
+        print(f"    joint limit: {note}")
+
+    # ...and the SAME rotations again as a one-keyframe animation, because Blender's glTF importer reads
+    # a joint node's TRS as the bone's REST and reconciles the difference in the pose — so a file posed
+    # the way the runtime poses it imports and renders as if nothing had happened (verified: two renders
+    # byte-identical). An animation channel is the one thing it applies over everything else, which is
+    # how the models' own idle clips were overriding this in the first place. Existing clips are dropped:
+    # this is a still.
+    buffers, views, accs = doc.setdefault("buffers", [{}]), doc.setdefault("bufferViews", []), \
+        doc.setdefault("accessors", [])
+    extra, samplers, channels = bytearray(), [], []
+    base = len(blob) + (-len(blob) % 4)
+
+    def add_view(payload):
+        offset = base + len(extra)
+        extra.extend(payload)
+        extra.extend(b"\x00" * (-len(extra) % 4))
+        views.append({"buffer": 0, "byteOffset": offset, "byteLength": len(payload)})
+        return len(views) - 1
+
+    time_acc = len(accs)
+    accs.append({"bufferView": add_view(struct.pack("<f", 0.0)), "componentType": 5126,
+                 "count": 1, "type": "SCALAR", "min": [0.0], "max": [0.0]})
+    for bone, node_index in posed_nodes.items():
+        q = doc["nodes"][node_index]["rotation"]
+        out = len(accs)
+        accs.append({"bufferView": add_view(struct.pack("<4f", *q)), "componentType": 5126,
+                     "count": 1, "type": "VEC4"})
+        samplers.append({"input": time_acc, "output": out, "interpolation": "STEP"})
+        channels.append({"sampler": len(samplers) - 1,
+                         "target": {"node": node_index, "path": "rotation"}})
+    doc["animations"] = [{"name": "pose", "samplers": samplers, "channels": channels}]
+    blob = bytes(blob) + b"\x00" * (-len(blob) % 4) + bytes(extra)
+    buffers[0]["byteLength"] = len(blob)
+
+    body = json.dumps(doc).encode()
+    body += b" " * (-len(body) % 4)
+    chunks = struct.pack("<II", len(body), 0x4E4F534A) + body
+    if blob:
+        padded = blob + b"\x00" * (-len(blob) % 4)
+        chunks += struct.pack("<II", len(padded), 0x004E4942) + padded
+    return b"glTF" + struct.pack("<II", 2, 12 + len(chunks)) + chunks
+
+
+source = glb
+if anatomical and mapping:
+    source = os.path.join(outdir, "posed.glb")
+    open(source, "wb").write(posed_glb(raw, doc, blob, mapping, anatomical))
+
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=glb)
+bpy.ops.import_scene.gltf(filepath=source)
 
 arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
 if not arms:
     print("  NO ARMATURE"); sys.exit(1)
 rig = max(arms, key=lambda a: len(a.data.bones))
-print(f"\n=== pose_test: {os.path.basename(glb)} ===")
 print(f"  armature {rig.name} ({len(rig.data.bones)} bones)")
-if mapping:
-    problems = validate(doc, mapping)
-    print(f"  humanoid map: {len(mapping)} bones, "
-          + ("clean" if not problems else f"{len(problems)} problem(s): {problems[0]}"))
+
+# A model that ships clips (the asset-pack characters carry ten to twenty-four each) imports with one
+# ASSIGNED, and it drives the bones over anything else in the file. When we wrote a pose, ours replaced
+# them and is the only clip left; when we did not, drop them all so the render shows the bind pose.
+if not anatomical and bpy.data.actions:
+    print(f"  clearing {len(bpy.data.actions)} imported clip(s) so the BIND pose is what renders")
+    for obj in bpy.context.scene.objects:
+        if obj.animation_data:
+            obj.animation_data_clear()
 
 bpy.ops.object.select_all(action="DESELECT")
 rig.select_set(True)
 bpy.context.view_layer.objects.active = rig
 bpy.ops.object.mode_set(mode="POSE")
 
-
-def find(node_name):
-    """A pose bone by its glTF node name, through the sanitizations Blender's importer applies."""
-    for candidate in (node_name, node_name.replace(".", "_"), node_name.replace(" ", "_")):
-        pb = rig.pose.bones.get(candidate)
-        if pb:
-            return pb
-    return None
-
-
-# Anatomical poses. `anatomical_axes(space="world")` gives an axis in the GLB's own model space; Blender
-# imports glTF Y-up as Z-up, so (x, y, z) -> (x, -z, y). A pose bone's rotation is expressed in its REST
-# frame, so the world rotation R becomes R_rest^-1 * R * R_rest — which is also why it composes correctly
-# when an ancestor is posed too: matrix_basis is relative to the parent chain, exactly like glTF's.
-if anatomical:
-    axes = anatomical_axes(doc, mapping, space="world") if mapping else {}
-    for bone, quat in resolve_pose(axes, anatomical).items():
-        pb = find(mapping.get(bone, ""))
-        if not pb:
-            print(f"    ! {bone!r} -> {mapping.get(bone)!r} not in this rig"); continue
-        q_world = mathutils.Quaternion((quat[3], quat[0], -quat[2], quat[1]))
-        rest = pb.bone.matrix_local.to_quaternion()
-        pb.rotation_mode = "QUATERNION"
-        pb.rotation_quaternion = rest.inverted() @ q_world @ rest
-        print(f"    posed {bone:<16} ({pb.name:<24}) by {anatomical[bone]}")
 
 for bone, euler in euler_poses.items():
     pb = rig.pose.bones.get(bone)
@@ -113,12 +180,18 @@ for o in bpy.context.scene.objects:
     else:
         objs.append(o)
 
+# Frame on the POSED SKELETON, not the mesh bounding boxes. A mesh's `bound_box` is its rest shape, so
+# a raised arm falls outside it and the camera crops exactly the thing being checked — `Steve` came out
+# filling the frame with his head. Bones are evaluated, so they already carry the pose; a margin covers
+# the flesh around them.
 lo = [1e9] * 3; hi = [-1e9] * 3
-for o in objs:
-    for c in o.bound_box:
-        w = o.matrix_world @ mathutils.Vector(c)
-        for i in range(3):
-            lo[i] = min(lo[i], w[i]); hi[i] = max(hi[i], w[i])
+points = [rig.matrix_world @ p for pb in rig.pose.bones for p in (pb.head, pb.tail)]
+points += [o.matrix_world @ mathutils.Vector(c) for o in objs for c in o.bound_box]
+for w in points:
+    for i in range(3):
+        lo[i] = min(lo[i], w[i]); hi[i] = max(hi[i], w[i])
+pad = 0.12 * max(hi[i] - lo[i] for i in range(3))
+lo = [v - pad for v in lo]; hi = [v + pad for v in hi]
 size = [hi[i] - lo[i] for i in range(3)]
 mid = [(hi[i] + lo[i]) / 2 for i in range(3)]
 
