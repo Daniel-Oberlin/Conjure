@@ -46,6 +46,21 @@ def slug(name: str) -> str:
     return s
 
 
+def loose(s) -> str:
+    """Voice-friendly match key: case-insensitive with spaces/underscores/hyphens treated as equal
+    ('Test 7' == 'test-7' == 'test_7'), and other punctuation dropped. Lookup ONLY — never changes a
+    stored name.
+
+    Dropping punctuation mirrors `world.slug`, which is how worlds and spaces have always matched. That
+    difference was invisible until a name arrived carrying quotes: a WORLD called '"alien"' still answered
+    to `alien` because slug threw the quotes away, while a SESSION titled the same did not, because this
+    key kept them — so the session became unreachable by any form of its own name. `clean_name` now stops
+    such a name being stored at all; matching the two keys up is what lets the ones already on disk be
+    reached (and renamed) without a migration."""
+    s = re.sub(r"[\s_-]+", " ", fold_accents(s).strip().lower())
+    return re.sub(r"[^a-z0-9 ]", "", s).strip()
+
+
 # Double quotes only. A name containing one can't be wrapped in the quotes a shell path needs, so it
 # can't be typed back. The APOSTROPHE is deliberately not here: `shlex` handles "Bob's room" perfectly
 # once the name is double-quoted, which it must be anyway the moment it has a space.

@@ -49,7 +49,7 @@ from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from . import namespace
-from .world import (_MRU_CAP, MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
+from .world import (_MRU_CAP, MIGRATED_SID, loose, SessionRepository, SpaceStore, WorldRepository, WorldStore,
                     NAME_SEGMENT, _set_path, clean_name, fold_accents, migrate_cache_to_users,
                     migrate_env_room_to_space_presentation,
                     migrate_project_cache_to_home, migrate_worlds_to_ids, new_world_id)
@@ -1781,25 +1781,10 @@ def _next_sid(scope: str) -> str:
     return f"session-{n + 1}"
 
 
-def _loose(s: Optional[str]) -> str:
-    """Voice-friendly match key: case-insensitive with spaces/underscores/hyphens treated as equal
-    ('Test 7' == 'test-7' == 'test_7'), and other punctuation dropped. Lookup ONLY — never changes a
-    stored name.
-
-    Dropping punctuation mirrors `world.slug`, which is how worlds and spaces have always matched. That
-    difference was invisible until a name arrived carrying quotes: a WORLD called '"alien"' still answered
-    to `alien` because slug threw the quotes away, while a SESSION titled the same did not, because this
-    key kept them — so the session became unreachable by any form of its own name. `clean_name` now stops
-    such a name being stored at all; matching the two keys up is what lets the ones already on disk be
-    reached (and renamed) without a migration."""
-    s = re.sub(r"[\s_-]+", " ", fold_accents(s).strip().lower())
-    return re.sub(r"[^a-z0-9 ]", "", s).strip()
-
-
 def _session_title_taken(scope: str, title: str, *, other_than: str = "") -> Optional[str]:
     """The id of another session in `scope` that `title` would collide with, or None.
 
-    Collision is measured with `_loose` — the key `_resolve_sid` matches on — because that is what makes
+    Collision is measured with `world.loose` — the key `_resolve_sid` matches on — because that is what makes
     a title ambiguous in practice, not string equality. Worlds and spaces have refused a duplicate name
     all along (`WorldDir.name_taken`); sessions didn't, so two could both be 'Home' and `_resolve_sid`
     would return None for the ambiguous match, reporting "no session 'Home'" — doesn't-exist when it
@@ -1808,7 +1793,7 @@ def _session_title_taken(scope: str, title: str, *, other_than: str = "") -> Opt
     Ids count as well as titles: titling one session 'Session 1' while a *different* session-1 exists
     doesn't strictly collide (an exact id wins first), but it makes the same words mean two things
     depending on spelling, which is the confusion the guard is for."""
-    want = _loose(title)
+    want = loose(title)
     if not want:
         return None
     for sid in sessions.list(scope):
@@ -1818,7 +1803,7 @@ def _session_title_taken(scope: str, title: str, *, other_than: str = "") -> Opt
             other = sessions.load_meta(scope, sid).get("title") or ""
         except (OSError, ValueError):
             other = ""
-        if want in (_loose(sid), _loose(other)):
+        if want in (loose(sid), loose(other)):
             return sid
     return None
 
@@ -1841,9 +1826,9 @@ def _resolve_sid(scope: str, ref: Optional[str]) -> Optional[str]:
     exact = [sid for sid, t in titles.items() if t == ref]     # exact title (case-sensitive)
     if len(exact) == 1:
         return exact[0]
-    key = _loose(ref)                                          # unique loose match on id or title
-    loose = [sid for sid in ids if _loose(sid) == key or _loose(titles[sid]) == key]
-    return loose[0] if len(loose) == 1 else None
+    key = loose(ref)                                           # unique loose match on id or title
+    hits = [sid for sid in ids if loose(sid) == key or loose(titles[sid]) == key]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _resolve_user(spoken: str, agent: str) -> Optional[str]:
@@ -1852,8 +1837,8 @@ def _resolve_user(spoken: str, agent: str) -> Optional[str]:
     users = worlds.users_in_agent(agent)
     if spoken in users:
         return spoken
-    key = _loose(spoken)
-    matches = [u for u in users if _loose(u) == key]
+    key = loose(spoken)
+    matches = [u for u in users if loose(u) == key]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -1953,7 +1938,7 @@ async def session_switch(req: SessionRef) -> dict:
     still refuse edits)."""
     caller_agent = agent_of(req.scope)
     caller_user = req.scope.split("/", 1)[0]
-    if req.owner and _loose(req.owner) != _loose(caller_user):    # VISIT another user, in the caller's agent
+    if req.owner and loose(req.owner) != loose(caller_user):    # VISIT another user, in the caller's agent
         owner = _resolve_user(req.owner, caller_agent)
         if not owner:
             return {"ok": False, "error": f"no user {req.owner!r} with sessions in the {caller_agent} agent"}
@@ -2616,6 +2601,19 @@ async def admin_show(req: AdminPath) -> dict:
         return {"ok": False, "error": loc}
     return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
             "kind": loc.kind, "fields": namespace.fields(loc)}
+
+
+@app.post("/admin/match")
+async def admin_match(req: AdminPath) -> dict:
+    """Every location `path` names — one, or many when its last segment is a pattern (shell globbing)."""
+    found = namespace.match(req.path)
+    if isinstance(found, str):
+        return {"ok": False, "error": found}
+    kind = found[0].kind if found else ""
+    return {"ok": True, "glob": namespace.is_glob(req.path.rstrip("/").rsplit("/", 1)[-1]),
+            "columns": namespace.columns_for(kind + "s"),
+            "matches": [{"path": namespace.loc_path(l), "display": namespace.display_path(l),
+                         "kind": l.kind, "row": namespace.leaf_row(l)} for l in found]}
 
 
 @app.post("/admin/file")

@@ -787,6 +787,62 @@ def test_every_row_declares_whether_it_is_voice_safe():
 # best mispronounced and at worst — since the voice speech stage strips asterisks before the engine sees
 # them — silently gone, leaving a listener with a list and no idea which one they are in.
 
+def _glob_shell(matches, kind="world"):
+    """A shell whose /admin/match answers with `matches` (labels), and records every delete."""
+    deleted = []
+    def responder(action, path):
+        if action == "match":
+            return {"ok": True, "glob": True, "columns": ["name", "entities", "space"],
+                    "matches": [{"path": f"/w/{n}", "display": f"/daniel/agents/builder/worlds/{n}",
+                                 "kind": kind, "row": {"label": n, "kind": kind, "cells": ["0 entities", "?"]}}
+                                for n in matches]}
+        if action == "delete":
+            deleted.append(path)
+            return {"ok": True}
+        return {"ok": True, "path": path, "display": path, "children": []}
+    sh, out, on_text, calls = _admin_shell(responder)
+    return sh, out, on_text, deleted
+
+
+async def test_a_pattern_delete_previews_and_takes_a_bang_to_act():
+    # §6.6 says `delete` needs no confirmation because it takes an explicit path. A pattern voids that
+    # argument — `delete "s*"` looks precise and may match nine things — so the guard lands there, and
+    # only there: an explicit path keeps its one-shot form.
+    sh, out, on_text, deleted = _glob_shell(["Kitchen sketch", "Porch sketch", "Sketch 4"])
+    await sh._dispatch('delete "*sketch*"', on_text)
+    assert deleted == []                                       # nothing went
+    assert "nothing deleted" in out[-1][1] and "Kitchen sketch" in out[-1][1]
+
+    await sh._dispatch('delete "*sketch*" !', on_text)
+    assert len(deleted) == 3 and "Deleted 3" in out[-1][1]
+
+
+async def test_an_explicit_path_still_deletes_in_one_shot():
+    # The one-shot form is why the y/n prompt was dropped; a pattern guard must not take it back.
+    sh, out, on_text, calls = _admin_shell(
+        lambda a, p: {"ok": True, "path": p, "display": p, "children": [], "self":
+                      {"label": "Meadow", "kind": "world", "cells": ["0 entities"]}})
+    await sh._dispatch("delete Meadow", on_text)
+    assert ("delete", "/daniel/agents/builder/Meadow") in calls
+    assert "Deleted" in out[-1][1]
+
+
+async def test_cd_refuses_a_pattern_that_matches_more_than_one():
+    sh, out, on_text, deleted = _glob_shell(["Kitchen sketch", "Porch sketch"])
+    await sh._dispatch('cd "*sketch*"', on_text)
+    assert "2 match" in out[-1][1] and sh.cwd == "/daniel/agents/builder"      # unmoved
+
+    sh, out, on_text, deleted = _glob_shell(["Kitchen sketch"])
+    await sh._dispatch('cd "*sketch*"', on_text)
+    assert sh.cwd == "/w/Kitchen sketch"                       # exactly one → you can stand in it
+
+
+async def test_rename_refuses_a_pattern():
+    sh, out, on_text, deleted = _glob_shell(["a", "b"])
+    await sh._dispatch('rename "*sketch*" Something', on_text)
+    assert "one path" in out[-1][1]
+
+
 async def test_cd_remembers_ids_and_shows_names():
     # The cwd is canonical (ids) so a rename can't strand it; the prompt renders the display form the
     # server sent alongside. Two fields, one round trip.

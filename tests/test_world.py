@@ -720,11 +720,11 @@ def test_an_accented_name_is_found_by_its_unaccented_spelling():
     fold: 'Café Noir' keyed as 'caf noir', and typing 'Cafe Noir' missed it. Since these names arrive by
     dictation — which is inconsistent about accents — the two spellings have to converge.
     """
-    from conjure.server import _loose
+    from conjure.world import loose
     from conjure.world import fold_accents, slug
     assert fold_accents("Café") == "Cafe"
     for typed in ("Cafe Noir", "cafe-noir", "CAFE_NOIR"):
-        assert _loose("Café Noir") == _loose(typed), typed
+        assert loose("Café Noir") == loose(typed), typed
         assert slug("Café Noir") == slug(typed), typed
     # the accent survives in what's STORED — only the match key folds
     from conjure.world import clean_name

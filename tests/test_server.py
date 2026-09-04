@@ -2766,14 +2766,39 @@ def test_admin_delete_all_assets_in_a_scope(srv, client):
     assert srv.library.get("b1") is not None                  # another user's scope is untouched
 
 
-def test_admin_addresses_an_asset_by_id_not_by_its_label(srv, client):
-    # The id is the address precisely because labels are neither unique nor guaranteed present.
+def test_an_ambiguous_asset_label_refuses_and_lists_the_candidates(srv, client):
+    # A label is accepted when it names exactly one thing, because that is what a listing shows you. When
+    # it names three it refuses — a bare name is a request for ONE thing, so acting on all three would
+    # answer a question nobody asked. (A glob is the opposite case; see the delete tests.)
     _seed_asset(srv, "a1", "alice/agents/builder", label="Animated Woman")
     _seed_asset(srv, "a2", "alice/agents/builder", label="Animated Woman")
+    _seed_asset(srv, "b1", "alice/agents/builder", label="Spaceship")
     ok = client.post("/admin/tree", json={"path": "/alice/agents/builder/assets/a1"}).json()
     assert ok["ok"] is True and ok["self"]["label"] == "Animated Woman" and ok["self"]["ref"] == "a1"
+
+    unique = client.post("/admin/tree", json={"path": "/alice/agents/builder/assets/Spaceship"}).json()
+    assert unique["ok"] is True and unique["self"]["ref"] == "b1"      # one match → addressable
+
     dup = client.post("/admin/tree", json={"path": "/alice/agents/builder/assets/Animated Woman"}).json()
-    assert dup["ok"] is False                                 # a label is not an address
+    assert dup["ok"] is False
+    assert "2 assets" in dup["error"] and "a1" in dup["error"] and "a2" in dup["error"]
+
+
+def test_a_pattern_expands_against_display_names_in_the_last_segment(srv, client):
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "Kitchen sketch", "Porch sketch", "Sketch 4", "Meadow")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    r = client.post("/admin/match",
+                    json={"path": f"/{scope}/sessions/{sid}/worlds/*sketch*"}).json()
+    # folded like every other lookup, so 'Sketch 4' matches a lowercase pattern
+    assert sorted(m["row"]["label"] for m in r["matches"]) == ["Kitchen sketch", "Porch sketch", "Sketch 4"]
+    assert r["glob"] is True
+
+    exact = client.post("/admin/match", json={"path": f"/{scope}/sessions/{sid}/worlds/Meadow"}).json()
+    assert exact["glob"] is False and len(exact["matches"]) == 1
+
+    none = client.post("/admin/match", json={"path": f"/{scope}/sessions/{sid}/worlds/zzz*"}).json()
+    assert none["ok"] is True and none["matches"] == []        # no match is not an error
 
 
 def test_admin_delete_refuses_active_world(srv, client):

@@ -240,6 +240,11 @@ def short_path(p: str) -> str:
     return "~" + p[len(home):] if p.startswith(home + "/") else p
 
 
+def is_glob(path: str) -> bool:
+    """Does this path end in a PATTERN? Only the last segment may, so only it is examined."""
+    return any(c in (path or "").rstrip("/").rsplit("/", 1)[-1] for c in "*?[")
+
+
 def _match_name(token: str, roster) -> Optional[str]:
     """Case-insensitive lookup of a spoken/typed word against the roster's casual LLM names
     ('gemini' → 'Gemini'); None if it matches none. The gate that keeps a switch deterministic."""
@@ -339,9 +344,9 @@ class Shell:
             (re.compile(r"^rename\s+(?P<rest>\S.*)$", re.I), self._rename,
              "rename <path> <new name> — retitle a world, space or session; relabel an asset "
              "(quote a path containing spaces)", False),
-            (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
-             "delete <path> — remove a world, session, space, asset or user (immediate, no confirmation)",
-             False),
+            (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*?)(?P<force>\s+!)?$", re.I), self._delete,
+             "delete <path> [!] — remove a world, session, space, asset or user. An explicit path goes "
+             "immediately; a pattern lists what it matched and needs '!' to act", False),
         ]
 
     @classmethod
@@ -831,12 +836,28 @@ class Shell:
 
     async def _dir(self, on_text, m):
         path = self._path(m)
+        if is_glob(path):
+            await self._dir_glob(on_text, path, long=bool(m.groupdict().get("long")))
+            return
         data = await self._admin("tree", path)
         if not data.get("ok"):
             data = await self._recover(on_text, m, data)
             if data is None:
                 return
         await self._say(on_text, self._render_listing(data, long=bool(m.groupdict().get("long"))))
+
+    async def _dir_glob(self, on_text, path: str, *, long: bool = False) -> None:
+        found = await self._admin("match", path)
+        if not found.get("ok"):
+            await self._say(on_text, found.get("error", "error"))
+            return
+        rows = [mm["row"] for mm in (found.get("matches") or []) if mm.get("row")]
+        if not rows:
+            await self._say(on_text, f"Nothing matches {loc_name(path)!r}.")
+            return
+        head = f"{len(rows)} match {loc_name(path)!r}"
+        await self._say(on_text, head + "\n" + "\n".join(columns(rows, found.get("columns") or [],
+                                                                  long=long)))
 
     async def _recover(self, on_text, m, failed: dict) -> Optional[dict]:
         """A path command failed. If the CWD is what went stale, move up to the nearest place that still
@@ -902,6 +923,14 @@ class Shell:
     async def _cd(self, on_text, m):
         """Bare `cd` returns to your own agent scope — the useful default, not the root."""
         target = self._path(m, default=default_cwd(self._acting, self._agent_name()))
+        if is_glob(target):                                   # you can only stand in one place
+            found = await self._admin("match", target)
+            hits = found.get("matches") or []
+            if not found.get("ok") or len(hits) != 1:
+                await self._say(on_text, found.get("error") if not found.get("ok") else
+                                f"{len(hits)} match {loc_name(target)!r} — name one to cd into it.")
+                return
+            target = hits[0]["path"]
         data = await self._admin("tree", target)
         if not data.get("ok"):
             await self._say(on_text, data.get("error", "error"))
@@ -965,6 +994,9 @@ class Shell:
             await self._say(on_text, 'Usage: rename <path> <new name>   (quote a path with spaces)')
             return
         path = resolve_path(self._cwd, tokens[0], self._acting)   # shlex already unquoted it
+        if is_glob(path):                                     # renaming N things to one name is nonsense
+            await self._say(on_text, "rename takes one path — a pattern can't name the result.")
+            return
         new = " ".join(tokens[1:]).strip()
         data = await self._admin("show", path)
         if not data.get("ok"):
@@ -1004,6 +1036,9 @@ class Shell:
             await self._say(on_text, "This session is private — you can't delete anything here.")
             return
         path = self._path(m)
+        if is_glob(path):
+            await self._delete_many(on_text, path, force=bool(m.groupdict().get("force")))
+            return
         preview = await self._admin("tree", path)             # resolve + describe before it's gone
         if not preview.get("ok"):
             await self._say(on_text, preview.get("error", "error"))
@@ -1016,6 +1051,36 @@ class Shell:
             await self._say(on_text, f"Deleted {display_path(shown, self._acting)} ({took}).")
         else:
             await self._say(on_text, f"Not deleted: {data.get('error', 'error')}")
+
+    async def _delete_many(self, on_text, path: str, *, force: bool) -> None:
+        """A pattern deletes nothing until you add `!`.
+
+        §6.6 argues that `delete` needs no confirmation because it "takes an explicit path" — you cannot
+        land on it by accident. A pattern voids exactly that argument: `delete "s*"` looks precise and
+        may match nine things. So the guard lands on the new ambiguity and nowhere else — an explicit
+        path keeps its one-shot form, which is why the y/n prompt was dropped in the first place."""
+        found = await self._admin("match", path)
+        if not found.get("ok"):
+            await self._say(on_text, found.get("error", "error"))
+            return
+        matches = found.get("matches") or []
+        if not matches:
+            await self._say(on_text, f"Nothing matches {loc_name(path)!r}.")
+            return
+        names = [loc_name(mm.get("display") or mm["path"]) for mm in matches]
+        if not force:
+            await self._say(on_text, f"{len(matches)} {matches[0]['kind']}(s) match — nothing deleted. "
+                                     f"Re-run with ! to confirm:\n  " + " · ".join(names))
+            return
+        done, failed = [], []
+        for mm, name in zip(matches, names):
+            out = await self._admin("delete", mm["path"])
+            (done if out.get("ok") else failed).append(
+                name if out.get("ok") else f"{name} ({out.get('error', 'error')})")
+        msg = f"Deleted {len(done)}: {' · '.join(done)}." if done else "Deleted nothing."
+        if failed:
+            msg += f"\nKept {len(failed)}: " + " · ".join(failed)
+        await self._say(on_text, msg)
 
     async def _reset_agent(self, on_text, m) -> None:
         """`reset agent <name> [assets]` — a purge plus the pointer surgery that has to follow it.

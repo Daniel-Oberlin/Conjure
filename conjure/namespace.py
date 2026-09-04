@@ -27,12 +27,13 @@ inconsistent.
 """
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import Path
 from typing import NamedTuple, Optional
 
 from .config import VOID
-from .world import NAME_SEGMENT
+from .world import NAME_SEGMENT, fold_accents, loose
 
 # Exactly what a display NAME may contain (`world.NAME_SEGMENT`) — one definition, so a name can never be
 # stored that this then refuses to address. `clean_name` enforces the same rule on write. Everything but
@@ -125,7 +126,7 @@ def resolve(path: str):
     if cat == "assets":                                        # legacy: rows scoped to a bare user
         if len(segs) == 2:
             return Loc("assets", user)
-        return Loc("asset", user, name=segs[2])
+        return _asset_loc(user, "", segs[2])
     if cat != "agents":
         return f"unknown category {cat!r} (agents|spaces)"
     if len(segs) == 2:
@@ -142,7 +143,7 @@ def resolve(path: str):
     if sub == "assets":
         if len(segs) == 4:
             return Loc("assets", user, agent)
-        return Loc("asset", user, agent, name=segs[4])
+        return _asset_loc(user, agent, segs[4])
     if sub == "worlds":                                        # shortcut → the active session's worlds
         return resolve(f"/{scope}/sessions/{_h()._active_sid_for(scope)}/" + "/".join(segs[3:]))
     if sub != "sessions":
@@ -175,6 +176,71 @@ def resolve(path: str):
     if wid is None:
         return f"no world {ref!r} in {sid}"
     return Loc("world", user, agent, sid, wid)
+
+def _asset_loc(user: str, agent: str, ref: str):
+    """An asset reference → a `Loc`, or an error string. The id is the address, but a LABEL is what a
+    listing shows, so a label is accepted when it names exactly one thing.
+
+    An ambiguous label refuses and lists the candidates instead of guessing. That is deliberately
+    different from a glob, which confirms a SET: a glob is intentionally plural — you typed `*` — while
+    a bare name is a request for one thing, so offering to act on three would be answering a question
+    nobody asked. The live catalog has four assets sharing one label and three more pairs, so this is
+    the common case, not a corner."""
+    if _h().library and _h().library.get(ref):
+        return Loc("asset", user, agent, name=ref)             # an id always wins
+    want = loose(ref)
+    hits = [r for r in asset_rows(user, agent, limit=10_000)
+            if r["kind"] == "asset" and loose(r["label"]) == want]
+    if not hits:
+        return f"no asset {ref!r} for {user!r}"
+    if len(hits) == 1:
+        return Loc("asset", user, agent, name=ref_of(hits[0]))
+    lines = "\n".join(f"  {ref_of(r)}   {' · '.join(r.get('cells') or [])}" for r in hits)
+    return f"{len(hits)} assets are called {ref!r} — name one:\n{lines}"
+
+
+# What makes a path segment a PATTERN rather than a name. Deliberately no `**`: worlds are flat and the
+# tree is four levels deep, so a recursive form would only ever mean "everything", which `dir` at the
+# root already answers badly enough.
+_GLOB = re.compile(r"[*?\[]")
+
+
+def is_glob(segment: str) -> bool:
+    return bool(_GLOB.search(segment or ""))
+
+
+def _glob_key(s: str) -> str:
+    """`loose`, but keeping the pattern characters — so `Kitchen *` and `kitchen*` mean the same thing
+    for the same reason `Kitchen Table` and `kitchen-table` do."""
+    s = re.sub(r"[\s_-]+", " ", fold_accents(s or "").strip().lower())
+    return re.sub(r"[^a-z0-9 *?\[\]!^-]", "", s).strip()
+
+
+def match(path: str):
+    """Every location `path` names — a list of `Loc`, or an error string.
+
+    A pattern is allowed in the LAST segment only, and expands against that container's DISPLAY names
+    through the same folded key everything else matches on. Anything without a pattern is one `resolve`,
+    so callers can use this everywhere and only the plural cases differ."""
+    segs = _split(path)
+    if not segs or not is_glob(segs[-1]):
+        loc = resolve(path)
+        return loc if isinstance(loc, str) else [loc]
+    parent = resolve("/" + "/".join(segs[:-1]))
+    if isinstance(parent, str):
+        return parent
+    want = _glob_key(segs[-1])
+    out = []
+    for row in children(parent):
+        if row.get("kind") in ("category", "note", "shortcut"):
+            continue
+        if not fnmatch.fnmatchcase(_glob_key(row["label"]), want):
+            continue
+        loc = resolve(loc_path(parent) + "/" + ref_of(row))
+        if not isinstance(loc, str):
+            out.append(loc)
+    return out
+
 
 def loc_path(loc: Loc) -> str:
     """The canonical path for a `Loc` — what a shortcut resolves to, and what `cd` should remember."""
