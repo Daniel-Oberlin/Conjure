@@ -30,6 +30,7 @@ and reads the same spoken or typed. A *path* command acts on anything addressabl
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shlex
 import time
@@ -217,6 +218,28 @@ def columns(rows: list[dict], header: list[str], *, long: bool = False) -> list[
     return out
 
 
+def human_size(n) -> str:
+    """`412 KB`, `35 MB` — sizes you compare at a glance. Directories report none."""
+    if n is None:
+        return ""
+    for unit, div in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if n >= div:
+            v = n / div
+            return f"{v:.1f} {unit}" if v < 10 else f"{v:.0f} {unit}"
+    return f"{n} B"
+
+
+def when(ts) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else ""
+
+
+def short_path(p: str) -> str:
+    """A real filesystem path with your home folded to `~`. These are long and mostly boilerplate; the
+    part that identifies the file is the tail."""
+    home = os.path.expanduser("~")
+    return "~" + p[len(home):] if p.startswith(home + "/") else p
+
+
 def _match_name(token: str, roster) -> Optional[str]:
     """Case-insensitive lookup of a spoken/typed word against the roster's casual LLM names
     ('gemini' → 'Gemini'); None if it matches none. The gate that keeps a switch deterministic."""
@@ -306,6 +329,9 @@ class Shell:
              "dir [-l] [path] — list one level of the namespace (-l also shows ids)", False),
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
+            (re.compile(r"^(?:disk|file)(?:\s+(?P<path>\S.*))?$", re.I), self._disk,
+             "disk [path] — where a thing actually lives: real files, sizes, and an asset's catalog row",
+             False),
             (re.compile(r"^cd(?:\s+(?P<path>\S.*))?$", re.I), self._cd,
              "cd [path] — change the working directory (bare: back to your agent)", False),
             (re.compile(r"^(?P<vis>public|private)(?:\s+(?P<path>\S.*))?$", re.I), self._visibility,
@@ -851,6 +877,27 @@ class Shell:
         width = max((len(k) for k, _ in data.get("fields", [])), default=0)
         rows = "\n".join(f"  {k:<{width}}  {v}" for k, v in data.get("fields", []))
         await self._say(on_text, f"{display_path(data.get('display') or data['path'], self._acting)}\n{rows}")
+
+    async def _disk(self, on_text, m):
+        """`disk [path]` — the on-disk truth behind a name. The one command that shows ids and filenames,
+        which is what lets every other one stop.
+
+        A LIST of files, not one: a session is a directory of four things, and an asset is a `library.db`
+        row plus a blob plus (for a downloaded model) a `.json` sidecar carrying its licence."""
+        data = await self._admin("file", self._path(m))
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        rows = [["name", data.get("label") or loc_name(data.get("display", ""))],
+                ["path", display_path(data.get("display") or data["path"], self._acting)]]
+        if data.get("display") != data.get("path"):
+            rows.append(["id path", data["path"]])
+        for f in data.get("files", []):
+            detail = "missing" if f.get("missing") else "not yet" if f.get("absent") else "  ".join(
+                x for x in (human_size(f.get("size")), when(f.get("mtime")), f.get("note")) if x)
+            rows.append([f["role"], f"{short_path(f['path'])}   {detail}".rstrip()])
+        width = max(len(k) for k, _ in rows)
+        await self._say(on_text, "\n".join(f"  {k:<{width}}  {v}" for k, v in rows))
 
     async def _cd(self, on_text, m):
         """Bare `cd` returns to your own agent scope — the useful default, not the root."""

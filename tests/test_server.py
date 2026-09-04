@@ -2704,6 +2704,55 @@ def test_a_legacy_name_valued_active_world_still_renders(srv, client):
     assert row["active_world_name"] == "meadow"
 
 
+def test_disk_reports_an_asset_as_a_row_plus_a_blob(srv, client, tmp_path):
+    # "The file" is a lie for an asset: it is a library.db row AND a blob, and for a downloaded model a
+    # .json sidecar carrying the licence too. Showing one of the three silently drops provenance.
+    srv.ASSET_CACHE.mkdir(parents=True, exist_ok=True)
+    (srv.ASSET_CACHE / "beagle.glb").write_bytes(b"x" * 2048)
+    (srv.ASSET_CACHE / "beagle.json").write_text('{"licence": "CC-BY 3.0"}')
+    _seed_asset(srv, "beagle.glb", "alice/agents/builder", label="Beagle", filename="beagle.glb")
+    r = client.post("/admin/file", json={"path": "/alice/agents/builder/assets/beagle.glb"}).json()
+    roles = {f["role"]: f for f in r["files"]}
+    assert r["label"] == "Beagle"
+    assert roles["blob"]["size"] == 2048 and "sidecar" in roles
+    assert roles["row"]["path"].endswith(".db") and "beagle.glb" in roles["row"]["note"]
+
+
+def test_disk_says_missing_for_a_row_whose_blob_is_gone(srv, client):
+    # The catalog keeps bytes on delete, so row and blob drift apart. A path composed from the row and
+    # never checked would send you looking in Finder for something that isn't there.
+    _seed_asset(srv, "gone.png", "alice/agents/builder", label="Vanished", filename="gone.png")
+    r = client.post("/admin/file", json={"path": "/alice/agents/builder/assets/gone.png"}).json()
+    blob = next(f for f in r["files"] if f["role"] == "blob")
+    assert blob.get("missing") is True and "size" not in blob
+
+
+def test_disk_distinguishes_not_yet_written_from_missing(srv, client):
+    # A session nobody has spoken in HAS no transcript. Calling that "missing" sends you hunting a bug.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, sid, title="Quiet")
+    roles = {f["role"]: f for f in
+             client.post("/admin/file", json={"path": f"/{scope}/sessions/Quiet"}).json()["files"]}
+    assert roles["transcript"].get("absent") and not roles["transcript"].get("missing")
+    assert roles["meta"].get("missing") is None                # this one exists
+
+
+def test_a_displayed_path_can_always_be_typed_back(srv, client):
+    # Whatever the shell prints as a path must resolve. Names do; an asset LABEL does not (not unique,
+    # not guaranteed), so an asset's display path keeps its id.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, sid, title="Kitchen Table")
+    _seed_asset(srv, "a1.png", scope, label="Kitchen counter")
+    for path in (f"/{scope}/sessions/{sid}", f"/{scope}/sessions/{sid}/worlds/w1",
+                 f"/{scope}/assets/a1.png"):
+        shown = client.post("/admin/tree", json={"path": path}).json()["display"]
+        assert client.post("/admin/tree", json={"path": shown}).json()["ok"] is True, shown
+
+
 def test_admin_delete_all_assets_in_a_scope(srv, client):
     # `delete <path>/assets` empties the scope and leaves other scopes alone. Untested until 2026-09-04,
     # which is how the bulk branch got away with deleting by the row's DISPLAY text: it passed only

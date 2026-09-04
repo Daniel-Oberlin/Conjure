@@ -363,6 +363,12 @@ class WorldDir:
                 continue
         return None
 
+    def path_of(self, ref: str) -> Path | None:
+        """The document FILE for `ref` (an id or a name), or None if it resolves to nothing. The one
+        public way to ask where a world actually lives — `disk` needs it, and nothing else should."""
+        wid = self.resolve(ref)
+        return self._path(wid) if wid else None
+
     def name_taken(self, name: str, *, other_than: str = "") -> bool:
         try:
             want = slug(name)
@@ -998,6 +1004,15 @@ class SpaceStore:
         sp["name"] = new_name
         self.save(user, sid, sp)
         return sid
+
+    def path_of(self, user: str, ref: str) -> Path | None:
+        """The FILE a space lives in, by id or display name — or None if it resolves to nothing."""
+        sid = self.resolve(user, ref)
+        return self._path(user, sid) if sid else None
+
+    def dir_of(self, user: str) -> Path:
+        """A user's spaces directory."""
+        return self._user_dir(user)
 
     def list_users(self) -> list[str]:
         """Users with a presence under the root (its immediate subdirs). Under the shared ``users/`` root

@@ -28,6 +28,7 @@ inconsistent.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 from .config import VOID
@@ -219,7 +220,10 @@ def display_path(loc: Loc) -> str:
     does not. Both are returned by `/admin/{tree,show}` so a caller can remember the first and print the
     second (docs/backlogs/agents.md, phase 3)."""
     canon = loc_path(loc)
-    if loc.kind in ("world", "space", "asset", "session"):
+    # Assets keep their id in the path. Everything else has a name that resolves, so showing the name is
+    # showing an address; an asset label is neither unique nor guaranteed, so a label-valued path would
+    # print something you cannot type back. `disk`/`dir` show the label in their own name column instead.
+    if loc.kind in ("world", "space", "session"):
         head, _, _ = canon.rpartition("/")
         canon = f"{head}/{label_of(loc)}"
     if loc.kind == "world":                                    # …/sessions/<id>/worlds/<name>
@@ -425,6 +429,76 @@ def leaf_row(loc: Loc) -> Optional[dict]:
     if loc.kind == "asset":
         return next((r for r in asset_rows(loc.user, loc.agent) if ref_of(r) == loc.name), None)
     return None
+
+def _stat(role: str, path, note: str = "", *, required: bool = True) -> dict:
+    """One on-disk thing. Reports what is ACTUALLY there rather than what the catalog claims: row and
+    blob drift apart (the live install carries 436 MB of files no row points at), so a path composed
+    from a record and never checked is a path that lies."""
+    p = Path(path)
+    entry: dict = {"role": role, "path": str(p)}
+    if note:
+        entry["note"] = note
+    try:
+        st = p.stat()
+        entry["size"] = st.st_size if p.is_file() else None
+        entry["mtime"] = st.st_mtime
+    except OSError:
+        # Absent-and-expected is a fault worth naming; absent-and-not-yet-written is ordinary. A session
+        # that nobody has spoken in HAS no transcript, and calling that "missing" sends you looking for a
+        # bug. A blob a catalog row points at is the other case.
+        entry["missing" if required else "absent"] = True
+    return entry
+
+
+def files(loc: Loc) -> list[dict]:
+    """Every real thing `loc` is made of on disk (shell `disk`).
+
+    Deliberately a LIST, because "the file" is a lie for three of the six kinds. A session is a
+    directory of four things. An asset is a `library.db` row plus a blob — and, for a model downloaded
+    from poly.pizza, plus a `.json` sidecar carrying the licence and attribution, which a file-only
+    answer would silently drop. Only a world and a space are single documents."""
+    h = _h()
+    if loc.kind == "world":
+        p = h._session_worlds(loc.scope, loc.sid).path_of(loc.name)
+        return [_stat("doc", p)] if p else []
+    if loc.kind == "session":
+        return [_stat("dir", h.sessions.dir(loc.scope, loc.sid)),
+                _stat("meta", h.sessions.meta_path(loc.scope, loc.sid)),
+                _stat("transcript", h.sessions.transcript_path(loc.scope, loc.sid), required=False),
+                _stat("state", h.sessions.state_dir(loc.scope, loc.sid), required=False)]
+    if loc.kind == "space":
+        p = h.spaces.path_of(loc.user, loc.name)
+        return [_stat("doc", p)] if p else []
+    if loc.kind == "asset":
+        rec = h.library.get(loc.name) if h.library else None
+        out = []
+        fn = (rec or {}).get("filename") or loc.name
+        if fn:
+            out.append(_stat("blob", Path(h.ASSET_CACHE) / fn))
+            side = Path(h.ASSET_CACHE) / (Path(fn).stem + ".json")
+            if side.exists():                                  # poly.pizza writes licence + attribution here
+                out.append(_stat("sidecar", side))
+        out.append(_stat("row", h.library.path, f"assets.id = {loc.name!r}") if h.library
+                   else {"role": "row", "path": "?", "missing": True})
+        src = (rec or {}).get("source")
+        if src:
+            out.append({"role": "source", "path": src})
+        return out
+    if loc.kind in ("worlds",):
+        return [_stat("dir", h.sessions.worlds_dir(loc.scope, loc.sid))]
+    if loc.kind in ("sessions",):
+        return [_stat("dir", h.sessions.dir(loc.scope, "").parent)]
+    if loc.kind == "spaces":
+        return [_stat("dir", h.spaces.dir_of(loc.user))]
+    if loc.kind in ("assets",):
+        return [_stat("dir", h.ASSET_CACHE, "shared by every user — assets are content-addressed")]
+    if loc.kind == "agent":
+        return [_stat("dir", Path(h.USERS_DIR) / loc.user / "agents" / loc.agent)]
+    if loc.kind in ("user", "agents"):
+        base = Path(h.USERS_DIR) / loc.user
+        return [_stat("dir", base / "agents" if loc.kind == "agents" else base)]
+    return [_stat("dir", h.USERS_DIR)]
+
 
 def fields(loc: Loc) -> list[list]:
     """Ordered `[key, value]` pairs describing one entry (shell `show`)."""

@@ -2618,6 +2618,16 @@ async def admin_show(req: AdminPath) -> dict:
             "kind": loc.kind, "fields": namespace.fields(loc)}
 
 
+@app.post("/admin/file")
+async def admin_file(req: AdminPath) -> dict:
+    """Where `path` actually lives on disk (shell `disk`) — the one place ids and filenames belong."""
+    loc = namespace.resolve(req.path)
+    if isinstance(loc, str):
+        return {"ok": False, "error": loc}
+    return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
+            "kind": loc.kind, "label": namespace.label_of(loc), "files": namespace.files(loc)}
+
+
 @app.post("/admin/delete")
 async def admin_delete(req: AdminPath, request: Request) -> dict:
     """Purge whatever `path` points at (shell `delete`, post-confirm). Ownership-gated (§6e): the caller
