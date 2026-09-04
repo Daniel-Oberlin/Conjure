@@ -28,6 +28,7 @@ inconsistent.
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -564,6 +565,87 @@ def files(loc: Loc) -> list[dict]:
         base = Path(h.USERS_DIR) / loc.user
         return [_stat("dir", base / "agents" if loc.kind == "agents" else base)]
     return [_stat("dir", h.USERS_DIR)]
+
+
+def garbage() -> dict:
+    """Files under `assets/` that nothing points at (shell `gc`).
+
+    `library.delete` keeps an asset's bytes on purpose — "regenerable, and may still be referenced by a
+    placed entity" — so residue accumulates by design and nothing has ever reclaimed it. The live install
+    carries 436 MB of it.
+
+    The keep-set is **rows ∪ world references**, and the union is the load-bearing part: the retention
+    rule exists precisely because a placed entity can outlive its row, so rows alone would be an unsafe
+    keep-set. References come from `server._referenced_asset_ids`, which walks a doc for any
+    `/assets/<id>` string and is deliberately schema-agnostic, so new reference sites are covered free.
+
+    Two rules that make it safe to run. Blobs are **global** — `assets/` is one flat store shared by
+    every user, while rows are scoped — so this unions references across everyone's worlds, which makes
+    it an operator action rather than a per-user one. And it is **conservative on error**: an unreadable
+    document aborts the sweep rather than counting as referencing nothing, because the failure mode of
+    the alternative is deleting a model that is currently placed in someone's world.
+
+    Lives here rather than beside `library.delete` (where the plan first put it) because the keep-set
+    spans the catalog AND every world on disk: `library` knows nothing of worlds or `USERS_DIR`, and this
+    module is already bound to a host that has all three.
+
+    Reports only — `sweep` is what removes anything."""
+    h = _h()
+    keep = set(h.library.all_files()) if h.library else set()
+    # The root the REPOSITORIES are using, not the module-level `USERS_DIR` — they can disagree (a test
+    # points the repositories at a tmp tree and leaves the constant alone), and a sweep that scans a
+    # different tree from the one it is deleting against would call live assets garbage.
+    users = Path(getattr(h.sessions, "root", None) or h.USERS_DIR)
+    scanned = 0
+    for doc in sorted(users.rglob("*.json")) if users.is_dir() else []:
+        try:
+            keep |= h._referenced_asset_ids(json.loads(doc.read_text()))
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": f"unreadable {doc.name} ({exc}) — sweep aborted rather than "
+                                          f"treat it as referencing nothing"}
+        scanned += 1
+    assets = Path(h.ASSET_CACHE)
+    # Never consider the catalog itself. `assets/` is normally a dedicated directory, but nothing
+    # enforces that — a configuration that points it at the data root would otherwise offer library.db
+    # for deletion, and `gc` is the one command here that removes a file nobody named.
+    db = Path(h.library.path) if h.library else None
+    protected = {f"{db.name}{suf}" for suf in ("", "-wal", "-shm")} if db else set()
+    present = sorted(p for p in assets.iterdir()
+                     if p.is_file() and p.name not in protected and not p.name.startswith(".")) \
+        if assets.is_dir() else []
+    # A sidecar belongs to its blob: kept while the blob is kept, collected with it when it goes.
+    kept_stems = {Path(f).stem for f in keep}
+    out = []
+    for f in present:
+        if f.name in keep:
+            continue
+        if f.suffix == ".json" and f.stem in kept_stems:
+            continue
+        try:
+            out.append({"name": f.name, "size": f.stat().st_size, "mtime": f.stat().st_mtime})
+        except OSError:
+            continue
+    out.sort(key=lambda e: -e["size"])
+    return {"ok": True, "files": out, "bytes": sum(e["size"] for e in out),
+            "present": len(present), "kept": len(present) - len(out), "docs": scanned}
+
+
+def sweep() -> dict:
+    """Delete what `garbage` found. Re-computed here rather than taking a list from the caller, so a
+    world created between the listing and the confirmation cannot lose its asset."""
+    found = garbage()
+    if not found.get("ok"):
+        return found
+    assets = Path(_h().ASSET_CACHE)
+    freed, gone = 0, []
+    for entry in found["files"]:
+        try:
+            (assets / entry["name"]).unlink()
+        except OSError:
+            continue
+        freed += entry["size"]
+        gone.append(entry["name"])
+    return {"ok": True, "deleted": len(gone), "bytes": freed}
 
 
 def fields(loc: Loc) -> list[list]:

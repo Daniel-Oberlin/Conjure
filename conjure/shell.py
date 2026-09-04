@@ -334,6 +334,8 @@ class Shell:
              "dir [-l] [path] — list one level of the namespace (-l also shows ids)", False),
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
+            (re.compile(r"^gc(?P<force>\s+!)?$", re.I), self._gc,
+             "gc [!] — asset files nothing points at. Lists them; '!' deletes them", False),
             (re.compile(r"^set(?:\s+(?P<key>[\w.-]+)(?:\s+(?P<value>\S.*?))?)?(?P<save>\s+--save)?$", re.I),
              self._set,
              "set [key [value]] [--save] — list settings, read one, or change it for this run; "
@@ -915,6 +917,42 @@ class Shell:
                 return (await client.post(f"{url}/admin/settings", json=kw)).json()
         except Exception as exc:                          # noqa: BLE001 — network / server down
             return {"ok": False, "error": f"settings request failed: {exc}"}
+
+    async def _gc(self, on_text, m):
+        """`gc` lists what is reclaimable; `gc !` reclaims it.
+
+        Same idiom as a pattern delete, and for the same reason — the input names a SET rather than one
+        thing, so it is shown before it is acted on."""
+        url = getattr(self._settings, "world_url", None) if self._settings else None
+        if not url:
+            await self._say(on_text, "no world server configured")
+            return
+        force = bool(m.groupdict().get("force"))
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                data = (await client.post(f"{url}/admin/gc", json={"confirm": force})).json()
+        except Exception as exc:                          # noqa: BLE001 — network / server down
+            await self._say(on_text, f"gc request failed: {exc}")
+            return
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        if force:
+            await self._say(on_text, f"Deleted {data.get('deleted', 0)} files, "
+                                     f"freeing {human_size(data.get('bytes', 0))}.")
+            return
+        found = data.get("files") or []
+        if not found:
+            await self._say(on_text, f"Nothing to collect — every one of {data.get('present', 0)} "
+                                     f"asset files is referenced.")
+            return
+        head = (f"{len(found)} unreferenced files · {human_size(data['bytes'])} reclaimable · "
+                f"nothing deleted")
+        rows = [f"  {e['name']:<24}{human_size(e['size']):>9}   {when(e['mtime'])}" for e in found[:10]]
+        if len(found) > 10:
+            rows.append(f"  … {len(found) - 10} more")
+        await self._say(on_text, "\n".join([head] + rows + ["Re-run as  gc !  to delete them."]))
 
     async def _set(self, on_text, m):
         """`set` · `set <key>` · `set <key> <value> [--save]`.

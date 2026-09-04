@@ -2623,6 +2623,22 @@ def _setting_row(key: str) -> dict:
             "choices": list(config.CHOICES.get(key, ())), "limits": list(config.LIMITS.get(key, ()))}
 
 
+class GcRequest(BaseModel):
+    confirm: bool = False
+
+
+@app.post("/admin/gc")
+async def admin_gc(req: GcRequest, request: Request) -> dict:
+    """Unreferenced asset files (shell `gc`). Reports by default; `confirm` deletes.
+
+    Operator-scoped by nature: `assets/` is one flat store shared by every user, so the keep-set has to
+    union references across everyone's worlds and the sweep cannot be per-caller."""
+    found = namespace.garbage()
+    if not found.get("ok") or not req.confirm:
+        return found
+    return {**namespace.sweep(), "found": found}
+
+
 @app.post("/admin/settings")
 async def admin_settings(req: SettingChange) -> dict:
     """Read or change a runtime setting (shell `set` / `unset`).

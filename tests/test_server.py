@@ -2704,6 +2704,69 @@ def test_a_legacy_name_valued_active_world_still_renders(srv, client):
     assert row["active_world_name"] == "meadow"
 
 
+def _blob(srv, name, size=64):
+    """Write a file into the asset store. The `srv` fixture points ASSET_CACHE at the tmp root, which is
+    also where library.db and users/ live — realistic enough for everything else, but `gc` reads the
+    whole directory, so these tests give it a dedicated one."""
+    srv.ASSET_CACHE.mkdir(parents=True, exist_ok=True)
+    (srv.ASSET_CACHE / name).write_bytes(b"x" * size)
+
+
+@pytest.fixture
+def assets_dir(srv, monkeypatch, tmp_path):
+    d = tmp_path / "assets"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(srv, "ASSET_CACHE", d)
+    return d
+
+
+def test_gc_keeps_a_blob_a_world_still_places_even_with_no_row(srv, client, assets_dir):
+    # The union is the load-bearing part. `library.delete` keeps bytes precisely BECAUSE a placed entity
+    # can outlive its row, so a keep-set built from rows alone would delete something in use.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    wdir = srv.sessions.worlds(scope, sid)
+    st = wdir.load("w1")
+    st.doc["entities"] = [{"id": "e1", "components": {"material": {"src": "/assets/placed.png"}}}]
+    wdir.save("w1", st)
+    _blob(srv, "placed.png")                      # on disk, PLACED, but no catalog row
+    _blob(srv, "loose.png")                       # on disk, referenced by nothing
+
+    r = client.post("/admin/gc", json={}).json()
+    names = {f["name"] for f in r["files"]}
+    assert "loose.png" in names and "placed.png" not in names
+
+
+def test_gc_keeps_a_sidecar_with_its_blob_and_collects_it_without(srv, client, assets_dir):
+    _seed_asset(srv, "keep.glb", "alice/agents/builder", filename="keep.glb")
+    _blob(srv, "keep.glb"); _blob(srv, "keep.json")          # licence sidecar for a catalogued model
+    _blob(srv, "orphan.glb"); _blob(srv, "orphan.json")      # both unreferenced
+    names = {f["name"] for f in client.post("/admin/gc", json={}).json()["files"]}
+    assert names == {"orphan.glb", "orphan.json"}
+
+
+def test_gc_aborts_rather_than_treat_an_unreadable_doc_as_referencing_nothing(srv, client, assets_dir):
+    # The failure mode of the alternative is deleting a model that is currently placed in someone's world.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    (srv.sessions.worlds_dir(scope, sid) / "wld_broken.json").write_text("{not json")
+    _blob(srv, "loose.png")
+    r = client.post("/admin/gc", json={}).json()
+    assert r["ok"] is False and "aborted" in r["error"]
+    assert (srv.ASSET_CACHE / "loose.png").exists()
+
+
+def test_gc_deletes_only_on_confirm(srv, client, assets_dir):
+    _blob(srv, "loose.png", size=2048)
+    assert client.post("/admin/gc", json={}).json()["bytes"] == 2048
+    assert (srv.ASSET_CACHE / "loose.png").exists()          # a bare gc removes nothing
+    done = client.post("/admin/gc", json={"confirm": True}).json()
+    assert done["deleted"] == 1 and done["bytes"] == 2048
+    assert not (srv.ASSET_CACHE / "loose.png").exists()
+
+
 def test_disk_reports_an_asset_as_a_row_plus_a_blob(srv, client, tmp_path):
     # "The file" is a lie for an asset: it is a library.db row AND a blob, and for a downloaded model a
     # .json sidecar carrying the licence too. Showing one of the three silently drops provenance.
