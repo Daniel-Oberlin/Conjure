@@ -43,6 +43,11 @@ So this is a **split, not a move** — which is why it wasn't done with the relo
 ([decisions.md #21](../decisions.md)). The shape when it happens: prefs → `settings.json` under the
 existing precedence ladder, secrets stay in `.env`, and `Settings` reads from both.
 
+The planned shell `set` command forces the decision, and the shape is settled: one `"preferences"` block
+in `settings.json`, written by `set <key> <value> --save`, leaving secrets and per-run overrides in
+`.env`. It has to be `settings.json` rather than `.env` for reasons beyond tidiness — `.env` has no
+writer, is untyped, and holds every API key. See [the shell rationalisation plan](./agents.md), phase 6.
+
 ### Retiring the project-cache migration
 
 [Spec §7](../specs/config.md) exists only to carry pre-2026-08-17 installs across. It is breadcrumb-guarded
@@ -79,7 +84,8 @@ exist yet ([decisions.md #9](../decisions.md)). Not precluded; not designed.
 restart. That's correct for path keys — moving `DATA_DIR` under a running server is not something to
 support — but wrong for the cheap ones: adding a wake-word alias you just heard go wrong shouldn't cost
 a session. A `reload settings` shell command re-resolving only the non-path keys would cover the real
-case.
+case — and overlaps the planned `set`/`unset` pair in [the shell rationalisation plan](./agents.md),
+which needs the same "which keys are safe to change under a running server" table (its three tiers).
 
 ### `settings.json` has no schema
 

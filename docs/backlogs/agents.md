@@ -332,6 +332,422 @@ natural extension.
 no key are all named and unbuilt. The shell's modal overlay would generalize to a **stack** for
 sub-agents; v1 is overlay + a single active pointer.
 
+## Shell rationalisation — names in front, ids underneath (planned 2026-09-03, with Daniel)
+
+**Not yet built. The open questions at the end are the alignment gate.**
+
+The storage model is already right: everything renameable carries a permanent id and a display name —
+`wld_…`, `session-N`, `space-N`, an asset hash — and names are unique within their container, compared
+slug-wise ([spec §6.5](../specs/agents.md)). So name→id resolution is *total*, and addressing by name is
+fully available. It just isn't consistently used, and the ids leak into places a person has to read.
+
+The goal, in one line: **store ids, show names.** An id-based `cwd` survives a rename of the session you
+are standing in; a name-based one silently breaks. So the id stays canonical underneath and the shell
+never shows one unless you ask.
+
+### What is actually inconsistent
+
+Three sibling nouns, three behaviours. `_admin_resolve` resolves a session reference to its id and
+`_loc_path` renders that back (`server.py:2676`, `:2696`), while worlds and spaces keep whatever string
+you typed. So `cd` into a session by title leaves the prompt reading `~/agents/builder/sessions/session-3`
+— `Shell._cd` deliberately adopts the server's path (`shell.py:774`) — but `cd` into a space by name
+stays a name.
+
+`worlds` prints the space as an id: `_world_row` emits `space={env['space']}` (`server.py:2733`) and
+`environment.space` holds the `space-N` id. It also never says *whose* space, which matters because it
+can be another user's.
+
+`sessions` prints a raw world id in some rows and a name in others. The shell renders
+`world {s['active_world']}` (`shell.py:676`), and session meta's `active_world` is written as a **name**
+by `/session/new` (`server.py:1911`) but as an **id** by `_ensure_session` (`server.py:358`) and by the
+migration (`world.py:1117`). Nothing updates it on a world switch, so it is stale either way. The same
+value feeds the "other users' public sessions" listing through `list_public_sessions`
+(`world.py:601` → `shell.py:686`).
+
+Asset rows are inverted — led by the id with the label in the detail (`server.py:2791`) — where every
+other row leads with the name.
+
+### The change the rest depends on: `label` is not `ref`
+
+`_node`'s `label` is doing double duty as display text *and* addressable key. That is *why* the asset row
+must lead with an id: `_leaf_row` matches on `r["label"] == loc.name` (`server.py:2834`) and the bulk
+delete calls `library.delete(r["label"])` (`server.py:3022`). **Changing the asset row's display text
+today silently breaks `delete assets`** — it would delete by human label and match nothing.
+
+So every row gains both fields: `label` (what you read) and `ref` (what you type, what the server
+addresses it by). The renderer only ever shows `label`; the server only ever addresses by `ref`. That one
+split is what makes names-in-front safe everywhere, and it is also the hook globbing needs.
+
+### Phases
+
+**0 — extract `conjure/namespace.py`.** Move `_Loc`, `_admin_resolve`, `_loc_path`, `_node`, the `_*_row`
+builders, `_children`, `_leaf_row`, `_fields` and `_admin_do_delete` out of `server.py:2537-3025`; the
+three `/admin/*` routes stay behind and call in. This is the cleanest seam in a 4400-line file, it is the
+one place the naming policy can be enforced rather than repeated, and four of the six phases below touch
+it. It also starts the split this backlog already wants (see *Server decomposition*, below).
+
+*The risk worth naming:* those functions read module globals (`worlds`, `sessions`, `spaces`, `library`,
+`active_scope`, `active_sid`, `active_world`, `active_space`, `active_space_owner`) that `_init_state`
+**rebinds**, so an import-time capture would go stale on the first re-init and a test would see the
+previous run's repositories. The extraction must take a live view: `namespace.bind(get_repos, get_live)`
+with two zero-argument callables reaching into `server`'s globals — no import cycle, no snapshot.
+
+**1 — the `label`/`ref` split, and the bugs it uncovers.** `_node(label, kind, cells, *, ref=None,
+active=False)`. Asset rows lead with `r["label"] or "(unlabelled)"` and carry `ref=r["id"]`. Fix
+`server.py:3022` and `:2834` to key on the ref. Normalise `active_world` to hold the **id**, render the
+name at display time via `worlds.name_of`, and update it on a world switch — with a read-time coercion
+(`worlds.resolve`) rather than a disk migration, since existing metas hold a mix. `_world_row` shows the
+space's display name, qualified by owner when it isn't yours.
+
+**2 — structured cells, aligned columns.** `detail` is a server-composed free-text string, which is why
+nothing lines up. Replace it with `columns: [str]` on the listing and `cells: [str]` per row; `_render_listing`
+(`shell.py:1003`) pads each column and prints a header when there are two or more. The voice path is
+untouched — it reads `label` only. `shell.py` is the sole consumer of `/admin/tree` (`ctl.py` does not
+use it), so this is a contained protocol change.
+
+```
+~/agents/builder/assets
+   name              type    vis      id
+   Kitchen counter   image   public   a1b2c3
+   (unlabelled)      model   private  778899
+
+~/agents/builder/worlds
+   name              entities  space
+ * Meadow                  12  Living Room
+   Kitchen sketch           3  Living Room
+```
+
+**3 — name-canonical display paths.** `_Loc` carries the resolved **id** for worlds and spaces too, not
+just sessions (the comment at `server.py:2677` explaining why worlds store the name needs to go with it).
+`/admin/{tree,show}` return both `path` (ids, canonical) and `display` (names). Every message that echoes
+a path — `_dir`, `_show`, `_delete`, `_visibility`, `_rename` — uses `display`. Spec: §6.4.
+
+**The cwd holds ids and displays names — and this costs no protocol change.** An earlier draft of this
+plan said it needed one, wrongly. `cwd` never round-trips: it lives server-side on `Conn`
+(`agent_server.py:52`, set from `shell.cwd` at `:415`) and is only *sent* to the client to render the
+prompt (`agent_client.py:45` reads it; nothing writes it). So:
+
+- `Conn` gains `cwd_display` beside `cwd`, both set together in the one place that already sets it
+  (`:415`). `Shell` grows the matching property, filled by `_cd` from the server's `path`/`display` pair.
+- The wire field is unchanged and carries the **display** string. `prompt_from_context`'s `~`
+  substitution is prefix matching on `/{user}`, which works on either form. No new field, no client
+  change, §8.1 untouched.
+- **Relative paths need no new code.** `_admin_resolve` already accepts either form per segment —
+  `_resolve_sid` takes an id *or* a title, `WorldDir.resolve` an id *or* a name — so an id-path cwd with
+  a typed name appended resolves today.
+
+Two things make it cheaper than it sounds. **At and above the agent level the two forms are identical**:
+`default_cwd` is `/{user}/agents/{agent}`, and user and agent names *are* names — there are no ids at
+that level. Anyone who never descends below their agent sees one string, not two. And the one new
+failure is **cosmetic and self-healing**: a cached `cwd_display` goes stale if the session you are
+standing in is renamed while you are idle, so the prompt shows the old name until your next command. A
+wrong label is a display bug; the name-cwd's equivalent is a wrong *address*. Invalidation plumbing is
+not worth it.
+
+Rejected: keeping names and patching every connection's cwd on rename. That is pointer-fixup, which is
+exactly what the id architecture exists to avoid — [§6.5](../specs/agents.md)'s own line is that a rename
+"moves no file and strands nothing" — and it cannot touch the recycled-name case below, because the cwd
+is already wrong before the new session is created.
+
+**Fail safely when a cwd goes stale.** Whichever form the cwd holds, it can come to name something that
+no longer exists — renamed, or deleted by another connection. The rule: **walk up until something
+resolves, and say so once.** This is the idiom the codebase already uses for the same class of problem —
+`_mru_first` walks a world pointer down past deleted entries, and `_boot_world` has its three rungs.
+
+```
+conjure:daniel.shell ~/…/sessions/Kitchen sketch> dir
+"Kitchen sketch" is gone — moved you up to ~/agents/builder/sessions
+   Porch          2 worlds · public
+   Session 3      1 world · private
+```
+
+Two failures, not one, and only the first is fixed by walking up. If the cwd holds **names**, a stale
+name can also be *re-used* — rename "Kitchen sketch" to "Porch", create a new "Kitchen sketch", and the
+cwd now silently addresses a different session. It does not fail; it succeeds wrongly, which is the worse
+outcome and undetectable without the id. If the cwd holds **ids**, that case cannot arise — which,
+together with the near-zero cost above, is why ids win.
+
+**4 — `disk [path]`.** CLI-only, the one place ids and filenames are legitimate: display path, id path,
+on-disk path(s), size, mtime. A session resolves to its directory plus `session.json`,
+`transcript.jsonl` and `state/`; a world to its `wld_*.json`; a space to `spaces/space-N.json`; a
+container level to the directory. New `/admin/file` route over `Locator.files`.
+
+An asset is not one file, so `disk` lists every piece of it. Measured against the live library
+(2026-09-04, 118 rows): a generated image is a **`library.db` row plus a blob** under `assets/`, and a
+poly.pizza model is a row, a blob, **and a `.json` sidecar** written beside it by the resolver
+(`assets.py`) carrying title, attribution, licence and `source_url` — 25 of them on disk against 29 model
+rows. Showing only "the file" would silently drop the licence provenance for every downloaded model.
+
+```
+conjure:daniel.shell ~> disk assets/a1b2c3
+  name     Kitchen counter
+  blob     ~/.local/share/conjure/assets/a1b2c3.png    412 KB · 2026-08-29 14:02
+  row      ~/.local/share/conjure/library.db           assets.id = 'a1b2c3'
+  source   cache://a1b2c3
+
+conjure:daniel.shell ~> disk assets/1a3a2ce1
+  name     Beagle
+  blob     ~/.local/share/conjure/assets/1a3a2ce1.glb  1.2 MB · 2026-08-31 09:14
+  sidecar  ~/.local/share/conjure/assets/1a3a2ce1.json licence CC-BY 3.0 · Poly by Google
+  row      ~/.local/share/conjure/library.db           assets.id = '1a3a2ce1'
+  source   cache://1a3a2ce1
+```
+
+The row is given as a key you can paste into `sqlite3`, not dumped column by column — the row's
+*contents* are `show`'s job.
+
+**Row and blob do drift apart, so `disk` reports what is actually there rather than what the row claims.**
+Not in the direction first assumed: no row in the live library has a missing blob, and none has a NULL
+`filename`. The drift runs the other way — 27 files with no row at all, totalling 436 MB, most of it
+three 35 MB `.glb`s that look like figure-conversion output. `disk` doesn't fix that (it answers about a
+path you name), but it is the reason its file lines carry real `stat` results and a `missing` marker
+instead of a path composed from the row.
+
+The row key is given in the form you can paste into `sqlite3`, not dumped column by column — the row's
+*contents* are `show`'s job. The three commands divide cleanly: `dir` gives names, `show` gives what a
+thing is, `disk` gives where its bytes are. (`show` currently prints a bare `filename` with no directory,
+`server.py:2911`; that becomes redundant once `disk` exists.)
+
+**5 — globs.** Last segment only, no recursive `**`, matched against the *display name* through the same
+folded key `WorldDir.resolve` already uses, so `dir "kitchen*"` and `dir "Kitchen *"` agree. Matching
+happens server-side in `namespace.py`, which holds the entries — shell-side globbing would cost a listing
+round-trip per command. `dir`, `show`, `file` and `public`/`private` take a glob freely; `cd` takes one
+only when it matches exactly one thing; `rename` refuses one outright.
+
+`delete` needed a decision, because [§6.6](../specs/agents.md) justifies having no confirmation on the
+grounds that `delete` "takes an explicit path" — and a glob voids that argument. **Settled: a glob delete
+previews and deletes nothing unless you add `!`.** An explicit path keeps its one-shot property (which is
+why the y/n prompt was dropped in the first place), and the new guard lands exactly on the new ambiguity.
+
+```
+conjure:daniel.shell ~/…/worlds> delete "sketch*"
+3 worlds match — nothing deleted. Re-run with ! to confirm:
+  Kitchen sketch · Porch sketch · Sketch 4
+```
+
+**6 — `set`.** Three tiers, because pretending otherwise is how a `set` command becomes a liar:
+
+- **live** — `history_cap`, the director/image/skybox/caption models, `void_origin`, the `debug_*` and
+  `force_*` test overrides. Effective next turn.
+- **client** — `foveation`, `occlusion`, `pose_tau`, `geo_slice_ms`, `apply_tol_*`, `wall_*`, `reg_*`,
+  `beam_*`, `bindings`. Baked into `index.html` at page load (`server.py:1447-1465`), so `set` stores the
+  override and says *applies on the next headset load*. A live push over the world WS is the follow-up
+  that would make in-headset A/B tuning by voice work; these are exactly the knobs you want to turn while
+  wearing the thing.
+- **boot** — `host`, `port`, `world_url`, `agent_url`, the roots and search paths, API keys, `stt`/`tts`,
+  `embed_backend`. `set` refuses these **by name, with the reason**, rather than silently no-opping.
+
+```
+set                        every settable key: value, source, tier
+set <key>                  one key: value, source, tier, what it does, its env var
+set <key> <value>          override for this run
+unset <key>                back to the resolved value
+set <key> <value> --save   persist
+```
+
+Source is always shown — `default | env | settings.json | session` — and the reply always gives the env
+line, so you can go the other way by hand:
+
+```
+conjure:daniel.shell ~> set foveation 0.3
+foveation = 0.3   (was 0.0 · default)   applies on the next headset load
+env:      CONJURE_FOVEATION=0.3
+persist:  set foveation 0.3 --save   → settings.json
+```
+
+Two implementation notes. `server.py` mixes a module-global `settings` snapshot (`:394`) with live
+`get_settings()` calls (`:4393`), so an override applied to one and not the other would take effect for
+some readers and not others — one `config.apply_override(key, value)` writing both env and the process's
+snapshot fixes it. And the shell runs in the **agent server** while the client knobs belong to the
+**world server**, so `set` routes per key over a new `/admin/settings`; `history_cap` stays local.
+
+`--save` writes to **`settings.json`, never `.env`**, under one new block:
+
+```json
+{ "data_dir": null, "…": null, "default_user": "daniel",
+  "preferences": { "foveation": 0.3, "occlusion": "hands" } }
+```
+
+**Why not `.env`.** Nothing in `conjure/` writes it — `load_env` (`config.py:286`) is the whole
+relationship, and it is read-only. `settings.json` already has both halves (`ensure_settings_file`
+`:97`, `load_settings` `:72`, the latter deliberately returning `{}` on a broken file rather than
+refusing to boot). Beyond the missing writer: a `.env` is line-oriented text with comments and human
+ordering, so a machine editor either regenerates it and loses that or splices lines surgically; every
+value in it is an untyped string, so `foveation=banana` is indistinguishable from `0.3` until `float()`
+fails at boot; and it holds **every API key**, so pointing a writer at it puts credentials in the blast
+radius of a bad save. JSON has the types, has the writer, and has no secrets in it.
+
+**Why `preferences` and not `tuning` or `options`.** The block's contents are heterogeneous — tolerances
+(`apply_tol_pos`) but also *choices* (`llm_model`), toggles (`debug_log`) and a control map (`bindings`).
+`tuning` describes only the first kind and would invite a second block for the rest. `options` is true of
+every key in the file including `data_dir`, so it fails to say why this one is nested. The real line is
+that **top-level keys say where things live; the block says how the running system behaves** — which is
+what `preferences` names, and it is the word [config §3.1](../specs/config.md) and the config backlog
+already use for this category.
+
+Precedence is unchanged — env still beats `settings.json` — which is the right way round: the
+machine-managed file sits *below* the hand-authored one, so a saved value stays overridable by a one-off
+`CONJURE_FOVEATION=0` and `--save` can never fight something you typed. Secrets are never settable and
+never printed unmasked.
+
+§3.1 still needs an edit: it currently assigns "tuning knobs" to `.env` explicitly, and these values are
+moving regardless of what the block is called. Naming it `preferences` makes that a clarification rather
+than a contradiction. This closes *Fold `.env` provider/model prefs into `settings.json`* and overlaps
+*Config reload without a restart* in [the config backlog](./config.md).
+
+*Implementation note:* `Settings` is a **frozen** dataclass (`config.py:293`), so `apply_override`
+rebinds the module global via `dataclasses.replace` rather than mutating — the way `agent_server.py:716`
+already does for `--history-cap`.
+
+**7 — `gc`.** `delete` deliberately keeps an asset's bytes, so residue accumulates by design and nothing
+ever reclaims it. Measured on the live install 2026-09-04: 170 files against 118 rows — **28 files
+reclaimable, 436 MB**.
+
+The classification, prototyped against the real data: a blob is **kept** if a catalog row references it
+*or* any world doc places it, and is garbage only if neither does. The union is the load-bearing part —
+the retention rule exists precisely because a placed entity can outlive its row, so rows alone are not a
+safe keep-set. `server._referenced_asset_ids` (`server.py:1228`) already does the reference walk and is
+deliberately schema-agnostic ("new reference sites are covered free"), so `gc` reuses it rather than
+reinventing it. Scanning every `*.json` under `users/` rather than only `wld_*.json` costs nothing and
+covers space and state docs if they ever gain references; today only world docs have any (16 ids, every
+one of them also catalogued).
+
+Sidecars follow their blob: a `<stem>.json` whose `<stem>.glb` survives is kept, one whose blob is gone
+goes with it.
+
+Same idiom as a glob delete — **reports by default, acts only on `!`**:
+
+```
+conjure:daniel.shell ~> gc
+28 unreferenced files · 436 MB reclaimable · nothing deleted
+  9a9513f44400fec2.glb   35 MB   2026-09-01
+  b4727a461a252b6a.glb   35 MB   2026-09-01
+  … 26 more
+Re-run as  gc !  to delete them.
+```
+
+Two safety rules. Blobs are **global** while rows are scoped — `assets/` is one flat store shared across
+users (`ASSET_CACHE`, `server.py:73`) — so `gc` unions references across *every* user's worlds, not just
+the caller's, which makes it an operator action rather than a per-user one. And it is **conservative on
+error**: a world doc that fails to parse aborts the run rather than counting as referencing nothing,
+because the failure mode of the alternative is deleting a model currently placed in someone's world.
+
+The engine belongs in `library.py` beside `delete`, with the shell command as one caller — `ctl` is the
+equally natural home for a maintenance verb and should invoke the same function.
+
+### Assets: what `delete` and `rename` actually do
+
+Assets are the one noun addressed by id, so both verbs need stating rather than inferring.
+
+**`rename` is a relabel**, and it is the only rename in the shell with **no uniqueness check**. Worlds,
+sessions and spaces refuse a clashing name; asset labels are auto-generated by the caption backfill
+(`captioner.py`, `assets_missing_caption`), so enforcing uniqueness there would fight the backfill. Two
+assets may therefore share a label — which is exactly why the id stays the address. It routes through
+`/update_asset` → `library.update`, which keeps FTS consistent (`library.py:203`), so a rename updates
+search as well as display.
+
+```
+> rename a1b2c3 "Kitchen counter, morning light"
+Renamed to "Kitchen counter, morning light".
+
+> rename "Kitchen counter" "Counter, morning"
+3 assets are called "Kitchen counter" — name one:
+  a1b2c3  image · public · 2026-08-29
+  d4e5f6  image · public · 2026-08-30
+  778899  image · private · 2026-09-01
+```
+
+`(unlabelled)` is a display placeholder, never an address: an asset with no label is reached by id.
+
+**`delete` removes the catalog entry, not the bytes.** `library.delete` (`library.py:455`) drops the row,
+FTS entry, aliases, relations and vector, and **deliberately leaves the blob** — "regenerable, and may
+still be referenced by a placed entity". That is correct behaviour and also the explanation for the 436 MB
+of rowless files measured above: they are mostly accumulated `delete` residue, not corruption.
+
+So the report has to say so. "Deleted asset X" on its own implies reclaimed disk that was never
+reclaimed:
+
+```
+> delete "Kitchen counter, morning light"
+Deleted asset "Kitchen counter, morning light" (image · a1b2c3) from the catalog.
+Blob kept: assets/a1b2c3.png (412 KB) — it may still be placed in a world.
+
+> delete "kitchen*"
+4 assets match — nothing deleted. Re-run with ! to confirm:
+  Kitchen counter · Kitchen sink · Kitchen window · Kitchen door
+```
+
+**An ambiguous label refuses; a glob confirms.** These are different situations and get different
+answers. A glob is *intentionally* plural — you typed `*`, so being shown the set and confirming it with
+`!` is right. An ambiguous label is *unintentionally* plural — you typed one name meaning one thing, so
+offering to delete all three would be the wrong help. It refuses, deletes nothing, and hands back
+commands you can run:
+
+```
+> delete "Animated Woman"
+3 assets are called "Animated Woman" — nothing deleted. Name one:
+  delete assets/97a4e8c5e93b5c4f.glb    model · public · 2026-06-22
+  delete assets/a6522fe53d15de21.glb    model · public · 2026-06-22
+  delete assets/a2212729826b718e.glb    model · public · 2026-09-03
+Or all three:  delete "Animated Woman" !
+```
+
+That is a real case, not a hypothetical: the live library has four assets sharing one label, two more
+labels at three each, and two at two. They cluster on exactly the **short** labels — "Animated Woman",
+"Spaceship" — which are the ones anybody would type.
+
+The existing scope gate is unchanged: `_admin_do_delete` checks the row's scope against the caller's user
+before calling through, and `_asset_rows` only ever lists one agent's own assets, so ambiguity is always
+within a single scope.
+
+### What the live library says about asset display (measured 2026-09-04)
+
+Three facts that shape phases 1, 2 and 4:
+
+- **An asset id *is* its filename, extension included** — `04d8ea35984d3492.glb`, 20 chars
+  (`server.py:1279` writes `filename=asset_id`). So `disk`'s blob line is `assets/<id>` directly, and a
+  poly.pizza sidecar is `assets/<stem>.json`. No path composition needed.
+- **Labels are prompt-derived and can be paragraph-length**: min 3 chars, mean 59, **max 611**. Only 45
+  of 118 are 30 characters or under. So the label column in `dir` must be **truncated to a fixed width**
+  with the full text left to `show` — an untruncated label column would blow out any terminal. It also
+  means label-*addressing* is a convenience for the short ones, never the primary route; the id stays the
+  address for good reason.
+- **Every asset currently has a label** (0 of 118 are empty), so the `(unlabelled)` placeholder is not
+  reachable today. It still needs to exist for the window between an asset arriving and the caption
+  backfill reaching it.
+
+### Test surface
+
+`tests/test_shell.py` (76 tests) and the `/admin/*` block of `tests/test_server.py` (315) take the weight;
+`test_agent_server.py` (36) and `test_agent_client.py` (15) cover the `cwd_display` protocol addition,
+`test_cli_repl.py` (27) the prompt, `test_config_paths.py` (23) the `tuning` block and precedence. Phase 1
+wants a regression test that `delete assets` actually empties the scope — the current pass is an accident
+of `label` holding the id.
+
+### Settled (2026-09-04, with Daniel)
+
+- **Glob deletes preview unless you add `!`** (phase 5).
+- **`--save` writes a `preferences` block in `settings.json`**, not `.env` (phase 6). The name and the
+  reasoning are above; §3.1 gains a clarification.
+- **`show` keeps ids, below the human fields**; `file` adds disk paths on top of that, so nothing you
+  rely on while debugging disappears behind a second command.
+- **Client-tier `set` stores the override and says "applies on the next headset load"**; a live push over
+  the world WS is a follow-up, not part of this.
+- **`dir` hides the `ref` column everywhere except assets**, where the id *is* the address; `dir -l`
+  adds it back. No persistent toggle whose state you have to remember.
+- **The command is `disk`, not `file`.**
+- **The cwd holds ids and displays names** (phase 3), settled once it turned out to need no protocol
+  change. A stale display is accepted as cosmetic.
+- **A stale cwd walks up to the nearest surviving ancestor and says so** rather than erroring.
+- **`set` is CLI-only.** Voice deferred — reads are plainly speakable and writes were workable under
+  constraints (allowlisted spoken keys, declared ranges, a spoken read-back, no `--save`), but none of
+  that is worth carrying in the first cut. The `SETTABLE` table should still leave room for a `spoken`
+  field so adding it later is a data change, not a redesign.
+
+### Open
+
+None. The plan is aligned and ready to implement.
+
 ## Shell
 
 **World ops as commands.** `reset` / `save` / `load` were named as shell verbs and never added; today
