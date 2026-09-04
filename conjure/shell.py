@@ -334,6 +334,12 @@ class Shell:
              "dir [-l] [path] — list one level of the namespace (-l also shows ids)", False),
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
+            (re.compile(r"^set(?:\s+(?P<key>[\w.-]+)(?:\s+(?P<value>\S.*?))?)?(?P<save>\s+--save)?$", re.I),
+             self._set,
+             "set [key [value]] [--save] — list settings, read one, or change it for this run; "
+             "--save keeps it in settings.json", False),
+            (re.compile(r"^unset\s+(?P<key>[\w.-]+)$", re.I), self._unset,
+             "unset <key> — drop a run-time change, back to the saved or default value", False),
             (re.compile(r"^(?:disk|file)(?:\s+(?P<path>\S.*))?$", re.I), self._disk,
              "disk [path] — where a thing actually lives: real files, sizes, and an asset's catalog row",
              False),
@@ -898,6 +904,84 @@ class Shell:
         width = max((len(k) for k, _ in data.get("fields", [])), default=0)
         rows = "\n".join(f"  {k:<{width}}  {v}" for k, v in data.get("fields", []))
         await self._say(on_text, f"{display_path(data.get('display') or data['path'], self._acting)}\n{rows}")
+
+    async def _settings_api(self, **kw) -> dict:
+        url = getattr(self._settings, "world_url", None) if self._settings else None
+        if not url:
+            return {"ok": False, "error": "no world server configured"}
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return (await client.post(f"{url}/admin/settings", json=kw)).json()
+        except Exception as exc:                          # noqa: BLE001 — network / server down
+            return {"ok": False, "error": f"settings request failed: {exc}"}
+
+    async def _set(self, on_text, m):
+        """`set` · `set <key>` · `set <key> <value> [--save]`.
+
+        Always reports the SOURCE and the environment variable, so the answer to "why is it that?" and
+        "how do I keep it?" are both in the reply rather than in someone's memory."""
+        key = (m.group("key") or "").strip()
+        value = (m.group("value") or "").strip() or None
+        save = bool(m.group("save"))
+        data = await self._settings_api(key=key, value=value, save=save)
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        if not key:
+            await self._say(on_text, self._render_settings(data.get("settings") or []))
+            return
+        if value is None:
+            await self._say(on_text, self._render_setting(data))
+            return
+        lines = [f"{data['key']} = {data['value']}   (was {data.get('was')} · "
+                 f"{data.get('was_source', 'default')}){self._tier_note(data)}",
+                 f"env:      {data['env']}={data.get('env_value', data['value'])}"]
+        lines.append(f"saved:    {short_path(data['saved'])}" if data.get("saved")
+                     else f"persist:  set {data['key']} {value} --save   → settings.json")
+        await self._say(on_text, "\n".join(lines))
+
+    async def _unset(self, on_text, m):
+        data = await self._settings_api(key=m.group("key").strip(), clear=True)
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        await self._say(on_text, f"{data['key']} = {data['value']}   (was {data.get('was')}) — "
+                                 f"back to the {data['source']} value.{self._tier_note(data)}")
+
+    @staticmethod
+    def _tier_note(data: dict) -> str:
+        return "\n          applies on the next headset load" if data.get("tier") == "client" else ""
+
+    def _render_setting(self, d: dict) -> str:
+        rows = [["value", d.get("value")], ["source", d.get("source")], ["tier", d.get("tier")],
+                ["env", d.get("env")]]
+        if d.get("choices"):
+            rows.append(["one of", ", ".join(d["choices"])])
+        if d.get("limits"):
+            rows.append(["between", f"{d['limits'][0]} and {d['limits'][1]}"])
+        if d.get("doc"):
+            rows.append(["what", d["doc"]])
+        w = max(len(k) for k, _ in rows)
+        return f"{d['key']}\n" + "\n".join(f"  {k:<{w}}  {v}" for k, v in rows)
+
+    def _render_settings(self, rows: list[dict]) -> str:
+        """The whole table, grouped by tier — a flat list of forty knobs answers no question anyone has."""
+        out = []
+        for tier, blurb in (("live", "effective next turn"),
+                            ("client", "applied when the headset next loads")):
+            here = [r for r in rows if r.get("tier") == tier]
+            if not here:
+                continue
+            out.append(f"{tier} — {blurb}")
+            grid = [[r["key"], str(r["value"]), r["source"] if r["source"] != "default" else "",
+                     r.get("doc", "")] for r in here]
+            widths = [max(len(g[i]) for g in grid) for i in range(3)]
+            out += [f"  {g[0]:<{widths[0]}}  {g[1]:<{widths[1]}}  {g[2]:<{widths[2]}}  {g[3]}".rstrip()
+                    for g in grid]
+            out.append("")
+        out.append("`set <key>` for one · `set <key> <value>` to change it · boot-time keys live in .env")
+        return "\n".join(out)
 
     async def _disk(self, on_text, m):
         """`disk [path]` — the on-disk truth behind a name. The one command that shows ids and filenames,

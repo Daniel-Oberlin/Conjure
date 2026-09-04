@@ -48,7 +48,7 @@ from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
-from . import namespace
+from . import config, namespace
 from .world import (_MRU_CAP, MIGRATED_SID, loose, SessionRepository, SpaceStore, WorldRepository, WorldStore,
                     NAME_SEGMENT, _set_path, clean_name, fold_accents, migrate_cache_to_users,
                     migrate_env_room_to_space_presentation,
@@ -2601,6 +2601,66 @@ async def admin_show(req: AdminPath) -> dict:
         return {"ok": False, "error": loc}
     return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
             "kind": loc.kind, "fields": namespace.fields(loc)}
+
+
+class SettingChange(BaseModel):
+    key: str = ""
+    value: Optional[str] = None       # None with a key = read it; with `clear` = drop the override
+    clear: bool = False
+    save: bool = False
+
+
+def _setting_row(key: str) -> dict:
+    tier, doc = config.SETTABLE.get(key, (config.tier_of(key), ""))
+    value = getattr(get_settings(), key, None)
+    # Two renderings: `value` is for a person (a flag reads on/off, an unset option reads as a dash) and
+    # `env_value` is what the variable would literally carry, which is what the reply tells you to paste.
+    return {"key": key, "tier": tier, "doc": doc, "env": config.env_var(key),
+            "value": ("on" if value else "off") if isinstance(value, bool) else
+                     ("—" if value is None or value == "" else value),
+            "env_value": config.as_env(value) if value is not None else "",
+            "source": config.source_of(key),
+            "choices": list(config.CHOICES.get(key, ())), "limits": list(config.LIMITS.get(key, ()))}
+
+
+@app.post("/admin/settings")
+async def admin_settings(req: SettingChange) -> dict:
+    """Read or change a runtime setting (shell `set` / `unset`).
+
+    Lives on the WORLD server because that is what serves the headset page and therefore owns every
+    client-tier knob; the agent server keeps its own (`history_cap`). Secrets are never readable here
+    and never settable — `set` is a convenience for tuning, not a credential store."""
+    global settings
+    if not req.key:
+        return {"ok": True, "settings": [_setting_row(k) for k in sorted(config.SETTABLE)]}
+    key = req.key.strip().lower().replace("-", "_").replace(" ", "_")
+    tier = config.tier_of(key)
+    if tier == "unknown":
+        return {"ok": False, "error": f"no setting {req.key!r}. Try `set` for the list."}
+    if tier == "secret":
+        return {"ok": False, "error": f"{key} is a secret — it lives in .env and is never shown or set here."}
+    if req.value is None and not req.clear:
+        return {"ok": True, **_setting_row(key)}
+    if tier == "boot":
+        return {"ok": False, "error": f"{key} is read once at startup ({config.env_var(key)}) — "
+                                      f"set it in .env and restart."}
+    was = _setting_row(key)
+    try:
+        if req.clear:
+            config.clear_override(key)
+        else:
+            config.apply_override(key, config.parse_value(key, req.value))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    settings = get_settings()                      # frozen dataclass: the snapshot is replaced, not mutated
+    saved = ""
+    if req.save and not req.clear:
+        try:
+            saved = str(config.save_preference(key, config.parse_value(key, req.value)))
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": f"set but not saved: {exc}"}
+    return {"ok": True, **_setting_row(key), "was": was["value"], "was_source": was["source"],
+            "saved": saved}
 
 
 @app.post("/admin/match")

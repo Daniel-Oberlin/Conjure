@@ -787,6 +787,57 @@ def test_every_row_declares_whether_it_is_voice_safe():
 # best mispronounced and at worst — since the voice speech stage strips asterisks before the engine sees
 # them — silently gone, leaving a listener with a list and no idea which one they are in.
 
+def _set_shell(reply):
+    """A shell whose /admin/settings is served by `reply(kw)`."""
+    sh, d, out, on_text = _shell()
+    sh.in_shell = True
+    seen = []
+
+    async def api(**kw):
+        seen.append(kw)
+        return reply(kw)
+
+    sh._settings_api = api
+    return sh, out, on_text, seen
+
+
+async def test_set_reports_the_source_and_how_to_keep_it():
+    # "why is it that?" and "how do I keep it?" both belong in the reply, not in someone's memory.
+    sh, out, on_text, seen = _set_shell(lambda kw: {
+        "ok": True, "key": "foveation", "value": "0.3", "env_value": "0.3", "tier": "client",
+        "env": "CONJURE_FOVEATION", "source": "env", "was": "0.0", "was_source": "default"})
+    await sh._dispatch("set foveation 0.3", on_text)
+    line = out[-1][1]
+    assert "was 0.0 · default" in line
+    assert "CONJURE_FOVEATION=0.3" in line                    # the env form, to paste into .env
+    assert "--save" in line                                   # …and the way to persist it
+    assert "next headset load" in line                        # a client knob says when it takes effect
+
+
+async def test_a_saved_setting_says_where_it_went_instead_of_how_to_save_it():
+    sh, out, on_text, seen = _set_shell(lambda kw: {
+        "ok": True, "key": "pose_tau", "value": "0.25", "env_value": "0.25", "tier": "client",
+        "env": "CONJURE_POSE_TAU", "source": "env", "was": "0.0", "saved": "/home/d/settings.json"})
+    await sh._dispatch("set pose_tau 0.25 --save", on_text)
+    assert seen[-1]["save"] is True
+    assert "settings.json" in out[-1][1] and "persist:" not in out[-1][1]
+
+
+async def test_a_refused_setting_says_why():
+    sh, out, on_text, seen = _set_shell(
+        lambda kw: {"ok": False, "error": "port is read once at startup (CONJURE_PORT) — "
+                                          "set it in .env and restart."})
+    await sh._dispatch("set port 9000", on_text)
+    assert "read once at startup" in out[-1][1]
+
+
+async def test_set_is_a_terminal_command():
+    # Deferred by design: a mis-heard number succeeds silently where a mis-heard key would fail loudly.
+    sh, out, on_text, seen = _set_shell(lambda kw: {"ok": True})
+    await sh._dispatch("set foveation 0.3", on_text, voice=True)
+    assert "terminal command" in out[-1][1] and seen == []
+
+
 def _glob_shell(matches, kind="world"):
     """A shell whose /admin/match answers with `matches` (labels), and records every delete."""
     deleted = []
