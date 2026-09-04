@@ -2597,13 +2597,14 @@ async def admin_tree(req: AdminPath) -> dict:
         row = namespace.leaf_row(loc)
         if row is None:
             return {"ok": False, "error": f"no {loc.kind} {loc.name!r}"}
-        return {"ok": True, "path": namespace.loc_path(loc), "kind": loc.kind, "self": row,
-                "children": [row], "columns": namespace.columns_for(loc.kind + "s")}
+        return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
+                "kind": loc.kind, "self": row, "children": [row],
+                "columns": namespace.columns_for(loc.kind + "s")}
     # `self` is the row for the node ITSELF when it has one (a session's own summary, say). A session's
     # children are just `worlds/` and `state/`, so without this a delete confirmation for one could only
     # say "nothing" — see Shell._summarize.
-    return {"ok": True, "path": namespace.loc_path(loc), "kind": loc.kind,
-            "self": namespace.leaf_row(loc), "children": namespace.children(loc),
+    return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
+            "kind": loc.kind, "self": namespace.leaf_row(loc), "children": namespace.children(loc),
             "columns": namespace.columns_for(loc.kind)}
 
 
@@ -2613,7 +2614,8 @@ async def admin_show(req: AdminPath) -> dict:
     loc = namespace.resolve(req.path)
     if isinstance(loc, str):
         return {"ok": False, "error": loc}
-    return {"ok": True, "path": namespace.loc_path(loc), "kind": loc.kind, "fields": namespace.fields(loc)}
+    return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
+            "kind": loc.kind, "fields": namespace.fields(loc)}
 
 
 @app.post("/admin/delete")

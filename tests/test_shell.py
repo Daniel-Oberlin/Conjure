@@ -787,6 +787,45 @@ def test_every_row_declares_whether_it_is_voice_safe():
 # best mispronounced and at worst — since the voice speech stage strips asterisks before the engine sees
 # them — silently gone, leaving a listener with a list and no idea which one they are in.
 
+async def test_cd_remembers_ids_and_shows_names():
+    # The cwd is canonical (ids) so a rename can't strand it; the prompt renders the display form the
+    # server sent alongside. Two fields, one round trip.
+    sh, out, on_text, calls = _admin_shell(
+        lambda a, p: {"ok": True, "path": "/daniel/agents/builder/sessions/session-3",
+                      "display": "/daniel/agents/builder/sessions/Kitchen sketch", "children": []})
+    await sh._dispatch('cd "Kitchen sketch"', on_text)
+    assert sh.cwd == "/daniel/agents/builder/sessions/session-3"          # remembered by id
+    assert sh.cwd_display == "/daniel/agents/builder/sessions/Kitchen sketch"
+    assert "Kitchen sketch" in out[-1][1] and "session-3" not in out[-1][1]   # shown by name
+
+
+async def test_a_cwd_whose_session_vanished_walks_up_instead_of_erroring():
+    # Someone else renamed or deleted the session you were standing in. The old behaviour was an error
+    # per command until you worked out you had to `cd` somewhere; now it moves you and says so.
+    gone = "/daniel/agents/builder/sessions/session-3"
+    def responder(action, path):
+        if path.startswith(gone):
+            return {"ok": False, "error": f"no session 'session-3' for daniel/agents/builder"}
+        return {"ok": True, "path": path, "display": path, "children": [{"label": "Porch",
+                                                                         "kind": "session"}]}
+    sh, out, on_text, calls = _admin_shell(responder)
+    await sh._dispatch("dir", on_text, cwd=gone)          # cwd is per-connection, passed in per dispatch
+    assert "is gone" in out[-2][1] and "session-3" in out[-2][1]
+    assert sh.cwd == "/daniel/agents/builder/sessions"                    # the nearest survivor
+    assert "Porch" in out[-1][1]                                          # …and it listed there
+
+
+async def test_a_bad_argument_is_still_reported_as_a_bad_argument():
+    # The walk-up must not swallow a genuine typo: if the CWD is fine, the error stands.
+    def responder(action, path):
+        if path.endswith("/nope"):
+            return {"ok": False, "error": "no world 'nope' in session-1"}
+        return {"ok": True, "path": path, "display": path, "children": []}
+    sh, out, on_text, calls = _admin_shell(responder)
+    await sh._dispatch("dir nope", on_text)
+    assert "no world 'nope'" in out[-1][1] and "moved you" not in out[-1][1]
+
+
 def test_columns_align_every_row_under_a_header():
     from conjure.shell import columns
     rows = [{"label": "Meadow", "kind": "world", "cells": ["12 entities", "Living Room"], "active": True},

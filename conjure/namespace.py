@@ -119,7 +119,8 @@ def resolve(path: str):
     if cat == "spaces":
         if len(segs) == 2:
             return Loc("spaces", user)
-        return Loc("space", user, name="/".join(segs[2:]))
+        ref = "/".join(segs[2:])
+        return Loc("space", user, name=_h().spaces.resolve(user, ref) or ref)
     if cat == "assets":                                        # legacy: rows scoped to a bare user
         if len(segs) == 2:
             return Loc("assets", user)
@@ -155,9 +156,9 @@ def resolve(path: str):
     # what a reference means. It stays dir-based — a session can hold worlds before anything writes its
     # `session.json`, and such a session is still a real, listable, deletable place.
     sid = _h()._resolve_sid(scope, segs[4])
-    # The Loc carries the resolved ID, not the reference: `loc.sid` is used directly as a directory name
-    # downstream. (The world branch stores the name instead and re-resolves per use — worlds are addressed
-    # by name throughout, sessions by id.)
+    # The Loc carries the resolved ID, not the reference — for worlds and spaces as well as sessions, so
+    # that one `Loc` means one thing whoever typed what. A rename can then never move a resolved location
+    # out from under the command holding it, and `loc_path` is stable where `display_path` is readable.
     if sid is None:
         return f"no session {segs[4]!r} for {scope}"
     if len(segs) == 5:
@@ -168,10 +169,11 @@ def resolve(path: str):
         return Loc("worlds", user, agent, sid)
     # Verify it: without this, any trailing segments resolve to a `world` Loc and `cd`/`show` succeed on
     # a world that doesn't exist (worlds are flat now, so a name never spans segments).
-    name = "/".join(segs[6:])
-    if _h()._session_worlds(f"{user}/agents/{agent}", sid).resolve(name) is None:
-        return f"no world {name!r} in {sid}"
-    return Loc("world", user, agent, sid, name)
+    ref = "/".join(segs[6:])
+    wid = _h()._session_worlds(f"{user}/agents/{agent}", sid).resolve(ref)
+    if wid is None:
+        return f"no world {ref!r} in {sid}"
+    return Loc("world", user, agent, sid, wid)
 
 def loc_path(loc: Loc) -> str:
     """The canonical path for a `Loc` — what a shortcut resolves to, and what `cd` should remember."""
@@ -189,6 +191,43 @@ def loc_path(loc: Loc) -> str:
     if loc.kind == "session":
         return f"{base}/{loc.sid}"
     return f"{base}/{loc.sid}/worlds" + (f"/{loc.name}" if loc.kind == "world" else "")
+
+def label_of(loc: Loc) -> str:
+    """The display name of whatever `loc` points at — its last path segment, in names."""
+    if loc.kind == "world":
+        try:
+            return _h()._session_worlds(loc.scope, loc.sid).name_of(loc.name)
+        except (OSError, ValueError, AttributeError):
+            return loc.name
+    if loc.kind == "space":
+        try:
+            return _h().spaces.name_of(loc.user, loc.name)
+        except (OSError, ValueError, AttributeError):
+            return loc.name
+    if loc.kind == "session":
+        return session_meta(loc.scope, loc.sid).get("title") or loc.sid
+    if loc.kind == "asset":
+        rec = (_h().library.get(loc.name) or {}) if _h().library else {}
+        return (rec.get("label") or "").strip() or loc.name
+    return {"root": "/", "user": loc.user, "agent": loc.agent}.get(loc.kind, loc.kind)
+
+
+def display_path(loc: Loc) -> str:
+    """The same location as `loc_path`, written in NAMES — what a person is shown and types back.
+
+    `loc_path` is the canonical form and holds ids, so it survives a rename; this one is readable and
+    does not. Both are returned by `/admin/{tree,show}` so a caller can remember the first and print the
+    second (docs/backlogs/agents.md, phase 3)."""
+    canon = loc_path(loc)
+    if loc.kind in ("world", "space", "asset", "session"):
+        head, _, _ = canon.rpartition("/")
+        canon = f"{head}/{label_of(loc)}"
+    if loc.kind == "world":                                    # …/sessions/<id>/worlds/<name>
+        parts = canon.split("/")
+        parts[-3] = session_meta(loc.scope, loc.sid).get("title") or loc.sid
+        canon = "/".join(parts)
+    return canon
+
 
 def node(label: str, kind: str, *cells: str, ref: str = "", active: bool = False) -> dict:
     """One listing row. `label` is what a person READS; `ref` is what they TYPE and what the server
@@ -274,12 +313,14 @@ def space_label(env_space: str, world_owner: str = "") -> str:
     return name if owner == world_owner or not world_owner else f"{owner}'s {name}"
 
 
-def world_row(scope: str, sid: str, name: str) -> dict:
+def world_row(scope: str, sid: str, ref: str) -> dict:
+    """`ref` is an id or a name; the row is always LED by the name."""
     wdir = _h()._session_worlds(scope, sid)
-    wid = wdir.resolve(name)
+    wid = wdir.resolve(ref)
+    name = wdir.name_of(wid) if wid else ref
     live = scope == _h().active_scope and sid == _h().active_sid and wid == _h().active_world
     try:
-        doc = wdir.load(name).doc
+        doc = wdir.load(wid or ref).doc
     except (OSError, ValueError):
         doc = {}
     env = doc.get("environment") or {}
@@ -402,7 +443,7 @@ def fields(loc: Loc) -> list[list]:
             kinds[k] = kinds.get(k, 0) + 1
         meta = session_meta(loc.scope, loc.sid)
         wid = _h()._session_worlds(loc.scope, loc.sid).resolve(loc.name)
-        return [["world", loc.name], ["id", wid or "?"], ["session", loc.sid], ["scope", loc.scope],
+        return [["world", label_of(loc)], ["id", wid or "?"], ["session", loc.sid], ["scope", loc.scope],
                 ["entities", str(len(ents))],
                 ["by kind", ", ".join(f"{k}×{v}" for k, v in sorted(kinds.items())) or "—"],
                 ["space", space_label(env.get("space"), loc.user)

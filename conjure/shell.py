@@ -252,6 +252,10 @@ class Shell:
         # (tests) leaves it None and clears in-memory only. `async (on_text) -> None`.
         self._clear_transcript_hook = None
         self._cwd = ""                   # this dispatch's working directory (per-connection; see _dispatch)
+        self._cwd_display = ""           # the same place written in NAMES — what the prompt shows. The cwd
+                                         # itself holds ids so a rename can't strand it; only the rendering
+                                         # is by name, and it goes stale until the next command (harmless,
+                                         # and cosmetic — see docs/backlogs/agents.md phase 3).
         # An armed spoken `reset agent`: (who, agent, assets, monotonic-time). One slot, not per-user —
         # arming a second reset should replace the first, and it carries WHO armed it so `_confirm`
         # can refuse someone else's (§ _confirm).
@@ -464,7 +468,8 @@ class Shell:
         return bool(_LEAVE_SHELL.match(cmd))
 
     async def _dispatch(self, cmd: str, on_text, *, speaker: Optional[str] = None,
-                        permitted: bool = True, cwd: str = "", voice: bool = False) -> None:
+                        permitted: bool = True, cwd: str = "", cwd_display: str = "",
+                        voice: bool = False) -> None:
         if not cmd:
             return
         # WHO typed this command (the connection's user), so identity-scoped verbs act as the speaker, not
@@ -477,6 +482,7 @@ class Shell:
         self._permitted = permitted
         self._voice = voice
         self._cwd = cwd or default_cwd(self._acting, self._agent_name())
+        self._cwd_display = cwd_display or self._cwd
         if voice:                                             # spoken aliases for `llm <name>`
             sm = _SPOKEN_LLM.match(cmd)
             if sm and await self._switch_llm(on_text, sm):
@@ -494,8 +500,16 @@ class Shell:
 
     @property
     def cwd(self) -> str:
-        """The working directory after the last dispatch — the caller persists it per connection."""
+        """The working directory after the last dispatch — the caller persists it per connection.
+        Canonical: it holds ids, so renaming the session you are standing in cannot strand it."""
         return self._cwd
+
+    @property
+    def cwd_display(self) -> str:
+        """The same directory in names — what a prompt shows. Persisted per connection alongside `cwd`
+        rather than derived, because rendering it needs a world-server round trip and the prompt is
+        redrawn on events that have none."""
+        return self._cwd_display
 
     # ----------------------------------------------------------------- commands
     async def _open(self, on_text, m=None):
@@ -793,9 +807,41 @@ class Shell:
         path = self._path(m)
         data = await self._admin("tree", path)
         if not data.get("ok"):
-            await self._say(on_text, data.get("error", "error"))
-            return
+            data = await self._recover(on_text, m, data)
+            if data is None:
+                return
         await self._say(on_text, self._render_listing(data, long=bool(m.groupdict().get("long"))))
+
+    async def _recover(self, on_text, m, failed: dict) -> Optional[dict]:
+        """A path command failed. If the CWD is what went stale, move up to the nearest place that still
+        exists, say so, and retry there; otherwise report the original error.
+
+        A working directory can be invalidated by someone else — the session you are standing in gets
+        renamed or deleted from another connection — and the failure then looks like a broken shell
+        rather than a moved floor. Walking up is the same self-healing the world pointer already does
+        (`world._mru_first` falls through deleted worlds; `_boot_world` has its three rungs).
+
+        Cost is paid only on the error path: a command that works never asks."""
+        if not self._cwd or self._cwd == home_of(self._acting):
+            await self._say(on_text, failed.get("error", "error"))
+            return None
+        here = await self._admin("tree", self._cwd)
+        if here.get("ok"):                                     # the cwd is fine — the ARGUMENT was bad
+            await self._say(on_text, failed.get("error", "error"))
+            return None
+        gone = loc_name(self._cwd_display or self._cwd)
+        path = self._cwd
+        while path and path != "/":
+            path = path.rsplit("/", 1)[0] or "/"
+            up = await self._admin("tree", path)
+            if up.get("ok"):
+                self._cwd = up.get("path") or path
+                self._cwd_display = up.get("display") or self._cwd
+                await self._say(on_text, f"{gone!r} is gone — moved you up to "
+                                         f"{display_path(self._cwd_display, self._acting)}")
+                return up if not (m and (m.groupdict().get("path") or "").strip()) else None
+        await self._say(on_text, failed.get("error", "error"))
+        return None
 
     async def _show(self, on_text, m):
         data = await self._admin("show", self._path(m))
@@ -804,7 +850,7 @@ class Shell:
             return
         width = max((len(k) for k, _ in data.get("fields", [])), default=0)
         rows = "\n".join(f"  {k:<{width}}  {v}" for k, v in data.get("fields", []))
-        await self._say(on_text, f"{display_path(data['path'], self._acting)}\n{rows}")
+        await self._say(on_text, f"{display_path(data.get('display') or data['path'], self._acting)}\n{rows}")
 
     async def _cd(self, on_text, m):
         """Bare `cd` returns to your own agent scope — the useful default, not the root."""
@@ -816,7 +862,8 @@ class Shell:
         # Adopt the path the SERVER resolved, not the one typed: `…/worlds` is a shortcut for the active
         # session's worlds, and remembering the shortcut would silently point elsewhere after a switch.
         self._cwd = data.get("path") or target
-        await self._say(on_text, display_path(self._cwd, self._acting))
+        self._cwd_display = data.get("display") or self._cwd
+        await self._say(on_text, display_path(self._cwd_display, self._acting))
 
     async def _visibility(self, on_text, m):
         """`public`/`private` — bare acts on the live session (the common case, and voice-safe); with a
@@ -836,6 +883,7 @@ class Shell:
         if not data.get("ok"):
             await self._say(on_text, data.get("error", "error"))
             return
+        shown = data.get("display") or path
         kind, fields = data.get("kind"), dict(data.get("fields", []))
         if kind == "space":
             out = await self._session_api("POST", "/space/visibility", name=fields.get("space"), public=public)
@@ -849,7 +897,7 @@ class Shell:
             await self._say(on_text, f"A {kind} has no visibility of its own — "
                                      f"a world inherits its session's.")
             return
-        await self._say(on_text, f"{display_path(path, self._acting)} is now "
+        await self._say(on_text, f"{display_path(shown, self._acting)} is now "
                                  f"{'public' if public else 'private'}."
                         if out.get("ok") else out.get("error", "error"))
 
@@ -914,10 +962,11 @@ class Shell:
             await self._say(on_text, preview.get("error", "error"))
             return
         path = preview.get("path") or path
+        shown = preview.get("display") or path
         took = self._summarize(preview)
         data = await self._admin("delete", path)
         if data.get("ok"):
-            await self._say(on_text, f"Deleted {display_path(path, self._acting)} ({took}).")
+            await self._say(on_text, f"Deleted {display_path(shown, self._acting)} ({took}).")
         else:
             await self._say(on_text, f"Not deleted: {data.get('error', 'error')}")
 
@@ -1063,7 +1112,7 @@ class Shell:
             # is the sort of thing that only shows up once a listener hears it.
             noun = noun or loc_name(data.get("path", "")).rstrip("s") or "item"
             return spoken_list(noun, labels, current=current, here=here, sole=sole)
-        head = display_path(data.get("path", "/"), self._acting)
+        head = display_path(data.get("display") or data.get("path", "/"), self._acting)
         if data.get("path") != data.get("requested", data.get("path")):
             head += f"   (→ {data['path']})"
         if not rows:
