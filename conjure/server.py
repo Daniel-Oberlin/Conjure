@@ -363,6 +363,27 @@ def _ensure_session(scope: str, sid: str | None = None, *, active_world: str | N
     return sid
 
 
+def _record_active_world(scope: str, sid: str, wid: str) -> None:
+    """Keep a session's `active_world` current, as the **id**.
+
+    It used to be written once at creation and never again, so every listing that read it was reporting
+    where the session started rather than where it is. Worse, the two writers disagreed on the type —
+    `/session/new` stored the world's NAME while `_ensure_session` and the id migration stored its ID — so
+    one column carried two kinds of value. The id is the right one: it survives a rename, and readers turn
+    it into a name with `namespace.world_label`, which still resolves a legacy name for anything on disk
+    that predates this."""
+    if sessions is None or not sid:
+        return
+    try:
+        meta = sessions.load_meta(scope, sid) or {}
+    except (OSError, ValueError):
+        return                                             # no meta yet — `_ensure_session` will write one
+    if meta.get("active_world") == wid:
+        return
+    meta["active_world"] = wid
+    sessions.save_meta(scope, sid, meta)
+
+
 def _boot_world() -> tuple[str, str, WorldStore]:
     """Resume exactly where the server was: read the global session pointer `(scope, sid)`, make that the
     live session, and load that session's active world (docs/specs/agents.md §7.1). `agent = agent_of
@@ -1614,6 +1635,7 @@ async def _switch_to(scope: str, ref: str, store_override: WorldStore | None = N
     active_scope, active_world, active_sid = scope, wid, sid
     active_space_owner, active_space, store = _activate(scope, wid, raw)   # resolve space (owner+name) + compose
     worlds.set_active(scope, wid)                 # per-session memory: which world to resume in this session
+    _record_active_world(scope, sid, wid)         # …and in the session's own meta, which is what listings read
     _write_session_ptr(scope, sid)               # global pointer: which SESSION is live across the server
     _slog("world", f"switch → {scope.split('/', 1)[0]}/{name} [{wid}] "
                    f"(space {active_space_owner}/{active_space})")
@@ -1877,6 +1899,7 @@ async def sessions_list(scope: str = DEFAULT_SCOPE) -> dict:
         except (OSError, ValueError):
             meta = {}
         out.append({"id": sid, "title": meta.get("title", sid), "active_world": meta.get("active_world"),
+                    "active_world_name": namespace.world_label(scope, sid, meta.get("active_world")),
                     "llm": meta.get("llm", ""), "public": meta.get("public", True), "active": sid == active})
     # Discovery is scoped to the caller's AGENT (same lens as their own list); switch agents to cross.
     available = worlds.list_public_sessions(agent=agent_of(scope), exclude_user=scope.split("/", 1)[0])
@@ -1912,10 +1935,11 @@ async def session_new(req: SessionRef) -> dict:
         "id": sid, "owner": user, "agent": agent_of(req.scope),
         "title": title or f"Session {sid.split('-')[-1]}",
         "public": _agent_session_public(req.scope),
-        "active_world": wname, "llm": "", "greeted": False, "seeded": False})
+        "active_world": "", "llm": "", "greeted": False, "seeded": False})
     wdir = sessions.worlds(req.scope, sid)     # explicit target — the active-pointer flip is _switch_to's
-    wdir.save(wname, raw)
-    wdir.set_active(wname)
+    wid = wdir.save(wname, raw)                # upsert by name → mints the permanent id
+    wdir.set_active(wid)
+    _record_active_world(req.scope, sid, wid)  # the ID, not the name it was asked for
     await _switch_session(req.scope, sid)                # resumes the first world we just built
     return {"ok": True, "session": sid, "title": sessions.load_meta(req.scope, sid)["title"]}
 

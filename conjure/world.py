@@ -597,8 +597,14 @@ class WorldRepository:
                     meta = {}                                    # no/unreadable meta → treat as public (default)
                 if not meta.get("public", True):
                     continue
+                # The world reference is an id (a legacy meta may hold a name); resolve it here, since a
+                # caller listing OTHER users' sessions has no route to their world names.
+                aw = meta.get("active_world")
+                wdir = WorldDir(sess_dir / "worlds")
+                wname = (wdir.name_of(wdir.resolve(aw)) if aw and wdir.resolve(aw) else aw) or ""
                 out.append({"scope": scope, "owner": owner, "agent": agent_seg, "session": sess_dir.name,
-                            "title": meta.get("title", sess_dir.name), "active_world": meta.get("active_world")})
+                            "title": meta.get("title", sess_dir.name), "active_world": aw,
+                            "active_world_name": wname})
         return out
 
     def users_in_agent(self, agent: str) -> list[str]:

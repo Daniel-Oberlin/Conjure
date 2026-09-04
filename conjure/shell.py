@@ -672,8 +672,9 @@ class Shell:
             is_live = live.get("scope") == scope and live.get("session") == s["id"]
             extra = f", {s['llm']}" if s.get("llm") else ""
             vis = "" if s.get("public", True) else ", private"
+            world = s.get("active_world_name") or s.get("active_world") or "—"
             rows.append(self._mark(is_live, bool(s.get("active")))
-                        + f"{s.get('title')} ({s['id']}) — world {s.get('active_world')}{extra}{vis}")
+                        + f"{s.get('title')} ({s['id']}) — world {world}{extra}{vis}")
         text = "Sessions:\n" + ("\n".join(rows) or "  (none)")
         # Other users' public sessions you can VISIT (docs/specs/agents.md §7.2), scoped to THIS agent — a
         # human act, so it lives here in the shell, not in the agent's world tools. Visit by name.
@@ -683,7 +684,8 @@ class Shell:
             for a in avail:
                 is_live = live.get("scope") == a["scope"] and live.get("session") == a["session"]
                 pub.append(self._mark(is_live, False)
-                           + f"{a['owner']}  \"{a.get('title')}\"  — world {a.get('active_world')}")
+                           + f"{a['owner']}  \"{a.get('title')}\"  "
+                             f"— world {a.get('active_world_name') or a.get('active_world') or '—'}")
             text += ("\n\nOther users' public sessions (visit: session <user> <name>):\n" + "\n".join(pub))
         text += "\n\n@ = live session (you're here) · * = your last-used in this agent"
         await self._say(on_text, text)
