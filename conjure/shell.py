@@ -175,6 +175,48 @@ def spoken_list(noun: str, labels: list[str], *, current: str = "", here: str = 
     return f"{head} {here} {current}." if current else head
 
 
+# How wide a name column may grow. Asset labels are prompt-derived — the live catalog runs to 611
+# characters — so an uncapped column doesn't wrap, it destroys the layout. The full text is one `show`
+# away, which is the right place for it.
+NAME_WIDTH = 44
+
+
+def _clip(text: str, width: int) -> str:
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def columns(rows: list[dict], header: list[str], *, long: bool = False) -> list[str]:
+    """Rows → aligned lines, `*` marking the live one.
+
+    The server sends each row as `label` plus a list of `cells`, already stringified but not laid out,
+    and `header` naming what they mean. It used to send one pre-composed `detail` string per row, which
+    is exactly why no two listings ever lined up.
+
+    The **id** column is shown only in `long` mode, or when a row's `ref` differs from its label — which
+    is assets, where the id is genuinely the address rather than a curiosity."""
+    def name(c):     # a trailing '/' marks what you can `cd` into, so the namespace's shape is visible
+        return _clip(c["label"], NAME_WIDTH) + ("/" if c.get("kind") in ("category", "user", "agent") else "")
+
+    show_id = long or any(c.get("ref") and c["kind"] == "asset" for c in rows)
+    grid = [[name(c)] + [str(x) for x in (c.get("cells") or [])] + ([c.get("ref", "")] if show_id else [])
+            for c in rows]
+    head = (header[:1] + header[1:] + (["id"] if show_id else [])) if header else []
+    if head and len(head) < max((len(r) for r in grid), default=0):
+        head += [""] * (max(len(r) for r in grid) - len(head))
+    widths: list[int] = []
+    for row in ([head] if head else []) + grid:
+        for i, cell in enumerate(row):
+            if i >= len(widths):
+                widths.append(0)
+            widths[i] = max(widths[i], len(cell))
+    def line(mark: str, cells: list[str]) -> str:
+        padded = [c.ljust(widths[i]) for i, c in enumerate(cells)]
+        return f" {mark}{'  '.join(padded)}".rstrip()
+    out = [line(" ", head)] if head and any(head) else []
+    out += [line("*" if c.get("active") else " ", g) for c, g in zip(rows, grid)]
+    return out
+
+
 def _match_name(token: str, roster) -> Optional[str]:
     """Case-insensitive lookup of a spoken/typed word against the roster's casual LLM names
     ('gemini' → 'Gemini'); None if it matches none. The gate that keeps a switch deterministic."""
@@ -256,8 +298,8 @@ class Shell:
              "yes — confirm the reset just offered (voice; expires in a minute)", True),
 
             # -- paths: act on anything addressable
-            (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
-             "dir [path] — list one level of the namespace", False),
+            (re.compile(r"^(?:dir|ls)(?:\s+(?P<long>-l))?(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
+             "dir [-l] [path] — list one level of the namespace (-l also shows ids)", False),
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
             (re.compile(r"^cd(?:\s+(?P<path>\S.*))?$", re.I), self._cd,
@@ -753,7 +795,7 @@ class Shell:
         if not data.get("ok"):
             await self._say(on_text, data.get("error", "error"))
             return
-        await self._say(on_text, self._render_listing(data))
+        await self._say(on_text, self._render_listing(data, long=bool(m.groupdict().get("long"))))
 
     async def _show(self, on_text, m):
         data = await self._admin("show", self._path(m))
@@ -1002,7 +1044,7 @@ class Shell:
         except Exception as exc:                              # network / server down / bad JSON
             return {"ok": False, "error": f"admin request failed: {exc}"}
 
-    def _render_listing(self, data: dict, *, noun: str = "", current: str = "",
+    def _render_listing(self, data: dict, *, long: bool = False, noun: str = "", current: str = "",
                         here: str = "You're in", sole: str = "and you're in it") -> str:
         """One line per entry, columns aligned. Deliberately NOT a tree: the recursive form dumped every
         world, space and asset of every user at the root, which is unreadable at any real size.
@@ -1026,16 +1068,7 @@ class Shell:
             head += f"   (→ {data['path']})"
         if not rows:
             return f"{head}\n  (empty)"
-        # A trailing '/' marks the things you can `cd` into, so the shape of the namespace is visible.
-        def label(c):
-            return c["label"] + ("/" if c.get("kind") in ("category", "user", "agent") else "")
-        width = max(len(label(c)) for c in rows)
-        out = [head]
-        for c in rows:
-            mark = "*" if c.get("active") else " "
-            detail = f"  {c['detail']}" if c.get("detail") else ""
-            out.append(f" {mark}{label(c):<{width}}{detail}".rstrip())
-        return "\n".join(out)
+        return head + "\n" + "\n".join(columns(rows, data.get("columns") or [], long=long))
 
     def _summarize(self, data: dict) -> str:
         """What a `delete` took — read off the pre-delete tree, reported after. Counts the children for a
@@ -1048,7 +1081,7 @@ class Shell:
                 counts[k] = counts.get(k, 0) + 1
         me = data.get("self") or {}
         if me and (not counts or counts == {me.get("kind"): 1}):
-            detail = f" — {me['detail']}" if me.get("detail") else ""
+            detail = f" — {' · '.join(str(c) for c in me['cells'] if c)}" if me.get("cells") else ""
             return f"{me.get('kind', 'entry')} {me.get('label', '')}{detail}".strip()
         if counts:
             return ", ".join(f"{v} {k}{'' if v == 1 else 's'}" for k, v in sorted(counts.items()))

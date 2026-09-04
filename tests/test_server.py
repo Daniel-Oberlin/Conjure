@@ -2528,14 +2528,17 @@ def test_a_session_lists_under_its_TITLE_and_that_label_is_addressable(srv, clie
 
     rows = client.post("/admin/tree", json={"path": f"/{scope}/sessions"}).json()["children"]
     row = next(r for r in rows if r["label"] == "Kitchen Table")
-    assert sid in row["detail"]                                 # the id stays visible, as the stable handle
+    # The id is the stable handle, so it rides in `ref` — but it is not what you read a list for, so it
+    # stays out of the visible cells (`dir -l` and `disk` show it).
+    assert row["ref"] == sid
+    assert not any(sid in c for c in row["cells"])
     assert _ls(client, f"/{scope}/sessions/Kitchen Table") == {"worlds", "state"}
 
-    # an unnamed session still leads with its id, and doesn't print it twice
+    # an unnamed session leads with its id, and doesn't then repeat it as a ref
     _seed_session(srv, scope, "session-9")
     bare = next(r for r in client.post("/admin/tree", json={"path": f"/{scope}/sessions"}).json()["children"]
                 if r["label"] == "session-9")
-    assert "session-9" not in bare.get("detail", "")
+    assert "ref" not in bare and not any("session-9" in c for c in bare["cells"])
 
 
 def test_session_titles_must_be_unique_like_world_and_space_names(srv, client):
@@ -2670,7 +2673,7 @@ def test_a_world_row_names_its_space_rather_than_its_id(srv, client):
     st.doc["environment"] = {"space": "alice/space-1"}
     wdir.save("w1", st)
     row = client.post("/admin/tree", json={"path": "/alice/agents/builder/worlds/w1"}).json()["self"]
-    assert "Living Room" in row["detail"] and "space-1" not in row["detail"]
+    assert "Living Room" in row["cells"] and not any("space-1" in c for c in row["cells"])
 
 
 def test_a_sessions_active_world_is_an_id_and_is_kept_current(srv, client):

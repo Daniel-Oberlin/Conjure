@@ -190,19 +190,25 @@ def loc_path(loc: Loc) -> str:
         return f"{base}/{loc.sid}"
     return f"{base}/{loc.sid}/worlds" + (f"/{loc.name}" if loc.kind == "world" else "")
 
-def node(label: str, kind: str, detail: str = "", *, ref: str = "", active: bool = False) -> dict:
+def node(label: str, kind: str, *cells: str, ref: str = "", active: bool = False) -> dict:
     """One listing row. `label` is what a person READS; `ref` is what they TYPE and what the server
     addresses the row by.
 
     They were one field until 2026-09-04, which is why the asset listing had to lead with an id: the
     row's display text was also its key, so `leaf_row` matched on it and the bulk delete passed it
     straight to `library.delete`. Anything renameable can keep them identical — a world's name IS how you
-    address it — so `ref` is omitted unless it differs, and readers fall back to `label`."""
+    address it — so `ref` is omitted unless it differs, and readers fall back to `label`.
+
+    `cells` are the remaining columns, **already stringified but not yet laid out**: how wide they sit and
+    whether they show at all is the renderer's business, and a terminal and a voice client answer that
+    differently. They used to arrive as one pre-composed `detail` string, which is why no two listings
+    ever lined up. Their meaning per listing is `COLUMNS`."""
     n: dict = {"label": label, "kind": kind}
     if ref and ref != label:
         n["ref"] = ref
-    if detail:
-        n["detail"] = detail
+    cells = tuple(c for c in cells)
+    if any(cells):
+        n["cells"] = list(cells)
     if active:
         n["active"] = True
     return n
@@ -211,6 +217,27 @@ def node(label: str, kind: str, detail: str = "", *, ref: str = "", active: bool
 def ref_of(row: dict) -> str:
     """What to address a row by — its `ref` where display and key differ, else its label."""
     return row.get("ref") or row.get("label", "")
+
+# The header for each listing, `label` first. A kind absent here lists names only (users, categories,
+# agents) and gets no header — a single column needs no explaining. `id` is appended by the renderer in
+# long mode, and always for assets, where the id is genuinely the address rather than a curiosity.
+COLUMNS = {
+    "sessions": ["name", "worlds", "vis"],
+    "worlds": ["name", "entities", "space"],
+    "spaces": ["name", "surfaces", "geo", "vis"],
+    "assets": ["name", "type", "vis"],
+}
+
+
+def columns_for(kind: str) -> list[str]:
+    return list(COLUMNS.get(kind, []))
+
+
+def _plural(n: int, noun: str, many: str = "") -> str:
+    """`1 world` / `2 worlds`. The listing said "1 entities" for two years because the count and its noun
+    were composed by f-string at each site."""
+    return f"{n} {noun}" if n == 1 else f"{n} {many or noun + 's'}"
+
 
 def world_label(scope: str, sid: str, ref: str) -> str:
     """A session's active-world reference → the name a person recognises.
@@ -258,7 +285,7 @@ def world_row(scope: str, sid: str, name: str) -> dict:
     env = doc.get("environment") or {}
     n = len(doc.get("entities") or [])
     space = space_label(env.get("space"), scope.split("/", 1)[0])
-    return node(name, "world", f"{n} entities · {space}", active=live)
+    return node(name, "world", _plural(n, "entity", "entities"), space, ref=wid or "", active=live)
 
 def session_meta(scope: str, sid: str) -> dict:
     try:
@@ -268,16 +295,15 @@ def session_meta(scope: str, sid: str) -> dict:
 
 def session_row(scope: str, sid: str) -> dict:
     """Led by the TITLE, like a world row is led by its name — that's what you address it as, and titles
-    are renameable and unique now. The id stays in the description: unlike a world's `wld_…` it's short
-    and meaningful (`session-1`), it's the stable handle when a title is in flux, and it's what a
-    just-created session answers to before anyone names it."""
+    are renameable and unique now. The id rides in `ref`: it is the stable handle when a title is in flux,
+    and what a just-created session answers to before anyone names it, but it is not what you read a list
+    for. `dir -l` and `disk` show it."""
     meta = session_meta(scope, sid)
     live = scope == _h().active_scope and sid == _h().active_sid
     nw = len(_h()._session_worlds(scope, sid).list())
     vis = "public" if meta.get("public", True) else "private"
     title = meta.get("title") or sid
-    desc = f"{nw} worlds · {vis}" if title == sid else f"{sid} · {nw} worlds · {vis}"
-    return node(title, "session", desc, active=live)
+    return node(title, "session", _plural(nw, "world"), vis, ref=sid, active=live)
 
 def _last_world_label(sp: dict) -> str:
     """A space's back-reference is a world ID; show the name a person would recognise."""
@@ -299,7 +325,8 @@ def space_row(user: str, ref: str) -> dict:
     live = user == _h().active_space_owner and sid == _h().active_space
     geo = "geo✓" if sp.get("geolocation") else "geo✗"
     vis = "public" if sp.get("public", True) else "private"
-    return node(name, "space", f"{len(sp.get('surfaces') or [])} surfaces · {geo} · {vis}", active=live)
+    return node(name, "space", _plural(len(sp.get("surfaces") or []), "surface"), geo, vis,
+                ref=sid, active=live)
 
 def asset_rows(user: str, agent: str, limit: int = 200) -> list[dict]:
     """Assets whose scope is exactly `<user>/agents/<agent>` — the same hard boundary `agent_of()`
@@ -314,7 +341,7 @@ def asset_rows(user: str, agent: str, limit: int = 200) -> list[dict]:
         # address here: labels are auto-generated by the caption backfill and are neither unique nor
         # guaranteed present, so an ambiguous one is refused rather than guessed at.
         out.append(node((r.get("label") or "").strip() or "(unlabelled)", "asset",
-                        f"{r.get('kind', '?')} · {vis}", ref=r["id"]))
+                        r.get("kind") or "?", vis, ref=r["id"]))
         if len(out) >= limit:
             out.append(node(f"… (more than {limit})", "note"))
             break

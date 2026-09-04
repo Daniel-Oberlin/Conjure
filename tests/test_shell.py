@@ -787,6 +787,47 @@ def test_every_row_declares_whether_it_is_voice_safe():
 # best mispronounced and at worst — since the voice speech stage strips asterisks before the engine sees
 # them — silently gone, leaving a listener with a list and no idea which one they are in.
 
+def test_columns_align_every_row_under_a_header():
+    from conjure.shell import columns
+    rows = [{"label": "Meadow", "kind": "world", "cells": ["12 entities", "Living Room"], "active": True},
+            {"label": "Kitchen sketch", "kind": "world", "cells": ["1 entity", "outdoor"]}]
+    out = columns(rows, ["name", "entities", "space"])
+    assert out[0].split() == ["name", "entities", "space"]
+    # every column starts at the same offset in every line — the whole point of the change
+    starts = [line.index("Living Room") for line in out if "Living Room" in line]
+    assert [line.index("outdoor") for line in out if "outdoor" in line] == starts
+    assert out[1].startswith(" *")                      # the live row is marked, and stays aligned
+    assert out[2].startswith("  ")
+
+
+def test_a_single_column_listing_gets_no_header():
+    from conjure.shell import columns
+    rows = [{"label": "agents", "kind": "category"}, {"label": "spaces", "kind": "category"}]
+    assert columns(rows, []) == ["  agents/", "  spaces/"]     # a lone column needs no explaining
+
+
+def test_the_id_column_shows_only_for_assets_or_in_long_mode():
+    from conjure.shell import columns
+    sess = [{"label": "Kitchen sketch", "kind": "session", "cells": ["2 worlds", "public"],
+             "ref": "session-1"}]
+    assert not any("session-1" in l for l in columns(sess, ["name", "worlds", "vis"]))
+    assert any("session-1" in l for l in columns(sess, ["name", "worlds", "vis"], long=True))
+    # assets are the exception: the id IS the address there, so it shows unasked
+    asset = [{"label": "Kitchen counter", "kind": "asset", "cells": ["image", "public"], "ref": "a1.png"}]
+    assert any("a1.png" in l for l in columns(asset, ["name", "type", "vis"]))
+
+
+def test_a_paragraph_length_label_is_clipped_rather_than_wrapped():
+    from conjure.shell import columns, NAME_WIDTH
+    long_label = "a sensual woman with long dark hair, wearing elegant black lingerie, standing gracefully"
+    rows = [{"label": long_label, "kind": "asset", "cells": ["image", "public"], "ref": "a1.png"},
+            {"label": "Cat", "kind": "asset", "cells": ["image", "public"], "ref": "b2.png"}]
+    out = columns(rows, ["name", "type", "vis"])
+    assert "…" in out[1] and len(out[1]) < len(long_label)
+    assert all(l.index("image") == out[1].index("image") for l in out[1:])   # still aligned
+    assert NAME_WIDTH < len(long_label)                    # the sample actually exercises the clip
+
+
 def test_join_spoken_reads_like_a_person():
     from conjure.shell import _join_spoken
     assert _join_spoken([]) == ""
