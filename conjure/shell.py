@@ -213,7 +213,11 @@ def columns(rows: list[dict], header: list[str], *, long: bool = False) -> list[
     def line(mark: str, cells: list[str]) -> str:
         padded = [c.ljust(widths[i]) for i, c in enumerate(cells)]
         return f" {mark}{'  '.join(padded)}".rstrip()
-    out = [line(" ", head)] if head and any(head) else []
+    out = []
+    if head and any(head):
+        # A rule under the header, because a bare row of words above rows of words reads as data. Drawn
+        # per column so it also shows where each one begins and ends.
+        out = [line(" ", head), line(" ", ["─" * widths[i] for i in range(len(head))])]
     out += [line("*" if c.get("active") else " ", g) for c, g in zip(rows, grid)]
     return out
 

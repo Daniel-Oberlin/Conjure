@@ -765,6 +765,31 @@ of `label` holding the id.
 
 None. The plan is aligned and ready to implement.
 
+## Shell — listings: dates and order
+
+**Raised while testing the rationalisation, 2026-09-04.** A listing has no dates and no order but one.
+
+`dir` sorts however the underlying store enumerates — worlds and spaces by name, sessions by id, assets
+by the catalog's most-recently-used. That is fine until you are looking for *the one from Tuesday*, which
+is how you look for an asset far more often than by name: labels are auto-generated, frequently
+duplicated, and up to 611 characters, so the name column is the least identifying thing in an asset row.
+
+The catalog already carries what is needed — `created_at`, `last_used`, `use_count` — and `disk` already
+reports a real mtime per file, so this is display and ordering rather than new bookkeeping.
+
+The shape when it happens:
+
+- **A date column**, at least for assets, where it identifies better than the label does. `created_at`
+  is probably the honest default; `last_used` answers a different question and both are on the row.
+- **`dir --sort <field>`** (name · date · size · kind), and `-r` to reverse. Sorting server-side keeps it
+  consistent with paging if a listing ever grows one, and `namespace.COLUMNS` already names the columns
+  a listing has, so the sortable set can be read off it rather than declared twice.
+- **Whether every listing gets dates or only assets.** A world and a session have real mtimes too, and
+  "which session was I in last week" is a question people ask. The cost is a `stat` per row, which is
+  what `disk` already pays for one entry.
+
+Not started. `columns()` renders whatever cells it is handed, so the renderer needs nothing.
+
 ## Shell
 
 **World ops as commands.** `reset` / `save` / `load` were named as shell verbs and never added; today

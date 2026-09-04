@@ -2802,6 +2802,64 @@ def test_disk_distinguishes_not_yet_written_from_missing(srv, client):
     assert roles["meta"].get("missing") is None                # this one exists
 
 
+def test_state_is_reachable_not_just_listed(srv, client):
+    # `dir <session>` has always offered `state/`, and the resolver has always refused it — a listing
+    # that names somewhere you cannot go. It is the agent's own memory (§7.4), worth reading when an
+    # agent behaves oddly.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, sid, title="Kitchen Table")
+    srv.sessions.state(scope, sid).write("inventory", {"lamp": {"where": "table"}, "notes": ["a", "b"]})
+
+    assert "state" in _ls(client, f"/{scope}/sessions/{sid}")
+    assert _ls(client, f"/{scope}/sessions/{sid}/state") == {"inventory"}
+
+    doc = client.post("/admin/show",
+                      json={"path": f"/{scope}/sessions/{sid}/state/inventory"}).json()
+    fields = dict(doc["fields"])
+    assert fields["doc"] == "inventory"
+    assert fields["notes"] == "[2 items]"          # described, not dumped — the schema is the agent's
+    assert fields["lamp"] == "{where}"
+
+    # and the displayed path round-trips, like every other one
+    shown = client.post("/admin/tree",
+                        json={"path": f"/{scope}/sessions/{sid}/state/inventory"}).json()["display"]
+    assert "Kitchen Table" in shown
+    assert client.post("/admin/tree", json={"path": shown}).json()["ok"] is True
+
+    bad = client.post("/admin/tree", json={"path": f"/{scope}/sessions/{sid}/state/nope"}).json()
+    assert bad["ok"] is False and "no state doc" in bad["error"]
+
+
+def test_deleting_a_state_doc_makes_the_agent_forget_it(srv, client):
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    state = srv.sessions.state(scope, sid)
+    state.write("inventory", {"lamp": 1})
+    state.write("map", {"rooms": []})
+    r = client.post("/admin/delete",
+                    json={"path": f"/{scope}/sessions/{sid}/state/inventory"}).json()
+    assert r["ok"] is True and state.list() == ["map"]
+    client.post("/admin/delete", json={"path": f"/{scope}/sessions/{sid}/state"}).json()
+    assert state.list() == []
+
+
+def test_a_void_space_shows_its_sentinel_not_a_word(srv, client):
+    # "outdoor" would be indistinguishable from a space someone actually named outdoor; the angle
+    # brackets say "this is not a name".
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    wdir = srv.sessions.worlds(scope, sid)
+    st = wdir.load("w1")
+    st.doc["environment"] = {"space": srv.VOID}
+    wdir.save("w1", st)
+    row = client.post("/admin/tree", json={"path": f"/{scope}/sessions/{sid}/worlds/w1"}).json()["self"]
+    assert srv.VOID in row["cells"]
+
+
 def test_the_session_segment_reads_as_a_title_at_every_depth(srv, client):
     # `cd worlds` used to read `sessions/session-1/worlds` while a world one level down read
     # `sessions/Session 1/worlds/<name>` — the same session, two names, in one path.

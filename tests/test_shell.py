@@ -942,8 +942,9 @@ def test_columns_align_every_row_under_a_header():
     # every column starts at the same offset in every line — the whole point of the change
     starts = [line.index("Living Room") for line in out if "Living Room" in line]
     assert [line.index("outdoor") for line in out if "outdoor" in line] == starts
-    assert out[1].startswith(" *")                      # the live row is marked, and stays aligned
-    assert out[2].startswith("  ")
+    assert out[1].lstrip().startswith("─")              # a rule, so the header doesn't read as data
+    assert out[2].startswith(" *")                      # the live row is marked, and stays aligned
+    assert out[3].startswith("  ")
 
 
 def test_a_single_column_listing_gets_no_header():
@@ -969,8 +970,9 @@ def test_a_paragraph_length_label_is_clipped_rather_than_wrapped():
     rows = [{"label": long_label, "kind": "asset", "cells": ["image", "public"], "ref": "a1.png"},
             {"label": "Cat", "kind": "asset", "cells": ["image", "public"], "ref": "b2.png"}]
     out = columns(rows, ["name", "type", "vis"])
-    assert "…" in out[1] and len(out[1]) < len(long_label)
-    assert all(l.index("image") == out[1].index("image") for l in out[1:])   # still aligned
+    body = out[2:]                                      # skip the header and its rule
+    assert "…" in body[0] and len(body[0]) < len(long_label)
+    assert all(l.index("image") == body[0].index("image") for l in body)     # still aligned
     assert NAME_WIDTH < len(long_label)                    # the sample actually exercises the clip
 
 

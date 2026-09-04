@@ -166,8 +166,18 @@ def resolve(path: str):
         return f"no session {segs[4]!r} for {scope}"
     if len(segs) == 5:
         return Loc("session", user, agent, sid)
+    if segs[5] == "state":
+        # Listed as a child of a session since the namespace existed, and refused by this resolver the
+        # whole time — so `dir` offered somewhere you could not go. It is the agent's own memory
+        # (specs/agents.md §7.4) and worth reading when an agent behaves oddly.
+        if len(segs) == 6:
+            return Loc("state", user, agent, sid)
+        doc = "/".join(segs[6:])
+        if doc not in _h().sessions.state(f"{user}/agents/{agent}", sid).list():
+            return f"no state doc {doc!r} in {sid}"
+        return Loc("statedoc", user, agent, sid, doc)
     if segs[5] != "worlds":
-        return f"unknown category {segs[5]!r} (worlds)"
+        return f"unknown category {segs[5]!r} (worlds|state)"
     if len(segs) == 6:
         return Loc("worlds", user, agent, sid)
     # Verify it: without this, any trailing segments resolve to a `world` Loc and `cd`/`show` succeed on
@@ -258,6 +268,8 @@ def loc_path(loc: Loc) -> str:
         return base
     if loc.kind == "session":
         return f"{base}/{loc.sid}"
+    if loc.kind in ("state", "statedoc"):
+        return f"{base}/{loc.sid}/state" + (f"/{loc.name}" if loc.kind == "statedoc" else "")
     return f"{base}/{loc.sid}/worlds" + (f"/{loc.name}" if loc.kind == "world" else "")
 
 def label_of(loc: Loc) -> str:
@@ -338,6 +350,7 @@ COLUMNS = {
     "worlds": ["name", "entities", "space"],
     "spaces": ["name", "surfaces", "geo", "vis"],
     "assets": ["name", "type", "vis"],
+    "state": ["name", "holds", "entries", "size"],
 }
 
 
@@ -375,7 +388,10 @@ def space_label(env_space: str, world_owner: str = "") -> str:
     if not ref:
         return "?"
     if ref == VOID:
-        return "outdoor"
+        # Verbatim, not "outdoor": a space could legitimately BE called outdoor, and a listing that
+        # renders a sentinel as an ordinary word makes the two indistinguishable. The angle brackets say
+        # "this is not a name".
+        return VOID
     owner, _, sid = ref.rpartition("/")
     if not owner:
         return ref
@@ -442,6 +458,33 @@ def space_row(user: str, ref: str) -> dict:
     return node(name, "space", _plural(len(sp.get("surfaces") or []), "surface"), geo, vis,
                 ref=sid, active=live)
 
+def _describe(v) -> str:
+    """One line for a value of unknown shape — its size when it has one, itself when it is small."""
+    if isinstance(v, dict):
+        return "{" + ", ".join(list(v)[:6]) + ("…" if len(v) > 6 else "") + "}"
+    if isinstance(v, list):
+        return f"[{_plural(len(v), 'item')}]"
+    text = json.dumps(v) if not isinstance(v, str) else v
+    return text if len(text) <= 60 else text[:59] + "…"
+
+
+def state_row(scope: str, sid: str, doc: str) -> dict:
+    """A state doc, summarised by what it holds — the shape is the agent's, not ours (§7.4), so the only
+    honest summary is its size and how many top-level entries it has."""
+    store = _h().sessions.state(scope, sid)
+    try:
+        data = store.read(doc)
+    except (OSError, ValueError):
+        data = None
+    n = len(data) if isinstance(data, (dict, list)) else 0
+    kind = "object" if isinstance(data, dict) else "list" if isinstance(data, list) else "value"
+    try:
+        size = store._path(doc).stat().st_size
+    except OSError:
+        size = 0
+    return node(doc, "statedoc", kind, _plural(n, "entry", "entries"), f"{size} B")
+
+
 def asset_rows(user: str, agent: str, limit: int = 200) -> list[dict]:
     """Assets whose scope is exactly `<user>/agents/<agent>` — the same hard boundary `agent_of()`
     enforces. `agent=""` selects the legacy rows scoped to a bare user."""
@@ -479,6 +522,8 @@ def children(loc: Loc) -> list[dict]:
         return [session_row(loc.scope, s) for s in _h().sessions.list(loc.scope)]
     if loc.kind == "session":
         return [node("worlds", "category"), node("state", "category")]
+    if loc.kind == "state":
+        return [state_row(loc.scope, loc.sid, d) for d in _h().sessions.state(loc.scope, loc.sid).list()]
     if loc.kind == "worlds":
         return [world_row(loc.scope, loc.sid, n) for n in _h()._session_worlds(loc.scope, loc.sid).list()]
     if loc.kind == "spaces":
@@ -497,6 +542,8 @@ def leaf_row(loc: Loc) -> Optional[dict]:
         return space_row(loc.user, loc.name)
     if loc.kind == "asset":
         return next((r for r in asset_rows(loc.user, loc.agent) if ref_of(r) == loc.name), None)
+    if loc.kind == "statedoc":
+        return state_row(loc.scope, loc.sid, loc.name)
     return None
 
 def _stat(role: str, path, note: str = "", *, required: bool = True) -> dict:
@@ -553,6 +600,10 @@ def files(loc: Loc) -> list[dict]:
         if src:
             out.append({"role": "source", "path": src})
         return out
+    if loc.kind == "statedoc":
+        return [_stat("doc", h.sessions.state(loc.scope, loc.sid)._path(loc.name))]
+    if loc.kind == "state":
+        return [_stat("dir", h.sessions.state_dir(loc.scope, loc.sid), required=False)]
     if loc.kind in ("worlds",):
         return [_stat("dir", h.sessions.worlds_dir(loc.scope, loc.sid))]
     if loc.kind in ("sessions",):
@@ -710,6 +761,23 @@ def fields(loc: Loc) -> list[list]:
                 ["visibility", "public" if r.get("public", 1) else "private"],
                 ["tags", r.get("tags") or "—"], ["file", r.get("filename") or "—"],
                 ["last used", str(r.get("last_used") or "—")]]
+    if loc.kind == "statedoc":
+        store = _h().sessions.state(loc.scope, loc.sid)
+        try:
+            data = store.read(loc.name)
+        except (OSError, ValueError) as exc:
+            return [["error", str(exc)]]
+        rows = [["doc", loc.name], ["session", loc.sid], ["scope", loc.scope]]
+        if isinstance(data, dict):
+            # The agent owns this schema, not us (§7.4), so the only honest rendering is the top level
+            # with each value described rather than dumped — a map or an inventory can be large.
+            for k, v in list(data.items())[:40]:
+                rows.append([k, _describe(v)])
+            if len(data) > 40:
+                rows.append(["…", f"{len(data) - 40} more entries"])
+        else:
+            rows.append(["value", _describe(data)])
+        return rows
     if loc.kind == "user":
         ags = agents(loc.user)
         nsess = sum(len(_h().sessions.list(f"{loc.user}/agents/{a}")) for a in ags)
@@ -780,6 +848,18 @@ def delete(loc: Loc) -> dict:
             return {"ok": False, "error": "the active space is here — switch away first"}
         return {"ok": True, "deleted": f"{_h().spaces.delete_user(loc.user)} spaces for {loc.user!r}"}
 
+    if loc.kind == "statedoc":
+        p = _h().sessions.state(loc.scope, loc.sid)._path(loc.name)
+        if not p.exists():
+            return {"ok": False, "error": f"no state doc {loc.name!r}"}
+        p.unlink()
+        return {"ok": True, "deleted": f"state doc {loc.name!r} — the agent has forgotten it"}
+    if loc.kind == "state":
+        store = _h().sessions.state(loc.scope, loc.sid)
+        docs = store.list()
+        for d in docs:
+            store._path(d).unlink(missing_ok=True)
+        return {"ok": True, "deleted": f"{_plural(len(docs), 'state doc')} in {loc.sid}"}
     if loc.kind == "asset":
         rec = _h().library.get(loc.name)
         sc = (rec or {}).get("scope") or ""

@@ -570,6 +570,7 @@ Paths mirror storage, one level per real containment:
 /<user>/spaces/<name>
 /<user>/agents/<agent>/assets/<id>                     library rows (virtual — SQLite, not files)
 /<user>/agents/<agent>/sessions/<sid>/worlds/<name>
+/<user>/agents/<agent>/sessions/<sid>/state/<doc>      the agent's own memory (§7.4)
 /<user>/agents/<agent>/worlds                          shortcut → the ACTIVE session's worlds
 ```
 
@@ -598,6 +599,11 @@ The **id column is hidden** — `dir -l` shows it, and `disk` shows it with the 
 exception is assets, where the id genuinely IS the address. Names are clipped at 44 columns: asset labels
 are prompt-derived and run to 611 characters in practice, so an uncapped column destroys the table rather
 than wrapping.
+
+**`state/` is addressable**, not just listed. It was a child of every session from the start and refused
+by the resolver the whole time, so `dir` named somewhere you could not go. `show` describes a doc's top
+level rather than dumping it — the schema belongs to the agent (§7.4), so the only honest summary is what
+each entry *is*. Deleting one is allowed and reported as what it is: the agent forgets it.
 
 **Both forms of every path are returned.** `path` holds ids and is canonical; `display` holds names and is
 what you are shown. The shell remembers the first and prints the second, so renaming the session you are
