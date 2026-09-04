@@ -543,14 +543,24 @@ back and fire it. The first `yes` consumes it, so an echo is inert.
 
 | Path command | Effect | Voice |
 |---|---|:--:|
-| `dir [path]` (`ls`) | list **one level** of the namespace | — |
+| `dir [-l] [path]` (`ls`) | list **one level** of the namespace; `-l` also shows ids | — |
 | `show [path]` (`info`) | one entry in detail | — |
+| `disk [path]` (`file`) | where it lives on disk — real files, sizes, an asset's catalog row | — |
 | `cd [path]` | change the working directory (bare: back to your agent) | — |
 | `public` / `private [path]` | visibility of the live session, or of a path | ✓ |
 | `rename <path> <new>` | retitle a world, space or session; relabel an asset | — |
-| `delete <path>` (`rm`) | remove a world, session, space, asset or user — **immediate** | — |
+| `delete <path> [!]` (`rm`) | remove a world, session, space, asset or user — **immediate** for an explicit path; a pattern lists what it matched and needs `!` | — |
+| `gc [!]` | asset files nothing references; lists them, `!` deletes them | — |
+| `set [key [value]] [--save]` | list settings, read one, or change it for this run | — |
+| `unset <key>` | drop a run-time change | — |
 
 First match wins; the unknown-command fallback runs after. Adding a command is adding a row.
+
+**Patterns.** A `*`, `?` or `[…]` in the LAST segment expands against display names, folded the same way
+every other lookup folds (§6.5) — so `dir "kitchen*"` and `dir "Kitchen *"` agree. No `**`: worlds are
+flat and the tree is four levels deep, so a recursive form could only ever mean "everything". Matching is
+server-side (`namespace.match`), which is where the entries are. `cd` takes a pattern only when it
+matches exactly one thing; `rename` refuses one, since N things cannot share a new name.
 
 ### 6.4 The namespace
 
@@ -560,6 +570,7 @@ Paths mirror storage, one level per real containment:
 /<user>/spaces/<name>
 /<user>/agents/<agent>/assets/<id>                     library rows (virtual — SQLite, not files)
 /<user>/agents/<agent>/sessions/<sid>/worlds/<name>
+/<user>/agents/<agent>/sessions/<sid>/state/<doc>      the agent's own memory (§7.4)
 /<user>/agents/<agent>/worlds                          shortcut → the ACTIVE session's worlds
 ```
 
@@ -576,9 +587,33 @@ A shortcut **resolves on use**: `cd worlds` adopts the path the *server* resolve
 holds for `delete` — it reports what the server resolved.
 
 `dir` lists **one level**. The old recursive form dumped every user's worlds, spaces and assets at the
-root, unreadable at any real size. A `dir` row leads with what you address it as: a world by name, a
-session by **title**, with the session id kept in the detail as its stable handle. A trailing `/` marks
-what you can `cd` into; `*` marks what's live.
+root, unreadable at any real size. A trailing `/` marks what you can `cd` into; `*` marks what's live.
+
+**A row is a `label` and a list of `cells`, laid out by the renderer**, under a `columns` header naming
+what they mean. The server used to compose one `detail` string per row, which is why no two listings
+lined up. `label` is what you READ; `ref` is what you TYPE, present only when the two differ. That split
+matters more than it looks: while they were one field, the asset listing had to lead with an id, because
+`leaf_row` matched on the row's display text and the bulk delete passed it to `library.delete`.
+
+The **id column is hidden** — `dir -l` shows it, and `disk` shows it with the real filenames. The
+exception is assets, where the id genuinely IS the address. Names are clipped at 44 columns: asset labels
+are prompt-derived and run to 611 characters in practice, so an uncapped column destroys the table rather
+than wrapping.
+
+**`state/` is addressable**, not just listed. It was a child of every session from the start and refused
+by the resolver the whole time, so `dir` named somewhere you could not go. `show` describes a doc's top
+level rather than dumping it — the schema belongs to the agent (§7.4), so the only honest summary is what
+each entry *is*. Deleting one is allowed and reported as what it is: the agent forgets it.
+
+**Both forms of every path are returned.** `path` holds ids and is canonical; `display` holds names and is
+what you are shown. The shell remembers the first and prints the second, so renaming the session you are
+standing in cannot strand your working directory — and cannot silently re-point it at a LATER session of
+the same name, which a name-valued cwd would do without failing. No protocol field was needed: `cwd`
+never round-trips, it is per-connection server state that is only ever sent out for the prompt.
+
+A cwd can still name something **deleted**, so a path command whose cwd no longer resolves walks up to
+the nearest surviving ancestor and says so — the same self-healing `_mru_first` does for the world
+pointer. It checks the cwd before blaming it, so a genuine typo is still reported as a typo.
 
 All of these hit the world server's `/admin/{tree,show,delete}`, so they act on its live state rather
 than raw files. `_admin_resolve` rejects `.`/`..` outright and then checks every segment against an
@@ -613,9 +648,21 @@ whatever a schema-free state doc stashed. See [decisions.md §15](../decisions.m
 
 ### 6.6 `delete` acts on the one line
 
-No confirmation. `delete <path>` resolves the target, removes it, and reports **after**: the path the
-*server* resolved and what was in it (`Shell._summarize` off the pre-delete tree). A wrong target is
-visible immediately rather than agreed to in advance.
+No confirmation for an explicit path. `delete <path>` resolves the target, removes it, and reports
+**after**: the path the *server* resolved and what was in it (`Shell._summarize` off the pre-delete
+tree). A wrong target is visible immediately rather than agreed to in advance.
+
+**A pattern is the exception, and `!` is its confirmation.** The argument above rests on `delete` taking
+an explicit path — you cannot land on it by accident. A pattern voids exactly that: `delete "s*"` looks
+precise and may match nine things. So a pattern lists what it matched, deletes nothing, and acts only on
+`delete <pattern> !`. The guard lands on the new ambiguity and nowhere else, so an explicit path keeps
+the one-shot form that dropping the y/n prompt bought.
+
+**An ambiguous NAME is the opposite case and gets the opposite answer.** A pattern is intentionally
+plural, so confirming the set is right; a bare name is a request for one thing, so acting on three would
+answer a question nobody asked. It refuses and lists the candidates with their ids. This is routine, not
+a corner: asset labels are auto-generated and not unique, and the duplicates cluster on the short,
+typeable ones.
 
 The y/n prompt was dropped 2026-08-25 because it needed a **second line back on the same connection**,
 which made `delete` the one command with no one-shot form — `cli say "conjure delete …"` stopped at the

@@ -70,8 +70,10 @@ class FakeShell:
         return cmd.strip().lower() in ("exit", "leave", "close", "done")
 
     cwd = "/daniel/agents/builder"        # the shell reports its working directory back after a dispatch
+    cwd_display = "/daniel/agents/builder"   # …and the same place in names, which is what the prompt shows
 
-    async def _dispatch(self, cmd, on_text, *, speaker=None, permitted=True, cwd="", voice=False):
+    async def _dispatch(self, cmd, on_text, *, speaker=None, permitted=True, cwd="", cwd_display="",
+                        voice=False):
         await on_text("Now talking to Gemini (builder).", final=True, speaker=self.director.active)
 
     async def _open_agent(self, agent, *, activate_world=True):
@@ -86,6 +88,7 @@ class FakeConn:
         self.kind = kind                 # "cli" | "voice" — selects the shell's command set
         self.in_shell = False
         self.cwd = ""
+        self.cwd_display = ""
         self.bumped = False
         self.sent: list[dict] = []
 
@@ -585,7 +588,8 @@ class SlowShell(FakeShell):
         self.started = asyncio.Event()
         self.dispatched: list[str] = []
 
-    async def _dispatch(self, cmd, on_text, *, speaker=None, permitted=True, cwd="", voice=False):
+    async def _dispatch(self, cmd, on_text, *, speaker=None, permitted=True, cwd="", cwd_display="",
+                        voice=False):
         self.dispatched.append(cmd)
         self.started.set()
         await self.release.wait()

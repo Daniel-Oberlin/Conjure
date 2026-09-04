@@ -2402,9 +2402,11 @@ def _seed_worlds(srv, scope, *names):
             {"id": n, "name": n, "rev": 0, "environment": {}, "entities": []}))
 
 
-def _seed_space(srv, user, name, *, geo=None, surfaces=1):
+def _seed_space(srv, user, name, *, geo=None, surfaces=1, display=None):
+    # `name` is the FILE key (the permanent `space-N` id in real use); `display` is the renameable
+    # human name, which defaults to the key so existing callers are unchanged.
     srv.spaces.save(user, name, {
-        "owner": user, "name": name, "public": True, "geolocation": geo,
+        "owner": user, "name": display or name, "public": True, "geolocation": geo,
         "surfaces": [{"id": f"s{i}"} for i in range(surfaces)], "boundary": {}})
 
 
@@ -2421,6 +2423,13 @@ def _ls(client, path):
     return {c["label"] for c in r["children"]}
 
 
+def _refs(client, path):
+    """What each row is ADDRESSED by, which is its label unless the two differ (assets)."""
+    r = client.post("/admin/tree", json={"path": path}).json()
+    assert r["ok"] is True, r
+    return {c.get("ref") or c["label"] for c in r["children"]}
+
+
 def test_admin_tree_lists_one_level_at_a_time(srv, client):
     # `dir` walks the namespace a level at a time — the old recursive dump was unusable at any real size.
     _seed_worlds(srv, "alice/agents/builder", "w1")
@@ -2430,7 +2439,10 @@ def test_admin_tree_lists_one_level_at_a_time(srv, client):
     assert _ls(client, "/alice") == {"agents", "spaces"}
     assert _ls(client, "/alice/agents") == {"builder"}
     assert _ls(client, "/alice/spaces") == {"living-room"}
-    assert _ls(client, "/bob/agents/builder/assets") == {"bob-asset"}
+    # An asset row leads with its LABEL like every other row; the id rides in `ref`, because a label is
+    # neither unique nor guaranteed present and so can't be the address (docs/backlogs/agents.md).
+    assert _ls(client, "/bob/agents/builder/assets") == {"thing"}
+    assert _refs(client, "/bob/agents/builder/assets") == {"bob-asset"}
 
 
 def test_admin_tree_exposes_the_agent_and_session_levels(srv, client):
@@ -2516,14 +2528,17 @@ def test_a_session_lists_under_its_TITLE_and_that_label_is_addressable(srv, clie
 
     rows = client.post("/admin/tree", json={"path": f"/{scope}/sessions"}).json()["children"]
     row = next(r for r in rows if r["label"] == "Kitchen Table")
-    assert sid in row["detail"]                                 # the id stays visible, as the stable handle
+    # The id is the stable handle, so it rides in `ref` — but it is not what you read a list for, so it
+    # stays out of the visible cells (`dir -l` and `disk` show it).
+    assert row["ref"] == sid
+    assert not any(sid in c for c in row["cells"])
     assert _ls(client, f"/{scope}/sessions/Kitchen Table") == {"worlds", "state"}
 
-    # an unnamed session still leads with its id, and doesn't print it twice
+    # an unnamed session leads with its id, and doesn't then repeat it as a ref
     _seed_session(srv, scope, "session-9")
     bare = next(r for r in client.post("/admin/tree", json={"path": f"/{scope}/sessions"}).json()["children"]
                 if r["label"] == "session-9")
-    assert "session-9" not in bare.get("detail", "")
+    assert "ref" not in bare and not any("session-9" in c for c in bare["cells"])
 
 
 def test_session_titles_must_be_unique_like_world_and_space_names(srv, client):
@@ -2645,6 +2660,279 @@ def test_admin_delete_single_asset_scoped(srv, client):
     r = client.post("/admin/delete", json={"path": "/alice/agents/builder/assets/drop"}).json()
     assert r["ok"] is True
     assert srv.library.get("drop") is None and srv.library.get("keep") is not None
+
+
+def test_a_world_row_names_its_space_rather_than_its_id(srv, client):
+    # `environment.space` stores `<owner>/<space-id>` so a rename strands nothing — but an id is not what
+    # a person reading a listing wants, and it never said whose space it was either.
+    _seed_space(srv, "alice", "space-1", display="Living Room")
+    _seed_worlds(srv, "alice/agents/builder", "w1")
+    sid = srv.sessions.get_active("alice/agents/builder") or MIGRATED_SID
+    wdir = srv.sessions.worlds("alice/agents/builder", sid)
+    st = wdir.load("w1")
+    st.doc["environment"] = {"space": "alice/space-1"}
+    wdir.save("w1", st)
+    row = client.post("/admin/tree", json={"path": "/alice/agents/builder/worlds/w1"}).json()["self"]
+    assert "Living Room" in row["cells"] and not any("space-1" in c for c in row["cells"])
+
+
+def test_a_sessions_active_world_is_an_id_and_is_kept_current(srv, client):
+    # The field was written once at creation and never again, and its two writers disagreed on the type:
+    # /session/new stored a NAME while _ensure_session stored an ID. Now it is always the id, updated on
+    # every switch, and rendered as a name for anyone reading it.
+    scope = srv.DEFAULT_SCOPE
+    _seed_worlds(srv, scope, "meadow")
+    r = client.post("/worlds/switch", json={"scope": scope, "name": "meadow"}).json()
+    assert r["ok"] is True
+    sid = srv.sessions.get_active(scope)
+    meta = srv.sessions.load_meta(scope, sid)
+    assert meta["active_world"] == r["id"]                    # the id, not "meadow"
+    listed = client.get("/sessions", params={"scope": scope}).json()
+    row = next(x for x in listed["sessions"] if x["id"] == sid)
+    assert row["active_world"] == r["id"] and row["active_world_name"] == "meadow"
+
+
+def test_a_legacy_name_valued_active_world_still_renders(srv, client):
+    # Metas written before the id migration hold a NAME. Coerced at read time rather than rewritten.
+    scope = srv.DEFAULT_SCOPE
+    _seed_worlds(srv, scope, "meadow")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    srv.sessions.save_meta(scope, sid, {"id": sid, "title": "Session 1", "public": True,
+                                        "active_world": "meadow"})     # the old shape, on disk
+    row = next(x for x in client.get("/sessions", params={"scope": scope}).json()["sessions"]
+               if x["id"] == sid)
+    assert row["active_world_name"] == "meadow"
+
+
+def _blob(srv, name, size=64):
+    """Write a file into the asset store. The `srv` fixture points ASSET_CACHE at the tmp root, which is
+    also where library.db and users/ live — realistic enough for everything else, but `gc` reads the
+    whole directory, so these tests give it a dedicated one."""
+    srv.ASSET_CACHE.mkdir(parents=True, exist_ok=True)
+    (srv.ASSET_CACHE / name).write_bytes(b"x" * size)
+
+
+@pytest.fixture
+def assets_dir(srv, monkeypatch, tmp_path):
+    d = tmp_path / "assets"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(srv, "ASSET_CACHE", d)
+    return d
+
+
+def test_gc_keeps_a_blob_a_world_still_places_even_with_no_row(srv, client, assets_dir):
+    # The union is the load-bearing part. `library.delete` keeps bytes precisely BECAUSE a placed entity
+    # can outlive its row, so a keep-set built from rows alone would delete something in use.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    wdir = srv.sessions.worlds(scope, sid)
+    st = wdir.load("w1")
+    st.doc["entities"] = [{"id": "e1", "components": {"material": {"src": "/assets/placed.png"}}}]
+    wdir.save("w1", st)
+    _blob(srv, "placed.png")                      # on disk, PLACED, but no catalog row
+    _blob(srv, "loose.png")                       # on disk, referenced by nothing
+
+    r = client.post("/admin/gc", json={}).json()
+    names = {f["name"] for f in r["files"]}
+    assert "loose.png" in names and "placed.png" not in names
+
+
+def test_gc_keeps_a_sidecar_with_its_blob_and_collects_it_without(srv, client, assets_dir):
+    _seed_asset(srv, "keep.glb", "alice/agents/builder", filename="keep.glb")
+    _blob(srv, "keep.glb"); _blob(srv, "keep.json")          # licence sidecar for a catalogued model
+    _blob(srv, "orphan.glb"); _blob(srv, "orphan.json")      # both unreferenced
+    names = {f["name"] for f in client.post("/admin/gc", json={}).json()["files"]}
+    assert names == {"orphan.glb", "orphan.json"}
+
+
+def test_gc_aborts_rather_than_treat_an_unreadable_doc_as_referencing_nothing(srv, client, assets_dir):
+    # The failure mode of the alternative is deleting a model that is currently placed in someone's world.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    (srv.sessions.worlds_dir(scope, sid) / "wld_broken.json").write_text("{not json")
+    _blob(srv, "loose.png")
+    r = client.post("/admin/gc", json={}).json()
+    assert r["ok"] is False and "aborted" in r["error"]
+    assert (srv.ASSET_CACHE / "loose.png").exists()
+
+
+def test_gc_deletes_only_on_confirm(srv, client, assets_dir):
+    _blob(srv, "loose.png", size=2048)
+    assert client.post("/admin/gc", json={}).json()["bytes"] == 2048
+    assert (srv.ASSET_CACHE / "loose.png").exists()          # a bare gc removes nothing
+    done = client.post("/admin/gc", json={"confirm": True}).json()
+    assert done["deleted"] == 1 and done["bytes"] == 2048
+    assert not (srv.ASSET_CACHE / "loose.png").exists()
+
+
+def test_disk_reports_an_asset_as_a_row_plus_a_blob(srv, client, tmp_path):
+    # "The file" is a lie for an asset: it is a library.db row AND a blob, and for a downloaded model a
+    # .json sidecar carrying the licence too. Showing one of the three silently drops provenance.
+    srv.ASSET_CACHE.mkdir(parents=True, exist_ok=True)
+    (srv.ASSET_CACHE / "beagle.glb").write_bytes(b"x" * 2048)
+    (srv.ASSET_CACHE / "beagle.json").write_text('{"licence": "CC-BY 3.0"}')
+    _seed_asset(srv, "beagle.glb", "alice/agents/builder", label="Beagle", filename="beagle.glb")
+    r = client.post("/admin/file", json={"path": "/alice/agents/builder/assets/beagle.glb"}).json()
+    roles = {f["role"]: f for f in r["files"]}
+    assert r["label"] == "Beagle"
+    assert roles["blob"]["size"] == 2048 and "sidecar" in roles
+    assert roles["row"]["path"].endswith(".db") and "beagle.glb" in roles["row"]["note"]
+
+
+def test_disk_says_missing_for_a_row_whose_blob_is_gone(srv, client):
+    # The catalog keeps bytes on delete, so row and blob drift apart. A path composed from the row and
+    # never checked would send you looking in Finder for something that isn't there.
+    _seed_asset(srv, "gone.png", "alice/agents/builder", label="Vanished", filename="gone.png")
+    r = client.post("/admin/file", json={"path": "/alice/agents/builder/assets/gone.png"}).json()
+    blob = next(f for f in r["files"] if f["role"] == "blob")
+    assert blob.get("missing") is True and "size" not in blob
+
+
+def test_disk_distinguishes_not_yet_written_from_missing(srv, client):
+    # A session nobody has spoken in HAS no transcript. Calling that "missing" sends you hunting a bug.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, sid, title="Quiet")
+    roles = {f["role"]: f for f in
+             client.post("/admin/file", json={"path": f"/{scope}/sessions/Quiet"}).json()["files"]}
+    assert roles["transcript"].get("absent") and not roles["transcript"].get("missing")
+    assert roles["meta"].get("missing") is None                # this one exists
+
+
+def test_state_is_reachable_not_just_listed(srv, client):
+    # `dir <session>` has always offered `state/`, and the resolver has always refused it — a listing
+    # that names somewhere you cannot go. It is the agent's own memory (§7.4), worth reading when an
+    # agent behaves oddly.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, sid, title="Kitchen Table")
+    srv.sessions.state(scope, sid).write("inventory", {"lamp": {"where": "table"}, "notes": ["a", "b"]})
+
+    assert "state" in _ls(client, f"/{scope}/sessions/{sid}")
+    assert _ls(client, f"/{scope}/sessions/{sid}/state") == {"inventory"}
+
+    doc = client.post("/admin/show",
+                      json={"path": f"/{scope}/sessions/{sid}/state/inventory"}).json()
+    fields = dict(doc["fields"])
+    assert fields["doc"] == "inventory"
+    assert fields["notes"] == "[2 items]"          # described, not dumped — the schema is the agent's
+    assert fields["lamp"] == "{where}"
+
+    # and the displayed path round-trips, like every other one
+    shown = client.post("/admin/tree",
+                        json={"path": f"/{scope}/sessions/{sid}/state/inventory"}).json()["display"]
+    assert "Kitchen Table" in shown
+    assert client.post("/admin/tree", json={"path": shown}).json()["ok"] is True
+
+    bad = client.post("/admin/tree", json={"path": f"/{scope}/sessions/{sid}/state/nope"}).json()
+    assert bad["ok"] is False and "no state doc" in bad["error"]
+
+
+def test_deleting_a_state_doc_makes_the_agent_forget_it(srv, client):
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    state = srv.sessions.state(scope, sid)
+    state.write("inventory", {"lamp": 1})
+    state.write("map", {"rooms": []})
+    r = client.post("/admin/delete",
+                    json={"path": f"/{scope}/sessions/{sid}/state/inventory"}).json()
+    assert r["ok"] is True and state.list() == ["map"]
+    client.post("/admin/delete", json={"path": f"/{scope}/sessions/{sid}/state"}).json()
+    assert state.list() == []
+
+
+def test_a_void_space_shows_its_sentinel_not_a_word(srv, client):
+    # "outdoor" would be indistinguishable from a space someone actually named outdoor; the angle
+    # brackets say "this is not a name".
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    wdir = srv.sessions.worlds(scope, sid)
+    st = wdir.load("w1")
+    st.doc["environment"] = {"space": srv.VOID}
+    wdir.save("w1", st)
+    row = client.post("/admin/tree", json={"path": f"/{scope}/sessions/{sid}/worlds/w1"}).json()["self"]
+    assert srv.VOID in row["cells"]
+
+
+def test_the_session_segment_reads_as_a_title_at_every_depth(srv, client):
+    # `cd worlds` used to read `sessions/session-1/worlds` while a world one level down read
+    # `sessions/Session 1/worlds/<name>` — the same session, two names, in one path.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, sid, title="Kitchen Table")
+    for path in (f"/{scope}/sessions/{sid}", f"/{scope}/sessions/{sid}/worlds",
+                 f"/{scope}/sessions/{sid}/worlds/w1"):
+        shown = client.post("/admin/tree", json={"path": path}).json()["display"]
+        assert "Kitchen Table" in shown and sid not in shown, shown
+
+
+def test_a_displayed_path_can_always_be_typed_back(srv, client):
+    # Whatever the shell prints as a path must resolve. Names do; an asset LABEL does not (not unique,
+    # not guaranteed), so an asset's display path keeps its id.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, sid, title="Kitchen Table")
+    _seed_asset(srv, "a1.png", scope, label="Kitchen counter")
+    for path in (f"/{scope}/sessions/{sid}", f"/{scope}/sessions/{sid}/worlds/w1",
+                 f"/{scope}/assets/a1.png"):
+        shown = client.post("/admin/tree", json={"path": path}).json()["display"]
+        assert client.post("/admin/tree", json={"path": shown}).json()["ok"] is True, shown
+
+
+def test_admin_delete_all_assets_in_a_scope(srv, client):
+    # `delete <path>/assets` empties the scope and leaves other scopes alone. Untested until 2026-09-04,
+    # which is how the bulk branch got away with deleting by the row's DISPLAY text: it passed only
+    # because the display text happened to be the id. Labelled rows would have deleted nothing.
+    _seed_asset(srv, "a1", "alice/agents/builder", label="Kitchen counter")
+    _seed_asset(srv, "a2", "alice/agents/builder", label="Meadow skybox")
+    _seed_asset(srv, "b1", "bob/agents/builder", label="Kitchen counter")
+    r = client.post("/admin/delete", json={"path": "/alice/agents/builder/assets"}).json()
+    assert r["ok"] is True, r
+    assert srv.library.get("a1") is None and srv.library.get("a2") is None
+    assert srv.library.get("b1") is not None                  # another user's scope is untouched
+
+
+def test_an_ambiguous_asset_label_refuses_and_lists_the_candidates(srv, client):
+    # A label is accepted when it names exactly one thing, because that is what a listing shows you. When
+    # it names three it refuses — a bare name is a request for ONE thing, so acting on all three would
+    # answer a question nobody asked. (A glob is the opposite case; see the delete tests.)
+    _seed_asset(srv, "a1", "alice/agents/builder", label="Animated Woman")
+    _seed_asset(srv, "a2", "alice/agents/builder", label="Animated Woman")
+    _seed_asset(srv, "b1", "alice/agents/builder", label="Spaceship")
+    ok = client.post("/admin/tree", json={"path": "/alice/agents/builder/assets/a1"}).json()
+    assert ok["ok"] is True and ok["self"]["label"] == "Animated Woman" and ok["self"]["ref"] == "a1"
+
+    unique = client.post("/admin/tree", json={"path": "/alice/agents/builder/assets/Spaceship"}).json()
+    assert unique["ok"] is True and unique["self"]["ref"] == "b1"      # one match → addressable
+
+    dup = client.post("/admin/tree", json={"path": "/alice/agents/builder/assets/Animated Woman"}).json()
+    assert dup["ok"] is False
+    assert "2 assets" in dup["error"] and "a1" in dup["error"] and "a2" in dup["error"]
+
+
+def test_a_pattern_expands_against_display_names_in_the_last_segment(srv, client):
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "Kitchen sketch", "Porch sketch", "Sketch 4", "Meadow")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    r = client.post("/admin/match",
+                    json={"path": f"/{scope}/sessions/{sid}/worlds/*sketch*"}).json()
+    # folded like every other lookup, so 'Sketch 4' matches a lowercase pattern
+    assert sorted(m["row"]["label"] for m in r["matches"]) == ["Kitchen sketch", "Porch sketch", "Sketch 4"]
+    assert r["glob"] is True
+
+    exact = client.post("/admin/match", json={"path": f"/{scope}/sessions/{sid}/worlds/Meadow"}).json()
+    assert exact["glob"] is False and len(exact["matches"]) == 1
+
+    none = client.post("/admin/match", json={"path": f"/{scope}/sessions/{sid}/worlds/zzz*"}).json()
+    assert none["ok"] is True and none["matches"] == []        # no match is not an error
 
 
 def test_admin_delete_refuses_active_world(srv, client):

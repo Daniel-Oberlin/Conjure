@@ -46,6 +46,21 @@ def slug(name: str) -> str:
     return s
 
 
+def loose(s) -> str:
+    """Voice-friendly match key: case-insensitive with spaces/underscores/hyphens treated as equal
+    ('Test 7' == 'test-7' == 'test_7'), and other punctuation dropped. Lookup ONLY — never changes a
+    stored name.
+
+    Dropping punctuation mirrors `world.slug`, which is how worlds and spaces have always matched. That
+    difference was invisible until a name arrived carrying quotes: a WORLD called '"alien"' still answered
+    to `alien` because slug threw the quotes away, while a SESSION titled the same did not, because this
+    key kept them — so the session became unreachable by any form of its own name. `clean_name` now stops
+    such a name being stored at all; matching the two keys up is what lets the ones already on disk be
+    reached (and renamed) without a migration."""
+    s = re.sub(r"[\s_-]+", " ", fold_accents(s).strip().lower())
+    return re.sub(r"[^a-z0-9 ]", "", s).strip()
+
+
 # Double quotes only. A name containing one can't be wrapped in the quotes a shell path needs, so it
 # can't be typed back. The APOSTROPHE is deliberately not here: `shlex` handles "Bob's room" perfectly
 # once the name is double-quoted, which it must be anyway the moment it has a space.
@@ -57,13 +72,13 @@ _QUOTES = "\"“”"
 # characters. Everything else — accents, apostrophes, commas, parentheses — tokenises fine and is nobody's
 # business to refuse, especially in a product where the names arrive by voice.
 #
-# This is safe because it is NOT the traversal gate: `_admin_resolve` rejects "."/".." outright and then
+# This is safe because it is NOT the traversal gate: `namespace.resolve` rejects "."/".." outright and then
 # checks every segment against an enumerated real set (users, agents, sessions, worlds), so a segment can
 # never name something that doesn't exist. And since identity became an id, a name never reaches the
 # filesystem at all — worlds are `wld_*.json`, sessions `session-N`, spaces `space-N` — so there's no
 # encoding argument for ASCII either.
 _NAME_BAD = re.compile(r"[/\\\x00-\x1f\x7f]")
-# The path-segment charset server.py's `_ADMIN_PART` is built from — the same rule stated as a match, so
+# The path-segment charset `namespace.SEGMENT` is built from — the same rule stated as a match, so
 # the two can't drift into a name you can store but never type.
 NAME_SEGMENT = r"[^/\\\x00-\x1f\x7f]+"
 
@@ -363,6 +378,12 @@ class WorldDir:
                 continue
         return None
 
+    def path_of(self, ref: str) -> Path | None:
+        """The document FILE for `ref` (an id or a name), or None if it resolves to nothing. The one
+        public way to ask where a world actually lives — `disk` needs it, and nothing else should."""
+        wid = self.resolve(ref)
+        return self._path(wid) if wid else None
+
     def name_taken(self, name: str, *, other_than: str = "") -> bool:
         try:
             want = slug(name)
@@ -597,8 +618,14 @@ class WorldRepository:
                     meta = {}                                    # no/unreadable meta → treat as public (default)
                 if not meta.get("public", True):
                     continue
+                # The world reference is an id (a legacy meta may hold a name); resolve it here, since a
+                # caller listing OTHER users' sessions has no route to their world names.
+                aw = meta.get("active_world")
+                wdir = WorldDir(sess_dir / "worlds")
+                wname = (wdir.name_of(wdir.resolve(aw)) if aw and wdir.resolve(aw) else aw) or ""
                 out.append({"scope": scope, "owner": owner, "agent": agent_seg, "session": sess_dir.name,
-                            "title": meta.get("title", sess_dir.name), "active_world": meta.get("active_world")})
+                            "title": meta.get("title", sess_dir.name), "active_world": aw,
+                            "active_world_name": wname})
         return out
 
     def users_in_agent(self, agent: str) -> list[str]:
@@ -992,6 +1019,15 @@ class SpaceStore:
         sp["name"] = new_name
         self.save(user, sid, sp)
         return sid
+
+    def path_of(self, user: str, ref: str) -> Path | None:
+        """The FILE a space lives in, by id or display name — or None if it resolves to nothing."""
+        sid = self.resolve(user, ref)
+        return self._path(user, sid) if sid else None
+
+    def dir_of(self, user: str) -> Path:
+        """A user's spaces directory."""
+        return self._user_dir(user)
 
     def list_users(self) -> list[str]:
         """Users with a presence under the root (its immediate subdirs). Under the shared ``users/`` root

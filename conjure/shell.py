@@ -30,6 +30,7 @@ and reads the same spoken or typed. A *path* command acts on anything addressabl
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shlex
 import time
@@ -175,6 +176,79 @@ def spoken_list(noun: str, labels: list[str], *, current: str = "", here: str = 
     return f"{head} {here} {current}." if current else head
 
 
+# How wide a name column may grow. Asset labels are prompt-derived — the live catalog runs to 611
+# characters — so an uncapped column doesn't wrap, it destroys the layout. The full text is one `show`
+# away, which is the right place for it.
+NAME_WIDTH = 44
+
+
+def _clip(text: str, width: int) -> str:
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def columns(rows: list[dict], header: list[str], *, long: bool = False) -> list[str]:
+    """Rows → aligned lines, `*` marking the live one.
+
+    The server sends each row as `label` plus a list of `cells`, already stringified but not laid out,
+    and `header` naming what they mean. It used to send one pre-composed `detail` string per row, which
+    is exactly why no two listings ever lined up.
+
+    The **id** column is shown only in `long` mode, or when a row's `ref` differs from its label — which
+    is assets, where the id is genuinely the address rather than a curiosity."""
+    def name(c):     # a trailing '/' marks what you can `cd` into, so the namespace's shape is visible
+        return _clip(c["label"], NAME_WIDTH) + ("/" if c.get("kind") in ("category", "user", "agent") else "")
+
+    show_id = long or any(c.get("ref") and c["kind"] == "asset" for c in rows)
+    grid = [[name(c)] + [str(x) for x in (c.get("cells") or [])] + ([c.get("ref", "")] if show_id else [])
+            for c in rows]
+    head = (header[:1] + header[1:] + (["id"] if show_id else [])) if header else []
+    if head and len(head) < max((len(r) for r in grid), default=0):
+        head += [""] * (max(len(r) for r in grid) - len(head))
+    widths: list[int] = []
+    for row in ([head] if head else []) + grid:
+        for i, cell in enumerate(row):
+            if i >= len(widths):
+                widths.append(0)
+            widths[i] = max(widths[i], len(cell))
+    def line(mark: str, cells: list[str]) -> str:
+        padded = [c.ljust(widths[i]) for i, c in enumerate(cells)]
+        return f" {mark}{'  '.join(padded)}".rstrip()
+    out = []
+    if head and any(head):
+        # A rule under the header, because a bare row of words above rows of words reads as data. Drawn
+        # per column so it also shows where each one begins and ends.
+        out = [line(" ", head), line(" ", ["─" * widths[i] for i in range(len(head))])]
+    out += [line("*" if c.get("active") else " ", g) for c, g in zip(rows, grid)]
+    return out
+
+
+def human_size(n) -> str:
+    """`412 KB`, `35 MB` — sizes you compare at a glance. Directories report none."""
+    if n is None:
+        return ""
+    for unit, div in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if n >= div:
+            v = n / div
+            return f"{v:.1f} {unit}" if v < 10 else f"{v:.0f} {unit}"
+    return f"{n} B"
+
+
+def when(ts) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else ""
+
+
+def short_path(p: str) -> str:
+    """A real filesystem path with your home folded to `~`. These are long and mostly boilerplate; the
+    part that identifies the file is the tail."""
+    home = os.path.expanduser("~")
+    return "~" + p[len(home):] if p.startswith(home + "/") else p
+
+
+def is_glob(path: str) -> bool:
+    """Does this path end in a PATTERN? Only the last segment may, so only it is examined."""
+    return any(c in (path or "").rstrip("/").rsplit("/", 1)[-1] for c in "*?[")
+
+
 def _match_name(token: str, roster) -> Optional[str]:
     """Case-insensitive lookup of a spoken/typed word against the roster's casual LLM names
     ('gemini' → 'Gemini'); None if it matches none. The gate that keeps a switch deterministic."""
@@ -210,6 +284,10 @@ class Shell:
         # (tests) leaves it None and clears in-memory only. `async (on_text) -> None`.
         self._clear_transcript_hook = None
         self._cwd = ""                   # this dispatch's working directory (per-connection; see _dispatch)
+        self._cwd_display = ""           # the same place written in NAMES — what the prompt shows. The cwd
+                                         # itself holds ids so a rename can't strand it; only the rendering
+                                         # is by name, and it goes stale until the next command (harmless,
+                                         # and cosmetic — see docs/backlogs/agents.md phase 3).
         # An armed spoken `reset agent`: (who, agent, assets, monotonic-time). One slot, not per-user —
         # arming a second reset should replace the first, and it carries WHO armed it so `_confirm`
         # can refuse someone else's (§ _confirm).
@@ -256,10 +334,21 @@ class Shell:
              "yes — confirm the reset just offered (voice; expires in a minute)", True),
 
             # -- paths: act on anything addressable
-            (re.compile(r"^(?:dir|ls)(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
-             "dir [path] — list one level of the namespace", False),
+            (re.compile(r"^(?:dir|ls)(?:\s+(?P<long>-l))?(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
+             "dir [-l] [path] — list one level of the namespace (-l also shows ids)", False),
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
+            (re.compile(r"^gc(?P<force>\s+!)?$", re.I), self._gc,
+             "gc [!] — asset files nothing points at. Lists them; '!' deletes them", False),
+            (re.compile(r"^set(?:\s+(?P<key>[\w.-]+)(?:\s+(?P<value>\S.*?))?)?(?P<save>\s+--save)?$", re.I),
+             self._set,
+             "set [key [value]] [--save] — list settings, read one, or change it for this run; "
+             "--save keeps it in settings.json", False),
+            (re.compile(r"^unset\s+(?P<key>[\w.-]+)$", re.I), self._unset,
+             "unset <key> — drop a run-time change, back to the saved or default value", False),
+            (re.compile(r"^(?:disk|file)(?:\s+(?P<path>\S.*))?$", re.I), self._disk,
+             "disk [path] — where a thing actually lives: real files, sizes, and an asset's catalog row",
+             False),
             (re.compile(r"^cd(?:\s+(?P<path>\S.*))?$", re.I), self._cd,
              "cd [path] — change the working directory (bare: back to your agent)", False),
             (re.compile(r"^(?P<vis>public|private)(?:\s+(?P<path>\S.*))?$", re.I), self._visibility,
@@ -267,9 +356,9 @@ class Shell:
             (re.compile(r"^rename\s+(?P<rest>\S.*)$", re.I), self._rename,
              "rename <path> <new name> — retitle a world, space or session; relabel an asset "
              "(quote a path containing spaces)", False),
-            (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*)$", re.I), self._delete,
-             "delete <path> — remove a world, session, space, asset or user (immediate, no confirmation)",
-             False),
+            (re.compile(r"^(?:delete|rm)\s+(?P<path>\S.*?)(?P<force>\s+!)?$", re.I), self._delete,
+             "delete <path> [!] — remove a world, session, space, asset or user. An explicit path goes "
+             "immediately; a pattern lists what it matched and needs '!' to act", False),
         ]
 
     @classmethod
@@ -422,7 +511,8 @@ class Shell:
         return bool(_LEAVE_SHELL.match(cmd))
 
     async def _dispatch(self, cmd: str, on_text, *, speaker: Optional[str] = None,
-                        permitted: bool = True, cwd: str = "", voice: bool = False) -> None:
+                        permitted: bool = True, cwd: str = "", cwd_display: str = "",
+                        voice: bool = False) -> None:
         if not cmd:
             return
         # WHO typed this command (the connection's user), so identity-scoped verbs act as the speaker, not
@@ -435,6 +525,7 @@ class Shell:
         self._permitted = permitted
         self._voice = voice
         self._cwd = cwd or default_cwd(self._acting, self._agent_name())
+        self._cwd_display = cwd_display or self._cwd
         if voice:                                             # spoken aliases for `llm <name>`
             sm = _SPOKEN_LLM.match(cmd)
             if sm and await self._switch_llm(on_text, sm):
@@ -452,8 +543,16 @@ class Shell:
 
     @property
     def cwd(self) -> str:
-        """The working directory after the last dispatch — the caller persists it per connection."""
+        """The working directory after the last dispatch — the caller persists it per connection.
+        Canonical: it holds ids, so renaming the session you are standing in cannot strand it."""
         return self._cwd
+
+    @property
+    def cwd_display(self) -> str:
+        """The same directory in names — what a prompt shows. Persisted per connection alongside `cwd`
+        rather than derived, because rendering it needs a world-server round trip and the prompt is
+        redrawn on events that have none."""
+        return self._cwd_display
 
     # ----------------------------------------------------------------- commands
     async def _open(self, on_text, m=None):
@@ -672,8 +771,9 @@ class Shell:
             is_live = live.get("scope") == scope and live.get("session") == s["id"]
             extra = f", {s['llm']}" if s.get("llm") else ""
             vis = "" if s.get("public", True) else ", private"
+            world = s.get("active_world_name") or s.get("active_world") or "—"
             rows.append(self._mark(is_live, bool(s.get("active")))
-                        + f"{s.get('title')} ({s['id']}) — world {s.get('active_world')}{extra}{vis}")
+                        + f"{s.get('title')} ({s['id']}) — world {world}{extra}{vis}")
         text = "Sessions:\n" + ("\n".join(rows) or "  (none)")
         # Other users' public sessions you can VISIT (docs/specs/agents.md §7.2), scoped to THIS agent — a
         # human act, so it lives here in the shell, not in the agent's world tools. Visit by name.
@@ -683,7 +783,8 @@ class Shell:
             for a in avail:
                 is_live = live.get("scope") == a["scope"] and live.get("session") == a["session"]
                 pub.append(self._mark(is_live, False)
-                           + f"{a['owner']}  \"{a.get('title')}\"  — world {a.get('active_world')}")
+                           + f"{a['owner']}  \"{a.get('title')}\"  "
+                             f"— world {a.get('active_world_name') or a.get('active_world') or '—'}")
             text += ("\n\nOther users' public sessions (visit: session <user> <name>):\n" + "\n".join(pub))
         text += "\n\n@ = live session (you're here) · * = your last-used in this agent"
         await self._say(on_text, text)
@@ -747,11 +848,59 @@ class Shell:
 
     async def _dir(self, on_text, m):
         path = self._path(m)
+        if is_glob(path):
+            await self._dir_glob(on_text, path, long=bool(m.groupdict().get("long")))
+            return
         data = await self._admin("tree", path)
         if not data.get("ok"):
-            await self._say(on_text, data.get("error", "error"))
+            data = await self._recover(on_text, m, data)
+            if data is None:
+                return
+        await self._say(on_text, self._render_listing(data, long=bool(m.groupdict().get("long"))))
+
+    async def _dir_glob(self, on_text, path: str, *, long: bool = False) -> None:
+        found = await self._admin("match", path)
+        if not found.get("ok"):
+            await self._say(on_text, found.get("error", "error"))
             return
-        await self._say(on_text, self._render_listing(data))
+        rows = [mm["row"] for mm in (found.get("matches") or []) if mm.get("row")]
+        if not rows:
+            await self._say(on_text, f"Nothing matches {loc_name(path)!r}.")
+            return
+        head = f"{len(rows)} match {loc_name(path)!r}"
+        await self._say(on_text, head + "\n" + "\n".join(columns(rows, found.get("columns") or [],
+                                                                  long=long)))
+
+    async def _recover(self, on_text, m, failed: dict) -> Optional[dict]:
+        """A path command failed. If the CWD is what went stale, move up to the nearest place that still
+        exists, say so, and retry there; otherwise report the original error.
+
+        A working directory can be invalidated by someone else — the session you are standing in gets
+        renamed or deleted from another connection — and the failure then looks like a broken shell
+        rather than a moved floor. Walking up is the same self-healing the world pointer already does
+        (`world._mru_first` falls through deleted worlds; `_boot_world` has its three rungs).
+
+        Cost is paid only on the error path: a command that works never asks."""
+        if not self._cwd or self._cwd == home_of(self._acting):
+            await self._say(on_text, failed.get("error", "error"))
+            return None
+        here = await self._admin("tree", self._cwd)
+        if here.get("ok"):                                     # the cwd is fine — the ARGUMENT was bad
+            await self._say(on_text, failed.get("error", "error"))
+            return None
+        gone = loc_name(self._cwd_display or self._cwd)
+        path = self._cwd
+        while path and path != "/":
+            path = path.rsplit("/", 1)[0] or "/"
+            up = await self._admin("tree", path)
+            if up.get("ok"):
+                self._cwd = up.get("path") or path
+                self._cwd_display = up.get("display") or self._cwd
+                await self._say(on_text, f"{gone!r} is gone — moved you up to "
+                                         f"{display_path(self._cwd_display, self._acting)}")
+                return up if not (m and (m.groupdict().get("path") or "").strip()) else None
+        await self._say(on_text, failed.get("error", "error"))
+        return None
 
     async def _show(self, on_text, m):
         data = await self._admin("show", self._path(m))
@@ -760,11 +909,154 @@ class Shell:
             return
         width = max((len(k) for k, _ in data.get("fields", [])), default=0)
         rows = "\n".join(f"  {k:<{width}}  {v}" for k, v in data.get("fields", []))
-        await self._say(on_text, f"{display_path(data['path'], self._acting)}\n{rows}")
+        await self._say(on_text, f"{display_path(data.get('display') or data['path'], self._acting)}\n{rows}")
+
+    async def _settings_api(self, **kw) -> dict:
+        url = getattr(self._settings, "world_url", None) if self._settings else None
+        if not url:
+            return {"ok": False, "error": "no world server configured"}
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return (await client.post(f"{url}/admin/settings", json=kw)).json()
+        except Exception as exc:                          # noqa: BLE001 — network / server down
+            return {"ok": False, "error": f"settings request failed: {exc}"}
+
+    async def _gc(self, on_text, m):
+        """`gc` lists what is reclaimable; `gc !` reclaims it.
+
+        Same idiom as a pattern delete, and for the same reason — the input names a SET rather than one
+        thing, so it is shown before it is acted on."""
+        url = getattr(self._settings, "world_url", None) if self._settings else None
+        if not url:
+            await self._say(on_text, "no world server configured")
+            return
+        force = bool(m.groupdict().get("force"))
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                data = (await client.post(f"{url}/admin/gc", json={"confirm": force})).json()
+        except Exception as exc:                          # noqa: BLE001 — network / server down
+            await self._say(on_text, f"gc request failed: {exc}")
+            return
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        if force:
+            await self._say(on_text, f"Deleted {data.get('deleted', 0)} files, "
+                                     f"freeing {human_size(data.get('bytes', 0))}.")
+            return
+        found = data.get("files") or []
+        if not found:
+            await self._say(on_text, f"Nothing to collect — every one of {data.get('present', 0)} "
+                                     f"asset files is referenced.")
+            return
+        head = (f"{len(found)} unreferenced files · {human_size(data['bytes'])} reclaimable · "
+                f"nothing deleted")
+        rows = [f"  {e['name']:<24}{human_size(e['size']):>9}   {when(e['mtime'])}" for e in found[:10]]
+        if len(found) > 10:
+            rows.append(f"  … {len(found) - 10} more")
+        await self._say(on_text, "\n".join([head] + rows + ["Re-run as  gc !  to delete them."]))
+
+    async def _set(self, on_text, m):
+        """`set` · `set <key>` · `set <key> <value> [--save]`.
+
+        Always reports the SOURCE and the environment variable, so the answer to "why is it that?" and
+        "how do I keep it?" are both in the reply rather than in someone's memory."""
+        key = (m.group("key") or "").strip()
+        value = (m.group("value") or "").strip() or None
+        save = bool(m.group("save"))
+        data = await self._settings_api(key=key, value=value, save=save)
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        if not key:
+            await self._say(on_text, self._render_settings(data.get("settings") or []))
+            return
+        if value is None:
+            await self._say(on_text, self._render_setting(data))
+            return
+        lines = [f"{data['key']} = {data['value']}   (was {data.get('was')} · "
+                 f"{data.get('was_source', 'default')}){self._tier_note(data)}",
+                 f"env:      {data['env']}={data.get('env_value', data['value'])}"]
+        lines.append(f"saved:    {short_path(data['saved'])}" if data.get("saved")
+                     else f"persist:  set {data['key']} {value} --save   → settings.json")
+        await self._say(on_text, "\n".join(lines))
+
+    async def _unset(self, on_text, m):
+        data = await self._settings_api(key=m.group("key").strip(), clear=True)
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        await self._say(on_text, f"{data['key']} = {data['value']}   (was {data.get('was')}) — "
+                                 f"back to the {data['source']} value.{self._tier_note(data)}")
+
+    @staticmethod
+    def _tier_note(data: dict) -> str:
+        return "\n          applies on the next headset load" if data.get("tier") == "client" else ""
+
+    def _render_setting(self, d: dict) -> str:
+        rows = [["value", d.get("value")], ["source", d.get("source")], ["tier", d.get("tier")],
+                ["env", d.get("env")]]
+        if d.get("choices"):
+            rows.append(["one of", ", ".join(d["choices"])])
+        if d.get("limits"):
+            rows.append(["between", f"{d['limits'][0]} and {d['limits'][1]}"])
+        if d.get("doc"):
+            rows.append(["what", d["doc"]])
+        w = max(len(k) for k, _ in rows)
+        return f"{d['key']}\n" + "\n".join(f"  {k:<{w}}  {v}" for k, v in rows)
+
+    def _render_settings(self, rows: list[dict]) -> str:
+        """The whole table, grouped by tier — a flat list of forty knobs answers no question anyone has."""
+        out = []
+        for tier, blurb in (("live", "effective next turn"),
+                            ("client", "applied when the headset next loads")):
+            here = [r for r in rows if r.get("tier") == tier]
+            if not here:
+                continue
+            out.append(f"{tier} — {blurb}")
+            grid = [[r["key"], str(r["value"]), r["source"] if r["source"] != "default" else "",
+                     r.get("doc", "")] for r in here]
+            widths = [max(len(g[i]) for g in grid) for i in range(3)]
+            out += [f"  {g[0]:<{widths[0]}}  {g[1]:<{widths[1]}}  {g[2]:<{widths[2]}}  {g[3]}".rstrip()
+                    for g in grid]
+            out.append("")
+        out.append("`set <key>` for one · `set <key> <value>` to change it · boot-time keys live in .env")
+        return "\n".join(out)
+
+    async def _disk(self, on_text, m):
+        """`disk [path]` — the on-disk truth behind a name. The one command that shows ids and filenames,
+        which is what lets every other one stop.
+
+        A LIST of files, not one: a session is a directory of four things, and an asset is a `library.db`
+        row plus a blob plus (for a downloaded model) a `.json` sidecar carrying its licence."""
+        data = await self._admin("file", self._path(m))
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        rows = [["name", data.get("label") or loc_name(data.get("display", ""))],
+                ["path", display_path(data.get("display") or data["path"], self._acting)]]
+        if data.get("display") != data.get("path"):
+            rows.append(["id path", data["path"]])
+        for f in data.get("files", []):
+            detail = "missing" if f.get("missing") else "not yet" if f.get("absent") else "  ".join(
+                x for x in (human_size(f.get("size")), when(f.get("mtime")), f.get("note")) if x)
+            rows.append([f["role"], f"{short_path(f['path'])}   {detail}".rstrip()])
+        width = max(len(k) for k, _ in rows)
+        await self._say(on_text, "\n".join(f"  {k:<{width}}  {v}" for k, v in rows))
 
     async def _cd(self, on_text, m):
         """Bare `cd` returns to your own agent scope — the useful default, not the root."""
         target = self._path(m, default=default_cwd(self._acting, self._agent_name()))
+        if is_glob(target):                                   # you can only stand in one place
+            found = await self._admin("match", target)
+            hits = found.get("matches") or []
+            if not found.get("ok") or len(hits) != 1:
+                await self._say(on_text, found.get("error") if not found.get("ok") else
+                                f"{len(hits)} match {loc_name(target)!r} — name one to cd into it.")
+                return
+            target = hits[0]["path"]
         data = await self._admin("tree", target)
         if not data.get("ok"):
             await self._say(on_text, data.get("error", "error"))
@@ -772,7 +1064,8 @@ class Shell:
         # Adopt the path the SERVER resolved, not the one typed: `…/worlds` is a shortcut for the active
         # session's worlds, and remembering the shortcut would silently point elsewhere after a switch.
         self._cwd = data.get("path") or target
-        await self._say(on_text, display_path(self._cwd, self._acting))
+        self._cwd_display = data.get("display") or self._cwd
+        await self._say(on_text, display_path(self._cwd_display, self._acting))
 
     async def _visibility(self, on_text, m):
         """`public`/`private` — bare acts on the live session (the common case, and voice-safe); with a
@@ -792,6 +1085,7 @@ class Shell:
         if not data.get("ok"):
             await self._say(on_text, data.get("error", "error"))
             return
+        shown = data.get("display") or path
         kind, fields = data.get("kind"), dict(data.get("fields", []))
         if kind == "space":
             out = await self._session_api("POST", "/space/visibility", name=fields.get("space"), public=public)
@@ -805,7 +1099,7 @@ class Shell:
             await self._say(on_text, f"A {kind} has no visibility of its own — "
                                      f"a world inherits its session's.")
             return
-        await self._say(on_text, f"{display_path(path, self._acting)} is now "
+        await self._say(on_text, f"{display_path(shown, self._acting)} is now "
                                  f"{'public' if public else 'private'}."
                         if out.get("ok") else out.get("error", "error"))
 
@@ -826,6 +1120,9 @@ class Shell:
             await self._say(on_text, 'Usage: rename <path> <new name>   (quote a path with spaces)')
             return
         path = resolve_path(self._cwd, tokens[0], self._acting)   # shlex already unquoted it
+        if is_glob(path):                                     # renaming N things to one name is nonsense
+            await self._say(on_text, "rename takes one path — a pattern can't name the result.")
+            return
         new = " ".join(tokens[1:]).strip()
         data = await self._admin("show", path)
         if not data.get("ok"):
@@ -865,17 +1162,51 @@ class Shell:
             await self._say(on_text, "This session is private — you can't delete anything here.")
             return
         path = self._path(m)
+        if is_glob(path):
+            await self._delete_many(on_text, path, force=bool(m.groupdict().get("force")))
+            return
         preview = await self._admin("tree", path)             # resolve + describe before it's gone
         if not preview.get("ok"):
             await self._say(on_text, preview.get("error", "error"))
             return
         path = preview.get("path") or path
+        shown = preview.get("display") or path
         took = self._summarize(preview)
         data = await self._admin("delete", path)
         if data.get("ok"):
-            await self._say(on_text, f"Deleted {display_path(path, self._acting)} ({took}).")
+            await self._say(on_text, f"Deleted {display_path(shown, self._acting)} ({took}).")
         else:
             await self._say(on_text, f"Not deleted: {data.get('error', 'error')}")
+
+    async def _delete_many(self, on_text, path: str, *, force: bool) -> None:
+        """A pattern deletes nothing until you add `!`.
+
+        §6.6 argues that `delete` needs no confirmation because it "takes an explicit path" — you cannot
+        land on it by accident. A pattern voids exactly that argument: `delete "s*"` looks precise and
+        may match nine things. So the guard lands on the new ambiguity and nowhere else — an explicit
+        path keeps its one-shot form, which is why the y/n prompt was dropped in the first place."""
+        found = await self._admin("match", path)
+        if not found.get("ok"):
+            await self._say(on_text, found.get("error", "error"))
+            return
+        matches = found.get("matches") or []
+        if not matches:
+            await self._say(on_text, f"Nothing matches {loc_name(path)!r}.")
+            return
+        names = [loc_name(mm.get("display") or mm["path"]) for mm in matches]
+        if not force:
+            await self._say(on_text, f"{len(matches)} {matches[0]['kind']}(s) match — nothing deleted. "
+                                     f"Re-run with ! to confirm:\n  " + " · ".join(names))
+            return
+        done, failed = [], []
+        for mm, name in zip(matches, names):
+            out = await self._admin("delete", mm["path"])
+            (done if out.get("ok") else failed).append(
+                name if out.get("ok") else f"{name} ({out.get('error', 'error')})")
+        msg = f"Deleted {len(done)}: {' · '.join(done)}." if done else "Deleted nothing."
+        if failed:
+            msg += f"\nKept {len(failed)}: " + " · ".join(failed)
+        await self._say(on_text, msg)
 
     async def _reset_agent(self, on_text, m) -> None:
         """`reset agent <name> [assets]` — a purge plus the pointer surgery that has to follow it.
@@ -1000,7 +1331,7 @@ class Shell:
         except Exception as exc:                              # network / server down / bad JSON
             return {"ok": False, "error": f"admin request failed: {exc}"}
 
-    def _render_listing(self, data: dict, *, noun: str = "", current: str = "",
+    def _render_listing(self, data: dict, *, long: bool = False, noun: str = "", current: str = "",
                         here: str = "You're in", sole: str = "and you're in it") -> str:
         """One line per entry, columns aligned. Deliberately NOT a tree: the recursive form dumped every
         world, space and asset of every user at the root, which is unreadable at any real size.
@@ -1019,21 +1350,12 @@ class Shell:
             # is the sort of thing that only shows up once a listener hears it.
             noun = noun or loc_name(data.get("path", "")).rstrip("s") or "item"
             return spoken_list(noun, labels, current=current, here=here, sole=sole)
-        head = display_path(data.get("path", "/"), self._acting)
+        head = display_path(data.get("display") or data.get("path", "/"), self._acting)
         if data.get("path") != data.get("requested", data.get("path")):
             head += f"   (→ {data['path']})"
         if not rows:
             return f"{head}\n  (empty)"
-        # A trailing '/' marks the things you can `cd` into, so the shape of the namespace is visible.
-        def label(c):
-            return c["label"] + ("/" if c.get("kind") in ("category", "user", "agent") else "")
-        width = max(len(label(c)) for c in rows)
-        out = [head]
-        for c in rows:
-            mark = "*" if c.get("active") else " "
-            detail = f"  {c['detail']}" if c.get("detail") else ""
-            out.append(f" {mark}{label(c):<{width}}{detail}".rstrip())
-        return "\n".join(out)
+        return head + "\n" + "\n".join(columns(rows, data.get("columns") or [], long=long))
 
     def _summarize(self, data: dict) -> str:
         """What a `delete` took — read off the pre-delete tree, reported after. Counts the children for a
@@ -1046,7 +1368,7 @@ class Shell:
                 counts[k] = counts.get(k, 0) + 1
         me = data.get("self") or {}
         if me and (not counts or counts == {me.get("kind"): 1}):
-            detail = f" — {me['detail']}" if me.get("detail") else ""
+            detail = f" — {' · '.join(str(c) for c in me['cells'] if c)}" if me.get("cells") else ""
             return f"{me.get('kind', 'entry')} {me.get('label', '')}{detail}".strip()
         if counts:
             return ", ".join(f"{v} {k}{'' if v == 1 else 's'}" for k, v in sorted(counts.items()))

@@ -204,19 +204,45 @@ conjure:daniel.shell ~/agents/builder> dir
   worlds     → sessions/session-1/worlds
 
 conjure:daniel.shell ~/agents/builder> cd worlds
-~/agents/builder/sessions/session-1/worlds
+~/agents/builder/sessions/Session 1/worlds
 
-conjure:daniel.shell ~/agents/builder/sessions/session-1/worlds> show animal-house
+conjure:daniel.shell ~/agents/builder/sessions/Session 1/worlds> dir
+  name          entities     space
+ *animal-house  24 entities  Living Room
+  meadow        0 entities   outdoor
+
+conjure:daniel.shell ~/agents/builder/sessions/Session 1/worlds> show animal-house
+  world       animal-house
+  id          wld_5244403f2c
   entities    24
-  by kind     grid×5, image×8, model×6, other×4, plane×1
-  space       daniel/space-1
+  by kind     image×18, model×6
+  space       Living Room  (daniel/space-1)
+```
+
+**Names in front, ids underneath.** A listing leads with what you'd say — a world by name, a session by
+title, a space by the name you gave it — and the permanent id stays out of the way, reachable with
+`dir -l` or `disk`. Paths are shown in names too, but *remembered* as ids, so renaming the session
+you're standing in doesn't strand you. `disk` is the one command that shows the truth on disk:
+
+```
+conjure:daniel.shell ~> disk Beagle
+  name     Beagle
+  blob     ~/.local/share/conjure/assets/04d8ea35984d3492.glb   1.2 MB  2026-09-04 09:56
+  sidecar  ~/.local/share/conjure/assets/04d8ea35984d3492.json  licence CC-BY 3.0
+  row      ~/.local/share/conjure/library.db   assets.id = '04d8ea35984d3492.glb'
 ```
 
 Nouns — `agent`, `llm`, `session`, `world` — list when bare and switch when given a name
 (`world meadow`, `llm gemini`), with `new`, `rename`, `clear` and `public`/`private` for the live one.
-Paths — `dir`, `show`, `cd`, `delete`, `rename` — walk a namespace that mirrors storage, including the
-part that isn't obvious: **worlds live per session**, so `…/sessions/<sid>/worlds/<name>` is the real
-address and `…/agents/<agent>/worlds` is a shortcut to the active session's.
+Paths — `dir`, `show`, `disk`, `cd`, `delete`, `rename` — walk a namespace that mirrors storage,
+including the part that isn't obvious: **worlds live per session**, so `…/sessions/<sid>/worlds/<name>`
+is the real address and `…/agents/<agent>/worlds` is a shortcut to the active session's. A `*` pattern
+works in the last segment; `delete` takes an explicit path in one shot, but a pattern lists what it
+matched and waits for `!`.
+
+`set` reads and changes runtime settings — and refuses the ones that need a restart, by name and with
+the reason (`set foveation 0.3`, `set` for the table, `--save` to keep it in `settings.json`). `gc`
+lists asset files nothing references and deletes them on `gc !`.
 
 Every command declares whether it's **voice-safe**: voice gets the modal verbs ("where am I", "go to
 the meadow", "new session") and is refused the ones that need a screen. Full table:

@@ -1,8 +1,11 @@
 """User-home path resolution (docs/specs/config.md §1/§2). Pure over injected env/settings, so no
 real home is touched: every case passes an explicit `env` dict (and `settings` where relevant)."""
 
+import json
 import os
 from pathlib import Path
+
+import pytest
 
 from conjure import config
 
@@ -194,3 +197,60 @@ def test_an_alias_spec_may_name_several_words():
     assert voice_wake_aliases("banana") == ["banana"]                  # a lone word is still literal
     # a single word that IS the configured canonical still expands to its list (the shell's case)
     assert wake_aliases("conjure") == wake_aliases()
+
+
+# --------------------------------------------------------------------------- runtime settings (`set`)
+
+def test_a_settings_key_knows_its_tier_and_its_env_var():
+    from conjure import config
+    assert config.tier_of("foveation") == "client"      # baked into the page at load
+    assert config.tier_of("history_cap") == "live"      # read per turn
+    assert config.tier_of("port") == "boot"             # read once, at startup
+    assert config.tier_of("openai_api_key") == "secret"
+    assert config.tier_of("no_such_knob") == "unknown"
+    assert config.env_var("foveation") == "CONJURE_FOVEATION"
+    assert config.env_var("world_url") == "CONJURE_URL"          # one of the six that don't follow
+
+
+def test_a_value_outside_its_range_is_refused_not_clamped():
+    from conjure import config
+    assert config.parse_value("foveation", "0.3") == 0.3
+    for key, bad in [("foveation", "3"), ("occlusion", "sideways"), ("history_cap", "lots")]:
+        with pytest.raises(ValueError):
+            config.parse_value(key, bad)
+
+
+def test_preferences_sit_below_env_and_above_the_default(tmp_path, monkeypatch):
+    # The whole precedence ladder of spec §2, and the reason `--save` writes the file rather than .env:
+    # the machine-managed file sits BELOW the hand-authored variable, so a save can never fight you.
+    from conjure import config
+    monkeypatch.setattr(config, "_seeded", {})
+    (tmp_path / "settings.json").write_text(json.dumps(
+        {"preferences": {"foveation": 0.3, "pose_tau": 0.5}}))
+    monkeypatch.setenv("CONJURE_POSE_TAU", "0.9")            # already set by hand
+    monkeypatch.delenv("CONJURE_FOVEATION", raising=False)
+    config.seed_preferences(tmp_path)
+    assert os.environ["CONJURE_FOVEATION"] == "0.3" and config.source_of("foveation") == "settings.json"
+    assert os.environ["CONJURE_POSE_TAU"] == "0.9" and config.source_of("pose_tau") == "env"
+
+    config.apply_override("foveation", 0.7)                  # `set` for this run
+    assert config.source_of("foveation") == "env"
+    config.clear_override("foveation")                       # `unset` falls to the saved value, not away
+    assert os.environ["CONJURE_FOVEATION"] == "0.3" and config.source_of("foveation") == "settings.json"
+
+
+def test_a_secret_never_enters_settings_json(tmp_path, monkeypatch):
+    # settings.json is meant to be syncable with dotfiles, so it must never carry a credential — not
+    # written by us, and not kept if someone hand-edits one in.
+    from conjure import config
+    monkeypatch.setattr(config, "_seeded", {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    (tmp_path / "settings.json").write_text(json.dumps(
+        {"preferences": {"openai_api_key": "sk-nope", "foveation": 0.3}}))
+    config.seed_preferences(tmp_path)
+    assert "OPENAI_API_KEY" not in os.environ             # a secret in the file is never honoured
+    with pytest.raises(ValueError):
+        config.save_preference("openai_api_key", "sk-nope", tmp_path)
+    config.save_preference("pose_tau", 0.25, tmp_path)    # …and any already there is stripped on write
+    prefs = json.loads((tmp_path / "settings.json").read_text())["preferences"]
+    assert sorted(prefs) == ["foveation", "pose_tau"]

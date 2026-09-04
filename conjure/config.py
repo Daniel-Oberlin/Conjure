@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional
@@ -84,6 +85,8 @@ def load_settings(config_dir: Path) -> dict:
 # resolver treats a falsy value as absent (docs/specs/config.md §3), so a fresh file changes nothing;
 # it exists purely so the keys are discoverable and a user can fill one in.
 DEFAULT_SETTINGS: dict = {
+    "preferences": {},       # runtime knobs set by the shell's `set --save` (§ runtime settings). NOT
+                             #   secrets — those stay in .env, which is never machine-written.
     "data_dir": None,        # override the precious data root (sessions/worlds/assets/library.db)
     "cache_dir": None,       # override the disposable cache root
     "agents_path": None,     # list of dirs; user-first search path for agent definitions
@@ -460,8 +463,57 @@ class Settings:
     bindings: str = DEFAULT_BINDINGS
 
 
+# Env vars this process seeded from `settings.json`, so `source_of` can tell a saved preference from a
+# real environment override — they look identical once both are in `os.environ`.
+_seeded: dict[str, str] = {}
+
+
+def seed_preferences(config_dir: Path | None = None) -> None:
+    """Load the `preferences` block of `settings.json` into the environment, **without overriding**
+    anything already there.
+
+    That single rule IS the precedence ladder of spec §2 — env > settings.json > default — expressed
+    the same way `load_dotenv` already expresses it for `.env`. It also puts the machine-managed file
+    BELOW the hand-authored one, which is the right way round: a value saved by `set --save` stays
+    overridable by a one-off `CONJURE_FOVEATION=0`, and `--save` can never fight something you typed."""
+    prefs = (load_settings(config_dir or CONFIG_DIR) or {}).get("preferences") or {}
+    if not isinstance(prefs, dict):
+        return
+    for key, value in prefs.items():
+        if value is None or tier_of(key) in ("secret", "unknown"):
+            continue                                    # a secret in settings.json is never honoured
+        var = env_var(key)
+        if var not in os.environ:
+            os.environ[var] = _seeded[var] = as_env(value)
+
+
+def save_preference(key: str, value, config_dir: Path | None = None) -> Path:
+    """Persist one preference to `settings.json`, in its own `preferences` block.
+
+    Never `.env`: nothing writes that file today (`load_env` is the whole relationship), it is
+    line-oriented text whose comments and ordering a machine editor would flatten, every value in it is
+    an untyped string, and it holds every API key — so pointing a writer at it puts credentials in the
+    blast radius of a bad save. JSON has the types, has a writer, and has no secrets in it."""
+    if tier_of(key) == "secret":
+        raise ValueError("secrets are never saved to settings.json — keep them in .env")
+    path = (config_dir or CONFIG_DIR) / "settings.json"
+    data = load_settings(config_dir or CONFIG_DIR) or {}
+    prefs = data.get("preferences")
+    prefs = {} if not isinstance(prefs, dict) else prefs
+    # Strip any secret already sitting in the block — hand-edited in, or written by an older build. This
+    # file is meant to be syncable with dotfiles, so every write is a chance to get one back out of it.
+    prefs = {k: v for k, v in prefs.items() if k not in SECRET_KEYS}
+    data["preferences"] = prefs | {key: value}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")                  # atomic: a half-written settings.json boots on {}
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(path)
+    return path
+
+
 def get_settings() -> Settings:
     load_env()
+    seed_preferences()
     return Settings(
         stt=os.environ.get("CONJURE_STT", "whisper"),
         tts=os.environ.get("CONJURE_TTS", "kokoro"),
@@ -554,3 +606,170 @@ def voice_wake_aliases(word: Optional[str] = None) -> list[str]:
     its word before the shell ever sees the line, so any overlap makes shell commands unreachable by
     voice (`DEFAULT_VOICE_WAKE_WORDS`)."""
     return _aliases_for(word, VOICE_WAKE_WORDS)
+
+
+# --------------------------------------------------------------------------- runtime settings (`set`)
+#
+# What the shell may change while the app runs, and what it must refuse. Three tiers, because a `set`
+# that pretends every knob behaves alike is a `set` that lies:
+#
+#   live    — read per turn / per request. Effective immediately.
+#   client  — baked into index.html when a headset loads (`server._page`). Stored now, applied on the
+#             next load; a live push over the world WS is a later job.
+#   boot    — read once while wiring up processes, ports, roots and model loads. REFUSED, by name and
+#             with the reason, rather than silently accepted and ignored.
+#
+# Secrets are in none of them: never settable, never printed. `.env` keeps them, and `settings.json` —
+# which `--save` writes and which people sync with their dotfiles — must never carry one.
+SECRET_KEYS = frozenset({
+    "anthropic_api_key", "poly_pizza_api_key", "openai_api_key", "google_api_key", "xai_api_key",
+})
+
+# key → (tier, one line of what it does). Anything absent is `boot`.
+SETTABLE: dict[str, tuple[str, str]] = {
+    # -- live: the next turn sees it
+    "llm_model":             ("live", "Claude model the director runs on"),
+    "gemini_model":          ("live", "Gemini director model"),
+    "openai_director_model": ("live", "OpenAI director model"),
+    "xai_director_model":    ("live", "Grok director model"),
+    "image_provider":        ("live", "who generates images"),
+    "image_model":           ("live", "image generation model"),
+    "openai_image_model":    ("live", "OpenAI image model"),
+    "xai_image_model":       ("live", "Grok image model"),
+    "skybox_model":          ("live", "skybox generation model (higher-res than images)"),
+    "skybox_size":           ("live", "skybox resolution, e.g. 4K"),
+    "caption_provider":      ("live", "who writes labels for unlabelled assets"),
+    "caption_model":         ("live", "caption model"),
+    "history_cap":           ("live", "transcript turns sent to the LLM each turn (0 = no limit)"),
+    "geometry_log_days":     ("live", "days of geometry logs to keep (0 = keep all)"),
+    "on_surface_standoff":   ("live", "metres an on-surface image floats off its host"),
+    "force_occupied":        ("live", "TEST: treat the active space as already claimed"),
+    # -- client: stored now, applied when the headset next loads
+    "foveation":             ("client", "0..1 peripheral render reduction; higher = cheaper, blurrier edges"),
+    "occlusion":             ("client", "real-world depth occlusion: off | hands | hands-solid"),
+    "pose_tau":              ("client", "seconds of pose smoothing; 0 snaps"),
+    "geo_slice_ms":          ("client", "per-frame budget for mesh rebuilds"),
+    "capture_interval":      ("client", "seconds between room recaptures"),
+    "apply_tol_pos":         ("client", "metres a surface must move before it is re-laid"),
+    "apply_tol_rot_deg":     ("client", "degrees it must rotate before it is re-laid"),
+    "apply_tol_ext":         ("client", "metres its size must change before it is re-laid"),
+    "inset_standoff":        ("client", "metres a door/window sits in front of its wall"),
+    "surface_weld":          ("client", "metres of overlap between abutting surfaces (0 disables)"),
+    "wall_seal_tol":         ("client", "metres of gap to seal between a wall and the ceiling/floor"),
+    "wall_perp_tol":         ("client", "metres of plane offset still counted as one wall"),
+    "wall_yaw_tol_deg":      ("client", "degrees of normal difference still counted as one wall"),
+    "wall_overlap_slop":     ("client", "metres of along-line gap still counted as one wall"),
+    "group_surface_relay":   ("client", "re-lay all real surfaces together, so junctions stay sealed"),
+    "reg_min_cov":           ("client", "distinct reference surfaces a guest must cover to lock on"),
+    "reg_min_cov_frac":      ("client", "fraction of the reference a guest must cover"),
+    "reg_size_tol":          ("client", "metres a detected plane may exceed its reference"),
+    "reg_inlier_m":          ("client", "metres a plane may sit from a same-kind reference"),
+    "reg_yaw_peaks":         ("client", "candidate room rotations tried when solving orientation"),
+    "beam_timeout":          ("client", "seconds a controller beam lingers after the trigger"),
+    "beam_trigger":          ("client", "0..1 trigger pull that arms the beam"),
+    "void_origin":           ("client", "origin basis for an outdoor world: centres | corners"),
+    "debug_log":             ("client", "append client diagnostics to the dev log"),
+    "debug_registration":    ("client", "co-location registration HUD"),
+    "debug_jitter":          ("client", "frame-pacing probes"),
+    "debug_surface_overlay": ("client", "seed / device-rect / polygon wireframes"),
+    "geometry_log":          ("client", "record surface-churn and height-census events"),
+    "force_geo":             ("client", "TEST: pin the reported geolocation"),
+    "drop_surface":          ("client", "TEST: pretend a surface was never captured"),
+}
+
+# Where a value is bounded, say so — a rejected value beats a silently wrong one, and it is the only
+# check standing between a typo and a knob nobody remembers changing.
+LIMITS: dict[str, tuple[float, float]] = {
+    "foveation": (0.0, 1.0), "beam_trigger": (0.0, 1.0), "reg_min_cov_frac": (0.0, 1.0),
+    "pose_tau": (0.0, 10.0), "geo_slice_ms": (0.0, 16.0), "capture_interval": (0.1, 60.0),
+    "history_cap": (0, 10_000), "geometry_log_days": (0, 3650), "reg_min_cov": (0, 100),
+    "reg_yaw_peaks": (1, 64), "beam_timeout": (0.0, 600.0),
+}
+CHOICES: dict[str, tuple[str, ...]] = {
+    "occlusion": ("off", "hands", "hands-solid"),
+    "void_origin": ("centres", "corners"),
+}
+# The six env names that don't follow `CONJURE_<FIELD>`. All are secrets or boot-tier, so none is
+# settable — they are here so `set <key>` still REPORTS the right variable when it refuses.
+_ENV_ALIASES = {"anthropic_api_key": "ANTHROPIC_API_KEY", "poly_pizza_api_key": "POLY_PIZZA_API_KEY",
+                "openai_api_key": "OPENAI_API_KEY", "google_api_key": "GOOGLE_API_KEY",
+                "xai_api_key": "XAI_API_KEY", "world_url": "CONJURE_URL"}
+
+
+def env_var(key: str) -> str:
+    """The environment variable a settings key reads from."""
+    return _ENV_ALIASES.get(key) or "CONJURE_" + key.upper()
+
+
+def tier_of(key: str) -> str:
+    """`live` | `client` | `boot` | `secret` | `unknown`."""
+    if key in SECRET_KEYS:
+        return "secret"
+    if key in SETTABLE:
+        return SETTABLE[key][0]
+    return "boot" if key in {f.name for f in dataclasses.fields(Settings)} else "unknown"
+
+
+def parse_value(key: str, raw: str):
+    """A typed value for `key` from what someone typed, or ValueError naming what would have been ok.
+
+    The type comes from the `Settings` field itself, so the table can never drift from the dataclass."""
+    field = next((f for f in dataclasses.fields(Settings) if f.name == key), None)
+    if field is None:
+        raise ValueError(f"no setting {key!r}")
+    raw = (raw or "").strip()
+    kind = str(field.type)
+    if key in CHOICES:
+        if raw.lower() not in CHOICES[key]:
+            raise ValueError(f"{key} must be one of: {', '.join(CHOICES[key])}")
+        return raw.lower()
+    if "bool" in kind:
+        if raw.lower() in ("1", "true", "yes", "on"):
+            return True
+        if raw.lower() in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"{key} is on/off — say true or false")
+    if "int" in kind or "float" in kind:
+        try:
+            value = int(raw) if "int" in kind and "float" not in kind else float(raw)
+        except ValueError:
+            raise ValueError(f"{key} is a number") from None
+        lo, hi = LIMITS.get(key, (None, None))
+        if lo is not None and not (lo <= value <= hi):
+            raise ValueError(f"{key} must be between {lo} and {hi} — {value} is outside it")
+        return value
+    return raw
+
+
+def as_env(value) -> str:
+    """A parsed value written the way its env var would carry it."""
+    return ("1" if value else "0") if isinstance(value, bool) else str(value)
+
+
+def apply_override(key: str, value) -> None:
+    """Put `value` in the environment, where every reader of this setting looks.
+
+    Both reader styles are covered by this one write: modules that call `get_settings()` per use see it
+    immediately, and modules holding a snapshot see it once they rebuild — which is why the caller
+    rebinds its own `settings` right after. `Settings` is frozen, so a snapshot is REPLACED, never
+    mutated (`dataclasses.replace`, as `agent_server` already does for --history-cap)."""
+    os.environ[env_var(key)] = as_env(value)
+
+
+def clear_override(key: str) -> None:
+    """Drop a run-time override so the key falls back to `settings.json`, then to its default."""
+    var = env_var(key)
+    os.environ.pop(var, None)
+    if var in _seeded:                                   # a saved preference is the rung below, not gone
+        os.environ[var] = _seeded[var]
+
+
+def source_of(key: str) -> str:
+    """Where the value in force came from: `env` | `settings.json` | `default`.
+
+    A saved preference is seeded INTO the environment, so the two are indistinguishable by then — hence
+    `_seeded`, which remembers what this process put there and what it put."""
+    var = env_var(key)
+    if var not in os.environ:
+        return "default"
+    return "settings.json" if _seeded.get(var) == os.environ[var] else "env"

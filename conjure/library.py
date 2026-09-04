@@ -343,6 +343,14 @@ class AssetLibrary:
             rows = self._db.execute("SELECT DISTINCT scope FROM assets WHERE scope IS NOT NULL").fetchall()
         return sorted({(r[0] or "").split("/", 1)[0] for r in rows} - {""})
 
+    def all_files(self) -> set[str]:
+        """Every filename the catalog claims, `id` and `filename` alike (they normally coincide — an
+        asset's id IS its filename — but a row may carry one and not the other). The keep-set half that
+        `gc` gets from the catalog; the other half comes from the worlds."""
+        with self._lock:
+            rows = self._db.execute("SELECT id, filename FROM assets").fetchall()
+        return {v for r in rows for v in (r[0], r[1]) if v}
+
     def by_user(self, user: str, *, limit: int = 200) -> list[dict]:
         """Assets owned by `user` (scope == user or `user/…`), most-recently-used first."""
         with self._lock:

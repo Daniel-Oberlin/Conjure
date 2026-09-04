@@ -50,6 +50,9 @@ class Conn:
         self.kind = kind                 # "cli" | "voice" — which command set applies and how output reads
         self.in_shell = in_shell         # a client can ASK to start here (`?shell=1`, i.e. `cli --open-shell`)
         self.cwd = ""                    # shell working directory; "" until the first command resolves it
+        self.cwd_display = ""            # the same place in NAMES, for the prompt. Two fields, not one:
+                                         # the cwd holds ids so a rename can't strand it, and rendering it
+                                         # needs a world-server round trip that a prompt redraw hasn't got.
         self.bumped = False              # auto-forced into shell by a private session (§8.3) — distinct from
                                          # a user who chose shell, so we only auto-restore what we bumped
 
@@ -94,7 +97,7 @@ class Hub:
 
 
 def _context_event(shell: Shell, live: Optional[dict], user: str, in_shell: bool,
-                   cwd: str = "") -> dict:
+                   cwd: str = "", cwd_display: str = "") -> dict:
     """A connection's view of "what's live" — **data**, not a formatted prompt (the client formats). The
     shared bits (agent, llm, world/space/owner) plus this connection's own `user` + `in_shell`."""
     d = shell.director                                   # transiently None while a re-bind is in flight
@@ -105,7 +108,9 @@ def _context_event(shell: Shell, live: Optional[dict], user: str, in_shell: bool
           "in_shell": in_shell,
           # The shell's working directory, so the client can show it in the prompt. Data, not a formatted
           # string — the client decides how to render it (voice renders none).
-          "cwd": cwd or default_cwd(user, d.agent.name if (d and d.agent) else "")}
+          # The DISPLAY form goes on the wire — the client only renders it, never sends it back, so the
+          # canonical id path stays server-side and no protocol field is needed for the split.
+          "cwd": cwd_display or cwd or default_cwd(user, d.agent.name if (d and d.agent) else "")}
     if d is not None:
         try:                                     # turns/cap + last turn's context size, for a status bar
             ev["stats"] = d.context_stats()
@@ -132,15 +137,17 @@ def _turn_to_event(turn) -> dict:
 
 
 def _backlog_events(shell: Shell, live: Optional[dict], user: str, in_shell: bool,
-                    cwd: str = "") -> list[dict]:
+                    cwd: str = "", cwd_display: str = "") -> list[dict]:
     """What a newly-connected client receives before the live feed: its `context`, then the transcript
     replayed (so a late joiner has the history). Pure — unit-testable without a socket."""
     transcript = shell.director.transcript if shell.director else []   # None mid-rebind → no backlog
-    return [_context_event(shell, live, user, in_shell, cwd)] + [_turn_to_event(t) for t in list(transcript)]
+    return [_context_event(shell, live, user, in_shell, cwd, cwd_display)] + \
+           [_turn_to_event(t) for t in list(transcript)]
 
 
 async def _send_context(app: FastAPI, conn: Conn) -> None:
-    await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd))
+    await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd,
+                                    conn.cwd_display))
 
 
 def _permitted(app: FastAPI, conn: Conn) -> bool:
@@ -411,8 +418,9 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
             before_llm = shell.director.active if shell.director else None
             await shell._dispatch(cmd, on_text, speaker=conn.user,   # act as the SPEAKER (own scope), not host;
                                   permitted=_permitted(app, conn),   # gate shared-effect verbs on §6d
-                                  cwd=conn.cwd, voice=(conn.kind == "voice"))
-            conn.cwd = shell.cwd                         # `cd` is per-connection, like shell mode
+                                  cwd=conn.cwd, cwd_display=conn.cwd_display,
+                                  voice=(conn.kind == "voice"))
+            conn.cwd, conn.cwd_display = shell.cwd, shell.cwd_display   # `cd` is per-connection, like mode
             if shell.director and shell.director.active != before_llm:
                 _persist_llm(app)                        # a `use <llm>` sticks to the session (step 3c)
             await _broadcast_context(app)                # an LLM/agent switch changes everyone's prompt
@@ -651,15 +659,17 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
             if not _permitted(app, conn):                # joining a PRIVATE session → shell only, no dialog (§8.3)
                 conn.bumped = not conn.in_shell          # `--open-shell` asked for this — don't claim it as OUR
                 conn.in_shell = True                     # bump, or going public would yank them back out
-                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd))
+                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd,
+                                    conn.cwd_display))
                 await conn.send({"type": "notice", "text": "This session is private — you're in shell mode "
                                  "until its owner makes it public (or you switch sessions)."})
             elif want_backlog:                           # a text client replays history; a voice client can't
                 for event in _backlog_events(app.state.shell, app.state.live, conn.user,
-                                             conn.in_shell, conn.cwd):
+                                             conn.in_shell, conn.cwd, conn.cwd_display):
                     await conn.send(event)
             else:
-                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd))
+                await conn.send(_context_event(app.state.shell, app.state.live, conn.user, conn.in_shell, conn.cwd,
+                                    conn.cwd_display))
             # READ AHEAD. Awaiting the handler here is the obvious shape and it is wrong: a slow command
             # (a generative session constructor runs for tens of seconds) never returns, so the loop
             # never reaches `receive_json` again and every following line sits unread in the socket

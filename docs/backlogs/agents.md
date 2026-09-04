@@ -332,9 +332,26 @@ natural extension.
 no key are all named and unbuilt. The shell's modal overlay would generalize to a **stack** for
 sub-agents; v1 is overlay + a single active pointer.
 
-## Shell rationalisation — names in front, ids underneath (planned 2026-09-03, with Daniel)
+## Shell rationalisation — names in front, ids underneath
 
-**Not yet built. The open questions at the end are the alignment gate.**
+**Status: shipped 2026-09-04** (planned 2026-09-03 with Daniel). All seven phases are built and the
+specs carry the behaviour — [`specs/agents.md` §6.3–§6.6](../specs/agents.md) for the namespace and the
+commands, [`specs/config.md` §3.1/§9](../specs/config.md) for `preferences` and the `set` tiers. What
+stays here is the reasoning, the measurements, and the three things the build changed about the plan.
+
+### What the build changed about the plan
+
+- **Phase 3 needed no protocol addition**, and was briefly declined on the belief that it did. `cwd`
+  never round-trips — it is per-connection server state, only ever sent out to render the prompt — so
+  the id/name split is two fields on `Conn` and nothing on the wire.
+- **`gc` lives in `namespace.py`, not beside `library.delete`.** Its keep-set spans the catalog AND
+  every world on disk; `library` knows nothing of worlds or the users tree.
+- **Assets keep their id in a displayed path.** The plan implied names everywhere, but a label is
+  neither unique nor guaranteed, so a label-valued path prints something you cannot type back. Labels
+  lead the name COLUMN instead, and a unique label resolves.
+- **Two bugs were found by building it, not by reading**: `gc` read `USERS_DIR` while the repositories
+  pointed elsewhere (so under test it scanned the developer's real home), and it offered `library.db`
+  for deletion wherever the asset dir and data root coincide.
 
 The storage model is already right: everything renameable carries a permanent id and a display name —
 `wld_…`, `session-N`, `space-N`, an asset hash — and names are unique within their container, compared
@@ -747,6 +764,31 @@ of `label` holding the id.
 ### Open
 
 None. The plan is aligned and ready to implement.
+
+## Shell — listings: dates and order
+
+**Raised while testing the rationalisation, 2026-09-04.** A listing has no dates and no order but one.
+
+`dir` sorts however the underlying store enumerates — worlds and spaces by name, sessions by id, assets
+by the catalog's most-recently-used. That is fine until you are looking for *the one from Tuesday*, which
+is how you look for an asset far more often than by name: labels are auto-generated, frequently
+duplicated, and up to 611 characters, so the name column is the least identifying thing in an asset row.
+
+The catalog already carries what is needed — `created_at`, `last_used`, `use_count` — and `disk` already
+reports a real mtime per file, so this is display and ordering rather than new bookkeeping.
+
+The shape when it happens:
+
+- **A date column**, at least for assets, where it identifies better than the label does. `created_at`
+  is probably the honest default; `last_used` answers a different question and both are on the row.
+- **`dir --sort <field>`** (name · date · size · kind), and `-r` to reverse. Sorting server-side keeps it
+  consistent with paging if a listing ever grows one, and `namespace.COLUMNS` already names the columns
+  a listing has, so the sortable set can be read off it rather than declared twice.
+- **Whether every listing gets dates or only assets.** A world and a session have real mtimes too, and
+  "which session was I in last week" is a question people ask. The cost is a `stat` per row, which is
+  what `disk` already pays for one entry.
+
+Not started. `columns()` renders whatever cells it is handed, so the renderer needs nothing.
 
 ## Shell
 

@@ -787,6 +787,195 @@ def test_every_row_declares_whether_it_is_voice_safe():
 # best mispronounced and at worst — since the voice speech stage strips asterisks before the engine sees
 # them — silently gone, leaving a listener with a list and no idea which one they are in.
 
+def _set_shell(reply):
+    """A shell whose /admin/settings is served by `reply(kw)`."""
+    sh, d, out, on_text = _shell()
+    sh.in_shell = True
+    seen = []
+
+    async def api(**kw):
+        seen.append(kw)
+        return reply(kw)
+
+    sh._settings_api = api
+    return sh, out, on_text, seen
+
+
+async def test_set_reports_the_source_and_how_to_keep_it():
+    # "why is it that?" and "how do I keep it?" both belong in the reply, not in someone's memory.
+    sh, out, on_text, seen = _set_shell(lambda kw: {
+        "ok": True, "key": "foveation", "value": "0.3", "env_value": "0.3", "tier": "client",
+        "env": "CONJURE_FOVEATION", "source": "env", "was": "0.0", "was_source": "default"})
+    await sh._dispatch("set foveation 0.3", on_text)
+    line = out[-1][1]
+    assert "was 0.0 · default" in line
+    assert "CONJURE_FOVEATION=0.3" in line                    # the env form, to paste into .env
+    assert "--save" in line                                   # …and the way to persist it
+    assert "next headset load" in line                        # a client knob says when it takes effect
+
+
+async def test_a_saved_setting_says_where_it_went_instead_of_how_to_save_it():
+    sh, out, on_text, seen = _set_shell(lambda kw: {
+        "ok": True, "key": "pose_tau", "value": "0.25", "env_value": "0.25", "tier": "client",
+        "env": "CONJURE_POSE_TAU", "source": "env", "was": "0.0", "saved": "/home/d/settings.json"})
+    await sh._dispatch("set pose_tau 0.25 --save", on_text)
+    assert seen[-1]["save"] is True
+    assert "settings.json" in out[-1][1] and "persist:" not in out[-1][1]
+
+
+async def test_a_refused_setting_says_why():
+    sh, out, on_text, seen = _set_shell(
+        lambda kw: {"ok": False, "error": "port is read once at startup (CONJURE_PORT) — "
+                                          "set it in .env and restart."})
+    await sh._dispatch("set port 9000", on_text)
+    assert "read once at startup" in out[-1][1]
+
+
+async def test_set_is_a_terminal_command():
+    # Deferred by design: a mis-heard number succeeds silently where a mis-heard key would fail loudly.
+    sh, out, on_text, seen = _set_shell(lambda kw: {"ok": True})
+    await sh._dispatch("set foveation 0.3", on_text, voice=True)
+    assert "terminal command" in out[-1][1] and seen == []
+
+
+def _glob_shell(matches, kind="world"):
+    """A shell whose /admin/match answers with `matches` (labels), and records every delete."""
+    deleted = []
+    def responder(action, path):
+        if action == "match":
+            return {"ok": True, "glob": True, "columns": ["name", "entities", "space"],
+                    "matches": [{"path": f"/w/{n}", "display": f"/daniel/agents/builder/worlds/{n}",
+                                 "kind": kind, "row": {"label": n, "kind": kind, "cells": ["0 entities", "?"]}}
+                                for n in matches]}
+        if action == "delete":
+            deleted.append(path)
+            return {"ok": True}
+        return {"ok": True, "path": path, "display": path, "children": []}
+    sh, out, on_text, calls = _admin_shell(responder)
+    return sh, out, on_text, deleted
+
+
+async def test_a_pattern_delete_previews_and_takes_a_bang_to_act():
+    # §6.6 says `delete` needs no confirmation because it takes an explicit path. A pattern voids that
+    # argument — `delete "s*"` looks precise and may match nine things — so the guard lands there, and
+    # only there: an explicit path keeps its one-shot form.
+    sh, out, on_text, deleted = _glob_shell(["Kitchen sketch", "Porch sketch", "Sketch 4"])
+    await sh._dispatch('delete "*sketch*"', on_text)
+    assert deleted == []                                       # nothing went
+    assert "nothing deleted" in out[-1][1] and "Kitchen sketch" in out[-1][1]
+
+    await sh._dispatch('delete "*sketch*" !', on_text)
+    assert len(deleted) == 3 and "Deleted 3" in out[-1][1]
+
+
+async def test_an_explicit_path_still_deletes_in_one_shot():
+    # The one-shot form is why the y/n prompt was dropped; a pattern guard must not take it back.
+    sh, out, on_text, calls = _admin_shell(
+        lambda a, p: {"ok": True, "path": p, "display": p, "children": [], "self":
+                      {"label": "Meadow", "kind": "world", "cells": ["0 entities"]}})
+    await sh._dispatch("delete Meadow", on_text)
+    assert ("delete", "/daniel/agents/builder/Meadow") in calls
+    assert "Deleted" in out[-1][1]
+
+
+async def test_cd_refuses_a_pattern_that_matches_more_than_one():
+    sh, out, on_text, deleted = _glob_shell(["Kitchen sketch", "Porch sketch"])
+    await sh._dispatch('cd "*sketch*"', on_text)
+    assert "2 match" in out[-1][1] and sh.cwd == "/daniel/agents/builder"      # unmoved
+
+    sh, out, on_text, deleted = _glob_shell(["Kitchen sketch"])
+    await sh._dispatch('cd "*sketch*"', on_text)
+    assert sh.cwd == "/w/Kitchen sketch"                       # exactly one → you can stand in it
+
+
+async def test_rename_refuses_a_pattern():
+    sh, out, on_text, deleted = _glob_shell(["a", "b"])
+    await sh._dispatch('rename "*sketch*" Something', on_text)
+    assert "one path" in out[-1][1]
+
+
+async def test_cd_remembers_ids_and_shows_names():
+    # The cwd is canonical (ids) so a rename can't strand it; the prompt renders the display form the
+    # server sent alongside. Two fields, one round trip.
+    sh, out, on_text, calls = _admin_shell(
+        lambda a, p: {"ok": True, "path": "/daniel/agents/builder/sessions/session-3",
+                      "display": "/daniel/agents/builder/sessions/Kitchen sketch", "children": []})
+    await sh._dispatch('cd "Kitchen sketch"', on_text)
+    assert sh.cwd == "/daniel/agents/builder/sessions/session-3"          # remembered by id
+    assert sh.cwd_display == "/daniel/agents/builder/sessions/Kitchen sketch"
+    assert "Kitchen sketch" in out[-1][1] and "session-3" not in out[-1][1]   # shown by name
+
+
+async def test_a_cwd_whose_session_vanished_walks_up_instead_of_erroring():
+    # Someone else renamed or deleted the session you were standing in. The old behaviour was an error
+    # per command until you worked out you had to `cd` somewhere; now it moves you and says so.
+    gone = "/daniel/agents/builder/sessions/session-3"
+    def responder(action, path):
+        if path.startswith(gone):
+            return {"ok": False, "error": f"no session 'session-3' for daniel/agents/builder"}
+        return {"ok": True, "path": path, "display": path, "children": [{"label": "Porch",
+                                                                         "kind": "session"}]}
+    sh, out, on_text, calls = _admin_shell(responder)
+    await sh._dispatch("dir", on_text, cwd=gone)          # cwd is per-connection, passed in per dispatch
+    assert "is gone" in out[-2][1] and "session-3" in out[-2][1]
+    assert sh.cwd == "/daniel/agents/builder/sessions"                    # the nearest survivor
+    assert "Porch" in out[-1][1]                                          # …and it listed there
+
+
+async def test_a_bad_argument_is_still_reported_as_a_bad_argument():
+    # The walk-up must not swallow a genuine typo: if the CWD is fine, the error stands.
+    def responder(action, path):
+        if path.endswith("/nope"):
+            return {"ok": False, "error": "no world 'nope' in session-1"}
+        return {"ok": True, "path": path, "display": path, "children": []}
+    sh, out, on_text, calls = _admin_shell(responder)
+    await sh._dispatch("dir nope", on_text)
+    assert "no world 'nope'" in out[-1][1] and "moved you" not in out[-1][1]
+
+
+def test_columns_align_every_row_under_a_header():
+    from conjure.shell import columns
+    rows = [{"label": "Meadow", "kind": "world", "cells": ["12 entities", "Living Room"], "active": True},
+            {"label": "Kitchen sketch", "kind": "world", "cells": ["1 entity", "outdoor"]}]
+    out = columns(rows, ["name", "entities", "space"])
+    assert out[0].split() == ["name", "entities", "space"]
+    # every column starts at the same offset in every line — the whole point of the change
+    starts = [line.index("Living Room") for line in out if "Living Room" in line]
+    assert [line.index("outdoor") for line in out if "outdoor" in line] == starts
+    assert out[1].lstrip().startswith("─")              # a rule, so the header doesn't read as data
+    assert out[2].startswith(" *")                      # the live row is marked, and stays aligned
+    assert out[3].startswith("  ")
+
+
+def test_a_single_column_listing_gets_no_header():
+    from conjure.shell import columns
+    rows = [{"label": "agents", "kind": "category"}, {"label": "spaces", "kind": "category"}]
+    assert columns(rows, []) == ["  agents/", "  spaces/"]     # a lone column needs no explaining
+
+
+def test_the_id_column_shows_only_for_assets_or_in_long_mode():
+    from conjure.shell import columns
+    sess = [{"label": "Kitchen sketch", "kind": "session", "cells": ["2 worlds", "public"],
+             "ref": "session-1"}]
+    assert not any("session-1" in l for l in columns(sess, ["name", "worlds", "vis"]))
+    assert any("session-1" in l for l in columns(sess, ["name", "worlds", "vis"], long=True))
+    # assets are the exception: the id IS the address there, so it shows unasked
+    asset = [{"label": "Kitchen counter", "kind": "asset", "cells": ["image", "public"], "ref": "a1.png"}]
+    assert any("a1.png" in l for l in columns(asset, ["name", "type", "vis"]))
+
+
+def test_a_paragraph_length_label_is_clipped_rather_than_wrapped():
+    from conjure.shell import columns, NAME_WIDTH
+    long_label = "a sensual woman with long dark hair, wearing elegant black lingerie, standing gracefully"
+    rows = [{"label": long_label, "kind": "asset", "cells": ["image", "public"], "ref": "a1.png"},
+            {"label": "Cat", "kind": "asset", "cells": ["image", "public"], "ref": "b2.png"}]
+    out = columns(rows, ["name", "type", "vis"])
+    body = out[2:]                                      # skip the header and its rule
+    assert "…" in body[0] and len(body[0]) < len(long_label)
+    assert all(l.index("image") == body[0].index("image") for l in body)     # still aligned
+    assert NAME_WIDTH < len(long_label)                    # the sample actually exercises the clip
+
+
 def test_join_spoken_reads_like_a_person():
     from conjure.shell import _join_spoken
     assert _join_spoken([]) == ""

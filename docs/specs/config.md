@@ -129,7 +129,8 @@ place this layer writes to a real home. Idempotent: an existing file is never to
 can gain keys without disturbing anyone.
 
 ```json
-{ "data_dir": null, "cache_dir": null,
+{ "preferences": {},
+  "data_dir": null, "cache_dir": null,
   "agents_path": null, "dynamics_path": null,
   "wake_words": null, "voice_wake_words": null,
   "default_user": "daniel" }
@@ -144,19 +145,31 @@ to boot over a stray comma.
 > `default_user` is written into the template but **not yet read** — `DEFAULT_USER` is still a constant
 > in `config.py`. Tracked in the [backlog](../backlogs/config.md).
 
-### 3.1 What belongs here vs. in `.env`
+### 3.1 `preferences` — what the shell may save
+
+The `preferences` block holds runtime knobs written by the shell's `set <key> <value> --save` (§9). Keys
+are `Settings` field names, values are typed JSON.
 
 Two files, one line between them:
 
-- **`settings.json`** — *locations and preferences.* Authored, safe to sync with your dotfiles.
-- **`.env`** (git-ignored, `.env.example` is the template) — *provider selection, connectivity, tuning
-  knobs, and every **secret*** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`,
-  `POLY_PIZZA_API_KEY`, `GOOGLE_API_KEY`). Read into the `Settings` dataclass; see
-  [`docs/providers.md`](../providers.md).
+- **`settings.json`** — *locations, preferences, and non-secret tuning.* Authored or written by `set`,
+  and safe to sync with your dotfiles.
+- **`.env`** (git-ignored, `.env.example` is the template) — *connectivity, per-run overrides, and every
+  **secret*** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `POLY_PIZZA_API_KEY`,
+  `GOOGLE_API_KEY`). Read into the `Settings` dataclass; see [`docs/providers.md`](../providers.md).
 
-The provider/model *preferences* in `.env` are the same category as `settings.json` and could move; the
-secrets can't, because `settings.json` is meant to be syncable. So consolidating is a **split**, not a
-move — deferred, and in the [backlog](../backlogs/config.md).
+**Why the machine writes JSON and never `.env`.** Nothing in `conjure/` writes `.env` — `load_env` is the
+whole relationship. Beyond the missing writer: a `.env` is line-oriented text whose comments and ordering
+an editor would flatten; every value in it is an untyped string, so `foveation=banana` is
+indistinguishable from `0.3` until `float()` fails at boot; and it holds every API key, so pointing a
+writer at it puts credentials in the blast radius of a bad save. `settings.json` has the types, has a
+writer (`save_preference`), and has no secrets in it — a secret is refused on write and stripped from the
+block if one is hand-edited in, and one sitting there is never honoured on read.
+
+Preferences are seeded into the environment **without overriding**, which is §2's ladder stated once:
+env > settings.json > default. That deliberately puts the machine-managed file BELOW the hand-authored
+one, so a saved value stays overridable by a one-off `CONJURE_FOVEATION=0` and `--save` can never fight
+something you typed.
 
 ---
 
@@ -276,3 +289,34 @@ The layout is nonetheless the local case of a model that generalises: on a share
 belong to the **operator** — `config/agents/` being the agents the operator offers everyone, and
 `data/users/<user>/` already splitting per-user data. Per-remote-user *definitions* are the one piece
 this layout doesn't yet reach, and are not precluded by it.
+
+---
+
+## 9. Runtime settings — what `set` may change
+
+Every one of `Settings`' 61 fields reaches the app through an environment variable (`CONJURE_<FIELD>`,
+with six exceptions — the five API keys and `CONJURE_URL` — all of them unsettable anyway). The shell's
+`set` reads and changes them in place, and the useful half of its job is refusing the ones it can't.
+Four tiers, in `config.SETTABLE`:
+
+| Tier | Read | `set` |
+|---|---|---|
+| `live` | per turn / per request | takes effect immediately |
+| `client` | baked into `index.html` when a headset loads | stored now, applied on the next load |
+| `boot` | once, wiring processes, ports, roots, model loads | **refused**, by name and with the reason |
+| `secret` | the API keys | never shown, never set, never saved |
+
+A boot-tier key is refused rather than silently accepted, which is the whole reason the tiers are
+explicit. Bounded values are bounded (`config.LIMITS`, `config.CHOICES`): `set foveation 3` is refused
+rather than clamped. Types come from the `Settings` dataclass itself, so the table cannot drift from it.
+
+`apply_override` writes the environment variable, which is where **both** reader styles look — modules
+calling `get_settings()` per use see it at once, and modules holding a snapshot see it when they rebuild,
+which the caller does immediately (`Settings` is frozen, so a snapshot is replaced, never mutated).
+
+`unset` drops a run-time change and falls back to the saved preference, not past it to the default.
+
+**CLI-only.** Voice was designed and deferred: a mis-heard KEY fails loudly against a closed set, but a
+mis-heard number succeeds silently, and that asymmetry needs an allowlist of spoken keys, declared
+ranges, a spoken read-back and a refusal to `--save` before it is safe. See
+[the backlog](../backlogs/agents.md).
