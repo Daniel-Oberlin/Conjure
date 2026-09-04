@@ -654,7 +654,7 @@ def test_clean_name_drops_quotes_so_a_stored_name_can_always_be_typed_back():
 def test_clean_name_refuses_only_what_a_path_genuinely_cannot_carry():
     """A denylist, not an allowlist — only the path separators and control characters.
 
-    An earlier pass restricted names to ASCII letters/digits/`. _ -`, reasoning that `_admin_resolve`
+    An earlier pass restricted names to ASCII letters/digits/`. _ -`, reasoning that `namespace.resolve`
     would refuse anything else. It would have, but that was OUR allowlist, chosen conservatively, not a
     real constraint: shlex tokenises `"Café Noir"` and `"Bob's room"` correctly, the charset is
     defence-in-depth behind per-segment existence checks, and since identity became an id a name never
@@ -679,10 +679,10 @@ def test_every_name_clean_name_accepts_is_a_legal_path_segment():
     """The invariant the two definitions exist to keep: write and address can't drift apart.
 
     A name is how you address the thing in the shell, so a name that `clean_name` blesses but
-    `_admin_resolve` rejects is unreachable by path — which is exactly how a session ended up titled
+    `namespace.resolve` rejects is unreachable by path — which is exactly how a session ended up titled
     something no one could type. Both now read `world.NAME_CHARS`; this asserts they agree.
     """
-    from conjure.server import _ADMIN_PART
+    from conjure.namespace import SEGMENT
     from conjure.world import clean_name
     candidates = ["meadow", "Kitchen Table", '"alien"', "  a   b  ", "my-world.v2", "Bob's room",
                   "test_7", "Session 1", "a.b-c_d e", "“smart”", "Café Noir", "Session (old)",
@@ -694,7 +694,7 @@ def test_every_name_clean_name_accepts_is_a_legal_path_segment():
         except ValueError:
             continue                                    # refused on write → never stored → not our problem
         accepted += 1
-        assert _ADMIN_PART.fullmatch(cleaned), f"{c!r} → {cleaned!r} is storable but not addressable"
+        assert SEGMENT.fullmatch(cleaned), f"{c!r} → {cleaned!r} is storable but not addressable"
     assert accepted >= 8, "the sample should mostly be accepted, or it proves nothing"
 
 

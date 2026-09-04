@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 import re
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -47,6 +48,7 @@ from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
+from . import namespace
 from .world import (_MRU_CAP, MIGRATED_SID, SessionRepository, SpaceStore, WorldRepository, WorldStore,
                     NAME_SEGMENT, _set_path, clean_name, fold_accents, migrate_cache_to_users,
                     migrate_env_room_to_space_presentation,
@@ -418,6 +420,10 @@ active_space: str = "home"          # bare NAME of the space the active world co
 active_space_owner: str = DEFAULT_USER  # who OWNS that space — may differ from the active WORLD's owner
                                     # (D3: your world can live in someone else's shared space). Together
                                     # (active_space_owner, active_space) identify the live space's file.
+# The namespace view (`dir`/`show`/`delete`) reads every global above. Bound to this MODULE, not to their
+# values, because both kinds move: `_init_state` rebinds the repositories and the live pointers change on
+# every switch. Safe at import — `namespace` reads the attribute at call time, never now.
+namespace.bind(sys.modules[__name__])
 # The embedder is None unless the optional torch/transformers are installed — then vector write-through
 # is simply skipped and the catalog runs on FTS/exact only. Lazy: no model loads until first embed.
 embedder = build_embedder(settings)
@@ -943,8 +949,6 @@ async def _autosave_loop() -> None:
                 saved_rev = rev
             except Exception as exc:  # noqa: BLE001 — autosave must never crash the server
                 print(f"[conjure] world autosave failed: {exc}")
-
-
 
 
 #: The authored heights a figure may keep. Outside it the file is not in metres and "life size" would be
@@ -1708,7 +1712,7 @@ async def agent_reset(req: ResetAgentRequest) -> dict:
         sessions.delete(scope, sid)
     n_assets = 0
     if req.assets and library is not None:
-        # Query the catalog directly rather than through `_asset_rows`, which returns DISPLAY nodes for
+        # Query the catalog directly rather than through `namespace.asset_rows`, which returns DISPLAY nodes
         # the shell's tree (the id rides in `label`). A deletion loop shouldn't depend on a formatter.
         for row in library.by_user(req.user, limit=10_000):
             if (row.get("scope") or "") != scope:
@@ -2536,74 +2540,14 @@ async def space_visibility(req: SpaceVisibilityRequest) -> dict:
 
 # ---- admin: the namespace as a filesystem (shell `dir` / `show` / `delete`) ----------------------
 #
-# Paths mirror STORAGE and are agent-explicit. The one thing that isn't obvious from the outside: worlds
-# live PER SESSION — `WorldRepository(USERS_DIR, sessions=…)` routes every per-name op to the scope's
-# ACTIVE session's `worlds/` dir. So two sessions under one agent each own a separate set of worlds, and
-# a listing that hides the session level merges them invisibly.
-#
-#   /                                                   users
-#   /<user>                                             agents/ · spaces/
-#   /<user>/spaces[/<name>]                             spaces are user-level, shared across agents
-#   /<user>/agents[/<agent>]                            sessions/ · assets/ · worlds→
-#   /<user>/agents/<a>/assets[/<id>]                    library rows scoped `<user>/agents/<a>` (virtual —
-#                                                       assets are SQLite rows, not files)
-#   /<user>/agents/<a>/sessions[/<sid>]                 worlds/ · state/
-#   /<user>/agents/<a>/sessions/<sid>/worlds[/<name>]   <name> may be nested (`castle/hall`)
-#   /<user>/agents/<a>/worlds                           SHORTCUT → the ACTIVE session's worlds; resolves to
-#                                                       the real path, so it can never go stale
-#   /<user>/assets[/<id>]                               legacy rows scoped to a bare user (no agent segment)
-#
-# `dir` lists ONE level (the old recursive dump was unusable at any real size); `show` returns one entry
-# in depth. Deletes refuse whatever is ACTIVE — autosave would resurrect it and leave the in-memory store
-# inconsistent.
-# Display names may contain spaces now ("Living Room"), so a path segment allows them. `/` is still the
-# separator and `.`/`..` are rejected outright, so a segment can't traverse.
-# Exactly what a display NAME may contain (world.NAME_SEGMENT) — one definition, so a name can never be
-# stored that this then refuses to address. `clean_name` enforces the same rule on write. Everything but
-# a path separator or a control character is allowed: this is defence-in-depth, not the traversal gate —
-# "."/".." are rejected above and every segment is checked against an enumerated real set below.
-_ADMIN_PART = re.compile(NAME_SEGMENT)
-_VOID_SPACE = VOID
+# The view itself — path resolution, listings, per-entry detail and the delete dispatch — lives in
+# `conjure.namespace`, bound to this module at startup so it reads the live repositories and pointers.
+# What stays here is the HTTP surface and the two addressing helpers the rest of the server also uses
+# (`_active_sid_for`, `_session_worlds`).
 
 
 class AdminPath(BaseModel):
     path: str = "/"
-
-
-class _Loc(NamedTuple):
-    """A resolved path. `kind` names what it points at; the rest is filled in as far as the path goes."""
-    kind: str                      # root|user|agents|agent|sessions|session|worlds|world|assets|asset|
-                                   # spaces|space
-    user: str = ""
-    agent: str = ""
-    sid: str = ""
-    name: str = ""
-
-    @property
-    def scope(self) -> str:
-        return f"{self.user}/agents/{self.agent}" if self.agent else ""
-
-
-def _admin_split(path: str) -> list[str]:
-    return [s for s in (path or "").strip().strip("/").split("/") if s]
-
-
-def _admin_active_user() -> str:
-    return active_scope.split("/", 1)[0]
-
-
-def _admin_all_users() -> list[str]:
-    return sorted(set(worlds.list_users()) | set(spaces.list_users()) | set(library.list_users()))
-
-
-def _admin_agents(user: str) -> list[str]:
-    """Agent names for a user — those with worlds/sessions on disk, plus any that only own assets."""
-    names = {s.rsplit("/", 1)[-1] for s in worlds.user_scopes(user)}
-    for row in library.by_user(user, limit=10_000):
-        sc = row.get("scope") or ""
-        if "/agents/" in sc and sc.split("/", 1)[0] == user:
-            names.add(sc.rsplit("/", 1)[-1])
-    return sorted(names)
 
 
 def _active_sid_for(scope: str) -> str:
@@ -2619,323 +2563,31 @@ def _session_worlds(scope: str, sid: str):
     return sessions.worlds(scope, sid)
 
 
-def _admin_resolve(path: str):
-    """`path` → a `_Loc`, or an error string. The `worlds` shortcut at agent level resolves here, so
-    everything downstream only ever sees real, unambiguous locations."""
-    segs = _admin_split(path)
-    for seg in segs:
-        if seg in (".", "..") or not _ADMIN_PART.fullmatch(seg):
-            return f"bad path segment {seg!r}"
-    if not segs:
-        return _Loc("root")
-    user = segs[0]
-    if user not in _admin_all_users():
-        return f"no such user {user!r}"
-    if len(segs) == 1:
-        return _Loc("user", user)
-
-    cat = segs[1]
-    if cat == "spaces":
-        if len(segs) == 2:
-            return _Loc("spaces", user)
-        return _Loc("space", user, name="/".join(segs[2:]))
-    if cat == "assets":                                        # legacy: rows scoped to a bare user
-        if len(segs) == 2:
-            return _Loc("assets", user)
-        return _Loc("asset", user, name=segs[2])
-    if cat != "agents":
-        return f"unknown category {cat!r} (agents|spaces)"
-    if len(segs) == 2:
-        return _Loc("agents", user)
-
-    agent = segs[2]
-    if agent not in _admin_agents(user):
-        return f"no agent {agent!r} for {user!r}"
-    if len(segs) == 3:
-        return _Loc("agent", user, agent)
-
-    scope = f"{user}/agents/{agent}"
-    sub = segs[3]
-    if sub == "assets":
-        if len(segs) == 4:
-            return _Loc("assets", user, agent)
-        return _Loc("asset", user, agent, name=segs[4])
-    if sub == "worlds":                                        # shortcut → the active session's worlds
-        return _admin_resolve(f"/{scope}/sessions/{_active_sid_for(scope)}/" + "/".join(segs[3:]))
-    if sub != "sessions":
-        return f"unknown category {sub!r} (worlds|sessions|assets)"
-    if len(segs) == 4:
-        return _Loc("sessions", user, agent)
-
-    # By id OR by display title, like every other addressable thing in a path (a world resolves either
-    # way below, and so does a space). `dir` prints the title right there in the row, so refusing it here
-    # made the listing a liar: `rename "Session 1" Home` came back "no session 'Session 1'".
-    # `_resolve_sid` is the same resolver the /session/* endpoints use, so the shell and the API agree on
-    # what a reference means. It stays dir-based — a session can hold worlds before anything writes its
-    # `session.json`, and such a session is still a real, listable, deletable place.
-    sid = _resolve_sid(scope, segs[4])
-    # The Loc carries the resolved ID, not the reference: `loc.sid` is used directly as a directory name
-    # downstream. (The world branch stores the name instead and re-resolves per use — worlds are addressed
-    # by name throughout, sessions by id.)
-    if sid is None:
-        return f"no session {segs[4]!r} for {scope}"
-    if len(segs) == 5:
-        return _Loc("session", user, agent, sid)
-    if segs[5] != "worlds":
-        return f"unknown category {segs[5]!r} (worlds)"
-    if len(segs) == 6:
-        return _Loc("worlds", user, agent, sid)
-    # Verify it: without this, any trailing segments resolve to a `world` Loc and `cd`/`show` succeed on
-    # a world that doesn't exist (worlds are flat now, so a name never spans segments).
-    name = "/".join(segs[6:])
-    if _session_worlds(f"{user}/agents/{agent}", sid).resolve(name) is None:
-        return f"no world {name!r} in {sid}"
-    return _Loc("world", user, agent, sid, name)
-
-
-def _loc_path(loc: _Loc) -> str:
-    """The canonical path for a `_Loc` — what a shortcut resolves to, and what `cd` should remember."""
-    p = {"root": "/", "user": f"/{loc.user}", "agents": f"/{loc.user}/agents",
-         "spaces": f"/{loc.user}/spaces", "space": f"/{loc.user}/spaces/{loc.name}",
-         "agent": f"/{loc.user}/agents/{loc.agent}"}.get(loc.kind)
-    if p:
-        return p
-    if loc.kind in ("assets", "asset"):
-        base = f"/{loc.user}/agents/{loc.agent}/assets" if loc.agent else f"/{loc.user}/assets"
-        return f"{base}/{loc.name}" if loc.kind == "asset" else base
-    base = f"/{loc.user}/agents/{loc.agent}/sessions"
-    if loc.kind == "sessions":
-        return base
-    if loc.kind == "session":
-        return f"{base}/{loc.sid}"
-    return f"{base}/{loc.sid}/worlds" + (f"/{loc.name}" if loc.kind == "world" else "")
-
-
-def _node(label: str, kind: str, detail: str = "", *, active: bool = False) -> dict:
-    n: dict = {"label": label, "kind": kind}
-    if detail:
-        n["detail"] = detail
-    if active:
-        n["active"] = True
-    return n
-
-
-def _world_row(scope: str, sid: str, name: str) -> dict:
-    wdir = _session_worlds(scope, sid)
-    wid = wdir.resolve(name)
-    live = scope == active_scope and sid == active_sid and wid == active_world
-    try:
-        doc = wdir.load(name).doc
-    except (OSError, ValueError):
-        doc = {}
-    env = doc.get("environment") or {}
-    n = len(doc.get("entities") or [])
-    return _node(name, "world", f"{n} entities · space={env.get('space') or '?'}", active=live)
-
-
-def _session_meta(scope: str, sid: str) -> dict:
-    try:
-        return sessions.load_meta(scope, sid) or {}
-    except (OSError, ValueError):                              # no session.json yet — still a real session
-        return {}
-
-
-def _session_row(scope: str, sid: str) -> dict:
-    """Led by the TITLE, like a world row is led by its name — that's what you address it as, and titles
-    are renameable and unique now. The id stays in the description: unlike a world's `wld_…` it's short
-    and meaningful (`session-1`), it's the stable handle when a title is in flux, and it's what a
-    just-created session answers to before anyone names it."""
-    meta = _session_meta(scope, sid)
-    live = scope == active_scope and sid == active_sid
-    nw = len(_session_worlds(scope, sid).list())
-    vis = "public" if meta.get("public", True) else "private"
-    title = meta.get("title") or sid
-    desc = f"{nw} worlds · {vis}" if title == sid else f"{sid} · {nw} worlds · {vis}"
-    return _node(title, "session", desc, active=live)
-
-
-def _last_world_label(sp: dict) -> str:
-    """A space's back-reference is a world ID; show the name a person would recognise."""
-    ls, lw = sp.get("last_scope"), sp.get("last_world")
-    if not ls or not lw:
-        return "—"
-    try:
-        return f"{ls} / {worlds.name_of(ls, lw)}"
-    except (OSError, ValueError):
-        return f"{ls} / {lw}"
-
-
-def _space_row(user: str, ref: str) -> dict:
-    sid = spaces.resolve(user, ref) or ref
-    try:
-        sp = spaces.load(user, sid)
-    except (OSError, ValueError):
-        sp = {}
-    name = (sp.get("name") or "").strip() or sid          # label by NAME; the id shows in `show`
-    live = user == active_space_owner and sid == active_space
-    geo = "geo✓" if sp.get("geolocation") else "geo✗"
-    vis = "public" if sp.get("public", True) else "private"
-    return _node(name, "space", f"{len(sp.get('surfaces') or [])} surfaces · {geo} · {vis}", active=live)
-
-
-def _asset_rows(user: str, agent: str, limit: int = 200) -> list[dict]:
-    """Assets whose scope is exactly `<user>/agents/<agent>` — the same hard boundary `agent_of()`
-    enforces. `agent=""` selects the legacy rows scoped to a bare user."""
-    want = f"{user}/agents/{agent}" if agent else user
-    out = []
-    for r in library.by_user(user, limit=10_000):
-        if (r.get("scope") or "") != want:
-            continue
-        vis = "public" if r.get("public", 1) else "private"
-        label = f" · {r['label']}" if r.get("label") else ""
-        out.append(_node(r["id"], "asset", f"{r.get('kind', '?')} · {vis}{label}"))
-        if len(out) >= limit:
-            out.append(_node(f"… (more than {limit})", "note"))
-            break
-    return out
-
-
-def _children(loc: _Loc) -> list[dict]:
-    """One level below `loc` — never recursive."""
-    if loc.kind == "root":
-        return [_node(u, "user", active=(u == _admin_active_user())) for u in _admin_all_users()]
-    if loc.kind == "user":
-        return [_node("agents", "category"), _node("spaces", "category")] + \
-               ([_node("assets", "category", "legacy (no agent)")] if _asset_rows(loc.user, "") else [])
-    if loc.kind == "agents":
-        return [_node(a, "agent", active=(f"{loc.user}/agents/{a}" == active_scope))
-                for a in _admin_agents(loc.user)]
-    if loc.kind == "agent":
-        sid = _active_sid_for(loc.scope)
-        return [_node("sessions", "category"), _node("assets", "category"),
-                _node("worlds", "shortcut", f"→ sessions/{sid}/worlds" if sid else "→ (no active session)")]
-    if loc.kind == "sessions":
-        return [_session_row(loc.scope, s) for s in sessions.list(loc.scope)]
-    if loc.kind == "session":
-        return [_node("worlds", "category"), _node("state", "category")]
-    if loc.kind == "worlds":
-        return [_world_row(loc.scope, loc.sid, n) for n in _session_worlds(loc.scope, loc.sid).list()]
-    if loc.kind == "spaces":
-        return [_space_row(loc.user, n) for n in spaces.list(loc.user)]
-    if loc.kind == "assets":
-        return _asset_rows(loc.user, loc.agent)
-    return []                                                  # a leaf: world/space/asset/user item
-
-
-def _leaf_row(loc: _Loc) -> Optional[dict]:
-    """The one-line row for a leaf, so `dir <leaf>` shows the item rather than nothing."""
-    if loc.kind == "world":
-        return _world_row(loc.scope, loc.sid, loc.name)
-    if loc.kind == "session":
-        return _session_row(loc.scope, loc.sid)
-    if loc.kind == "space":
-        return _space_row(loc.user, loc.name)
-    if loc.kind == "asset":
-        return next((r for r in _asset_rows(loc.user, loc.agent) if r["label"] == loc.name), None)
-    return None
-
-
 @app.post("/admin/tree")
 async def admin_tree(req: AdminPath) -> dict:
     """One level of the namespace at `path` (shell `dir`)."""
-    loc = _admin_resolve(req.path)
+    loc = namespace.resolve(req.path)
     if isinstance(loc, str):
         return {"ok": False, "error": loc}
     if loc.kind in ("world", "space", "asset"):                # a leaf lists as itself
-        row = _leaf_row(loc)
+        row = namespace.leaf_row(loc)
         if row is None:
             return {"ok": False, "error": f"no {loc.kind} {loc.name!r}"}
-        return {"ok": True, "path": _loc_path(loc), "kind": loc.kind, "self": row, "children": [row]}
+        return {"ok": True, "path": namespace.loc_path(loc), "kind": loc.kind, "self": row, "children": [row]}
     # `self` is the row for the node ITSELF when it has one (a session's own summary, say). A session's
     # children are just `worlds/` and `state/`, so without this a delete confirmation for one could only
     # say "nothing" — see Shell._summarize.
-    return {"ok": True, "path": _loc_path(loc), "kind": loc.kind,
-            "self": _leaf_row(loc), "children": _children(loc)}
-
-
-def _fields(loc: _Loc) -> list[list]:
-    """Ordered `[key, value]` pairs describing one entry (shell `show`)."""
-    if loc.kind == "world":
-        try:
-            doc = _session_worlds(loc.scope, loc.sid).load(loc.name).doc
-        except (OSError, ValueError) as exc:
-            return [["error", str(exc)]]
-        env = doc.get("environment") or {}
-        ents = doc.get("entities") or []
-        kinds: dict = {}
-        for e in ents:
-            c = e.get("components") or {}
-            k = ("model" if "gltf-model" in c else "image" if (c.get("material") or {}).get("src")
-                 else "grid" if "grid" in c else (c.get("geometry") or {}).get("primitive") or "other")
-            kinds[k] = kinds.get(k, 0) + 1
-        meta = _session_meta(loc.scope, loc.sid)
-        wid = _session_worlds(loc.scope, loc.sid).resolve(loc.name)
-        return [["world", loc.name], ["id", wid or "?"], ["session", loc.sid], ["scope", loc.scope],
-                ["entities", str(len(ents))],
-                ["by kind", ", ".join(f"{k}×{v}" for k, v in sorted(kinds.items())) or "—"],
-                ["space", env.get("space") or "?"], ["sky", (env.get("sky") or {}).get("color") or "—"],
-                ["rev", str(doc.get("rev", "?"))],
-                ["visibility", "public" if meta.get("public", True) else "private (session)"],
-                ["active", "yes" if (loc.scope == active_scope and loc.sid == active_sid
-                                     and wid == active_world) else "no"]]
-    if loc.kind == "session":
-        meta = _session_meta(loc.scope, loc.sid)
-        wl = _session_worlds(loc.scope, loc.sid).list()
-        return [["session", loc.sid], ["title", meta.get("title") or loc.sid], ["scope", loc.scope],
-                ["turns", str(len(sessions.read_transcript(loc.scope, loc.sid)))],
-                ["llm", meta.get("llm") or "—"], ["active world", meta.get("active_world") or "—"],
-                ["worlds", f"{len(wl)}: " + (", ".join(wl) if wl else "—")],
-                ["state docs", ", ".join(sessions.state(loc.scope, loc.sid).list()) or "—"],
-                ["visibility", "public" if meta.get("public", True) else "private"],
-                ["active", "yes" if (loc.scope == active_scope and loc.sid == active_sid) else "no"]]
-    if loc.kind == "space":
-        sid = spaces.resolve(loc.user, loc.name) or loc.name
-        try:
-            sp = spaces.load(loc.user, sid)
-        except (OSError, ValueError) as exc:
-            return [["error", str(exc)]]
-        return [["space", (sp.get("name") or "").strip() or sid], ["id", sid], ["owner", loc.user],
-                ["surfaces", str(len(sp.get("surfaces") or []))],
-                ["geolocation", "yes" if sp.get("geolocation") else "no"],
-                ["boundary", "yes" if sp.get("boundary") else "no"],
-                ["visibility", "public" if sp.get("public", True) else "private"],
-                ["last world", _last_world_label(sp)],
-                ["active", "yes" if (loc.user == active_space_owner and sid == active_space) else "no"]]
-    if loc.kind == "asset":
-        r = library.get(loc.name)
-        if not r:
-            return [["error", f"no asset {loc.name!r}"]]
-        return [["asset", r["id"]], ["kind", r.get("kind") or "?"], ["label", r.get("label") or "—"],
-                ["query", r.get("query") or "—"], ["scope", r.get("scope") or "—"],
-                ["visibility", "public" if r.get("public", 1) else "private"],
-                ["tags", r.get("tags") or "—"], ["file", r.get("filename") or "—"],
-                ["last used", str(r.get("last_used") or "—")]]
-    if loc.kind == "user":
-        ags = _admin_agents(loc.user)
-        nsess = sum(len(sessions.list(f"{loc.user}/agents/{a}")) for a in ags)
-        nw = sum(len(_session_worlds(f"{loc.user}/agents/{a}", s).list())
-                 for a in ags for s in sessions.list(f"{loc.user}/agents/{a}"))
-        return [["user", loc.user], ["agents", ", ".join(ags) or "—"], ["sessions", str(nsess)],
-                ["worlds", str(nw)], ["spaces", str(len(spaces.list(loc.user)))],
-                ["assets", str(library.count_by_user(loc.user))],
-                ["active", "yes" if loc.user == _admin_active_user() else "no"]]
-    if loc.kind == "agent":
-        sids = sessions.list(loc.scope)
-        return [["agent", loc.agent], ["user", loc.user], ["scope", loc.scope],
-                ["sessions", f"{len(sids)}: " + (", ".join(sids) if sids else "—")],
-                ["active session", _active_sid_for(loc.scope) or "—"],
-                ["assets", str(len(_asset_rows(loc.user, loc.agent, limit=10_000)))],
-                ["active", "yes" if loc.scope == active_scope else "no"]]
-    return [["path", _loc_path(loc)], ["kind", loc.kind]]
+    return {"ok": True, "path": namespace.loc_path(loc), "kind": loc.kind,
+            "self": namespace.leaf_row(loc), "children": namespace.children(loc)}
 
 
 @app.post("/admin/show")
 async def admin_show(req: AdminPath) -> dict:
     """One entry in depth (shell `show`) — the detail `dir`'s one-line rows leave out."""
-    loc = _admin_resolve(req.path)
+    loc = namespace.resolve(req.path)
     if isinstance(loc, str):
         return {"ok": False, "error": loc}
-    return {"ok": True, "path": _loc_path(loc), "kind": loc.kind, "fields": _fields(loc)}
+    return {"ok": True, "path": namespace.loc_path(loc), "kind": loc.kind, "fields": namespace.fields(loc)}
 
 
 @app.post("/admin/delete")
@@ -2943,7 +2595,7 @@ async def admin_delete(req: AdminPath, request: Request) -> dict:
     """Purge whatever `path` points at (shell `delete`, post-confirm). Ownership-gated (§6e): the caller
     (X-Conjure-User) may only delete their OWN namespace. A missing caller header is treated as
     trusted-local (back-compat, mirroring `_owner_only_writes`)."""
-    loc = _admin_resolve(req.path)
+    loc = namespace.resolve(req.path)
     if isinstance(loc, str):
         return {"ok": False, "error": loc}
     if loc.kind == "root":
@@ -2952,78 +2604,9 @@ async def admin_delete(req: AdminPath, request: Request) -> dict:
     if caller and caller != loc.user:
         return {"ok": False, "error": f"you can only delete your own namespace — {loc.user!r} isn't yours."}
     try:
-        return _admin_do_delete(loc)
+        return namespace.delete(loc)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
-
-
-def _admin_do_delete(loc: _Loc) -> dict:
-    au = _admin_active_user()
-    if loc.kind == "user":
-        if loc.user == au:
-            return {"ok": False, "error": f"{loc.user!r} is the active user — switch away first"}
-        nw, ns, na = worlds.delete_user(loc.user), spaces.delete_user(loc.user), \
-            library.delete_by_user(loc.user)
-        return {"ok": True, "deleted": f"user {loc.user!r}: {nw} worlds, {ns} spaces, {na} assets"}
-
-    if loc.kind == "world":
-        if loc.scope == active_scope and loc.sid == active_sid \
-                and _session_worlds(loc.scope, loc.sid).resolve(loc.name) == active_world:
-            return {"ok": False, "error": "can't delete the active world — switch away first"}
-        ok = _session_worlds(loc.scope, loc.sid).delete(loc.name)
-        return {"ok": ok, "deleted": f"world {loc.name!r}"} if ok else \
-            {"ok": False, "error": f"no world {loc.name!r}"}
-    if loc.kind == "worlds":
-        names = _session_worlds(loc.scope, loc.sid).list()
-        if loc.scope == active_scope and loc.sid == active_sid and active_world in names:
-            return {"ok": False, "error": "the active world is here — switch away first"}
-        for n in names:
-            _session_worlds(loc.scope, loc.sid).delete(n)
-        return {"ok": True, "deleted": f"{len(names)} worlds in {loc.sid}"}
-
-    if loc.kind == "session":
-        if loc.scope == active_scope and loc.sid == active_sid:
-            return {"ok": False, "error": "can't delete the live session — switch away first"}
-        ok = sessions.delete(loc.scope, loc.sid)
-        return {"ok": ok, "deleted": f"session {loc.sid!r}"} if ok else \
-            {"ok": False, "error": f"no session {loc.sid!r}"}
-    if loc.kind == "sessions":
-        sids = sessions.list(loc.scope)
-        if loc.scope == active_scope and active_sid in sids:
-            return {"ok": False, "error": "the live session is here — switch away first"}
-        for s in sids:
-            sessions.delete(loc.scope, s)
-        return {"ok": True, "deleted": f"{len(sids)} sessions in {loc.agent}"}
-
-    if loc.kind == "space":
-        sid = spaces.resolve(loc.user, loc.name)
-        if sid is None:
-            return {"ok": False, "error": f"no space {loc.name!r} for {loc.user!r}"}
-        if loc.user == active_space_owner and not _no_space() and sid == active_space:
-            return {"ok": False, "error": "can't delete the active space — switch away first"}
-        spaces.delete(loc.user, sid)
-        return {"ok": True, "deleted": f"space {loc.name!r}"}
-    if loc.kind == "spaces":
-        if loc.user == active_space_owner and not _no_space() \
-                and active_space in spaces.list(loc.user):
-            return {"ok": False, "error": "the active space is here — switch away first"}
-        return {"ok": True, "deleted": f"{spaces.delete_user(loc.user)} spaces for {loc.user!r}"}
-
-    if loc.kind == "asset":
-        rec = library.get(loc.name)
-        sc = (rec or {}).get("scope") or ""
-        if rec is None or not (sc == loc.user or sc.startswith(f"{loc.user}/")):
-            return {"ok": False, "error": f"no asset {loc.name!r} for {loc.user!r}"}
-        ok, err = library.delete(loc.name)
-        return {"ok": ok, "deleted": f"asset {loc.name!r}"} if ok else {"ok": False, "error": err}
-    if loc.kind == "assets":
-        rows = _asset_rows(loc.user, loc.agent, limit=10_000)
-        for r in rows:
-            library.delete(r["label"])
-        where = f"{loc.user}/agents/{loc.agent}" if loc.agent else loc.user
-        return {"ok": True, "deleted": f"{len(rows)} assets in {where}"}
-
-    return {"ok": False, "error": f"can't delete a {loc.kind} — name a world, session, space or asset"}
 
 
 def _reanchor_moved_content_ops(applied_ops: list[dict]) -> list[dict]:

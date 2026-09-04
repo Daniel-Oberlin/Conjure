@@ -57,13 +57,13 @@ _QUOTES = "\"“”"
 # characters. Everything else — accents, apostrophes, commas, parentheses — tokenises fine and is nobody's
 # business to refuse, especially in a product where the names arrive by voice.
 #
-# This is safe because it is NOT the traversal gate: `_admin_resolve` rejects "."/".." outright and then
+# This is safe because it is NOT the traversal gate: `namespace.resolve` rejects "."/".." outright and then
 # checks every segment against an enumerated real set (users, agents, sessions, worlds), so a segment can
 # never name something that doesn't exist. And since identity became an id, a name never reaches the
 # filesystem at all — worlds are `wld_*.json`, sessions `session-N`, spaces `space-N` — so there's no
 # encoding argument for ASCII either.
 _NAME_BAD = re.compile(r"[/\\\x00-\x1f\x7f]")
-# The path-segment charset server.py's `_ADMIN_PART` is built from — the same rule stated as a match, so
+# The path-segment charset `namespace.SEGMENT` is built from — the same rule stated as a match, so
 # the two can't drift into a name you can store but never type.
 NAME_SEGMENT = r"[^/\\\x00-\x1f\x7f]+"
 
