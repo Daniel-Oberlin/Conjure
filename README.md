@@ -252,7 +252,7 @@ tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" &
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
 docs/       vision · spec · architecture · decisions · providers · roadmap · setup · testing/https guides
   specs/    per-area LIVING specs — what is built and how it behaves today (agents, dynamics,
-            spaces, spaces-geometry, worlds-surfaces, occlusion)
+            spaces, spaces-geometry, worlds-surfaces, library, figures, occlusion, voice, config)
   backlogs/ the matching per-area backlogs — unfinished work, future directions, known problems
   investigations/  debugging campaigns: what was measured, and what was tried and REJECTED
 ```

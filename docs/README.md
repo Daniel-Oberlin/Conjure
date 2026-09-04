@@ -50,6 +50,11 @@ split exists so a spec can be trusted: nothing in it is a plan, an intention, or
   output bytes, the core+attributes record, one write-through for every ingest path, staged search
   (alias → exact → FTS → vector) and its confidence tier, the scope predicate that walls agents off from
   each other, and the embedder. ([backlog](./backlogs/library.md))
+- **[specs/figures.md](./specs/figures.md)** — **figures**: rigged humanoids, and the per-model
+  vocabulary that makes them posable — what import extracts from a GLB, the discovery layers that
+  recover a semantic bone map and the validator that gates them, the anatomical frame and joint limits,
+  life-size placement, the catalog revision stamp, the runtime `figure` component, and the headless
+  Blender conversion that feeds it. ([backlog](./backlogs/figures.md))
 - **[specs/occlusion.md](./specs/occlusion.md)** — real-world depth occlusion: the global depth pre-pass
   and the `off`/`hands`/`hands-solid` modes. ([backlog](./backlogs/occlusion.md))
 - **[specs/voice.md](./specs/voice.md)** — the **ears-and-mouth front-end**: the thin-client contract

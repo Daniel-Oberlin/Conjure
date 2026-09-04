@@ -1,9 +1,12 @@
 # Figures — rigged humanoid models — backlog
 
 Unfinished work and design for **figures**: rigged humanoid models brought in from Blender and other
-sources, placed in a world, dressed, posed, and eventually animated and touchable. Nothing here is built.
-There is no `docs/specs/figures.md` yet — it gets written when the first slice ships, per the house rule
-that a spec describes what the system *does*.
+sources, placed in a world, dressed, posed, and eventually animated and touchable.
+
+**What is built now lives in [`docs/specs/figures.md`](../specs/figures.md)** — import and extraction,
+the discovery layers and the validator, the anatomical frame and joint limits, life-size placement, the
+`figure` component, and the Blender conversion pass. This document keeps the design reasoning, the
+measurements, the dead ends and everything still unbuilt.
 
 This spans two existing subsystems and is deliberately kept whole rather than split between them, because
 the design rationale is the expensive part and it does not survive being cut in half:
