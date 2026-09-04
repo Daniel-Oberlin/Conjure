@@ -2802,6 +2802,19 @@ def test_disk_distinguishes_not_yet_written_from_missing(srv, client):
     assert roles["meta"].get("missing") is None                # this one exists
 
 
+def test_the_session_segment_reads_as_a_title_at_every_depth(srv, client):
+    # `cd worlds` used to read `sessions/session-1/worlds` while a world one level down read
+    # `sessions/Session 1/worlds/<name>` — the same session, two names, in one path.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    sid = srv.sessions.get_active(scope) or MIGRATED_SID
+    _seed_session(srv, scope, sid, title="Kitchen Table")
+    for path in (f"/{scope}/sessions/{sid}", f"/{scope}/sessions/{sid}/worlds",
+                 f"/{scope}/sessions/{sid}/worlds/w1"):
+        shown = client.post("/admin/tree", json={"path": path}).json()["display"]
+        assert "Kitchen Table" in shown and sid not in shown, shown
+
+
 def test_a_displayed_path_can_always_be_typed_back(srv, client):
     # Whatever the shell prints as a path must resolve. Names do; an asset LABEL does not (not unique,
     # not guaranteed), so an asset's display path keeps its id.

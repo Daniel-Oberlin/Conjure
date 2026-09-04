@@ -286,18 +286,20 @@ def display_path(loc: Loc) -> str:
     `loc_path` is the canonical form and holds ids, so it survives a rename; this one is readable and
     does not. Both are returned by `/admin/{tree,show}` so a caller can remember the first and print the
     second (docs/backlogs/agents.md, phase 3)."""
-    canon = loc_path(loc)
-    # Assets keep their id in the path. Everything else has a name that resolves, so showing the name is
+    parts = loc_path(loc).split("/")
+    # The session segment, wherever it sits — under `/worlds` and `/state` as well as at the leaf.
+    # Rewriting only the leaf left `cd worlds` reading `sessions/session-1/worlds` while a world one
+    # level down read `sessions/Session 1/worlds/<name>`: the same session, two names, one path.
+    if loc.sid and "sessions" in parts:
+        i = parts.index("sessions") + 1
+        if i < len(parts) and parts[i] == loc.sid:
+            parts[i] = session_meta(loc.scope, loc.sid).get("title") or loc.sid
+    # Assets keep their id at the leaf. Everything else has a name that resolves, so showing the name is
     # showing an address; an asset label is neither unique nor guaranteed, so a label-valued path would
     # print something you cannot type back. `disk`/`dir` show the label in their own name column instead.
     if loc.kind in ("world", "space", "session"):
-        head, _, _ = canon.rpartition("/")
-        canon = f"{head}/{label_of(loc)}"
-    if loc.kind == "world":                                    # …/sessions/<id>/worlds/<name>
-        parts = canon.split("/")
-        parts[-3] = session_meta(loc.scope, loc.sid).get("title") or loc.sid
-        canon = "/".join(parts)
-    return canon
+        parts[-1] = label_of(loc)
+    return "/".join(parts)
 
 
 def node(label: str, kind: str, *cells: str, ref: str = "", active: bool = False) -> dict:

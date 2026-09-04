@@ -332,9 +332,26 @@ natural extension.
 no key are all named and unbuilt. The shell's modal overlay would generalize to a **stack** for
 sub-agents; v1 is overlay + a single active pointer.
 
-## Shell rationalisation — names in front, ids underneath (planned 2026-09-03, with Daniel)
+## Shell rationalisation — names in front, ids underneath
 
-**Not yet built. The open questions at the end are the alignment gate.**
+**Status: shipped 2026-09-04** (planned 2026-09-03 with Daniel). All seven phases are built and the
+specs carry the behaviour — [`specs/agents.md` §6.3–§6.6](../specs/agents.md) for the namespace and the
+commands, [`specs/config.md` §3.1/§9](../specs/config.md) for `preferences` and the `set` tiers. What
+stays here is the reasoning, the measurements, and the three things the build changed about the plan.
+
+### What the build changed about the plan
+
+- **Phase 3 needed no protocol addition**, and was briefly declined on the belief that it did. `cwd`
+  never round-trips — it is per-connection server state, only ever sent out to render the prompt — so
+  the id/name split is two fields on `Conn` and nothing on the wire.
+- **`gc` lives in `namespace.py`, not beside `library.delete`.** Its keep-set spans the catalog AND
+  every world on disk; `library` knows nothing of worlds or the users tree.
+- **Assets keep their id in a displayed path.** The plan implied names everywhere, but a label is
+  neither unique nor guaranteed, so a label-valued path prints something you cannot type back. Labels
+  lead the name COLUMN instead, and a unique label resolves.
+- **Two bugs were found by building it, not by reading**: `gc` read `USERS_DIR` while the repositories
+  pointed elsewhere (so under test it scanned the developer's real home), and it offered `library.db`
+  for deletion wherever the asset dir and data root coincide.
 
 The storage model is already right: everything renameable carries a permanent id and a display name —
 `wld_…`, `session-N`, `space-N`, an asset hash — and names are unique within their container, compared
