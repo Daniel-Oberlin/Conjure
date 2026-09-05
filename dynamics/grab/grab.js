@@ -20,11 +20,14 @@
 //                              pushes/pulls. Surface-attached: slide on the surface plane. Grounded models:
 //                              slide on the floor, yaw only.
 //   • `resize` (trigger) on a corner handle → uniform resize (transform.scale), proportions preserved.
-//   • sticks, while holding a MODEL: `yaw` (right stick ←→) turns it about gravity-up; a FREE model also
-//     takes `pitch` (left stick ↕) and `bank` (left stick ←→), measured against the VIEWER — tip it away
-//     from you, roll it as you see it. Viewer-relative because nothing in a glTF says which way a model
-//     faces, so its own axes can't define pitch or bank. Images are excluded: turning a picture edge-on is
-//     only a way to lose it.
+//   • sticks, on anything with a BODY — a loaded model, an image plane, a primitive. `yaw` (right stick ←→)
+//     turns it about gravity-up; a FREE one also takes `pitch` (left stick ↕) and `bank` (left stick ←→),
+//     measured against the VIEWER — tip it away from you, roll it as you see it. Viewer-relative because
+//     nothing in a glTF says which way a model faces, so its own axes can't define pitch or bank.
+//     Works while HOLDING it and while merely HIGHLIGHTING it — highlighting already means a beam is up and
+//     aimed at that object, so a grip on top of it was a step with nothing behind it. Held commits on
+//     release; hovered commits when the stick returns to neutral. Surface-attached art is excluded either
+//     way, so it stays flush to its wall.
 //   • release                → commit.
 // `resize` shares the trigger with water's `select`; they coexist because we RESERVE the pointer while the
 // beam is on one of our handles, so the same control resizes there and ripples on the picture's body.
@@ -90,6 +93,7 @@
       this._seen = {};                       // one-shot diagnostic latches (see _once)
       this._modeHudTxt = null;               // last text written to the mode indicator (write-gated)
       this._stickDirty = null;               // mode whose standalone stick yaw is awaiting a commit
+      this._hoverDirty = null;               // object turned by the hover stick, awaiting a commit
       glog("init — owner=" + amOwner() + " mode=" + this._mode()
         + " (point at an object and squeeze GRIP to move it)");
     },
@@ -109,8 +113,10 @@
       });
       this._clearHud();
       this._modeHudTxt = null;
-      // A pending standalone stick yaw belongs to the mode that produced it; commit it before switching
-      // rather than dropping the turn the user already saw happen.
+      // A pending standalone stick turn belongs to the mode that produced it — the object one to `object`,
+      // the frame one to whichever of skybox/void made it. Commit both before switching, rather than
+      // dropping a turn the user already saw happen.
+      this._settleHover(null);
       if (this._stickDirty && window.ConjureWorldFrame) {
         window.ConjureWorldFrame.commit(this._stickDirty === "void" ? "frame" : "sky");
         this._stickDirty = null;
@@ -501,15 +507,18 @@
       }
     },
 
-    // Stick-driven rotation of anything held with a BODY to turn — a loaded model, or a plane/primitive
-    // (a free-standing image included). Grounded things get YAW only, matching how they're re-solved:
-    // upright on the floor. Free ones also get PITCH and BANK, measured against the VIEWER — tip away from
-    // you, roll as you see it. That's deliberate: nothing in a glTF records which way a model faces, so its
-    // own axes can't define pitch or bank, while the viewer's frame is well-defined from wherever you stand.
+    // Stick-driven rotation of anything with a BODY to turn — a loaded model, or a plane/primitive (a
+    // free-standing image included). Reached two ways: from `_update` while the object is HELD, and from
+    // `_stickHover` while it is merely HIGHLIGHTED (`st.hover`). Grounded things get YAW only, matching how
+    // they're re-solved: upright on the floor. Free ones also get PITCH and BANK, measured against the
+    // VIEWER — tip away from you, roll as you see it. That's deliberate: nothing in a glTF records which way
+    // a model faces, so its own axes can't define pitch or bank, while the viewer's frame is well-defined
+    // from wherever you stand.
     //
-    // Surface-attached content never reaches here — `_update` returns from its own branch, so art stays
-    // flush to its wall. Images WERE excluded outright, on the grounds that turning a picture edge-on is a
-    // way to lose it; that's a real hazard but it's the user's to take, and it costs one stick nudge back.
+    // Surface-attached content never reaches here — `_update` returns from its own branch and `_stickHover`
+    // refuses it outright, so art stays flush to its wall. Images WERE excluded outright, on the grounds
+    // that turning a picture edge-on is a way to lose it; that's a real hazard but it's the user's to take,
+    // and it costs one stick nudge back.
     _stickRotate: function (st, p, dt) {
       var el = st.target, obj = el.object3D;
       if (!el.components) return false;
@@ -523,7 +532,12 @@
       var dz = function (v) { return Math.abs(v) < STICK_DEAD ? 0 : v; };
       var yaw = dz(p.value("yaw")), moved = false;
       if (yaw) {                                    // about gravity-up: unambiguous, needs no model facing
-        if (st.grounded) st.stickYaw = (st.stickYaw || 0) - yaw * rate;   // folded into its upright yaw
+        // A grounded object being DRAGGED has its yaw rebuilt from the wrist every frame (_update), so the
+        // stick has to fold into that rather than write the object — a direct spin would be overwritten on
+        // the very next tick. On a merely HOVERED one (st.hover) nothing is rebuilding it, so the same spin
+        // a free object gets is both correct and the only thing that would show. Yaw about world up keeps
+        // it upright either way, which is the whole reason grounded content gets this axis and no other.
+        if (st.grounded && !st.hover) st.stickYaw = (st.stickYaw || 0) - yaw * rate;   // → its upright yaw
         else this._spin(obj, new THREE.Vector3(0, 1, 0), -yaw * rate);    // push right → clockwise from above
         moved = true;
       }
@@ -551,6 +565,56 @@
       var q = obj.getWorldQuaternion(new THREE.Quaternion());
       q.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, angle));
       this._applyWorld(obj, new THREE.Matrix4().compose(pos, q, obj.scale.clone()));
+    },
+
+    // STANDALONE stick rotation in OBJECT mode: the HIGHLIGHTED object turns with no grip held. Squeezing
+    // the grip first was consistency with the drag rather than a step that did anything — the same finding
+    // that already put the stick on the sky without a grip in skybox/void mode (§8b), applied back here.
+    // Highlighting is the whole gate: it means a beam is up (`armed()`), aimed at that object, and it is the
+    // one the HUD box is drawn around, so what will turn is exactly what you can see is selected.
+    //
+    // Called ONCE PER TICK, not per pointer, for the reason `_stickYaw` documents: `yaw`/`pitch`/`bank` are
+    // hand-qualified bindings (`right.stickX`), which resolve GLOBALLY, so every pointer reports the same
+    // deflection and a per-pointer loop would apply it twice.
+    //
+    // A stick has no release event, so the commit fires when it returns to neutral — the analogue of
+    // letting go of a grip, and it keeps a long slow turn to a single POST.
+    _stickHover: function (el, pointers, dt) {
+      // A gesture in flight already folds the stick into its own drag (`_update` → `_stickRotate`), so
+      // running this as well would double it.
+      for (var k in this._ctrl) {
+        var g = this._ctrl[k];
+        if (!g || g.mode === "idle") continue;
+        // The drag commits the object it holds on release, including whatever the stick already turned it
+        // by — so on THAT object just drop the flag rather than POSTing twice. A drag on a different one
+        // leaves ours unsettled, and an uncommitted turn is reverted at the next capture, so it commits.
+        if (g.target && g.target === this._hoverDirty) this._hoverDirty = null;
+        this._settleHover(null);
+        return;
+      }
+      if (!pointers.length) { this._settleHover(null); return; }
+      this._settleHover(el);                     // focus moved on → commit where the last one was left
+      var p = pointers[0], dead = function (a) { return Math.abs(p.value(a)) < STICK_DEAD; };
+      if (dead("yaw") && dead("pitch") && dead("bank")) { this._settleHover(null); return; }
+      if (!el) return;
+      if (!amOwner()) { this._hint(); return; }
+      // Surface-attached content is excluded exactly as it is while held, and for the same reason: its pose
+      // is host-relative and re-solved flush to its wall, so a turn here would look wrong and then be undone.
+      if (el.dataset.onSurface) return;
+      var st = { target: el, hover: true, grounded: el.dataset.placement === "grounded" };
+      if (this._stickRotate(st, p, dt)) this._hoverDirty = el;
+    },
+
+    // Commit a hover-turned object, unless it is still the one being turned. Called on every path that
+    // stops tracking it — sticks neutral, focus moved, a grab starting, pointers gone, a mode switch,
+    // teardown — because an uncommitted rotation is not merely unshared: anchored content re-derives its
+    // pose from `meta.anchor` at the next capture, so it would be silently undone.
+    _settleHover: function (next) {
+      var el = this._hoverDirty;
+      if (!el || el === next) return;
+      this._hoverDirty = null;
+      glog("hover stick settled → commit " + el.id);
+      this._commit({ target: el });
     },
 
     _update: function (st, origin, cq, dir, p, dt) {
@@ -878,7 +942,7 @@
         this._modeHud(bad ? "GRAB  — unknown mode " + JSON.stringify(bad) + "; using object"
                           : (mode === "object" ? null : this._modeLine(mode)));
         var pointers = CP ? CP.controllers(this.el.sceneEl) : [];
-        if (!pointers.length) { this._setHud(null); return; }
+        if (!pointers.length) { this._setHud(null); this._settleHover(null); return; }
         this._once("xr", "XR session live — " + this._manipulables().length + " manipulable object(s) in world-root");
         var hover = null;
         for (var i = 0; i < pointers.length; i++) {
@@ -966,7 +1030,10 @@
         // The box shows in every mode (it is what tells you a grip would take the object rather than the
         // world); the corner handles only in object mode, where resize is reachable.
         this._setHud(hover, mode === "object");
+        // The stick is standalone in every mode, but on different targets: outside object mode there is no
+        // entity to turn and it drives the sky or the world frame; inside it, it turns whatever is highlighted.
         if (mode !== "object") this._stickYaw(pointers, mode, dt);
+        else this._stickHover(hover, pointers, dt);
       } catch (e) {
         // Never break the render loop over a manipulation — but SAY SO once. Swallowing silently makes a
         // broken module look identical to one that was never conjured.
@@ -974,6 +1041,9 @@
       }
     },
 
-    remove: function () { this._clearHud(); this._modeHud(null); this._ctrl = {}; }
+    remove: function () {
+      this._settleHover(null);                 // a turn made and not yet settled is still the user's
+      this._clearHud(); this._modeHud(null); this._ctrl = {};
+    }
   });
 })();

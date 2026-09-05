@@ -17,7 +17,7 @@
     0.0,
     0.0
   ],
-  "description": "Move, rotate, and resize placed objects with the controllers: point to highlight, GRIP to grab (free objects move/rotate in full 3D; surface-attached objects slide on their surface), GRIP a corner handle to resize. Owner-only; changes commit when you release. Set `mode` to adjust the skybox or a whole void world instead — re-conjuring with a new mode switches the live instance.",
+  "description": "Move, rotate, and resize placed objects with the controllers: point to highlight, GRIP to grab (free objects move/rotate in full 3D; surface-attached objects slide on their surface), GRIP a corner handle to resize. The thumbsticks turn a highlighted object whether or not you are gripping it — right stick ←→ yaws it, left stick pitches and banks a free one; wall art is excluded so it stays flush. Owner-only; a drag commits on release, a stick turn when the stick returns to neutral. Set `mode` to adjust the skybox or a whole void world instead — re-conjuring with a new mode switches the live instance.",
   "config_schema": {
     "mode": {
       "type": "string",
