@@ -430,6 +430,89 @@ digit. It covers what is easy to get subtly different: composition order, side m
 antiparallel half-turn, and every clamp. (Comparisons are by quaternion **dot product**: three's
 `Quaternion.angleTo` has a ~3e-8 noise floor even between bit-identical quaternions.)
 
+### The utterance layer — `scripts/pose_eval.py`
+
+Everything above verifies the **frame**: given `{"leftUpperArm": {"bend": 45}}`, does the right joint
+move the right way. None of it verifies the **tool surface**: given *"raise her right arm up"*, does the
+director produce that call at all. The two fail independently, and the second is the one with no other
+net — a change to a sentence of English in `pose_figure`'s description is otherwise unfalsifiable.
+
+| | Verify the frame | Verify the tool surface |
+|---|---|---|
+| Input | `{"leftUpperArm": {"bend": 45}}` | *"raise her right arm up"* |
+| Runs | every commit, free | on demand — real API calls, real Blender |
+| Catches | a bone mapped to a fingertip, an axis that is self-consistently wrong | the director picking the wrong bone or sign |
+
+**The corpus is data** (`conjure/pose_corpus.py`): 20 phrases × the 3-rig cast, with the expectations
+written per *phrase* and never per rig — the claim the whole vocabulary rests on is that one sentence
+means the same thing on every skeleton. Distances are fractions of the figure's own height, so a 1.55 m
+rig and a 1.87 m one score alike.
+
+**Three layers, cheapest first, and each fails for a different reason:**
+
+| Layer | Checks | A failure means | Gates? |
+|---|---|---|---|
+| `check_call` | `touches` / `leaves` / `signs` — which bones were set, and which way | the tool description is wrong | yes |
+| `check_geometry` | where the joints landed once the pose is applied to a real bind pose | the words and the frame disagree | yes |
+| the judge | up to two multiple-choice questions about a rendered pair | *see below — it did not reproduce* | no |
+
+**`points` for an absolute request, `moved` for a relative one.** Scoring *"hold both arms out to the
+sides"* by displacement marks Saka wrong, because she rests in a T-pose and correctly does not move: an
+`aim` is a claim about where the limb **ends up**. That distinction is the corpus's half of the same
+argument that produced `aim` itself.
+
+**What the harness does not do is execute anything.** It reads the live tool schemas off the MCP server
+(never a transcription — a transcribed description would pass forever after the first edit), runs one
+real director turn per cell, and answers the tool calls from the model file: `inspect_figure` returns
+`figures.figure_description`, the same wording the real tool returns, and `pose_figure` runs
+`figures.clean_pose` and reports the joint limits the endpoint would have reported. No world, no server,
+no headset.
+
+**The judge** (`conjure/judge.py`) is a seam beside `Captioner`, returning a structured verdict rather
+than prose. Every question is **multiple choice against a reference render from fixed viewpoints** —
+never free-form spatial description, because vision models are unreliable at 3-D reasoning and reliable
+at recognition. A model that will not pick an option returns `choice == -1`, which is an abstention and
+never scores as a pass. Gemini 2.5 Flash by default (`judge_provider` / `judge_model`), Claude for
+rubric-heavy work, `FakeJudge` offline.
+
+It asks two questions:
+
+- **Which way did it move** — asked only where the corpus claims one word is true of the motion on every
+  rig (`Phrase.moves`; empty means do not ask). A trunk bone barely translates, an absolute request
+  means something else on a rig already resting in the target pose, and a lifted knee goes up *and*
+  forward — none of those has a one-word answer, so none is asked.
+- **Could a body hold this** — asked of every cell.
+
+**Neither one gates a cell.** As of 2026-09-05 the judge layer is advisory (`--judge-gates` to make it
+count), because it does not reproduce: across four full runs its disagreements were 29, 8, 2 and 7 out
+of 60, with cells moving in and out of the failure column while nothing but the model changed. Before
+each battery the harness renders a **calibration pose** — a 170° twist of the skull, so the figure faces
+forward with the back of its head to the camera — and asks the same plausibility question. Gemini 2.5
+Flash and Claude Sonnet 4.6 both answer *"yes, a person could hold this"*.
+
+**The calibration is the point, not a footnote.** An instrument that cannot detect the defect it exists
+to find does not become trustworthy by being run over sixty cells, and the only way to know is to ask it
+something whose answer is already known. What gates a cell is `check_call` and `check_geometry`, which
+were 60/60 on every one of those runs.
+
+Renders come from `scripts/pose_test.py --clay`, which also gained `--frame` so the posed and rest shots
+share one camera — *"compared to the first image"* means nothing between two differently-zoomed pictures.
+Clay was chosen over textures for three reasons at once: materials are irrelevant to which way an arm
+went, several of the library's are still wrong, and a hosted judge might decline to look at an undressed
+figure. Measured 2026-09-05: it does not decline, and it distinguishes up / down / forward / back /
+barely-moved correctly on a four-way probe.
+
+Three views, not two: front, **three-quarter** and side. A dead-on view is degenerate for any limb aimed
+along it — an arm pointing forward foreshortens into what looks like a folded elbow — and the extra shot
+is nearly free, because the ~3 s the script costs is Blender starting and importing a GLB while each
+render is about 30 ms.
+
+    python scripts/pose_eval.py --calls-only          # the fast loop after editing a description
+    python scripts/pose_eval.py --phrases arm-up --rigs Saka --keep out/
+
+A full battery is 60 cells in ~20 minutes and a few cents. `--calls-only` runs the layer a
+tool-description edit can actually break, needs no Blender and no judge, and takes about twenty seconds.
+
 ## 11. Surface reference
 
 | Endpoint | Purpose |
@@ -443,7 +526,8 @@ pose) and `pose_figure`. Neither is in `_READONLY_TOOLS`, so a `access: "read"` 
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
-**CLI:** `conjure-import` (ingest), `conjure-ctl refresh-models [--force]`.
+**CLI:** `conjure-import` (ingest), `conjure-ctl refresh-models [--force]`,
+`python scripts/pose_eval.py` (the utterance-layer battery), `scripts/pose_test.py` (render one pose).
 
 **Deps:** none new. GLB reading is stdlib; `trimesh` was already there. Blender is a soft dependency of
 the conversion scripts only, never of the world server.
@@ -460,8 +544,8 @@ Recorded here so the spec can be trusted about its own edges; the design work is
 - **No named poses** ("kneel", "sit"), and therefore no re-grounding — rotations cannot ground a figure,
   so a pose that lowers the body would leave it standing in the floor.
 - **No discovery layers 3–6:** no LLM labelling, no multimodal verification, no human confirmation.
-- **No evaluation of the utterance layer.** `validate()` checks the bone map, renders check the axes, and
-  nothing at all checks whether a change to a tool description still steers the director correctly.
+- **No named-pose authoring loop.** The judge exists and the renderer exists, but nothing yet proposes
+  a pose, renders it, verifies it and freezes it into a library.
 - **No FBX front door**, so no Mixamo.
 - **No morph, spring-bone or MToon support.** VRM material data is in the file and A-Frame's plain glTF
   loader ignores it.

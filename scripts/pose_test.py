@@ -2,6 +2,7 @@
 
     B=/Applications/Blender.app/Contents/MacOS/Blender
     $B --background --python scripts/pose_test.py -- model.glb out/ '{"leftUpperArm": {"bend": 60}}'
+    $B --background --python scripts/pose_test.py -- model.glb rest/ '{}' 640 --clay --frame out/frame.json
 
 `conjure.figures.validate()` checks a bone map for geometric self-consistency, and `score()` checks it
 against VRM's stated answer. Both are STRUCTURAL: they can confirm a map is plausible and internally
@@ -32,11 +33,24 @@ import bpy
 import mathutils
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from conjure.figures import (_mul, anatomical_axes, best_humanoid,   # noqa: E402 — after the path fix
-                             follow_bones, node_world_matrices, resolve_pose, split_glb, validate)
+from conjure.figures import (_mul, apply_pose, best_humanoid,   # noqa: E402 — after the path fix
+                             follow_bones, node_world_matrices, split_glb, validate)
 from conjure.importer import vrm_humanoid                       # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+# Two flags, both for the eval harness (docs/backlogs/figures.md, slice 2), both harmless by hand:
+#   --clay          untextured render. Materials are irrelevant to "which way did the arm go", several
+#                   of the library's are still wrong, and a hosted judge may decline to look at an
+#                   undressed figure at all. Clay removes all three questions at once.
+#   --frame <path>  reuse a camera box written by an earlier run instead of computing one. A rest and a
+#                   posed render are only comparable if the camera did not move between them, and this
+#                   script frames on the POSED skeleton — so the harness renders the pose first and
+#                   hands the frame back for the reference shot.
+clay = "--clay" in argv
+frame_in = argv[argv.index("--frame") + 1] if "--frame" in argv else None
+skip = {i for i, a in enumerate(argv) if a in ("--clay", "--frame")}
+skip |= {i + 1 for i, a in enumerate(argv) if a == "--frame"}
+argv = [a for i, a in enumerate(argv) if i not in skip]
 glb, outdir = argv[0], argv[1]
 poses = json.loads(argv[2]) if len(argv) > 2 else {}
 os.makedirs(outdir, exist_ok=True)
@@ -98,22 +112,13 @@ def posed_glb(data, doc, blob, mapping, requests, follows):
     """
     by_name = {n.get("name"): i for i, n in enumerate(doc.get("nodes") or []) if n.get("name")}
     world = node_world_matrices(doc)                      # BIND pose, before anything is rotated
-    axes = anatomical_axes(doc, mapping)                  # PARENT space: where a node's rotation lives
-    notes, posed_nodes = [], {}
-    for bone, delta in resolve_pose(axes, requests, notes).items():
-        i = by_name.get(mapping.get(bone, ""))
-        if i is None:
-            print(f"    ! {bone!r} -> {mapping.get(bone)!r} not in this file"); continue
-        node = doc["nodes"][i]
-        rest = node.get("rotation", [0.0, 0.0, 0.0, 1.0])
-        x, y, z, w = delta
-        rx, ry, rz, rw = rest
-        node["rotation"] = [w * rx + x * rw + y * rz - z * ry,
-                            w * ry - x * rz + y * rw + z * rx,
-                            w * rz + x * ry - y * rx + z * rw,
-                            w * rw - x * rx - y * ry - z * rz]
-        posed_nodes[bone] = i
-        print(f"    posed {bone:<16} ({node['name']:<24}) by {requests[bone]}")
+    notes: list = []
+    posed_nodes = apply_pose(doc, mapping, requests, notes)   # the runtime's own arithmetic, shared
+    for bone, i in posed_nodes.items():
+        print(f"    posed {bone:<16} ({doc['nodes'][i]['name']:<24}) by {requests[bone]}")
+    for bone in requests:
+        if bone not in posed_nodes:
+            print(f"    ! {bone!r} -> {mapping.get(bone)!r} not in this file")
     for note in notes:
         print(f"    joint limit: {note}")
 
@@ -189,7 +194,12 @@ bpy.ops.import_scene.gltf(filepath=source)
 arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
 if not arms:
     print("  NO ARMATURE"); sys.exit(1)
-rig = max(arms, key=lambda a: len(a.data.bones))
+# The BODY armature, which is not the biggest one. Trish carries a 679-bone `Hair` rig beside her
+# 362-bone skeleton, and hair spring bones sprawl metres past the figure — picked by bone count, it won
+# and framed the camera on a box twice the height of the body, leaving her a third of the frame. Choose
+# by the map instead: the armature holding the most bones we can actually name.
+rig = max(arms, key=lambda a: (sum(1 for n in mapping.values() if n in a.data.bones),
+                               len(a.data.bones)))
 print(f"  armature {rig.name} ({len(rig.data.bones)} bones)")
 
 # A model that ships clips (the asset-pack characters carry ten to twenty-four each) imports with one
@@ -224,6 +234,8 @@ for o in bpy.context.scene.objects:
         continue
     if any(c.name == "glTF_not_exported" for c in o.users_collection):
         o.hide_render = True
+    elif any(m.type == "ARMATURE" and m.object is not rig for m in o.modifiers):
+        pass                    # skinned to a different armature (hair, clothing rigs) — not the body
     else:
         objs.append(o)
 
@@ -231,28 +243,50 @@ for o in bpy.context.scene.objects:
 # a raised arm falls outside it and the camera crops exactly the thing being checked — `Steve` came out
 # filling the frame with his head. Bones are evaluated, so they already carry the pose; a margin covers
 # the flesh around them.
-lo = [1e9] * 3; hi = [-1e9] * 3
-points = [rig.matrix_world @ p for pb in rig.pose.bones for p in (pb.head, pb.tail)]
-points += [o.matrix_world @ mathutils.Vector(c) for o in objs for c in o.bound_box]
-for w in points:
-    for i in range(3):
-        lo[i] = min(lo[i], w[i]); hi[i] = max(hi[i], w[i])
-pad = 0.12 * max(hi[i] - lo[i] for i in range(3))
-lo = [v - pad for v in lo]; hi = [v + pad for v in hi]
+if frame_in:
+    saved = json.load(open(frame_in))
+    lo, hi = saved["lo"], saved["hi"]
+else:
+    lo = [1e9] * 3; hi = [-1e9] * 3
+    points = [rig.matrix_world @ p for pb in rig.pose.bones for p in (pb.head, pb.tail)]
+    points += [o.matrix_world @ mathutils.Vector(c) for o in objs for c in o.bound_box]
+    for w in points:
+        for i in range(3):
+            lo[i] = min(lo[i], w[i]); hi[i] = max(hi[i], w[i])
+    pad = 0.12 * max(hi[i] - lo[i] for i in range(3))
+    lo = [v - pad for v in lo]; hi = [v + pad for v in hi]
 size = [hi[i] - lo[i] for i in range(3)]
 mid = [(hi[i] + lo[i]) / 2 for i in range(3)]
+# Written every run, so any render can become the reference frame for a later one without re-deriving.
+json.dump({"lo": list(lo), "hi": list(hi)}, open(os.path.join(outdir, "frame.json"), "w"))
 
 scene = bpy.context.scene
 scene.render.engine = "BLENDER_WORKBENCH"
 scene.render.resolution_x = scene.render.resolution_y = int(argv[3]) if len(argv) > 3 else 640
 scene.display.shading.light = "STUDIO"
-scene.display.shading.color_type = "TEXTURE"
+scene.display.shading.color_type = "SINGLE" if clay else "TEXTURE"
+if clay:
+    # A single mid-grey with the studio light on it: shape reads, material does not. Slightly warm so
+    # a limb in front of the torso still separates by shading rather than by colour.
+    scene.display.shading.single_color = (0.62, 0.58, 0.55)
 cam_d = bpy.data.cameras.new("c"); cam = bpy.data.objects.new("c", cam_d)
 scene.collection.objects.link(cam); scene.camera = cam
 r = max(size) * 1.5 + 0.5
-# Front AND side, always. A front view cannot tell a raised knee from a leg swung backwards, which is
-# precisely the error this script exists to catch — the side view is the one that settles `bend`.
-for label, offset in (("posed", (0.0, -r, 0.0)), ("posed_side", (r, 0.0, 0.0))):
+# Front, three-quarter AND side, always. A front view cannot tell a raised knee from a leg swung
+# backwards, which is precisely the error this script exists to catch — the side view is the one that
+# settles `bend`. The three-quarter exists because both of the others are DEGENERATE for some pose: an
+# arm aimed straight forward points at the front camera and foreshortens into what looks like a folded
+# elbow, and a vision judge called a correct pose anatomically impossible on exactly that render
+# (2026-09-05). At 35 degrees no limb aligns with the view axis, and left/right still read cleanly.
+# The extra shot is nearly free: the 3 s this script costs is Blender starting and importing, and each
+# additional render is ~30 ms.
+# All three cameras sit on the model's LEFT half (+X after the glTF import, which is the figure's own
+# left) or dead in front, so a caption can name the side without lying — "her front-left" and "her left
+# side" are the same side, and a judge asked which way the RIGHT arm went is not being told the mirror.
+q = math.radians(35.0)
+for label, offset in (("posed", (0.0, -r, 0.0)),
+                      ("posed_q", (r * math.sin(q), -r * math.cos(q), 0.0)),
+                      ("posed_side", (r, 0.0, 0.0))):
     cam.location = (mid[0] + offset[0], mid[1] + offset[1], mid[2] + offset[2])
     d = mathutils.Vector(mid) - cam.location
     cam.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()

@@ -1640,6 +1640,10 @@ The three slices the 2026-09-03 device run calls for, in order. Designed here be
 because the first two are cheap only if their scope stays honest and the third has a structural gap in it
 that is easy to paper over badly.
 
+**Slices 1 and 2 are built** (2026-09-03 and 2026-09-05). What the harness measured on its first runs —
+including the two places this design was wrong — is under
+[*What the harness measured*](#what-the-harness-measured-2026-09-05).
+
 Read them as one argument: **1** removes the guessing, **2** is the only way to know it stayed removed,
 and **3** is the first capability the rig-independent vocabulary actually buys — as opposed to the bugs it
 prevents.
@@ -1817,11 +1821,23 @@ It is approximate by construction — joint positions plus a small contact radiu
 and that is the right trade: exact would mean posing the mesh server-side, and the error is millimetres
 against a decision measured in tens of centimetres.
 
-**Authoring loop, and it is one this document already defines.** An LLM proposes the numbers, Blender
-renders front and side, the judge from slice 2 says whether that is a kneel, and a human confirms once
-before it is frozen into the library — *propose → render → verify → freeze*, exactly the discipline
-[layers 5 and 6](#5--the-validator-llm-proposes-geometry-disposes) apply to bone maps. A new pose then
-costs a call and a glance.
+**Authoring loop — and slice 2 changed what the verify step can be.** The plan was: an LLM proposes the
+numbers, Blender renders, the judge from slice 2 says whether that is a kneel, a human confirms once.
+**That judge passes a figure with its head on backwards** (§ *What the harness measured*), so as written
+the loop would rubber-stamp whatever was proposed.
+
+Use the corpus's predicate vocabulary instead, which did not exist when this was designed. A kneel has a
+geometric signature — knees below hips, shins near horizontal, feet behind the knees — and `above`,
+`below`, `moved`, `points`, `nearer` and `apart` already say it. So: **propose → check the signature →
+render for one human glance → freeze.** That is the same *LLM proposes, geometry disposes* as
+[layer 5](#5--the-validator-llm-proposes-geometry-disposes), which is the verifier in this document that
+has actually held up. A named pose then ships with the assertions that define it, and the pose library
+and the eval corpus are the same kind of object.
+
+**Two things bound what tier 2 can express, and neither is a bug.** `hips` reaches different parts of the
+body on different rig lineages (above), so leg-rooted poses port and trunk-rooted ones do not until the
+reach check exists. And `hips` is clamped to ±45° on every axis, so "lie down" is outside tier 1 by
+construction — laying a figure horizontal is placement, not pose, and belongs to the entity transform.
 
 **What stays closed: the axis words.** Four rotations cover every single-bone request, and both examples
 that prompted this were already expressible — "spread her legs apart" is `spread` on both sides (the
@@ -1829,6 +1845,144 @@ director simply got the sign wrong), and "knees in" is negative `spread`. Every 
 grown a fifth criterion at the primitive layer it has been fitting noise; that is recorded twice above. A
 request that genuinely cannot be said in tier 1 is a signal that it belongs in a different tier, not that
 tier 1 is missing a word.
+
+### What the harness measured (2026-09-05)
+
+Built as designed — corpus in `conjure/pose_corpus.py`, judge seam in `conjure/judge.py`, runner in
+`scripts/pose_eval.py`, and `pose_test.py` gained `--clay`, `--frame` and a third camera. What is worth
+recording is not that it works but what it found, because **every finding but one was about this
+document's design rather than about the code it was pointed at.**
+
+**The call and geometry layers were clean on every run: 60/60, five times.** Twenty phrases across
+Grace, Trish and Saka, and the director picked the right bone, the right form and the right sign every
+time — including all three utterances that failed in the headset on 2026-09-03. `aim` did what it was
+built to do, and it does it on a T-posed VRoid rig and two A-posed Daz conversions alike.
+
+That is a real result and also a warning: **a net that has never caught anything has not been shown to
+be a net.** Which is why the deliberate wrong-pose tests in `tests/test_pose_eval.py` matter more than
+the run does — aim an arm down against the "raise her arm" phrase and the geometry layer fails it, negate
+one side of a spread and the feet stop parting. Those two run for free on every commit.
+
+**Finding 1 — a relative expectation cannot score an absolute request.** "Hold both arms out to the
+sides" moved Saka's arms *not at all*, and the corpus called that a failure. It was right: she rests in
+a T-pose and her arms already point out. The whole argument for `aim` is that a destination does not
+depend on the rest pose, and the corpus had gone and scored it on displacement anyway. Fixed with a
+`points` predicate that reads where the limb ENDED UP. **The lesson generalises past this corpus:
+anything scoring an absolute request against a starting position is measuring the rig, not the request.**
+
+**Finding 2 — the movement question duplicates geometry, and loses to it.** The
+judge disagreed with 29 of 60 cells, and on inspection it was usually right and the corpus wrong:
+
+- A bent elbow puts the forearm **forward**, not up. The render settles it; the label was wrong.
+- A head that tilts, turns or bows barely *translates*, so "which way did the head move" has no true
+  answer. Trunk phrases now ask nothing — the sign check was always the real test there.
+- A lifted knee goes up **and** forward at once, which a seven-word vocabulary cannot say.
+- An arm swung back is bounded by a joint limit, so "barely moved" is a defensible reading of a correct
+  pose.
+
+So the movement question is now asked only where the corpus claims one word is true of the motion on
+every rig (`Phrase.moves`, empty = do not ask), and the silence is documented per phrase. That was meant
+to leave the plausibility question as the judge's real contribution — the one thing geometry cannot
+answer exactly. Finding 4 is what happened when that assumption was finally tested.
+
+**Finding 3 — two orthogonal views are not enough, and the failure looks exactly like a defect.** The
+judge called Grace's "left arm straight out in front" *anatomically impossible*. It was correct about
+the picture: an arm aimed forward points at the front camera, foreshortens, and reads as a folded elbow.
+The side view showed a perfect straight arm. A dead-on view is degenerate for any limb aimed along it,
+so `pose_test.py` now renders a **three-quarter** as well — at 35° nothing aligns with the view axis and
+left/right still reads. The extra shot is nearly free: the ~3 s that script costs is Blender starting and
+importing a GLB, and each additional render is about 30 ms.
+
+That camera then had to move. It went on the model's **−X** side while the side camera sits at **+X**,
+so the two auxiliary views looked at opposite halves of the figure and the caption handed to the judge —
+*"from her front-left"* — named the wrong one. On a question about which way the **right** arm went, a
+caption that mirrors the body is worse than no caption. All three cameras now sit on her left or dead in
+front. Worth noticing how this was found: not by reading the code, but by rendering one arm straight up
+and looking at which side of the frame it came out on.
+
+**Finding 4, and the one that matters — the judge does not work yet, and nothing had asked it a question
+whose answer was already known.** Adding the third view did not stop the false positives, so the
+instrument itself got tested: render a figure with its **head twisted 170° onto backwards** and ask
+whether a person could hold that pose.
+
+| | broken pose (head on backwards) | a correct arm-forward pose |
+|---|---|---|
+| Gemini 2.5 Flash | *"yes, a person could hold this"* | *"no"* on one call, *"yes"* on another — **same images, temperature 0** |
+| Claude Sonnet 4.6 | *"yes, a person could hold this"* | *"yes"* |
+
+False positives, false negatives, and not even stable between identical calls. **A verdict that cannot
+detect a skull on backwards cannot be believed about a subtle elbow.**
+
+The movement question turned out no more reproducible, which took four full runs to see because each one
+looked like a plausible score:
+
+| run | what changed | judge disagreements / 60 |
+|---|---|---|
+| 1 | as designed | 29 |
+| 2 | movement question scoped to phrases with a one-word answer; labels corrected | 8 |
+| 3 | anatomy verdict downgraded to advisory after it failed calibration | 2 |
+| 4 | three-quarter view added to the movement question too | 7 |
+| 5 | that reverted; three-quarter kept for anatomy only, camera side fixed | 7 |
+
+Run 4 was supposed to be the improvement — the extra view is exactly what fixed the anatomy question —
+and it made things worse and broke a `knee` cell that had passed on all three rigs. Reverting it did not
+restore run 3 either: the same subset re-run put `elbow` in the failure column, where it had passed
+twice. **Nothing was moving except the model.**
+
+So the whole judge layer is now **advisory by default** (`--judge-gates` to make it count). What gates a
+cell is the call and the geometry, which were **60/60 on every one of those runs** — deterministic, free
+and fast. The judge's answers are printed for a person to read, the calibration line says up front
+whether it can see a head on backwards, and the machinery stays because the fixture is exactly what will
+detect a better model the day one exists.
+
+This is the same discipline as the black-bake fallback and the two wrong oracles further up this
+document, arrived at from the opposite direction: **the check that was never checked is the one that was
+wrong.** It is worth asking of the other unvalidated verifiers designed here — discovery layer 4's
+multimodal pass is the same shape and has the same gap, and layer 5's "LLM proposes, geometry disposes"
+is the one that already got it right.
+
+**The undressed-render trap did not bite.** The design flagged it as worth learning early: Gemini 2.5
+Flash judged clay renders of the nude conversions without hesitation, and a four-way probe (arm down /
+forward / back, head-only) came back 4/4 correct, so it is discriminating rather than answering (a). Clay
+remains the right default anyway — materials say nothing about which way an arm went, and two of the
+library's are still wrong.
+
+**Three rig defects surfaced on the way, none of them the harness's business to fix:**
+
+- **Trish's spine is not a chain.** `spine`, `spine-1`, `chest` and `chest-1` are all siblings under
+  `back`, and the mapped `spine` carries only `spine.twk`. Bending it deforms her waist and does not tip
+  her shoulders, so "bow from the waist" half-works on that rig and `validate()` says nothing —
+  it checks that a *limb* is a chain and the trunk is explicitly exempt (§ *validate does not require the
+  trunk to be a chain*). Worth revisiting: the exemption was right about branching, wrong about reach.
+- **`hips` is not the same joint on the two rig lineages** (measured 2026-09-05, while asking whether
+  named poses would port):
+
+  | | mapped `hips` | its children | rotating it |
+  |---|---|---|---|
+  | Saka (VRM) | `J_Bip_C_Hips` | spine + both upper legs | moves the whole body |
+  | Grace (Daz → Rigify) | `pelvis` | `Anus`, `Genitals`, `legSocket.L/R` | moves **the legs only** |
+
+  The same word, two different reaches, and `validate()` is blind to it for the same reason it is blind
+  to Trish's spine. **That is now twice, which makes it a pattern rather than a one-off: the trunk
+  exemption needs a deform-REACH check, not another per-rig patch.** It bounds slice 3 directly — a
+  leg-rooted pose like `kneel` ports across lineages, a trunk-rooted one like `sit` does not.
+- **`pose_test.py` framed on the wrong armature.** It chose by bone count, and Trish's 679-bone hair rig
+  beat her 362-bone skeleton; hair spring bones sprawl metres past the body, so the camera framed a box
+  twice her height and she filled a third of the frame. Now chosen by the bone map — the armature holding
+  the most bones we can name.
+
+**Cost, measured:** a full battery is 60 cells in ~18–22 minutes and a few cents — one director turn,
+three renders and up to two judge calls each. The `--calls-only` pass is the one to actually live with:
+it scores the layer a tool-description edit can break, needs no Blender and no judge, and runs in about
+twenty seconds.
+
+**The run to reproduce**, and what it prints at the top:
+
+    judge calibration: FAILED — asked whether a figure with its head on backwards is a pose a
+                       person could hold, it said YES
+    ...
+    60/60 cells clean in 1109s — 0 call, 0 geometry, 0 judge
+    7 cell(s) the judge disagreed with, not counted — see --judge-gates
 
 ## Animation — the long-term plan
 
@@ -1950,13 +2104,16 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
     every figure), or record `facing` in `attributes` and correct at placement? Baking is simpler downstream
     and destroys information; recording is reversible and pushes the concern into every consumer.
 11. ~~**Which multimodal model** for the verification passes, and whether it extends `Captioner`?~~
-    **Proposed 2026-09-03** — Gemini 2.5 Flash for the bulk battery (the seam and the key exist), Claude
-    for rubric-heavy judging (already the default director), and its **own** protocol beside `Captioner`
-    because the return type is a structured verdict. Unresolved sub-question: whether a hosted model will
-    judge renders of the undressed exports at all.
+    **Settled 2026-09-05, built as proposed** (`conjure/judge.py`) — Gemini 2.5 Flash for the bulk
+    battery, Claude for rubric-heavy judging, and its **own** protocol beside `Captioner` because the
+    return type is a structured verdict. The sub-question is answered too: a hosted model **will** judge
+    clay renders of the undressed exports, without hesitation and while discriminating correctly.
 12. **Which armature is the humanoid one** when a file ships several (Hitomi has five). Body-mesh binding
     cross-checked against bone count is the obvious heuristic; the hair rigs are separate skeletons and are
-    exactly what spring-bone secondary motion would drive later.
+    exactly what spring-bone secondary motion would drive later. **Bone count alone is measurably wrong**:
+    Trish's hair rig carries 679 bones against her skeleton's 362, and picking the larger one wrecked the
+    render framing (2026-09-05). `pose_test.py` now picks the armature holding the most bones the humanoid
+    map can name, which is the same "cross-check against something semantic" answer, one layer up.
 13. **Touch response mechanism** — canned reaction clip, IK reach toward the contact point, or spring-bone
     secondary motion. Relates to the open physics-vs-parametric question ([`decisions.md`](../decisions.md) #12).
 14. **Where the pose library lives** — shipped with the repo like the bundled dynamics modules, per-user
@@ -1985,11 +2142,16 @@ than protects:
    her legs apart".
 1b. ~~**Joint limits**~~ **Built 2026-09-03**, after `aim` made it easy to ask for the impossible. Per
    semantic bone, shipped with the frame, clamped on both sides of the wire and reported back.
-2. **The eval harness at the utterance layer** — ~20 phrases × 3 rigs, rendered and judged. The only
-   guard on the one layer of this feature that has no test, and the only way to know whether a change to
-   a sentence of English did what it was supposed to.
+2. ~~**The eval harness at the utterance layer**~~ **Built 2026-09-05** — 20 phrases × 3 rigs, scored on
+   the call and the geometry, with a rendered pair shown to a judge whose verdict is **advisory**.
+   Call and geometry: 60/60 on every run. The judge's verdicts did not reproduce and it passes a figure
+   with its head on backwards, so it does not gate anything yet — the whole argument is under
+   [*What the harness measured*](#what-the-harness-measured-2026-09-05), and every finding but one was
+   about the design in this document rather than the code it was pointed at.
 3. **Named poses + re-grounding** — "kneel", "sit". Data, not code, because tier 1 is rig-independent;
-   and the re-grounding rule is what stops a kneeling figure standing in the floor.
+   and the re-grounding rule is what stops a kneeling figure standing in the floor. **Everything its
+   authoring loop needs now exists**: `judge.py` is the verify step, `pose_test.py --clay` is the render
+   step, and `pose_corpus` is the shape a frozen pose library would take.
 4. **Outfits** (Phase 2) — deferred by choice; also wants a re-conversion with clothing.
 5. **Animation** — § *Animation — the long-term plan*. Stage 1 plays the 52 clips already in the
    library; everything past that waits on the FBX front door and a decision about composition.
@@ -2021,8 +2183,12 @@ export is byte-identical to the `c8421e03…` already catalogued — the colour 
   Hitomi and Leifang too.
 - **`leftHand` on a Daz rig** now resolves to `hand.fk.L` via layer 1, so the old fingertip defect is
   gone — but rigs that fall through to layer 2 can still hit it.
-- **`validate()` checks the bone map, the axes and now deform reach. Nothing checks the utterance
-  layer** — that is the eval harness, still the next slice.
+- **Trish's mapped `spine` drives nothing but her waist** — her spine bones are siblings, not a chain, so
+  a bow does not tip her shoulders and `validate()` passes it. Found by the harness; see
+  [*What the harness measured*](#what-the-harness-measured-2026-09-05).
+- **The judge does not gate anything** — it passes a figure with its head on backwards, and its verdicts
+  moved between five identical runs. Advisory by default; every battery prints the calibration result
+  first so nobody has to remember this.
 - Figures already placed in a world hold the meta they were placed with. Re-place after any refresh.
 - The anatomical-pose work and the void-frame branch are both merged to `main` and pushed.
 
