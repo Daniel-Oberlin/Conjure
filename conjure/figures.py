@@ -1555,3 +1555,149 @@ def _quat_mul(a: list[float], b: list[float]) -> list[float]:
             aw * by - ax * bz + ay * bw + az * bx,
             aw * bz + ax * by - ay * bx + az * bw,
             aw * bw - ax * bx - ay * by - az * bz]
+
+
+# ---------------------------------------------------------------- what the caller is told, and applied
+#
+# The two functions below exist because two callers need them and a second copy of either would rot.
+# `figure_description` is the wording the director reads before posing, and the eval harness
+# (`conjure.pose_corpus`) has to read the SAME wording or it is measuring a paraphrase. `apply_pose`
+# is the arithmetic the client does per frame, needed offline by both the renderer
+# (`scripts/pose_test.py`) and the harness's geometry pass.
+
+
+def figure_description(*, label: str, height_m: Optional[float] = None, tris=None,
+                       bones=(), has_map: bool = False, posed=()) -> str:
+    """What `inspect_figure` says about a figure — the bones it has and how they can be asked to move.
+
+    Kept here rather than in the MCP tool because this text is part of the tool SURFACE under test: the
+    harness answers a director's `inspect_figure` call from a file rather than a live world, and a
+    harness that invented its own phrasing would pass while the real thing failed.
+    """
+    bones = sorted(bones)
+    height = f"{height_m:.2f} m tall" if height_m else "unknown height"
+    lines = [f"{label} — {height}, {tris or '?'} triangles."]
+    if bones:
+        limbs = [b for b in bones if b not in TRUNK_BONES]
+        lines.append(f"Posable bones ({len(bones)}): {', '.join(bones)}")
+        if limbs:
+            lines.append("Arms and legs take aim (up, down, forward, back, out, in) — where the limb "
+                         "should point, which is what you want for \"raise her arm\".")
+    elif has_map:
+        # A map but no measured frame: the figure was placed before poses had one. Say which it is —
+        # "cannot be posed" would send the caller looking for a missing skeleton.
+        lines.append("Bones are named but this figure has no anatomical frame — place it again to "
+                     "measure one, then it can be posed.")
+    else:
+        lines.append("No humanoid bone map, so it cannot be posed.")
+    if bones:
+        lines.append("Every bone also takes bend (forward +/back -), spread (out from the body +) and "
+                     "turn (inward +), in degrees, as a rotation from where it rests. out/in and spread "
+                     "are already mirrored: the same sign on both sides gives a symmetric pose.")
+    if posed:
+        lines.append(f"Currently posed: {', '.join(sorted(posed))}")
+    return "\n".join(lines)
+
+
+def apply_pose(doc: dict, mapping: dict[str, str], pose: dict,
+               notes: Optional[list] = None) -> dict[str, int]:
+    """Write `pose` into `doc`'s node rotations IN PLACE. Returns `{bone: node index}` for what moved.
+
+    A pose is a delta on a node's local rotation, which is exactly what the client applies — so a doc
+    mutated here is the posed figure, and `node_world_positions` on it gives the joint positions the
+    headset would show. Bones the file does not have are skipped; the caller reports them.
+    """
+    by_name = {n.get("name"): i for i, n in enumerate(doc.get("nodes") or []) if n.get("name")}
+    axes = anatomical_axes(doc, mapping)                  # PARENT space: where a node's rotation lives
+    moved: dict[str, int] = {}
+    for bone, delta in resolve_pose(axes, pose, notes).items():
+        i = by_name.get(mapping.get(bone, ""))
+        if i is None:
+            continue
+        node = doc["nodes"][i]
+        node["rotation"] = _quat_mul(delta, node.get("rotation", [0.0, 0.0, 0.0, 1.0]))
+        moved[bone] = i
+    return moved
+
+
+# ---------------------------------------------------------------- checking a pose REQUEST
+#
+# Between the director's words and the arithmetic sits a layer that says no. It lives here rather than
+# in the endpoint because a refusal is part of the tool SURFACE — the director reads it and tries again
+# — so the eval harness has to produce the same one the server would, from a file and with no world.
+
+
+def aim_problem(bone: str, aim, frame: dict, rot: dict) -> Optional[str]:
+    """What is wrong with an `aim` request, or None. Every branch refuses LOUDLY rather than no-op.
+
+    That is not politeness. A pose that silently does nothing is indistinguishable from a pose the user
+    simply cannot see from where they are standing, and this feature has now shipped that failure twice
+    (grab's unreachable modes; three fixes the headset never ran)."""
+    if bone in TRUNK_BONES:
+        return (f"{bone}: aim points a bone along its own LENGTH, so on the trunk it would mean aiming "
+                f"the top of the skull — use bend, spread or turn there")
+    for other in ("bend", "spread"):
+        if other in rot:
+            return f"{bone}: aim and {other} both set the swing — use one or the other"
+    if isinstance(aim, str):
+        if aim not in AIM_DIRECTIONS:
+            return (f"{bone}: unknown direction {aim!r} — use {', '.join(AIM_DIRECTIONS)}, "
+                    "or a vector [out, up, forward]")
+    else:
+        if not isinstance(aim, (list, tuple)) or len(aim) != 3:
+            return (f"{bone}: aim takes a direction ({', '.join(AIM_DIRECTIONS)}) or a vector "
+                    "[out, up, forward]")
+        try:
+            vals = [float(c) for c in aim]
+        except (TypeError, ValueError):
+            return f"{bone}: aim vector must be three numbers"
+        if not all(math.isfinite(v) for v in vals) or not any(vals):
+            return f"{bone}: aim vector must be finite and not all zero"
+    if not all(k in frame for k in FRAME_VECTORS):
+        # The bone map is fine; the FRAME was measured by an older build. Placing again re-measures it.
+        return f"{bone}: this figure's frame predates aiming — place it again to measure one"
+    return None
+
+
+def clean_pose(pose: dict, axes: dict) -> tuple[dict, Optional[str]]:
+    """`(clean, None)` for a usable pose request, or `({}, why not)`. Refuses on the FIRST problem.
+
+    `clean` is the same request with angles coerced to floats and nothing else changed — an empty `{}`
+    for a bone is legal and means "return that bone to rest".
+    """
+    # A bone with a name but no frame is not posable: two of Saka's 54 have no measurable direction.
+    # Saying so is the point — a silent no-op on something nobody can see is the failure mode this
+    # feature keeps rediscovering (docs/backlogs/figures.md, grab's mode fiasco).
+    unknown = [b for b in pose if b not in axes]
+    if unknown:
+        return {}, (f"unknown bone(s) {', '.join(sorted(unknown))}; "
+                    f"this figure has: {', '.join(sorted(axes))}")
+    clean: dict = {}
+    for bone, rot in pose.items():
+        if not isinstance(rot, dict):
+            return {}, (f"{bone}: expected {{{', '.join(sorted(POSE_AXES))}}} in degrees "
+                        "or {\"aim\": \"up\"}")
+        bad = [k for k in rot if k not in POSE_AXES and k != "aim"]
+        if bad:
+            return {}, (f"{bone}: unknown rotation(s) {', '.join(sorted(bad))} — "
+                        f"use {', '.join(sorted(POSE_AXES))} or aim")
+        vals: dict = {}
+        if rot.get("aim") is not None:
+            problem = aim_problem(bone, rot["aim"], axes.get(bone) or {}, rot)
+            if problem:
+                return {}, problem
+            vals["aim"] = rot["aim"] if isinstance(rot["aim"], str) else [float(c) for c in rot["aim"]]
+        for k, v in rot.items():
+            if k == "aim":
+                continue
+            try:
+                angle = float(v)
+            except (TypeError, ValueError):
+                return {}, f"{bone}.{k}: expected degrees, got {v!r}"
+            if not math.isfinite(angle):
+                # Same hazard as /world_frame: a non-finite angle blanks that branch of the scene graph
+                # and stays blanked, and a persisted one comes back on every reload.
+                return {}, f"{bone}.{k}: angles must be finite"
+            vals[k] = angle
+        clean[bone] = vals                      # an empty {} is legal: it returns that bone to rest
+    return clean, None

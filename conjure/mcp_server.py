@@ -32,7 +32,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
 from .config import DEFAULT_USER, scope_for
-from .figures import TRUNK_BONES
+from .figures import figure_description
 
 BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
 # The catalog scope <user>/agents/<agent> — a CAPABILITY injected by the director at MCP-server launch
@@ -538,35 +538,22 @@ async def inspect_figure(id: str) -> str:
     meta = ent.get("meta") or {}
     if not meta.get("rigged"):
         return f"{id!r} is not a posable figure — it has no skeleton."
-    bones = sorted(meta.get("humanoid_axes") or {})
     bbox = meta.get("bbox")
-    height = f"{bbox[1][1] - bbox[0][1]:.2f} m tall" if bbox else "unknown height"
     posed = ((ent.get("components") or {}).get("figure") or {}).get("pose")
-    lines = [f"{meta.get('title') or id} — {height}, {meta.get('tris') or '?'} triangles."]
-    if bones:
-        limbs = [b for b in bones if b not in TRUNK_BONES]
-        lines.append(f"Posable bones ({len(bones)}): {', '.join(bones)}")
-        if limbs:
-            lines.append("Arms and legs take aim (up, down, forward, back, out, in) — where the limb "
-                         "should point, which is what you want for \"raise her arm\".")
-    elif meta.get("humanoid"):
-        # A map but no measured frame: the figure was placed before poses had one. Say which it is —
-        # "cannot be posed" would send the caller looking for a missing skeleton.
-        lines.append("Bones are named but this figure has no anatomical frame — place it again to "
-                     "measure one, then it can be posed.")
-    else:
-        lines.append("No humanoid bone map, so it cannot be posed.")
-    if bones:
-        lines.append("Every bone also takes bend (forward +/back -), spread (out from the body +) and "
-                     "turn (inward +), in degrees, as a rotation from where it rests. out/in and spread "
-                     "are already mirrored: the same sign on both sides gives a symmetric pose.")
+    already: list = []
     if posed and posed != "{}":
         import json as _json
         try:
-            lines.append(f"Currently posed: {', '.join(sorted(_json.loads(posed)))}")
+            already = sorted(_json.loads(posed))
         except ValueError:
             pass
-    return "\n".join(lines)
+    # The wording lives in `figures` so the eval harness can ask the director the same question this
+    # tool does, against a file instead of a live world (docs/backlogs/figures.md, slice 2).
+    return figure_description(
+        label=meta.get("title") or id,
+        height_m=(bbox[1][1] - bbox[0][1]) if bbox else None,
+        tris=meta.get("tris"), bones=(meta.get("humanoid_axes") or {}),
+        has_map=bool(meta.get("humanoid")), posed=already)
 
 
 @mcp.tool()

@@ -42,8 +42,7 @@ from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
-from .figures import (AIM_DIRECTIONS, FRAME_REV, FRAME_VECTORS, POSE_AXES, TRUNK_BONES,
-                      resolve_pose)
+from .figures import FRAME_REV, POSE_AXES, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
@@ -4478,38 +4477,6 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
 
 
 # --- figures: pose a rigged model through its humanoid bone map (docs/backlogs/figures.md) ---------
-def _aim_problem(bone: str, aim, frame: dict, rot: dict) -> Optional[str]:
-    """What is wrong with an `aim` request, or None. Every branch refuses LOUDLY rather than no-op.
-
-    That is not politeness. A pose that silently does nothing is indistinguishable from a pose the user
-    simply cannot see from where they are standing, and this feature has now shipped that failure twice
-    (grab's unreachable modes; three fixes the headset never ran)."""
-    if bone in TRUNK_BONES:
-        return (f"{bone}: aim points a bone along its own LENGTH, so on the trunk it would mean aiming "
-                f"the top of the skull — use bend, spread or turn there")
-    for other in ("bend", "spread"):
-        if other in rot:
-            return f"{bone}: aim and {other} both set the swing — use one or the other"
-    if isinstance(aim, str):
-        if aim not in AIM_DIRECTIONS:
-            return (f"{bone}: unknown direction {aim!r} — use {', '.join(AIM_DIRECTIONS)}, "
-                    "or a vector [out, up, forward]")
-    else:
-        if not isinstance(aim, (list, tuple)) or len(aim) != 3:
-            return (f"{bone}: aim takes a direction ({', '.join(AIM_DIRECTIONS)}) or a vector "
-                    "[out, up, forward]")
-        try:
-            vals = [float(c) for c in aim]
-        except (TypeError, ValueError):
-            return f"{bone}: aim vector must be three numbers"
-        if not all(math.isfinite(v) for v in vals) or not any(vals):
-            return f"{bone}: aim vector must be finite and not all zero"
-    if not all(k in frame for k in FRAME_VECTORS):
-        # The bone map is fine; the FRAME was measured by an older build. Placing again re-measures it.
-        return f"{bone}: this figure's frame predates aiming — place it again to measure one"
-    return None
-
-
 class FigureRequest(BaseModel):
     id: str                                       # entity id of a placed rigged model
     pose: Optional[dict] = None                   # {semanticBone: {bend|spread|turn: DEGREES}}
@@ -4569,41 +4536,9 @@ async def figure(req: FigureRequest) -> dict:
     if not isinstance(pose, dict) or not pose:
         return {"ok": False, "error": "pass a pose like {\"leftUpperArm\": {\"bend\": 45}}, or clear=true"}
 
-    # A bone with a name but no frame is not posable: two of Saka's 54 have no measurable direction.
-    # Saying so is the point — a silent no-op on something nobody can see is the failure mode this
-    # feature keeps rediscovering (docs/backlogs/figures.md, grab's mode fiasco).
-    unknown = [b for b in pose if b not in axes]
-    if unknown:
-        return {"ok": False, "error": f"unknown bone(s) {', '.join(sorted(unknown))}; "
-                f"this figure has: {', '.join(sorted(axes))}"}
-    clean: dict = {}
-    for bone, rot in pose.items():
-        if not isinstance(rot, dict):
-            return {"ok": False, "error": f"{bone}: expected {{{', '.join(sorted(POSE_AXES))}}} in degrees "
-                    "or {\"aim\": \"up\"}"}
-        bad = [k for k in rot if k not in POSE_AXES and k != "aim"]
-        if bad:
-            return {"ok": False, "error": f"{bone}: unknown rotation(s) {', '.join(sorted(bad))} — "
-                    f"use {', '.join(sorted(POSE_AXES))} or aim"}
-        vals: dict = {}
-        if rot.get("aim") is not None:
-            problem = _aim_problem(bone, rot["aim"], axes.get(bone) or {}, rot)
-            if problem:
-                return {"ok": False, "error": problem}
-            vals["aim"] = rot["aim"] if isinstance(rot["aim"], str) else [float(c) for c in rot["aim"]]
-        for k, v in rot.items():
-            if k == "aim":
-                continue
-            try:
-                angle = float(v)
-            except (TypeError, ValueError):
-                return {"ok": False, "error": f"{bone}.{k}: expected degrees, got {v!r}"}
-            if not math.isfinite(angle):
-                # Same hazard as /world_frame: a non-finite angle blanks that branch of the scene graph
-                # and stays blanked, and a persisted one comes back on every reload.
-                return {"ok": False, "error": f"{bone}.{k}: angles must be finite"}
-            vals[k] = angle
-        clean[bone] = vals                      # an empty {} is legal: it returns that bone to rest
+    clean, problem = clean_pose(pose, axes)
+    if problem:
+        return {"ok": False, "error": problem}
 
     # Merge onto any existing pose so a caller can move one arm without resetting the rest. Per BONE,
     # not per axis: "bend her elbow" after "turn her elbow" replaces the elbow, which is what a reader
