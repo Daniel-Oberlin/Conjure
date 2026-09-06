@@ -32,6 +32,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
 from .config import DEFAULT_USER, scope_for
+from . import poses
 from .figures import figure_description
 
 BASE = os.environ.get("CONJURE_URL", "http://localhost:8080")
@@ -557,12 +558,33 @@ async def inspect_figure(id: str) -> str:
 
 
 @mcp.tool()
-async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
-    """Pose a human figure by moving named body parts. Use for "raise her left arm", "turn his head",
-    "have her bend a knee".
+async def list_poses() -> str:
+    """The named poses a figure can be put into, and what each one is.
 
-    pose maps a bone name to what you want that body part to do. Two ways to say it, and for arms and
-    legs the FIRST is almost always the right one:
+    Read this before inventing a pose bone by bone — a named pose is one call, works the same on every
+    figure, and settles the figure onto whatever it ends up resting on.
+    """
+    return ("Poses for pose_figure(id, named=…):\n" + poses.catalogue()
+            + "\n\nAny of them can be adjusted in the same call by passing `pose` as well.")
+
+
+@mcp.tool()
+async def pose_figure(id: str, pose: dict | None = None, named: str = "", clear: bool = False) -> str:
+    """Pose a human figure — either a whole named pose, or by moving body parts one at a time. Use for
+    "have her kneel", "raise her left arm", "turn his head", "have her bend a knee".
+
+    named is a WHOLE POSE from the library, and it is the first thing to reach for when the request has
+    a name: kneel, sit, crouch, t-pose, cheer, arms-crossed, hands-on-hips, wave, point, bow, stand.
+    Call `list_poses` for what each one is. One word does the work of seven bones, it is the same pose
+    on every figure, and the figure settles onto whatever it now rests on:
+
+        named="kneel"                                          down on both knees
+        named="sit"                                            seated — put a chair under her yourself
+        named="stand"                                          back to a plain neutral stance
+
+    pose maps a bone name to what you want that body part to do, and can be combined with `named` to
+    adjust it ("kneel, but with her arms out"). Two ways to say it, and for arms and legs the FIRST is
+    almost always the right one:
 
     1. aim — WHERE THE LIMB SHOULD POINT. Absolute, so it does not depend on how this particular figure
        happens to stand:
@@ -620,15 +642,29 @@ async def pose_figure(id: str, pose: dict, clear: bool = False) -> str:
     if clear:
         body["clear"] = True
     else:
-        if not isinstance(pose, dict) or not pose:
-            return "Give me a pose like {\"leftUpperArm\": {\"aim\": \"up\"}}, or clear=true to reset."
-        body["pose"] = pose
+        if not named and (not isinstance(pose, dict) or not pose):
+            return ("Give me a pose like {\"leftUpperArm\": {\"aim\": \"up\"}}, a named one like "
+                    "named=\"kneel\", or clear=true to reset.")
+        if named:
+            body["named"] = named
+        if pose:
+            body["pose"] = pose
     out = await _post("/figure", body)
     if not out.get("ok"):
         return f"Couldn't pose that: {_reason(out)}."
     if out.get("cleared"):
         return "Back to a neutral stance."
-    moved = f"Moved {', '.join(out.get('posed') or [])}."
+    moved = (f"{out['named']}." if out.get("named") and not pose
+             else f"Moved {', '.join(out.get('posed') or [])}.")
+    if out.get("skipped"):
+        # A figure this pose could only partly reach. Better said than left to look like the pose
+        # simply did not work.
+        moved += f" This figure has no {', '.join(out['skipped'])}, so that part was skipped."
+    if out.get("needs"):
+        # A pose can be the right SHAPE and still need something from the world. Saying so is the point:
+        # a figure sitting on nothing looks like a bug unless the caller was told it is waiting on a
+        # chair (docs/backlogs/figures.md — solving against the world is tier 3, and is not built).
+        moved += f" She needs {out['needs']}."
     if out.get("limited"):
         # What a joint refused, said out loud. A body has limits; a request past them lands at the limit
         # rather than doing nothing, and knowing which one was hit is how the next request gets better.

@@ -201,6 +201,58 @@ wrong.
 - Composition order is **turn, then bend, then spread** — twist innermost, the swing-twist decomposition
   — mirrored exactly in `figures.resolve_pose` and `figure.js` so a Blender render and a headset agree.
 
+### Named poses — tier 2
+
+`POST /figure {"named": "kneel"}`, and `conjure/poses.py` is the library. **13 poses**: `kneel`,
+`kneel-one`, `crouch`, `sit`, `t-pose`, `cheer`, `reach-out`, `hands-on-hips`, `arms-crossed`, `wave`,
+`point`, `bow`, `stand`.
+
+A pose is a dict in the vocabulary above, so **one authored pose works on every figure** — that is what
+the rig-independent axes buy rather than merely protect, and `scripts/pose_library.py` measures it:
+every pose against every rig of the eval cast, 12 of 13 clean on all three (the exception is `crouch`'s
+torso lean on Trish, whose spine does not carry her head).
+
+**Every pose ships with the assertions that define it.** `Pose.signature` holds `pose_corpus`
+predicates, so "is this a kneel" is arithmetic, not an opinion — which matters because the design called
+for a vision model here and that model passes a figure with its head on backwards (§ *The utterance
+layer*). The pose library and the eval corpus are the same kind of object and share one evaluator,
+`pose_corpus.check_predicates`.
+
+| | Behaviour |
+|---|---|
+| Expansion | server-side, so there is one definition of "kneel", in Python, beside its signature |
+| Durable state | the expansion **and** the name (`components.figure.named`), so the state reads "she is kneeling" |
+| Overrides | `{"named": "kneel", "pose": {...}}` in one call — *"kneel, but with her arms out"* |
+| Hand-editing after | drops the name: she is no longer kneeling, she is in a pose of her own |
+| A bone the rig lacks | **skipped and reported**, not refused — the opposite of a hand-written pose, where an unknown bone is a typo and must be loud |
+| No bones in common | refused. Filtered-to-nothing is not `stand`, and clearing her would be a wrong answer wearing a right one |
+| `needs` | said out loud. `sit` makes the *shape* of sitting; a seat is tier 3 and is not built |
+
+**Tier 3 — solving against the world** ("hand flat on that table") is not built and wants a solver.
+
+### Re-grounding
+
+Rotations cannot ground a figure: the hips do not move, so posing alone leaves the body wherever the
+bind pose put it, and `grounded` placement will not save it — that snaps the entity by its **bind-pose**
+bounds, the same stale box `grab` used to select with.
+
+**The direction is the surprise.** A kneeling figure does not sink through the floor; she **floats
+54 cm** (measured on Grace and Saka). Every joint hangs off hips that rotation cannot move, so a folded
+leg can only raise the foot, and the knee that becomes the lowest joint sits well above where the toes
+were. A lift-only correction — the obvious reading of "stop her sinking" — would do nothing at all for
+the one pose it was written for.
+
+So the rule is symmetric, lives in `figure.js`, and is one line of intent: **put the lowest mapped joint
+back at the height the lowest mapped joint had at rest.** Raise one leg and the standing foot is still
+the lowest, so nothing moves. Kneel and she settles onto her knees. It is measured in the model's own
+frame, so placement and scale cancel; it is undone before each re-measure, so poses do not accumulate;
+and it uses **mapped** bones only, because a hair rig's bones sprawl half a metre past the body and are
+not what anything rests on.
+
+Approximate by construction — joint positions, not skinned vertices, so a knee sinks by about its own
+radius. Exact would mean skinning the mesh, and the error is centimetres against a decision measured in
+tens of them.
+
 ### Joint limits
 
 The vocabulary can express poses a body cannot make. Limits are per **semantic** bone — one table is
@@ -421,7 +473,7 @@ animation channel is the one thing it applies over everything else.
 | `tests/test_figures.py` (55) | inference, `validate`'s every rule, pruning, `follow_bones`, the frame, forward kinematics through a posed bone, aiming, limits, the convention table |
 | `tests/test_importer.py` (27) | `glb_bounds`' skinned/unskinned/armature-scale cases, the VRM maps, what a rigged model records |
 | `tests/test_server.py` (~35) | life-size placement, the catalog revision and its tripwire, `refresh-models`, and `/figure` end to end through the real import → place → pose path |
-| `tests/js/figure.test.js` (40) | rest composition on a deliberately non-identity rest rotation, clearing, riding, client-side clamping |
+| `tests/js/figure.test.js` (46) | rest composition on a deliberately non-identity rest rotation, clearing, riding, client-side clamping, and re-grounding (including that it does not accumulate and does not scale with placement) |
 
 `tests/js/fixtures/figure-pose-golden.json` is **shared** by `tests/test_figures.py` and
 `tests/js/figure.test.js`. Pose resolution exists twice — in Python, which renders the verification
@@ -517,12 +569,13 @@ tool-description edit can actually break, needs no Blender and no judge, and tak
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /figure` | pose a placed figure, or `clear=true` to return it to rest. Owner-gated (`_OWNER_ONLY_PATHS`) |
+| `POST /figure` | pose a placed figure by bone or by `named` pose, or `clear=true` to return it to rest. Owner-gated (`_OWNER_ONLY_PATHS`) |
 | `POST /library/import` | ingest a `.glb`/`.vrm` — the figure attributes come out of this path |
 | `POST /library/refresh-models` | re-derive every model row's attributes |
 
 **MCP tools:** `inspect_figure` (height, triangle count, the bones this figure actually has, current
-pose) and `pose_figure`. Neither is in `_READONLY_TOOLS`, so a `access: "read"` agent gets neither.
+pose), `list_poses` (the named library, read from the data rather than written into a prompt) and
+`pose_figure`. Neither is in `_READONLY_TOOLS`, so a `access: "read"` agent gets neither.
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
@@ -541,8 +594,8 @@ Recorded here so the spec can be trusted about its own edges; the design work is
   no retargeting, and no decision yet on how a pose and a clip compose.
 - **No outfits.** Collection structure is used at *conversion* time to choose what to export; there is no
   runtime show/hide, no slot vocabulary, and no `set_model_parts`.
-- **No named poses** ("kneel", "sit"), and therefore no re-grounding — rotations cannot ground a figure,
-  so a pose that lowers the body would leave it standing in the floor.
+- **No tier 3.** Nothing solves against the world: "sit on that chair" makes the shape of sitting and
+  says so; "hand flat on the table" is not expressible at all.
 - **No discovery layers 3–6:** no LLM labelling, no multimodal verification, no human confirmation.
 - **No named-pose authoring loop.** The judge exists and the renderer exists, but nothing yet proposes
   a pose, renders it, verifies it and freezes it into a library.

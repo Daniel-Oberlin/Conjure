@@ -338,16 +338,29 @@ def check_geometry(phrase: Phrase, before: dict, after: dict, frame: dict, heigh
     conversions do not, and a corpus that could only use the intersection would test less on every rig
     to test the same on all of them.
     """
+    return check_predicates(phrase.geometry, before, after, frame, height, dirs, phrase.id)
+
+
+def check_predicates(predicates, before: dict, after: dict, frame: dict, height: float,
+                     dirs: Optional[dict] = None, label: str = "") -> list[str]:
+    """The predicate evaluator, split out from `check_geometry` so a named pose can be scored by the
+    same vocabulary that scores an utterance.
+
+    That is not tidiness. A named pose is only worth having if something can say whether a rig actually
+    performed it, and the honest way to say so is the way the corpus already does: assert where the
+    joints landed. It makes the pose library and the eval corpus the same kind of object — poses ship
+    with the assertions that define them.
+    """
     fails: list[str] = []
     dirs = dirs or {}
     sub = lambda a, b: [x - y for x, y in zip(a, b)]     # noqa: E731
     dist = lambda a, b: math.dist(a, b)                  # noqa: E731
-    for pred in phrase.geometry:
+    for pred in predicates:
         kind, args = pred[0], pred[1:]
         if kind not in PREDICATES:
             # Checked BEFORE the missing-bone skip below, or a typo would read as "nothing to check"
             # and the cell would go green for the rest of its life.
-            raise ValueError(f"unknown geometry predicate {kind!r} in phrase {phrase.id!r}")
+            raise ValueError(f"unknown geometry predicate {kind!r} in {label or 'a signature'}")
         names = args[:PREDICATES[kind]]
         if any(n not in before or n not in after for n in names):
             continue                                     # this rig cannot answer; not a failure

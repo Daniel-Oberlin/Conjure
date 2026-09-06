@@ -42,6 +42,7 @@ from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
+from . import poses
 from .figures import FRAME_REV, POSE_AXES, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
@@ -4477,9 +4478,20 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
 
 
 # --- figures: pose a rigged model through its humanoid bone map (docs/backlogs/figures.md) ---------
+#: What `stand` has to touch to undo whatever came before it. A named pose merges per BONE, so a pose
+#: whose dict is empty would merge nothing and leave the last one standing — the one case where "do
+#: nothing" and "undo everything" look identical from the data.
+_POSE_CLEARS = ("hips", "spine", "chest", "neck", "head",
+                "leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand",
+                "rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand",
+                "leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes",
+                "rightUpperLeg", "rightLowerLeg", "rightFoot", "rightToes")
+
+
 class FigureRequest(BaseModel):
     id: str                                       # entity id of a placed rigged model
     pose: Optional[dict] = None                   # {semanticBone: {bend|spread|turn: DEGREES}}
+    named: Optional[str] = None                   # ...or a pose from the library ("kneel"), tier 2
     clear: bool = False                           # drop the pose and return to the bind pose
 
 
@@ -4532,9 +4544,42 @@ async def figure(req: FigureRequest) -> dict:
                                                      origin="figure")})
         return {"ok": True, "id": req.id, "cleared": True}
 
-    pose = req.pose or {}
+    # A NAMED pose expands into the same tier-1 request the axis vocabulary already takes, here on the
+    # server rather than in the client — one source of truth for what "kneel" means, in Python, next to
+    # the signature that says whether a rig actually performed it. The NAME is kept beside the expansion
+    # so the durable state stays semantic and readable ("she is kneeling", not seven quaternion sources),
+    # which is what makes personas and "stand up again" possible later.
+    named = None
+    if req.named:
+        named = poses.resolve(req.named)
+        if named is None:
+            return {"ok": False, "error": f"no pose called {req.named!r}. Poses: "
+                    f"{', '.join(p.name for p in poses.POSES)}"}
+    # A NAMED pose is filtered to the bones this figure has; a hand-written one is not. The asymmetry is
+    # the point: naming a bone that does not exist is a typo and must be refused loudly, but a library
+    # pose is authored once against no rig in particular, and refusing `kneel` outright because a
+    # figure has no toes would make one authored pose stop working on exactly the rigs it was meant to
+    # span. What got dropped is reported rather than swallowed.
+    skipped: list = []
+    pose = {}
+    if named:
+        pose = {b: r for b, r in named.bones.items() if b in axes}
+        skipped = sorted(set(named.bones) - set(pose))
+    # Per-bone overrides ON TOP of the named pose, in one call: "kneel, but with her arms out".
+    pose.update(req.pose or {})
+    if named and not named.bones:
+        # `stand` is a pose whose content is "nothing", and an empty dict would merge nothing and leave
+        # the previous pose standing. Filtered by what this figure HAS, or a rig without toes would be
+        # refused for a bone it was never asked about.
+        pose = {b: {} for b in _POSE_CLEARS if b in axes}
+    elif named and not pose and not req.pose:
+        # Filtered down to nothing: this figure has none of the bones the pose is made of. NOT the same
+        # as `stand`, and quietly clearing her instead would be a wrong answer wearing a right one.
+        return {"ok": False, "error": f"{named.name!r} needs {', '.join(sorted(named.bones))}, and this "
+                f"figure has none of them — it maps {', '.join(sorted(axes))}"}
     if not isinstance(pose, dict) or not pose:
-        return {"ok": False, "error": "pass a pose like {\"leftUpperArm\": {\"bend\": 45}}, or clear=true"}
+        return {"ok": False, "error": "pass a pose like {\"leftUpperArm\": {\"bend\": 45}}, "
+                "a named one, or clear=true"}
 
     clean, problem = clean_pose(pose, axes)
     if problem:
@@ -4552,7 +4597,12 @@ async def figure(req: FigureRequest) -> dict:
             merged = {}
     merged.update(clean)
     merged = {b: r for b, r in merged.items() if r}          # a cleared bone leaves no trace
-    sets = {"components.figure": {**component, "pose": json.dumps(merged)}}
+    figure_state = {**component, "pose": json.dumps(merged)}
+    if named:
+        figure_state["named"] = named.name
+    elif req.pose:
+        figure_state["named"] = ""                 # a hand-made adjustment is no longer "kneeling"
+    sets = {"components.figure": figure_state}
     # Resolve it once here purely to REPORT what the joints refused. The client resolves it again for
     # real; this costs a few hundred multiplications and is what turns a silent clamp into feedback the
     # caller can act on — the director asked for 90 degrees of hip extension twice in one session, and
@@ -4563,6 +4613,15 @@ async def figure(req: FigureRequest) -> dict:
                       "patch": store.apply_patch([{"op": "update", "id": req.id, "set": sets}],
                                                  origin="figure")})
     out = {"ok": True, "id": req.id, "posed": sorted(clean), "bones": len(merged)}
+    if named:
+        out["named"] = named.name
+        if skipped:
+            out["skipped"] = skipped
+        if named.needs:
+            # Said out loud rather than left to look like a bug: `sit` makes the SHAPE of sitting and
+            # there is nothing under her until someone puts it there. Solving against the world is
+            # tier 3 (docs/backlogs/figures.md) and is not built.
+            out["needs"] = named.needs
     if limited:
         out["limited"] = limited
     return out

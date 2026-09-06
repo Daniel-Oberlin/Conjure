@@ -233,3 +233,114 @@ test("a bone that hangs outside its limb rides it instead of staying planted", (
   const shinPos = new THREE.Vector3().setFromMatrixPosition(shin.matrixWorld);
   assert.ok(Math.abs(after.distanceTo(shinPos) - before.distanceTo(shinPos)) < 1e-6);
 });
+
+// ---------------------------------------------------------------- re-grounding
+//
+// Rotations cannot ground a figure: the hips do not move, so posing alone leaves the body at whatever
+// height the bind pose put it. `grounded` placement does not save it — that snaps the entity by its
+// BIND-pose bounds, the same stale box `grab` used to select with.
+//
+// The direction is the surprise, and it is measured (2026-09-05, `apply_pose` on Grace and Saka with the
+// authored `kneel`): a kneeling figure does not sink, she **floats 54 cm**. Every joint hangs off fixed
+// hips, so rotating a straight leg can only raise the foot, and the knee that becomes the lowest joint
+// sits well above where the toes were. A lift-only correction — the obvious reading of "stop her sinking
+// through the floor" — would therefore do nothing whatsoever for the one pose it was designed for.
+//
+// So the rule is symmetric: put the lowest mapped joint back at the height the lowest mapped joint had
+// at rest. Two legs in the fixture, because with one leg every pose is also the lowest joint and the
+// interesting case — the other foot still planted — cannot happen.
+
+function biped(pose) {
+  const root = new THREE.Object3D(), map = {}, axes = {}, bones = {};
+  const FRAME = { bend: [1, 0, 0], spread: [0, 0, 1], turn: [0, 1, 0] };
+  [["left", "L"], ["right", "R"]].forEach(([side, s]) => {
+    const thigh = new THREE.Bone(), shin = new THREE.Bone(), foot = new THREE.Bone();
+    thigh.name = `Thigh.${s}`; shin.name = `Shin.${s}`; foot.name = `Foot.${s}`;
+    thigh.position.set(s === "L" ? 0.1 : -0.1, 1, 0);
+    shin.position.set(0, -0.5, 0);
+    foot.position.set(0, -0.5, 0);                    // foot joint lands at y = 0
+    shin.add(foot); thigh.add(shin); root.add(thigh);
+    map[`${side}UpperLeg`] = thigh.name; map[`${side}LowerLeg`] = shin.name;
+    map[`${side}Foot`] = foot.name;
+    [thigh.name, shin.name, foot.name].forEach((n) => { axes[map_key(map, n)] = FRAME; });
+    bones[`${side}Thigh`] = thigh; bones[`${side}Shin`] = shin; bones[`${side}Foot`] = foot;
+  });
+  const comp = Object.create(DEF);
+  comp.el = { id: "f", getObject3D: () => root, addEventListener() {}, removeEventListener() {} };
+  comp.data = { humanoid: JSON.stringify(map), axes: JSON.stringify(axes), pose: JSON.stringify(pose || {}) };
+  comp.init();
+  root.updateMatrixWorld(true);
+  return { comp, root, bones, all: Object.values(bones) };
+}
+
+function map_key(map, nodeName) {
+  return Object.keys(map).find((k) => map[k] === nodeName);
+}
+
+function lowest(bones) {
+  return Math.min(...bones.map((b) => new THREE.Vector3().setFromMatrixPosition(b.matrixWorld).y));
+}
+
+test("a kneel FLOATS the figure, and settling puts her back down", () => {
+  // Both thighs swung so the knees become the lowest joints, well above where the feet were — the
+  // measured shape of a real kneel, at the scale this fixture can express.
+  const rest = biped({});
+  const restLow = lowest(rest.all);
+  assert.ok(Math.abs(restLow) < 1e-9, `feet should start on the floor, got ${restLow}`);
+
+  const posed = biped({ leftUpperLeg: { bend: 90 }, rightUpperLeg: { bend: 90 } });
+  assert.ok(posed.root.position.y < -0.4,
+            `both legs up should settle her DOWN, got ${posed.root.position.y}`);
+  assert.ok(Math.abs(lowest(posed.all) - restLow) < 1e-6,
+            `lowest joint should return to ${restLow}, got ${lowest(posed.all)}`);
+});
+
+test("raising one leg leaves the figure exactly where it was", () => {
+  // The other foot is still planted and still the lowest joint, so the rule has nothing to say. A
+  // correction that fired here would shift the whole body every time an arm went up.
+  const { root } = biped({ leftUpperLeg: { bend: 90 } });
+  assert.ok(Math.abs(root.position.y) < 1e-9, `expected no settle, got ${root.position.y}`);
+});
+
+test("settling is measured from rest each time, not stacked on the last correction", () => {
+  // The failure this guards against walks the figure one settle at a time, which looks like a physics
+  // bug and is really an accumulator.
+  const f = biped({ leftUpperLeg: { bend: 90 }, rightUpperLeg: { bend: 90 } });
+  const once = f.root.position.y;
+  f.comp.apply();
+  f.comp.apply();
+  assert.ok(Math.abs(f.root.position.y - once) < 1e-9,
+            `re-applying should stay at ${once}, got ${f.root.position.y}`);
+});
+
+test("clearing the pose puts the figure back on the ground it started on", () => {
+  const f = biped({ leftUpperLeg: { bend: 90 }, rightUpperLeg: { bend: 90 } });
+  assert.ok(Math.abs(f.root.position.y) > 0.4);
+  f.comp.data.pose = "";
+  f.comp.apply();
+  assert.ok(Math.abs(f.root.position.y) < 1e-9, `expected 0 after clearing, got ${f.root.position.y}`);
+});
+
+test("removing the component leaves no settle behind", () => {
+  const f = biped({ leftUpperLeg: { bend: 90 }, rightUpperLeg: { bend: 90 } });
+  f.comp.remove();
+  assert.ok(Math.abs(f.root.position.y) < 1e-9, `expected 0 after remove, got ${f.root.position.y}`);
+});
+
+test("where the entity stands and at what scale does not change the settle", () => {
+  // The measurement goes through the model's OWN frame, so a figure placed across the room at half size
+  // settles by the same amount in her own units. Measuring in world space would scale the correction
+  // with the placement and leave every non-unit-scale figure wrong.
+  const plain = biped({ leftUpperLeg: { bend: 90 }, rightUpperLeg: { bend: 90 } });
+  const moved = biped({});
+  const parent = new THREE.Object3D();
+  parent.position.set(3, 0.7, -2);
+  parent.scale.setScalar(0.5);
+  parent.add(moved.root);
+  parent.updateMatrixWorld(true);
+  moved.comp._bones = null;                          // re-collect the bind pose in its new frame
+  moved.comp.data.pose = JSON.stringify({ leftUpperLeg: { bend: 90 }, rightUpperLeg: { bend: 90 } });
+  moved.comp.apply();
+  assert.ok(Math.abs(moved.root.position.y - plain.root.position.y) < 1e-6,
+            `expected ${plain.root.position.y} in model units, got ${moved.root.position.y}`);
+});

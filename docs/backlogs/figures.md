@@ -1805,7 +1805,13 @@ not code. The component stores `{"pose": "kneel"}` plus any per-bone overrides, 
 semantic and small, and the director learns what exists the way it learns what dynamics modules exist
 (`dynamics://available`) rather than by being told in a prompt.
 
-**The gap kneeling exposes: rotations cannot ground a figure.** Rotate a standing figure into a kneel and
+**The gap kneeling exposes: rotations cannot ground a figure.** And the direction below is WRONG — the
+hips do not move, so a folded leg can only raise the foot: a kneeling figure *floats* 54 cm rather than
+sinking (measured 2026-09-05, § *Authoring the library*). The fix is the same rule either way, but a
+lift-only reading of this paragraph would have fixed nothing. Left as written, corrected here, because
+the reasoning is what was wrong and hiding that would lose the lesson.
+
+Rotate a standing figure into a kneel and
 her hips stay where they were, so her knees go through the floor. `grounded` placement will not save her —
 it snaps the entity by its **bind-pose** bounds, which is the same stale-box problem `grab` had.
 
@@ -1984,6 +1990,54 @@ twenty seconds.
     60/60 cells clean in 1109s — 0 call, 0 geometry, 0 judge
     7 cell(s) the judge disagreed with, not counted — see --judge-gates
 
+### Authoring the library (2026-09-05)
+
+Thirteen poses, and the loop that produced them is *propose → check the signature → render and glance →
+freeze*. Two of those steps caught something the other could not, which is the argument for having both.
+
+**The `kneel` this document authored is not a kneel.** Hip −75, knee 105 gives a figure with its thighs
+swung back and its shins in the air — and the hip is clamped at −35 anyway, so it was never going to do
+what the numbers said. A kneel is geometrically trivial once looked at: **the thigh stays vertical and
+the shin folds to horizontal**, which is 90° at the knee and *nothing at all* at the hip. Same for
+`kneel-one`'s back leg. Rendered, glanced at, corrected.
+
+**And the first signature written for it passed the wrong pose.** "Knees below hips, feet moved back" is
+true of a figure with its shins in the air. What makes it a kneel is that the shin **points backward**,
+which is one predicate and was missing. Two more went the same way: `arms-crossed` first came out as a
+surrender pose — hands up beside the head — and satisfied "hand near the opposite shoulder" perfectly
+well; the honest assertion is that the hands **cross the midline**. A signature is as easy to get wrong
+as the pose, and the render is what catches it.
+
+**What crosses the arms is `turn` at the shoulder, not anything at the elbow.** Aiming the forearms `in`
+was refused by the joint limits, correctly — an elbow does not abduct — and the clamp left them pointing
+forward. Internal rotation of the upper arm is what sweeps a bent forearm across the chest, and negative
+`spread` tucks the elbows so the hands travel *past* the midline instead of meeting at it: 3 cm of hand
+travel is the whole difference between folded arms and clasped hands. Worth recording because the
+vocabulary DID express it — the first two attempts were wrong about anatomy, not short of words.
+
+**Re-grounding: the failure mode in this document is inverted.** "Her knees go through the floor" is
+wrong. Every joint hangs off hips that rotation cannot move, so a folded leg can only *raise* the foot —
+a kneeling Grace **floats 54 cm**, a kneeling Saka 53. A lift-only correction, which is what "stop her
+sinking" would lead anyone to write, does nothing whatsoever for the pose it was designed for. The rule
+that works is symmetric: put the lowest mapped joint back at the height the lowest mapped joint had at
+rest. Settle values are printed by `scripts/pose_library.py` — −43 cm for a kneel, −37 for a sit, 0 for
+every arm pose, which is itself a check that the rule stays quiet when it should.
+
+**One pose does not port, and it is the rig's fault, not the pose's.** `crouch` asserts the torso leans
+forward; on Trish it does not, because her spine bones are siblings rather than a chain and the mapped
+`spine` carries only her waist. The signature is right and the cell stays red — that is the portability
+check doing its job rather than a nuisance to tune away.
+
+**Two decisions the endpoint had to make, and both were forced by a partial rig:**
+
+- A named pose is **filtered** to the bones a figure has; a hand-written one is not. Naming a bone that
+  does not exist is a typo and must be loud, but a library pose is authored against no rig in
+  particular, and refusing `kneel` because a figure has no toes would break it on exactly the rigs it
+  was written to span. What got dropped is reported.
+- Filtered down to *nothing* is refused rather than treated as `stand`. Quietly returning her to rest
+  would be a wrong answer wearing a right one — the caller asked her to kneel and would be told it
+  worked.
+
 ## Animation — the long-term plan
 
 Sequenced **after** aiming (built), the eval harness, named poses and outfits. Written down now because
@@ -2148,10 +2202,11 @@ than protects:
    with its head on backwards, so it does not gate anything yet — the whole argument is under
    [*What the harness measured*](#what-the-harness-measured-2026-09-05), and every finding but one was
    about the design in this document rather than the code it was pointed at.
-3. **Named poses + re-grounding** — "kneel", "sit". Data, not code, because tier 1 is rig-independent;
-   and the re-grounding rule is what stops a kneeling figure standing in the floor. **Everything its
-   authoring loop needs now exists**: `judge.py` is the verify step, `pose_test.py --clay` is the render
-   step, and `pose_corpus` is the shape a frozen pose library would take.
+3. ~~**Named poses + re-grounding**~~ **Built 2026-09-05** — 13 poses in `conjure/poses.py`, each with
+   the geometric signature that defines it, 12 of 13 clean on all three rigs. Re-grounding lives in
+   `figure.js` and settles the lowest mapped joint back to its rest height. What the authoring loop
+   found is under [*Authoring the library*](#authoring-the-library-2026-09-05) — including that the
+   `kneel` authored in this document is not a kneel.
 4. **Outfits** (Phase 2) — deferred by choice; also wants a re-conversion with clothing.
 5. **Animation** — § *Animation — the long-term plan*. Stage 1 plays the 52 clips already in the
    library; everything past that waits on the FBX front door and a decision about composition.

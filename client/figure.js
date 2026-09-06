@@ -231,6 +231,9 @@
       var obj = this.el.getObject3D("mesh");
       if (!obj) return null;
       obj.updateMatrixWorld(true);          // the BIND pose, and the only moment it is guaranteed one
+      // The model's own frame at that same instant. Every height comparison below is made THROUGH this,
+      // so where the entity happens to stand — and at what scale — cancels out of the arithmetic.
+      this._restRootInv = new THREE.Matrix4().copy(obj.matrixWorld).invert();
       var bones = {}, rest = this._rest = new Map(), restWorld = this._restWorld = new Map();
       var put = function (n) {
         if (!n || !n.name) return;
@@ -286,6 +289,7 @@
         applied[bone] = true;
       });
       this._ride(bones, parse(this.data.follows) || {});
+      this._settle(bones, map);
       this._applied = applied;
       if (missing.length) {
         log("NO BONE OR AXES for " + missing.join(", ") + " on " + (this.el.id || "?")
@@ -294,6 +298,49 @@
       }
       this._once = this._once || (log("posed " + Object.keys(applied).length + " bone(s) on "
                                      + (this.el.id || "?")) || true);
+    },
+
+    // Rotations cannot ground a figure. Rotate a standing figure into a kneel and her hips stay exactly
+    // where they were, so her knees go through the floor — and `grounded` placement will not save her,
+    // because it snaps the entity by its BIND-pose bounds, which is the same stale-box problem `grab`
+    // had. So: settle the figure back onto whatever it now rests on.
+    //
+    // ONE RULE, and it covers the poses nobody authored as well as the ones we did — find the lowest
+    // mapped joint in the posed skeleton and put it back at the height the lowest mapped joint had at
+    // rest.
+    //
+    //   raise one leg  → the standing foot is still the lowest → nothing moves
+    //   kneel          → the knees become the lowest → she settles onto them
+    //   bow            → the feet are still the lowest → nothing moves
+    //
+    // Approximate by construction: joint positions, not skinned vertices, so a knee sinks by about its
+    // own radius. That is the right trade — exact would mean skinning the mesh here, and the error is
+    // centimetres against a decision measured in tens of them. MAPPED bones only: a hair rig's bones
+    // sprawl half a metre past the body (measured on Trish), and they are not what anything rests on.
+    _settle: function (bones, map) {
+      var root = this.el.getObject3D("mesh");
+      if (!root || !this._restRootInv) return;
+      // Undo the last settle BEFORE measuring, or the second pose is measured against the first one's
+      // correction and the figure walks upward one pose at a time.
+      if (this._lift) root.position.y -= this._lift;
+      this._lift = 0;
+      root.updateMatrixWorld(true);
+      var inv = new THREE.Matrix4().copy(root.matrixWorld).invert();
+      var m = new THREE.Matrix4(), self = this;
+      var restLow = Infinity, poseLow = Infinity, found = 0;
+      Object.keys(map).forEach(function (semantic) {
+        var b = lookup(bones, map[semantic]), r = b && self._restWorld.get(b);
+        if (!b || !r) return;
+        restLow = Math.min(restLow, m.multiplyMatrices(self._restRootInv, r).elements[13]);
+        poseLow = Math.min(poseLow, m.multiplyMatrices(inv, b.matrixWorld).elements[13]);
+        found++;
+      });
+      if (!found || !isFinite(restLow) || !isFinite(poseLow)) return;
+      var lift = restLow - poseLow;
+      if (Math.abs(lift) < 1e-4) return;                 // sub-millimetre: not worth a matrix rewrite
+      this._lift = lift;
+      root.position.y += lift;
+      root.updateMatrixWorld(true);
     },
 
     // Carry the bones that deform the mesh but hang outside their own limb. An IK rig parents the FOOT
@@ -330,6 +377,8 @@
 
     remove: function () {
       this.el.removeEventListener("model-loaded", this._onLoad);
+      var root = this.el.getObject3D("mesh");
+      if (root && this._lift) { root.position.y -= this._lift; this._lift = 0; }
       var map = parse(this.data.humanoid) || {}, bones = this._bones || {};
       var rest = this._rest || new Map();
       Object.keys(this._applied || {}).forEach(function (bone) {

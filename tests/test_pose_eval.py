@@ -16,9 +16,10 @@ from conjure.figures import (CORE_BONES, POSE_AXES, anatomical_axes, apply_pose,
                              bone_directions, figure_description, infer_humanoid,
                              node_world_positions)
 from conjure.judge import (FakeJudge, GeminiJudge, Verdict, build_judge, parse_choice, prompt_for)
-from conjure.pose_corpus import (CAST, CORPUS, IMPOSSIBLE_BONE, IMPOSSIBLE_TWIST, MOVES,
+from conjure.pose_corpus import (CAST, CORPUS, IMPOSSIBLE_BONE, IMPOSSIBLE_TWIST, MOVES, PREDICATES,
                                  PLAUSIBLE_BAD, PLAUSIBLE_OK, PLAUSIBLE_OPTIONS, Phrase,
-                                 bones_used, by_id, check_call, check_geometry)
+                                 bones_used, by_id, check_call, check_geometry, check_predicates)
+from conjure.poses import POSES, catalogue, resolve
 
 
 # ---------------------------------------------------------------- the corpus is well-formed
@@ -350,3 +351,71 @@ def test_the_calibration_pose_is_one_no_body_can_hold():
     (Blender runs Y along every bone), and 170 degrees of it puts a skull on backwards."""
     assert IMPOSSIBLE_BONE in CORE_BONES
     assert IMPOSSIBLE_TWIST[1] > 150 and not IMPOSSIBLE_TWIST[0] and not IMPOSSIBLE_TWIST[2]
+
+
+# ---------------------------------------------------------------- the named pose library
+#
+# Tier 2. The poses themselves are checked against real rigs by `scripts/pose_library.py`, which needs
+# model files; what is testable here is that the library is well-formed, expressible in the vocabulary
+# it claims to use, and checkable at all — the last of which is the property the design nearly lost.
+
+
+def test_every_pose_speaks_only_tier_one():
+    """A named pose is a dict in the vocabulary that already exists. The moment one needs a word the
+    axis layer does not have, it belongs in a different tier, not in a wider tier 1."""
+    for pose in POSES:
+        for bone, request in pose.bones.items():
+            assert bone in CORE_BONES, f"{pose.name}: {bone} is not a semantic bone"
+            for key in request:
+                assert key in POSE_AXES or key == "aim", f"{pose.name}: {bone}.{key} is not a rotation"
+
+
+def test_every_pose_that_changes_anything_says_how_to_check_it():
+    """A pose with no signature is a dict of numbers someone once liked the look of. `stand` and `bow`
+    are the exceptions and both are deliberate — `stand` asserts nothing because it IS nothing, and the
+    trunk carries different bones on different rigs."""
+    unchecked = {p.name for p in POSES if p.bones and not p.signature}
+    assert unchecked == {"bow"}, f"unchecked poses: {unchecked}"
+
+
+def test_signatures_use_predicates_the_checker_understands():
+    """A typo here would be a pose that verifies by never being looked at."""
+    for pose in POSES:
+        for pred in pose.signature:
+            assert pred[0] in PREDICATES, f"{pose.name}: {pred[0]!r} is not a predicate"
+            for bone in pred[1:1 + PREDICATES[pred[0]]]:
+                assert bone in CORE_BONES, f"{pose.name}: {bone} is not a semantic bone"
+
+
+def test_a_pose_resolves_however_the_director_spells_it():
+    """It will write "Hands On Hips" or "hands_on_hips", and neither is a typo worth refusing."""
+    assert resolve("hands-on-hips") is resolve("Hands On Hips") is resolve("hands_on_hips")
+    assert resolve("  KNEEL ").name == "kneel"
+    assert resolve("levitate") is None
+
+
+def test_the_catalogue_says_what_a_pose_still_needs_from_the_world():
+    """`sit` makes the SHAPE of sitting; there is nothing under her until someone puts it there. A
+    figure seated on air looks like a bug unless the caller was told it is waiting on a chair."""
+    text = catalogue()
+    assert "kneel — down on both knees" in text
+    assert "needs" in text and resolve("sit").needs
+    assert all(p.name in text for p in POSES)
+
+
+def test_the_wrong_kneel_fails_the_kneel_signature(rig):
+    """The regression that matters. The numbers this feature was designed with — hip -75, knee 105 —
+    are not a kneel: they swing the thighs back and leave the shins in the air. They passed the first
+    signature written for them, which is why the signature now asserts that the shin points BACKWARD."""
+    doc, mapping, at_rest, frame, height = rig
+    wrong = {"leftUpperLeg": {"bend": -75}, "leftLowerLeg": {"bend": 105},
+             "rightUpperLeg": {"bend": -75}, "rightLowerLeg": {"bend": 105}}
+    after, dirs = _after(doc, mapping, wrong)
+    fails = check_predicates(resolve("kneel").signature, at_rest, after, frame, height, dirs, "kneel")
+    assert any("points back" in f or "points" in f for f in fails), fails
+
+
+def test_the_real_kneel_passes_it(rig):
+    doc, mapping, at_rest, frame, height = rig
+    after, dirs = _after(doc, mapping, resolve("kneel").bones)
+    assert check_predicates(resolve("kneel").signature, at_rest, after, frame, height, dirs) == []
