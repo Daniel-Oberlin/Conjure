@@ -344,3 +344,14 @@ test("where the entity stands and at what scale does not change the settle", () 
   assert.ok(Math.abs(moved.root.position.y - plain.root.position.y) < 1e-6,
             `expected ${plain.root.position.y} in model units, got ${moved.root.position.y}`);
 });
+
+test("the pose's NAME reaches the client rather than being dropped as an unknown property", () => {
+  // The server stores `named` beside the expansion so the durable state stays semantic. A-Frame drops
+  // properties a component does not declare, so the schema has to know about it even though nothing
+  // here applies it — otherwise the readable half of the state stops at the wire.
+  assert.ok("named" in DEF.schema, "the figure component must declare `named`");
+  const f = biped({ leftUpperLeg: { bend: 90 } });
+  f.comp.data.named = "kneel";
+  f.comp.apply();
+  assert.strictEqual(f.comp.data.named, "kneel");
+});

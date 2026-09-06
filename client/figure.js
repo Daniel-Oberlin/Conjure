@@ -203,7 +203,12 @@
       humanoid: { type: "string", default: "" },   // {semanticBone: nodeName}
       follows: { type: "string", default: "" },    // {nodeName: nodeName it rides} — see _ride()
       axes: { type: "string", default: "" },       // {semanticBone: {bend|spread|turn: [x, y, z]}}
-      pose: { type: "string", default: "" }        // {semanticBone: {bend|spread|turn: DEGREES}}
+      pose: { type: "string", default: "" },       // {semanticBone: {bend|spread|turn: DEGREES}}
+      // The name of the library pose this expansion came from ("kneel"), or "" for a hand-made one.
+      // Nothing here reads it — the expansion is what gets applied — but it has to be DECLARED or
+      // A-Frame drops an undeclared property with a warning on every pose, and the semantic half of
+      // the durable state would never reach the client at all.
+      named: { type: "string", default: "" }
     },
 
     init: function () {
