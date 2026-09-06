@@ -4563,16 +4563,16 @@ async def figure(req: FigureRequest) -> dict:
     skipped: list = []
     pose = {}
     if named:
-        pose = {b: r for b, r in named.bones.items() if b in axes}
+        # A pose that `clears` starts by returning every bone to rest, so "stand" after "kneel" is a
+        # stance and not an adjustment — a named pose merges per BONE, and one that mentions only the
+        # arms would otherwise leave her kneeling with her arms neatly at her sides.
+        if named.clears:
+            pose = {b: {} for b in _POSE_CLEARS if b in axes}
+        pose.update({b: r for b, r in named.bones.items() if b in axes})
         skipped = sorted(set(named.bones) - set(pose))
     # Per-bone overrides ON TOP of the named pose, in one call: "kneel, but with her arms out".
     pose.update(req.pose or {})
-    if named and not named.bones:
-        # `stand` is a pose whose content is "nothing", and an empty dict would merge nothing and leave
-        # the previous pose standing. Filtered by what this figure HAS, or a rig without toes would be
-        # refused for a bone it was never asked about.
-        pose = {b: {} for b in _POSE_CLEARS if b in axes}
-    elif named and not pose and not req.pose:
+    if named and not pose and not req.pose:
         # Filtered down to nothing: this figure has none of the bones the pose is made of. NOT the same
         # as `stand`, and quietly clearing her instead would be a wrong answer wearing a right one.
         return {"ok": False, "error": f"{named.name!r} needs {', '.join(sorted(named.bones))}, and this "

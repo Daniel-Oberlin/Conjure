@@ -10,10 +10,15 @@ the axis work buys rather than merely protects, and it is measured rather than a
 is checked against its own `signature` on all three rigs of the eval cast by `scripts/pose_library.py`.
 
 **Every pose carries the assertions that define it.** A named pose nobody can check is a dict of numbers
-someone once liked the look of, and the design this replaces had a vision model doing the checking —
-which turned out to pass a figure with its head on backwards (docs/backlogs/figures.md). Geometry says
-whether the knees are below the hips; it is the verifier in this feature that has held up. So the pose
-library and the eval corpus are the same kind of object, and share the same predicate vocabulary.
+someone once liked the look of. `signature` holds `pose_corpus` predicates, so the pose library and the
+eval corpus are the same kind of object over one evaluator, and "is this a kneel" is arithmetic.
+
+**Geometry gates; a vision model looks.** `scripts/pose_library.py --identify` renders each pose and
+asks a model WHICH of these poses it is — recognition, never "is this pose any good", which is a
+judgement and demonstrably fails (it passes a figure with its head on backwards). Recognition catches
+what a signature structurally cannot: **a signature only asserts the bones a pose sets, so it is blind
+to the bones a pose forgets.** Both defects below were found that way and neither was visible to any
+assertion.
 
 **What is NOT here, and why:**
 
@@ -39,7 +44,23 @@ class Pose:
     bones: dict                      # exactly what `pose_figure` takes, in tier-1 terms
     signature: tuple = ()            # `pose_corpus` predicates that must hold once it is applied
     needs: str = ""                  # what the WORLD has to supply for this to make sense
+    clears: bool = False             # return every OTHER bone to rest first (see `stand`)
 
+
+#: Arms hanging at the sides — and every pose that is ABOUT THE LEGS has to say so.
+#:
+#: A pose only sets the bones it names; everything else stays at the rig's bind pose. On the two A-posed
+#: Daz conversions that is invisible, and on Saka it means a kneeling figure with her arms straight out
+#: like a scarecrow, because a VRoid rig rests in a T-pose. "One authored pose works on every figure"
+#: quietly stops being true, and no signature catches it — a signature only asserts the bones the pose
+#: sets. The visual check is what found it (2026-09-05).
+#:
+#: `aim` is the right tool precisely because it is ABSOLUTE: "point the arm down" lands the same way
+#: from a T-pose and an A-pose, which is the whole reason it exists.
+_ARMS_DOWN = {
+    "leftUpperArm": {"aim": "down"}, "rightUpperArm": {"aim": "down"},
+    "leftLowerArm": {}, "rightLowerArm": {},
+}
 
 #: Both knees down. The pose that motivated re-grounding, and the one that proved the design note wrong
 #: twice over.
@@ -55,8 +76,22 @@ class Pose:
 _KNEEL = {
     "leftUpperLeg": {"bend": 0}, "leftLowerLeg": {"bend": 90}, "leftFoot": {"bend": -35},
     "rightUpperLeg": {"bend": 0}, "rightLowerLeg": {"bend": 90}, "rightFoot": {"bend": -35},
+    "spine": {"bend": 5}, **_ARMS_DOWN,
+}
+
+#: The kneel this project designed, kept because it is the best negative control there is: it passed the
+#: first signature written for it AND looks obviously wrong, which is exactly the failure a geometric
+#: assertion cannot be trusted to catch on its own. `scripts/pose_library.py --identify` renders it and
+#: requires the judge to answer "none of these" before believing anything it says about a real pose.
+WRONG_KNEEL = {
+    "leftUpperLeg": {"bend": -75}, "leftLowerLeg": {"bend": 105}, "leftFoot": {"bend": -20},
+    "rightUpperLeg": {"bend": -75}, "rightLowerLeg": {"bend": 105}, "rightFoot": {"bend": -20},
     "spine": {"bend": 5},
 }
+
+#: Offered alongside the pose names so the judge can decline rather than pick the nearest — which is the
+#: whole reason it catches a wrong pose instead of rounding it to the intended one.
+NONE_OF_THESE = "none of these"
 
 POSES: tuple[Pose, ...] = (
     Pose("kneel", "down on both knees, sitting back on the heels",
@@ -66,21 +101,24 @@ POSES: tuple[Pose, ...] = (
          # shins in the air. A shin that points backward and level is what makes it a kneel.
          signature=(("points", "leftLowerLeg", "back"), ("points", "rightLowerLeg", "back"),
                     ("below", "leftLowerLeg", "hips"), ("below", "rightLowerLeg", "hips"),
-                    ("moved", "leftFoot", "back", 0.05), ("moved", "rightFoot", "back", 0.05))),
+                    ("moved", "leftFoot", "back", 0.05), ("moved", "rightFoot", "back", 0.05),
+                    ("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))),
     Pose("kneel-one", "down on the right knee with the left foot planted in front — a proposal",
          {"rightUpperLeg": {"bend": -10}, "rightLowerLeg": {"bend": 95}, "rightFoot": {"bend": -35},
-          "leftUpperLeg": {"bend": 75}, "leftLowerLeg": {"bend": 80}, "spine": {"bend": 5}},
+          "leftUpperLeg": {"bend": 75}, "leftLowerLeg": {"bend": 80}, "spine": {"bend": 5},
+          **_ARMS_DOWN},
          signature=(("points", "rightLowerLeg", "back"), ("below", "rightLowerLeg", "hips"),
                     ("moved", "rightFoot", "back", 0.05),
                     ("moved", "leftLowerLeg", "forward", 0.05))),
     Pose("crouch", "squatting on both feet, knees bent deep, torso forward for balance",
          {"leftUpperLeg": {"bend": 85}, "leftLowerLeg": {"bend": 105}, "leftFoot": {"bend": 25},
           "rightUpperLeg": {"bend": 85}, "rightLowerLeg": {"bend": 105}, "rightFoot": {"bend": 25},
-          "spine": {"bend": 25}},
+          "spine": {"bend": 25}, **_ARMS_DOWN},
          signature=(("moved", "leftLowerLeg", "forward", 0.05), ("moved", "head", "forward", 0.05))),
     Pose("sit", "seated with the thighs forward and the shins down, as on a chair",
          {"leftUpperLeg": {"bend": 85}, "leftLowerLeg": {"bend": 85},
-          "rightUpperLeg": {"bend": 85}, "rightLowerLeg": {"bend": 85}, "spine": {"bend": 5}},
+          "rightUpperLeg": {"bend": 85}, "rightLowerLeg": {"bend": 85}, "spine": {"bend": 5},
+          **_ARMS_DOWN},
          signature=(("points", "leftUpperLeg", "forward"), ("points", "rightUpperLeg", "forward"),
                     ("moved", "leftLowerLeg", "forward", 0.08),
                     ("moved", "rightLowerLeg", "forward", 0.08)),
@@ -119,17 +157,39 @@ POSES: tuple[Pose, ...] = (
          # let the wrong pose through.
          signature=(("moved", "leftHand", "in", 0.25), ("moved", "rightHand", "in", 0.25),
                     ("points", "leftLowerArm", "in"), ("points", "rightLowerArm", "in"))),
-    Pose("wave", "right arm up and bent, hand raised beside the head",
+    # A ONE-ARMED pose still has to say what the other arm does. Same defect as the leg poses had, found
+    # the same way: `wave` and `point` were misread on all three rigs at once, which is the signature of
+    # a bad pose rather than a noisy judge. On a T-posed rig the idle arm stayed straight out, so a wave
+    # read as a cheer and a point read as a T-pose — both fair descriptions of what was rendered.
+    Pose("wave", "right arm up and bent, hand raised beside the head, left arm down",
          {"rightUpperArm": {"aim": [0.6, 1.0, 0.2]}, "rightLowerArm": {"bend": 45},
-          "head": {"turn": -10}},
-         signature=(("above", "rightHand", "rightUpperArm"),)),
-    Pose("point", "right arm straight out in front, pointing",
-         {"rightUpperArm": {"aim": "forward"}, "rightLowerArm": {}},
-         signature=(("points", "rightUpperArm", "forward"),)),
+          "leftUpperArm": {"aim": "down"}, "leftLowerArm": {}, "head": {"turn": -10}},
+         signature=(("above", "rightHand", "rightUpperArm"),
+                    ("points", "leftUpperArm", "down"))),
+    Pose("point", "right arm straight out in front, pointing, left arm down",
+         {"rightUpperArm": {"aim": "forward"}, "rightLowerArm": {},
+          "leftUpperArm": {"aim": "down"}, "leftLowerArm": {}},
+         signature=(("points", "rightUpperArm", "forward"),
+                    ("points", "leftUpperArm", "down"))),
     Pose("bow", "bent forward from the waist, head lowered",
-         {"spine": {"bend": 40}, "chest": {"bend": 15}, "neck": {"bend": 15}},
-         signature=()),          # the trunk carries different bones per rig — see the module docstring
-    Pose("stand", "back to a plain neutral stance", {}, signature=()),
+         {"spine": {"bend": 40}, "chest": {"bend": 15}, "neck": {"bend": 15}, **_ARMS_DOWN},
+         # Nothing is asserted here, and both halves of that are deliberate. The trunk carries different
+         # bones on different rigs (see the module docstring). And the ARMS cannot be asserted either:
+         # `aim` is absolute with respect to the BIND pose, not to wherever the bone's ancestors have
+         # since been rotated — so arms aimed `down` under a spine bent 40 degrees come out 40 degrees
+         # off vertical. That is correct behaviour and correct anatomy (arms hang from a bowed torso and
+         # swing with it), and it is a real limit of `aim` worth knowing: aiming a limb while also
+         # rotating what it hangs from compounds the two.
+         signature=()),
+    # `stand` is a POSE, not a reset: arms at the sides and legs straight, which is what standing looks
+    # like on any rig. Returning to the FILE's bind pose is `clear=true`, and on a VRoid rig that is a
+    # T-pose — a perfectly good reference stance and not what anyone means by "have her stand".
+    # `clears` is what makes this a stance rather than an adjustment. A named pose merges per BONE, so
+    # "stand" after "kneel" would otherwise put her arms down and leave her kneeling. It is the one pose
+    # whose meaning includes everything it does NOT mention.
+    Pose("stand", "a plain neutral stance, arms at the sides",
+         dict(_ARMS_DOWN), clears=True,
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))),
 )
 
 BY_NAME: dict[str, Pose] = {p.name: p for p in POSES}

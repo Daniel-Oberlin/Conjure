@@ -4248,10 +4248,10 @@ def test_a_named_pose_expands_on_the_server_and_keeps_its_name(srv, client, tmp_
 
 
 def test_a_pose_the_figure_cannot_do_at_all_is_refused_rather_than_cleared(srv, client, tmp_path):
-    """Filtered down to nothing is NOT the same as `stand`. Quietly returning her to rest would be a
-    wrong answer wearing a right one — the caller asked her to kneel and would be told it worked."""
-    eid = _place_figure(srv, client, tmp_path)   # an arm and a head; no legs at all
-    r = client.post("/figure", json={"id": eid, "named": "kneel"}).json()
+    """Filtered down to nothing is not the same as doing nothing. Quietly returning her to rest would be
+    a wrong answer wearing a right one — the caller asked for a pose and would be told it worked."""
+    eid = _place_legged_figure(client)           # legs and a spine; no arms at all
+    r = client.post("/figure", json={"id": eid, "named": "cheer"}).json()
     assert r["ok"] is False and "none of them" in r["error"]
 
 
@@ -4274,15 +4274,26 @@ def test_adjusting_a_named_pose_by_hand_drops_the_name(srv, client, tmp_path):
     assert _ent(client, eid)["components"]["figure"]["named"] == ""
 
 
-def test_stand_undoes_a_pose_rather_than_merging_nothing_onto_it(srv, client, tmp_path):
-    """A named pose merges per BONE, so a pose whose dict is empty would leave the last one in place —
-    the one case where "do nothing" and "undo everything" are indistinguishable in the data."""
-    eid = _place_figure(srv, client, tmp_path)
-    client.post("/figure", json={"id": eid, "named": "cheer"})
-    assert json.loads(_ent(client, eid)["components"]["figure"]["pose"])
+def test_stand_is_a_stance_and_undoes_what_it_does_not_mention(srv, client, tmp_path):
+    """A named pose merges per BONE, so `stand` — which speaks only about the arms — would otherwise
+    leave a kneeling figure kneeling with her arms neatly at her sides. `clears` is what makes it a
+    stance: everything it does not mention goes back to rest."""
+    eid = _place_legged_figure(client)
+    client.post("/figure", json={"id": eid, "named": "kneel"})
+    assert "leftLowerLeg" in json.loads(_ent(client, eid)["components"]["figure"]["pose"])
     r = client.post("/figure", json={"id": eid, "named": "stand"}).json()
     assert r["ok"] is True and r["named"] == "stand"
+    # The legs are back at rest (a cleared bone leaves no trace); this rig has no arms to put down.
     assert json.loads(_ent(client, eid)["components"]["figure"]["pose"]) == {}
+
+
+def test_stand_still_puts_the_arms_down(srv, client, tmp_path):
+    """Not a reset. A VRoid rig RESTS in a T-pose, so "back to the bind pose" is not standing — that is
+    `clear=true`. Standing means arms at the sides, on any rig, which is what `aim` is for."""
+    eid = _place_figure(srv, client, tmp_path)          # has a left arm
+    client.post("/figure", json={"id": eid, "named": "stand"})
+    stored = json.loads(_ent(client, eid)["components"]["figure"]["pose"])
+    assert stored["leftUpperArm"] == {"aim": "down"}
 
 
 def _place_legged_figure(client):

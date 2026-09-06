@@ -212,15 +212,27 @@ the rig-independent axes buy rather than merely protect, and `scripts/pose_libra
 every pose against every rig of the eval cast, 12 of 13 clean on all three (the exception is `crouch`'s
 torso lean on Trish, whose spine does not carry her head).
 
-**Every pose ships with the assertions that define it.** `Pose.signature` holds `pose_corpus`
-predicates, so "is this a kneel" is arithmetic, not an opinion — which matters because the design called
-for a vision model here and that model passes a figure with its head on backwards (§ *The utterance
-layer*). The pose library and the eval corpus are the same kind of object and share one evaluator,
-`pose_corpus.check_predicates`.
+**Two verifiers, and they fail differently.**
+
+- `Pose.signature` holds `pose_corpus` predicates, so "is this a kneel" is arithmetic. This is what
+  **fails** a pose. The library and the eval corpus are the same kind of object over one evaluator,
+  `pose_corpus.check_predicates`.
+- `scripts/pose_library.py --identify` renders each pose and asks a vision model **which of the library
+  it is looking at**. Recognition, never "is this pose any good" — that framing is a judgement and does
+  not work (§ *The utterance layer*). Calibrated first against the wrong `kneel`, which it must decline.
+  **Advisory**: it confuses poses that genuinely resemble one another (a deep `crouch` reads as a
+  `sit`), so it reports rather than gates.
+
+**The visual check is not decoration — it catches what a signature structurally cannot.** A signature
+only asserts the bones a pose *sets*, so it is blind to the bones a pose *forgets*, and both defects of
+that shape were found this way: leg poses left the arms at the rig's bind pose (a T-posed VRoid figure
+knelt like a scarecrow), and one-armed poses never said what the other arm does. The fix for both is
+`aim`, which is absolute and so lands an arm at the side from a T-pose and an A-pose alike.
 
 | | Behaviour |
 |---|---|
 | Expansion | server-side, so there is one definition of "kneel", in Python, beside its signature |
+| `stand` | a **stance**, not a reset: arms at the sides, everything else back to rest (`Pose.clears`). Returning to the file's own bind pose is `clear=true` — and on a VRoid rig that is a T-pose, which is not what anyone means by "have her stand" |
 | Durable state | the expansion **and** the name (`components.figure.named`), so the state reads "she is kneeling" |
 | Overrides | `{"named": "kneel", "pose": {...}}` in one call — *"kneel, but with her arms out"* |
 | Hand-editing after | drops the name: she is no longer kneeling, she is in a pose of her own |
@@ -535,7 +547,9 @@ It asks two questions:
   forward — none of those has a one-word answer, so none is asked.
 - **Could a body hold this** — asked of every cell.
 
-**Neither one gates a cell.** As of 2026-09-05 the judge layer is advisory (`--judge-gates` to make it
+**Neither one gates a cell.** (Both are *judgement* framings. Asking the same models a **recognition**
+question — "which of these thirteen poses is this?" — works, and is used by the pose library; see
+§ *Named poses*. The failure below is of the question, not of vision models.) As of 2026-09-05 the judge layer is advisory (`--judge-gates` to make it
 count), because it does not reproduce: across four full runs its disagreements were 29, 8, 2 and 7 out
 of 60, with cells moving in and out of the failure column while nothing but the model changed. Before
 each battery the harness renders a **calibration pose** — a 170° twist of the skull, so the figure faces

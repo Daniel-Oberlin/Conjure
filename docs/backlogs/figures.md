@@ -1906,8 +1906,9 @@ caption that mirrors the body is worse than no caption. All three cameras now si
 front. Worth noticing how this was found: not by reading the code, but by rendering one arm straight up
 and looking at which side of the frame it came out on.
 
-**Finding 4, and the one that matters — the judge does not work yet, and nothing had asked it a question
-whose answer was already known.** Adding the third view did not stop the false positives, so the
+**Finding 4 — the judge does not work *for this question*, and nothing had asked it a question whose
+answer was already known.** (Narrowed 2026-09-06: it is the *judgement* framing that fails. Recognition
+works — § *Recognition works where judgement did not*.) Adding the third view did not stop the false positives, so the
 instrument itself got tested: render a figure with its **head twisted 170° onto backwards** and ask
 whether a person could hold that pose.
 
@@ -1989,6 +1990,48 @@ twenty seconds.
     ...
     60/60 cells clean in 1109s — 0 call, 0 geometry, 0 judge
     7 cell(s) the judge disagreed with, not counted — see --judge-gates
+
+### Recognition works where judgement did not (2026-09-06)
+
+**A correction to the finding above.** "The judge does not work" was too broad, and it was drawn from
+one question. Asking a vision model *whether a pose is anatomically possible* is a judgement, and it
+fails — it passes a figure with its head on backwards. Asking it *which of these thirteen poses this is*
+is **recognition against a fixed list**, which is the one thing the design said VLMs are good at, and
+nobody had tested it.
+
+| Framing | Result |
+|---|---|
+| "Could a body hold this?" | passes a head-on-backwards figure; verdict flips between identical calls |
+| "Which pose is this?" (13 options, forced choice) | **13/13** on Grace |
+| ...with "none of these" offered | declines the wrong kneel AND the wrong arms-crossed — *the two poses their signatures passed* |
+
+So `scripts/pose_library.py --identify` renders each pose and asks which one it is, with the wrong kneel
+as its calibration: it must decline that before anything it says is worth reading. Same discipline as
+the eval harness, and this time the instrument passes it.
+
+**It immediately found two defects no signature could.** A signature only asserts the bones the pose
+sets, so it is blind to the bones a pose *forgets*:
+
+1. **Leg poses left the arms wherever the rig rests.** Invisible on the two A-posed Daz conversions, and
+   on Saka it meant kneeling with her arms straight out like a scarecrow, because a VRoid rig rests in a
+   T-pose. "One authored pose works on every figure" had quietly stopped being true.
+2. **One-armed poses never said what the other arm does.** `wave` and `point` were misread on all three
+   rigs at once — which is the signature of a bad pose, not a noisy judge. A wave read as a `cheer` and
+   a point as a `t-pose`; both were fair descriptions of what was rendered.
+
+The fix for both is `aim`, and it is the reason `aim` exists: `{"aim": "down"}` puts an arm at the side
+from a T-pose and an A-pose alike. Misidentifications went 12 → 7 of 39.
+
+**It is advisory, not a gate**, and that is measured too. It confuses poses that genuinely resemble each
+other — a deep `crouch` reads as a `sit`, which is hard to call wrong — and is least steady on the
+stylised rig. What fails a pose is its signature; the `~` lines are for a person to look at. Two of
+those lines are the judge being *right* about a rig rather than a pose: Trish's `bow` reads as `stand`,
+because her spine does not carry her head.
+
+**The general lesson, and it is the same one twice.** The plausibility question was never validated and
+was wrong; the recognition question was never *tried* and was right. Both were settled in about five
+minutes by pointing the instrument at an answer already known. It is worth asking of discovery layer 4,
+which is still designed as a judgement and could be posed as a recognition.
 
 ### Authoring the library (2026-09-05)
 
