@@ -2227,10 +2227,25 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
 
 ## Where to pick up
 
-**Posing works end to end on device, and the next three slices are designed** under
-[*Aiming, evaluation and named poses*](#aiming-evaluation-and-named-poses). Build them in that order —
-the second exists to keep the first true, and the third is the first thing the vocabulary buys rather
-than protects:
+**Slices 1–3 are built (2026-09-03 to 09-06) and NONE of slice 3 has run in a headset.** That is the
+next step and it is not a formality: re-grounding is client code, its unit tests stub A-Frame entirely,
+and the one bug already found at that seam — the server sending a `named` property the component never
+declared, so A-Frame dropped it — was found by reading rather than running. Every slice in this document
+has a device-run section and every one of them found something.
+
+What a device run should settle: whether the settle lift survives the anchor solver re-placing the
+entity each capture (it moves the MESH inside the entity, so it should, and "should" is the word that
+has been wrong here repeatedly); whether a kneeling figure meets the real floor at life size; and
+whether the 13 poses read as themselves at human scale, which a 512-pixel render cannot answer.
+Remember `ctl refresh-models`, and re-place any figure already in a world — placed figures hold the meta
+they were placed with.
+
+Then: **the trunk deform-reach check in `validate()`**, which has now failed three times (Trish's spine,
+Grace's `hips`, `crouch` on Trish) and silently decides which named poses port to which rig. Slice 3
+made that consequential rather than theoretical.
+
+The slices, in the order they were built — the second exists to keep the first true, and the third is
+the first thing the vocabulary buys rather than protects:
 
 1. ~~**`aim`** — absolute directions, plus worked examples in the tool description.~~ **Built
    2026-09-03**, verified in render on all three rigs. Whether the *tool description* now steers the
