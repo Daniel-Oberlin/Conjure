@@ -76,6 +76,12 @@ only one, do 2 — the director's behaviour is the only thing downstream of this
 Fixing (1) also unblocks director-authored replacement geometry, which needs a safe footprint to
 extrude — see [`backlogs/worlds-surfaces.md`](./worlds-surfaces.md).
 
+**Option (1) now has a partition to key on.** The room-segmentation plan in
+[`backlogs/spaces-geometry.md`](./spaces-geometry.md) (*rooms as a first-class unit*, proposed 2026-09-07)
+builds exactly what per-room boundaries need — floor-keyed rooms with persisted identity — as the
+foundation for piecewise-rigid registration. If it lands, this item is mostly a summary-formatting job on
+top of it rather than a segmentation problem of its own.
+
 ### Void worlds cannot be re-homed
 
 The design says a world created `<void>` (because no AR user had established a space yet) can later be

@@ -21,6 +21,11 @@ and style them, constrained to the real footprint so the user cannot walk into a
 practice by the boundary defects in [`backlogs/spaces.md`](./spaces.md) — a single polygon at a
 hard-coded 2.6 m height is not a safe footprint to extrude in a multi-room space.
 
+The route to a safe footprint runs through the room-segmentation plan in
+[`backlogs/spaces-geometry.md`](./spaces-geometry.md) (*rooms as a first-class unit*), which gives the
+space a per-room partition — and therefore a per-room floor polygon and a measured ceiling height — as a
+by-product of piecewise-rigid registration.
+
 ### Only the `outline` edge layer exists
 
 The design has three independently-toggleable edge layers. One is built:

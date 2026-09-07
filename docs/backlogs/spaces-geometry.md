@@ -190,6 +190,259 @@ meaningfully smoother, 0.3 a balance, 0 sharpest.
 
 ---
 
+## Planned — rooms as a first-class unit
+
+**Status:** proposed 2026-09-07, **for review — nothing built.** Branch `feat/room-segmentation`.
+
+[`specs/spaces.md` §1](../specs/spaces.md) says it plainly: *"Nothing in the record models a 'room' as a
+unit."* This plan gives it one. Two wants turn out to share a single primitive — a registration that stops
+pretending the space is rigid, and a director that can say "the kitchen" — so the segmentation is the
+foundation and both consumers hang off it independently.
+
+### Why piecewise-rigid registration
+
+The spec's §1 is the motivation: the Quest's map is locally non-rigid by up to ~9 cm, concentrated in one
+region, which **no single rigid transform reconciles**. Registration nonetheless solves exactly one
+transform for the whole space.
+
+The raised-floor investigation says something sharper than "rooms move relative to each other": the Quest
+anchors one room's stored entity high and **every plane in that room rides with it rigidly**, room heights
+preserved. So the displacement's *unit* is the room and its *shape* is rigid — which is precisely the
+assumption a piecewise-rigid registration needs. The observed failure mode and the proposed model agree,
+and that agreement is the whole case.
+
+It also rules out the smooth alternative. A locally-weighted or thin-plate warp needs no segmentation and
+degrades gracefully, but it would **blur a discontinuity that is physically real**. Rooms are the right
+partition because the physics is piecewise — not because segmentation is convenient.
+
+**What it buys, precisely.** `Tmat` drives no render transform in a captured space (§2.1), so this is not a
+rendering fix: a raised floor still renders raised. The payoff is **identity correspondence** — §4.3's
+linchpin. The measured ~9 cm regional non-rigidity already consumes 60% of `matchWall`'s 150 mm
+perpendicular budget.
+
+Worth stating before building it: **this fixes no live bug.** The one churn case on record was traced to
+room load and is already fixed by the load gate, and `churn.*` has never fired since. This is margin being
+spent silently, plus a measurement we do not currently have.
+
+Anchor *solving* is untouched — it is F_track-native and never passes through `Tmat`. Anchor *authoring*
+does convert through the frame (`toRef`, §5.4a), so that is the one place to use the room-refined transform.
+
+### The design: segment the seed, inherit the labels
+
+The naive shape — segment the live capture *and* the seed, then match rooms to rooms — reintroduces a
+correspondence problem one level up, and segmentation instability is the same class of bug as the
+inset-identity churn of §6.1. Instead:
+
+1. Segment the **seed** only. Persist the labels.
+2. Register globally, **exactly as today** — yaw + x/z, unchanged.
+3. Live surfaces **inherit their room label through the match they already got.** No live segmentation at
+   all.
+4. Group matched pairs by label; refine each room as a bounded delta off the global transform.
+5. Re-match identity per room with the refined transform. This is the payoff.
+
+Coarse-to-fine, never independent per-room solves — for one specific reason. **A single room is maximally
+symmetric**: four walls, opposite pairs equal, which is exactly §4's known ambiguity where the yaw vote can
+lock 180° off. Whole-space asymmetry is what saves the global solve; register each room alone and every room
+gets the worst case. The acceptance gate inverts too — `MIN_COV` 4 against a six-surface room is a 0.67
+fraction where the global gate is 0.3. Refining off a global yaw never re-solves yaw from scratch, so both
+problems vanish rather than being tuned around.
+
+**The refinement must be strictly non-degrading.** Skip a room below ~4 matched pairs; require the
+refinement to *reduce* that room's residual; reject a delta past ~25 cm as a mis-fit rather than trusting
+it; always fall back to the global transform. A room that cannot be refined must not be a room that fails to
+register.
+
+**`y` is estimated and reported, never folded into `Tmat`.** Tempting, since the raised floor is purely
+vertical — but §10.2's baseline rests on registration never touching y, which is what makes height
+differences frame-invariant and the stored seed a valid baseline with no extra persistence. Fold a per-room
+y into the transform and `levelDeviation` goes blind, subtracting the very quantity it measures. Per-room y
+and the floating-room detector are **the same measurement**; it may be a correction or a diagnostic, and it
+must not become one silently.
+
+Kept out, it is still the better input to the correction: the unmerged corrector on
+`feat/fix-floating-rooms` is threshold-gated, and its open question — *does it still fire when the
+displacement changes size?* — dissolves against a continuous estimate.
+
+### Segmentation basis — the device already did it
+
+Floor planes are the partition, and that is observation rather than assumption. This space's `floor_8` /
+`floor_10` / `floor_32` are living / kitchen / bedroom, and `ceiling_25` / `ceiling_21` / `ceiling_13` pair
+off correctly — matching the ground truth recorded above exactly. Since the raised-floor evidence says the
+displacement follows the Quest's *own* room entities, segmenting by floor plane recovers the partition that
+actually moves rigidly.
+
+- walls and ceilings → their floor by `covers()` (`room-snap.js:635`) — the same footprint test `sealWalls`
+  (`:666`/`:672`) and `heightCensus` (`:981`) already use to decide which room a surface is in. The
+  multi-room-correct machinery is built; it has only never been named.
+- insets → the room of their `meta.host_wall`, a recorded fact (§6.1).
+- leftovers → an explicit `unassigned` bucket. Never a crash, never a guess.
+
+**Over-segmentation is safe; under-segmentation hurts.** Two sub-rooms that genuinely co-move refine to
+equal deltas and cost nothing, so bias toward splitting.
+
+### Room identity resolves by set overlap
+
+The load-bearing rule, and the one place this can destroy *user data* rather than a colour: a
+re-segmentation matches new groups against existing rooms by **surface-set overlap**, never by segmentation
+order. Get it wrong and the user's "kitchen" migrates to a different room after a rescan.
+
+Tiered, most robust first:
+
+1. **surface-set overlap** against the stored labels — robust to any one surface churning, because a room is
+   ~20 surfaces, not one.
+2. **the defining floor's id**, recorded on the room — the fallback if the labels are ever lost wholesale
+   (see the branch-compatibility note below for why this tier exists).
+3. **mint** a new room. Ids are monotonic and never reused.
+
+Keying *only* on the floor id was considered and rejected as the primary key: a floor that churns would take
+the room's name with it. Keying on segmentation order was rejected outright — that is the inset-churn
+mechanism, one level up and with worse consequences.
+
+Empty rooms keep their names. Cheap, names are precious, and it is a small hedge against the empty-capture
+wipe in [`backlogs/spaces.md`](./spaces.md).
+
+### Schema — the name is stored exactly once
+
+The space document gains one member:
+
+```jsonc
+"rooms": {
+  "room_1": { "n": 1, "name": "kitchen", "floor": "real_floor_10" },
+  "room_2": { "n": 2, "floor": "real_floor_8" }     // `name` ABSENT until the user sets one
+}
+```
+
+Real surfaces gain `meta.room` — a scalar room id. Doors and windows additionally gain `meta.leads_to`.
+
+- The name lives **only** in `space.rooms[<id>].name`. Surfaces carry the id, never the string — the same
+  shape as `surfaceStyles` keyed by id, and as `meta.host_wall` being a recorded reference rather than a
+  duplicated fact.
+- **The default is derived, not stored:** display is `name ?? f"room #{n}"`. `{"n": 2}` renders as
+  "room #2" with no string on disk, so a rename cannot leave a stale default anywhere — the default was
+  never written. This mirrors `meta.friendly_id`, which is likewise the number the user reads off a label
+  and speaks back (§1.1 of [`worlds-surfaces.md`](../specs/worlds-surfaces.md)).
+- **The space is the home, not the world.** A room name is a fact about the physical environment — the same
+  kitchen in every world — so it belongs beside `boundary` and `geolocation`, not inside
+  `spacePresentation`. This is the same reasoning that keeps `boundary` a *sibling* of `spacePresentation`
+  rather than a member of it.
+- Consequence, and it falls out for free: a name is a space write, so it is **owner-gated** by the existing
+  rule. A guest cannot rename your kitchen.
+- `meta.room` is authoritative for membership; `rooms[].floor` exists solely as identity tier 2.
+
+**Integration point not to miss:** `meta.room` must join `_surface_changes`' aspect set, and a room
+reassignment must **not** drag `position` along — the 2026-08-31 rule that a change to one aspect must never
+rewrite the pose.
+
+### Connectivity — doors know what they lead to
+
+Per door inset: step ±0.5 m along the host wall's normal from the door centre and `floorUnder` each side.
+
+- two rooms → `meta.leads_to` names the far one
+- one room, nothing beyond → exterior (`leads_to: null`)
+
+`floorUnder` is an x/z footprint test, so the probe height is irrelevant. This works whether the partition
+was captured as one wall or as the two near-coincident anti-parallel faces of §6.1, and it does **not**
+depend on the door having been captured twice — which is why it is preferred over reading the host wall's
+room set or pairing duplicate door insets. Both of those were considered; both fail on a partition captured
+as two walls, where each face knows only its own room.
+
+Windows get the same probe free, which tells the director which walls are exterior — useful in its own right.
+
+### Where each part runs
+
+| Part | Where | Why |
+|---|---|---|
+| `segmentRooms(THREE, surfaces)` → groups + connectivity | **client**, `room-snap.js`, pure | shell geometry is JS-only (§12); reuses `covers`/`floorUnder`; unit-testable on `fixtures/golden-room.json` |
+| room identity + name persistence | **server**, at ingest | pure set arithmetic against the stored labels — **no Python geometry port needed** |
+
+Keeping the server free of geometry here is deliberate: §12's rule is that a server-side geometry query
+ports to `conjure/room_snap.py` with a golden test, and this design avoids owing that.
+
+### The director surface
+
+`_real_surface_match` (`server.py:3297`) is the **single** target matcher — both `_room_targets` (`:3310`)
+and `_resolve_op_ids` (`:3316`) go through it, and it already handles a compound form (`wall 4`) via
+`_SEM_NUM`. So room targeting is a one-function change and every surface tool gains it at once.
+
+| Want | How |
+|---|---|
+| query room identities | `query_room()` groups its output by room and names each |
+| which room am I in | the **client reports it in the presence tick**, using the `floorUnder` it already calls for `_markProbe` — free, and avoids the Python port |
+| manipulate a room's surfaces | room accepted as a target through `_real_surface_match` |
+| connectivity | an adjacency summary in `query_room` and `room://current` |
+| rename | `name_room(room, name)`, owner-gated, rejecting reserved semantic words and duplicates |
+
+**`room://current` is the highest-value integration point** — it is the per-turn injected resource and the
+only place surfaces are described, so room grouping, the adjacency summary and a *"you are in the kitchen"*
+line reach the director every turn with no tool call.
+
+Honest limit on "which room am I in": only a physically-present AR client has one. CLI, voice and desktop
+have no room and should say so rather than guess.
+
+### What the primitive unblocks
+
+| Item | Source |
+|---|---|
+| per-room boundary — the top open item, "make it honest" | [`backlogs/spaces.md`](./spaces.md) |
+| `authored` immersion mode (needs a safe footprint to extrude) | [`backlogs/worlds-surfaces.md`](./worlds-surfaces.md) |
+| multi-room culling for the surface overlay | this file, above |
+| `levelDeviation` per-room instead of one global median | spec §10.2 |
+| the floating-room corrector's input — an estimate, not a threshold | [`investigations/raised-floor.md`](../investigations/raised-floor.md) |
+
+### Staging
+
+1. **Segmentation + room record + names + connectivity + director queries and targeting.** Offline-testable,
+   immediately user-visible, no registration change at all.
+2. **Per-room residuals into the geometry event log** (`room.*`, change-gated), applying nothing. Field-read
+   before correcting — the same `[aabb]`-first discipline.
+3. **Apply the refinement**, with the guards above.
+4. **Per-room boundary**, separately: it changes a schema with two consumers and deserves its own increment.
+
+Step 1 is verifiable with no device. `fixtures/golden-room.json` is 45 surfaces across two rooms — a known
+answer — and this space's three rooms have their ground truth written down above. The registration claim is
+measurable the same way §4.1.2's table was: perturb one room of the golden fixture rigidly by 9 cm, then
+compare global against per-room residuals and count which surfaces lose identity under the global fit and
+are recovered under refinement.
+
+### Branch compatibility — main and this branch share live data
+
+Verified against the code, because the risk is not main *breaking* but main silently *dropping* the new
+fields:
+
+| Path | Behaviour | Verdict |
+|---|---|---|
+| `SpaceStore.load` / `.save` (`world.py`) | `json.loads` / `json.dumps` of the whole dict — schema-free | preserves unknown keys |
+| `_save_active` (`server.py:919`) | **loads the existing doc and mutates named keys** | `space.rooms` survives untouched |
+| `_space_from_world_doc` (`:2920`) | `copy.deepcopy(e)`, overwrites only `components.material` | `meta.room` survives |
+| `_surface_update_set` | writes **dotted paths** for changed aspects only | `meta.room` never rewritten |
+| a surface minted under main | no `meta.room` | benign — reassigned on the next branch run |
+| a surface pruned under main | its label goes with it | benign — membership is derived |
+
+So the schema is genuinely additive and **no separate data copy is needed**. The one caveat worth recording:
+main preserves `meta.room` because it *never writes meta it does not know about*, which is a property of
+today's implementation rather than a guarantee. Identity tier 2 (`rooms[].floor`) exists precisely so that a
+wholesale loss of the labels re-identifies the rooms instead of minting fresh ids and orphaning the user's
+names.
+
+### Open decisions — to settle at review
+
+1. **`room=` filter, `target` overload, or both?** "The kitchen walls" is room ∩ semantic, which the current
+   single-target vocabulary cannot express. A separate `room=` parameter composes cleanly and is
+   unambiguous but touches ~6 tool signatures; overloading `target` is one line at the chokepoint but
+   cannot compose. *Leaning: both* — `room=` as the composable form, room accepted in `target` as the
+   convenience the model will reach for first.
+2. **The word "room" is already taken.** `query_room`, `room://current`, `_room_summary`, `_room_targets`
+   and `room-snap.js` all use "room" to mean *the whole space*. Making rooms real makes `query_room`
+   misnamed. *Leaning: keep the director-facing names* — renaming churns the model's vocabulary and every
+   prompt — and disambiguate in docstrings.
+3. **Merge.** Two floor planes that are one physical room (open-plan) will over-segment, and the user will
+   want *"room #2 and #3 are both the living room"*. The schema supports it later. *Leaning: defer.*
+4. **Does `y` stay out of `Tmat` permanently**, or is folding it in the eventual goal once the floating-room
+   correction is settled? *Leaning: permanently out*, reported alongside — but it decides whether
+   `levelDeviation` keeps its baseline, so it deserves a deliberate call now rather than later.
+
+---
+
 ## Instrumentation — the geometry event log
 
 **Status:** **shipped 2026-08-30; diagnosed the floor fault on its first day in the field, 2026-08-31.**
