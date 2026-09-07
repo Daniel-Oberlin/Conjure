@@ -192,7 +192,9 @@ meaningfully smoother, 0.3 a balance, 0 sharpest.
 
 ## Planned — rooms as a first-class unit
 
-**Status:** proposed 2026-09-07, **for review — nothing built.** Branch `feat/room-segmentation`.
+**Status:** proposed 2026-09-07, **reviewed the same day — nothing built.** Branch
+`feat/room-segmentation`. The four open questions are settled below; the *"room" rename* is a
+prerequisite and lands on `main` first.
 
 [`specs/spaces.md` §1](../specs/spaces.md) says it plainly: *"Nothing in the record models a 'room' as a
 unit."* This plan gives it one. Two wants turn out to share a single primitive — a registration that stops
@@ -424,23 +426,71 @@ today's implementation rather than a guarantee. Identity tier 2 (`rooms[].floor`
 wholesale loss of the labels re-identifies the rooms instead of minting fresh ids and orphaning the user's
 names.
 
-### Open decisions — to settle at review
+### Decisions — settled at review 2026-09-07
 
-1. **`room=` filter, `target` overload, or both?** "The kitchen walls" is room ∩ semantic, which the current
-   single-target vocabulary cannot express. A separate `room=` parameter composes cleanly and is
-   unambiguous but touches ~6 tool signatures; overloading `target` is one line at the chokepoint but
-   cannot compose. *Leaning: both* — `room=` as the composable form, room accepted in `target` as the
-   convenience the model will reach for first.
-2. **The word "room" is already taken.** `query_room`, `room://current`, `_room_summary`, `_room_targets`
-   and `room-snap.js` all use "room" to mean *the whole space*. Making rooms real makes `query_room`
-   misnamed. *Leaning: keep the director-facing names* — renaming churns the model's vocabulary and every
-   prompt — and disambiguate in docstrings.
-3. **Merge.** Two floor planes that are one physical room (open-plan) will over-segment, and the user will
-   want *"room #2 and #3 are both the living room"*. The schema supports it later. *Leaning: defer.*
-4. **Does `y` stay out of `Tmat` permanently**, or is folding it in the eventual goal once the floating-room
-   correction is settled? *Leaning: permanently out*, reported alongside — but it decides whether
-   `levelDeviation` keeps its baseline, so it deserves a deliberate call now rather than later.
+1. **Target vocabulary: both.** `room=` as the composable filter (room ∩ semantic — "the kitchen walls"),
+   *and* a room accepted as a bare `target` value, which is what the model will reach for first. Both
+   resolve at `_real_surface_match` (`server.py:3297`), so it stays one chokepoint.
+2. **Rename the misuse of "room" — first, and on `main`.** Not deferred, and not done on this branch. Scope
+   and reasoning below.
+3. **Merge: deferred.** Two floor planes that are one physical room will over-segment. The schema supports
+   merging later — the name is keyed by room id, so an alias or a `merged_into` field is additive — and the
+   bias toward splitting holds until it actually bites.
+4. **`y` stays out of `Tmat`, permanently.** Estimated per room and reported alongside; never applied.
+   Stated plainly: registration only ever slides and turns the space horizontally, which is *precisely why*
+   a stored height is a valid baseline for a live one. Fitting a per-room y would shift heights by exactly
+   the displacement being measured, so `levelDeviation` would compare two numbers with the fault already
+   cancelled and read a floating room as level. Calibrating the error away, then trying to measure it.
 
+### The "room" rename — scope, and why it goes on `main` first
+
+`room` is used throughout the code, tools and prompts to mean *the whole space*, which
+[`specs/spaces.md` §1](../specs/spaces.md) explicitly disclaims. Making rooms real makes that usage
+actively **wrong** rather than merely loose, so it is cleared **before** this work lands. Otherwise there is
+a window in which `room` means both things at once — the exact confusion being removed.
+
+**It touches no persisted data.** Verified 2026-09-07 against the live tree under `config.DATA_DIR`:
+
+| Checked | Result |
+|---|---|
+| `room`-named keys in live space / world / session / state docs | **zero** — the 2026-08-26 `environment.room` → `spacePresentation` migration already cleared them; only `users.bak1` still carries them |
+| agent definitions and prompts | in the **repo** (`agents/*/agent.json`, `agents/builder/prompt.md`) — versioned, not under `DATA_DIR` |
+| `query_room` / `room://current` / `realign_room` inside live session transcripts | **zero** occurrences |
+
+So there is no migration to write and no shared-data hazard — which matters because `main` and this branch
+run against the same live data (see the branch-compatibility note above).
+
+The cost is therefore **entirely merge conflicts**, and that is the argument for `main`: a broad mechanical
+rename on a long-lived branch conflicts with every later `main` commit touching the same lines, for weeks,
+whereas landed on `main` it costs this branch one merge and nothing else.
+`migrate_env_room_to_space_presentation` (`world.py`) stays the house pattern if a persisted key ever does
+need one.
+
+**It is not a blind `s/room/space/`.** Each site needs a judgement about which of the two things it meant:
+
+| Now | Meant | Becomes |
+|---|---|---|
+| `query_room` | the whole space | `query_space` |
+| `room://current` | the whole space | `space://current` |
+| `realign_room` | the whole space | `realign_space` |
+| `_room_summary` | the whole space | `_space_summary` |
+| `_room_targets` | **surfaces**, for the whole space — misnamed twice | `_surface_targets` |
+| `ingest_room` / `RoomUpdate` | a capture of the space | `ingest_capture` / `CaptureUpdate` |
+| `_face_room` | the space's interior | `_face_interior` |
+| `room-snap.js` / `RoomSnap` / `room-worker.js` / `room-capture` | space geometry | `space-*` / `SpaceSnap` |
+| `show_room_labels` (unbuilt) | **surface** labels | `show_surface_labels` |
+
+Three tiers, in increasing care:
+
+1. **persisted keys** — empty, verified above. Nothing to do.
+2. **wire and director-facing** — MCP tool names, resource URIs, HTTP routes, A-Frame component names.
+   These must move atomically with `agents/*/agent.json`, `agents/builder/prompt.md`, the docs, and
+   `tests/test_{server,director,mcp}.py`, all of which name them. All in-repo, so one commit can be atomic.
+3. **pure internals** — function names, filenames, module names, comments. Free.
+
+**The next step is an inventory, not an edit:** every occurrence classified by tier and by which meaning it
+carried, reviewed before anything is renamed. A rename that silently converts a *surface* name into a
+*space* name would leave the vocabulary as wrong as it started.
 ---
 
 ## Instrumentation — the geometry event log
