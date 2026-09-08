@@ -174,9 +174,20 @@ pytest count never moved, so no renamed test quietly stopped being collected.
 | `865e48d` | file moves — `space-snap.js`, `space-worker.js`, `space-snap.test.js`, `golden-space.json`, `SpaceSnap` |
 | `15ad259` | scripts, test helpers, ~20 test names, the mixed uppercase `ROOM` |
 
-**Tier 2 not started.** It needs a call on `virtual_room` first (below).
+**Tier 2 complete** (2026-09-07) — 5 further commits, `978 pytest / 204 JS` green after each.
 
-**The long tail is prose.** ~650 bare `room` occurrences remain in comments and docstrings, with genuinely
+| Commit | What |
+|---|---|
+| `ef1710f` | `query_space`, `space://current`, `space_resource`, the context-budget slice label |
+| `0b6118f` | `realign_space` + docstring |
+| `0ad7ba4` | `virtual_space` + the `set_immersion` docstring, dropping the phantom `build_room` |
+| `f1d1a9a` | `space-capture` component, `_slog("space", …)`, `origin="space"` |
+| `6f1a96f` | the dead-passthrough finding filed to [`backlogs/worlds-surfaces.md`](../backlogs/worlds-surfaces.md) |
+
+**Every remaining identifier is on the do-not-rename list above** — `migrate_env_room_to_space_presentation`,
+the synthetic-room fixtures, three uppercase `ROOM`s, `roomy`, `room_check14`. The identifier work is done.
+
+**The long tail is prose.** ~590 bare `room` occurrences (plus `rooms`, and the non-"Room Setup" uses of `Room`) remain in comments and docstrings, with genuinely
 mixed meaning — the uppercase split above was 4-3, and there is no reason to expect the lowercase ones to be
 cleaner. No functional risk, but it is the layer where the confusion actually reaches a reader, so it wants
 its own pass and its own commit rather than being folded into an identifier rename.
