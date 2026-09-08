@@ -376,7 +376,7 @@ control tool `set_caller`, so a new tool cannot go silently un-granted ([specs/a
 - **Entities:** `add_entity`, `update_entity`, `move_entity`, `remove_entity`, `set_environment`
 - **Real surfaces** (a captured room is ordinary entities, §4): `show_surface`, `texture_surface`,
   `style_surface`, `show_edges`, `style_edges`, `show_annotations`, `style_annotations`,
-  `set_immersion`, `realign_room`
+  `set_immersion`, `realign_space`
 - **Library:** `place_asset`, `place_cached_asset`, `search_library`, `query_assets`, `update_asset`,
   `delete_asset`
 - **Images — procurement decoupled from scene use (decision #13):** *procure* (return an opaque

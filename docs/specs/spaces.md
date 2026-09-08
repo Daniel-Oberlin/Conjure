@@ -476,7 +476,7 @@ still needs a second headset.
 | `POST /worlds/new` \| `/worlds/switch` | open to all; every mint path stamps the active space ref or `<void>` (§4.2) |
 | `POST /scope/activate` \| `/session/new` | agent / session switch — mints a world, same stamp (§4.2) |
 
-**MCP tools:** `set_space_visibility`, `realign_room`, `query_space`, `set_world_visibility`,
+**MCP tools:** `set_space_visibility`, `realign_space`, `query_space`, `set_world_visibility`,
 `switch_world(name, owner=…)`, `list_worlds`.
 
 **Code**

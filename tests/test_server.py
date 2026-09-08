@@ -923,7 +923,7 @@ async def test_realign_broadcasts_recapture(srv):
     ws = FakeWS()
     srv.clients[ws] = "daniel"
     try:
-        await srv.realign_room()
+        await srv.realign_space()
     finally:
         srv.clients.pop(ws, None)
     assert ws.sent and ws.sent[-1]["type"] == "recapture"

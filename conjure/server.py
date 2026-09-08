@@ -3257,7 +3257,7 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
 
 
 @app.post("/space/realign")
-async def realign_room() -> dict:
+async def realign_space() -> dict:
     """Ask connected headsets to re-capture the room at the current tracking origin (restores alignment
     after a recenter/reload). No-op for clients not in an AR session. (Clients render their own capture
     locally now, so this is just a nudge to recapture — there's no server-side freeze to reopen.)"""

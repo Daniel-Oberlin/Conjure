@@ -13,7 +13,7 @@
         "query_space",
         "view_relative",
         "set_immersion",
-        "realign_room",
+        "realign_space",
         "reset_world",
         "show_surface",
         "texture_surface",

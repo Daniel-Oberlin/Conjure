@@ -156,7 +156,7 @@ id, or `all`.
 | `show_edges(on)` | the polygon outline around every surface — **on by default** |
 | `style_edges(color, opacity)` | restyle the outline |
 | `query_space()` | surfaces by semantic + friendly id, with colour and visibility, plus the boundary |
-| `realign_room()` | re-capture at the current tracking origin when the space looks drifted |
+| `realign_space()` | re-capture at the current tracking origin when the space looks drifted |
 
 **Styling is the ordinary edit vocabulary.** Because surfaces are entities with a `material`, "make the
 ceiling a galaxy" is `material.src` pointing at a generated image — the same plane-material path
@@ -244,7 +244,7 @@ server-side (`specs/spaces.md §7`); and pruning protection keeps a surface with
 ## 7. Surface reference
 
 **MCP tools:** `set_immersion`, `show_surface`, `style_surface`, `texture_surface`, `show_annotations`,
-`style_annotations`, `show_edges`, `style_edges`, `query_space`, `realign_room`,
+`style_annotations`, `show_edges`, `style_edges`, `query_space`, `realign_space`,
 `place_image(on_surface=…)`.
 
 **Resource:** `space://current` — the per-surface summary injected each turn.

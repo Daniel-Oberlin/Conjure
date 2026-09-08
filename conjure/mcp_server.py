@@ -344,10 +344,10 @@ async def set_immersion(mode: str) -> str:
 
 
 @mcp.tool()
-async def realign_room() -> str:
-    """Re-align the virtual room to the real room. Use when the user says the room looks misaligned,
+async def realign_space() -> str:
+    """Re-align the virtual surfaces to the real world. Use when the user says things look misaligned,
     drifted, or shifted — e.g. after recentering with the Meta button, putting the headset down, or
-    reloading. Re-captures the room at the current tracking origin. Only affects a headset in AR."""
+    reloading. Re-captures the space at the current tracking origin. Only affects a headset in AR."""
     out = await _post("/space/realign", {})
     if not out.get("ok"):
         return f"Couldn't realign: {_reason(out)}."
