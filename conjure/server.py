@@ -1419,7 +1419,7 @@ async def index() -> HTMLResponse:
     # Stamp the client script URL with its mtime so a code change always busts the cache. The Quest
     # Browser caches /static across reloads even with no-store, which left headsets running stale JS.
     html = (CLIENT_DIR / "index.html").read_text()
-    rwm = int((CLIENT_DIR / "room-worker.js").stat().st_mtime)   # geometry worker (fix/pops-and-jitters)
+    rwm = int((CLIENT_DIR / "space-worker.js").stat().st_mtime)   # geometry worker (fix/pops-and-jitters)
     tmm = int((CLIENT_DIR / "three.module.min.js").stat().st_mtime)  # worker's standalone three (ESM)
     # Dynamic modules are discovered + scoped to the ACTIVE agent (docs/specs/dynamics.md §9): inject a
     # <script> per module from its folder, mtime-stamped so a code change busts the cache.
@@ -1452,7 +1452,7 @@ async def index() -> HTMLResponse:
     jflag = "true" if settings.debug_jitter else "false"   # jitter probes only (clean, no registration diag)
     gflag = "true" if settings.geometry_log else "false"   # always-on, change-gated geometry event log
     soflag = "true" if settings.debug_surface_overlay else "false"   # seed/device wireframe overlay (opt-in)
-    # Co-location robustness knobs (two-headset guest tuning) — read by RoomSnap.register/selectSpace and the
+    # Co-location robustness knobs (two-headset guest tuning) — read by SpaceSnap.register/selectSpace and the
     # capture throttle in conjure-client.js. Omitting a field falls back to the client's built-in default.
     reg = (f"{{minCov:{settings.reg_min_cov},minCovFrac:{settings.reg_min_cov_frac},"
            f"sizeTol:{settings.reg_size_tol},inlierM:{settings.reg_inlier_m},yawPeaks:{settings.reg_yaw_peaks}}}")
@@ -1465,7 +1465,7 @@ async def index() -> HTMLResponse:
     # Render apply-gate tolerances (--apply-tol-*) → the client's surfaceMoved (world-model.js).
     tol = (f"{{pos:{settings.apply_tol_pos},rotDeg:{settings.apply_tol_rot_deg},ext:{settings.apply_tol_ext}}}")
     gwr = "true" if settings.group_surface_relay else "false"   # --group-surface-relay (junction-seam fix)
-    # Wall-identity-by-plane knobs (--wall-*) → RoomSnap.matchWall. yawTol is passed in RADIANS (matchWall's
+    # Wall-identity-by-plane knobs (--wall-*) → SpaceSnap.matchWall. yawTol is passed in RADIANS (matchWall's
     # unit); the CLI/config take degrees for readability.
     wall = (f"{{perpTol:{settings.wall_perp_tol},yawTol:{math.radians(settings.wall_yaw_tol_deg)},"
             f"overlapSlop:{settings.wall_overlap_slop}}}")
@@ -1489,7 +1489,7 @@ async def index() -> HTMLResponse:
                         f"window.CONJURE_BEAM_TRIGGER={settings.beam_trigger};"
                         f"window.CONJURE_BINDINGS={settings.bindings};"
                         f'window.CONJURE_OCCLUSION="{settings.occlusion}";'
-                        f'window.CONJURE_WORKER_URL="/static/room-worker.js?v={v}";</script>\n  </head>')
+                        f'window.CONJURE_WORKER_URL="/static/space-worker.js?v={v}";</script>\n  </head>')
     return HTMLResponse(html, headers=_NO_STORE)
 
 
@@ -1524,10 +1524,10 @@ async def client_js() -> FileResponse:
     return FileResponse(CLIENT_DIR / "conjure-client.js", media_type="application/javascript", headers=_NO_STORE)
 
 
-@app.get("/static/room-snap.js")
-async def room_snap_js() -> FileResponse:
+@app.get("/static/space-snap.js")
+async def space_snap_js() -> FileResponse:
     # Explicit no-store route for the snapping module (loaded before conjure-client.js).
-    return FileResponse(CLIENT_DIR / "room-snap.js", media_type="application/javascript", headers=_NO_STORE)
+    return FileResponse(CLIENT_DIR / "space-snap.js", media_type="application/javascript", headers=_NO_STORE)
 
 
 @app.get("/static/world-model.js")
@@ -2099,7 +2099,7 @@ def _unique_space_name(user: str) -> str:
 
 def _candidate_surface(e: dict) -> dict:
     """Trim a stored surface entity to just the geometry the client's registration vote needs
-    (RoomSnap.surfaceToRef) — id, semantic, pose, extent. Drops materials/debug/overlays from the wire."""
+    (SpaceSnap.surfaceToRef) — id, semantic, pose, extent. Drops materials/debug/overlays from the wire."""
     t, comps = e.get("transform") or {}, e.get("components") or {}
     return {"id": e.get("id"),
             "meta": {"semantic": (e.get("meta") or {}).get("semantic", "surface")},
@@ -2111,7 +2111,7 @@ def _geo_candidates(lat: float, lon: float) -> list[dict]:
     """Stage 1 of space selection (specs/spaces.md §6, D2/D7): every space ACROSS ALL USERS whose stored
     geolocation is within `_GEO_RANGE_M` of (lat, lon), each with its surface constellation for the
     client's registration vote. Geolocation only NARROWS the field (two rooms at one address both qualify);
-    the client's `RoomSnap.selectSpace` picks the exact one. Nearest-first is just a tiebreak — the
+    the client's `SpaceSnap.selectSpace` picks the exact one. Nearest-first is just a tiebreak — the
     geometric vote, not distance, decides. A filesystem walk over every user's spaces; index later."""
     out = []
     for owner in spaces.list_users():
@@ -2176,7 +2176,7 @@ def _cid(req) -> str:
 async def report_geolocation(req: GeoReport) -> dict:
     """Stage 1 (discovery) of space selection. The AR client reports its coarse location; we return every
     geo-near candidate space across all users (each with its surface constellation) for the client to
-    disambiguate by registration (`RoomSnap.selectSpace`) and then commit via `/space/select`. **Read-only**
+    disambiguate by registration (`SpaceSnap.selectSpace`) and then commit via `/space/select`. **Read-only**
     — it never changes the active space. Each client commits ONCE per claim epoch (see `/space/select`);
     once it has, later reports from that client return no candidates so GPS jitter can't re-open its choice
     (a DIFFERENT, co-located AR client still gets candidates — it must vote to pass the admission gate)."""

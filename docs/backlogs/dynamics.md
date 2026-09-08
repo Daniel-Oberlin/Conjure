@@ -172,7 +172,7 @@ a per-session-arbitrary centre, not perfect.
 
 ### Reference frames, for the record
 
-`canonicalFrame` (`room-snap.js:390`) builds a void world's `_Tmat` in two parts. **Orientation:** an
+`canonicalFrame` (`space-snap.js:390`) builds a void world's `_Tmat` in two parts. **Orientation:** an
 area-weighted histogram of wall normals mod 90° gives the wall grid; θ snaps to whichever grid direction
 is nearest the *largest* wall's outward normal, which is what makes it invariant to the session's arbitrary
 tracking yaw. **Origin:** the arithmetic mean of the vertical walls' centre points, flattened with `c.y = 0`
@@ -374,7 +374,7 @@ Related: the world-server → Node question, [`docs/decisions.md`](../decisions.
 first step there is independent of Node and worth doing on its own merits — **extract the shared
 geometry/placement math into one pure-JS module** that the client uses and the server consumes. That
 duplication (`_face_interior` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler, all
-shadowed in `room-snap.js` / `world-model.js` / `plane-anchor.js`) is the source of a whole class of
+shadowed in `space-snap.js` / `world-model.js` / `plane-anchor.js`) is the source of a whole class of
 parity bugs: YXZ order, quat→euler, the boundary frame-flip, normals-outward.
 
 ## Modules not yet built

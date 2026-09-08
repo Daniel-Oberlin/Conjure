@@ -311,7 +311,7 @@ build (5 phases) in the plan; Phase 1 (users + namespace + migration) is foundat
 
 ### 16. Capture solve off the render thread; gated + sliced render — ✅ RESOLVED
 **Choice:** Keep the ~0.5 Hz room capture from ever landing heavy work in a single render frame. Move
-`RoomSnap.register` into a **Web Worker** (the render applies on its reply); split the apply-gate into
+`SpaceSnap.register` into a **Web Worker** (the render applies on its reply); split the apply-gate into
 **pose vs shape** so tracking drift re-lays only cheap transforms; gate the per-surface **styling** to run
 only on change; and **time-slice** the mesh re-triangulation across frames under a per-frame budget
 (`--geo-slice-ms`). Full mechanism in **`docs/specs/spaces-geometry.md` §14**.
@@ -325,7 +325,7 @@ only on change; and **time-slice** the mesh re-triangulation across frames under
   frame** — which also buys headroom as scenes grow (the solve/rebuild cost decouples from frame rate).
 
 **Implications:**
-- New client files `room-worker.js` + vendored `three.module.min.js`; `?v=`-cache-busted like page scripts.
+- New client files `space-worker.js` + vendored `three.module.min.js`; `?v=`-cache-busted like page scripts.
   Synchronous fallback if the worker can't start (`window.CONJURE_WORKER=false` forces it) — no hard
   dependency on worker support.
 - New knobs: `--geo-slice-ms` (slice budget; `<=0` = off) and `--debug-jitter` (probes without the heavy
@@ -411,7 +411,7 @@ Node at all. Never a big-bang port.
 
 **Why the prize is real:** one runtime kills the server↔client geometry-math duplication.
 `_face_interior` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler all shadow JS in
-`room-snap.js` / `world-model.js` / `plane-anchor.js`, and that duplication is the source of a whole class
+`space-snap.js` / `world-model.js` / `plane-anchor.js`, and that duplication is the source of a whole class
 of parity bugs — YXZ order, quat→euler, the boundary frame-flip, normals-outward. It would also give
 module authors one language for both halves.
 

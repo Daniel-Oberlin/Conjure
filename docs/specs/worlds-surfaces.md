@@ -208,7 +208,7 @@ cannot see a door as an opening.
 **Openings are cut.** At capture the client snaps each inset onto its host wall — project the centre
 onto the wall plane, adopt its orientation, nudge a fixed ~1 cm into the room — and, for doors and
 windows, records the opening on the wall as `surface.holes`: the inset's rectangle projected into the
-wall's local 2-D frame (`snapInsets`, `client/room-snap.js`). The wall then renders through the
+wall's local 2-D frame (`snapInsets`, `client/space-snap.js`). The wall then renders through the
 **`holed-wall`** geometry — the rectangle minus the hole rects, triangulated with `THREE.ShapeGeometry`
 — so you see through into the next room or outside.
 
@@ -258,7 +258,7 @@ server-side (`specs/spaces.md §7`); and pruning protection keeps a surface with
 | compose / decompose | `conjure/server.py:2636` / `:2659` |
 | interior-facing orientation | `conjure/server.py:3682` `_face_interior` |
 | client presentation mirror | `client/conjure-client.js:255` `presentation` |
-| inset snapping + hole cutting | `client/room-snap.js` `snapInsets` |
+| inset snapping + hole cutting | `client/space-snap.js` `snapInsets` |
 | holed-wall geometry | `client/conjure-client.js` `applySurfaceGeometry` |
 
 ---

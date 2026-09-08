@@ -16,7 +16,7 @@
 //   • "free"               — full 3-D position (floor + walls); orientation a full quaternion (heading +
 //     pitch + roll), gimbal-safe (no yaw extraction — cf. the A-Frame YXZ euler-order trap, docs/specs/worlds-surfaces.md).
 //
-// Pure like room-snap.js: THREE is the first arg (browser passes AFRAME.THREE, node passes require('three')),
+// Pure like space-snap.js: THREE is the first arg (browser passes AFRAME.THREE, node passes require('three')),
 // no state/DOM/globals. Golden vectors in tests/js/fixtures/plane-anchor-golden.json pin the numeric
 // behaviour so the future Python server port (docs §13.1) can be checked against the identical cases.
 

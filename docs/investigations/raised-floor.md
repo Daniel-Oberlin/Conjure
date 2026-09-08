@@ -75,7 +75,7 @@ left is the Quest's own room entity for the bedroom being anchored high, with it
 following it.
 
 Nothing in our pipeline touches a floor — `sealWalls` reads floors and writes only walls
-(`room-snap.js:554`), `joinCorners` writes walls, `snapInsets` writes insets, and a floor renders at its raw
+(`space-snap.js:554`), `joinCorners` writes walls, `snapInsets` writes insets, and a floor renders at its raw
 `detectedPlanes` pose. So the obvious remedy was a Room Setup re-scan on the device.
 
 **That was tried, and it did not clear the fault.** Whatever anchors that room entity survives a re-scan.
@@ -187,9 +187,9 @@ structural, not a tolerance to tune: **move the whole room or none of it.**
 Branch tip `f86d163`; its history begins at `391d8e9`, the first implementation, so the whole arc is
 readable in order. `main` was rewound to `b0f3d8d` (the revert), keeping everything else.
 
-- `RoomSnap.floatingRoom` — detection and spatial membership
-- `RoomSnap.confirmFloating` — the confirmation state machine (pure, so it is unit-tested)
-- `RoomSnap.applyFloatingFix` — vertical-only application
+- `SpaceSnap.floatingRoom` — detection and spatial membership
+- `SpaceSnap.confirmFloating` — the confirmation state machine (pure, so it is unit-tested)
+- `SpaceSnap.applyFloatingFix` — vertical-only application
 - `conjure-client.js` `_fixFloating` / `_driftAll`, `--fix-floating-rooms`, `level.correct` events
 - 9 JS tests including a replay of the 229 mm incident
 

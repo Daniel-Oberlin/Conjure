@@ -1,5 +1,5 @@
 {
-  "//": "Type-checking only (no build/emit) for the plain-JS client — a trial on client/room-snap.js.",
+  "//": "Type-checking only (no build/emit) for the plain-JS client — a trial on client/space-snap.js.",
   "//2": "Run with `npm run typecheck`. The .js files ship verbatim; this just reads their // @ts-check + JSDoc.",
   "compilerOptions": {
     "allowJs": true,
@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["client/room-snap.js", "client/world-model.js", "client/plane-anchor.js"]
+  "include": ["client/space-snap.js", "client/world-model.js", "client/plane-anchor.js"]
 }

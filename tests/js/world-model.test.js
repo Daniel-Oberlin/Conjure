@@ -615,8 +615,8 @@ test("voidGateAdvance ratchets the expectation up, never down, on a healthy esta
 // capture and asserts the fix — that content lands back on the same PHYSICAL spot — plus that the old
 // ungated path did not. It spans two modules (the gate decides WHEN, canonicalFrame decides WHAT), which
 // is exactly the interaction that was broken, so it is tested as one thing.
-const RS = require("../../client/room-snap.js");
-const golden = require("./fixtures/golden-room.json");
+const RS = require("../../client/space-snap.js");
+const golden = require("./fixtures/golden-space.json");
 const G_UP = new THREE.Vector3(0, 1, 0);
 const VOID_GATE = { frac: 0.6, minWalls: 6, patience: 8 };
 

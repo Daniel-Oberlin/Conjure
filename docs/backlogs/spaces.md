@@ -55,7 +55,7 @@ absent when nothing checks.
 Worth noting the codebase already solves this correctly elsewhere. `sealWalls` faces the identical
 question — which floor/ceiling belongs to this wall? — and answers it per-wall with a footprint
 `covers()` test plus a margin, so a wall on a shared boundary counts under both adjoining rooms
-(`room-snap.js:539`). The multi-room-correct machinery exists a few hundred lines from the global
+(`space-snap.js:539`). The multi-room-correct machinery exists a few hundred lines from the global
 `if (area > best)`.
 
 **Three options, in increasing cost. They are not alternatives — 3 depends on 1.**
@@ -289,7 +289,7 @@ Two rough edges seen on-device, **not yet fixed**. Captured here so they're not 
 Three distinct mechanisms were found behind these, in order of impact:
 
 1. **Duplicate-space roulette (main driver of "wrong world on re-entry").** `_geo_candidates` returns *every*
-   space within GPS range, and the client's `RoomSnap.selectSpace` picks by best registration coverage. When
+   space within GPS range, and the client's `SpaceSnap.selectSpace` picks by best registration coverage. When
    several **geo-overlapping** spaces exist at one physical location (leftovers accumulated during the
    churn/deadlock era, when garbage seeds couldn't be re-matched so each re-entry minted a fresh `space-N` +
    a world named after it), the vote lands on a *different* space each re-entry — and each space carries its

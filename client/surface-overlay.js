@@ -199,7 +199,7 @@
   //
   // A seed surface is a-plane form: its rectangle lies in local X-Y with normal +Z, and its rotation is
   // euler DEGREES in YXZ order — A-Frame's order, and reading it as XYZ corrupts the normal of any
-  // multi-axis (tilted) surface, which is the bug room-snap's surfaceToRef comment records. Same
+  // multi-axis (tilted) surface, which is the bug space-snap's surfaceToRef comment records. Same
   // reconstruction here.
   //
   // Vertices are rebuilt every capture rather than only when the snapshot changes. The plan was to gate

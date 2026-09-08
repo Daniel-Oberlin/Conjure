@@ -13,7 +13,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const THREE = require("three");
-const RS = require("../../client/room-snap.js");
+const RS = require("../../client/space-snap.js");
 
 const D2R = Math.PI / 180;
 const scene = new THREE.Group();

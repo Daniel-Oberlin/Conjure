@@ -1,16 +1,16 @@
-// Unit tests for the pure room-snapping geometry (client/room-snap.js), run with `node --test`.
+// Unit tests for the pure space-snapping geometry (client/space-snap.js), run with `node --test`.
 // Two layers:
 //  • Synthetic rooms (built with `vert`) give full control — known facings/positions to assert each
 //    invariant precisely: insets land in front of their wall toward the interior (incl. junction doors),
 //    openings cut where the inset sits, walls come out square, the frame solve recovers a known
 //    transform, rotations are emitted in A-Frame's YXZ order, wall art renders upright.
-//  • One golden room (fixtures/golden-room.json) is a REAL Quest capture (45 surfaces, two rooms). The
+//  • One golden room (fixtures/golden-space.json) is a REAL Quest capture (45 surfaces, two rooms). The
 //    synthetic tests encode our assumptions about the device's conventions; the golden room pins them to
 //    the actual hardware and guards against a Quest update changing plane orientation. See its test below.
 const { test } = require("node:test");
 const assert = require("node:assert");
 const THREE = require("three");
-const RS = require("../../client/room-snap.js");
+const RS = require("../../client/space-snap.js");
 
 const UP = new THREE.Vector3(0, 1, 0);
 const D2R = Math.PI / 180;
@@ -207,7 +207,7 @@ test("wall squaring is removed: the seed pipeline keeps a near-square wall's RAW
     assert.ok(Math.abs(facingDeg(s) - before[i]) < 1e-6,
       s.id + " kept its raw facing " + before[i].toFixed(2) + "° (got " + facingDeg(s).toFixed(2) + "°)");
   });
-  assert.equal(typeof RS.squareWalls, "undefined", "squareWalls is gone from the RoomSnap API");
+  assert.equal(typeof RS.squareWalls, "undefined", "squareWalls is gone from the SpaceSnap API");
 });
 
 test("joinCorners extends two perpendicular walls that fall short to meet at the corner", () => {
@@ -655,7 +655,7 @@ test("dupInsetIds keeps insets on different walls / of different semantics disti
 // joinCorners → snapInsets the headset runs and asserts the geometry stays sane. It's the check that
 // would have caught the wall-art roll bug, and it'd catch a Quest OS update changing plane conventions.
 test("golden room (real capture): pipeline holds on real geometry", () => {
-  const fixture = require("./fixtures/golden-room.json");
+  const fixture = require("./fixtures/golden-space.json");
   // No active registration ⇒ Tmat = identity, so the local frame is the raw pose (lp = pos, lq = quat),
   // exactly as the client builds it on the first capture.
   const surfaces = fixture.surfaces.map(function (s, i) {
@@ -989,7 +989,7 @@ test("polyFit on the golden room: the real device's planes are centred rectangle
   // polyFit's arithmetic against real extents rather than evidence about the device: the on-device answer
   // comes from the [aabb] probe line, and if it ever disagrees with this, the polygon is the thing that
   // differs and the hypothesis is confirmed.
-  const golden = require("./fixtures/golden-room.json");
+  const golden = require("./fixtures/golden-space.json");
   const list = golden.surfaces || golden;
   let checked = 0;
   list.forEach((e) => {

@@ -32,7 +32,7 @@ else's space. That is the point of the fully-qualified space reference (§4).
 
 A space usually contains **more than one room**. `detectedPlanes` reports the whole dwelling, so a
 single space routinely holds several rooms joined by doors — the reference capture in
-`tests/js/fixtures/golden-room.json` is 45 surfaces across two rooms. Nothing in the record models a
+`tests/js/fixtures/golden-space.json` is 45 surfaces across two rooms. Nothing in the record models a
 "room" as a unit; a space is a flat set of surfaces plus one boundary polygon. Code that reasons about
 "the room" as a single convex volume is making an assumption the record does not support (see
 [`backlogs/spaces.md`](../backlogs/spaces.md)).
@@ -275,7 +275,7 @@ constellation (`_geo_candidates`, `server.py:1649`). Coarse — it separates hom
 separate two rooms at one address.
 
 **Stage 2 — surface vote, client-side.** The client votes its live capture against those candidate
-constellations (`RoomSnap.selectSpace` → the coverage vote of §7 in
+constellations (`SpaceSnap.selectSpace` → the coverage vote of §7 in
 [`spaces-geometry.md`](./spaces-geometry.md)) and commits the verdict via `POST /space/select`. The
 match runs client-side deliberately: it reuses the same tested matcher registration uses, rather than a
 second Python implementation.

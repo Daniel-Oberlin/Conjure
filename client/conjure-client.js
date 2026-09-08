@@ -82,7 +82,7 @@
   // apparent stability should be believed.
   var VOID_GATE = { frac: 0.6, minWalls: 6, patience: 8 };
 
-  // Compact wire form for the geometry worker (fix/pops-and-jitters): send only the fields RoomSnap.register
+  // Compact wire form for the geometry worker (fix/pops-and-jitters): send only the fields SpaceSnap.register
   // reads, as plain numbers, so a capture's planes + reference constellation cross to the worker in a few KB.
   function serCur(c) { var p = c.pos; return { p: [p.x, p.y, p.z], nyaw: c.nyaw, sem: c.sem, orient: c.orient, ext: [c.ext[0], c.ext[1]] }; }
   function serRef(r) { var p = r.pos; return { id: r.id, p: [p.x, p.y, p.z], nyaw: r.nyaw, sem: r.sem, orient: r.orient, ext: [r.ext[0], r.ext[1]] }; }
@@ -135,7 +135,7 @@
   }
 
   // Custom geometry: a wall rectangle with rectangular openings cut out of it. The openings come from
-  // room-snap (snapInsets) as {x, y, w, h} in the wall's local X-Y frame — doors/windows cut through so
+  // space-snap (snapInsets) as {x, y, w, h} in the wall's local X-Y frame — doors/windows cut through so
   // you can see into the next room / outside. They arrive as a component-string-safe list of "x y w h"
   // groups (space/comma separated — no ':' or ';' to clash with A-Frame's parser). A door reaching the
   // floor sits flush against the wall's bottom edge, which would break ShapeGeometry triangulation, so
@@ -876,7 +876,7 @@
   }
   // Two-stage space selection (specs/spaces.md §6). On entering AR we report our coarse location and get
   // back the geo-near candidate spaces; room-capture then votes its live geometry against them
-  // (RoomSnap.selectSpace) and commits the verdict via /space/select. `pendingSelect` holds the candidates
+  // (SpaceSnap.selectSpace) and commits the verdict via /space/select. `pendingSelect` holds the candidates
   // while that vote is in flight (null when there's nothing to decide); `lastGeo` remembers the reported
   // location so a "no match" commit can stamp/mint a space there.
   var pendingSelect = null, lastGeo = null;
@@ -1654,7 +1654,7 @@
         var selfInit = this;
         try {
           if (window.CONJURE_WORKER !== false && typeof Worker !== "undefined") {
-            var w = new Worker(window.CONJURE_WORKER_URL || "/static/room-worker.js", { type: "module" });
+            var w = new Worker(window.CONJURE_WORKER_URL || "/static/space-worker.js", { type: "module" });
             w.onmessage = function (e) { selfInit._onSolve(e.data); };
             w.onerror = function (err) {                 // load/runtime failure → disable + re-capture sync
               debugLog("worker", "error, falling back to sync register: " + (err && (err.message || err.filename)), true);
@@ -1884,7 +1884,7 @@
       // on-surface content). Once the client actually detects the surface, it's in `localSurfaces` → skipped
       // here → the live capture wins.
       _recoverMissing: function (localSurfaces) {
-        var PA = window.PlaneAnchor, RS = window.RoomSnap; if (!PA || !docSurfaces) return [];
+        var PA = window.PlaneAnchor, RS = window.SpaceSnap; if (!PA || !docSurfaces) return [];
         var THREE = AFRAME.THREE;
         var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
         if (localPl.length < 2 || refPl.length < 2) return [];        // need a wall basis to solve against
@@ -1989,7 +1989,7 @@
       // the device-vs-matcher discrimination possible: if no plane of that semantic is anywhere near, the
       // Quest never emitted it; if one is right there, the matcher rejected it and we can say which gate.
       _logChurn: function (claimed, claimedInset, curRef) {
-        var RS = window.RoomSnap, self = this;
+        var RS = window.SpaceSnap, self = this;
         if (!window.CONJURE_GEOMETRY_LOG || !RS) return;
         var hit = {};
         claimed.forEach(function (r) { if (r && r.id) hit[r.id] = 1; });
@@ -2022,7 +2022,7 @@
       // between sessions), and what remains is "this floor moved relative to the rest of the space" — which
       // is exactly the reported symptom, and cannot be explained away as drift.
       _logLevel: function (localSurfaces) {
-        var RS = window.RoomSnap;
+        var RS = window.SpaceSnap;
         if (!RS) return null;
         var cen = this._census = RS.heightCensus(AFRAME.THREE, localSurfaces);   // …also what [mark] dumps
         // Keep the floor SURFACES too (three references, already live): the marker needs their footprints
@@ -2108,7 +2108,7 @@
         // to be by FOOTPRINT: nearest-by-height is wrong in exactly the case this exists for — with one
         // room's floor rendered 13 cm high and the controller on the real floor, the nearest floor plane by
         // height is the one in the other room, so the marker would blame the wrong room.
-        var under = window.RoomSnap.floorUnder(AFRAME.THREE, this._censusFloors || [], gripP.x, gripP.z);
+        var under = window.SpaceSnap.floorUnder(AFRAME.THREE, this._censusFloors || [], gripP.x, gripP.z);
         var over = null;
         if (under) cen.floors.forEach(function (f) { if (f.id === under.id) over = f; });
         var vp = frame.getViewerPose(refSpace);
@@ -2149,12 +2149,12 @@
         });
         return WM.levelDeviation(flat, seed);
       },
-      // The room-snapping geometry lives in the pure, unit-tested client/room-snap.js (RoomSnap). These
+      // The space-snapping geometry lives in the pure, unit-tested client/space-snap.js (SpaceSnap). These
       // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
-      _euler: function (q) { return window.RoomSnap.eulerYXZ(AFRAME.THREE, q); },
-      _yawOf: function (n) { return window.RoomSnap.yawOf(n); },
+      _euler: function (q) { return window.SpaceSnap.eulerYXZ(AFRAME.THREE, q); },
+      _yawOf: function (n) { return window.SpaceSnap.yawOf(n); },
       _register: function (cur) {
-        var r = window.RoomSnap.register(AFRAME.THREE, cur, this._ref, window.CONJURE_REG);
+        var r = window.SpaceSnap.register(AFRAME.THREE, cur, this._ref, window.CONJURE_REG);
         this._regStat = r.stat;
         this._regRes = r.residuals || null;   // per-wall fit residuals for the --debug-registration probe
         return r.Tmat;
@@ -2626,7 +2626,7 @@
           // reported? Pass A keeps only the polygon's two spans and throws the polygon away, so the whole
           // system downstream — the local render, the posted seed, registration, every anchor — is built on
           // that rectangle, and a lossy reduction is invisible precisely because it is applied
-          // consistently. Two numbers, two different faults (RoomSnap.polyFit holds the reasoning):
+          // consistently. Two numbers, two different faults (SpaceSnap.polyFit holds the reasoning):
           //   off  — distance from the AABB's own centre to the plane's pose origin. The rect takes the
           //          AABB's DIMENSIONS but is centred on the origin, so a non-zero off displaces every
           //          rendered surface by exactly that much. Expected ~0; never checked until now.
@@ -2636,7 +2636,7 @@
           // the jitter campaign already paid for once (§9/§10).
           var offMax = 0, offSem = "", offSum = 0, offN = 0, offBig = 0, fillMin = 1, fillSem = "", verts = {};
           cur.forEach(function (c) {
-            var f = window.RoomSnap.polyFit(c.poly);
+            var f = window.SpaceSnap.polyFit(c.poly);
             if (!f) return;
             offN++; offSum += f.off;
             if (f.off > offMax) { offMax = f.off; offSem = c.sem; }
@@ -2671,7 +2671,7 @@
           if (!amOwner) self._ref = [];                                  // guest: replace wholesale from authority
           var mx = 0;
           docSurfaces.forEach(function (e) {
-            var rr = window.RoomSnap.surfaceToRef(THREE, e);              // one source of truth (YXZ-correct normal)
+            var rr = window.SpaceSnap.surfaceToRef(THREE, e);              // one source of truth (YXZ-correct normal)
             var m = e.meta || {};                                        // carry the inset's corner-relative
             if (m.host_wall) rr.hostWall = m.host_wall;                  // anchor onto its _ref entry, so inset
             if (m.along) rr.anchor = { along: m.along, vertical: m.vertical };   // IDENTITY resolves against _ref
@@ -2775,7 +2775,7 @@
         // against candidates to find/mint the physical room — otherwise selection can never resolve (the
         // old !isVoidWorld gate is what left an outdoor re-entry stuck on "finding").
         if (pendingSelect) {
-          var pick = window.RoomSnap.selectSpace(THREE, cur, pendingSelect.candidates, window.CONJURE_REG);
+          var pick = window.SpaceSnap.selectSpace(THREE, cur, pendingSelect.candidates, window.CONJURE_REG);
           if (pick) { commitSelect({ matched: true, owner: pick.owner, name: pick.name }); return; }
           pendingSelect.tries++;
           var nWalls = cur.filter(function (c) { return c.orient === "vertical"; }).length;
@@ -2822,7 +2822,7 @@
               if (!this._haveT) this._markLost(time);
               this.lastPost = time - RETRY_MS; return;
             }
-            var cf = window.RoomSnap.canonicalFrame(THREE, cur, { origin: window.CONJURE_VOID_ORIGIN });
+            var cf = window.SpaceSnap.canonicalFrame(THREE, cur, { origin: window.CONJURE_VOID_ORIGIN });
             if (!cf.Tmat) {                                   // fewer than 2 walls → no frame to derive
               this._regStat = cf.stat;
               if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, null);
@@ -2881,7 +2881,7 @@
         // Runs for owner AND guest now (unified): everyone renders their own capture; only the owner authors.
         // See docs/specs/spaces-geometry.md §9.1.
         var surfaces = [], localSurfaces = [], floor = null, claimed = new Set();
-        var RS = window.RoomSnap, INSET_SEMS = { "door": 1, "window": 1, "wall art": 1 };
+        var RS = window.SpaceSnap, INSET_SEMS = { "door": 1, "window": 1, "wall art": 1 };
         // TEST (--drop-surface): a comma-separated list of semantics/ids to pretend we didn't capture.
         var dropList = (window.CONJURE_DROP_SURFACE || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
         // A cur plane's pose in the shared reference frame (F_ref): T · plane.
@@ -2921,8 +2921,8 @@
           // entry goes in (it would otherwise be its own nearest candidate at distance 0), naming the best
           // rejected reference and the gate that rejected it — the difference between "a new surface
           // appeared" and "wall_7 was right there and missed by 4 cm of perpendicular offset".
-          if (window.CONJURE_GEOMETRY_LOG && window.RoomSnap && probe) {
-            var w = window.RoomSnap.explainNoMatch(THREE, probe, self._ref, window.CONJURE_WALL);
+          if (window.CONJURE_GEOMETRY_LOG && window.SpaceSnap && probe) {
+            var w = window.SpaceSnap.explainNoMatch(THREE, probe, self._ref, window.CONJURE_WALL);
             self._churn("mint", { sem: c.sem, why: w.why, gate: w.gate, val: w.val, tol: w.tol,
                                   near: w.id, dist: w.dist });
           }
@@ -2999,12 +2999,12 @@
         // round-trip. Squaring is intentionally skipped (default off — trust the raw local planes; docs §9).
         // world-root stays identity (_updateWorldFrame). The apply-gate inside applyEntity means an unchanged
         // surface isn't re-laid, so nothing "pops".
-        window.RoomSnap.joinCorners(THREE, localSurfaces);        // close wall corners (the recovery + snap basis)
+        window.SpaceSnap.joinCorners(THREE, localSurfaces);        // close wall corners (the recovery + snap basis)
         // Height census BEFORE sealing — sealWalls rewrites each wall's centre height and height to close
         // the slit against whatever floor/ceiling covers it, which is precisely the measurement we want.
         // After sealing every wall agrees with its floor by construction and the census says nothing.
         this._logLevel(localSurfaces);
-        window.RoomSnap.sealWalls(THREE, localSurfaces, window.CONJURE_WALL_SEAL_TOL);   // seal wall tops→ceiling, bottoms→floor (§9.1)
+        window.SpaceSnap.sealWalls(THREE, localSurfaces, window.CONJURE_WALL_SEAL_TOL);   // seal wall tops→ceiling, bottoms→floor (§9.1)
         this._localPlanes = localToPlanes(THREE, localSurfaces);   // stash for avatar anchors (§5.1) / presence
         // Reconstruct any seed surface this client didn't capture (§5.2) and fold it into the render set, so
         // recovered surfaces both draw and can host on-surface content just like captured ones.
@@ -3012,7 +3012,7 @@
         var allSurfaces = recovered.length ? localSurfaces.concat(recovered) : localSurfaces;
         // Snap ALL insets (captured AND recovered) co-planar to their walls + carve openings — so a
         // recovered door/window/wall-art snaps to its wall instead of floating at the raw anchor pose (§5.2).
-        window.RoomSnap.snapInsets(THREE, allSurfaces, window.CONJURE_INSET_STANDOFF);
+        window.SpaceSnap.snapInsets(THREE, allSurfaces, window.CONJURE_INSET_STANDOFF);
         if (JIT) this._jMark("prepL");                    // joinCorners + recoverMissing + snapInsets (local)
         this._renderLocal(allSurfaces);
         if (JIT) this._jMark("renderL");                  // apply-gate + setAttribute + geometry rebuild
@@ -3029,10 +3029,10 @@
         // their wall toward the room interior. Both mutate `surfaces` in place (position, extent, holes).
         // The seed is built with the SAME treatment as the local render (joinCorners only, NO squaring) so
         // the shared model stays consistent with the raw geometry every headset draws (docs §9). Pure
-        // geometry, unit-tested in client/room-snap.js.
-        window.RoomSnap.joinCorners(THREE, surfaces);
-        window.RoomSnap.sealWalls(THREE, surfaces, window.CONJURE_WALL_SEAL_TOL);   // same treatment as local render (§9.1)
-        window.RoomSnap.snapInsets(THREE, surfaces, window.CONJURE_INSET_STANDOFF);
+        // geometry, unit-tested in client/space-snap.js.
+        window.SpaceSnap.joinCorners(THREE, surfaces);
+        window.SpaceSnap.sealWalls(THREE, surfaces, window.CONJURE_WALL_SEAL_TOL);   // same treatment as local render (§9.1)
+        window.SpaceSnap.snapInsets(THREE, surfaces, window.CONJURE_INSET_STANDOFF);
         // Author each captured inset's CORNER-RELATIVE anchor (§5.3 L2): its along-wall distances to the host
         // wall's corner points + its floor/ceiling edge distances — SHARED structural features, so any client
         // (esp. a guest whose wall scan centres differently) reconstructs the same physical spot, never riding
@@ -3040,7 +3040,7 @@
         // snapInsets — and BEFORE _lp/_lq are dropped. Attached to the posted surface (→ persisted in the seed)
         // AND stamped onto the inset's `_ref` entry, so NEXT capture's identity match reconstructs against it
         // from _ref (immediate) rather than the lagging seed (docs/specs/spaces-geometry.md §6.1).
-        var authorCorners = window.RoomSnap.wallCorners(THREE, surfaces);
+        var authorCorners = window.SpaceSnap.wallCorners(THREE, surfaces);
         var authorFloorY = null, authorCeilY = null, authorWallById = {}, refById = {};
         surfaces.forEach(function (s) {
           if (s.semantic === "floor") authorFloorY = s._lp.y;
@@ -3051,7 +3051,7 @@
         surfaces.forEach(function (s) {
           if (!INSET_SEMS[s.semantic] || !s.hostWall) return;
           var hw = authorWallById[s.hostWall]; if (!hw) return;
-          var anc = window.RoomSnap.authorInsetAnchor(THREE, s, hw, authorCorners.get(s.hostWall), authorFloorY, authorCeilY);
+          var anc = window.SpaceSnap.authorInsetAnchor(THREE, s, hw, authorCorners.get(s.hostWall), authorFloorY, authorCeilY);
           s.along = anc.along; s.vertical = anc.vertical;
           if (anc.fallback) s.structuralFallback = anc.fallback;
           var rr = refById[s.id];                                        // stamp onto _ref for next capture's match

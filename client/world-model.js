@@ -3,7 +3,7 @@
 // transforms and geometry (no DOM, no A-Frame) can be strict TYPE-CHECKED (npm run typecheck) and
 // unit-tested (tests/js/world-model.test.js). The A-Frame/DOM glue stays in conjure-client.js, which loads
 // this as window.WorldModel; the geometry helpers take the THREE module as their first arg (browser passes
-// AFRAME.THREE, node tests pass require('three')) — same convention as room-snap.js.
+// AFRAME.THREE, node tests pass require('three')) — same convention as space-snap.js.
 
 /**
  * @typedef {typeof import('three')} THREE_NS
