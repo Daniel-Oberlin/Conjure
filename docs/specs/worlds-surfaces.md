@@ -124,7 +124,7 @@ The whole real/virtual spectrum is two independent axes:
 
 | Mode | passthrough | `spacePresentation.active` | `defaultSurfaceVisible` | What you get |
 |---|---|---|---|---|
-| `virtual_room` | off | true | **true** | a virtual reconstruction of the space, recolourable |
+| `virtual_space` | off | true | **true** | a virtual reconstruction of the space, recolourable |
 | `ar` | on | true | false | the real space; surfaces invisible but used for mounting and bounds |
 | `mixed` | on | true | *(untouched)* | passthrough plus whatever `show_surface` reveals |
 | `authored` | off | true | false | captured surfaces hidden, ready for replacement geometry |

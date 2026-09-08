@@ -3,7 +3,7 @@
 
 Simulates what the Quest's WebXR capture would send (docs/specs/worlds-surfaces.md): four walls, a floor, a
 ceiling, and a table, plus the room boundary — **centered on the user** so it surrounds you (a real
-capture arrives relative to where you stand). Also flips to `virtual_room` immersion so the surfaces
+capture arrives relative to where you stand). Also flips to `virtual_space` immersion so the surfaces
 are visible on desktop. Then drive the director (`set_immersion` / `show_surface`).
 
 Usage:  python scripts/send_space.py
@@ -40,7 +40,7 @@ SPACE = {
     "replace": True,
 }
 
-# Make the surfaces visible on desktop (no passthrough): virtual_room immersion.
+# Make the surfaces visible on desktop (no passthrough): virtual_space immersion.
 VISIBLE = {"ops": [{"op": "env", "set": {
     "passthrough": False, "room.active": True, "room.defaultSurfaceVisible": True}}]}
 
@@ -55,8 +55,8 @@ def _post(path: str, body: dict) -> str:
 
 def main() -> int:
     print(_post("/space/capture", SPACE))
-    _post("/patch", VISIBLE)   # show the surfaces (virtual_room mode)
-    print("Posted a synthetic room around you (virtual_room mode). Try:")
+    _post("/patch", VISIBLE)   # show the surfaces (virtual_space mode)
+    print("Posted a synthetic room around you (virtual_space mode). Try:")
     print('  conjure-cli say "make the walls glass and the ceiling a galaxy"')
     print('  conjure-cli say "switch to AR" / "drop into full VR"')
     return 0

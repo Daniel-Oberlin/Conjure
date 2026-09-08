@@ -245,7 +245,7 @@ async def query_world() -> str:
 # --- Room model (AR / scene understanding) — see docs/specs/worlds-surfaces.md -----------------------------
 
 _IMMERSION = {
-    "virtual_room": {"passthrough": False, "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": True},
+    "virtual_space": {"passthrough": False, "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": True},
     "ar":           {"passthrough": True,  "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": False},
     "mixed":        {"passthrough": True,  "spacePresentation.active": True},
     "authored":     {"passthrough": False, "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": False},
@@ -329,12 +329,14 @@ async def dynamics_resource() -> str:
 
 @mcp.tool()
 async def set_immersion(mode: str) -> str:
-    """Set how much real room vs. virtual the user sees:
-    - virtual_room: passthrough off, the room's surfaces rendered (a virtual copy of the room).
-    - ar: passthrough on, real room visible, surfaces hidden (mount/occlude against them).
-    - mixed: passthrough on; then show_surface to reveal specific surfaces (e.g. a virtual ceiling).
-    - authored: passthrough off, captured room hidden — use after build_room to show a built room.
-    - vr_unbounded: ignore the room entirely; the original full synthetic VR space.
+    """Set how much of the real space vs. virtual the user sees:
+    - virtual_space: the captured surfaces are RENDERED — a recolourable virtual copy of the space.
+    - ar: the captured surfaces are hidden; the real space shows through (mount/occlude against them).
+    - mixed: leaves surface visibility alone, so show_surface composes the blend (e.g. a virtual ceiling
+      over real walls).
+    - authored: captured surfaces hidden, the space still in effect — intended for replacement geometry
+      built to the real footprint. No tool builds that geometry yet, so today this matches `ar`.
+    - vr_unbounded: ignore the space entirely; the original full synthetic VR environment.
     """
     env = _IMMERSION.get(mode)
     if env is None:
