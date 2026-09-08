@@ -151,7 +151,7 @@ def test_reanchor_surface_images_repins_stranded_on_compose():
     assert 0.01 < math.dist(img["transform"]["position"], [2.0, 1.5, 0.0]) < 0.05   # ~2 cm toward the room
 
 
-def test_face_room_faces_opposite_the_surface_normal_upright(srv):
+def test_face_interior_faces_opposite_the_surface_normal_upright(srv):
     from conjure.server import _face_interior, _forward
     # content faces AWAY from the surface's (outward) normal — into the room — for any surface orientation
     for srot in ([0.0, 90.0, 0.0], [0.0, -41.0, 0.0], [90.0, 0.0, 0.0]):
@@ -162,7 +162,7 @@ def test_face_room_faces_opposite_the_surface_normal_upright(srv):
     assert _face_interior([0.0, 90.0, 0.0])["rotation"][2] == pytest.approx(0, abs=0.5)
 
 
-def test_face_room_aligns_flat_content_to_the_surface_rectangle(srv):
+def test_face_interior_aligns_flat_content_to_the_surface_rectangle(srv):
     # On an up-facing surface (a table yawed 30°) there's no gravity-up, so the image must align to the
     # SURFACE's own rectangle (its in-plane axis), not an arbitrary world axis that tilts it ~30°. The
     # image's up matches the surface's -Y (a 180° flip about vertical — +Y read consistently upside-down).
@@ -752,7 +752,7 @@ def test_expected_routes_exist(srv):
 
 # --------------------------------------------------------------------------- room model
 
-def test_room_unchanged_capture_is_not_rebroadcast(srv, client):
+def test_space_unchanged_capture_is_not_rebroadcast(srv, client):
     # fix A: a settled room stops emitting patches — an identical re-capture makes NO new revision, so the
     # client isn't re-applying (and rebuilding) every surface every ~2 s (the "pops").
     body = {"client_id": "h1", "surfaces": [
@@ -770,7 +770,7 @@ def test_room_unchanged_capture_is_not_rebroadcast(srv, client):
     assert client.get("/world").json()["rev"] > rev          # a real move DOES update
 
 
-def test_room_authority_taken_over_only_when_stale(srv, client, monkeypatch):
+def test_capture_authority_taken_over_only_when_stale(srv, client, monkeypatch):
     import conjure.server as S
     body = lambda cid: {"client_id": cid, "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]}]}
@@ -783,7 +783,7 @@ def test_room_authority_taken_over_only_when_stale(srv, client, monkeypatch):
     assert client.get("/world").json()["environment"]["captureAuthority"] == "h2"
 
 
-def test_room_ingest_creates_real_surfaces_and_boundary(srv, client):
+def test_capture_ingest_creates_real_surfaces_and_boundary(srv, client):
     body = {"client_id": "h1",
             "surfaces": [{"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2],
                           "extent": [3, 2.4]}],
@@ -943,13 +943,13 @@ def test_tunnel_404_when_none_running(srv, client, tmp_path, monkeypatch):
     assert client.get("/tunnel", follow_redirects=False).status_code == 404
 
 
-def test_room_authority_rejects_other_headset(srv, client):
+def test_capture_authority_rejects_other_headset(srv, client):
     client.post("/space/capture", json={"client_id": "h1", "surfaces": []})
     r = client.post("/space/capture", json={"client_id": "h2", "surfaces": []})
     assert r.json()["ok"] is False and "authority" in r.json()["error"]
 
 
-def test_room_recapture_updates_pose_but_keeps_director_style(srv, client):
+def test_space_recapture_updates_pose_but_keeps_director_style(srv, client):
     client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2]}]})
     # director colors + shows the wall
@@ -1002,7 +1002,7 @@ def test_style_surface_needs_color_or_opacity(srv, client):
     assert client.post("/style_surface", json={"target": "wall"}).json()["ok"] is False
 
 
-def test_room_replace_prunes_missing_surface_on_first_absence(srv, client):
+def test_capture_replace_prunes_missing_surface_on_first_absence(srv, client):
     # A `replace` post (the default) is the client's CONFIRMED set — it owns the absence debounce (docs §7),
     # so a surface missing from it is genuinely gone and the server prunes it at once (no server-side counter).
     client.post("/space/capture", json={"client_id": "h1", "surfaces": [
@@ -1107,7 +1107,7 @@ def test_world_names_are_unique_within_a_session():
         d.create("MEADOW", WorldStore({"rev": 0, "environment": {}, "entities": []}))
 
 
-def test_reset_room_authority_clears_stale_id(srv):
+def test_reset_capture_authority_clears_stale_id(srv):
     from conjure.world import WorldStore
     s = WorldStore({"id": "x", "name": "x", "rev": 0, "entities": [],
                     "environment": {"captureAuthority": "hs_dead"}})
@@ -1203,7 +1203,7 @@ def test_decompose_extracts_only_real_overrides_and_round_trips(srv):
     assert srv._compose(back, space)["entities"] == composed["entities"]
 
 
-def test_room_geometry_is_shared_across_worlds_styling_is_per_world(srv, client):
+def test_space_geometry_is_shared_across_worlds_styling_is_per_world(srv, client):
     # capture a room and style the couch in the current ('default') world
     client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_couch_1", "semantic": "couch", "position": [1, 0.5, 0], "extent": [2, 0.8]},
@@ -1605,7 +1605,7 @@ def test_the_fallback_skips_an_agent_that_cannot_live_in_a_space(srv):
     assert S._entry_scope_for("bob", prefer="daniel/agents/scratch") == "bob/agents/scratch"
 
 
-def test_an_outdoor_world_is_not_relocated_by_recognising_the_room(srv, client):
+def test_an_outdoor_world_is_not_relocated_by_recognising_the_space(srv, client):
     """specs/spaces.md §4.3. The client votes its capture against candidates even in a void world — it must, or an outdoor
     re-entry never resolves a space at all. But resolving WHICH space you're in and MOVING you to that
     space's last world are different things, and only the first is wanted when you deliberately chose to
@@ -1629,7 +1629,7 @@ def test_an_outdoor_world_is_not_relocated_by_recognising_the_room(srv, client):
     assert srv.active_space == srv.VOID                    # still deliberately space-less
 
 
-def test_a_boot_placeholder_IS_relocated_by_recognising_the_room(srv, client):
+def test_a_boot_placeholder_IS_relocated_by_recognising_the_space(srv, client):
     """The contrast that makes the no-relocation rule safe, and a **regression guard rather than a new behaviour**: a boot
     placeholder has always relocated, and must keep doing so. A world minted before anything knew the
     space is UNSET, not VOID — a guess, not a choice. Were both spelled VOID, the branch above would
@@ -2064,7 +2064,7 @@ def test_implicit_mint_degrades_to_void_in_someone_elses_private_space(srv, clie
         S.active_space_owner, S.active_space = monkey
 
 
-def test_an_outdoor_agents_worlds_are_room_less_however_they_are_minted(srv, client):
+def test_an_outdoor_agents_worlds_are_space_less_however_they_are_minted(srv, client):
     """An agent whose point is to put you SOMEWHERE ELSE declares `world.outdoor`, and every mint path
     honours it. Without this, the space stamp (which every path now applies) gave the outdoor agent's
     constructor-built first world the whole room you were standing in — measured at 59 surfaces on the
@@ -2974,20 +2974,20 @@ def _space_with_walls():
          "transform": {"position": [0, 1.2, -1.3], "rotation": [0, 90, 0]}}], "boundary": None}
 
 
-def test_compose_marks_room_active_when_inheriting_space_geometry():
+def test_compose_marks_presentation_active_when_inheriting_space_geometry():
     from conjure import server
     doc = server._compose({"environment": {"spacePresentation": {"edgesVisible": True}}, "entities": []}, _space_with_walls())
     assert doc["environment"]["spacePresentation"].get("active") is True
     assert sum(1 for e in doc["entities"] if (e.get("meta") or {}).get("real")) == 2
 
 
-def test_compose_respects_explicit_room_active_false():
+def test_compose_respects_explicit_presentation_active_false():
     from conjure import server  # a director immersion mode (vr_unbounded) hides the room — must not be flipped
     doc = server._compose({"environment": {"spacePresentation": {"active": False}}, "entities": []}, _space_with_walls())
     assert doc["environment"]["spacePresentation"].get("active") is False
 
 
-def test_compose_leaves_room_inactive_without_reals():
+def test_compose_leaves_presentation_inactive_without_reals():
     from conjure import server
     doc = server._compose({"environment": {"spacePresentation": {}}, "entities": []}, {"surfaces": [], "boundary": None})
     assert not doc["environment"]["spacePresentation"].get("active")
@@ -3023,7 +3023,7 @@ def test_move_leaves_unanchored_content_alone(srv, client):
     assert "anchor" not in (e.get("meta") or {})
 
 
-def _anchored_room(client):
+def _anchored_space(client):
     """A seed room with a floor + 4 walls — enough for _content_anchor to author a plane-relative anchor."""
     client.post("/space/capture", json={"client_id": "h1", "surfaces": [
         {"id": "real_floor_0", "semantic": "floor", "position": [0, 0, 0], "rotation": [-90, 0, 0], "extent": [4, 6]},
@@ -3038,7 +3038,7 @@ def test_manipulate_reauthors_anchor_so_a_grab_survives_recapture(srv, client):
     # restart. An anchored model's pose is RE-SOLVED from meta.anchor every capture, so /manipulate must
     # re-author the anchor from the new pose — exactly as /patch does — or the next solve reverts the grab.
     from conjure.plane_anchor import solve_anchor
-    _anchored_room(client)
+    _anchored_space(client)
     anchor = srv._content_anchor({"position": [0.3, 0, -0.8]}, "grounded")
     assert anchor
     client.post("/patch", json={"ops": [{"op": "add", "entity": {
@@ -3053,7 +3053,7 @@ def test_manipulate_reauthors_anchor_so_a_grab_survives_recapture(srv, client):
 
 def test_manipulate_leaves_unanchored_content_without_an_anchor(srv, client):
     # A free (un-anchored) object grabbed in 6DOF must not acquire a spurious anchor — mirrors /patch.
-    _anchored_room(client)
+    _anchored_space(client)
     client.post("/patch", json={"ops": [{"op": "add", "entity": {
         "id": "ent_float", "transform": {"position": [0, 1, -2]}, "components": {"gltf-model": "/a"}, "meta": {}}}]})
     client.post("/manipulate", json={"id": "ent_float", "position": [1, 1.4, -2]})
@@ -3589,7 +3589,7 @@ def test_manipulate_stores_a_client_authored_anchor_verbatim(srv, client):
     # The client authors the anchor against ITS OWN walls and sends it; the server stores it as-is. Letting
     # the server re-author from the committed position instead adds author/solve hops between plane sets
     # that aren't rigidly related, and the residual shows up as content settling off the drop point.
-    _anchored_room(client)
+    _anchored_space(client)
     anchor = srv._content_anchor({"position": [0.3, 0, -0.8]}, "grounded")
     assert anchor
     client.post("/patch", json={"ops": [{"op": "add", "entity": {
@@ -3607,7 +3607,7 @@ def test_manipulate_stores_a_client_authored_anchor_verbatim(srv, client):
 def test_manipulate_still_reauthors_when_no_anchor_is_sent(srv, client):
     # No client anchor (no room basis on that client) ⇒ the server re-authors, as before.
     from conjure.plane_anchor import solve_anchor
-    _anchored_room(client)
+    _anchored_space(client)
     anchor = srv._content_anchor({"position": [0.3, 0, -0.8]}, "grounded")
     client.post("/patch", json={"ops": [{"op": "add", "entity": {
         "id": "ent_dog3", "transform": {"position": [0.3, 0, -0.8]}, "components": {"gltf-model": "/a"},
@@ -3685,7 +3685,7 @@ def test_manipulate_stores_a_client_anchor_on_previously_unanchored_content(srv,
     # F_ref pose every capture. Keeping the exact one the drop produced replaces that re-derived
     # approximation, so free content is as accurate as models. (The server still never INVENTS one — see
     # test_manipulate_leaves_unanchored_content_without_an_anchor.)
-    _anchored_room(client)
+    _anchored_space(client)
     client.post("/patch", json={"ops": [{"op": "add", "entity": {
         "id": "ent_free_img", "transform": {"position": [0, 1.4, -2]},
         "components": {"geometry": {"primitive": "plane", "width": 0.5, "height": 0.4}}, "meta": {}}}]})
@@ -3997,7 +3997,7 @@ def test_the_history_records_what_was_open_and_caps(srv, client):
 
 # -- being moved by the room is announced ---------------------------------------------------------
 
-def test_a_room_match_that_relocates_you_says_so(srv, client, monkeypatch):
+def test_a_space_match_that_relocates_you_says_so(srv, client, monkeypatch):
     """Decision #20 made a room-driven AGENT change audible. A relocation within the SAME agent — restart
     the server in a different room — stayed silent, which is the same surprise minus the attribution."""
     said = []
@@ -4015,7 +4015,7 @@ def test_a_room_match_that_relocates_you_says_so(srv, client, monkeypatch):
     assert any("daniel/office" in t and "office-world" in t for t in said), said
 
 
-def test_being_admitted_to_the_room_you_are_already_in_says_nothing(srv, client, monkeypatch):
+def test_being_admitted_to_the_space_you_are_already_in_says_nothing(srv, client, monkeypatch):
     """No relocation, no announcement — otherwise every headset reconnect narrates itself."""
     said = []
 
@@ -4162,7 +4162,7 @@ def test_a_void_world_refuses_a_wall_relative_anchor(srv, client):
     assert "anchor" not in (e.get("meta") or {})               # …but nothing wall-relative is persisted
 
 
-def test_a_world_with_a_room_still_stores_the_anchor(srv, client):
+def test_a_world_with_a_space_still_stores_the_anchor(srv, client):
     """The guard is about space-less worlds only. Dropping the anchor where it IS meaningful would
     reintroduce the drift it exists to remove — the client's exact drop replaced by a re-derivation."""
     eid = _place_box(client)

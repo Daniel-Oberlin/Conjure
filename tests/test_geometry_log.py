@@ -42,7 +42,7 @@ def test_client_batch_lands_as_one_jsonl_line_per_event(srv, client):
     assert rows[0]["t"] < rows[1]["t"] or rows[0]["ct"] < rows[1]["ct"]
 
 
-def test_a_settled_room_writes_nothing(srv, client):
+def test_a_settled_space_writes_nothing(srv, client):
     """The affordability argument for leaving this on: no change, no line."""
     surfaces = [_surface("real_wall_1"), _surface("real_floor_2", "floor", (0, 0, 0))]
     body = {"client_id": "hs_1", "surfaces": surfaces, "boundary": None, "replace": True}

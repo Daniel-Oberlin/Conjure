@@ -2258,7 +2258,7 @@
         debugLog("coloc", line, window.CONJURE_DEBUG_REGISTRATION);   // gated by --debug-registration, not debug_log
         this._diagHud(line);
       },
-      // Pin the skybox to the ROOM's frame (§5d — wall-relative yaw), in BOTH rotation and horizontal
+      // Pin the skybox to the SPACE's frame (§5d — wall-relative yaw), in BOTH rotation and horizontal
       // position. The <a-sky>/#grounded-sky live as scene children (not inside #world-root, which
       // applySnapshot clears), so left alone they'd hold the arbitrary per-session tracking pose and spin
       // between visits. #world-root is identity in a captured room now, so instead of reading it we apply
@@ -2815,7 +2815,7 @@
               this._regStat = "void-loading " + vWalls + "/" + (this._voidGate.max || "?");
               if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, null);
               // Deliberately NOT _markLost when we still have a frame to hold. The relocalizing fallback
-              // reveals passthrough, whose remedy ("step out of the play area") applies to a wrong ROOM;
+              // reveals passthrough, whose remedy ("step out of the play area") applies to a wrong SPACE;
               // in a void world it would show you your real room instead of the void for the 1.2 s grace
               // while we simply wait for planes. With no frame at all there IS nothing to show, so the
               // original behaviour stands.

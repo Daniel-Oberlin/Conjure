@@ -6,8 +6,8 @@ ceiling, and a table, plus the room boundary — **centered on the user** so it 
 capture arrives relative to where you stand). Also flips to `virtual_room` immersion so the surfaces
 are visible on desktop. Then drive the director (`set_immersion` / `show_surface`).
 
-Usage:  python scripts/send_room.py
-        CONJURE_URL=http://localhost:8080 python scripts/send_room.py
+Usage:  python scripts/send_space.py
+        CONJURE_URL=http://localhost:8080 python scripts/send_space.py
 Then, e.g.:  conjure-cli say "make the walls glass and the ceiling a galaxy"
              conjure-cli say "drop into full VR"   (set_immersion vr_unbounded)
 """
@@ -25,7 +25,7 @@ W, D, H = 4.0, 5.0, 2.6
 x0, x1 = CX - W / 2, CX + W / 2
 z0, z1 = CZ - D / 2, CZ + D / 2
 
-ROOM = {
+SPACE = {
     "client_id": "synthetic",
     "boundary": {"floorPolygon": [[x0, z0], [x1, z0], [x1, z1], [x0, z1]], "height": H},
     "surfaces": [
@@ -54,7 +54,7 @@ def _post(path: str, body: dict) -> str:
 
 
 def main() -> int:
-    print(_post("/space/capture", ROOM))
+    print(_post("/space/capture", SPACE))
     _post("/patch", VISIBLE)   # show the surfaces (virtual_room mode)
     print("Posted a synthetic room around you (virtual_room mode). Try:")
     print('  conjure-cli say "make the walls glass and the ceiling a galaxy"')

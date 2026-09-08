@@ -59,7 +59,7 @@ async def test_query_world_dumps_everything(monkeypatch):
     assert "floor" in out and "ent_asset_1" in out and "environment" in out  # full dump incl. scaffold
 
 
-def _room_doc(n_walls=3, n_floors=2):
+def _space_doc(n_walls=3, n_floors=2):
     """A world whose entity list is mostly captured room — the shape that made the dump 87% filler."""
     ents = [{"id": "ent_asset_1", "meta": {"title": "Oak Tree"}, "components": {"gltf-model": "/assets/x.glb"},
              "transform": {"position": [0, 0, -3]}}]
@@ -78,7 +78,7 @@ async def test_query_world_collapses_real_surfaces_to_one_line(monkeypatch):
     position and nothing else — most of the dump's bulk, and no colour, which is the one attribute
     anyone asks a surface about."""
     monkeypatch.setattr(m, "BASE", "http://world")
-    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_room_doc()))
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_space_doc()))
     out = await _tool("query_world")()
     assert "ent_asset_1" in out and "Oak Tree" in out             # placed objects still listed one by one
     assert "real_wall_0" not in out and "real_floor_1" not in out  # surfaces are NOT
@@ -92,7 +92,7 @@ async def test_the_collapsed_line_says_it_is_not_the_whole_story(monkeypatch):
     complete, so an agent concluded surface colours aren't stored (they are, in room://current). The
     replacement has to name what it withheld and where it lives, or it just moves the same trap."""
     monkeypatch.setattr(m, "BASE", "http://world")
-    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_room_doc()))
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_space_doc()))
     out = await _tool("query_world")()
     line = next(ln for ln in out.splitlines() if "REAL" in ln)
     assert "NOT listed" in line                                    # the omission is explicit…
@@ -100,9 +100,9 @@ async def test_the_collapsed_line_says_it_is_not_the_whole_story(monkeypatch):
 
 
 @respx.mock
-async def test_a_roomless_world_gains_no_summary_line(monkeypatch):
+async def test_a_spaceless_world_gains_no_summary_line(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
-    doc = _room_doc(n_walls=0, n_floors=0)
+    doc = _space_doc(n_walls=0, n_floors=0)
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json=doc))
     out = await _tool("query_world")()
     assert "REAL" not in out                                       # no surfaces → no stand-in for them
@@ -112,7 +112,7 @@ async def test_a_roomless_world_gains_no_summary_line(monkeypatch):
 async def test_the_collapse_is_what_makes_the_dump_cheap(monkeypatch):
     """The point, in one measurement: a captured room's surfaces are most of the dump's characters."""
     monkeypatch.setattr(m, "BASE", "http://world")
-    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_room_doc(22, 3)))
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_space_doc(22, 3)))
     out = await _tool("query_world")()
     per_surface = len("  - real_wall_00: REAL wall (room surface — see the room summary) at [0, 1, -2]\n")
     assert len(out) < 25 * per_surface // 2      # comfortably under half of what 25 listed lines cost
