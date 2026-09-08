@@ -1994,7 +1994,7 @@ def test_new_world_adopts_the_active_space(srv, client):
 
 def test_new_world_is_void_when_no_active_space(srv, client):
     """D5/step 5: with no active space (unclaimed server → active_space == VOID), a new NON-outdoor world is
-    born VOID — the honest 'no room yet', not the old anonymous-'home' Path B fallback."""
+    born VOID — the honest 'no space yet', not the old anonymous-'home' Path B fallback."""
     from conjure import server as S
     S.active_space = S.VOID                                             # unclaimed: no AR user established a space
     assert client.post("/worlds/new", json={"name": "sketch"}).json()["ok"]
@@ -3605,7 +3605,7 @@ def test_manipulate_stores_a_client_authored_anchor_verbatim(srv, client):
 
 
 def test_manipulate_still_reauthors_when_no_anchor_is_sent(srv, client):
-    # No client anchor (no room basis on that client) ⇒ the server re-authors, as before.
+    # No client anchor (no space basis on that client) ⇒ the server re-authors, as before.
     from conjure.plane_anchor import solve_anchor
     _anchored_space(client)
     anchor = srv._content_anchor({"position": [0.3, 0, -0.8]}, "grounded")

@@ -821,7 +821,7 @@ and dates are as originally written; none has been re-verified against today's c
 **Status:** open (refinements) · noted 2026-07-01 · **core shipped same day**
 
 **Shipped:** outdoor/void worlds (`new_world(outdoor=True)` → `environment.space == "<void>"`) are live —
-no room geometry, skybox + objects, geolocation won't yank them into a physical space. In AR, `space-capture`
+no space geometry, skybox + objects, geolocation won't yank them into a physical space. In AR, `space-capture`
 derives the frame on the fly with `SpaceSnap.canonicalFrame` (gravity-up + wall-grid axis + largest-wall
 forward + centroid origin), never captures/posts, and `#world-root` + the skybox ride that frame → the same
 physical room canonicalizes to the same orientation each visit (invariance unit-tested).

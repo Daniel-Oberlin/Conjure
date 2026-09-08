@@ -462,7 +462,7 @@ frame, while the server persists the reference frame and re-solves content from 
   slightly off where it was dropped.
 - `surface_offset` — for surface-attached content, the host-local offset (`ConjureFrames.surfaceOffset`).
   Host-relative and therefore frame-independent.
-- `position`/`rotation` — converted with `ConjureFrames.toRef`. With no room basis (a void/outdoor world)
+- `position`/`rotation` — converted with `ConjureFrames.toRef`. With no space basis (a void/outdoor world)
   the frames coincide and the local pose is committed as-is.
 
 If the client sends no anchor, the server re-authors one; without that, a move is reverted at the next

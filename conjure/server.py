@@ -2060,7 +2060,7 @@ class WorldRef(BaseModel):
     name: str
     scope: str = DEFAULT_SCOPE
     public: bool = True               # new_world: create public (default) or private
-    outdoor: bool = False             # new_world: an OUTDOOR/void world (skybox, no room; space = <void>)
+    outdoor: bool = False             # new_world: an OUTDOOR/void world (skybox, no space; space = <void>)
 
 
 class ScopeRef(BaseModel):
@@ -2248,7 +2248,7 @@ async def select_space(req: SpaceSelect) -> dict:
     if active_space == VOID:
         _slog("select", f"user={who!r} matched {req.owner}/{req.name} but the live world is outdoor "
                         f"→ space claimed, NOT relocating")
-        await _broadcast({"type": "notice", "text": "You're in a world with no room — staying put."})
+        await _broadcast({"type": "notice", "text": "You're in a world with no space — staying put."})
         return {"ok": True, "admitted": True, "kept_outdoor": True,
                 "msg": "You're in an outdoor world, so I've left you in it."}
 
@@ -2971,7 +2971,7 @@ def _may_create_world_in(user: str, owner: str, name: str) -> bool:
 def _space_for_new_world(scope: str, *, outdoor: bool = False) -> str:
     """The `environment.space` a freshly-minted world adopts (D5/step 5): the LIVE, geo+surface-selected
     space, so a world created while a headset is standing in a room composes THAT room. VOID — the honest
-    "no room here" — in three cases:
+    "no space here" — in three cases:
 
       - `outdoor`: an explicitly space-less world (skybox only);
       - no space is live (`active_space == VOID`) — an unclaimed server, or a void/outdoor world;
@@ -2998,11 +2998,11 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     style overrides. The real-surface geometry + boundary live in a shared, user-owned *space* (docs/
     specs/spaces.md §2). `environment.space` points a world at its space:
 
-        VOID ("<void>")     → an outdoor/void world: no room to merge — objects + skybox only.
+        VOID ("<void>")     → an outdoor/void world: no space to merge — objects + skybox only.
         "<owner>/<name>"    → a shared space, possibly ANOTHER user's (D3, the target form).
         "<name>"            → a bare/legacy ref → the world-owner's own space (back-compat).
         absent              → no space chosen YET → UNSET (D5 step 5 + specs/spaces.md §4.3): renders like VOID
-                              (the honest "no room yet", never the old anonymous-'home' fallback), but a
+                              (the honest "no space yet", never the old anonymous-'home' fallback), but a
                               headset selecting a space MAY relocate it, where a deliberate VOID may not.
 
     `_compose` merges the world's objects/prefs with the space's surfaces to build the doc the client
@@ -3022,7 +3022,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     doc = world.doc
     space_ref = (doc.get("environment", {}) or {}).get("space")
     if space_ref == VOID or not space_ref:                         # explicit outdoor/void OR no space chosen
-        composed_doc = copy.deepcopy(doc)                          # yet: no room to merge — objects +
+        composed_doc = copy.deepcopy(doc)                          # yet: no space to merge — objects +
         composed_doc["entities"] = [e for e in composed_doc.get("entities", [])   # skybox only. Neither
                                     if not (e.get("meta") or {}).get("real")]     # owns real geometry —
         # The LIVE doc says VOID for both, so the client's two-state contract (`isVoidWorld` → canonical
@@ -4674,7 +4674,7 @@ class ManipulateRequest(BaseModel):
     # plane-relative (shared surface ids + offsets), so one authored against any client's walls solves
     # correctly on every other client. Preferring it avoids re-authoring here from the committed position:
     # that adds author/solve hops between plane sets that aren't rigidly related, and the residual shows up
-    # as content settling slightly off where the user dropped it. Omitted (no room basis) ⇒ we re-author.
+    # as content settling slightly off where the user dropped it. Omitted (no space basis) ⇒ we re-author.
     anchor: Optional[dict] = None
     # Likewise for SURFACE-ATTACHED content: the host-local offset (host⁻¹·content) the client computed
     # against its own rendered host. Host-relative ⇒ frame-independent ⇒ stored verbatim.

@@ -941,7 +941,7 @@
     });
     // A SNAPSHOT is the COMPLETE world state, unlike an env PATCH (which merges only the fields it
     // carries — `applyEnv` is written for that merge). So a snapshot whose environment has no `room`
-    // block means THIS world has no room at all (an outdoor/void world), and the room flags must RESET
+    // block means THIS world has no space at all (an outdoor/void world), and the room flags must RESET
     // rather than inherit the previous world's. Without this, switching from a captured space to an
     // outdoor world left `presentation.active` true, so the last space's surfaces (locally-rendered ones
     // included — applyImmersion drives them via [data-real]) kept drawing over the outdoor world.

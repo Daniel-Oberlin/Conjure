@@ -825,7 +825,7 @@
       // FRAME: what we just dragged is in the LOCAL render frame (F_track). The server persists F_ref and
       // re-solves content from it every capture, so committing the raw local pose makes the object jump to
       // wherever that solve lands on release. Convert with ConjureFrames.toRef (the inverse of the client's
-      // solve). With no room basis (void/outdoor world) the frames coincide → commit the local pose as-is.
+      // solve). With no space basis (void/outdoor world) the frames coincide → commit the local pose as-is.
       var wp = obj.getWorldPosition(new THREE.Vector3());
       var wq = obj.getWorldQuaternion(new THREE.Quaternion());
       var mode = st.target.dataset.placement === "grounded" ? "grounded" : "free";

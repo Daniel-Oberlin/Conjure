@@ -965,7 +965,7 @@ server → client   {type:"context", …}                    # this connection's
   dead terminal and then flushes the entire backlog at once (observed 2026-08-28). `busy` could not
   fire for a same-connection follow-up, because the follow-up was never read.
 - **World-server notices are relayed into the conversation.** The world server narrates its slow or
-  surprising moments (*"Setting up your new world…"*, *"You're in a world with no room — staying put"*)
+  surprising moments (*"Setting up your new world…"*, *"You're in a world with no space — staying put"*)
   on its own socket, which only world clients — the headset — are on. `_follow_world_state` forwards
   any `notice` it sees to the conversation hub, so the CLI or voice client that *asked* is the one told.
   Without it the reassurance was addressed to whoever was wearing the headset, which is not necessarily
