@@ -43,7 +43,7 @@ So the boundary today is **a hint to the LLM, delivered as raw coordinates, that
 
 **There is no in-bounds clamp.** The design promised models would land inside the boundary and never
 through a wall; no such check exists on any placement path, and `floorPolygon` is read in exactly one
-place — the text formatter above. `query_room`'s own docstring still promises the enforcement ("Read
+place — the text formatter above. `query_space`'s own docstring still promises the enforcement ("Read
 this before placing things (so models land INSIDE the room, not through a wall)"), and the builder
 prompt names the boundary in its Live-context bullet, so the raw polygon reaches the model every turn.
 Both are advice, not a guarantee.

@@ -50,7 +50,7 @@ _ALLOWED_TOOLS: Optional[set[str]] = None if _raw_tools is None else set(filter(
 _ACCESS = os.environ.get("CONJURE_ACCESS", "all")       # "all" | "read"
 # Read-only tools: everything else is treated as mutating (safe default — a NEW tool is denied to a
 # read-only agent until it's classified here). `access: "read"` allows only these.
-_READONLY_TOOLS = {"query_world", "query_room", "view_relative", "list_worlds",
+_READONLY_TOOLS = {"query_world", "query_space", "view_relative", "list_worlds",
                    "list_image_generators", "search_library", "query_assets"}
 
 
@@ -205,7 +205,7 @@ def _real_surfaces_line(reals: list[dict]) -> str:
     and nothing else. The cost wasn't the worst of it: those lines READ as complete. Every entity in
     the dump has the same `id: description at pos` shape, so "this floor has no colour" and "this line
     doesn't show colour" are indistinguishable — and an agent that wants a colour concludes the world
-    doesn't store one. It does: `room://current` carries every surface's id, position, colour and
+    doesn't store one. It does: `space://current` carries every surface's id, position, colour and
     visibility, and it's already in the prompt of any agent that cares (observed 2026-08-26 — the
     director read this dump, saw no colours, and reported that surface colours aren't stored, with the
     real answer sitting in its own context).
@@ -255,8 +255,8 @@ _IMMERSION = {
 
 async def _space_summary() -> str:
     """Text summary of the real room: surfaces (by semantic + short id) + the boundary. Shared by the
-    query_room tool and the `room://current` resource (which agents inject into their prompt each turn,
-    so they needn't call query_room just to see surfaces)."""
+    query_space tool and the `space://current` resource (which agents inject into their prompt each turn,
+    so they needn't call query_space just to see surfaces)."""
     doc = await _get("/world")
     env = doc.get("environment", {})
     pres = env.get("spacePresentation", {})
@@ -278,7 +278,7 @@ async def _space_summary() -> str:
 
 
 @mcp.tool()
-async def query_room() -> str:
+async def query_space() -> str:
     """Summarize the user's real room: surfaces (by semantic label) + the boundary. Read this before
     placing things (so models land INSIDE the room, not through a wall) or to pick a surface to mount
     on / restyle. Real surfaces also appear in query_world as REAL entities — restyle or hide them
@@ -287,10 +287,10 @@ async def query_room() -> str:
     return await _space_summary()
 
 
-@mcp.resource("room://current")
-async def room_resource() -> str:
-    """The live real-room summary — injected each turn into agents that list `room://current` in their
-    context (so the builder sees the room without a query_room round-trip)."""
+@mcp.resource("space://current")
+async def space_resource() -> str:
+    """The live real-room summary — injected each turn into agents that list `space://current` in their
+    context (so the builder sees the room without a query_space round-trip)."""
     return await _space_summary()
 
 
@@ -298,7 +298,7 @@ async def room_resource() -> str:
 async def world_resource() -> str:
     """Live summary of the virtual scene you've built — PLACED objects (models/images) plus the
     ENVIRONMENT (skybox / sky color / fog). Injected each turn so the builder references them without a
-    query_world round-trip. Excludes scaffold and real surfaces (those are in room://current). The skybox
+    query_world round-trip. Excludes scaffold and real surfaces (those are in space://current). The skybox
     lives in the environment, not as an object, so it's reported on its own line — check here before
     telling the user there's no skybox to change/remove."""
     doc = await _get("/world")
@@ -411,7 +411,7 @@ async def show_surface(target: str, visible: bool = True) -> str:
                if t == "all" or e["id"] == target or e.get("meta", {}).get("semantic") == t
                or str(e.get("meta", {}).get("friendly_id")) == target]
     if not targets:
-        return f"No room surface matches {target!r} (try query_room)."
+        return f"No room surface matches {target!r} (try query_space)."
     await _post_patch([{"op": "update", "id": e["id"], "set": {"components.material.visible": visible}}
                        for e in targets])
     return f"{'Showed' if visible else 'Hid'} {len(targets)} surface(s) matching {target!r}."

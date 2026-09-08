@@ -5,7 +5,7 @@ from conjure.agent_client import (apply_context, human_count, prompt_from_contex
                                   render_parts, status_from_context, ws_url)
 
 _STATS = {"turns": 12, "cap": 40,
-          "chars": {"prompt": 10152, "room": 10589, "tools": 33492, "history": 568}}   # total 54_801
+          "chars": {"prompt": 10152, "space": 10589, "tools": 33492, "history": 568}}   # total 54_801
 _CTX = {"agent": "builder", "llm": "Claude", "stats": _STATS}
 
 
@@ -17,17 +17,17 @@ def test_human_count_keeps_the_bar_a_stable_width():
 def test_status_reports_turns_total_and_a_char_breakdown_with_percentages():
     bar = status_from_context(_CTX)
     assert bar == ("builder·claude   12/40 turns   54.8k chars   "
-                   "prompt 10.2k (19%) · room 10.6k (19%) · tools 33.5k (61%) · hist 568 (1%)")
+                   "prompt 10.2k (19%) · space 10.6k (19%) · tools 33.5k (61%) · hist 568 (1%)")
 
 
 def test_status_omits_slices_that_are_zero():
     # `room` is 0 until a turn actually assembles the {context} injection (and some agents never do) —
-    # a permanent "room 0 (0%)" would be noise.
+    # a permanent "space 0 (0%)" would be noise.
     ctx = {"agent": "outdoor", "llm": "Claude",
-           "stats": {"turns": 4, "cap": 40, "chars": {"prompt": 3434, "room": 0, "tools": 5367,
+           "stats": {"turns": 4, "cap": 40, "chars": {"prompt": 3434, "space": 0, "tools": 5367,
                                                       "history": 1478}}}
     bar = status_from_context(ctx)
-    assert "room" not in bar
+    assert "space" not in bar
     assert "prompt 3.4k (33%) · tools 5.4k (52%) · hist 1.5k (14%)" in bar
 
 
@@ -36,7 +36,7 @@ def test_status_degrades_by_shortening_before_it_drops_anything():
     compact = status_from_context(_CTX, width=len(full) - 1)
     # The breakdown survives a narrow terminal by losing its char counts, not by disappearing.
     assert compact != full and len(compact) <= len(full) - 1
-    for label in ("prompt", "room", "tools", "hist"):
+    for label in ("prompt", "space", "tools", "hist"):
         assert f"{label} " in compact
     assert "10.2k" not in compact and "19%" in compact
 

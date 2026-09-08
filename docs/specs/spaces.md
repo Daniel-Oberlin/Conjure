@@ -80,7 +80,7 @@ single space routinely holds several rooms joined by doors — the reference cap
   measured.
 - **It has exactly one consumer: the room summary**, which prints it as a line of text for the director
   (`mcp_server.py:267`). Nothing clamps placement against it and nothing renders it — despite
-  `query_room`'s docstring saying models land inside the room, that is advice to the model, not an
+  `query_space`'s docstring saying models land inside the room, that is advice to the model, not an
   enforced invariant. See [`backlogs/spaces.md`](../backlogs/spaces.md).
 - **`recent` is the return-visit history** — `[[scope, world_id], …]`, newest first, capped at
   `_MRU_CAP`. Match this space again and you land back in the newest entry that **still exists**; the
@@ -476,7 +476,7 @@ still needs a second headset.
 | `POST /worlds/new` \| `/worlds/switch` | open to all; every mint path stamps the active space ref or `<void>` (§4.2) |
 | `POST /scope/activate` \| `/session/new` | agent / session switch — mints a world, same stamp (§4.2) |
 
-**MCP tools:** `set_space_visibility`, `realign_room`, `query_room`, `set_world_visibility`,
+**MCP tools:** `set_space_visibility`, `realign_room`, `query_space`, `set_world_visibility`,
 `switch_world(name, owner=…)`, `list_worlds`.
 
 **Code**

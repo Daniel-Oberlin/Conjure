@@ -648,7 +648,7 @@ Modules are **scoped to an agent**. An agent declares what it may conjure in `ag
 
 ```jsonc
 "dynamics": ["fireflies", "water", "grab"],              // REQUIRED allow-list
-"context": ["room://current", "world://current", "dynamics://available"]
+"context": ["space://current", "world://current", "dynamics://available"]
 ```
 
 Every listed name is **required**: the agent fails to load if one is not found on the search path.
@@ -657,7 +657,7 @@ Scoping governs **conjuring**, in two places at once:
 
 - **Soft (discovery).** `GET /dynamics/available` builds the catalog from the *active agent's* scoped
   modules — one `name — description; params: …` line each — surfaced as the `dynamics://available` MCP
-  resource and injected into the director's prompt each turn, the same mechanism as `room://current`. No
+  resource and injected into the director's prompt each turn, the same mechanism as `space://current`. No
   discovery ritual and no dynamic tool schema; `conjure_module` stays one generic tool.
 - **Hard (enforcement).** `/module` validates the requested module against the active agent's `dynamics`
   and refuses an out-of-scope name, even if the module exists on the server.

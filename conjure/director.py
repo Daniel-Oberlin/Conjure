@@ -14,7 +14,7 @@ The agent owns:
     carries no record of which LLM authored a reply, so switching LLMs is invisible in the history,
   • the **LLM roster** (conjure.llm) — the named LLMs it allows, one *active* at a time,
   • the world-editing **MCP tools** (it is an MCP client of its scoped servers over stdio),
-  • the per-turn **context** it injects (e.g. `room://current` — the live room, docs/specs/agents.md §5.3).
+  • the per-turn **context** it injects (e.g. `space://current` — the live room, docs/specs/agents.md §5.3).
 
 Every turn runs on the **active** LLM. Switching the active LLM is the shell's job — deterministic,
 parsed there (conjure.shell), never inferred from the utterance here.
@@ -208,7 +208,7 @@ class Director:
         # a turn is whatever `usage` the provider reports afterwards — a char count is the one figure
         # that means the same thing across all four. `room` is the live `{context}` injection, which is
         # the part that grows without anyone editing anything.
-        self._ctx_chars: dict = {"prompt": 0, "room": 0, "tools": _tools_chars(self._tools), "history": 0}
+        self._ctx_chars: dict = {"prompt": 0, "space": 0, "tools": _tools_chars(self._tools), "history": 0}
         self._last_injected: dict = {}             # injection name → chars, from the most recent `_system()`
         self._measured = False                     # has a real turn filled `_ctx_chars` yet?
 
@@ -422,10 +422,10 @@ class Director:
         return _validate
 
     async def _fetch_context(self) -> str:
-        """Fetch the agent's `context` MCP resources (e.g. `room://current`) as raw text, injected at
+        """Fetch the agent's `context` MCP resources (e.g. `space://current`) as raw text, injected at
         the prompt's `{context}` placeholder (the agent's prompt.md owns the surrounding framing via a
         `{#context}…{/context}` section — see `_fill_injection`). Gives the agent live room state
-        without a query_room round-trip (docs/specs/agents.md §5.3). Only called when the prompt references
+        without a query_space round-trip (docs/specs/agents.md §5.3). Only called when the prompt references
         `{context}`; returns "" when there's nothing (no resources, or all failed) so the section drops
         out. A missing/failed resource is skipped, never fatal."""
         if not self.agent or not self.agent.context:
@@ -542,13 +542,13 @@ class Director:
         # Stored RAW below; the label is re-derived from `by` on replay, so history never double-labels.
         labeled = f"{speaker}: {text}" if speaker else text
         history = self._recent_history()
-        # Size what we're about to send, split by origin (see `_ctx_chars`). `room` is the live
+        # Size what we're about to send, split by origin (see `_ctx_chars`). `space` is the live
         # `{context}` injection; `prompt` is the rest of the assembled system prompt, so the two always
         # add up to it. History is the TRIMMED tail the model sees, plus this utterance — not the full
         # transcript, which is what `turns` vs `cap` is there to show.
-        room = self._last_injected.get("context", 0)
-        self._ctx_chars = {"prompt": max(0, len(system) - room),
-                           "room": room,
+        space = self._last_injected.get("context", 0)
+        self._ctx_chars = {"prompt": max(0, len(system) - space),
+                           "space": space,
                            "tools": _tools_chars(self._tools),
                            "history": sum(len(t.text or "") for t in history) + len(labeled)}
         self._measured = True

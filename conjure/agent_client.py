@@ -54,7 +54,7 @@ def prompt_from_context(ctx: dict) -> str:
     return f"conjure:{user}.{agent}.{llm}> "
 
 
-_SLICES = (("prompt", "prompt"), ("room", "room"), ("tools", "tools"), ("history", "hist"))
+_SLICES = (("prompt", "prompt"), ("space", "space"), ("tools", "tools"), ("history", "hist"))
 
 
 def human_count(n: int) -> str:

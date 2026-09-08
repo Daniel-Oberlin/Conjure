@@ -838,7 +838,7 @@ Relative placement — "a few metres in front of me", "to my left", "behind me" 
 (`server.gaze`, keyed by `X-Conjure-User`, preferring the plane-relative head anchor over the raw
 presence pose). What doesn't exist is the *prefetched* form: a `viewer://current` context resource
 (position + yaw, injected each turn) so the agent can resolve "in front of me" without a round-trip, the
-same way `room://current` removed the `query_room` hop. A `near="me"` tool argument is the other half of
+same way `space://current` removed the `query_space` hop. A `near="me"` tool argument is the other half of
 the same idea.
 
 ## Record / replay
@@ -1120,7 +1120,7 @@ knee, clamp by the window only on small models:
 - The `quality_budget` stays the PRIMARY limit and is tuned **empirically** (watch the `[bcast]`/`[tool]`
   trace as history grows — the window doesn't tell you the degradation knee). Optional per-model overrides.
 
-**Safe here specifically:** `world://current` + `room://current` are re-injected fresh every turn, so
+**Safe here specifically:** `world://current` + `space://current` are re-injected fresh every turn, so
 trimming old chat loses only conversational continuity, never scene knowledge — aggressive trimming is
 safe, and summarizing dropped turns is optional (narrative continuity only).
 

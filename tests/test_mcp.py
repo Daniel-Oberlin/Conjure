@@ -89,7 +89,7 @@ async def test_query_world_collapses_real_surfaces_to_one_line(monkeypatch):
 @respx.mock
 async def test_the_collapsed_line_says_it_is_not_the_whole_story(monkeypatch):
     """The failure this fixes wasn't the missing colour — it was that 59 identical-looking lines READ as
-    complete, so an agent concluded surface colours aren't stored (they are, in room://current). The
+    complete, so an agent concluded surface colours aren't stored (they are, in space://current). The
     replacement has to name what it withheld and where it lives, or it just moves the same trap."""
     monkeypatch.setattr(m, "BASE", "http://world")
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_space_doc()))
@@ -399,13 +399,13 @@ async def test_show_surface_matches_friendly_id(monkeypatch):
 
 
 @respx.mock
-async def test_query_room_summarizes(monkeypatch):
+async def test_query_space_summarizes(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
         "entities": [{"id": "real_floor", "meta": {"real": True, "semantic": "floor", "friendly_id": 7},
                       "components": {"material": {}}, "transform": {"position": [0, 0, 0]}}],
         "environment": {"passthrough": True, "boundary": {"height": 2.6}, "spacePresentation": {"active": True}}}))
-    out = await _tool("query_room")()
+    out = await _tool("query_space")()
     assert "floor" in out and "2.6" in out and "#7" in out      # friendly id surfaced
 
 

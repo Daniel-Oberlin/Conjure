@@ -320,7 +320,7 @@ The shell forwards anything that isn't a command to the active agent, which runs
 (one turn):
 
 1. **Perceive** — addressing gate (§ voice) / shell admits agent-directed speech → STT → the agent's
-   LLM. The prompt carries: the **live room**, injected via the `room://current` context resource
+   LLM. The prompt carries: the **live room**, injected via the `space://current` context resource
    ([specs/agents.md §5.3](./specs/agents.md)) so the agent needn't re-query it; the placed scene
    (`world://current`) and its conjurable modules (`dynamics://available`); the agent's scoped MCP
    tools; and the session transcript. (`query_world` is still used where a prefetched snapshot would go
@@ -370,7 +370,7 @@ control tool `set_caller`, so a new tool cannot go silently un-granted ([specs/a
 
 **Built — 45 tools**, in these groups:
 
-- **World & session navigation:** `query_world`, `query_room`, `view_relative`, `list_worlds`,
+- **World & session navigation:** `query_world`, `query_space`, `view_relative`, `list_worlds`,
   `new_world`, `switch_world`, `delete_world`, `reset_world`, `set_world_visibility`,
   `set_space_visibility`
 - **Entities:** `add_entity`, `update_entity`, `move_entity`, `remove_entity`, `set_environment`

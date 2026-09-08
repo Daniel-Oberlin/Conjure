@@ -2962,7 +2962,7 @@ def test_admin_delete_empty_path_refused(srv, client):
 
 # --- a world inheriting a non-empty space's geometry is spacePresentation.active (director can see it) --------------
 # Regression: creating/switching to a world that inherits an existing space's surfaces left spacePresentation.active
-# unset (only ingest_capture set it), so the CLI/voice director's query_room reported "no room" though the
+# unset (only ingest_capture set it), so the CLI/voice director's query_space reported "no room" though the
 # geometry was merged. _compose now defaults spacePresentation.active True when reals are merged (respecting an
 # explicit False from an immersion mode like vr_unbounded).
 def _space_with_walls():

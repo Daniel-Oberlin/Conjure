@@ -157,7 +157,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
     { "server": "world", "access": "all",      // "all" | "read"
       "tools": ["query_world", "place_asset"] }  // opt-in only, NO wildcard; omitted ⇒ none
   ],
-  "context": ["room://current"],               // MCP resources injected each turn (§5.3)
+  "context": ["space://current"],               // MCP resources injected each turn (§5.3)
   "dynamics": ["fireflies", "water", "grab"],  // required allow-list (specs/dynamics.md §9)
   "world":   { "outdoor": false, "on_create": [ … ], "on_exit": [] },  // §7.5
   "session": { "public": true, "greeting": "…", "first_world": { … } },  // §7.5
@@ -200,7 +200,7 @@ running interpreter, so the subprocess inherits the venv.
 
 - **`builder`** — the full-access world-building agent. It enumerates the **entire** world tool surface
   (a test asserts the list equals every `@mcp.tool` in `mcp_server.py`, minus the control tool
-  `set_caller`, so a new tool can't go silently un-granted). Context: `room://current`,
+  `set_caller`, so a new tool can't go silently un-granted). Context: `space://current`,
   `world://current`, `dynamics://available`. Dynamics: `fireflies`, `water`, `grab`.
 - **`outdoor`** — skybox-only: twelve tools, no `context` at all (so it pays **zero** per-turn context
   cost — the live contrast with builder), no dynamics. Declares `world.outdoor` — its worlds are
@@ -241,7 +241,7 @@ CONJURE_ACCESS = all | read
 
 This is a *separate process from the LLM*, so it holds regardless of what the model was offered — a
 Layer-1 filter bug or a non-LLM path can't bypass it. `_READONLY_TOOLS` is an explicit set
-(`query_world`, `query_room`, `view_relative`, `list_worlds`, `list_image_generators`,
+(`query_world`, `query_space`, `view_relative`, `list_worlds`, `list_image_generators`,
 `search_library`, `query_assets`); **everything else counts as mutating**, so a newly added tool is
 denied to a read-only agent until it is classified.
 
@@ -326,13 +326,13 @@ A failed or missing context resource is skipped, never fatal. The world server e
 
 | Resource | Contents |
 |---|---|
-| `room://current` | the live real-room summary — the same formatter `query_room` uses |
+| `space://current` | the live real-room summary — the same formatter `query_space` uses |
 | `world://current` | placed objects (excluding scaffold and real surfaces) + the environment line |
 | `dynamics://available` | the **active agent's** conjurable module catalog (specs/dynamics.md §9) |
 
 `query_world` stays a *tool* for anything a prefetched snapshot would make stale. It dumps the
 **placed** scene: real room surfaces collapse to one counted line that names what it withheld and
-points at `room://current`, because a per-surface listing was most of the dump and carried strictly
+points at `space://current`, because a per-surface listing was most of the dump and carried strictly
 less than the summary — an identical-looking line per surface reads as complete, and a reader that
 wants a colour concludes none is stored.
 

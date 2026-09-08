@@ -49,7 +49,7 @@ so the director adjusts it like any other.
 ### 1.1 Friendly ids
 
 Each surface carries a small sequential `meta.friendly_id` assigned at ingest. It is what the user reads
-off a label and speaks back — "make 12 blue". The label, `query_room`, the entity id and the user's
+off a label and speaks back — "make 12 blue". The label, `query_space`, the entity id and the user's
 reference all agree on it deliberately (`server.py:547`).
 
 ---
@@ -155,7 +155,7 @@ id, or `all`.
 | `style_annotations(color, opacity)` | restyle those labels |
 | `show_edges(on)` | the polygon outline around every surface — **on by default** |
 | `style_edges(color, opacity)` | restyle the outline |
-| `query_room()` | surfaces by semantic + friendly id, with colour and visibility, plus the boundary |
+| `query_space()` | surfaces by semantic + friendly id, with colour and visibility, plus the boundary |
 | `realign_room()` | re-capture at the current tracking origin when the space looks drifted |
 
 **Styling is the ordinary edit vocabulary.** Because surfaces are entities with a `material`, "make the
@@ -189,7 +189,7 @@ except wall-art, whose normal may arrive inward. That asymmetry is a live source
 
 ### 4.2 Where the description lives
 
-`room://current` — injected into an agent's prompt each turn — is the **only** place surfaces are
+`space://current` — injected into an agent's prompt each turn — is the **only** place surfaces are
 described. It carries every surface's semantic, friendly id, position, **colour** and visibility.
 
 `query_world` deliberately does **not** list them. It collapses every real surface to one counted line
@@ -244,10 +244,10 @@ server-side (`specs/spaces.md §7`); and pruning protection keeps a surface with
 ## 7. Surface reference
 
 **MCP tools:** `set_immersion`, `show_surface`, `style_surface`, `texture_surface`, `show_annotations`,
-`style_annotations`, `show_edges`, `style_edges`, `query_room`, `realign_room`,
+`style_annotations`, `show_edges`, `style_edges`, `query_space`, `realign_room`,
 `place_image(on_surface=…)`.
 
-**Resource:** `room://current` — the per-surface summary injected each turn.
+**Resource:** `space://current` — the per-surface summary injected each turn.
 
 | Concern | Where |
 |---|---|

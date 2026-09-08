@@ -347,12 +347,12 @@ def test_fill_injection_bare_section_and_drop():
 async def test_context_section_rendered_when_present():
     llm, session = FakeLLM("Claude"), FakeSession()
     d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
-                 prompt="Build.\n{#context}scene:\n{context}{/context}", agent=_agent(["room://current"]))
+                 prompt="Build.\n{#context}scene:\n{context}{/context}", agent=_agent(["space://current"]))
     await d.handle("add a tree")
     system = llm.seen[0]["system"]
     assert "scene:" in system and "Room: 2 surfaces (test)" in system   # agent's framing + the data
     assert "{context}" not in system and "{#context}" not in system     # placeholders consumed
-    assert session.resources_read == ["room://current"]
+    assert session.resources_read == ["space://current"]
 
 
 async def test_context_section_dropped_when_empty():
@@ -368,10 +368,10 @@ async def test_context_section_dropped_when_empty():
 
 async def test_context_not_fetched_when_prompt_omits_placeholder():
     # An agent whose prompt references neither {context} nor {#context} pays nothing — the fetch is
-    # skipped entirely, even though it declares context resources. (Many agents ignore room surfaces.)
+    # skipped entirely, even though it declares context resources. (Many agents ignore real surfaces.)
     llm, session = FakeLLM("Claude"), FakeSession()
     d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
-                 prompt="Just build. No scene needed.", agent=_agent(["room://current"]))
+                 prompt="Just build. No scene needed.", agent=_agent(["space://current"]))
     await d.handle("add a tree")
     assert session.resources_read == []                        # never fetched
 
@@ -401,16 +401,16 @@ async def test_injection_inside_a_dropped_llm_branch_is_never_fetched():
     llm, session = FakeLLM("Claude"), FakeSession()
     prompt = "Build.\n{#llm}\n{=grok}\n{#context}scene:\n{context}{/context}\n{/llm}\n"
     d = Director(settings=None, session=session, roster={"Claude": llm}, active="Claude", tools=[],
-                 prompt=prompt, agent=_agent(["room://current"]))
+                 prompt=prompt, agent=_agent(["space://current"]))
     await d.handle("add a tree")
     assert session.resources_read == []                        # the placeholder never survived to be seen
     assert "scene:" not in llm.seen[0]["system"]
     # …and the same prompt on Grok does fetch it, so the skip is the branch and not a broken placeholder
     grok, session2 = FakeLLM("Grok"), FakeSession()
     d2 = Director(settings=None, session=session2, roster={"Grok": grok}, active="Grok", tools=[],
-                  prompt=prompt, agent=_agent(["room://current"]))
+                  prompt=prompt, agent=_agent(["space://current"]))
     await d2.handle("add a tree")
-    assert session2.resources_read == ["room://current"]
+    assert session2.resources_read == ["space://current"]
     assert "Room: 2 surfaces (test)" in grok.seen[0]["system"]
 
 
@@ -422,7 +422,7 @@ async def test_context_fetch_failure_is_not_fatal():
     llm = FakeLLM("Claude")
     d = Director(settings=None, session=BoomSession(), roster={"Claude": llm}, active="Claude",
                  tools=[], prompt="Build.\n{#context}scene:\n{context}{/context}",
-                 agent=_agent(["room://current"]))
+                 agent=_agent(["space://current"]))
     out = await d.handle("add a tree")                       # must not raise
     assert out == "Claude: done «daniel: add a tree»"
     assert "scene:" not in llm.seen[0]["system"]             # failed fetch → value "" → section dropped
@@ -558,19 +558,19 @@ async def test_context_stats_before_any_turn_reports_what_is_free_to_compute():
     assert stats["turns"] == 0
     assert stats["chars"]["tools"] > 0
     assert stats["chars"]["prompt"] == len(d._prompt or "")
-    assert stats["chars"]["room"] == 0            # the {context} injection is an MCP fetch — not for a status bar
+    assert stats["chars"]["space"] == 0            # the {context} injection is an MCP fetch — not for a status bar
 
 
 async def test_context_stats_after_a_turn_measures_what_was_actually_sent():
     d = _director(tools=[_tool("place_asset", "Place a 3D model", {"type": "object"})])
     d._prompt = "You are a builder. Room: {context}"
     d.agent = _agent(["world://room"])
-    d._session._resource_text = "SURFACE-DATA" * 20          # the live room injection
+    d._session._resource_text = "SURFACE-DATA" * 20          # the live space injection
     await d.handle("put a tree in front of me", speaker="daniel")
 
     chars = d.context_stats()["chars"]
-    assert chars["room"] == len("SURFACE-DATA" * 20)         # attributed to the injection, not the prompt
-    assert chars["prompt"] > 0 and chars["room"] not in (0, chars["prompt"])
+    assert chars["space"] == len("SURFACE-DATA" * 20)         # attributed to the injection, not the prompt
+    assert chars["prompt"] > 0 and chars["space"] not in (0, chars["prompt"])
     assert chars["history"] >= len("daniel: put a tree in front of me")
     assert chars["tools"] > 0
     # turns counts transcript ENTRIES — a user line and its reply are two, which is what `cap` trims.

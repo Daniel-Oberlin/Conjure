@@ -639,7 +639,7 @@ IMAGES: dict[str, ImageRecord] = {}
 
 # Short, human-friendly per-surface number shown on annotation labels + usable as a director target
 # (e.g. "make 12 blue"). It IS the number already in the surface id (real_wall_3 → 3) — ONE numbering
-# system, so the label, query_room, the id, and the user's reference all agree. (Previously a separate
+# system, so the label, query_space, the id, and the user's reference all agree. (Previously a separate
 # counter started at 1 while the id started at 0, which drifted off-by-one and confused references.)
 # Stable by construction: same surface id → same number, no caching needed.
 def _friendly_id_for(surface_id: str) -> int:
@@ -2883,7 +2883,7 @@ def _compose(world_doc: dict, space: dict) -> dict:
     if space.get("boundary") is not None:
         env["boundary"] = space["boundary"]        # geometry on loan from the space, live-only
     # A world INHERITING a non-empty space's geometry (created new / switched-to / reset) genuinely has a
-    # room, even with no live headset ingest this session — so mark it active for the director's query_room
+    # room, even with no live headset ingest this session — so mark it active for the director's query_space
     # (which gates on spacePresentation.active). Only default it: an explicit False (a director immersion mode like
     # vr_unbounded, mcp_server.py) is respected. spacePresentation.active only ever meant "a room exists to work with".
     if reals and "active" not in pres:
@@ -3280,7 +3280,7 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
         return {"ok": False, "error": err}
     targets = _surface_targets(req.target)
     if not targets:
-        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_room)"}
+        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_space)"}
     mat = {"components.material.src": rec.url, "components.material.shader": "flat",
            "components.material.color": "#FFFFFF", "components.material.side": "double",
            "components.material.visible": True}
@@ -3334,7 +3334,7 @@ async def style_surface(req: StyleSurfaceRequest) -> dict:
     glass ceiling. (For an image, use /texture_surface.)"""
     targets = _surface_targets(req.target)
     if not targets:
-        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_room)"}
+        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_space)"}
     setm: dict = {"components.material.visible": True}
     if req.color is not None:
         setm["components.material.color"] = req.color
