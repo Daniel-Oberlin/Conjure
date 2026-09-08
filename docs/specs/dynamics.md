@@ -422,8 +422,17 @@ Chosen by what the beam is on when the action starts, and held for as long as **
 it** is held, so a gesture can never be ended by a different control:
 
 - **`grab` on the body** → move. *Free* objects: rigid 6DOF, plus `reel` to push/pull along the beam.
-  *Grounded* models: slide on the floor plane, yaw only — matching how they are re-solved on every capture.
+  *Grounded* models: slide on the floor plane, yaw only — matching how they are re-solved on every capture
+  — plus `reel`, which there pushes and pulls along the beam's **compass heading**, staying on the floor.
   *Surface-attached*: slide on the host plane, clamped to its extent, keeping the original stand-off.
+
+A grounded `reel` cannot ride the controller's forward axis the way a free object's does: the pose is
+rebuilt from the ray every frame and would overwrite it. It accumulates as a **reach** along the beam's
+horizontal heading instead, floored at 0.3 m so reeling in cannot drag the model through you and out behind
+your head, where the beam no longer reaches it to push it back. This was lost when the grounded branch was
+added (`49390d8`, 2026-08-24): until then every non-surface object took the free-rigid path and reeled, and
+the branch's early `return` took push/pull away from the content that needs it most — a model across the
+room is a small target, and the alternative is walking to it.
 - **`resize` on a corner handle** → uniform scale, proportions preserved. Progress is measured **signed
   along the grabbed corner's outward axis** rather than radially: dragging a corner out is mostly lateral
   hand movement that barely changes controller→centre distance, and an unsigned measure bounced back
@@ -452,12 +461,18 @@ consequences follow from the same place the frame modes' stick does:
   resolve *globally* (§6), so every pointer reports the same deflection and a per-pointer loop would double
   it. A gesture in flight suppresses the hover path entirely, since the held branch already folds the stick
   into its own drag.
-- **A stick has no release event**, so the commit fires when it returns to neutral, and also on every other
+- **A stick has no release event**, so the commit fires once the sticks have *stayed* neutral for 300 ms,
+  and also on every other
   path that stops tracking the object — focus moving on, a grab starting *on something else*, the pointers
   going away, a mode switch, teardown. That breadth is not belt-and-braces: an uncommitted rotation is not
   merely unshared, because anchored content re-derives its pose from `meta.anchor` at the next capture, so
   it would be silently undone. Gripping the object you were *just turning* is the one exception, and the
   only one that needs no commit: that drag carries the turn and commits the combined pose on release.
+  The 300 ms is on the neutral path alone. Feathering a turn crosses the dead zone repeatedly, and
+  committing on each crossing made one adjustment six POSTs and six broadcasts on device (2026-09-08) —
+  the wait is what makes "one POST per turn" true rather than merely intended. Every other path has
+  genuinely stopped tracking the object, so there is nothing left to coalesce and delaying would only
+  risk losing the turn.
 
 A **grounded** object is the one case where held and hovered differ internally. While dragged its yaw is
 rebuilt from the wrist every frame, so the stick has to *fold into* that (`st.stickYaw`) — a direct write

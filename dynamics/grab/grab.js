@@ -17,8 +17,9 @@
 // are engaged, and the control→action map is config (window.CONJURE_BINDINGS). With the defaults:
 //   • hover (pointer visible) → an oriented highlight box + corner handles on the pointed-at object
 //   • `grab` (grip) on the body → move. Free objects: full 6DOF (move + wrist-twist), `reel` (thumbstick)
-//                              pushes/pulls. Surface-attached: slide on the surface plane. Grounded models:
-//                              slide on the floor, yaw only.
+//                              pushes/pulls along the controller's forward. Surface-attached: slide on the
+//                              surface plane. Grounded models: slide on the floor, yaw only — plus the same
+//                              `reel`, which there pushes/pulls along the beam's compass heading.
 //   • `resize` (trigger) on a corner handle → uniform resize (transform.scale), proportions preserved.
 //   • sticks, on anything with a BODY — a loaded model, an image plane, a primitive. `yaw` (right stick ←→)
 //     turns it about gravity-up; a FREE one also takes `pitch` (left stick ↕) and `bank` (left stick ←→),
@@ -54,6 +55,8 @@
   var BOX_TTL_MS = 500;                        // how long a cached selection box stays valid
   var HANDLE_SOFT = 0.06;                      // aim slop (m) for a corner when the ray hits nothing
   var STICK_DEAD = 0.15;                       // stick deflection ignored (rest drift)
+  var REEL_MIN = 0.3;                          // closest a grounded model can be reeled in (m, on the floor)
+  var HOVER_SETTLE_MS = 300;                   // sticks must STAY neutral this long before a hover turn commits
   var SCALE_DEAD = 0.02;                       // corner drag (m) ignored before a resize starts
   var SCALE_F_MIN = 0.25, SCALE_F_MAX = 4.0;   // clamp on ONE resize gesture
   var ONE = null;   // set once AFRAME.THREE exists
@@ -94,6 +97,7 @@
       this._modeHudTxt = null;               // last text written to the mode indicator (write-gated)
       this._stickDirty = null;               // mode whose standalone stick yaw is awaiting a commit
       this._hoverDirty = null;               // object turned by the hover stick, awaiting a commit
+      this._hoverIdle = 0;                   // when its sticks went neutral (see HOVER_SETTLE_MS)
       glog("init — owner=" + amOwner() + " mode=" + this._mode()
         + " (point at an object and squeeze GRIP to move it)");
     },
@@ -430,6 +434,7 @@
       // leftover stickYaw snapped a grounded model by the previous grab's rotation the instant you
       // re-gripped it.
       st.stickYaw = 0;
+      st.reel = 0;
       st.gScale = false;
       if (st.action === "resize") {            // the caller already decided, from what the beam is on
         st.mode = "scale";
@@ -595,7 +600,19 @@
       if (!pointers.length) { this._settleHover(null); return; }
       this._settleHover(el);                     // focus moved on → commit where the last one was left
       var p = pointers[0], dead = function (a) { return Math.abs(p.value(a)) < STICK_DEAD; };
-      if (dead("yaw") && dead("pitch") && dead("bank")) { this._settleHover(null); return; }
+      if (dead("yaw") && dead("pitch") && dead("bank")) {
+        // Wait for the sticks to STAY neutral. Feathering a turn crosses the dead zone repeatedly, and
+        // committing on every crossing made one adjustment six POSTs and six broadcasts (on device,
+        // 2026-09-08) — this delay is what makes "one POST per turn" true rather than merely intended.
+        // Only THIS path waits: every other caller of `_settleHover` has genuinely stopped tracking the
+        // object, so there is nothing left to coalesce and holding the commit would only risk losing it.
+        if (!this._hoverDirty) return;
+        var t = (window.performance && performance.now) ? performance.now() : Date.now();
+        if (!this._hoverIdle) this._hoverIdle = t;
+        if (t - this._hoverIdle >= HOVER_SETTLE_MS) this._settleHover(null);
+        return;
+      }
+      this._hoverIdle = 0;                       // deflected again → restart the settle window
       if (!el) return;
       if (!amOwner()) { this._hint(); return; }
       // Surface-attached content is excluded exactly as it is while held, and for the same reason: its pose
@@ -612,7 +629,7 @@
     _settleHover: function (next) {
       var el = this._hoverDirty;
       if (!el || el === next) return;
-      this._hoverDirty = null;
+      this._hoverDirty = null; this._hoverIdle = 0;
       glog("hover stick settled → commit " + el.id);
       this._commit({ target: el });
     },
@@ -645,11 +662,29 @@
       }
       if (st.grounded) {                         // slide along the floor plane it rests on; yaw-only turn
         this._stickRotate(st, p, dt);            // stick yaw folds into the upright yaw below
+        // Reel works here too, along the floor. Before this branch existed (49390d8, 2026-08-24) every
+        // non-surface object took the free-rigid path below and reeled; adding the branch silently took
+        // push/pull away from exactly the content that needs it most — a model across the room is a small
+        // target and walking to it is the alternative. It cannot ride the controller's forward axis the way
+        // a free object does, because the pose here is rebuilt from the ray every frame and would overwrite
+        // it, so it accumulates as a reach along the beam's COMPASS heading instead.
+        // NEGATED, to match the free path's direction. The XR stick axis reads −1 pushed forward, and the
+        // free path adds that to controller-space Z, whose forward is −Z — so pushing forward sends a free
+        // object AWAY. Reach grows away from you, so it needs the opposite sign to mean the same thing.
+        var reelG = p.value("reel");
+        if (Math.abs(reelG) > STICK_DEAD) st.reel = (st.reel || 0) - reelG * this.data.reelSpeed * (dt / 1000);
         if (dir.y > -1e-5) return;               // ray parallel/upward → it never meets the floor
         var tg = (st.groundY - origin.y) / dir.y;
         if (tg <= 0) return;
         var gp2 = origin.clone().add(dir.clone().multiplyScalar(tg));
         gp2.y = st.groundY;                      // stays ON the floor — never lifted or sunk
+        if (st.reel) {
+          var base = new THREE.Vector3(origin.x, st.groundY, origin.z);   // you, projected onto the floor
+          var away = gp2.clone().sub(base), reach = away.length();
+          // Floored, not unbounded: reeling in past yourself would drag the model through you and out
+          // behind your head, where the beam no longer reaches it to push it back.
+          if (reach > 1e-4) gp2.copy(base).add(away.multiplyScalar(Math.max(REEL_MIN, reach + st.reel) / reach));
+        }
         var yaw = new THREE.Euler().setFromQuaternion(cq, "YXZ").y + st.yawOff + (st.stickYaw || 0);
         var gq2 = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0, "YXZ"));  // upright
         this._applyWorld(obj, new THREE.Matrix4().compose(gp2, gq2, obj.scale));
@@ -660,17 +695,20 @@
         if (Math.abs(denom) < 1e-5) return;
         var t = st.sPos.clone().sub(origin).dot(st.normal) / denom;
         if (t <= 0) return;
-        var p = origin.clone().add(dir.clone().multiplyScalar(t));
+        // `sp`, not `p`: a `var p` here would not shadow the pointer parameter, it would REASSIGN it, and
+        // the branches around this one read `p.value("reel")`. Harmless only while this branch always
+        // returns — which is not a property worth depending on.
+        var sp = origin.clone().add(dir.clone().multiplyScalar(t));
         if (st.half) {                           // clamp to the surface rectangle
           var right = new THREE.Vector3(1, 0, 0).applyQuaternion(st.sQuat);
           var up = new THREE.Vector3(0, 1, 0).applyQuaternion(st.sQuat);
-          var rel = p.clone().sub(st.sPos);
+          var rel = sp.clone().sub(st.sPos);
           var du = Math.max(st.half.min.x, Math.min(st.half.max.x, rel.dot(right)));
           var dv = Math.max(st.half.min.y, Math.min(st.half.max.y, rel.dot(up)));
-          p = st.sPos.clone().add(right.multiplyScalar(du)).add(up.multiplyScalar(dv));
+          sp = st.sPos.clone().add(right.multiplyScalar(du)).add(up.multiplyScalar(dv));
         }
-        p.add(st.normal.clone().multiplyScalar(st.standoff));   // keep its stand-off in front of the surface
-        var world = new THREE.Matrix4().compose(p, obj.getWorldQuaternion(new THREE.Quaternion()), obj.scale);
+        sp.add(st.normal.clone().multiplyScalar(st.standoff));  // keep its stand-off in front of the surface
+        var world = new THREE.Matrix4().compose(sp, obj.getWorldQuaternion(new THREE.Quaternion()), obj.scale);
         this._applyWorld(obj, world);
         return;
       }
