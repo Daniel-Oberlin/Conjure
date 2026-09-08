@@ -187,7 +187,7 @@ async def _build_first_world(scope: str) -> tuple[Optional[str], Optional[WorldS
     raw = _new_world_store(scope, extra_on_create=fw_on_create)
     if gen_ops:
         raw.apply_patch(gen_ops, origin="constructor")   # generative results (e.g. the skybox) bake in
-    _reset_room_authority(raw)
+    _reset_capture_authority(raw)
     return wname, raw, None
 
 
@@ -289,10 +289,10 @@ async def _build_generative_ops(steps: list[dict]) -> tuple[list[dict], Optional
     return ops, None
 
 
-def _reset_room_authority(s: WorldStore) -> None:
+def _reset_capture_authority(s: WorldStore) -> None:
     """Room authority (the one headset allowed to report geometry) is LIVE-session state, not durable.
     Each client mints a fresh id per page load, so a *persisted* authority from a past session names a
-    dead headset — and ingest_room would reject the live headset's captures forever (it can't match the
+    dead headset — and ingest_capture would reject the live headset's captures forever (it can't match the
     stale id). Clear it whenever a world becomes active so the live headset reclaims it on next capture."""
     env = s.doc.get("environment") or {}
     if env.get("captureAuthority"):
@@ -400,13 +400,13 @@ def _boot_world() -> tuple[str, str, WorldStore]:
     if active and worlds.exists(scope, active):
         try:
             s = worlds.load(scope, active)
-            _reset_room_authority(s)
+            _reset_capture_authority(s)
             _write_session_ptr(scope, sid)
             return scope, active, s
         except Exception as exc:  # noqa: BLE001
             print(f"[conjure] active world {active!r} unreadable ({exc}); creating a fresh default")
     s = _new_world_store(scope, adopt_space=False)   # boot: no space resolved yet (the globals still hold
-    _reset_room_authority(s)                         # their module defaults) — nothing honest to adopt
+    _reset_capture_authority(s)                         # their module defaults) — nothing honest to adopt
     wid = worlds.save(scope, "default", s)      # upsert by name → mints the permanent id
     worlds.set_active(scope, wid)
     _ensure_session(scope, sid, active_world=wid)
@@ -693,7 +693,7 @@ def _slog(tag: str, msg: str) -> None:
 #
 # Structured rather than prose because the questions are numeric: did floor_10's height move relative to the
 # rest of the space, and by how much. `t` is the SERVER's receive time (one clock for the whole file, so
-# lines from the headset and from ingest_room sort together); the client's own stamp rides along as `ct`.
+# lines from the headset and from ingest_capture sort together); the client's own stamp rides along as `ct`.
 _geo_log_day: str = ""            # the date of the last retention sweep, so it runs once per day, not per line
 
 
@@ -1598,7 +1598,7 @@ async def reset_world() -> dict:
         if (spaces and not _no_space() and spaces.exists(active_space_owner, active_space)) \
         else {"surfaces": [], "boundary": None}   # keep the active space's geometry (from its owner's scope)
     store = WorldStore(_compose(raw.doc, space))   # keep the physical room; clear only the world's content
-    _reset_room_authority(store)
+    _reset_capture_authority(store)
     _save_active()                            # persist the reset so it survives a restart
     await _broadcast(_snapshot_msg())
     return {"ok": True, "rev": store.doc["rev"]}
@@ -2773,7 +2773,7 @@ async def post_patch(patch: Patch) -> dict:
 # active flag, and the single room **authority** (only that headset may report room geometry).
 # See docs/specs/worlds-surfaces.md.
 
-class RoomSurface(BaseModel):
+class CapturedSurface(BaseModel):
     id: str                                   # stable id from the headset, e.g. "real_wall_3"
     semantic: str = "surface"                 # wall | floor | ceiling | table | …
     position: list[float]
@@ -2795,14 +2795,14 @@ class RoomSurface(BaseModel):
     debug: Optional[dict] = None                  # raw pose/label for diagnosis (stored in meta)
 
 
-class RoomUpdate(BaseModel):
+class CaptureUpdate(BaseModel):
     client_id: str                            # which headset is reporting
-    surfaces: list[RoomSurface] = []
+    surfaces: list[CapturedSurface] = []
     boundary: Optional[dict] = None           # {floorPolygon: [[x,z]…], height: float}
     replace: bool = True                      # replace the whole real-surface set vs merge
 
 
-def _surface_entity(s: RoomSurface) -> dict:
+def _surface_entity(s: CapturedSurface) -> dict:
     """A fresh `real` surface entity. Visibility/style are left to the renderer default
     (environment.spacePresentation.defaultSurfaceVisible) + later director edits, so re-capture never clobbers
     a director's color/visibility (those go through update, below)."""
@@ -3029,7 +3029,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
         # frame) is untouched; only the server keeps the third state, in `active_space`.
         composed_doc.setdefault("environment", {})["space"] = VOID
         composed = WorldStore(composed_doc)
-        _reset_room_authority(composed)
+        _reset_capture_authority(composed)
         return world_owner, (VOID if space_ref == VOID else UNSET), composed
     owner, space_name = _resolve_space_ref(space_ref, world_owner)
     if spaces.exists(owner, space_name):
@@ -3041,7 +3041,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
         if owner == world_owner:
             spaces.set_active(owner, space_name)                   # only track YOUR OWN space as current
     composed = WorldStore(_compose(doc, space))
-    _reset_room_authority(composed)
+    _reset_capture_authority(composed)
     return owner, space_name, composed
 
 
@@ -3157,7 +3157,7 @@ def _surface_update_set(s, aspects) -> dict:
 
 
 @app.post("/space/capture")
-async def ingest_room(req: RoomUpdate) -> dict:
+async def ingest_capture(req: CaptureUpdate) -> dict:
     """Ingest captured room geometry from the room **authority** headset into the shared MODEL / SEED.
 
     LOCAL-FIRST (docs/specs/spaces-geometry.md §2): every client renders its OWN live capture, so this no
@@ -3278,7 +3278,7 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
     rec, _, err = _get_image(req.image_id)
     if err:
         return {"ok": False, "error": err}
-    targets = _room_targets(req.target)
+    targets = _surface_targets(req.target)
     if not targets:
         return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_room)"}
     mat = {"components.material.src": rec.url, "components.material.shader": "flat",
@@ -3309,7 +3309,7 @@ def _real_surface_match(e: dict, target: str) -> bool:
     return bool(mm and mm.group(1).strip() in (sem, "surface") and mm.group(2) == fid)
 
 
-def _room_targets(target: str) -> list[dict]:
+def _surface_targets(target: str) -> list[dict]:
     """Real surfaces matching `target` (see _real_surface_match)."""
     return [e for e in store.doc["entities"] if _real_surface_match(e, target)]
 
@@ -3332,7 +3332,7 @@ class StyleSurfaceRequest(BaseModel):
 async def style_surface(req: StyleSurfaceRequest) -> dict:
     """Color and/or set the transparency of room surface(s) — e.g. semi-transparent blue walls, a
     glass ceiling. (For an image, use /texture_surface.)"""
-    targets = _room_targets(req.target)
+    targets = _surface_targets(req.target)
     if not targets:
         return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_room)"}
     setm: dict = {"components.material.visible": True}
@@ -3927,7 +3927,7 @@ def _forward(rotation: list[float]) -> list[float]:
 # surface (floor/table/ceiling), where gravity gives no in-plane up: there the content's up is snapped to
 # the surface-rectangle axis whose bottom edge sits nearest the placing viewer (square to the surface,
 # readable from where they stood), stored surface-local so a re-capture reproduces it (see
-# `_content_up_local` / `_face_room(up_local=…)`). A wall never needs this.
+# `_content_up_local` / `_face_interior(up_local=…)`). A wall never needs this.
 # Measured on-device (`[normals]` probe): surface normals are reliably outward-from-room, so -normal is the
 # interior in every room including a multi-room space (each wall's own normal marks its own room).
 def _norm3(v: list[float]) -> list[float]:
@@ -3976,7 +3976,7 @@ def _face_user(user: str, position: list[float] | None, distance: float = 1.2) -
     return {"position": pos, "rotation": [0.0, round(yaw, 2), 0.0]}
 
 
-def _face_room(srot: list[float], up_local: Optional[list[float]] = None) -> dict:
+def _face_interior(srot: list[float], up_local: Optional[list[float]] = None) -> dict:
     """Orientation for content hung on a surface: face the room INTERIOR (upright). Surfaces store their
     OUTWARD normal, so the interior is `-normal`; `up` = gravity projected onto the plane. On a HORIZONTAL
     surface (floor/table/ceiling) gravity gives no in-plane up, so the content's up is ambiguous — pass
@@ -4034,7 +4034,7 @@ def _content_up_local(srot: list[float], spos: list[float], user: str) -> Option
 
 # --- on-surface re-anchoring: keep place_image(on_surface=…) planes glued to their surface across a room
 #     re-registration/re-capture. The image records meta.on_surface = the surface id; we re-derive its pose
-#     (2 cm in front, re-oriented toward the room via _face_room, re-fit to the current frame) from the
+#     (2 cm in front, re-oriented toward the room via _face_interior, re-fit to the current frame) from the
 #     surface's CURRENT geometry — so when the surface moves, the image follows instead of being stranded.
 def _surface_offset(spos: list[float], srot: list[float],
                     ipos: list[float], irot: list[float]) -> dict:
@@ -4063,7 +4063,7 @@ def _dims_component(e: dict) -> Optional[str]:
 
 def _on_surface_set(spos: list[float], srot: list[float], extent, e: dict) -> dict:
     """The `update`-op `set` for on-surface content (a placed image OR an image-bearing dynamic module):
-    face the room interior (upright, via `_face_room`), sit 2 cm in front, re-fit to the surface frame
+    face the room interior (upright, via `_face_interior`), sit 2 cm in front, re-fit to the surface frame
     keeping the content's current aspect, and carry the host-local offset (§7c-B2) so the client can ride
     it without its own copy of the host seed pose. A horizontal surface reuses the placing viewer's facing
     from `meta.content_up` (surface-local), so a re-capture keeps the bottom edge toward where it was placed."""
@@ -4083,7 +4083,7 @@ def _on_surface_set(spos: list[float], srot: list[float], extent, e: dict) -> di
                      "transform.rotation": [round(c, 4) for c in rot]}
     else:
         # No offset yet (first placement / legacy content): centre it on the surface, facing the room.
-        fr = _face_room(srot, (e.get("meta") or {}).get("content_up"))
+        fr = _face_interior(srot, (e.get("meta") or {}).get("content_up"))
         f = fr["forward"]
         pos = [spos[i] + get_settings().on_surface_standoff * f[i] for i in range(3)]
         out = {"transform.position": pos, "transform.rotation": fr["rotation"],
@@ -4114,7 +4114,7 @@ def _reanchor_surface_images(doc: dict) -> None:
 
 def _reanchor_ops(doc: dict, moved: dict) -> list[dict]:
     """`update` ops re-pinning on-surface images whose surface id is in `moved` (id → {position, rotation,
-    extent}, e.g. just re-captured). Used live in ingest_room so the image rides the re-captured surface."""
+    extent}, e.g. just re-captured). Used live in ingest_capture so the image rides the re-captured surface."""
     ops = []
     for e in doc.get("entities", []):
         s = moved.get((e.get("meta") or {}).get("on_surface"))
@@ -4254,7 +4254,7 @@ async def place_image(req: PlaceImageRequest, request: Request) -> dict:
     width, height = _plane_dims(rec, req.size_m or 1.0, stereo)
     rotation = None
     if req.on_surface:  # hang on a real surface: face the room (upright), fit its frame, sit just in front
-        surfaces = _room_targets(req.on_surface)
+        surfaces = _surface_targets(req.on_surface)
         if not surfaces:
             return {"ok": False, "error": f"no room surface matches {req.on_surface!r}"}
         surf = surfaces[0]
@@ -4265,7 +4265,7 @@ async def place_image(req: PlaceImageRequest, request: Request) -> dict:
             width, height = (float(extent[0]), float(extent[1])) if req.stretch else _fit_dims(rec, extent, stereo)
         caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
         up_local = _content_up_local(srot, spos, caller)  # horizontal surface → bottom edge toward the viewer
-        fr = _face_room(srot, up_local)                   # face the room interior (-normal), upright
+        fr = _face_interior(srot, up_local)                   # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]   # toward the viewer
     eid = req.name or f"ent_image_{uuid4().hex[:6]}"
@@ -4420,7 +4420,7 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
     meta = {"module": req.module, "dynamic": True}
     extra_components: dict = {}
     if req.on_surface:   # mount on a real surface: align to it, fit its frame, ride it (like place_image)
-        surfaces = _room_targets(req.on_surface)
+        surfaces = _surface_targets(req.on_surface)
         if not surfaces:
             return {"ok": False, "error": f"no room surface matches {req.on_surface!r}"}
         surf = surfaces[0]
@@ -4433,7 +4433,7 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
             config["width"], config["height"] = _module_plane_dims(rec, config, extent, stretch=req.stretch)
         caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
         up_local = _content_up_local(srot, spos, caller)       # horizontal surface → bottom edge toward viewer
-        fr = _face_room(srot, up_local)                        # face the room interior (-normal), upright
+        fr = _face_interior(srot, up_local)                        # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]
         meta["on_surface"] = surf["id"]

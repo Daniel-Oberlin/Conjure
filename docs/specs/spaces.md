@@ -491,7 +491,7 @@ still needs a second headset.
 | occupancy | `conjure/server.py:664` `_space_holders`, `_occupied`, `_unclaim` |
 | world-creation gate | `conjure/server.py:2737` `_may_create_world_in` |
 | owner middleware | `conjure/server.py:609` |
-| geometry ingest | `conjure/server.py:2909` `ingest_room` |
+| geometry ingest | `conjure/server.py:2909` `ingest_capture` |
 | presence relay | `conjure/server.py:4439` |
 | desktop-guest spawn | `client/conjure-client.js` `maybeSpawnGuest` + `WM.shouldSpawnGuest` |
 | rig-origin invariant | `client/conjure-client.js` `resetRigForSession` (on `enter-vr`) |

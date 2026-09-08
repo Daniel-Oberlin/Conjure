@@ -921,7 +921,7 @@
       // normal, consistent with all other surfaces. Wall art no longer gets a special upright/negated
       // orientation (that flipped its normal 180°, causing per-session re-minting): the surface is an
       // invisible reference, and the CONTENT hung on it is oriented upright toward the room at placement
-      // time (server _face_room), independent of the surface's own roll.
+      // time (server _face_interior), independent of the surface's own roll.
       s.rotation = best.rotation.slice();
       s.debug.snap = "wall=" + best.id.slice(-7) + " clr=" + Math.round(clr * 100) + "cm";
 

@@ -85,7 +85,7 @@ pipeline must use it or the result is silently wrong.
 
 **Normal semantics:** captured surface normals point **outward from the space**, so the interior-facing
 direction is `−normal`. **Wall-art is the exception** — its live normal may arrive *inward*, roughly
-180° from its host wall. Consumers compensate (`_face_room`, and `matchRef`'s coincident-flip fallback)
+180° from its host wall. Consumers compensate (`_face_interior`, and `matchRef`'s coincident-flip fallback)
 rather than the convention being normalised at ingest; see
 [`backlogs/worlds-surfaces.md`](../backlogs/worlds-surfaces.md).
 
@@ -890,7 +890,7 @@ on are pinned in `room-snap.test.js` instead (the `Tmat⁻¹` round-trip).
 | Concern | Where |
 |---|---|
 | structural-change gate | `conjure/server.py` `_surface_changes` + `_surface_update_set` (write only what changed) |
-| ingest (seed-only, no broadcast) | `conjure/server.py:2909` `ingest_room` |
+| ingest (seed-only, no broadcast) | `conjure/server.py:2909` `ingest_capture` |
 | seed planes for server solves | `conjure/server.py` `_seed_planes` |
 | server-side anchor authoring | `conjure/server.py` `_content_anchor` |
 | pose-relative queries | `conjure/server.py:3898` `/view_relative` |

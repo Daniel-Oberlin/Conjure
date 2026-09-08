@@ -253,7 +253,7 @@ _IMMERSION = {
 }
 
 
-async def _room_summary() -> str:
+async def _space_summary() -> str:
     """Text summary of the real room: surfaces (by semantic + short id) + the boundary. Shared by the
     query_room tool and the `room://current` resource (which agents inject into their prompt each turn,
     so they needn't call query_room just to see surfaces)."""
@@ -284,14 +284,14 @@ async def query_room() -> str:
     on / restyle. Real surfaces also appear in query_world as REAL entities — restyle or hide them
     with update_entity's color, or show_surface; don't move or remove them.
     """
-    return await _room_summary()
+    return await _space_summary()
 
 
 @mcp.resource("room://current")
 async def room_resource() -> str:
     """The live real-room summary — injected each turn into agents that list `room://current` in their
     context (so the builder sees the room without a query_room round-trip)."""
-    return await _room_summary()
+    return await _space_summary()
 
 
 @mcp.resource("world://current")

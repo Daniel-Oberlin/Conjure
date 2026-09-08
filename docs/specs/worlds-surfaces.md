@@ -181,7 +181,7 @@ to the surface and fitted to its frame automatically, so no caller computes a po
 `stretch=true` fills the entire surface. Use `texture_surface` instead when the image should *cover* a
 surface as a mural rather than hang as a framed picture.
 
-Orientation is handled by `_face_room(srot, up_local)` (`server.py:3682`), which turns content to face
+Orientation is handled by `_face_interior(srot, up_local)` (`server.py:3682`), which turns content to face
 the space's interior (along `−normal`) and keeps it upright against gravity rather than trusting the
 surface's own roll. Captured normals point **outward** from the space, so interior-facing is `−normal` —
 except wall-art, whose normal may arrive inward. That asymmetry is a live source of bugs; see
@@ -252,11 +252,11 @@ server-side (`specs/spaces.md §7`); and pruning protection keeps a surface with
 | Concern | Where |
 |---|---|
 | immersion mode table | `conjure/mcp_server.py:246` `_IMMERSION` |
-| the room summary | `conjure/mcp_server.py:255` `_room_summary` |
+| the room summary | `conjure/mcp_server.py:255` `_space_summary` |
 | `query_world` collapse | `conjure/mcp_server.py` `_real_surfaces_line` |
 | per-semantic base material | `conjure/server.py:2619` `_default_surface_material` |
 | compose / decompose | `conjure/server.py:2636` / `:2659` |
-| interior-facing orientation | `conjure/server.py:3682` `_face_room` |
+| interior-facing orientation | `conjure/server.py:3682` `_face_interior` |
 | client presentation mirror | `client/conjure-client.js:255` `presentation` |
 | inset snapping + hole cutting | `client/room-snap.js` `snapInsets` |
 | holed-wall geometry | `client/conjure-client.js` `applySurfaceGeometry` |

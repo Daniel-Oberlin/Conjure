@@ -41,7 +41,7 @@ So "hide the internal seams but keep the outline" cannot be expressed today.
 ### Wall-art normals are inconsistent with every other surface
 
 Captured surfaces point **outward** from the space, so interior-facing content is oriented along
-`−normal`. Wall-art arrives **inward** — roughly 180° from its host wall. `_face_room` and `matchRef`
+`−normal`. Wall-art arrives **inward** — roughly 180° from its host wall. `_face_interior` and `matchRef`
 both need a coincident-flip fallback because of it, and it is the mechanism behind the recurring
 "picture lands behind its wall" bug. Documented as a case study in
 [`docs/investigations/`](../investigations/); the durable fix would be normalising the convention at

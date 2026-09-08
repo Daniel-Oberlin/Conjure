@@ -373,7 +373,7 @@ arbiter. Alignments already made, and the reasons they were made this way, are i
 Related: the world-server → Node question, [`docs/decisions.md`](../decisions.md) §18. The actionable
 first step there is independent of Node and worth doing on its own merits — **extract the shared
 geometry/placement math into one pure-JS module** that the client uses and the server consumes. That
-duplication (`_face_room` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler, all
+duplication (`_face_interior` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler, all
 shadowed in `room-snap.js` / `world-model.js` / `plane-anchor.js`) is the source of a whole class of
 parity bugs: YXZ order, quat→euler, the boundary frame-flip, normals-outward.
 

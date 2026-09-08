@@ -410,7 +410,7 @@ see it snap *as you drag*. A server-commit snap would hop after release.
 Node at all. Never a big-bang port.
 
 **Why the prize is real:** one runtime kills the server↔client geometry-math duplication.
-`_face_room` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler all shadow JS in
+`_face_interior` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler all shadow JS in
 `room-snap.js` / `world-model.js` / `plane-anchor.js`, and that duplication is the source of a whole class
 of parity bugs — YXZ order, quat→euler, the boundary frame-flip, normals-outward. It would also give
 module authors one language for both halves.

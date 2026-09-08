@@ -715,7 +715,7 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
 
   // (4) Wall art that snapped to a wall adopts that wall's orientation — so its normal (a-plane +Z) comes
   // out HORIZONTAL (a vertical-wall normal), regardless of the plane's captured roll. Upright-facing of the
-  // CONTENT hung on it is now handled at placement (server _face_room), not baked into the surface.
+  // CONTENT hung on it is now handled at placement (server _face_interior), not baked into the surface.
   surfaces.filter((s) => s.semantic === "wall art" && s.debug && s.debug.snap).forEach(function (s) {
     const q = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(s.rotation[0] * D2R, s.rotation[1] * D2R, s.rotation[2] * D2R, "YXZ"));

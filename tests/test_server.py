@@ -152,23 +152,23 @@ def test_reanchor_surface_images_repins_stranded_on_compose():
 
 
 def test_face_room_faces_opposite_the_surface_normal_upright(srv):
-    from conjure.server import _face_room, _forward
+    from conjure.server import _face_interior, _forward
     # content faces AWAY from the surface's (outward) normal — into the room — for any surface orientation
     for srot in ([0.0, 90.0, 0.0], [0.0, -41.0, 0.0], [90.0, 0.0, 0.0]):
-        fr, n = _face_room(srot), _forward(srot)
+        fr, n = _face_interior(srot), _forward(srot)
         assert all(abs(fr["forward"][i] + n[i]) < 0.02 for i in range(3))
     # a floor (normal down) → content faces UP; a vertical wall stays upright (no roll)
-    assert _face_room([90.0, 0.0, 0.0])["forward"][1] > 0.9
-    assert _face_room([0.0, 90.0, 0.0])["rotation"][2] == pytest.approx(0, abs=0.5)
+    assert _face_interior([90.0, 0.0, 0.0])["forward"][1] > 0.9
+    assert _face_interior([0.0, 90.0, 0.0])["rotation"][2] == pytest.approx(0, abs=0.5)
 
 
 def test_face_room_aligns_flat_content_to_the_surface_rectangle(srv):
     # On an up-facing surface (a table yawed 30°) there's no gravity-up, so the image must align to the
     # SURFACE's own rectangle (its in-plane axis), not an arbitrary world axis that tilts it ~30°. The
     # image's up matches the surface's -Y (a 180° flip about vertical — +Y read consistently upside-down).
-    from conjure.server import _face_room, _local_axis
+    from conjure.server import _face_interior, _local_axis
     tsrot = [90.0, 30.0, 0.0]
-    fr = _face_room(tsrot)
+    fr = _face_interior(tsrot)
     content_up = _local_axis(fr["rotation"], (0.0, 1.0, 0.0))   # the image's up (its +Y) in world
     surf_axis = _local_axis(tsrot, (0.0, -1.0, 0.0))            # the table's -Y in-plane axis (rectangle edge)
     assert all(abs(content_up[i] - surf_axis[i]) < 0.02 for i in range(3))   # edges parallel, no tilt
@@ -1111,9 +1111,9 @@ def test_reset_room_authority_clears_stale_id(srv):
     from conjure.world import WorldStore
     s = WorldStore({"id": "x", "name": "x", "rev": 0, "entities": [],
                     "environment": {"captureAuthority": "hs_dead"}})
-    srv._reset_room_authority(s)
+    srv._reset_capture_authority(s)
     assert s.doc["environment"]["captureAuthority"] is None
-    srv._reset_room_authority(WorldStore({"id": "y", "name": "y", "rev": 0, "entities": [],
+    srv._reset_capture_authority(WorldStore({"id": "y", "name": "y", "rev": 0, "entities": [],
                                           "environment": {}}))   # no room/env → must not raise
 
 
@@ -2962,7 +2962,7 @@ def test_admin_delete_empty_path_refused(srv, client):
 
 # --- a world inheriting a non-empty space's geometry is spacePresentation.active (director can see it) --------------
 # Regression: creating/switching to a world that inherits an existing space's surfaces left spacePresentation.active
-# unset (only ingest_room set it), so the CLI/voice director's query_room reported "no room" though the
+# unset (only ingest_capture set it), so the CLI/voice director's query_room reported "no room" though the
 # geometry was merged. _compose now defaults spacePresentation.active True when reals are merged (respecting an
 # explicit False from an immersion mode like vr_unbounded).
 def _space_with_walls():
