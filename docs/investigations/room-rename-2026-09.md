@@ -53,6 +53,18 @@ floor floats", "the room translates as a rigid unit".
 **4. `roomy`.** `director.py:372` — *"roomy enough to see a full `query_world`"*. Ordinary English. A
 substring sweep turns it into `spacey`. This one is the argument for the whole document.
 
+**5. "Room Setup".** Meta's own product name for the Quest feature that produces `detectedPlanes` — ~8
+occurrences across the client and specs. Renaming it invents a feature that does not exist. *(Found during
+Tier 3, not in the first sweep.)*
+
+**6. Three uppercase `ROOM` comments.** `conjure-client.js:2029`, `:2107` and `space-snap.js:1073` attribute
+a measured height error to **the room it belongs to** — the raised-floor probe's whole purpose. Genuine
+physical rooms, and *more* correct after the rooms work. The other four uppercase `ROOM`s meant the space
+and were changed. The split was 4-3 and had to be read one at a time. *(Found during Tier 3.)*
+
+**7. `temp/room_check14.txt`** in `golden-space.json`'s `source` field — the provenance of a real capture
+file. Renaming it falsifies a historical record.
+
 ---
 
 ## Tier 1 — persisted keys
@@ -147,3 +159,24 @@ not a real resource. Harmless; worth making `room://current` so the test reads a
   [`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md) was caught only by curling the running
   server, and a renamed tool that no agent can call would fail the same way.
 - A final sweep: every remaining `room` must be justifiable under the rule.
+
+---
+
+## Progress
+
+**Tier 3 complete** (2026-09-07) — 5 commits on `feat/rooms`, 978 pytest / 204 JS green throughout, and the
+pytest count never moved, so no renamed test quietly stopped being collected.
+
+| Commit | What |
+|---|---|
+| `4cdbf29` | server internals — `_space_summary`, `_surface_targets`, `ingest_capture`, `CaptureUpdate`, `CapturedSurface`, `_face_interior`, `_reset_capture_authority` |
+| `3160138` | `inSpace`, `space-less`, and three comments citing the dead `/room` route |
+| `865e48d` | file moves — `space-snap.js`, `space-worker.js`, `space-snap.test.js`, `golden-space.json`, `SpaceSnap` |
+| `15ad259` | scripts, test helpers, ~20 test names, the mixed uppercase `ROOM` |
+
+**Tier 2 not started.** It needs a call on `virtual_room` first (below).
+
+**The long tail is prose.** ~650 bare `room` occurrences remain in comments and docstrings, with genuinely
+mixed meaning — the uppercase split above was 4-3, and there is no reason to expect the lowercase ones to be
+cleaner. No functional risk, but it is the layer where the confusion actually reaches a reader, so it wants
+its own pass and its own commit rather than being folded into an identifier rename.
