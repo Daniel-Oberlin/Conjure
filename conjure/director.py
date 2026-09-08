@@ -298,7 +298,7 @@ class Director:
         """The prompt-injection registry: placeholder name → provider producing its value. A provider
         may be sync or async; it's invoked ONLY when its placeholder appears in the prompt, so an agent
         pays only for what it references (e.g. `{context}` triggers no MCP resource fetch unless the
-        prompt uses it — many agents won't care about room surfaces). Add a row to add an injection."""
+        prompt uses it — many agents won't care about real surfaces). Add a row to add an injection."""
         rows = [
             ("user", lambda: self._speaker),      # WHO is speaking this turn (human identity; per-turn)
             ("context", self._fetch_context),     # live MCP context resources (async; docs/specs/agents.md §5.3)

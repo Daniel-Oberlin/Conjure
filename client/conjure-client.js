@@ -55,7 +55,7 @@
     var rec = fields || {};
     rec.ev = ev; rec.ct = Date.now();
     geoQ.push(rec);
-    // A burst (a whole room re-minting) shouldn't sit in memory for the full window, and shouldn't grow
+    // A burst (a whole space re-minting) shouldn't sit in memory for the full window, and shouldn't grow
     // without bound if the server is unreachable either.
     if (geoQ.length >= GEO_MAX_Q) { if (geoTimer) clearTimeout(geoTimer); geoFlush(); return; }
     if (!geoTimer) geoTimer = setTimeout(geoFlush, GEO_FLUSH_MS);
@@ -109,7 +109,7 @@
     });
   }
 
-  // Outline for a room surface: a bright line loop around the plane's border. Drawn as an
+  // Outline for a real surface: a bright line loop around the plane's border. Drawn as an
   // always-on-top overlay (depthTest off, high renderOrder) so EVERY surface's edges show —
   // otherwise a surface facing away from you occludes its own outline (you'd see only the floor's).
   // The result is a full room wireframe with crisp corners and ceiling joins.
@@ -175,7 +175,7 @@
   }
 
   // Show/hide a surface's FILL (plane mesh) without hiding the entity — so child labels and the edge
-  // outline still render in AR (where the fill is hidden so passthrough shows the real room). The
+  // outline still render in AR (where the fill is hidden so passthrough shows the real space). The
   // edges are governed independently by `surface-edges` (room.edgesVisible). Re-applies when the mesh
   // is (re)created (object3dset), handling A-Frame's async setup.
   if (window.AFRAME && !AFRAME.components["fill-visible"]) {
@@ -309,7 +309,7 @@
   }
 
   // ----------------------------------------------------------------- immersion / room state
-  // Two axes (docs/specs/worlds-surfaces.md §3): passthrough (real room visible) × surface visibility.
+  // Two axes (docs/specs/worlds-surfaces.md §3): passthrough (real space visible) × surface visibility.
   var presentation = { active: false, passthrough: false, defaultVisible: false,
                        annotations: false, annotationDims: false,
                        edgesVisible: true, edgeColor: INFO_COLOR, edgeOpacity: 1,
@@ -339,8 +339,8 @@
   }
 
   function applyRealVisibility(el) {
-    // The FILL (plane mesh) shows if the room is active AND (explicit material.visible, else the
-    // global default). The ENTITY stays visible whenever the room is active so its annotation label
+    // The FILL (plane mesh) shows if the space is active AND (explicit material.visible, else the
+    // global default). The ENTITY stays visible whenever the space is active so its annotation label
     // and edge outline (children) can render even in AR where the fill is hidden; only unbounded-VR
     // hides it entirely.
     var explicit = el.dataset.matVisible;
@@ -363,7 +363,7 @@
       return;
     }
     // The synthetic holodeck shell (grid floor/walls) + the void sky belong ONLY to an EMPTY "unbounded
-    // VR" (room inactive AND no chosen skybox). Hide them whenever the room is active — AR passthrough or
+    // VR" (space inactive AND no chosen skybox). Hide them whenever the space is active — AR passthrough or
     // a virtual room — OR a skybox IS the environment (an outdoor/void world), so the grid never competes
     // with the room or the sky. (In AR the void a-sky would also occlude passthrough, so it's hidden too.)
     var inSpace = presentation.active;
@@ -372,10 +372,10 @@
       el.setAttribute("visible", showScaffold);
     });
     // Exception: a custom skybox IMAGE *is* the chosen environment, so keep it visible even with the
-    // room active — its opaque sphere deliberately wraps/occludes passthrough so you see the skybox,
+    // space active — its opaque sphere deliberately wraps/occludes passthrough so you see the skybox,
     // not the physical room. Only the void color sky is restricted to unbounded VR. A GROUNDED skybox
     // replaces the plain sphere with a ground-projected dome, so when it's active hide the sphere and
-    // show the grounded mesh instead (it likewise wraps the scene whenever the room is active).
+    // show the grounded mesh instead (it likewise wraps the scene whenever the space is active).
     var sky = document.getElementById("sky");
     if (sky) sky.setAttribute("visible", !presentation.grounded && (presentation.skybox || !inSpace));
     var grounded = document.getElementById("grounded-sky");
@@ -429,7 +429,7 @@
 
   // Time-sliced geometry rebuild (branch fix/pops-and-jitters). applySurfaceGeometry re-triangulates the
   // (holed-)wall mesh — the one expensive per-surface op left in the render. When many surfaces need it in
-  // ONE capture (first lay of the whole room, or several shapes crossing tolerance at once) it lands as a
+  // ONE capture (first lay of the whole space, or several shapes crossing tolerance at once) it lands as a
   // ~7-14 ms frame → a dropped frame → the last capture-caused jitter. So `applyEntity` ENQUEUES a rebuild
   // (pose is still applied immediately — positions are always correct) and `pumpGeo`, run every frame from
   // tick, drains a FEW per frame under a small time budget. Meshes materialize progressively over ~100-170 ms
@@ -674,7 +674,7 @@
     if (t.scale) el.setAttribute("scale", v3(t.scale));
     Object.keys(comps).forEach(function (name) { el.setAttribute(name, comps[name]); });
     // Director-placed content: remember its AUTHORED (F_ref) pose so the capture tick can re-place it via a
-    // plane-relative anchor solved against the LOCAL walls (docs §5). In a captured room #world-root is
+    // plane-relative anchor solved against the LOCAL walls (docs §5). In a captured space #world-root is
     // identity, so the raw F_ref pose would be wrong; _placeContent corrects it. Scaffold is excluded.
     if (!meta.scaffold && t.position) el._frefPose = { position: t.position, rotation: t.rotation || [0, 0, 0] };
     el._onSurface = meta.on_surface || null;   // content pinned to a surface rides that surface locally (§5a)
@@ -741,7 +741,7 @@
       } else if (env.sky && env.sky.src) {
         // 360 equirectangular image: set the full material so the texture isn't tinted and renders
         // on the inside of the sky sphere. Mark a custom skybox so immersion keeps it visible (it
-        // wraps the scene even when the room is active — see applyImmersion).
+        // wraps the scene even when the space is active — see applyImmersion).
         sky.setAttribute("material", { shader: "flat", side: "back", color: "#FFFFFF", src: env.sky.src });
         if (groundedSky) groundedSky.setAttribute("grounded-sky", { src: "" });   // tear down any grounded dome
         presentation.skybox = true;
@@ -792,7 +792,7 @@
   // snapshots + patches; _renderLocal applies it by id so a locally-rendered surface keeps its director/
   // persisted look instead of a default material. Reset per world switch.
   var surfaceStyles = {};
-  // A VOID/outdoor world (environment.space === "<void>") isn't tied to a captured room — it shows a
+  // A VOID/outdoor world (environment.space === "<void>") isn't tied to a captured space — it shows a
   // skybox + objects, and space-capture derives its frame on the fly from live walls (canonicalFrame)
   // instead of registering against stored geometry. Set from each snapshot.
   var VOID_SPACE = "<void>", isVoidWorld = false;
@@ -897,7 +897,7 @@
   var evicted = false;
   // While an AR headset is deciding WHICH space it's in (from enter-vr until /space/select resolves), we
   // blank to passthrough and show a "finding your space" notice — so a headset never renders the provisional
-  // booted world (or anyone else's) misaligned to the real room before it has established/joined its space.
+  // booted world (or anyone else's) misaligned to the real space before it has established/joined its space.
   var awaitingSpace = false, lastWorld = null;
 
   function applySnapshot(world) {
@@ -911,7 +911,7 @@
       hideHeadsetMessage(); hideInfo();
     }
     // Key on the world's permanent ID, not its name: renaming a world would otherwise look like a world
-    // SWITCH and needlessly reset the room capture frame.
+    // SWITCH and needlessly reset the space capture frame.
     var key = worldOwner + "/" + (world && (world.id || world.name));
     if (key !== lastWorldKey) {          // WORLD SWITCH → drop the previous room's capture frame so the next
       lastWorldKey = key;                // capture seeds/establishes for THIS world, not the last one
@@ -925,7 +925,7 @@
       // blank it. A grab release then authored a wall-relative anchor against walls this world does not
       // have, the inbound `meta.anchor` re-solved against them (the teleport), and `contentPoseIsLocal`
       // claimed the local solve owned the pose — suppressing the server's correct raw transform in the
-      // same patch. Observed 2026-08-28 placing models in a void world entered from a captured room.
+      // same patch. Observed 2026-08-28 placing models in a void world entered from a captured space.
       framePlanes.local = framePlanes.ref = null;
     }
     root().innerHTML = "";
@@ -942,8 +942,8 @@
     // A SNAPSHOT is the COMPLETE world state, unlike an env PATCH (which merges only the fields it
     // carries — `applyEnv` is written for that merge). So a snapshot whose environment has no `room`
     // block means THIS world has no room at all (an outdoor/void world), and the room flags must RESET
-    // rather than inherit the previous world's. Without this, switching from a captured room to an
-    // outdoor world left `presentation.active` true, so the last room's surfaces (locally-rendered ones
+    // rather than inherit the previous world's. Without this, switching from a captured space to an
+    // outdoor world left `presentation.active` true, so the last space's surfaces (locally-rendered ones
     // included — applyImmersion drives them via [data-real]) kept drawing over the outdoor world.
     if (!(world.environment || {}).spacePresentation) {
       presentation.active = false;
@@ -954,9 +954,9 @@
     var reals = (world.entities || []).filter(function (e) { return e.meta && e.meta.real; });
     surfaceStyles = {};                  // rebuild the shared styling map for THIS world (id → material)
     reals.forEach(function (e) { var m = (e.components || {}).material; if (m) surfaceStyles[e.id] = m; });
-    // Seed material for the room frame on reload (see the capture at ~L794). CLEAR it when a snapshot
+    // Seed material for the space frame on reload (see the capture at ~L794). CLEAR it when a snapshot
     // carries no real surfaces — otherwise switching into an empty/void world (or a DIFFERENT room)
-    // would leave the PREVIOUS room's surfaces here, and the next capture could register into the wrong
+    // would leave the PREVIOUS space's surfaces here, and the next capture could register into the wrong
     // frame (specs/spaces.md §6: the Harold's-house cross-room seeding). Empty ⇒ nothing to seed.
     docSurfaces = reals.length ? reals : null;
     lastWorld = world;                   // remember for endAwaitingSpace (restore after a no-switch resolve)
@@ -1187,12 +1187,12 @@
   // inbound `module_event` messages are dispatched to subscribers. A module acts on its OWN input
   // immediately (local); this bus carries only the shared, cross-client traffic (e.g. water touches).
   // Frame bridge for INTERACTION modules (grab, and anything else that lets a user drag content).
-  // In a captured room #world-root is identity, so a pose you SEE is in this client's LOCAL frame
+  // In a captured space #world-root is identity, so a pose you SEE is in this client's LOCAL frame
   // (F_track) — but the server persists poses in the SEED frame (F_ref) and re-solves content from it
   // every capture (_placeContent). Committing a dragged F_track pose raw therefore makes the object JUMP
   // to wherever that solve lands. `toRef` is the exact inverse of that solve: author a plane-relative
   // anchor from the dragged pose against the LOCAL walls, then solve it against the SEED walls.
-  // Returns null when there's no basis (no room captured yet / void world) — the frames coincide there,
+  // Returns null when there's no basis (no space captured yet / void world) — the frames coincide there,
   // so the caller should commit the raw pose.
   // Re-place ONE anchored entity right now, using the plane basis cached by the last capture — instead of
   // waiting up to a capture interval for _placeContent to come round. Used when the server sends a new
@@ -1321,8 +1321,8 @@
   // server authorizes and persists, and applyEnv writes the echo back into the same fields — idempotent,
   // so there is no pop.
   window.ConjureWorldFrame = {
-    // Void/outdoor world (no captured room). Void mode is meaningless anywhere else: local-first forces
-    // #world-root to identity in a captured room, so a move there is reverted at the next capture AND
+    // Void/outdoor world (no captured space). Void mode is meaningless anywhere else: local-first forces
+    // #world-root to identity in a captured space, so a move there is reverted at the next capture AND
     // desynchronises content from the real walls in between.
     isVoid: function () { return isVoidWorld; },
     // Where the drag plane sits. refSpace is `local-floor`, so the floor is y=0 by construction — and it is
@@ -1442,7 +1442,7 @@
     // F_track, so an anchor-less avatar (a desktop user has no walls to author one) must be brought
     // F_ref → F_track via T⁻¹ or it lands offset by the registration yaw. A desktop receiver has no T and
     // its scene already IS F_ref, so it uses the pose as-is.
-    if (!solved && !isVoidWorld && rcA && rcA._haveT && rcA._Tmat) {   // captured room: world-root is identity
+    if (!solved && !isVoidWorld && rcA && rcA._haveT && rcA._Tmat) {   // captured space: world-root is identity
       var inv = rcA._Tmat.clone().invert();
       var fp = new THREE.Vector3(pose.p[0], pose.p[1], pose.p[2]).applyMatrix4(inv);
       var rot = new THREE.Quaternion(); inv.decompose(new THREE.Vector3(), rot, new THREE.Vector3());
@@ -1552,10 +1552,10 @@
     };
   }
 
-  // ----------------------------------------------------------------- WebXR room capture
+  // ----------------------------------------------------------------- WebXR space capture
   // ⚠ HEADSET-ONLY / NEEDS IN-HEADSET VERIFICATION (docs/backlogs/worlds-surfaces.md). Reads the Quest's
   // detected planes (+ semantic labels) in an immersive session and POSTs them to /space/capture as this
-  // headset's room model. No-ops gracefully when the features aren't available (desktop / VR-only),
+  // headset's space model. No-ops gracefully when the features aren't available (desktop / VR-only),
   // so it never breaks the normal path. Mesh detection + anchors are later slices.
   if (window.AFRAME && !AFRAME.components["space-capture"]) {
     AFRAME.registerComponent("space-capture", {
@@ -1565,12 +1565,12 @@
         this._resetSpace = null;
         this._anchorInv = null;     // last-good registration frame, reused when establishing (= _Tmat once registered)
         // Geometry-registered world frame. The Quest's tracking origin (and any WebXR anchor) can flip
-        // ~180° + several metres when you leave the room boundary and return (docs/specs/spaces-geometry.md §4.1), so
+        // ~180° + several metres when you leave the space boundary and return (docs/specs/spaces-geometry.md §4.1), so
         // we don't trust it for identity. Instead we keep a REFERENCE constellation of the room's own
         // surfaces and, each capture, solve the single yaw+translation transform that aligns the newly
         // detected planes onto it (_register). That transform (_Tmat: refSpace → reference frame) IS the
         // world frame: surface ids stay put across the jump, and #world-root is parked at its inverse so
-        // placed content stays locked to the real room too.
+        // placed content stays locked to the real space too.
         this._ref = [];             // [{id, sem, ext:[w,h], pos:Vector3, nyaw, orient}] in the reference frame
         this._Tmat = null;          // Matrix4: refSpace → reference frame (authoritative once _haveT)
         this._haveT = false;
@@ -1719,7 +1719,7 @@
         return eulerYXZToQuat(THREE, p.rotation || [0, 0, 0]).angleTo(eulerYXZToQuat(THREE, k.rotation || [0, 0, 0]))
           > 20 * Math.PI / 180;
       },
-      // Position #world-root. LOCAL-FIRST (docs/specs/spaces-geometry.md §2): a captured room renders its
+      // Position #world-root. LOCAL-FIRST (docs/specs/spaces-geometry.md §2): a captured space renders its
       // real surfaces at their OWN detected (refSpace/F_track) poses via _renderLocal, so content is
       // F_track-native and #world-root stays at IDENTITY. Registration still runs — but only to assign
       // STABLE IDS; it no longer drives a render transform, because one rigid frame can't reconcile the
@@ -1730,7 +1730,7 @@
         var THREE = AFRAME.THREE;
         var wr = document.getElementById("world-root");
         if (!wr) return;
-        if (!isVoidWorld) {                        // captured room → world-root identity (content is F_track-native)
+        if (!isVoidWorld) {                        // captured space → world-root identity (content is F_track-native)
           wr.object3D.position.set(0, 0, 0);
           wr.object3D.quaternion.set(0, 0, 0, 1);
           return;
@@ -2261,9 +2261,9 @@
       // Pin the skybox to the SPACE's frame (§5d — wall-relative yaw), in BOTH rotation and horizontal
       // position. The <a-sky>/#grounded-sky live as scene children (not inside #world-root, which
       // applySnapshot clears), so left alone they'd hold the arbitrary per-session tracking pose and spin
-      // between visits. #world-root is identity in a captured room now, so instead of reading it we apply
+      // between visits. #world-root is identity in a captured space now, so instead of reading it we apply
       // the registration transform's INVERSE (F_ref → F_track) directly — the same pose #world-root used to
-      // carry — so the sky rides the persistent room frame across sessions. Identity before the first lock.
+      // carry — so the sky rides the persistent space frame across sessions. Identity before the first lock.
       //
       // POSITION was rotation-only until 2026-09-01, which left the sky the one thing in the scene not
       // anchored to the space: content is parked on the frame, the sky sat at the raw refSpace origin
@@ -2321,7 +2321,7 @@
       // (residual/coloc logging + fetches) contaminating the numbers. Can also be forced from the console.
       _jitOn: function () { return !!window.CONJURE_DEBUG_JITTER; },
       // JITTER PROBE: sample the WORLD position of a representative real wall + a content object every frame.
-      // world-root is identity in a captured room, so these should be dead-flat between captures regardless
+      // world-root is identity in a captured space, so these should be dead-flat between captures regardless
       // of head motion — if they stay flat across a visible flick, the flick is compositor reprojection.
       _jSample: function (t) {
         var wr = document.getElementById("world-root"); if (!wr) return;
@@ -2425,7 +2425,7 @@
         var refSpace = frame && sceneEl.renderer.xr.getReferenceSpace();
         if (!frame || !refSpace) {
           // Desktop / no XR session: A-Frame still ticks (rAF), but everything below (head-frame
-          // parking, sky pin, foveation, room capture, jitter probes) is XR-only. The deferred
+          // parking, sky pin, foveation, space capture, jitter probes) is XR-only. The deferred
           // surface-mesh builder (pumpGeo) and pose easing (slewPoses) are frame-INDEPENDENT and MUST
           // still run here — otherwise a desktop viewer never drains the geo queue, so real-surface
           // planes are never built (walls invisible; only edges/wall-art/labels render).
@@ -2692,7 +2692,7 @@
             });
           }
           if (!hadRef) {
-            console.log("[conjure] seeded room frame from " + self._ref.length + " surfaces"
+            console.log("[conjure] seeded space frame from " + self._ref.length + " surfaces"
               + (amOwner ? "" : " (guest, register-only)"));
             // The session's opening line: what the space looked like when we walked in. Every later churn
             // and level line is read against this, and comparing two days' entry lines is the cheapest way
@@ -2816,7 +2816,7 @@
               if (window.CONJURE_DEBUG_REGISTRATION) this._diag(amOwner, cur.length, null);
               // Deliberately NOT _markLost when we still have a frame to hold. The relocalizing fallback
               // reveals passthrough, whose remedy ("step out of the play area") applies to a wrong SPACE;
-              // in a void world it would show you your real room instead of the void for the 1.2 s grace
+              // in a void world it would show you your real space instead of the void for the 1.2 s grace
               // while we simply wait for planes. With no frame at all there IS nothing to show, so the
               // original behaviour stands.
               if (!this._haveT) this._markLost(time);

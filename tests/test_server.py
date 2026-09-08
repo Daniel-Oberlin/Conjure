@@ -750,7 +750,7 @@ def test_expected_routes_exist(srv):
         assert p in paths, f"missing route {p}"
 
 
-# --------------------------------------------------------------------------- room model
+# --------------------------------------------------------------------------- space model
 
 def test_space_unchanged_capture_is_not_rebroadcast(srv, client):
     # fix A: a settled room stops emitting patches — an identical re-capture makes NO new revision, so the
@@ -1211,7 +1211,7 @@ def test_space_geometry_is_shared_across_worlds_styling_is_per_world(srv, client
     client.post("/style_surface", json={"target": "couch", "color": "green"})
     couch = next(e for e in _entities(client) if e["id"] == "real_couch_1")
     assert couch["components"]["material"]["color"] == "green"
-    # a NEW world shares the same physical room geometry, but not 'default's styling
+    # a NEW world shares the same physical space geometry, but not 'default's styling
     assert client.post("/worlds/new", json={"name": "blade"}).json()["ok"]
     ids = {e["id"] for e in _entities(client)}
     assert {"real_couch_1", "real_wall_1"} <= ids                       # the room followed us
@@ -1447,7 +1447,7 @@ def test_conjure_module_billboard_param_composes(client):
 def test_water_on_surface_needs_a_matching_surface(client):
     r = client.post("/module", json={"module": "water", "on_surface": "no-such-42",
                                      "config": {"src": "http://x/y.png"}}).json()
-    assert r["ok"] is False and "no room surface" in r["error"]
+    assert r["ok"] is False and "no real surface" in r["error"]
 
 
 def test_module_event_relays_to_peers_only(client):
@@ -2008,7 +2008,7 @@ def test_outdoor_void_world_has_no_space(srv, client):
     assert client.post("/worlds/new", json={"name": "beach", "outdoor": True}).json()["ok"]
     assert S.active_space == "<void>"                                  # not tied to a physical space
     assert srv.store.doc["environment"]["space"] == "<void>"
-    assert not any(e.get("meta", {}).get("real") for e in srv.store.doc["entities"])  # no room geometry
+    assert not any(e.get("meta", {}).get("real") for e in srv.store.doc["entities"])  # no space geometry
     # saving a void world creates NO space file and round-trips as void
     S._save_active()
     assert "<void>" not in srv.spaces.list("daniel")
@@ -2022,7 +2022,7 @@ def test_outdoor_void_world_has_no_space(srv, client):
 def test_agent_switch_keeps_the_live_space(srv, client):
     """Switching agents mints a `default` world in the NEW scope — and it must adopt the live space, or
     you walk out of your own room. Reported from the headset: builder was in a fully-composed room, an
-    agent switch landed in a void world, and the new agent correctly reported 'no room surfaces yet'."""
+    agent switch landed in a void world, and the new agent correctly reported 'no real surfaces yet'."""
     from conjure import server as S
     srv.store.doc["entities"].append({"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
         "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]}}})
@@ -2067,7 +2067,7 @@ def test_implicit_mint_degrades_to_void_in_someone_elses_private_space(srv, clie
 def test_an_outdoor_agents_worlds_are_space_less_however_they_are_minted(srv, client):
     """An agent whose point is to put you SOMEWHERE ELSE declares `world.outdoor`, and every mint path
     honours it. Without this, the space stamp (which every path now applies) gave the outdoor agent's
-    constructor-built first world the whole room you were standing in — measured at 59 surfaces on the
+    constructor-built first world the whole space you were standing in — measured at 59 surfaces on the
     real capture. `new_world(outdoor=True)` only ever covered "this one world is a sky"."""
     srv.store.doc["entities"].append({"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
         "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]}}})
@@ -3567,7 +3567,7 @@ def test_manipulate_refuses_real_surfaces(srv, client):
         {"id": "real_wall_9", "semantic": "wall", "position": [0, 1.5, -2],
          "rotation": [0, 0, 0], "extent": [2, 2.5]}]})
     r = client.post("/manipulate", json={"id": "real_wall_9", "position": [1, 1, -1]}).json()
-    assert r["ok"] is False and "real room surfaces" in r["error"]
+    assert r["ok"] is False and "real space surfaces" in r["error"]
 
 
 def test_manipulate_unknown_entity_is_rejected(srv, client):

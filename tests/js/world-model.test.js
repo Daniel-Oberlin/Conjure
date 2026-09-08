@@ -107,7 +107,7 @@ test("surfaceMoved: tolerances are tunable", () => {
 });
 
 // ---- pose/shape split (jitter fix): a DRIFT re-lays only the transform; only a SHAPE change rebuilds the
-// mesh. This is what keeps tracking drift from re-triangulating the whole room every capture. ----
+// mesh. This is what keeps tracking drift from re-triangulating the whole space every capture. ----
 test("surfacePoseMoved: a drift moves the pose but NOT the shape", () => {
   const base = sig([1, 1.2, 0], [0, 90, 0], [4, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]);
   const drifted = sig([1.05, 1.2, 0], [0, 93, 0], [4, 2.4], [{ x: 0.5, y: 0, w: 0.9, h: 2 }]);
@@ -560,7 +560,7 @@ test("voidFrameGate holds a room that is still filling in, then establishes when
   assert.strictEqual(step(4), "hold", "below minWalls — never trust a frame from 4 planes");
   assert.strictEqual(step(16), "hold", "count grew ⇒ still restoring");
   assert.strictEqual(step(30), "hold", "count grew again");
-  assert.strictEqual(step(30), "go", "plateaued ⇒ this is the whole room");
+  assert.strictEqual(step(30), "go", "plateaued ⇒ this is the whole space");
   assert.strictEqual(st.max, 30);
   assert.ok(st.everGo);
 });
@@ -620,7 +620,7 @@ const golden = require("./fixtures/golden-space.json");
 const G_UP = new THREE.Vector3(0, 1, 0);
 const VOID_GATE = { frac: 0.6, minWalls: 6, patience: 8 };
 
-// The fixture is a real 45-surface two-room capture, already in Pass A form. quat is [x,y,z,w].
+// The fixture is a real 45-surface two-space capture, already in Pass A form. quat is [x,y,z,w].
 function goldenCur(transform) {
   return golden.surfaces.map((s, i) => {
     let q = new THREE.Quaternion(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);

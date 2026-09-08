@@ -767,7 +767,7 @@ test("sealWalls seals to the ceiling whose FOOTPRINT covers the wall, ignoring a
 // The wall_11 case: a wall shared between two rooms whose ceilings differ by a few mm. Both footprints cover
 // it; nearest-by-centre would pick the lower and leave a slit under the taller. Seal to the HIGHER.
 test("sealWalls on a shared boundary wall seals to the HIGHER of two covering ceilings", () => {
-  const wall = vert("wall_1", "wall", [0, 1.34, 0], 0, [3, 2.66]);    // top 2.67, on the room boundary
+  const wall = vert("wall_1", "wall", [0, 1.34, 0], 0, [3, 2.66]);    // top 2.67, on the space boundary
   const lower = horiz("ceiling", 0.6, 2.690, 0);                      // covers x=0, 2.690
   const higher = horiz("ceiling", -0.6, 2.695, 0);                    // also covers x=0, 4 mm higher
   RS.sealWalls(THREE, [wall, lower, higher, horiz("floor", 0, 0.0, 0)], 0.15);
@@ -1000,7 +1000,7 @@ test("polyFit on the golden room: the real device's planes are centred rectangle
     assert.ok(Math.abs(f.off) < 1e-9 && Math.abs(f.fill - 1) < 1e-9, `${e.id} round-trips its extent`);
     checked++;
   });
-  assert.ok(checked > 30, `expected the golden room's surfaces, got ${checked}`);
+  assert.ok(checked > 30, `expected the golden space's surfaces, got ${checked}`);
 });
 
 test("a seed surface carried back through Tmat⁻¹ lands exactly on its F_track plane", () => {

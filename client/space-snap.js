@@ -617,7 +617,7 @@
   // it to the wrong room's ceiling and leave a slit). Runs BEFORE snapInsets so door/window holes — placed
   // relative to the wall centre — are computed against the sealed wall (no separate hole compensation).
   // Mutates in place.
-  // A wall on a shared room boundary counts as under BOTH adjoining rooms' footprints.
+  // A wall on a shared space boundary counts as under BOTH adjoining rooms' footprints.
   var COVER_MARGIN = 0.3;
 
   /** @type {Record<string, number>} */

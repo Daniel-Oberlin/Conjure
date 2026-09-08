@@ -290,7 +290,7 @@ async def _build_generative_ops(steps: list[dict]) -> tuple[list[dict], Optional
 
 
 def _reset_capture_authority(s: WorldStore) -> None:
-    """Room authority (the one headset allowed to report geometry) is LIVE-session state, not durable.
+    """Capture authority (the one headset allowed to report geometry) is LIVE-session state, not durable.
     Each client mints a fresh id per page load, so a *persisted* authority from a past session names a
     dead headset — and ingest_capture would reject the live headset's captures forever (it can't match the
     stale id). Clear it whenever a world becomes active so the live headset reclaims it on next capture."""
@@ -1590,7 +1590,7 @@ async def world() -> dict:
 @app.post("/reset")
 async def reset_world() -> dict:
     """Reset the ACTIVE world to the empty starter (+ the agent's constructor) — clears all entities +
-    environment (incl. any captured room) and broadcasts a fresh snapshot. The room re-captures on its
+    environment (incl. any captured space) and broadcasts a fresh snapshot. The room re-captures on its
     own once a headset is back in AR. The world keeps its name; only its contents are wiped."""
     global store
     raw = _new_world_store(active_scope)      # empty starter world (placed content + prefs only)
@@ -2768,9 +2768,9 @@ async def post_patch(patch: Patch) -> dict:
     return applied
 
 
-# --- Room model: the client→server reverse channel (a headset reports its real room) ------------
+# --- Space model: the client→server reverse channel (a headset reports its real space) ------------
 # Captured surfaces become `real`-tagged stylable entities; `environment.room` holds the boundary,
-# active flag, and the single room **authority** (only that headset may report room geometry).
+# active flag, and the single room **authority** (only that headset may report space geometry).
 # See docs/specs/worlds-surfaces.md.
 
 class CapturedSurface(BaseModel):
@@ -3057,7 +3057,7 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 # Removal debounce now lives on the CLIENT (docs §7): it posts its confirmed set only when it structurally
 # changes, so a surface missing from a post is genuinely gone and the server prunes it at once — no
 # server-side absence counter is needed.
-# Room authority (the one headset allowed to report geometry) is claimed by the first capturer's
+# Capture authority (the one headset allowed to report geometry) is claimed by the first capturer's
 # per-page-load client id and cleared only on world-activate/boot — so a RECONNECTING owner (fresh id)
 # used to be locked out until a restart. Fix B: an authority goes STALE after _AUTH_TTL with no post; a
 # new capturer then TAKES IT OVER. Safe because /space/capture is already owner-only (middleware), so only the
@@ -3158,7 +3158,7 @@ def _surface_update_set(s, aspects) -> dict:
 
 @app.post("/space/capture")
 async def ingest_capture(req: CaptureUpdate) -> dict:
-    """Ingest captured room geometry from the room **authority** headset into the shared MODEL / SEED.
+    """Ingest captured space geometry from the room **authority** headset into the shared MODEL / SEED.
 
     LOCAL-FIRST (docs/specs/spaces-geometry.md §2): every client renders its OWN live capture, so this no
     longer broadcasts geometry for rendering. It just keeps the stored SEED current — the reference
@@ -3178,7 +3178,7 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
         if (now - _authority_ts) < _AUTH_TTL:                 # another headset is live → refuse
             _slog("space", f"reject client={req.client_id} — {authority!r} holds authority "
                           f"({now - _authority_ts:.1f}s ago)")
-            return {"ok": False, "error": f"another headset ({authority}) is the room authority"}
+            return {"ok": False, "error": f"another headset ({authority}) is the capture authority"}
         _slog("space", f"authority takeover: {authority!r} idle {now - _authority_ts:.0f}s → {req.client_id}")
     _authority_ts = now                                       # keep/refresh authority for this client
 
@@ -3273,14 +3273,14 @@ class TextureSurfaceRequest(BaseModel):
 
 @app.post("/texture_surface")
 async def texture_surface(req: TextureSurfaceRequest) -> dict:
-    """Map a procured image onto room surface(s) — stars on the ceiling, grass on the floor, a mural
+    """Map a procured image onto real surface(s) — stars on the ceiling, grass on the floor, a mural
     on a wall. Sets the real surface's material to the image (white-tinted, visible)."""
     rec, _, err = _get_image(req.image_id)
     if err:
         return {"ok": False, "error": err}
     targets = _surface_targets(req.target)
     if not targets:
-        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_space)"}
+        return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     mat = {"components.material.src": rec.url, "components.material.shader": "flat",
            "components.material.color": "#FFFFFF", "components.material.side": "double",
            "components.material.visible": True}
@@ -3330,11 +3330,11 @@ class StyleSurfaceRequest(BaseModel):
 
 @app.post("/style_surface")
 async def style_surface(req: StyleSurfaceRequest) -> dict:
-    """Color and/or set the transparency of room surface(s) — e.g. semi-transparent blue walls, a
+    """Color and/or set the transparency of real surface(s) — e.g. semi-transparent blue walls, a
     glass ceiling. (For an image, use /texture_surface.)"""
     targets = _surface_targets(req.target)
     if not targets:
-        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_space)"}
+        return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     setm: dict = {"components.material.visible": True}
     if req.color is not None:
         setm["components.material.color"] = req.color
@@ -4139,7 +4139,7 @@ def _plane_basis(rotation: list[float]) -> tuple[list[float], list[float], list[
 
 
 def _ray_surface(origin: list[float], direction: list[float]) -> Optional[dict]:
-    """Nearest REAL room surface a ray (from `origin` along unit `direction`) hits within its extent —
+    """Nearest REAL real surface a ray (from `origin` along unit `direction`) hits within its extent —
     'the wall I'm looking at'. Returns {id, semantic, friendly_id, distance, point} or None."""
     best = None
     for e in store.doc["entities"]:
@@ -4256,7 +4256,7 @@ async def place_image(req: PlaceImageRequest, request: Request) -> dict:
     if req.on_surface:  # hang on a real surface: face the room (upright), fit its frame, sit just in front
         surfaces = _surface_targets(req.on_surface)
         if not surfaces:
-            return {"ok": False, "error": f"no room surface matches {req.on_surface!r}"}
+            return {"ok": False, "error": f"no real surface matches {req.on_surface!r}"}
         surf = surfaces[0]
         srot = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
         spos = surf.get("transform", {}).get("position") or pos
@@ -4422,7 +4422,7 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
     if req.on_surface:   # mount on a real surface: align to it, fit its frame, ride it (like place_image)
         surfaces = _surface_targets(req.on_surface)
         if not surfaces:
-            return {"ok": False, "error": f"no room surface matches {req.on_surface!r}"}
+            return {"ok": False, "error": f"no real surface matches {req.on_surface!r}"}
         surf = surfaces[0]
         srot = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
         spos = surf.get("transform", {}).get("position") or pos
@@ -4684,13 +4684,13 @@ class ManipulateRequest(BaseModel):
 @app.post("/manipulate")
 async def manipulate_entity(req: ManipulateRequest) -> dict:
     """Commit a placed object's new resting transform after a `grab` manipulation (tier C). Owner-gated
-    like every world write. Real room surfaces are never movable. For on-surface content, recompute
+    like every world write. Real real surfaces are never movable. For on-surface content, recompute
     `meta.surface_offset` from the new pose so it still rides a room recapture (mirrors place_image)."""
     ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
     if ent is None:
         return {"ok": False, "error": f"no entity {req.id!r}"}
     if (ent.get("meta") or {}).get("real"):
-        return {"ok": False, "error": "real room surfaces can't be moved"}
+        return {"ok": False, "error": "real space surfaces can't be moved"}
     sets: dict = {}
     if req.position is not None:
         sets["transform.position"] = req.position

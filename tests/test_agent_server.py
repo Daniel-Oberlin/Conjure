@@ -489,7 +489,7 @@ async def test_a_switch_this_server_asked_for_is_not_announced_twice():
 
 
 async def test_an_unrelated_snapshot_does_not_burn_the_claim():
-    """Snapshots arrive for all sorts of reasons (a room capture, a world switch). One landing between
+    """Snapshots arrive for all sorts of reasons (a space capture, a world switch). One landing between
     `agent <name>` and the switch it asked for must not consume the claim, or the switch that follows
     gets announced on top of the narration the hook already gave."""
     shell = FakeShell()
