@@ -350,7 +350,7 @@ therefore stranded references, including two we can't reach at all: schema-free 
 The first design was a move+alias scheme: keep names as identity, patch the breakage with a redirect
 table. It was rejected because every question it raised — chain collapsing, name reuse, alias expiry,
 what `delete` on an alias means — existed *only because aliases existed*, the table grows forever, and it
-still couldn't fix a client-side bug (`conjure-client.js` keyed the room-capture frame on the world
+still couldn't fix a client-side bug (`conjure-client.js` keyed the space-capture frame on the world
 *name*, so a rename read as a world switch and reset the frame). An id removes the cause instead of
 patching the symptom, and is correct on the second rename as well as the first.
 

@@ -794,7 +794,7 @@ class _ScopeFromHeader:
 app.add_middleware(_ScopeFromHeader)
 
 # Durability: a background task writes the active world to its file whenever its rev advances. Polling
-# debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one write — and it
+# debounces naturally — a multi-patch turn or a space-capture flurry coalesces into one write — and it
 # touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
 _AUTOSAVE_INTERVAL = 1.0
 _autosave_task: asyncio.Task | None = None
@@ -3009,7 +3009,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     renders. On the way back out, `_save_active` SPLITS the live doc again (geometry → the space's owner's
     scope, objects + overrides → the world), so geometry only ever flows world→space on real capture.
 
-    Returns `(space_owner, space_name, composed_store)` with room-capture authority reset (fresh session
+    Returns `(space_owner, space_name, composed_store)` with space-capture authority reset (fresh session
     state). A space-less world returns `(world_owner, VOID | UNSET, …)` — the owner is irrelevant for it.
 
     specs/spaces.md §6.1 — the old LEGACY-MIGRATION path is gone (activate is read-only; it never
@@ -3176,10 +3176,10 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
     now = time.time()
     if authority and authority != req.client_id:
         if (now - _authority_ts) < _AUTH_TTL:                 # another headset is live → refuse
-            _slog("room", f"reject client={req.client_id} — {authority!r} holds authority "
+            _slog("space", f"reject client={req.client_id} — {authority!r} holds authority "
                           f"({now - _authority_ts:.1f}s ago)")
             return {"ok": False, "error": f"another headset ({authority}) is the room authority"}
-        _slog("room", f"authority takeover: {authority!r} idle {now - _authority_ts:.0f}s → {req.client_id}")
+        _slog("space", f"authority takeover: {authority!r} idle {now - _authority_ts:.0f}s → {req.client_id}")
     _authority_ts = now                                       # keep/refresh authority for this client
 
     existing = {e["id"]: e for e in store.doc["entities"] if e.get("meta", {}).get("real")}
@@ -3227,7 +3227,7 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
             _glog("seed.add", {"id": s.id, "sem": s.semantic})
             _slog("seed", f"surface {s.id} new → added to seed")
     if geo_ops:
-        store.apply_patch(geo_ops, origin="room")             # seed updated in place; NOT broadcast
+        store.apply_patch(geo_ops, origin="space")             # seed updated in place; NOT broadcast
 
     # Only these reach clients: room-activation/boundary env + on-surface image re-anchors (content, which
     # clients DO render). Geometry is theirs to render locally.
@@ -3247,11 +3247,11 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
              for s in req.surfaces if s.id in changed_ids}
     wire_ops += _reanchor_ops(store.doc, moved)               # re-pin photos on surfaces that moved
     if wire_ops:
-        patch = store.apply_patch(wire_ops, origin="room")
+        patch = store.apply_patch(wire_ops, origin="space")
         await _broadcast({"type": "patch", "patch": patch})
 
     if geo_ops or wire_ops:
-        _slog("room", f"accept client={req.client_id} → {active_scope.split('/', 1)[0]}/{active_world} "
+        _slog("space", f"accept client={req.client_id} → {active_scope.split('/', 1)[0]}/{active_world} "
                       f"surfaces={len(req.surfaces)} changed={len(changed_ids)} seed_ops={len(geo_ops)} wire={len(wire_ops)}")
     return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
 

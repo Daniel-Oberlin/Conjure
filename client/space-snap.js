@@ -1,5 +1,5 @@
 // @ts-check
-// Pure space-snapping geometry — extracted from the room-capture component so it can be unit-tested
+// Pure space-snapping geometry — extracted from the space-capture component so it can be unit-tested
 // (tests/js/space-snap.test.js) independently of A-Frame/WebXR/DOM. Every function takes the THREE
 // module as its first argument: the browser passes AFRAME.THREE, node tests pass require('three').
 // No state, no DOM, no globals — just the math that turns captured planes into placed surfaces.

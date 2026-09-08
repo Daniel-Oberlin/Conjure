@@ -777,7 +777,7 @@
     applyImmersion();
   }
 
-  // The persisted real surfaces from the latest server snapshot. On a page (re)load the room-capture
+  // The persisted real surfaces from the latest server snapshot. On a page (re)load the space-capture
   // component re-inits with an EMPTY reference and would otherwise establish a brand-new world frame
   // (jumping you out of the room); instead it seeds its reference from these so its first capture
   // registers INTO the persisted frame. Stays null until a snapshot carrying real surfaces arrives.
@@ -793,7 +793,7 @@
   // persisted look instead of a default material. Reset per world switch.
   var surfaceStyles = {};
   // A VOID/outdoor world (environment.space === "<void>") isn't tied to a captured room — it shows a
-  // skybox + objects, and room-capture derives its frame on the fly from live walls (canonicalFrame)
+  // skybox + objects, and space-capture derives its frame on the fly from live walls (canonicalFrame)
   // instead of registering against stored geometry. Set from each snapshot.
   var VOID_SPACE = "<void>", isVoidWorld = false;
   // USER ADJUSTMENTS to the two derived frames (specs/dynamics.md §8b — `grab`'s skybox/void modes).
@@ -875,7 +875,7 @@
     });
   }
   // Two-stage space selection (specs/spaces.md §6). On entering AR we report our coarse location and get
-  // back the geo-near candidate spaces; room-capture then votes its live geometry against them
+  // back the geo-near candidate spaces; space-capture then votes its live geometry against them
   // (SpaceSnap.selectSpace) and commits the verdict via /space/select. `pendingSelect` holds the candidates
   // while that vote is in flight (null when there's nothing to decide); `lastGeo` remembers the reported
   // location so a "no match" commit can stamp/mint a space there.
@@ -916,9 +916,9 @@
     if (key !== lastWorldKey) {          // WORLD SWITCH → drop the previous room's capture frame so the next
       lastWorldKey = key;                // capture seeds/establishes for THIS world, not the last one
       var sc = document.querySelector("a-scene");
-      var rc = sc && sc.components && sc.components["room-capture"];
+      var rc = sc && sc.components && sc.components["space-capture"];
       if (rc && rc.resetFrame) rc.resetFrame();
-      // …and the plane basis derived from it. `resetFrame` clears room-capture's own state; `framePlanes`
+      // …and the plane basis derived from it. `resetFrame` clears space-capture's own state; `framePlanes`
       // lives out here and used to survive, so the PREVIOUS room's walls stayed live as a conversion basis
       // in the next world. In a void/outdoor world that is unrecoverable on its own: `_placeContent` is the
       // only writer and its caller returns early on `!surfaces.length`, so nothing there can refresh or
@@ -1427,7 +1427,7 @@
   function setAvatar(user, pose, anchor) {
     var THREE = AFRAME.THREE;
     var scA = document.querySelector("a-scene");
-    var rcA = scA && scA.components && scA.components["room-capture"];
+    var rcA = scA && scA.components && scA.components["space-capture"];
     var solved = false;
     // Prefer the plane-relative anchor solved against MY OWN local walls (§5.1) — the avatar then lands on
     // the same real walls I see, not a shared rigid frame. (headset ↔ headset)
@@ -1492,7 +1492,7 @@
     // identity (local-first render, docs §2), so we apply the registration transform T (F_track → F_ref)
     // directly rather than reading world-root's (now identity) matrix. Falls back to the raw camera pose
     // before registration / on desktop (no capture) — where scene space is already the shared frame.
-    var rc = sc.components && sc.components["room-capture"];
+    var rc = sc.components && sc.components["space-capture"];
     var m = (rc && rc._haveT && rc._Tmat)
       ? new THREE.Matrix4().multiplyMatrices(rc._Tmat, cam.matrixWorld)   // F_track camera pose → F_ref
       : cam.matrixWorld;
@@ -1546,7 +1546,7 @@
       else if (msg.type === "presence_leave") removeAvatar(msg.user);
       else if (msg.type === "recapture") {                // realign request → re-capture the room
         var sc = document.querySelector("a-scene");
-        var rc = sc && sc.components && sc.components["room-capture"];
+        var rc = sc && sc.components && sc.components["space-capture"];
         if (rc && rc.recapture) rc.recapture();
       }
     };
@@ -1557,8 +1557,8 @@
   // detected planes (+ semantic labels) in an immersive session and POSTs them to /space/capture as this
   // headset's room model. No-ops gracefully when the features aren't available (desktop / VR-only),
   // so it never breaks the normal path. Mesh detection + anchors are later slices.
-  if (window.AFRAME && !AFRAME.components["room-capture"]) {
-    AFRAME.registerComponent("room-capture", {
+  if (window.AFRAME && !AFRAME.components["space-capture"]) {
+    AFRAME.registerComponent("space-capture", {
       init: function () {
         this.clientId = "hs_" + Math.random().toString(36).slice(2, 8);
         this.lastPost = 0;
@@ -3238,7 +3238,7 @@
       debugLog("sel", "/geolocation resp: selected=" + (resp && resp.selected) + " cands=" + cands.length, true);
       if (!resp || resp.selected) { endAwaitingSpace(); return; }   // already established this session
       // No geo-near space at all ⇒ somewhere new — commit "no match" now so the server mints a fresh space
-      // here. Otherwise arm the vote: room-capture picks the matching candidate as its capture fills in.
+      // here. Otherwise arm the vote: space-capture picks the matching candidate as its capture fills in.
       if (!cands.length) commitSelect({ matched: false });
       else pendingSelect = { candidates: cands, tries: 0 };
     }).catch(function (e) { debugLog("sel", "/geolocation FETCH ERROR: " + e, true); endAwaitingSpace(); });
