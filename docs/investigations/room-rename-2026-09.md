@@ -65,6 +65,10 @@ and were changed. The split was 4-3 and had to be read one at a time. *(Found du
 **7. `temp/room_check14.txt`** in `golden-space.json`'s `source` field — the provenance of a real capture
 file. Renaming it falsifies a historical record.
 
+**8. "room" meaning *leeway*.** `space-snap.js` — *"leaves ample noise room"*; `backlogs/agents.md` —
+*"the grammar leaves room for it"*, *"leave room for a `spoken`"*. Ordinary English, same class as `roomy`,
+and a phrase sweep on `room` catches all three. *(Found during the prose pass.)*
+
 ---
 
 ## Tier 1 — persisted keys
@@ -191,3 +195,41 @@ the synthetic-room fixtures, three uppercase `ROOM`s, `roomy`, `room_check14`. T
 mixed meaning — the uppercase split above was 4-3, and there is no reason to expect the lowercase ones to be
 cleaner. No functional risk, but it is the layer where the confusion actually reaches a reader, so it wants
 its own pass and its own commit rather than being folded into an identifier rename.
+
+---
+
+## The prose pass (2026-09-07)
+
+Done by **audience**, highest-value first, rather than by volume — the text the model reads every turn
+matters more than a comment a human reads once a year.
+
+| Commit | What | Remaining |
+|---|---|---|
+| `ec0cba0` | tool docstrings + `agents/builder/prompt.md` | **0** |
+| `2a4f0dc`* | 95 unambiguous phrases in code comments | — |
+| `6d98119` | the `no room` family, incl. a user-facing broadcast, + `agents/outdoor/prompt.md` | **0** model-facing |
+
+\* the safe-phrase commit; see `git log`.
+
+**Model-facing prose is at zero.** Every tool docstring and every agent prompt. The dominant pattern was
+`room surface`, where `room` was pure redundancy — `real surface` is already the term of art via
+`meta.real` — so the text got shorter as well as correcter. Two finds worth naming:
+
+- the definition of a space read *"a space is the real **room** your worlds are anchored in"*;
+- `server.py:2251` broadcasts *"You're in a world with no **room** — staying put"* **to the user**.
+
+### What remains, and why it is left
+
+| Audience | Count | Judgement |
+|---|---|---|
+| source comments | ~269 | mixed; needs reading |
+| tests + fixtures | ~245 | **largely correct already** — synthetic single-room fixtures, and multi-room assertions like *"sends each junction door into its OWN room"* |
+| docs | ~546 | mixed; many are genuine multi-room discussion that the rooms work makes *more* correct |
+| scripts + config | ~32 | mixed |
+
+These are the residue after every phrase whose meaning is unambiguous **without reading the surrounding
+paragraph** was replaced. What is left is `the room` (×48), `a room`, `same room`, `wrong room` — where the
+answer depends on context, and where after the rooms work a good share are simply right.
+
+Bulk-applying to them is how a prose pass corrupts a codebase: the uppercase `ROOM` split was 4-3, and the
+leeway sense (#8) was only found by sampling. So this wants a per-file read, and it blocks nothing.
