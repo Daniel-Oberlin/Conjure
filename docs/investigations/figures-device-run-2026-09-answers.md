@@ -80,7 +80,7 @@ A 512-pixel clay render cannot answer this and a person standing next to her can
 | B2 | `crouch` then `sit`, back to back | distinguishable. A vision model confused these two — the question is whether a person does | distinguishable, crouching is leaned forward a little|
 | B3 | `arms-crossed` | folded, not clasped, not surrender. Took four authoring passes; the last one only just crosses the midline | again, arms folded but inside her chest |
 | B4 | On **Saka** (VRoid, rests in a T-pose): `kneel`, `wave`, `point` | arms at her sides, not straight out. This is the scarecrow fix — the defect the visual check found | kneeling her arms are straight down, they enter her hips a little; no scarecrow in any of those three poses for saka, again pointing and waving look a little more like reaching |
-| B5 | On **Trish**: `bow` | **expected to barely bow.** Her spine bones are siblings rather than a chain, so the mapped `spine` carries her waist and not her shoulders. Confirms a known rig defect on device | |
+| B5 | On **Trish**: `bow` | **expected to barely bow.** Her spine bones are siblings rather than a chain, so the mapped `spine` carries her waist and not her shoulders. Confirms a known rig defect on device | confirmed, she is pushing her chest forward instead of bowing|
 | B6 | `sit` on any rig | the *shape* of sitting, seated on nothing. Put a chair under her by hand and see how far off she is — that gap is the size of the tier-3 problem | |
 
 ---
@@ -137,6 +137,7 @@ Logging is gated on `debug_log` (default on). An empty Terminal 2 means that fla
 **And the headset is the other half.** The REPL says what was *asked*; only the headset says whether she
 did it. A call that reads perfectly and produces nothing visible is the failure this feature keeps
 rediscovering.
+
 
 | # | Say | Expect | Saw |
 |---|---|---|---|
