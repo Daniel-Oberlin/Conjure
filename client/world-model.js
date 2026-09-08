@@ -335,7 +335,7 @@
    * PLUS a wall-relative anchor — and the receiving client solved that anchor against different walls
    * and teleported the object. Authoring an anchor you cannot convert back through is never right.
    *
-   * A room-less world legitimately has no basis at all; there the raw pose IS the pose.
+   * A space-less world legitimately has no basis at all; there the raw pose IS the pose.
    */
   function hasFrameBasis(fp) {
     var lp = fp && fp.local, rp = fp && fp.ref;

@@ -119,7 +119,7 @@ def _agent_world_config(scope: str) -> dict:
 
 
 def _agent_wants_outdoor(scope: str) -> bool:
-    """Does this agent's `world.outdoor` say its worlds are room-less (specs/agents.md §3)?
+    """Does this agent's `world.outdoor` say its worlds are space-less (specs/agents.md §3)?
 
     Whether a world wants a space is a property of the AGENT, not of the request that happened to
     create it. `new_world(outdoor=True)` covers "this one world is a sky"; an agent whose whole point is
@@ -201,9 +201,9 @@ def _new_world_store(scope: str, *, extra_on_create: list[dict] = (),
     The world ADOPTS the live space (`_space_for_new_world`, D5/step 5) — this is the one chokepoint every
     mint path shares, so a world born while you're standing in your room has your room in it no matter
     which path minted it. `adopt_space=False` is for the ONE caller that runs before a space is resolved
-    (`_boot_world`); `outdoor` forces VOID for an explicitly room-less world, and so does the owning
+    (`_boot_world`); `outdoor` forces VOID for an explicitly space-less world, and so does the owning
     agent's `world.outdoor` — the per-request flag and the per-agent declaration OR together, so an
-    outdoor agent's worlds are room-less however they were minted."""
+    outdoor agent's worlds are space-less however they were minted."""
     s = WorldStore.load(SAMPLE_WORLD)
     env = s.doc.setdefault("environment", {})
     env["public"] = True                                          # worlds are public by default (§4)
@@ -671,7 +671,7 @@ app = FastAPI(title="Conjure", version="0.0.1", lifespan=_lifespan)
 
 def _slog(tag: str, msg: str) -> None:
     """Append a SERVER-side diagnostic line to temp/conjure.log, same format as the client's lines, so
-    server routing events (world switches, space selection, /room accept vs 403) interleave with the
+    server routing events (world switches, space selection, /space/capture accept vs 403) interleave with the
     client's registration/patch trace by timestamp. Gated like /client_log (debug_log OR debug_registration)."""
     if not (settings.debug_log or settings.debug_registration):
         return
@@ -810,7 +810,7 @@ _autosave_task: asyncio.Task | None = None
 _space_holders: "set[WebSocket]" = set()
 _selected_cids: set[str] = set()
 
-# A world's space reference has THREE states, not two. `VOID` ("<void>") means *deliberately* room-less —
+# A world's space reference has THREE states, not two. `VOID` ("<void>") means *deliberately* space-less —
 # an outdoor world, or one whose agent declares `world.outdoor`. `UNSET` means *not decided yet*: a world
 # minted before anything knew which space we're in (the boot placeholder). Both render identically (no
 # real geometry) and both report VOID to the client, so the client contract is unchanged — the difference
@@ -930,7 +930,7 @@ def _save_active() -> None:
         # legitimately hold worlds before any meta is written, and treating that as deleted would
         # silently disable autosave for it.
         return
-    if _no_space():                                 # room-less world: no geometry to split out
+    if _no_space():                                 # space-less world: no geometry to split out
         world_doc = copy.deepcopy(store.doc)
         env = world_doc.setdefault("environment", {})
         if active_space == UNSET:
@@ -2236,13 +2236,13 @@ async def select_space(req: SpaceSelect) -> dict:
     # --- Unclaimed (provisional boot / everyone left): this AR user ESTABLISHES the space.
     _selected_cids.add(cid)
 
-    # specs/spaces.md §4.3 — a DELIBERATELY room-less world is not relocated by recognising the room you're standing in.
+    # specs/spaces.md §4.3 — a DELIBERATELY space-less world is not relocated by recognising the room you're standing in.
     # The client votes its capture against the candidates even here, and must: without it, an outdoor
     # re-entry never resolves a space at all. But resolving WHICH space you are in and MOVING you to that
     # space's last world are two different things, and only the first is wanted when you chose to be
     # nowhere. So: claim the space (occupancy + boundary are still real) and stay put.
     #
-    # This is only safe because UNSET exists (§4.3). A boot placeholder is room-less too, and relocating it
+    # This is only safe because UNSET exists (§4.3). A boot placeholder is space-less too, and relocating it
     # is exactly right — it is a guess, not a choice. Were both spelled VOID, this branch would strand a
     # headset user in a blank world.
     if active_space == VOID:
@@ -2323,7 +2323,7 @@ def _entry_scope_for(user: str, *, prefer: Optional[str] = None) -> str:
         the space's remembered scope  →  the live scope  →  the default agent
 
     A candidate is skipped when its agent no longer resolves on the search path (deleted or renamed), or
-    when it declares `world.outdoor` — an outdoor agent's worlds are room-less by declaration (specs/agents.md §3), so
+    when it declares `world.outdoor` — an outdoor agent's worlds are space-less by declaration (specs/agents.md §3), so
     it cannot host a world tied to a space and preferring it would contradict its own definition.
 
     This is what fixed coming back as the *builder*: the scope was hard-coded, so a space whose remembered
@@ -2973,7 +2973,7 @@ def _space_for_new_world(scope: str, *, outdoor: bool = False) -> str:
     space, so a world created while a headset is standing in a room composes THAT room. VOID — the honest
     "no room here" — in three cases:
 
-      - `outdoor`: an explicitly room-less world (skybox only);
+      - `outdoor`: an explicitly space-less world (skybox only);
       - no space is live (`active_space == VOID`) — an unclaimed server, or a void/outdoor world;
       - the creator may not build in the live space (`_may_create_world_in` — someone else's PRIVATE
         space). `/worlds/new` REFUSES that outright because the user asked for it explicitly; the
@@ -3010,7 +3010,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     scope, objects + overrides → the world), so geometry only ever flows world→space on real capture.
 
     Returns `(space_owner, space_name, composed_store)` with room-capture authority reset (fresh session
-    state). A room-less world returns `(world_owner, VOID | UNSET, …)` — the owner is irrelevant for it.
+    state). A space-less world returns `(world_owner, VOID | UNSET, …)` — the owner is irrelevant for it.
 
     specs/spaces.md §6.1 — the old LEGACY-MIGRATION path is gone (activate is read-only; it never
     rewrites a world doc). **step 2** — space references are now fully-qualified `<owner>/<name>`, so a
@@ -3060,7 +3060,7 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 # Room authority (the one headset allowed to report geometry) is claimed by the first capturer's
 # per-page-load client id and cleared only on world-activate/boot — so a RECONNECTING owner (fresh id)
 # used to be locked out until a restart. Fix B: an authority goes STALE after _AUTH_TTL with no post; a
-# new capturer then TAKES IT OVER. Safe because /room is already owner-only (middleware), so only the
+# new capturer then TAKES IT OVER. Safe because /space/capture is already owner-only (middleware), so only the
 # active world's owner ever reaches here — the guard is just against two of their live headsets at once.
 _AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle authority holds before takeover
 _authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
@@ -4717,7 +4717,7 @@ async def manipulate_entity(req: ManipulateRequest) -> dict:
     # on the fly from the F_ref pose every capture, so it's wall-solved either way. Keeping the exact anchor
     # the user's drop produced just replaces a re-derived approximation with the real thing — the same
     # accuracy models get. (Surface-attached content is host-relative; surface_offset covers it below.)
-    # …but NOT in a room-less world. An anchor is plane-relative — surface ids plus offsets — so in a VOID
+    # …but NOT in a space-less world. An anchor is plane-relative — surface ids plus offsets — so in a VOID
     # world it names walls that do not exist here, and any client holding a stale basis will solve it and
     # teleport the object. The client should not send one (it needs a basis to author it), but a stale
     # basis is exactly the bug this guards: refusing it here contains a client-side fault to that client,

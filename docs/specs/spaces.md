@@ -201,7 +201,7 @@ space: `_boot_world` runs before any space is resolved and is the one caller pas
 leaving the ref absent, which `_activate` reads as the honest "no space chosen yet".
 
 > The stamp lives at the shared chokepoint rather than at each call site because it was previously only at
-> `/worlds/new`. Every other path minted a room-less world, so switching agents inside your own captured
+> `/worlds/new`. Every other path minted a space-less world, so switching agents inside your own captured
 > room dropped you into a void world and the incoming agent reported, correctly, that it had no surfaces.
 
 ### 4.3 Room-less has two meanings: `UNSET` and `VOID`
@@ -211,8 +211,8 @@ treatment when a headset works out which space you are standing in.
 
 | Server state | On disk | Renders | A space selection… |
 |---|---|---|---|
-| **`UNSET`** | the `space` key is **absent** | room-less | **relocates you** — it's a placeholder, not a choice |
-| **`VOID`** (`"<void>"`) | `"space": "<void>"` | room-less | **claims the space and leaves you put** |
+| **`UNSET`** | the `space` key is **absent** | space-less | **relocates you** — it's a placeholder, not a choice |
+| **`VOID`** (`"<void>"`) | `"space": "<void>"` | space-less | **claims the space and leaves you put** |
 | a reference | `"space": "<owner>/<name>"` | that space's geometry | admitted on match, refused otherwise |
 
 `UNSET` is purely in-memory (`server.py`); on disk it is the *absence* of the key, which `_activate`
@@ -228,8 +228,8 @@ space's last world** are two different things, and only the first is wanted when
 Previously they were fused, so leaving and restarting inside an outdoor world and then putting the
 headset on pulled you into whichever agent last used your living room.
 
-**Why that needs `UNSET` to be safe.** A boot placeholder is room-less too, and relocating it is exactly
-right. Before this, `_save_active` stamped `<void>` on any room-less world, so a placeholder became
+**Why that needs `UNSET` to be safe.** A boot placeholder is space-less too, and relocating it is exactly
+right. Before this, `_save_active` stamped `<void>` on any space-less world, so a placeholder became
 *deliberately* outdoor within one autosave (~1 s) — after which the rule above would refuse to relocate
 it and strand a headset user in a blank world. Persisting the absence is what keeps the two apart.
 
@@ -304,7 +304,7 @@ yourself:
 > the space's `last_scope` → the live scope → the default agent
 
 A candidate is skipped when its agent no longer resolves on the search path, or when it declares
-`world.outdoor` (§4.3) — an outdoor agent's worlds are room-less by declaration, so it cannot host one
+`world.outdoor` (§4.3) — an outdoor agent's worlds are space-less by declaration, so it cannot host one
 tied to a space. This scope was previously **hard-coded to `builder`**, so a space whose remembered world
 had been deleted handed you to a general-purpose agent regardless of who you had been talking to.
 

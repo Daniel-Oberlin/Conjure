@@ -1227,7 +1227,7 @@ def test_activate_no_longer_migrates_embedded_geometry(srv, client):
     """specs/spaces.md §6.1: the legacy geometry-embedded migration is gone. A pre-space world
     doc is no longer rewritten on load, and its INLINE real surfaces are NOT resurrected — real geometry
     lives only in the space now (fed by capture via _save_active). Objects still compose; a world with no
-    space ref renders room-less (step 5 removed the anonymous-'home' Path B fallback) and resolves to
+    space ref renders space-less (step 5 removed the anonymous-'home' Path B fallback) and resolves to
     UNSET rather than VOID — not-decided-yet, which a headset may still claim (specs/spaces.md §4.3)."""
     from conjure.world import WorldStore
     embedded = {
@@ -1243,7 +1243,7 @@ def test_activate_no_longer_migrates_embedded_geometry(srv, client):
     assert "ent_box" in ids                                     # placed objects compose as before
     assert "real_table_2" not in ids                            # inline geometry is NOT resurrected
     assert srv.active_space == srv.UNSET                        # ABSENT ref → not-yet-decided, not a decision
-    assert srv._no_space() is True                              # …and it renders room-less either way
+    assert srv._no_space() is True                              # …and it renders space-less either way
     wd = srv.worlds.load(srv.DEFAULT_SCOPE, "legacy").doc
     assert any(e["id"] == "real_table_2" for e in wd["entities"])   # inline geometry NOT stripped from disk
     assert "space" not in wd.get("environment", {})                # activate no longer stamps a space ref
@@ -1569,7 +1569,7 @@ def test_occupied_space_refuses_an_ar_user_not_in_it(srv, client):
 
 
 def _void_world(srv, client, name="beach"):
-    """Put the live pointer in a DELIBERATELY room-less world (the outdoor case)."""
+    """Put the live pointer in a DELIBERATELY space-less world (the outdoor case)."""
     assert client.post("/worlds/new", json={"name": name, "outdoor": True}).json()["ok"]
     assert srv.active_space == srv.VOID
 
@@ -1592,7 +1592,7 @@ def test_a_deleted_world_sends_you_back_as_the_same_agent(srv, client):
 
 
 def test_the_fallback_skips_an_agent_that_cannot_live_in_a_space(srv):
-    """The chain skips a candidate whose agent declares `world.outdoor` — its worlds are room-less by
+    """The chain skips a candidate whose agent declares `world.outdoor` — its worlds are space-less by
     declaration (specs/agents.md §3), so preferring it would contradict its own definition — and one whose definition
     no longer resolves at all. Then, and only then, the default agent."""
     from conjure import server as S
@@ -1626,7 +1626,7 @@ def test_an_outdoor_world_is_not_relocated_by_recognising_the_room(srv, client):
     assert r["ok"] and r.get("kept_outdoor") is True
     assert r.get("admitted") is True                       # the space IS claimed — occupancy is still real
     assert srv.active_world == before                      # …but we did not move
-    assert srv.active_space == srv.VOID                    # still deliberately room-less
+    assert srv.active_space == srv.VOID                    # still deliberately space-less
 
 
 def test_a_boot_placeholder_IS_relocated_by_recognising_the_room(srv, client):
@@ -1655,11 +1655,11 @@ def test_a_boot_placeholder_IS_relocated_by_recognising_the_room(srv, client):
     assert r["ok"] and not r.get("kept_outdoor")
     assert srv.worlds.name_of(srv.DEFAULT_SCOPE, srv.active_world) == "animal-house"   # relocated
     assert srv.active_space == "home"
-    assert srv.UNSET != srv.VOID     # the two room-less states are distinct, which is what made this safe
+    assert srv.UNSET != srv.VOID     # the two space-less states are distinct, which is what made this safe
 
 
 def test_autosave_does_not_turn_a_placeholder_into_a_decision(srv, client):
-    """The load-bearing half of specs/spaces.md §4.3. `_save_active` used to stamp VOID on any room-less world, so a boot
+    """The load-bearing half of specs/spaces.md §4.3. `_save_active` used to stamp VOID on any space-less world, so a boot
     placeholder became *deliberately* outdoor within one autosave (~1s) — after which the no-relocation rule would refuse to
     relocate it. UNSET must persist as the ABSENCE of the key, so it reads back as UNSET."""
     from conjure.world import WorldStore
@@ -2026,7 +2026,7 @@ def test_agent_switch_keeps_the_live_space(srv, client):
     from conjure import server as S
     srv.store.doc["entities"].append({"id": "real_wall_9", "meta": {"real": True, "semantic": "wall"},
         "transform": {"position": [0, 1, -2]}, "components": {"surface": {"extent": [3, 2.4]}}})
-    # `scratch`, not `outdoor`: an outdoor agent's worlds are room-less BY DECLARATION (specs/agents.md §3), so it would
+    # `scratch`, not `outdoor`: an outdoor agent's worlds are space-less BY DECLARATION (specs/agents.md §3), so it would
     # pass this test for the wrong reason — or rather fail it for the right one.
     r = client.post("/scope/activate", json={"scope": "daniel/agents/scratch"}).json()
     assert r["ok"] and not r.get("unchanged")
@@ -4152,7 +4152,7 @@ async def test_the_owner_holding_the_space_keeps_it_claimed(srv):
 
 def test_a_void_world_refuses_a_wall_relative_anchor(srv, client):
     client.post("/worlds/new", json={"scope": srv.DEFAULT_SCOPE, "name": "meadow", "outdoor": True})
-    assert srv._no_space()                                     # room-less by construction
+    assert srv._no_space()                                     # space-less by construction
     eid = _place_box(client)
     r = client.post("/manipulate", json={"id": eid, "position": [1, 1, -2],
                                          "anchor": {"mode": "free", "refs": [{"id": "real_wall_1"}]}}).json()
@@ -4163,7 +4163,7 @@ def test_a_void_world_refuses_a_wall_relative_anchor(srv, client):
 
 
 def test_a_world_with_a_room_still_stores_the_anchor(srv, client):
-    """The guard is about room-less worlds only. Dropping the anchor where it IS meaningful would
+    """The guard is about space-less worlds only. Dropping the anchor where it IS meaningful would
     reintroduce the drift it exists to remove — the client's exact drop replaced by a re-derivation."""
     eid = _place_box(client)
     anchor = {"mode": "free", "refs": [{"id": "real_wall_1"}]}

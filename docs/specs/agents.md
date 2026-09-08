@@ -176,7 +176,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
 | `mcp_servers[].tools` | no (`[]`) | each name exists on the live server, at connect | opt-in only; omitted ⇒ **none** |
 | `context` | no (`[]`) | — | MCP resource URIs; fetched only if `{context}` appears in the prompt |
 | `dynamics` | no (`[]`) | every module resolves on the dynamics search path | a dangling name **fails the load** |
-| `world.outdoor` | no (`false`) | — | this agent's worlds are **room-less**: they never adopt the live space (§7.5) |
+| `world.outdoor` | no (`false`) | — | this agent's worlds are **space-less**: they never adopt the live space (§7.5) |
 | `session.public` | no (`true`) | — | visibility a NEW session is born with, on **every** mint path (§7.5) |
 | `world` / `session` / `state` | no (`{}`) | `state[].seed`/`schema` files parsed if present (failures skipped) | read by the world server and the agent server, not the loader |
 | `personas` | no (`[]`) | — | parsed into `AgentDef.personas` and **read by nothing** |
@@ -204,7 +204,7 @@ running interpreter, so the subprocess inherits the venv.
   `world://current`, `dynamics://available`. Dynamics: `fireflies`, `water`, `grab`.
 - **`outdoor`** — skybox-only: twelve tools, no `context` at all (so it pays **zero** per-turn context
   cost — the live contrast with builder), no dynamics. Declares `world.outdoor` — its worlds are
-  room-less and never adopt the live space, which is a property of *the agent* rather than of whichever
+  space-less and never adopt the live space, which is a property of *the agent* rather than of whichever
   request happened to create a world. Its `session.first_world.on_create` runs a
   generative constructor (§7.5). It holds the **read** half of the library (`search_library`,
   `query_assets`) but none of the mutating half — every sky it generates is catalogued, so without
@@ -1332,7 +1332,7 @@ debounce). `_save_active` **splits** it: real-surface geometry + boundary → th
 space owner's scope, so a world built in someone else's space writes its walls back to them); placed
 objects, display prefs and per-surface style overrides → the **world** doc. It also records
 `last_scope`/`last_world` on the space, which is what `/space/select` resumes on a return visit. A
-room-less world has no space to split out and is saved whole — as `<void>` if it is deliberately
+space-less world has no space to split out and is saved whole — as `<void>` if it is deliberately
 outdoor, and with the ref **omitted** if it is merely undecided ([`specs/spaces.md §4.3`](./spaces.md)).
 
 **Autosave never resurrects a deleted session.** `_save_active` returns early when the live session's

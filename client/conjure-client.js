@@ -366,8 +366,8 @@
     // VR" (room inactive AND no chosen skybox). Hide them whenever the room is active — AR passthrough or
     // a virtual room — OR a skybox IS the environment (an outdoor/void world), so the grid never competes
     // with the room or the sky. (In AR the void a-sky would also occlude passthrough, so it's hidden too.)
-    var inRoom = presentation.active;
-    var showScaffold = !inRoom && !presentation.skybox && !presentation.grounded;   // holodeck only in a bare void
+    var inSpace = presentation.active;
+    var showScaffold = !inSpace && !presentation.skybox && !presentation.grounded;   // holodeck only in a bare void
     document.querySelectorAll("[data-scaffold]").forEach(function (el) {
       el.setAttribute("visible", showScaffold);
     });
@@ -377,7 +377,7 @@
     // replaces the plain sphere with a ground-projected dome, so when it's active hide the sphere and
     // show the grounded mesh instead (it likewise wraps the scene whenever the room is active).
     var sky = document.getElementById("sky");
-    if (sky) sky.setAttribute("visible", !presentation.grounded && (presentation.skybox || !inRoom));
+    if (sky) sky.setAttribute("visible", !presentation.grounded && (presentation.skybox || !inSpace));
     var grounded = document.getElementById("grounded-sky");
     if (grounded) grounded.setAttribute("visible", presentation.grounded);
     var reals = document.querySelectorAll("[data-real]");
@@ -1554,7 +1554,7 @@
 
   // ----------------------------------------------------------------- WebXR room capture
   // ⚠ HEADSET-ONLY / NEEDS IN-HEADSET VERIFICATION (docs/backlogs/worlds-surfaces.md). Reads the Quest's
-  // detected planes (+ semantic labels) in an immersive session and POSTs them to /room as this
+  // detected planes (+ semantic labels) in an immersive session and POSTs them to /space/capture as this
   // headset's room model. No-ops gracefully when the features aren't available (desktop / VR-only),
   // so it never breaks the normal path. Mesh detection + anchors are later slices.
   if (window.AFRAME && !AFRAME.components["room-capture"]) {

@@ -354,7 +354,7 @@ test("a frame basis needs BOTH wall sets — authoring an anchor you cannot conv
   assert.strictEqual(WM.hasFrameBasis({ local: null, ref: two }), false);
 });
 
-test("a room-less world has no basis, and that is not a failure", () => {
+test("a space-less world has no basis, and that is not a failure", () => {
   // A void/outdoor world never captures, so nothing ever populates this. The raw pose IS the pose there,
   // and the caller commits it unconverted rather than treating the absence as an error.
   assert.strictEqual(WM.hasFrameBasis({ local: null, ref: null }), false);

@@ -408,7 +408,7 @@ locally.
 
 The single exception is §6.
 
-### 5.4a The basis is per-world, and a room-less world has none
+### 5.4a The basis is per-world, and a space-less world has none
 
 Interaction modules convert a dragged pose through `ConjureFrames` (`anchorFor`, `toRef`), which read one
 cached basis: `framePlanes` — the last capture's **local** walls (F_track) and **seed** walls (F_ref).
@@ -416,7 +416,7 @@ Two rules govern it, and both exist because breaking either produced the same sy
 teleporting on release and snapping back on reload:
 
 - **It is cleared on every world switch.** `_placeContent` is its only writer and runs only when the
-  world has real surfaces, so a room-less world can neither refresh nor blank it. Left alone it carried
+  world has real surfaces, so a space-less world can neither refresh nor blank it. Left alone it carried
   the *previous* room's walls into a void world, where a grab commit authored an anchor against walls
   that world does not have, the inbound `meta.anchor` re-solved against them, and `contentPoseIsLocal`
   then claimed the local solve owned the pose — suppressing the server's correct raw transform in the
@@ -426,7 +426,7 @@ teleporting on release and snapping back on reload:
   wall-relative anchor — two descriptions of the pose that disagree, in a message where one is supposed
   to be the conversion of the other.
 
-**A room-less world still has a frame — just not a plane-relative one.** Absent a basis, the commit falls
+**A space-less world still has a frame — just not a plane-relative one.** Absent a basis, the commit falls
 back to the entity's pose *local to `#world-root`*, not to its scene-space pose. In a void world those
 differ: world-root is parked at `Tmat⁻¹` (§2, item 4), so the world-root-local pose already **is** F_ref
 and needs no per-entity conversion. The fallback is correct *because of* the canonical parking, not in
