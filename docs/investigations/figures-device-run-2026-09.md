@@ -59,12 +59,12 @@ direction, not sinking.
 
 | # | Do | Expect | Saw |
 |---|---|---|---|
-| A1 | Place a figure, note where her feet meet the floor. `named: "kneel"` | knees on the floor, shins along it. Not hovering, not sunk to the hips | |
-| A2 | `named: "cheer"` from standing | she does **not** move vertically at all | |
-| A3 | `kneel`, then `kneel` again, then a third time | no creep. Same height every time — guards the accumulator | |
-| A4 | `kneel` → `stand` → `kneel` | back to the floor, then back to the same kneel height | |
-| A5 | **Kneel her, then walk around and let the room recapture** | she stays put. *This is the real unknown:* the settle moves the MESH inside the entity while the anchor solver sets the ENTITY, so they should not fight — "should" is the word that has been wrong here repeatedly | |
-| A6 | Reload the page with her kneeling | comes back kneeling, at the same height | |
+| A1 | Place a figure, note where her feet meet the floor. `named: "kneel"` | knees on the floor, shins along it. Not hovering, not sunk to the hips | kneeling looks good except for Trish, whos legs bones look deformed but in the right general orientation |
+| A2 | `named: "cheer"` from standing | she does **not** move vertically at all | looks good, and from kneeling she raises her arms too but remains kneeling |
+| A3 | `kneel`, then `kneel` again, then a third time | no creep. Same height every time — guards the accumulator | looks good |
+| A4 | `kneel` → `stand` → `kneel` | back to the floor, then back to the same kneel height | looks goos |
+| A5 | **Kneel her, then walk around and let the room recapture** | she stays put. *This is the real unknown:* the settle moves the MESH inside the entity while the anchor solver sets the ENTITY, so they should not fight — "should" is the word that has been wrong here repeatedly | looks good |
+| A6 | Reload the page with her kneeling | comes back kneeling, at the same height | looks good |
 | A7 | **Grab her while she is kneeling** | *predicted problem.* `grab` selects using `meta.bbox`, which is the BIND-pose box; the settle offsets the mesh inside the entity, so the selection box should sit ~43 cm off her body. If it does, that is a real finding and the same stale-box family as the original `grab` bug | |
 
 ---
@@ -76,10 +76,10 @@ A 512-pixel clay render cannot answer this and a person standing next to her can
 
 | # | Do | Expect | Saw |
 |---|---|---|---|
-| B1 | All 13 on Grace | each reads as its name without being told | |
-| B2 | `crouch` then `sit`, back to back | distinguishable. A vision model confused these two — the question is whether a person does | |
-| B3 | `arms-crossed` | folded, not clasped, not surrender. Took four authoring passes; the last one only just crosses the midline | |
-| B4 | On **Saka** (VRoid, rests in a T-pose): `kneel`, `wave`, `point` | arms at her sides, not straight out. This is the scarecrow fix — the defect the visual check found | |
+| B1 | All 13 on Grace | each reads as its name without being told | when standing, arms are straight down and go into her body a little; hands on hips, close but hands don't quite touch, arms are crossed but inside her chest, waving looks more like an upper outward reach, pointing is reaching not pulling the other fingers in, bow looks good |
+| B2 | `crouch` then `sit`, back to back | distinguishable. A vision model confused these two — the question is whether a person does | distinguishable, crouching is leaned forward a little|
+| B3 | `arms-crossed` | folded, not clasped, not surrender. Took four authoring passes; the last one only just crosses the midline | again, arms folded but inside her chest |
+| B4 | On **Saka** (VRoid, rests in a T-pose): `kneel`, `wave`, `point` | arms at her sides, not straight out. This is the scarecrow fix — the defect the visual check found | kneeling her arms are straight down, they enter her hips a little; no scarecrow in any of those three poses for saka, again pointing and waving look a little more like reaching |
 | B5 | On **Trish**: `bow` | **expected to barely bow.** Her spine bones are siblings rather than a chain, so the mapped `spine` carries her waist and not her shoulders. Confirms a known rig defect on device | |
 | B6 | `sit` on any rig | the *shape* of sitting, seated on nothing. Put a chair under her by hand and see how far off she is — that gap is the size of the tier-3 problem | |
 
@@ -90,7 +90,7 @@ A 512-pixel clay render cannot answer this and a person standing next to her can
 | # | Do | Expect | Saw |
 |---|---|---|---|
 | C1 | Watch the browser console while posing | **no** `Unknown property named for component figure`. That warning was the bug fixed in `8648ef8`; its absence is the check | |
-| C2 | `inspect_figure` after a named pose | reports the posed bones | |
+| C2 | `inspect_figure` after a named pose (ask "what can you tell me about her?") | reports the posed bones; watch the `->` line in Terminal 2 for the raw reply | |
 | C3 | Pose two figures at once, differently | no cross-talk; each holds its own | |
 | C4 | Frame cost with 2–3 figures posed | no new stutter. [`investigations/pops-and-jitters.md`](./pops-and-jitters.md) says dropped frames are already live on this hardware — the question is whether posing adds any | |
 
@@ -100,6 +100,34 @@ A 512-pixel clay render cannot answer this and a person standing next to her can
 
 The harness measures `pose_figure`'s *description*. `named` and `list_poses` are new and have never been
 in front of a director with a real world behind it.
+
+**How to run it.** Two terminals on the Mac, headset on:
+
+```bash
+python -m conjure.cli -v                                    # the director; -v prints each tool call
+tail -f temp/conjure.log | grep -E "/tool|\[figure\]"       # the same calls PLUS their results
+```
+
+`-v` is the whole trick — without it the REPL prints only the conversation, and which tool was called is
+invisible. Each call appears as one line, straight from the director's own `on_tool` callback:
+
+```
+  · pose_figure({"id": "grace", "named": "kneel"})
+```
+
+**That line is the evaluation.** A pass is `named` carrying the work; a fail is a `pose` dict of seven
+invented bone rotations, which means the director ignored the library and improvised — the tool
+description did not steer it.
+
+Terminal 2 adds what the REPL omits: the tool's **reply**, on the `->` line. That is where D2's evidence
+lives (`She needs something under her — a seat is tier 3…`), because the question there is whether the
+director passes that on to you or swallows it, and only the two side by side can say.
+
+Logging is gated on `debug_log` (default on). An empty Terminal 2 means that flag, not an absent call.
+
+**And the headset is the other half.** The REPL says what was *asked*; only the headset says whether she
+did it. A call that reads perfectly and produces nothing visible is the failure this feature keeps
+rediscovering.
 
 | # | Say | Expect | Saw |
 |---|---|---|---|
