@@ -254,14 +254,30 @@ refinement to *reduce* that room's residual; reject a delta past ~25 cm as a mis
 it; always fall back to the global transform. A room that cannot be refined must not be a room that fails to
 register.
 
-**`y` is estimated and reported, never folded into `Tmat`.** Tempting, since the raised floor is purely
-vertical — but §10.2's baseline rests on registration never touching y, which is what makes height
-differences frame-invariant and the stored seed a valid baseline with no extra persistence. Fold a per-room
-y into the transform and `levelDeviation` goes blind, subtracting the very quantity it measures. Per-room y
-and the floating-room detector are **the same measurement**; it may be a correction or a diagnostic, and it
-must not become one silently.
+**`y` is fitted per room, and `levelDeviation` keeps comparing raw heights.** These are not in tension,
+which is worth spelling out because the first instinct is that they are. The invariant §10.2 rests on is a
+**consumer** rule, not a representation rule: `levelDeviation(live, seed, basisIds)`
+(`client/world-model.js`) takes raw height scalars and never touches a transform, so a per-room refinement
+carrying y cannot reach it unless corrected heights are deliberately routed in.
 
-Kept out, it is still the better input to the correction: the unmerged corrector on
+Including y is likely **better for the detector**, not merely harmless. The census skips any live surface
+with no seed counterpart (`if (!s) return;`), so a floor displaced far enough to fail identity matching
+drops out of it entirely — losing precisely the surface the check exists to report — and below three
+comparable surfaces it returns nothing at all. A y-aware fit recovers that correspondence.
+
+**y is nearly free, and separately constrained.** It is not one more DOF in the same solve: horizontal
+surfaces constrain y directly and strongly — a floor is a pure y constraint — while verticals constrain x/z
+and yaw and say nothing about y. So it is an independent 1-DOF fit over the horizontals, costing the
+existing solve no conditioning. It takes its own guard accordingly: **a room with no captured floor or
+ceiling has no y constraint at all, so skip y there rather than fit it to noise.**
+
+**The two rules that must hold.** `levelDeviation` is never fed heights that passed through a refined
+transform. And once y is used to *correct* anything, the detector keeps firing on a corrected room —
+correctly, since the device data is still displaced — so the log must distinguish *the fault* from *the
+residual after correction*, emitting the fit's y beside the detector's deviation. Two independent estimates
+of one displacement are a cross-check, but only when labelled as such.
+
+This also makes it the better input to the floating-room correction: the unmerged corrector on
 `feat/fix-floating-rooms` is threshold-gated, and its open question — *does it still fire when the
 displacement changes size?* — dissolves against a continuous estimate.
 
@@ -436,11 +452,13 @@ names.
 3. **Merge: deferred.** Two floor planes that are one physical room will over-segment. The schema supports
    merging later — the name is keyed by room id, so an alias or a `merged_into` field is additive — and the
    bias toward splitting holds until it actually bites.
-4. **`y` stays out of `Tmat`, permanently.** Estimated per room and reported alongside; never applied.
-   Stated plainly: registration only ever slides and turns the space horizontally, which is *precisely why*
-   a stored height is a valid baseline for a live one. Fitting a per-room y would shift heights by exactly
-   the displacement being measured, so `levelDeviation` would compare two numbers with the fault already
-   cancelled and read a floating room as level. Calibrating the error away, then trying to measure it.
+4. **`y` is fitted per room; the detector keeps its raw comparison.** *Revised 2026-09-07, same day,
+   after reading the code.* The first position — keep y out of the transform entirely — was the wrong
+   shape: it stated a representation rule where the real invariant is a **consumer** rule.
+   `levelDeviation` compares raw height scalars and never touches a transform, so the two coexist. See
+   the body above for why including y likely *helps* the detector (a displaced floor that fails identity
+   is skipped by the census outright) and for the guard it needs of its own (no horizontals in a room ⇒
+   no y constraint ⇒ skip y, do not fit noise).
 
 ### The "room" rename — scope, and why it goes on `main` first
 
