@@ -289,7 +289,7 @@ off correctly — matching the ground truth recorded above exactly. Since the ra
 displacement follows the Quest's *own* room entities, segmenting by floor plane recovers the partition that
 actually moves rigidly.
 
-- walls and ceilings → their floor by `covers()` (`room-snap.js:635`) — the same footprint test `sealWalls`
+- walls and ceilings → their floor by `covers()` (`space-snap.js:635`) — the same footprint test `sealWalls`
   (`:666`/`:672`) and `heightCensus` (`:981`) already use to decide which room a surface is in. The
   multi-room-correct machinery is built; it has only never been named.
 - insets → the room of their `meta.host_wall`, a recorded fact (§6.1).
@@ -370,27 +370,27 @@ Windows get the same probe free, which tells the director which walls are exteri
 
 | Part | Where | Why |
 |---|---|---|
-| `segmentRooms(THREE, surfaces)` → groups + connectivity | **client**, `room-snap.js`, pure | shell geometry is JS-only (§12); reuses `covers`/`floorUnder`; unit-testable on `fixtures/golden-room.json` |
+| `segmentRooms(THREE, surfaces)` → groups + connectivity | **client**, `space-snap.js`, pure | shell geometry is JS-only (§12); reuses `covers`/`floorUnder`; unit-testable on `fixtures/golden-space.json` |
 | room identity + name persistence | **server**, at ingest | pure set arithmetic against the stored labels — **no Python geometry port needed** |
 
 Keeping the server free of geometry here is deliberate: §12's rule is that a server-side geometry query
-ports to `conjure/room_snap.py` with a golden test, and this design avoids owing that.
+ports to `conjure/space_snap.py` with a golden test, and this design avoids owing that.
 
 ### The director surface
 
-`_real_surface_match` (`server.py:3297`) is the **single** target matcher — both `_room_targets` (`:3310`)
+`_real_surface_match` (`server.py:3297`) is the **single** target matcher — both `_surface_targets` (`:3310`)
 and `_resolve_op_ids` (`:3316`) go through it, and it already handles a compound form (`wall 4`) via
 `_SEM_NUM`. So room targeting is a one-function change and every surface tool gains it at once.
 
 | Want | How |
 |---|---|
-| query room identities | `query_room()` groups its output by room and names each |
+| query room identities | `query_space()` groups its output by room and names each |
 | which room am I in | the **client reports it in the presence tick**, using the `floorUnder` it already calls for `_markProbe` — free, and avoids the Python port |
 | manipulate a room's surfaces | room accepted as a target through `_real_surface_match` |
-| connectivity | an adjacency summary in `query_room` and `room://current` |
+| connectivity | an adjacency summary in `query_space` and `space://current` |
 | rename | `name_room(room, name)`, owner-gated, rejecting reserved semantic words and duplicates |
 
-**`room://current` is the highest-value integration point** — it is the per-turn injected resource and the
+**`space://current` is the highest-value integration point** — it is the per-turn injected resource and the
 only place surfaces are described, so room grouping, the adjacency summary and a *"you are in the kitchen"*
 line reach the director every turn with no tool call.
 
@@ -416,7 +416,7 @@ have no room and should say so rather than guess.
 3. **Apply the refinement**, with the guards above.
 4. **Per-room boundary**, separately: it changes a schema with two consumers and deserves its own increment.
 
-Step 1 is verifiable with no device. `fixtures/golden-room.json` is 45 surfaces across two rooms — a known
+Step 1 is verifiable with no device. `fixtures/golden-space.json` is 45 surfaces across two rooms — a known
 answer — and this space's three rooms have their ground truth written down above. The registration claim is
 measurable the same way §4.1.2's table was: perturb one room of the golden fixture rigidly by 9 cm, then
 compare global against per-room residuals and count which surfaces lose identity under the global fit and
@@ -460,56 +460,30 @@ names.
    is skipped by the census outright) and for the guard it needs of its own (no horizontals in a room ⇒
    no y constraint ⇒ skip y, do not fit noise).
 
-### The "room" rename — scope, and why it goes on `main` first
+### The "room" rename — a prerequisite, and it is done
 
-`room` is used throughout the code, tools and prompts to mean *the whole space*, which
-[`specs/spaces.md` §1](../specs/spaces.md) explicitly disclaims. Making rooms real makes that usage
-actively **wrong** rather than merely loose, so it is cleared **before** this work lands. Otherwise there is
-a window in which `room` means both things at once — the exact confusion being removed.
+`room` was used throughout the code, tools and prompts to mean *the whole space*, which
+[`specs/spaces.md` §1](../specs/spaces.md) explicitly disclaims. Making rooms real turns that usage from
+loose into **wrong**, so it was cleared first — otherwise the word means both things at once, which is the
+confusion being removed.
 
-**It touches no persisted data.** Verified 2026-09-07 against the live tree under `config.DATA_DIR`:
+**The inventory, the classification rule, the do-not-rename list and the commit-by-commit progress live in
+[`investigations/room-rename-2026-09.md`](../investigations/room-rename-2026-09.md)** — kept in one place
+rather than duplicated here, because a rename map that exists twice is a rename map that goes stale once.
 
-| Checked | Result |
-|---|---|
-| `room`-named keys in live space / world / session / state docs | **zero** — the 2026-08-26 `environment.room` → `spacePresentation` migration already cleared them; only `users.bak1` still carries them |
-| agent definitions and prompts | in the **repo** (`agents/*/agent.json`, `agents/builder/prompt.md`) — versioned, not under `DATA_DIR` |
-| `query_room` / `room://current` / `realign_room` inside live session transcripts | **zero** occurrences |
+Two things worth keeping at this level:
 
-So there is no migration to write and no shared-data hazard — which matters because `main` and this branch
-run against the same live data (see the branch-compatibility note above).
+- **It touches no persisted data**, verified against the live tree — so `main` and this branch keep sharing
+  live data throughout. That is what made the next point safe.
+- **It ran on `feat/rooms`, not on `main`.** The original call was `main`-first, on the grounds that a broad
+  mechanical rename conflicts with every later `main` commit touching the same lines. That cost is
+  contingent on `main` moving, and it is not: the pose-eval work stays on its branch until it has been
+  device-tested. A trial merge confirmed it — `main + rename ← feat/pose-eval-harness` merges clean, since
+  none of that branch's ~3,200 changed lines contains a room-named identifier.
 
-The cost is therefore **entirely merge conflicts**, and that is the argument for `main`: a broad mechanical
-rename on a long-lived branch conflicts with every later `main` commit touching the same lines, for weeks,
-whereas landed on `main` it costs this branch one merge and nothing else.
-`migrate_env_room_to_space_presentation` (`world.py`) stays the house pattern if a persisted key ever does
-need one.
+**Status: the identifier half is complete** (Tiers 2 and 3), `978 pytest / 204 JS` green throughout. What
+remains is prose.
 
-**It is not a blind `s/room/space/`.** Each site needs a judgement about which of the two things it meant:
-
-| Now | Meant | Becomes |
-|---|---|---|
-| `query_room` | the whole space | `query_space` |
-| `room://current` | the whole space | `space://current` |
-| `realign_room` | the whole space | `realign_space` |
-| `_room_summary` | the whole space | `_space_summary` |
-| `_room_targets` | **surfaces**, for the whole space — misnamed twice | `_surface_targets` |
-| `ingest_room` / `RoomUpdate` | a capture of the space | `ingest_capture` / `CaptureUpdate` |
-| `_face_room` | the space's interior | `_face_interior` |
-| `room-snap.js` / `RoomSnap` / `room-worker.js` / `room-capture` | space geometry | `space-*` / `SpaceSnap` |
-| `show_room_labels` (unbuilt) | **surface** labels | `show_surface_labels` |
-
-Three tiers, in increasing care:
-
-1. **persisted keys** — empty, verified above. Nothing to do.
-2. **wire and director-facing** — MCP tool names, resource URIs, HTTP routes, A-Frame component names.
-   These must move atomically with `agents/*/agent.json`, `agents/builder/prompt.md`, the docs, and
-   `tests/test_{server,director,mcp}.py`, all of which name them. All in-repo, so one commit can be atomic.
-3. **pure internals** — function names, filenames, module names, comments. Free.
-
-**The next step is an inventory, not an edit:** every occurrence classified by tier and by which meaning it
-carried, reviewed before anything is renamed. A rename that silently converts a *surface* name into a
-*space* name would leave the vocabulary as wrong as it started.
----
 
 ## Instrumentation — the geometry event log
 
@@ -658,7 +632,7 @@ right now.
 
 - **The polygon does not survive Pass A, and the seed has none.** `plane.polygon` is read once
   (`conjure-client.js:2539`), swept for an AABB, and discarded — never stored, posted, or passed to
-  `RoomSnap`. The server *accepts* a `polygon` field (`server.py:2991`, written at `:3023` / `:3354`) that
+  `SpaceSnap`. The server *accepts* a `polygon` field (`server.py:2991`, written at `:3023` / `:3354`) that
   the client has never sent; it is `None` on every surface in every space file. `joinCorners`/`sealWalls`
   work on position-plus-extent rectangles and have no polygon to join even in principle. So **only the raw
   layer can be a true outline** and part of any green-vs-magenta shape mismatch is representation rather
@@ -675,11 +649,11 @@ right now.
 - **Seed vertices rebuild every capture**, not on a change signature as planned. Measured: 58 rects is ~460
   vertex writes, and the signature costs more code than it saves work. Correctness lives on the matrix,
   which has to be rewritten every capture regardless.
-- **The `[aabb]` probe is the cheaper half and shipped alongside.** `RoomSnap.polyFit` + one
+- **The `[aabb]` probe is the cheaper half and shipped alongside.** `SpaceSnap.polyFit` + one
   `--debug-registration` line per capture answers the displacement question with no overlay at all. It
   should be read **first**; if `off` is 0 everywhere the overlay is still worth having for the seed
   comparison, but the urgency drops a lot.
-- **One test was added for a convention, not a feature.** `room-snap.test.js` now pins the seed→F_track
+- **One test was added for a convention, not a feature.** `space-snap.test.js` now pins the seed→F_track
   round-trip through `Tmat⁻¹` at boundary-flip magnitude (167°) on both an upright and a tilted plane. It
   was written because the first attempt at verifying the overlay by hand got the composition wrong in
   exactly the plausible way — applying the −90° X plane→a-plane rotation twice — and a small-angle,
@@ -722,7 +696,7 @@ it is a different question from "how far is the shared model from what I see".
   are hypotheses.
 - **Hole cuts.** No outline layer shows them; the cyan edges draw the outer loop only.
 - **Multi-room culling.** The seed spans the whole space, so ~58 magenta rects draw at once including rooms
-  you are not standing in. `RoomSnap.floorUnder` (already used by `_markProbe`) is the room-scoped cull if it
+  you are not standing in. `SpaceSnap.floorUnder` (already used by `_markProbe`) is the room-scoped cull if it
   turns out to be a thicket — but a cull is a rule that can itself mislead, so it ships without one.
 - **Seed↔device pairing.** Highlighting seed surfaces with no live plane behind them is nearly free from Pass
   B's `claimed` set, and is arguably the more interesting half of the signal — a missing partner says more
@@ -847,8 +821,8 @@ and dates are as originally written; none has been re-verified against today's c
 **Status:** open (refinements) · noted 2026-07-01 · **core shipped same day**
 
 **Shipped:** outdoor/void worlds (`new_world(outdoor=True)` → `environment.space == "<void>"`) are live —
-no room geometry, skybox + objects, geolocation won't yank them into a physical space. In AR, `room-capture`
-derives the frame on the fly with `RoomSnap.canonicalFrame` (gravity-up + wall-grid axis + largest-wall
+no room geometry, skybox + objects, geolocation won't yank them into a physical space. In AR, `space-capture`
+derives the frame on the fly with `SpaceSnap.canonicalFrame` (gravity-up + wall-grid axis + largest-wall
 forward + centroid origin), never captures/posts, and `#world-root` + the skybox ride that frame → the same
 physical room canonicalizes to the same orientation each visit (invariance unit-tested).
 
@@ -886,7 +860,7 @@ physical room canonicalizes to the same orientation each visit (invariance unit-
      been a threshold to tune; holding has none.
 
    **Still open:** the symmetric-room ambiguity (1 above) is untouched, and nothing has been confirmed on
-   device — the numbers are all from `fixtures/golden-room.json` plus a perturbation model.
+   device — the numbers are all from `fixtures/golden-space.json` plus a perturbation model.
 
    Raised in priority by [`dynamics` → `grab` modes](./dynamics.md): void mode stores a user offset against
    this frame and pins the skybox's *position* to its origin, so a frame shift moves both. Holding the frame
@@ -1029,7 +1003,7 @@ Status lines are as originally written; not re-verified against today's code.*
 was fixed. Fix parked on branch **`deadlock-breaker`** (commit `f94dbd6`, branched off `main` @ `4027e9f`).
 Abandoned on the mainline pending an actual recurrence.
 
-**The problem.** `RoomSnap.register()` needs a wall basis (vertical plane pairs) to lock at all. If a room's
+**The problem.** `SpaceSnap.register()` needs a wall basis (vertical plane pairs) to lock at all. If a room's
 persisted *seed* ends up with **no walls**, it can never be registered against — and because a fresh
 establish is gated on an **empty** `_ref` (`conjure-client.js`, the `canEstablish` line), an owner that has
 already adopted such a seed is stranded in permanent `relocalizing`, with no path to rebuild the reference.
