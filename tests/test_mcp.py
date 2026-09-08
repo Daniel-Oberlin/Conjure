@@ -60,7 +60,7 @@ async def test_query_world_dumps_everything(monkeypatch):
 
 
 def _space_doc(n_walls=3, n_floors=2):
-    """A world whose entity list is mostly captured room — the shape that made the dump 87% filler."""
+    """A world whose entity list is mostly captured space — the shape that made the dump 87% filler."""
     ents = [{"id": "ent_asset_1", "meta": {"title": "Oak Tree"}, "components": {"gltf-model": "/assets/x.glb"},
              "transform": {"position": [0, 0, -3]}}]
     ents += [{"id": f"real_wall_{i}", "meta": {"real": True, "semantic": "wall", "friendly_id": i},
@@ -74,7 +74,7 @@ def _space_doc(n_walls=3, n_floors=2):
 
 @respx.mock
 async def test_query_world_collapses_real_surfaces_to_one_line(monkeypatch):
-    """The dump lists PLACED things and summarises the room. Per-surface lines carried a label and a
+    """The dump lists PLACED things and summarises the space. Per-surface lines carried a label and a
     position and nothing else — most of the dump's bulk, and no colour, which is the one attribute
     anyone asks a surface about."""
     monkeypatch.setattr(m, "BASE", "http://world")
@@ -82,7 +82,7 @@ async def test_query_world_collapses_real_surfaces_to_one_line(monkeypatch):
     out = await _tool("query_world")()
     assert "ent_asset_1" in out and "Oak Tree" in out             # placed objects still listed one by one
     assert "real_wall_0" not in out and "real_floor_1" not in out  # surfaces are NOT
-    assert "5 REAL room surfaces" in out and "3 wall" in out and "2 floor" in out
+    assert "5 REAL surfaces" in out and "3 wall" in out and "2 floor" in out
     assert out.count("REAL") == 1                                  # exactly one line stands in for all 5
 
 
@@ -96,7 +96,7 @@ async def test_the_collapsed_line_says_it_is_not_the_whole_story(monkeypatch):
     out = await _tool("query_world")()
     line = next(ln for ln in out.splitlines() if "REAL" in ln)
     assert "NOT listed" in line                                    # the omission is explicit…
-    assert "colour" in line and "room summary" in line             # …named, and pointed somewhere
+    assert "colour" in line and "space summary" in line             # …named, and pointed somewhere
 
 
 @respx.mock
@@ -110,11 +110,11 @@ async def test_a_spaceless_world_gains_no_summary_line(monkeypatch):
 
 @respx.mock
 async def test_the_collapse_is_what_makes_the_dump_cheap(monkeypatch):
-    """The point, in one measurement: a captured room's surfaces are most of the dump's characters."""
+    """The point, in one measurement: a captured space's surfaces are most of the dump's characters."""
     monkeypatch.setattr(m, "BASE", "http://world")
     respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_space_doc(22, 3)))
     out = await _tool("query_world")()
-    per_surface = len("  - real_wall_00: REAL wall (room surface — see the room summary) at [0, 1, -2]\n")
+    per_surface = len("  - real_wall_00: REAL wall (captured surface — see the space summary) at [0, 1, -2]\n")
     assert len(out) < 25 * per_surface // 2      # comfortably under half of what 25 listed lines cost
 
 
