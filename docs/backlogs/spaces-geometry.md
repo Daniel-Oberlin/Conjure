@@ -20,10 +20,10 @@ churn instrumentation fired for the first time and named it. Both replacement wa
 perpendicular offset by 14–21 mm against the 150 mm tolerance. The originals were then pruned, destroying
 three director-set colours (`#4B0082`, `#4f4f4f`, `#000000`).
 
-The cause was **room load**, not the headset and not the floating-room fault (that one is vertical; this is
+The cause was **space load**, not the headset and not the floating-room fault (that one is vertical; this is
 horizontal). Ordering by the client clock: sessions whose first capture held 4 and 16 planes of 58 both
 churned; the one that held 58 did not. Registration locks at 30% coverage, and a frame solved from a third
-of the room was ~17 cm out in x/z — past the identity tolerance. Fixed by the **load gate** (spec §4.0a).
+of the space was ~17 cm out in x/z — past the identity tolerance. Fixed by the **load gate** (spec §4.0a).
 
 **A design assumption this falsified**, worth keeping: `matchWall`'s comment says a tight tolerance is safe
 because *"a missed match only mints a recoverable duplicate."* It is not recoverable — the old id goes
@@ -492,7 +492,7 @@ The design and event reference live in [`specs/spaces-geometry.md` §10](../spec
 entry keeps only what is *not* done and what the field changed.
 
 Always-on and change-gated, to `temp/geometry-<date>.jsonl`, rotated daily and pruned past
-`--geometry-log-days` (21). A settled room emits nothing. Both halves shipped together — churn and heights —
+`--geometry-log-days` (21). A settled space emits nothing. Both halves shipped together — churn and heights —
 since a device-side map re-fit would produce both symptoms and the value is in reading them on one timeline.
 
 ### What it did on day one
@@ -824,7 +824,7 @@ and dates are as originally written; none has been re-verified against today's c
 no space geometry, skybox + objects, geolocation won't yank them into a physical space. In AR, `space-capture`
 derives the frame on the fly with `SpaceSnap.canonicalFrame` (gravity-up + wall-grid axis + largest-wall
 forward + centroid origin), never captures/posts, and `#world-root` + the skybox ride that frame → the same
-physical room canonicalizes to the same orientation each visit (invariance unit-tested).
+physical space canonicalizes to the same orientation each visit (invariance unit-tested).
 
 **Refinements left:**
 1. **Symmetric-room ambiguity (inherent):** no unique largest wall ⇒ no unique canonical orientation
@@ -839,11 +839,11 @@ physical room canonicalizes to the same orientation each visit (invariance unit-
    what this entry keeps is what the investigation changed about the plan.
 
    **The fault was bigger than this entry said, and in a different term.** It read "both the origin (mean of
-   wall centres) and θ (largest wall) can shift", implying comparable stakes. Measured on the golden room:
+   wall centres) and θ (largest wall) can shift", implying comparable stakes. Measured on the golden space:
    every subset from 3 to 12 of 30 verticals flipped **θ by 180°**, moving content **4.5–5.1 m** at 2.2 m
    from the origin, while the centroid contributed 0.2–1.8 m. θ is the fault; the centroid rides along. A
    recenter triggers it because `_onReset` sets `lastPost = 0`, forcing a capture on the very next frame —
-   the moment the Quest has restored least of the room.
+   the moment the Quest has restored least of the space.
 
    **Fixed by `WM.voidFrameGate` plus establish-once-and-hold**, not by making the derivation more robust.
    Holding is the larger half: the walls do not move within a session, so re-deriving every capture only
@@ -908,7 +908,7 @@ look on its own (may be a normalize/scale bug at placement).
 **Open decision:** ray-vs-AABB (needs oriented handling) vs. ray-vs-bounding-sphere (simpler, looser);
 and whether "looking at" should prefer the nearest hit or the smallest angular offset from gaze center.
 
-## Multi-observer room fusion — refine the shared model from every headset (server-side)
+## Multi-observer space fusion — refine the shared model from every headset (server-side)
 
 **Status:** future feature · noted 2026-06-30 (deferred while building register-only guests, co-location §5)
 
@@ -917,7 +917,7 @@ guest **localizes against a frozen copy** of that geometry and never contributes
 `specs/worlds-surfaces.md` §8b). That's correct for co-location: the shared `_ref` constellation *defines* the shared
 frame, so a guest mutating it locally would only desync (its `/space/capture` posts are 403'd, so the change never
 reaches the authority) and feed a drift loop. But a guest is *also* observing the same real space, so its
-observations could legitimately **improve** the one model (better extents, corrected drift, "the room
+observations could legitimately **improve** the one model (better extents, corrected drift, "the space
 changed since capture").
 
 **Why it must be server-side (not local `_ref` mutation):** to stay co-located there must remain exactly
@@ -933,7 +933,7 @@ confidence weighting,
 guard against a mis-registered guest corrupting the model, and the authority's right to override.
 
 **Open decisions:** trust model (does a guest need the owner's consent to refine?); fuse continuously vs.
-on explicit "rescan together"; how to reconcile a genuinely *changed* room (furniture moved) vs. noise.
+on explicit "rescan together"; how to reconcile a genuinely *changed* space (furniture moved) vs. noise.
 Defer until register-only co-location is solid and the need is real.
 
 ## Models placed "facing me" come out 180° backwards
@@ -1003,7 +1003,7 @@ Status lines are as originally written; not re-verified against today's code.*
 was fixed. Fix parked on branch **`deadlock-breaker`** (commit `f94dbd6`, branched off `main` @ `4027e9f`).
 Abandoned on the mainline pending an actual recurrence.
 
-**The problem.** `SpaceSnap.register()` needs a wall basis (vertical plane pairs) to lock at all. If a room's
+**The problem.** `SpaceSnap.register()` needs a wall basis (vertical plane pairs) to lock at all. If a space's
 persisted *seed* ends up with **no walls**, it can never be registered against — and because a fresh
 establish is gated on an **empty** `_ref` (`conjure-client.js`, the `canEstablish` line), an owner that has
 already adopted such a seed is stranded in permanent `relocalizing`, with no path to rebuild the reference.
@@ -1016,7 +1016,7 @@ healthy seed. That's why this is shelved rather than merged: it guards a route t
 
 **What the shelved fix does** (all keyed off `MIN_SEED_WALLS = 3`, matching `register`'s `ref<3` floor):
 1. **Establish gate** — the owner only establishes a fresh reference from a capture that has ≥3 walls (never
-   seed a wall-less room).
+   seed a wall-less space).
 2. **Adopt gate (recovery)** — the owner only adopts a persisted seed that has ≥3 walls; otherwise it leaves
    `_ref` empty and establishes fresh, whose `replace`-POST then overwrites the bad seed.
 3. **POST guard (prevention)** — never persist a wall-less surface set.
