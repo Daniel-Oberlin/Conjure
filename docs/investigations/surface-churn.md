@@ -109,7 +109,7 @@ mid-session. The tolerance question is back.
 
 ## Recurrence 2026-09-09 — a capture accepted before the space was selected
 
-Same symptom, new path, and it cost the whole room's styling: **all 59 surfaces are `#888`** — the 28
+Same symptom, new path, and it cost every stored surface its styling: **all 59 are `#888`** — the 28
 re-minted ones *and* the 31 that survived. Pink walls, cream tables, a maroon bed, green couches,
 lightyellow shelves, a `#3B1A08` floor, black doors, darkblue windows, all gone to default grey.
 
@@ -156,7 +156,7 @@ survivors that came back grey.
 
 **Root cause: `/space/capture` has no selection gate.** It is in `_OWNER_ONLY_PATHS`, so *who* is asking is
 checked; nothing checks whether they have established *where they are*. The load gate is client-side and
-guards entering AR, which is one door into the same room.
+guards entering AR, which is only one of the ways in.
 
 Candidate fixes, cheapest first:
 

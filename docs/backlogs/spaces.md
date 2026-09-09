@@ -94,21 +94,22 @@ into a closed loop:
 | boot restores the last active world | `_boot_world`, `server.py:387` | restarting comes back into the same void world |
 
 So: the vote will not mint, creating a world cannot escape, and restarting does not help. A user standing
-in a freshly scanned room, in a void world, **has no route to a world bound to that room.** Observed with
+in a freshly scanned room, in a void world, **has no route to a world bound to that space.** Observed with
 15 worlds on disk, every one either `<void>` or bound to the *previous* location's space, and not one with
 an absent `space` key — which is the single state (`UNSET`) that would have relocated them.
 
 Each rule is individually right. §4.3 argues the first one carefully and correctly: resolving *which*
 space you are in and *moving* you to its world are different things, and only the first is wanted when
 you chose to be nowhere. The gap is that "claim but stay put" was written for **returning** to a known
-room in an outdoor world, and it also fires for **arriving somewhere entirely new** — where there is no
+space in an outdoor world, and it also fires for **arriving somewhere entirely new** — where there is no
 world to stay in that has any relationship to where you are standing.
 
 Candidate fixes, cheapest first:
 
 - **Let the void branch still mint on no-match**, while keeping "do not relocate". Claiming a space you
   have never seen before and minting the world *beside* it is not the same as being dragged out of an
-  outdoor world into your living room. The user stays put; a home for the room now exists to switch to.
+  outdoor world into your living room. The user stays put; a world bound to that space now exists to
+  switch to.
 - **Say so.** The notice is *"You're in a world with no room — staying put."* It is accurate and it hides
   the interesting half: that this place is unknown and nothing here can hold it. Naming that would have
   saved the whole diagnosis.
