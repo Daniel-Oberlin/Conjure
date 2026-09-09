@@ -164,21 +164,35 @@ component written to the wrong entity, or one figure's axes resolving against an
 
 ### C4 — frame cost
 
-**Take a baseline first or the number means nothing.** [`pops-and-jitters.md`](./pops-and-jitters.md)
-established that dropped frames are already present on this hardware as a platform characteristic, so
-the question is not "are there drops" but "did posing add any".
+**Run it with `scripts/c4_frame_cost.py`.** The measurement needs two matched phases — the same figures
+unposed then posed, standing still then walking the same route — and the phase boundaries have to be
+findable in the log afterwards. You cannot type a marker while wearing a headset, and a boundary
+reconstructed from memory later is worth very little. So the script drives the whole thing: it **speaks**
+each instruction through macOS `say`, writes an exact marker into the log at every boundary, and poses
+the figures itself between the phases.
 
-With `--debug-jitter` on, a `PACE` line lands every ~2 s. Stand still, then walk a fixed path:
+**Why a baseline at all:** [`pops-and-jitters.md`](./pops-and-jitters.md) established that dropped frames
+are already present on this hardware as a platform characteristic. The question is not "are there drops"
+but "did posing add any", and that is only answerable against the same room, same route, minutes apart.
 
-| Phase | What to capture |
-|---|---|
-| figures placed, **unposed** | 3–4 `PACE` lines standing, 3–4 walking — this is the baseline |
-| the same figures **posed** (kneel + cheer + crouch) | the same again, same path |
+**Steps.**
 
-Compare `jit(sd)` (frame-interval stddev — the real smoothness metric), `late`, `drop` and `heap`. A pose
-is a one-off quaternion write per bone with no per-frame work, so the honest expectation is **no
-difference at all**; a rise in `jit`/`drop` between the two phases would mean something in the pose path
-is running every frame, which is exactly the hazard the design flagged (*"the mixer rewrites bones every
+1. Server running with `--debug-jitter`. The script refuses to start without it, because a run with no
+   `PACE` lines produces a confident-looking nothing.
+2. Figures placed and in view. Mac audio somewhere you can hear it.
+3. On the Mac: `python scripts/c4_frame_cost.py`
+4. Put the headset on and enter AR. Do what it says: stand still ~30 s, then walk your route ~40 s.
+   It poses the figures, then asks for the identical still-and-walk again.
+5. **Walk the same route both times.** Drops correlate with head translation, so a different path is a
+   different experiment.
+6. It prints a time window at the end. Hand that over — *"read C4 from the log, window HH:MM to HH:MM"* —
+   and the `PACE` lines get read for you.
+
+**What is being compared**, for the record: `jit(sd)` (frame-interval standard deviation, the real
+smoothness metric), `late`, `drop`, `rebuilds` and `heap`, baseline versus posed, still and walking kept
+separate. A pose is a one-off quaternion write per bone with no per-frame work, so the honest expectation
+is **no difference at all**. A rise in `jit`/`drop` between the phases would mean something in the pose
+path is running every frame — exactly the hazard the design flagged (*"the mixer rewrites bones every
 frame"*).
 
 | # | Do | Expect | Saw |
@@ -186,8 +200,8 @@ frame"*).
 | C1a | Mac browser console while posing | **no** `Unknown property \`named\`` warning | no unknown property displayed in browser console |
 | C1b | `[figure]` lines in the log | `posed N bone(s) on <id>`, N = the pose's bone count; no `NO BONE OR AXES` | I saw [figure] posed 7 bone(s) on grace_new, [figure] posed 10 bone(s) on sak, no failure mode error displayed in console |
 | C2 | `inspect_figure` on a posed figure | posed bone names — and probably **not** the pose's name (gap above) | **Spine** — bent/adjusted (torso not fully upright); **Both upper arms** — moved from rest (arms not at sides); **Both upper legs** — adjusted (legs not in a neutral stand); **Both lower legs** — bent (knees have some flex) — **and it never says she is kneeling**, which confirms the predicted gap: `named` is stored and not read |
-| C3 | grace `kneel` + trish `cheer` | separate log lines, distinct stored state, both correct in the headset | **state layer passed** — saka `sit` + 5f83f1 `stand`: distinct stored state, separate `[patch]` ops each naming its own id. Render not eyeballed |
-| C4 | `PACE` before vs after posing | no change in `jit(sd)` / `late` / `drop` | |
+| C3 | grace `kneel` + trish `cheer` | separate log lines, distinct stored state, both correct in the headset | **state layer passed** — saka `sit` + 5f83f1 `stand`: distinct stored state, separate `[patch]` ops each naming its own id. Render looks good |
+| C4 | `python scripts/c4_frame_cost.py`, then hand over the window it prints | no change in `jit(sd)` / `late` / `drop` between baseline and posed | |
 
 ---
 

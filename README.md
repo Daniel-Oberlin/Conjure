@@ -276,7 +276,8 @@ scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
             send_room.py (synthetic room), mcp_smoke.py, mic_check.py, vad_check.py,
             blend_to_glb.py + pose_test.py (figure conversion / render a pose),
             pose_eval.py (does the pose tool description still steer the director?),
-            pose_library.py (check every named pose against every rig)
+            pose_library.py (check every named pose against every rig),
+            c4_frame_cost.py (hands-free A/B of frame cost while posing)
 tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`); a
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
 docs/       vision · spec · architecture · decisions · providers · roadmap · setup · testing/https guides
