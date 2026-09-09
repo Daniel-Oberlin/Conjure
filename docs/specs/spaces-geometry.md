@@ -138,13 +138,13 @@ Two properties follow from scoring coverage rather than fraction-of-detected:
   penalised for it.
 - **Fragmentation cannot double-count.** Two live planes covering one reference surface score once.
 
-### 4.0a The load gate — do not name surfaces from a half-loaded room
+### 4.0a The load gate — do not name surfaces from a half-loaded space
 
 `detectedPlanes` is the persisted Room Setup delivered **wholesale**, not something that fills in as you
 look around — so a settled session sees essentially all of it, and a capture holding a small fraction means
-the Quest has not finished restoring the room. Entering AR, that takes seconds.
+the Quest has not finished restoring the space. Entering AR, that takes seconds.
 
-Acting on those captures re-mints walls. Registration accepts a lock at 30% coverage, so a third of the room
+Acting on those captures re-mints walls. Registration accepts a lock at 30% coverage, so a third of the space
 is enough to solve a frame — and a frame solved from a third of the geometry was measured **~17 cm out in
 x/z**, past `matchWall`'s perpendicular tolerance. The wall is rejected, a new id minted, and the original
 pruned three captures later, **taking its styling with it**. Measured: two sessions that began at 4 and 16
@@ -152,10 +152,10 @@ planes against a 58-surface seed both re-minted walls; one that began at 58 chur
 
 So a capture below `LOAD_FRAC` (0.6) of the seed's surface count **holds**, exactly as the trust gate holds
 a tilted one — no identity, no render, no post. The cost is a couple of seconds of passthrough on entry,
-which is honest: the room genuinely is not known yet.
+which is honest: the space genuinely is not known yet.
 
 `WM.loadGate` returns `hold`, `go`, or **`forced`**. The last is a deadlock escape, not a tuning outcome: a
-room that has genuinely *shrunk* could never reach the threshold, and holding forever would also block
+space that has genuinely *shrunk* could never reach the threshold, and holding forever would also block
 posting the removal — the wall-less-seed deadlock in a new costume ([backlog](../backlogs/spaces-geometry.md)).
 After `LOAD_PATIENCE` captures it proceeds and says so, so a forced pass is never mistaken for a healthy one.
 
@@ -184,10 +184,10 @@ surfaces keep their id across the flip**, against 1/47 before. A WebXR anchor is
 
 A capture that fails to register **holds the last good frame and skips the render** — deliberately, so a
 tilted or wrong-frame snapshot is never shown, posted, or allowed to pollute the reference. The cost is
-that the held frame is in the *old* F_track, so after a relocalization the room on screen is visibly
+that the held frame is in the *old* F_track, so after a relocalization the space on screen is visibly
 rotated until a lock returns.
 
-Because the room is wrong from that first held capture, the fallback that explains it has to track the
+Because the space is wrong from that first held capture, the fallback that explains it has to track the
 failure rather than lag it. After a short grace the client reveals passthrough — hiding `#world-root`,
 the sky and the scaffold — and shows a headset-locked hint to step out of the play area and back in,
 which forces the Quest to re-localize. It restores on recovery.
@@ -196,9 +196,9 @@ Two rules make that trigger reliable (`WM.relocStep`):
 
 - **Recovery needs consecutive good captures**, not one. A single lucky capture between failures used to
   reset the timer, so a *flickering* lock — the normal shape after a sleep or a boundary trip — never
-  accumulated the grace, and the hint either never appeared or blinked out while the room was still
+  accumulated the grace, and the hint either never appeared or blinked out while the space was still
   stale.
-- **The grace depends on whether a lock was ever held.** Once it has, the displayed room is known-stale
+- **The grace depends on whether a lock was ever held.** Once it has, the displayed space is known-stale
   and the hint comes quickly; while still acquiring it stays long, so a cold start doesn't nag someone
   who is simply walking in.
 
@@ -207,7 +207,7 @@ Two rules make that trigger reliable (`WM.relocStep`):
 A void/outdoor world is tied to no stored space, so there is nothing to register against. `canonicalFrame`
 derives a deterministic frame from the live walls instead — gravity for up, the area-weighted wall grid for
 the axis, the **largest wall** for the canonical forward, and a centroid for the origin — so the same
-physical room canonicalizes to the same arbitrary-but-consistent pose every visit. `#world-root` parks at
+physical space canonicalizes to the same arbitrary-but-consistent pose every visit. `#world-root` parks at
 `Tmat⁻¹` (§2.1 item 4), which means *the entire scene hangs off this one frame*.
 
 That is why it is **established once per tracking epoch and then held**, rather than re-derived every
@@ -227,25 +227,25 @@ two-space capture, for content 2.2 m from the frame origin):
 The θ flip dominates and comes from the largest-wall tiebreak: on a partial capture a different wall is
 biggest. The centroid shift rides on top. At a full capture both are exactly zero, so **the whole fault is
 acting on a partial capture** — and a Meta-button recenter is precisely that, because the reset handler
-forces a capture on the very next frame, when the Quest has restored least of the room.
+forces a capture on the very next frame, when the Quest has restored least of the space.
 
 **`WM.voidFrameGate`** decides when a capture may establish. `loadGate` cannot: it derives `expect` from
 the world doc's surfaces and a void world has none, so it returns `go` immediately. Two modes:
 
 - **Never established** — no expectation exists, so wait for the vertical-plane count to **stop growing**.
   Rides out an arrival sequence like 4 → 16 → 30 without acting on the first two.
-- **Established before** — the room did not change when a button was pressed, so the count at the last
+- **Established before** — the space did not change when a button was pressed, so the count at the last
   establish is a real expectation and `frac` (0.6) of it is enough. This is what makes recovery from a
   recenter one or two captures rather than a second plateau wait.
 
 `minWalls` (6) is an absolute floor under both, and `forced` is the same deadlock escape `loadGate` has,
-for a room that genuinely shrank — it re-baselines the expectation **downward**, since leaving it high
+for a space that genuinely shrank — it re-baselines the expectation **downward**, since leaving it high
 would deadlock the next reset too. A healthy establish only ever ratchets it **up**, so a run of thin
 captures cannot walk the gate open one capture at a time.
 
 While the gate holds, the **previous** frame stays in force and the relocalizing fallback is deliberately
 *not* triggered: that fallback reveals passthrough, whose remedy ("step out of the play area") addresses a
-wrong *room*, and in a void world it would show you your real space instead of the void for the 1.2 s grace
+wrong *space*, and in a void world it would show you your real space instead of the void for the 1.2 s grace
 while we merely wait for planes. With no frame at all there is nothing to hold, so the original
 hold-and-mark-lost behaviour stands. `void.establish` records each establish, its wall count, and whether
 it was forced.
@@ -256,7 +256,7 @@ it was forced.
 **with every wall present**, because that is the regime §4.1.2's gate exists to guarantee — and measuring
 it in the missing-wall regime instead gets the answer wrong.
 
-Two things differ between two visits to the same room, and they favour opposite bases:
+Two things differ between two visits to the same space, and they favour opposite bases:
 
 | Perturbation (all walls present) | wall centres | plane corners |
 |---|---|---|
@@ -282,7 +282,7 @@ the missing-wall regime again.
 
 Worth keeping in proportion: every number above is **1–3 cm**. The metre-scale fault was re-deriving the
 frame at all (§4.1.2), and it is fixed. This is a flag rather than a decision because settling it properly
-needs two real sessions in one room, and a perturbation model is only a model.
+needs two real sessions in one space, and a perturbation model is only a model.
 
 **`planeCorners` vs `wallCorners`.** Two differences, both about membership, which is the entire design:
 
@@ -298,7 +298,7 @@ The radius exists because content displacement scales with (θ error × distance
 origin dragged outside the building amplifies any later yaw error. **Spurious crossings inside it are kept
 deliberately**: the canonical origin is arbitrary, so it must be *reproducible*, not meaningful — a phantom
 corner that is always there costs nothing, an inconsistently-present real one costs everything. On the
-golden room this yields 81 crossings from 18 walls and an origin 3 cm from the wall-centre one.
+golden space this yields 81 crossings from 18 walls and an origin 3 cm from the wall-centre one.
 
 Below 3 corners it falls back to centres and says so in the stat, since a mean over one or two points
 swings metres.
@@ -417,7 +417,7 @@ teleporting on release and snapping back on reload:
 
 - **It is cleared on every world switch.** `_placeContent` is its only writer and runs only when the
   world has real surfaces, so a space-less world can neither refresh nor blank it. Left alone it carried
-  the *previous* room's walls into a void world, where a grab commit authored an anchor against walls
+  the *previous* space's walls into a void world, where a grab commit authored an anchor against walls
   that world does not have, the inbound `meta.anchor` re-solved against them, and `contentPoseIsLocal`
   then claimed the local solve owned the pose — suppressing the server's correct raw transform in the
   same patch. Reload looked like a fix because a fresh page has no basis at all.
@@ -552,7 +552,7 @@ floating-room detector all measure against. `extent` still carries `position` (a
 are one measurement, §9.1), and the inset anchors `along`/`vertical` ride the pose rather than being
 refreshed from an untrusted capture. Those geometry ops are applied to the stored seed
 and **never broadcast** — clients render locally. Only what clients actually consume goes out:
-room-activation env, boundary, and on-surface image re-anchors.
+space-activation env, boundary, and on-surface image re-anchors.
 
 **Client post-gating:** the owner keeps an authoritative known-set seeded from the persisted seed on
 entry and POSTs only on a structural change, so **a settled space sends no `/space/capture` traffic at all**.
@@ -685,7 +685,7 @@ and one room's floor renders 10–15 cm high. Every diagnostic in §9 is per-cap
 `--debug-registration`, which is correct for a sit-down session and useless here — the flag is off every
 time either fault occurs.
 
-So there is a second lane, **always on and change-gated**: `temp/geometry-<date>.jsonl`. A settled room
+So there is a second lane, **always on and change-gated**: `temp/geometry-<date>.jsonl`. A settled space
 emits **nothing**. That property is what makes it affordable to leave running for weeks, and it is enforced
 by construction, not by discipline — every event fires on a transition.
 
@@ -697,7 +697,7 @@ while the unit of analysis here is "compare Tuesday to Friday". This one rotates
 probes had to be decoupled from the registration diagnostics (§9) — the measurement was contaminating the
 measurement. Events accumulate in memory and flush on a ~5 s timer, so the per-event cost is an array push.
 
-**Cost, measured** (`scripts/geo_bench.mjs`, replayable): **13.8 µs per capture** on a real 58-surface room
+**Cost, measured** (`scripts/geo_bench.mjs`, replayable): **13.8 µs per capture** on a real 58-surface space
 with the fault reproduced — 0.28% of a ~5 ms capture — and exactly 0 on frames that are not captures. That
 is the whole steady-state addition: `heightCensus` and `levelDeviation` over every surface.
 `explainNoMatch` runs only on a miss. It is a **floor with a known direction of error** — a Quest's CPU is
@@ -807,7 +807,7 @@ eye. It localises disagreement; it does not attribute it. The HUD therefore carr
 residual μ/max as part of the feature — a gap read without them is uninterpretable, and a held (unlocked)
 frame draws flagged `STALE-T` because after a boundary flip the seed sits ~167° off.
 
-Hooked at **Pass A** (device layers, *before* the trust and load gates, so a held room still shows what the
+Hooked at **Pass A** (device layers, *before* the trust and load gates, so a held space still shows what the
 device is reporting — at the cost of the planes being anonymous, since identity is assigned in Pass B) and
 in **`finish`** (the seed matrix). Cost is two buffer rewrites and one matrix write per capture, one
 preallocated `LineSegments` per layer rather than an object per surface, and nothing when the flag is off.
