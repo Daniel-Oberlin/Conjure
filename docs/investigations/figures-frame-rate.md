@@ -97,8 +97,33 @@ Trish's 1041 is inflated by a **679-bone hair rig** — a second armature that e
 | jitter goes | **bones** | strip unused armatures in `blend_to_glb.py`; nothing renders from them |
 | jitter stays | **triangles** | decimation at conversion, or LOD |
 
-The mirror test works too and needs no re-export of Trish: a **decimated Grace** — same 482 joints, a
-third of the triangles. Either one splits it.
+**The variants are already built** (`scripts/glb_strip.py`, no Blender needed — Trish's hair node has an
+identity world matrix, so unskinning leaves the geometry exactly in place):
+
+```bash
+python scripts/glb_strip.py ~/.local/share/conjure/assets/9c4b8c1c727f245a.glb \
+    temp/frame-test/trish_A_hair_unskinned.glb --unskin Hair.001
+python scripts/glb_strip.py ~/.local/share/conjure/assets/9c4b8c1c727f245a.glb \
+    temp/frame-test/trish_B_no_hair.glb --unskin Hair.001 --drop Hair.001
+```
+
+| variant | triangles | skeletons | joints | skinned meshes |
+|---|---|---|---|---|
+| original | 125,558 | 2 | 1,041 | 6 |
+| **A** hair kept, unskinned | 125,558 | 1 | **362** | 5 |
+| **B** hair dropped | **41,487** | 1 | 362 | 5 |
+
+Import each, place it alone, walk the same route, and judge it the way the per-model run was judged —
+smooth / occasional / steady. **original vs A** isolates skinning; **A vs B** isolates drawing.
+
+A caveat so the result is not over-read: `--unskin` stops `Skeleton.update()` recomputing 679 bone
+matrices per frame, but the joint *nodes* remain in the scene graph and are still walked by
+`updateMatrixWorld`. It isolates the skinning cost, not all per-bone cost.
+
+**And a discovery from building it that may pre-empt the whole question: Trish's hair is 84,071 of her
+125,558 triangles — 67% — as well as 679 of her 1041 joints.** Her body is 34,786. Her hair alone is
+three times Saka's entire character, for a rig whose spring bones are unsupported so the hair only ever
+rides. Whichever variable wins, the hair is the target.
 
 ## Remaining theories
 
