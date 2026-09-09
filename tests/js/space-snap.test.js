@@ -737,8 +737,9 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
 // ---- sealWalls (§9.1): snap a wall's top→ceiling and bottom→floor so the shell has no open slit ----
 // A horizontal surface (floor/ceiling) as sealWalls reads it: semantic + ref-frame centre _lp + orientation
 // _lq (identity ⇒ normal up, axis-aligned footprint) + extent. sealWalls uses _lq/extent for its covers() test.
-function horiz(sem, x, y, z, ext) {
-  return { semantic: sem, _lp: new THREE.Vector3(x, y, z), _lq: new THREE.Quaternion(), extent: ext || [4, 4] };
+function horiz(sem, x, y, z, ext, id) {
+  return { id: id, semantic: sem, _lp: new THREE.Vector3(x, y, z), _lq: new THREE.Quaternion(),
+           extent: ext || [4, 4] };
 }
 
 test("sealWalls snaps a wall's top to the ceiling and bottom to the floor when within tolerance", () => {
@@ -1222,4 +1223,116 @@ test("the corner origin is EXACTLY invariant to how much of each wall was scanne
   const cB = originOf(rescanned.map((c) => ({ x: c.pos.x, z: c.pos.z })));
   assert.ok(Math.hypot(cA.x - cB.x, cA.z - cB.z) > 0.1,
     "the wall-centre origin does move — that is the trade --void-origin selects");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// segmentRooms / roomLinks — partitioning a captured space into rooms.
+// ---------------------------------------------------------------------------------------------------
+
+// Two rooms sharing a partition, which a Quest captures as TWO anti-parallel walls, one facing each room.
+// Room A floor spans x −2..2, room B floor spans x 2.3..6.3.
+function twoRooms() {
+  return [
+    horiz("floor",   0,   0,   0, [4, 4], "real_floor_A"),
+    horiz("ceiling", 0,   2.4, 0, [4, 4], "real_ceil_A"),
+    horiz("floor",   4.3, 0,   0, [4, 4], "real_floor_B"),
+    horiz("ceiling", 4.3, 2.4, 0, [4, 4], "real_ceil_B"),
+    vert("real_wall_A",   "wall",    [2.0, 1.2, 0],  90, [4, 2.4]),   // A's face of the partition, normal +X
+    vert("real_wall_B",   "wall",    [2.3, 1.2, 0], 270, [4, 2.4]),   // B's face, normal −X
+    vert("real_wall_out", "wall",    [-2.0, 1.2, 0], 270, [4, 2.4]),  // A's far wall, normal −X (outward)
+  ];
+}
+
+test("segmentRooms: floors are the partition, and a room is a floor plus its covering ceiling", () => {
+  const r = RS.segmentRooms(THREE, twoRooms());
+  assert.equal(r.rooms.length, 2, "one room per floor plane");
+  const byFloor = Object.fromEntries(r.rooms.map((x) => [x.floor, x]));
+  assert.equal(byFloor["real_floor_A"].ceiling, "real_ceil_A", "ceiling found by footprint, not proximity");
+  assert.equal(byFloor["real_floor_B"].ceiling, "real_ceil_B");
+});
+
+test("segmentRooms: facing separates the two faces of a partition", () => {
+  // The load-bearing rule. Both partition walls sit inside BOTH floors' covered footprints, so proximity
+  // alone would hand each room its neighbour's wall — the failure that reverted three times in
+  // investigations/raised-floor.md. The interior is the −normal side, and that is what decides it.
+  const r = RS.segmentRooms(THREE, twoRooms());
+  const A = r.rooms.find((x) => x.floor === "real_floor_A");
+  const B = r.rooms.find((x) => x.floor === "real_floor_B");
+  assert.ok(A.ids.includes("real_wall_A"), "A keeps its own face");
+  assert.ok(!A.ids.includes("real_wall_B"), "and does NOT take B's face");
+  assert.ok(B.ids.includes("real_wall_B"), "B keeps its own face");
+  assert.ok(!B.ids.includes("real_wall_A"), "and does NOT take A's face");
+  assert.ok(A.ids.includes("real_wall_out"), "an outer wall joins the room it faces away from");
+});
+
+test("segmentRooms: an inset rides its recorded host wall, even facing inward", () => {
+  // A wall-art normal can arrive INWARD (§2.2), so a facing test would reject exactly the insets that
+  // must be carried. Membership follows the recorded hostWall instead.
+  const surfaces = twoRooms();
+  const art = vert("real_wall_art_9", "wall art", [1.9, 1.4, 0], 270, [0.6, 0.4]);  // normal INWARD for A
+  art.hostWall = "real_wall_A";
+  surfaces.push(art);
+  const r = RS.segmentRooms(THREE, surfaces);
+  const A = r.rooms.find((x) => x.floor === "real_floor_A");
+  assert.ok(A.ids.includes("real_wall_art_9"), "the inset lands in its host wall's room, not its normal's");
+  assert.equal(r.unassigned.length, 0);
+});
+
+test("segmentRooms: a wall too edge-on to place is left unassigned, not guessed", () => {
+  // Conservative on purpose: for registration a wall in NO room costs the fit one constraint, while a
+  // wall in the WRONG room corrupts it.
+  const surfaces = twoRooms();
+  surfaces.push(vert("real_wall_edge", "wall", [0, 1.2, 0], 90, [1, 2.4]));   // normal ⟂ to the floor centre
+  const r = RS.segmentRooms(THREE, surfaces);
+  assert.ok(r.unassigned.includes("real_wall_edge"), "refused rather than assigned");
+  r.rooms.forEach((rm) => assert.ok(!rm.ids.includes("real_wall_edge")));
+});
+
+test("roomLinks: a doorway joins two rooms, an outer door leads outside", () => {
+  const surfaces = twoRooms();
+  const dA = vert("real_door_A", "door", [2.0, 1.0, 0], 90, [0.9, 2]);
+  dA.hostWall = "real_wall_A";
+  const dOut = vert("real_door_out", "door", [-2.0, 1.0, 0], 270, [0.9, 2]);
+  dOut.hostWall = "real_wall_out";
+  surfaces.push(dA, dOut);
+  const r = RS.segmentRooms(THREE, surfaces);
+  const link = r.links.find((l) => l.door === "real_door_A");
+  assert.equal(link.a, "real_floor_A");
+  assert.equal(link.b, "real_floor_B", "the doorway is seen through to the next room");
+  const out = r.links.find((l) => l.door === "real_door_out");
+  assert.equal(out.b, null, "no captured floor beyond ⇒ exterior");
+});
+
+test("golden space (real capture): two rooms, every surface placed, one doorway between them", () => {
+  // The synthetic tests encode what we expect of the partition; this asks the hardware. The fixture is a
+  // real 45-surface Quest capture of two rooms joined by a door, and its own header says so.
+  const fixture = require("./fixtures/golden-space.json");
+  const surfaces = fixture.surfaces.map(function (s, i) {
+    const lq = new THREE.Quaternion(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+    return { id: "real_" + s.semantic.replace(/\s+/g, "_") + "_" + i, semantic: s.semantic,
+             extent: s.extent, _lp: new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]), _lq: lq,
+             rotation: RS.eulerYXZ(THREE, lq), debug: {} };
+  });
+  RS.joinCorners(THREE, surfaces);
+  RS.sealWalls(THREE, surfaces);
+  RS.snapInsets(THREE, surfaces);                       // the real client pipeline, so hostWall is recorded
+  const r = RS.segmentRooms(THREE, surfaces);
+
+  assert.equal(r.rooms.length, 2, "the device's two floor planes are the two rooms");
+  assert.equal(r.unassigned.length, 0, "every captured surface is placed");
+  assert.equal(r.rooms.reduce((n, x) => n + x.ids.length, 0), surfaces.length, "and placed exactly once");
+  r.rooms.forEach(function (rm) {
+    assert.ok(rm.ceiling, "each room found its ceiling: " + rm.floor);
+    const walls = rm.ids.filter((id) => surfaces.find((s) => s.id === id).semantic === "wall");
+    assert.ok(walls.length >= 6, "and a plausible set of walls: " + rm.floor + " has " + walls.length);
+  });
+
+  // The partition's doorway is captured as two insets, one per face; each resolves the pair on its own.
+  const joins = r.links.filter((l) => l.b !== null);
+  assert.equal(joins.length, 2, "both faces of the one doorway resolve");
+  joins.forEach(function (l) {
+    assert.notEqual(l.a, l.b, "a link joins two DIFFERENT rooms");
+    assert.ok(l.b.startsWith("real_floor_"), "and names a room by its floor");
+  });
+  assert.notEqual(joins[0].a, joins[1].a, "the two faces are seen from opposite rooms");
 });
