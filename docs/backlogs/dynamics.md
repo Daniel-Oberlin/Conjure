@@ -315,17 +315,17 @@ context — but the *resolution* half is not built.
 - **A frame of reference always exists** even in a surfaceless meadow: user pose, world origin, up-vector,
   ground reference. That quartet is the universal substrate; anything richer is a bonus a module must do
   without.
-- **`volume` anchors** should take a bound spec defaulting to room extents when available and explicit
-  dimensions otherwise — never assuming "the room" exists.
+- **`volume` anchors** should take a bound spec defaulting to space extents when available and explicit
+  dimensions otherwise — never assuming "the space" exists.
 
 ## `sceneGeometry` — physical plausibility as a capability
 
-Room-geometry awareness is **decoupled from anchoring**. Fireflies (volume) want walls as *colliders* so
+Space-geometry awareness is **decoupled from anchoring**. Fireflies (volume) want walls as *colliders* so
 they do not clip through; a bouncing ball (free) wants a floor. That is a read-only `sceneGeometry`
 capability, requested independently of where a module is anchored.
 
 **One provider, two backends.** Modules must never ask "is this a real space?" They ask `sceneGeometry`,
-which answers uniformly: passthrough room → captured planes; outdoor VR world → whatever the world
+which answers uniformly: passthrough space → captured planes; outdoor VR world → whatever the world
 authored (usually a ground plane and a play-area bound, no walls). Requesting modules **must handle the
 sparse/null case**.
 

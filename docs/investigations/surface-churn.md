@@ -58,18 +58,18 @@ that was there, by 21 mm, on this gate".
 |---|---|---|---|
 | 1 | Log every `churn.*` with a device-vs-matcher discriminator | all three mints read `matcher`, with gate and margin | Not the headset. Our matcher. Rules out the debounce and the device entirely |
 | 2 | Order events by the **client's** clock (`ct`), not the server's batch-receive time | every mint lands ~330 ms after `space.enter` — one fast-retry interval | It happens in the *first moments* of a session, not at random |
-| 3 | Read `planes` on `space.enter` for each session | **4** and **16** of 58 on the two sessions that churned; **58** on the one that did not | Room load. `detectedPlanes` is the persisted Room Setup delivered wholesale, so a small count means the Quest has not finished restoring it |
+| 3 | Read `planes` on `space.enter` for each session | **4** and **16** of 58 on the two sessions that churned; **58** on the one that did not | Space load. `detectedPlanes` is the persisted Room Setup delivered wholesale, so a small count means the Quest has not finished restoring it |
 | 4 | Check whether the floating-room fault could explain it | `matchWall`'s `perp` is purely horizontal; that fault is vertical | Two separate faults. Do not conflate them |
-| 5 | Check what registration accepts | a lock at `cov ≥ 0.3 × |ref|` — **a third of the room** | A frame is solved from partial geometry, and that frame is ~17 cm out in x/z. Identity is then assigned from it |
+| 5 | Check what registration accepts | a lock at `cov ≥ 0.3 × |ref|` — **a third of the space** | A frame is solved from partial geometry, and that frame is ~17 cm out in x/z. Identity is then assigned from it |
 
 ## The fix
 
-**Hold identity until the room has loaded.** A capture below `LOAD_FRAC` (0.6) of the seed's surface count
+**Hold identity until the space has loaded.** A capture below `LOAD_FRAC` (0.6) of the seed's surface count
 holds — no identity, no render, no post — exactly as the trust gate already holds a tilted capture. Verified
 live at 16:16:45: `planes: 2` → `space.loading` → `space.loaded planes: 58, held: 1`, no churn.
 
 `WM.loadGate` returns `hold` / `go` / **`forced`**. The third is a deadlock escape, not a tuning outcome: a
-room that has genuinely *shrunk* could never reach the threshold, and holding forever would also block
+space that has genuinely *shrunk* could never reach the threshold, and holding forever would also block
 posting the removal — the wall-less-seed deadlock in a new costume. After `LOAD_PATIENCE` captures it
 proceeds and records that it was forced.
 
@@ -80,10 +80,10 @@ partition sit ~0.4 m apart, so a 0.2 m tolerance starts risking the id-swap cata
 to prevent — content on the wrong wall. And it treats a bad *transform* as if it were a tolerance problem.
 *What would justify revisiting:* misses that persist after the load gate, on captures known to be complete.
 
-**Raising `MIN_COV_FRAC` so a partial room cannot lock.** Plausible, and arguably the more principled fix.
+**Raising `MIN_COV_FRAC` so a partial space cannot lock.** Plausible, and arguably the more principled fix.
 Rejected for now because it changes registration behaviour for **every** space and every user to solve a
 post-gate problem, and the load gate is strictly narrower. *What would justify revisiting:* evidence that a
-partial-room lock causes harm somewhere the load gate does not cover.
+partial-space lock causes harm somewhere the load gate does not cover.
 
 ## A design assumption this falsified
 
@@ -201,7 +201,7 @@ re-styling by voice is a judgement call — the styling was authored conversatio
 | Symptom | Cause | Fix | Commit |
 |---|---|---|---|
 | No way to tell why a surface vanished | three causes, one appearance | `churn.*` events with a device-vs-matcher discriminator naming the gate and its margin | `371ff83` |
-| Walls replaced and colours destroyed on entering AR | identity assigned from a frame solved on a partial room | the load gate — hold until ≥60% of the seed is present (`WM.loadGate`) | `43bca11` |
+| Walls replaced and colours destroyed on entering AR | identity assigned from a frame solved on a partial space | the load gate — hold until ≥60% of the seed is present (`WM.loadGate`) | `43bca11` |
 | `[post]` logged only the first changed id; server `add`/`remove` silent | first-hit `reason`; only `update` logged | full reason list; `seed.add`/`seed.prune` named by id | `371ff83` |
 
 ## Related

@@ -83,9 +83,9 @@ ingest rather than compensating at every consumer.
 ## Not built — the mesh tier
 
 The whole progressive-refinement design is unimplemented. `mesh-detection` and `detectedMeshes` have
-**zero occurrences** in the codebase; `meshRevision` and `room.occlusion` likewise.
+**zero occurrences** in the codebase; `meshRevision` and `spacePresentation.occlusion` likewise.
 
-What it was for: start coarse with planes, and on request (`refine_room_scan`) stream simplified,
+What it was for: start coarse with planes, and on request (`refine_space_scan`) stream simplified,
 semantically-segmented mesh deltas up as the user looks around, so fidelity climbs while the director's
 edits keep working. The load-bearing promise is **uniform editability** — each mesh segment maps to the
 *same* surface entity that existed as a coarse plane (`meta.meshSegment`), so "make the wall blue" is
@@ -93,8 +93,8 @@ identical whether the geometry underneath is a plane or a dense mesh.
 
 Consequences of it being absent:
 
-- `refine_room_scan` and `show_room_labels` do not exist as tools.
-- The `room.geometry = planes | mesh | both` and `room.occlusion = off | depth | mesh` display modes do
+- `refine_space_scan` and `show_surface_labels` do not exist as tools.
+- The `spacePresentation.geometry = planes | mesh | both` and `spacePresentation.occlusion = off | depth | mesh` display modes do
   not exist.
 - `meta.meshSegment` is vestigial (2 occurrences, nothing reads it).
 
@@ -133,7 +133,7 @@ window or door opening looks into nothing. It wants a sky or skybox backdrop beh
 ### Per-agent presentation defaults
 
 An agent could declare how it wants a space presented on entry — broad rules over the base targeted by
-semantic, id, or `all`. Tracked as `room_view` in [`backlogs/agents.md`](./agents.md) since it belongs
+semantic, id, or `all`. Tracked as `space_view` in [`backlogs/agents.md`](./agents.md) since it belongs
 to the agent definition; noted here because this is the layer it would write to.
 
 ### Undo for surface styling
@@ -163,8 +163,8 @@ a flipped orientation (the headset's plane detection inverts their up/normal), s
 the flip. Capture-side quirk, not the placement math per se.
 
 **Proposed fix:** don't trust the captured rotation for image orientation — compute an **upright,
-room-inward-facing** mounting rotation (normal toward the room interior, zero roll) from the surface
-position + room center, used for *all* on-surface placements. Alt: normalize window/door surface
+interior-facing** mounting rotation (normal toward the space interior, zero roll) from the surface
+position + space center, used for *all* on-surface placements. Alt: normalize window/door surface
 rotations at ingest so "up" is consistent. Either way, **verify on a Quest** (window orientation is
 device/capture-dependent; can't confirm blind).
 

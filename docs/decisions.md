@@ -293,8 +293,8 @@ active world. A second user may **join a public world** and co-locate. Full plan
 **`docs/specs/spaces.md`**.
 
 **Why:**
-- **A "space" is the shared room layer made first-class** (resolves the per-world-room duplication and
-  the class of "live state frozen in the durable world doc" bugs — stale rooms, re-capture churn, the
+- **A "space" is the shared space layer made first-class** (resolves the per-world-space duplication and
+  the class of "live state frozen in the durable world doc" bugs — stale spaces, re-capture churn, the
   authority lockout). Authority = space owner falls out cleanly.
 - **Visibility as a flag, not a path segment:** content-addressed assets can't path-encode it;
   publishing must not relocate an item or break references; access is a clean predicate
@@ -331,8 +331,8 @@ only on change; and **time-slice** the mesh re-triangulation across frames under
 - New knobs: `--geo-slice-ms` (slice budget; `<=0` = off) and `--debug-jitter` (probes without the heavy
   registration diagnostics). Probes are flag-gated and kept in-tree for the next perf pass.
 - **Scaling is partial** (§14.3): the solve axis and the geometry-rebuild axis are decoupled from frame rate,
-  but **element creation** (first lay) and **`matchRef`** still grow with room size on the main thread — the
-  next levers if large rooms hitch. Element creation would need its own slicing; `matchRef` would migrate
+  but **element creation** (first lay) and **`matchRef`** still grow with space size on the main thread — the
+  next levers if large spaces hitch. Element creation would need its own slicing; `matchRef` would migrate
   behind the same worker message boundary.
 
 
@@ -466,7 +466,7 @@ announces itself instead of happening in silence.
 
 **The behaviour.** A world belongs to a session, a session to an agent, and a space remembers the last
 world opened in it (`last_scope`/`last_world`). So when an AR client votes its capture and matches a
-room, `/space/select` joins that room's last world — and `_switch_to` writes the global session pointer,
+room, `/space/select` joins that space's last world — and `_switch_to` writes the global session pointer,
 which the agent server follows by re-binding its Director. Put the headset on in a room whose space was
 last used by `builder`, and you are now talking to `builder`, whatever you were talking to before.
 
@@ -474,14 +474,14 @@ last used by `builder`, and you are now talking to `builder`, whatever you were 
 and `animal-house` twelve seconds after page load, with nothing said about it. Two rejected fixes:
 refuse to cross the agent boundary on a match, and skip selection entirely while the active world is
 VOID. Both break the thing the design is for — *your room, your world* — to avoid a surprise that is
-really a reporting failure. The room genuinely is the more authoritative signal about where a person is;
+really a reporting failure. The space genuinely is the more authoritative signal about where a person is;
 it just has to say so.
 
 **So:** `_reconcile_state` broadcasts `[now in the <agent> agent — <world> · <space>]` on any agent
 change it did not itself initiate (a client's own `agent <name>` already narrates, and sets
 `expect_agent` to claim the echo). `notice` is spoken by the voice client and shown in the CLI, so the
 switch is audible on the same channel the person is already using. Naming the world and the space is
-what makes a room match recognisable *as* a room match, since the state carries no reason field.
+what makes a space match recognisable *as* a space match, since the state carries no reason field.
 
 **Related, and separate:** this is also what exposed the dynamic-module loading bug — the page had been
 served under `outdoor`, which declares no `dynamics`, so it carried no module scripts and rendered
