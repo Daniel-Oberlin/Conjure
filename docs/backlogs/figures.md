@@ -2081,6 +2081,76 @@ check doing its job rather than a nuisance to tune away.
   would be a wrong answer wearing a right one — the caller asked her to kneel and would be told it
   worked.
 
+### Device run 2026-09-09 — it works, and the mesh is the problem now
+
+The full run is [`investigations/figures-device-run-2026-09.md`](../investigations/figures-device-run-2026-09.md)
+(spent; kept only as the raw record). Twenty-two checks across re-grounding, the pose library at human
+scale, the client seam, frame cost and the tool surface.
+
+**What passed, and two of these were the real unknowns:**
+
+- **Re-grounding, completely.** A kneel lands on the floor; an arm pose moves her not at all vertically;
+  repeating a pose does not creep; kneel → stand → kneel returns to the same height; **it survives a room
+  recapture** (the one thing static analysis could not answer — the settle moves the mesh inside the
+  entity while the anchor solver moves the entity, and they do not fight); and it survives a reload.
+- **The tool surface.** "Have her kneel" → `pose_figure(named="kneel")`, not seven invented rotations.
+  "Kneel with her arms out" → **one** call carrying `named` plus a `pose` override. "Stand her back up" →
+  `named="stand"`, avoiding the `clear=true` answer that would have returned a VRoid rig to its T-pose.
+  The three utterances that failed on 2026-09-03 are all correct in the headset.
+- **The `named` schema fix**, confirmed by the absence of the A-Frame warning in the console.
+- **No scarecrow on Saka** in `kneel`, `wave` or `point` — the arms-down fix holds on the T-posed rig.
+
+**The one that deserves recording as good news:** asked to *"have her lie down"* — which is not
+expressible, since `hips` is clamped to ±45° — the director called `list_poses`, said there is no such
+pose, improvised a spine bend (clamped 90° → 50°), and then **told the user it was an approximation the
+rig does not really support.** A graceful degradation that narrates itself is exactly what the joint-limit
+feedback was built for, and it is the first evidence it works on a request nobody anticipated.
+
+#### The new defect class: poses are authored against joints, and the mesh interpenetrates
+
+Every §B finding is the same shape, and **no signature can catch any of them** — a signature asserts
+where joints are and never asks whether flesh intersects flesh:
+
+| Pose | What it looks like |
+|---|---|
+| arms down (`stand`, and every leg pose) | forearms **enter the body**; on Saka they enter the hips |
+| `arms-crossed` | folded, but **inside her chest** |
+| `hands-on-hips` | close, but the **hands do not touch** |
+| `sit` | floats — about an inch on Grace, **several inches on Saka, who is shorter** |
+
+The first three are a single missing constraint: `aim: "down"` puts an arm along the body's own axis,
+which is where the torso already is. A real arm hangs a few degrees out. That is one number per pose, and
+it wants measuring against the mesh rather than guessing — which is a new capability, because the mesh
+has never been consulted about a pose.
+
+`sit` floating is the tier-3 gap made concrete, and the *rig-dependence* is the interesting half: the
+error is not a constant to subtract. It is not the seat height either, since Saka is shorter and floats
+further — it will be where her hips sit relative to her feet.
+
+#### Hand poses do not exist, and two library entries need them
+
+`point` and `wave` both "look more like reaching" on every rig. That is correct and unfixable in tier 1:
+**there is no finger vocabulary**, deliberately — fingers are not recoverable from topology
+([discovery layer 2](#2--topology-and-geometry-free-needs-no-names)), so no map has them. A point without
+a curled hand is an outstretched arm, and no amount of shoulder work changes that.
+
+Either those two entries should be renamed for what they actually are (`reach-out` already exists, which
+makes `point` nearly redundant), or fingers become a tier-1 extension for rigs that state them — VRM
+does state 30 finger bones. The second is a real feature; the first is honest today.
+
+#### Smaller findings
+
+- **`grab`'s selection box is the bind-pose box.** Grabbing a kneeling figure works, but the box is the
+  standing one: wide enough for spread arms, not deep enough to enclose bent legs. Milder than predicted
+  (it stays centred on her rather than sitting 43 cm off), and the same stale-box family as the original
+  `grab` bug.
+- **`inspect_figure` never reports the pose's NAME.** Confirmed: it lists bones and never says she is
+  kneeling. `named` is stored precisely so the state stays semantic, and nothing reads it. One line in
+  `figure_description`.
+- **Trish's legs look deformed kneeling** — right orientation, wrong shape. New, and consistent with her
+  being the rig with the flat spine and the 679-bone hair rig; likely another artefact of that conversion.
+- **`crouch` and `sit` are distinguishable** to a person, which the vision judge could not manage.
+
 ## Animation — the long-term plan
 
 Sequenced **after** aiming (built), the eval harness, named poses and outfits. Written down now because
@@ -2227,8 +2297,23 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
 
 ## Where to pick up
 
-**Slices 1–3 are built (2026-09-03 to 09-06) and NONE of slice 3 has run in a headset.** That is the
-next step and it is not a formality: re-grounding is client code, its unit tests stub A-Frame entirely,
+**Slices 1–3 are built and slice 3 has now run on device (2026-09-09).** It works: re-grounding
+survives a recapture and a reload, and the director reaches for a named pose from plain English. What the
+run found instead is that **the poses are geometrically right and the mesh interpenetrates** — see
+[*Device run 2026-09-09*](#device-run-2026-09-09--it-works-and-the-mesh-is-the-problem-now). Take those
+next, in this order:
+
+1. **Arms that hang outside the body.** One number per pose, and it wants measuring against the mesh
+   rather than guessed — a capability that does not exist yet, since nothing has ever consulted the mesh
+   about a pose. Affects `stand` and every leg pose, so it is the most visible thing on the list.
+2. **`inspect_figure` should say she is kneeling.** One line; `named` is already stored.
+3. **The trunk deform-reach check in `validate()`** — three failures now (Trish's spine, Grace's `hips`,
+   `crouch` on Trish), and it silently decides which poses port to which rig.
+4. **`grab`'s selection box** ignores the pose — the stale-box family again.
+5. Decide what `point` and `wave` are, given there is no finger vocabulary and there cannot be one from
+   topology alone.
+
+The original device-run note, kept because the reasoning still applies to the *next* slice: re-grounding is client code, its unit tests stub A-Frame entirely,
 and the one bug already found at that seam — the server sending a `named` property the component never
 declared, so A-Frame dropped it — was found by reading rather than running. Every slice in this document
 has a device-run section and every one of them found something.
@@ -2301,7 +2386,16 @@ export is byte-identical to the `c8421e03…` already catalogued — the colour 
   [*What the harness measured*](#what-the-harness-measured-2026-09-05).
 - **The judge does not gate anything** — it passes a figure with its head on backwards, and its verdicts
   moved between five identical runs. Advisory by default; every battery prints the calibration result
-  first so nobody has to remember this.
+  first so nobody has to remember this. (Recognition — *"which pose is this?"* — does work and is used by
+  the pose library.)
+- **Arms hang INTO the body** on `stand` and every leg pose; `arms-crossed` folds inside the chest;
+  `hands-on-hips` does not touch. Measured on device 2026-09-09. No geometric signature can catch this —
+  a signature asserts where joints are, never whether flesh intersects flesh.
+- **`sit` floats above a seat**, rig-dependently — an inch on Grace, several inches on the shorter Saka.
+- **`point` and `wave` read as reaching**, because there is no finger vocabulary and none is recoverable
+  from topology.
+- **`inspect_figure` never reports the pose name**, though `named` is stored for exactly that.
+- **Trish's legs deform when kneeling** — right orientation, wrong shape. Same rig as the flat spine.
 - Figures already placed in a world hold the meta they were placed with. Re-place after any refresh.
 - The anatomical-pose work and the void-frame branch are both merged to `main` and pushed.
 

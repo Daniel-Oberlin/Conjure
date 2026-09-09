@@ -241,6 +241,17 @@ knelt like a scarecrow), and one-armed poses never said what the other arm does.
 | `needs` | said out loud. `sit` makes the *shape* of sitting; a seat is tier 3 and is not built |
 
 **Tier 3 — solving against the world** ("hand flat on that table") is not built and wants a solver.
+Measured cost of its absence: `sit` leaves a figure floating above a real chair — about an inch on Grace,
+several on the shorter Saka — so the error is rig-dependent and not a constant to subtract.
+
+**Known limits of posing by joint**, all measured on device 2026-09-09 and none catchable by a signature,
+which asserts where joints are and never whether flesh intersects flesh:
+
+- Arms aimed `down` **enter the body**; `arms-crossed` folds inside the chest; `hands-on-hips` does not
+  quite touch. A real arm hangs a few degrees out from the torso axis, and nothing has ever consulted the
+  mesh about a pose.
+- `point` and `wave` read as *reaching*, because there is **no finger vocabulary** — fingers are not
+  recoverable from topology (§3), so no inferred map has them.
 
 ### Re-grounding
 
@@ -264,6 +275,11 @@ not what anything rests on.
 Approximate by construction — joint positions, not skinned vertices, so a knee sinks by about its own
 radius. Exact would mean skinning the mesh, and the error is centimetres against a decision measured in
 tens of them.
+
+**Verified on device 2026-09-09**, including the case static analysis could not settle: the settle
+survives a room recapture. It moves the mesh *inside* the entity while the anchor solver moves the
+entity, and the two do not fight. It also survives a reload, does not accumulate over repeated poses, and
+stays silent when nothing rests any lower.
 
 ### Joint limits
 

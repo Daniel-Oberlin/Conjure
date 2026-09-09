@@ -41,6 +41,8 @@ thing. Say what would change your mind.
 
 | [`figures-frame-rate.md`](./figures-frame-rate.md) | ~32 fps sustained with three figures in the room, on a 90 Hz display | **opened 2026-09-09**, one measurement. Distinct from `pops-and-jitters` (that one is *rare* drops on a healthy session; this is chronic, and *worse standing still than walking*). Cause unknown; the empty-room run splits the theory table |
 
+| [`figures-device-run-2026-09.md`](./figures-device-run-2026-09.md) | slice 3 (named poses, re-grounding) on device | **spent** — raw record only. Re-grounding and the tool surface passed; the finding was that poses are geometrically right and the *mesh* interpenetrates. Conclusions live in [`backlogs/figures.md`](../backlogs/figures.md) |
+
 ## Related
 
 - [`docs/specs/`](../specs/) — what the system does today.
