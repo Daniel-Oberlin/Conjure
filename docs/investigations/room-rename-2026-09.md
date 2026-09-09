@@ -233,3 +233,14 @@ answer depends on context, and where after the rooms work a good share are simpl
 
 Bulk-applying to them is how a prose pass corrupts a codebase: the uppercase `ROOM` split was 4-3, and the
 leeway sense (#8) was only found by sampling. So this wants a per-file read, and it blocks nothing.
+
+### Left open: `EMPTY-ROOM`
+
+`scripts/c4_frame_cost.py:136` — `phase("EMPTY-ROOM", …)`, alongside `speak("Empty room baseline.")`.
+It arrived on `main` with the frame-cost work, after this branch's sweeps.
+
+It means the *space* with no figures in it, so by the rule it should move. Left alone deliberately: it is a
+**spoken** string in another session's new script, "empty room" is defensible English for the physical
+condition being measured, and a merge is the wrong place to smuggle in a judgement call about someone
+else's output. No recorded measurement references the label, so it is free to change whenever it is decided.
+
