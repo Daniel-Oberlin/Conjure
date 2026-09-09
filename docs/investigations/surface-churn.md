@@ -154,15 +154,35 @@ reference to compare them against.
 `wall_39` and `wall_art_83` bounced through prune/regain. Three `churn.restyle_lost` events name the
 survivors that came back grey.
 
-**Root cause: `/space/capture` has no selection gate.** It is in `_OWNER_ONLY_PATHS`, so *who* is asking is
-checked; nothing checks whether they have established *where they are*. The load gate is client-side and
+**Root cause: `/space/capture` has no selection gate.** It is in `_OWNER_ONLY_PATHS`, so *who* is asking
+is checked; nothing checks whether they have established *where they are*.
+
+Precisely what reset at 07:15:35 was **occupancy**, not the space — `active_space` was still
+`daniel/space-3`. `_unclaim` cleared the per-client commit guard so a returning headset must vote again.
+So the returning client had not yet aligned itself to the stored geometry, and its capture arrived in an
+unaligned frame. A check of the form "is a space established?" would **not** have caught this: one was. The load gate is client-side and
 guards entering AR, which is only one of the ways in.
 
 Candidate fixes, cheapest first:
 
-- **Refuse a capture from a client that has not selected a space this claim epoch.** The client already
-  commits a `cid` to `/space/select`; requiring it on `/space/capture` is a few lines and closes the path
-  at the boundary rather than trusting arrival order.
+- **Merge, don't replace, until someone has voted.** Server-only, and the smallest thing that would have
+  prevented every deletion here. `_unclaim` already clears `_selected_cids` when the last holder leaves
+  (`server.py:911`) — set a flag in the same place, and while it is set treat `/space/capture` as a merge:
+  add new surfaces, delete none. The capture still lands, nothing is lost, and the flag clears on the
+  first `/space/select` commit.
+
+- **Gate the capture per client** — the complete version, and **not** the "few lines" it first looks
+  like. The two endpoints identify the client differently: `/space/select` sends `cid: "c_…"` (a
+  page-level id, `conjure-client.js:894`) while `/space/capture` sends `client_id: "hs_…"`
+  (`conjure-client.js:1563`), which is why the log reads `client=hs_3y06g2`. They cannot be compared, so
+  this needs the capture to carry the same id the vote used — a client change plus a server check,
+  shipping together, with a **"missing id ⇒ merge, don't replace"** fallback so a stale page is degraded
+  rather than permanently blocked. Worth it eventually because co-location needs per-client admission:
+  one headset can be admitted while another is refused.
+
+  *Not* worth reaching for first. Note also that the client hard-codes `replace: true` on every capture
+  (`conjure-client.js:3109`), so every capture is destructive by default — which is why the guard below
+  earns its place independently of either of these.
 - **Refuse a wholesale prune** — the first guard proposed under [*An empty capture wipes a space's
   geometry*](../backlogs/spaces.md): a post that would remove >50% of the stored set is far more likely a
   bug than a fact. Here it would have rejected the 25-surface prune outright.
