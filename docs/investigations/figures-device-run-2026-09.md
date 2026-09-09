@@ -201,7 +201,7 @@ frame"*).
 | C1b | `[figure]` lines in the log | `posed N bone(s) on <id>`, N = the pose's bone count; no `NO BONE OR AXES` | I saw [figure] posed 7 bone(s) on grace_new, [figure] posed 10 bone(s) on sak, no failure mode error displayed in console |
 | C2 | `inspect_figure` on a posed figure | posed bone names — and probably **not** the pose's name (gap above) | **Spine** — bent/adjusted (torso not fully upright); **Both upper arms** — moved from rest (arms not at sides); **Both upper legs** — adjusted (legs not in a neutral stand); **Both lower legs** — bent (knees have some flex) — **and it never says she is kneeling**, which confirms the predicted gap: `named` is stored and not read |
 | C3 | grace `kneel` + trish `cheer` | separate log lines, distinct stored state, both correct in the headset | **state layer passed** — saka `sit` + 5f83f1 `stand`: distinct stored state, separate `[patch]` ops each naming its own id. Render looks good |
-| C4 | `python scripts/c4_frame_cost.py`, then hand over the window it prints | no change in `jit(sd)` / `late` / `drop` between baseline and posed | |
+| C4 | `python scripts/c4_frame_cost.py`, then hand over the window it prints | no change in `jit(sd)` / `late` / `drop` between baseline and posed | **passed, with a caveat.** 15:21–15:24, Trish + Grace + Saka (226k tris), one client at 90 Hz. Still: jit 1.58 → 1.60, posed mean a hair *faster*. Walking: jit +5% and drops +11% but `late` down 31% — two metrics disagreeing in direction on 22 samples is noise. `rebuilds=0` throughout. **Caveat:** the baseline is ~31 ms against an 11.1 ms budget, so a 1 ms cost would be invisible — see [`figures-frame-rate.md`](./figures-frame-rate.md) |
 
 ---
 

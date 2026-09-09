@@ -3,6 +3,7 @@
 
     python scripts/c4_frame_cost.py                 # the full A/B, ~3 minutes
     python scripts/c4_frame_cost.py --still 20 --walk 30
+    python scripts/c4_frame_cost.py --empty         # no figures: the idle baseline, ~90 s
 
 **The problem this solves.** The measurement needs two matched phases — the same figures unposed, then
 posed, standing still and then walking the same path — and the phase boundaries have to be findable in
@@ -15,6 +16,11 @@ the Mac is your audio out, and audible in the room regardless), writes an exact 
 You put the headset on, start it, and do what it tells you.
 
 Afterwards it prints the log window to hand over. Nobody has to read a `PACE` line by hand.
+
+`--empty` runs a single phase with nothing placed and nothing posed. That is a different question from
+the A/B — not "does posing cost frames" but "what does an idle frame cost at all", which the first run
+raised by measuring a ~31 ms baseline against an 11.1 ms budget
+(docs/investigations/figures-frame-rate.md).
 
 **Prerequisites:** the server running with `--debug-jitter` (the `PACE` lines come from that probe), and
 you in AR with the figures in view. It refuses to start if the probe is not live, because a run with no
@@ -95,12 +101,19 @@ def main() -> int:
     ap.add_argument("--still", type=int, default=30, help="seconds standing still per phase")
     ap.add_argument("--walk", type=int, default=40, help="seconds walking per phase")
     ap.add_argument("--skip-check", action="store_true", help="run even if no PACE lines are seen")
+    ap.add_argument("--empty", action="store_true",
+                    help="ONE phase, no figures required and none posed — the empty-room baseline for "
+                         "docs/investigations/figures-frame-rate.md. Answers whether the ~31 ms idle "
+                         "frame is the figures at all")
     args = ap.parse_args()
 
     ids = figures()
-    if not ids:
-        return print("no rigged figures in the world — place some first") or 2
-    print(f"figures: {', '.join(ids)}")
+    if not ids and not args.empty:
+        return print("no rigged figures in the world — place some first, or --empty for the "
+                     "no-figures baseline") or 2
+    print(f"figures: {', '.join(ids) if ids else '(none)'}")
+    if args.empty and ids:
+        print("  ! --empty but figures are present; remove them or the baseline measures them too")
 
     # A run with no PACE lines produces a confident-looking nothing. Refuse it.
     if not args.skip_check:
@@ -115,19 +128,26 @@ def main() -> int:
                          "(--skip-check to override.)") or 2
 
     started = time.strftime("%Y-%m-%d %H:%M:%S")
-    speak("Frame cost test. Two phases, about three minutes. Put the headset on and stand where you can "
-          "see the figures.")
-    time.sleep(6)
+    if args.empty:
+        # One phase, nothing posed. The A/B above answers "does POSING cost frames"; this answers the
+        # question that A/B raised — whether the ~31 ms idle frame has anything to do with figures.
+        speak("Empty room baseline. One phase, about a minute and a half.")
+        time.sleep(5)
+        phase("EMPTY-ROOM", args.still, args.walk)
+    else:
+        speak("Frame cost test. Two phases, about three minutes. Put the headset on and stand where you "
+              "can see the figures.")
+        time.sleep(6)
 
-    print("\n--- baseline: every figure neutral ---")
-    pose_all(ids, "stand")
-    time.sleep(3)                                        # let the pose settle before measuring
-    phase("BASELINE-unposed", args.still, args.walk)
+        print("\n--- baseline: every figure neutral ---")
+        pose_all(ids, "stand")
+        time.sleep(3)                                    # let the pose settle before measuring
+        phase("BASELINE-unposed", args.still, args.walk)
 
-    print("\n--- posed ---")
-    pose_all(ids, POSED)
-    time.sleep(3)
-    phase("POSED", args.still, args.walk)
+        print("\n--- posed ---")
+        pose_all(ids, POSED)
+        time.sleep(3)
+        phase("POSED", args.still, args.walk)
 
     ended = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"\nDone. Window to analyse: {started} → {ended}")
