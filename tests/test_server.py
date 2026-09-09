@@ -4232,6 +4232,123 @@ def test_a_figure_carries_its_bone_vocabulary(srv, client, tmp_path):
     assert frame["limits"]["bend"] == [-140, 190], "a shoulder is barely limited; a knee is not"
 
 
+def test_a_named_pose_expands_on_the_server_and_keeps_its_name(srv, client, tmp_path):
+    """Tier 2: one word does the work of several bones. The NAME is stored beside the expansion, so the
+    durable state stays readable — "she is kneeling", not seven anonymous rotations."""
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "named": "cheer"}).json()
+    assert r["ok"] is True and r["named"] == "cheer"
+    fig = _ent(client, eid)["components"]["figure"]
+    assert fig["named"] == "cheer"
+    # The fixture has a LEFT arm and no right one, so what survives is what it has — a library pose is
+    # authored against no rig in particular, and refusing it outright for a bone this figure never had
+    # would break it on exactly the rigs it was written to span. What was dropped is reported.
+    assert json.loads(fig["pose"]) == {"leftUpperArm": {"aim": "up"}}
+    assert r["skipped"] == ["rightUpperArm"]
+
+
+def test_a_pose_the_figure_cannot_do_at_all_is_refused_rather_than_cleared(srv, client, tmp_path):
+    """Filtered down to nothing is not the same as doing nothing. Quietly returning her to rest would be
+    a wrong answer wearing a right one — the caller asked for a pose and would be told it worked."""
+    eid = _place_legged_figure(client)           # legs and a spine; no arms at all
+    r = client.post("/figure", json={"id": eid, "named": "cheer"}).json()
+    assert r["ok"] is False and "none of them" in r["error"]
+
+
+def test_a_named_pose_takes_overrides_in_the_same_call(srv, client, tmp_path):
+    """"kneel, but with her arms out" is one request, not two."""
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "named": "kneel",
+                                     "pose": {"leftUpperArm": {"aim": "out"}}}).json()
+    assert r["ok"] is True
+    stored = json.loads(_ent(client, eid)["components"]["figure"]["pose"])
+    assert stored["leftUpperArm"] == {"aim": "out"}
+
+
+def test_adjusting_a_named_pose_by_hand_drops_the_name(srv, client, tmp_path):
+    """She was kneeling; now she is in a pose of her own. Keeping the label would make the state lie
+    about itself, and "stand up again" would restore something nobody asked for."""
+    eid = _place_figure(srv, client, tmp_path)
+    client.post("/figure", json={"id": eid, "named": "kneel"})
+    client.post("/figure", json={"id": eid, "pose": {"head": {"turn": 20}}})
+    assert _ent(client, eid)["components"]["figure"]["named"] == ""
+
+
+def test_stand_is_a_stance_and_undoes_what_it_does_not_mention(srv, client, tmp_path):
+    """A named pose merges per BONE, so `stand` — which speaks only about the arms — would otherwise
+    leave a kneeling figure kneeling with her arms neatly at her sides. `clears` is what makes it a
+    stance: everything it does not mention goes back to rest."""
+    eid = _place_legged_figure(client)
+    client.post("/figure", json={"id": eid, "named": "kneel"})
+    assert "leftLowerLeg" in json.loads(_ent(client, eid)["components"]["figure"]["pose"])
+    r = client.post("/figure", json={"id": eid, "named": "stand"}).json()
+    assert r["ok"] is True and r["named"] == "stand"
+    # The legs are back at rest (a cleared bone leaves no trace); this rig has no arms to put down.
+    assert json.loads(_ent(client, eid)["components"]["figure"]["pose"]) == {}
+
+
+def test_stand_still_puts_the_arms_down(srv, client, tmp_path):
+    """Not a reset. A VRoid rig RESTS in a T-pose, so "back to the bind pose" is not standing — that is
+    `clear=true`. Standing means arms at the sides, on any rig, which is what `aim` is for."""
+    eid = _place_figure(srv, client, tmp_path)          # has a left arm
+    client.post("/figure", json={"id": eid, "named": "stand"})
+    stored = json.loads(_ent(client, eid)["components"]["figure"]["pose"])
+    assert stored["leftUpperArm"] == {"aim": "down"}
+
+
+def _place_legged_figure(client):
+    """A figure with LEGS — what the lowered poses are made of, and what `_place_figure` deliberately
+    lacks. Kept separate so the older fixture keeps testing the partial-rig path."""
+    doc = {"scenes": [{"nodes": [0, 1]}], "scene": 0,
+           "nodes": [{"mesh": 0, "skin": 0},
+                     {"name": "hips", "translation": [0, 1.0, 0], "children": [2, 3, 5]},
+                     {"name": "spine", "translation": [0, 0.2, 0]},
+                     {"name": "thigh.L", "translation": [0.1, -0.05, 0], "children": [4]},
+                     {"name": "shin.L", "translation": [0, -0.45, 0], "children": [6]},
+                     {"name": "thigh.R", "translation": [-0.1, -0.05, 0], "children": [7]},
+                     {"name": "foot.L", "translation": [0, -0.45, 0]},
+                     {"name": "shin.R", "translation": [0, -0.45, 0], "children": [8]},
+                     {"name": "foot.R", "translation": [0, -0.45, 0]}],
+           "skins": [{"joints": [1, 2, 3, 4, 5, 6, 7, 8]}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+           "accessors": [{"min": [-0.3, 0.0, -0.15], "max": [0.3, 1.3, 0.15]}],
+           "extensions": {"VRMC_vrm": {"humanoid": {"humanBones": {
+               "hips": {"node": 1}, "spine": {"node": 2},
+               "leftUpperLeg": {"node": 3}, "leftLowerLeg": {"node": 4}, "leftFoot": {"node": 6},
+               "rightUpperLeg": {"node": 5}, "rightLowerLeg": {"node": 7}, "rightFoot": {"node": 8}}}}}}
+    body = json.dumps(doc).encode()
+    body += b" " * (-len(body) % 4)
+    blob = (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body))
+            + struct.pack("<II", len(body), 0x4E4F534A) + body)
+    r = client.post("/library/import", json={"items": [
+        {"filename": "legs.vrm", "data_b64": base64.b64encode(blob).decode(), "hints": {}}]}).json()
+    return client.post("/place_cached_asset",
+                       json={"id": r["results"][0]["id"], "name": "legs"}).json()["id"]
+
+
+def test_a_pose_that_needs_something_from_the_world_says_so(srv, client, tmp_path):
+    """`sit` makes the shape of sitting. Solving against an actual chair is tier 3 and is not built, so
+    the reply says what is missing instead of leaving a figure seated on air."""
+    eid = _place_legged_figure(client)
+    r = client.post("/figure", json={"id": eid, "named": "sit"}).json()
+    assert r["ok"] is True and "seat" in r["needs"]
+
+
+def test_a_named_leg_pose_reaches_every_leg_bone_the_figure_has(srv, client, tmp_path):
+    eid = _place_legged_figure(client)
+    r = client.post("/figure", json={"id": eid, "named": "kneel"}).json()
+    assert r["ok"] is True
+    stored = json.loads(_ent(client, eid)["components"]["figure"]["pose"])
+    assert {"leftUpperLeg", "leftLowerLeg", "rightUpperLeg", "rightLowerLeg", "spine"} <= set(stored)
+    assert stored["leftLowerLeg"] == {"bend": 90.0}
+
+
+def test_an_unknown_pose_name_lists_the_real_ones(srv, client, tmp_path):
+    eid = _place_figure(srv, client, tmp_path)
+    r = client.post("/figure", json={"id": eid, "named": "levitate"}).json()
+    assert r["ok"] is False and "kneel" in r["error"]
+
+
 def test_a_pose_is_stored_in_the_terms_it_was_asked_for(srv, client, tmp_path):
     eid = _place_figure(srv, client, tmp_path)
     r = client.post("/figure", json={"id": eid, "pose": {"leftUpperArm": {"bend": 60}}}).json()

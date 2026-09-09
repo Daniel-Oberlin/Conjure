@@ -102,9 +102,99 @@ the deeper fix for "loses its colouring" whatever the reason the id churned, and
 symptom cosmetic instead of destructive. The load gate removes the most common *cause* of a missed match; it
 does not change what a miss costs.
 
-**Was this ever observed away from session start?** Every instance in the record is within ~350 ms of
-`space.enter`. If it only ever happens at entry, the load gate closes it completely. If it recurs
-mid-session, the tolerance question comes back and the evidence will be cleaner for having eliminated this.
+~~**Was this ever observed away from session start?**~~ **Answered 2026-09-09: yes, and the load gate does
+not close it.** See *Recurrence* below — the destructive captures arrived **4 s before `space.enter` and
+23 s before selection completed**, so the gate never had a chance to hold them, and it recurred twice more
+mid-session. The tolerance question is back.
+
+## Recurrence 2026-09-09 — a capture accepted before the space was selected
+
+Same symptom, new path, and it cost every stored surface its styling: **all 59 are `#888`** — the 28
+re-minted ones *and* the 31 that survived. Pink walls, cream tables, a maroon bed, green couches,
+lightyellow shelves, a `#3B1A08` floor, black doors, darkblue windows, all gone to default grey.
+
+**The load gate did its job.** That is the first thing to establish, because it is the obvious suspect:
+
+```
+07:24:53.635 space.enter    {"role":"owner","ref":57,"seed":57,"planes":4}
+07:24:53.635 space.loading  {"planes":4,"expect":57}
+07:24:53.636 space.loaded   {"planes":57,"expect":57,"held":1}
+```
+
+Entered on 4 of 57 planes, `held:1`, loaded 57/57. Exactly as designed. **It was simply too late**, and
+the reason is the ordering:
+
+| Time | Event |
+|---|---|
+| 07:15:35 | `[select] space unclaimed (last AR holder left) — re-selection re-opened` |
+| **07:24:49** | `[room] accept surfaces=86 changed=38 seed_ops=38` — 29 NEW ids minted beside the existing 57 |
+| 07:24:51 | `[room] accept surfaces=86 changed=1` |
+| **07:24:53** | `[room] accept surfaces=59 seed_ops=25` — the 25 originals pruned, every one `styled:true` |
+| 07:24:53 | `space.enter` → the load gate holds → loaded 57/57 |
+| **07:25:12** | `[select] user='daniel' MATCHED daniel/space-3` — selection completes, 23 s after the damage |
+
+So a client that had **not yet selected a space** was accepted as room authority and allowed to rewrite
+the seed. With no established space at that moment there was nothing to match against in the right
+frame, so the matcher missed everything, minted a parallel set of ids (`real_ceiling_57` …
+`real_door_85`), and pruned the originals with their materials.
+
+**The `dist` values prove it is not alignment.** A frame solved slightly wrong would miss everything by a
+similar margin. Instead:
+
+```
+churn.miss real_wall_21     why=matcher dist=1.23   ← 1.2 m out
+churn.miss real_wall_art_83 why=matcher dist=0.003  ← 3 mm out, and still a miss
+```
+
+A 3 mm miss cannot be a tolerance problem. Those surfaces were not *compared and rejected*; there was no
+reference to compare them against.
+
+**It then recurred twice**, both mid-session and both following the same `space unclaimed` line — 07:25:20
+→ churn at 07:26:43, and again at 07:30:45 — each cycle costing a couple more surfaces as `wall_21`,
+`wall_39` and `wall_art_83` bounced through prune/regain. Three `churn.restyle_lost` events name the
+survivors that came back grey.
+
+**Root cause: `/space/capture` has no selection gate.** It is in `_OWNER_ONLY_PATHS`, so *who* is asking
+is checked; nothing checks whether they have established *where they are*.
+
+Precisely what reset at 07:15:35 was **occupancy**, not the space — `active_space` was still
+`daniel/space-3`. `_unclaim` cleared the per-client commit guard so a returning headset must vote again.
+So the returning client had not yet aligned itself to the stored geometry, and its capture arrived in an
+unaligned frame. A check of the form "is a space established?" would **not** have caught this: one was. The load gate is client-side and
+guards entering AR, which is only one of the ways in.
+
+Candidate fixes, cheapest first:
+
+- **Merge, don't replace, until someone has voted.** Server-only, and the smallest thing that would have
+  prevented every deletion here. `_unclaim` already clears `_selected_cids` when the last holder leaves
+  (`server.py:911`) — set a flag in the same place, and while it is set treat `/space/capture` as a merge:
+  add new surfaces, delete none. The capture still lands, nothing is lost, and the flag clears on the
+  first `/space/select` commit.
+
+- **Gate the capture per client** — the complete version, and **not** the "few lines" it first looks
+  like. The two endpoints identify the client differently: `/space/select` sends `cid: "c_…"` (a
+  page-level id, `conjure-client.js:894`) while `/space/capture` sends `client_id: "hs_…"`
+  (`conjure-client.js:1563`), which is why the log reads `client=hs_3y06g2`. They cannot be compared, so
+  this needs the capture to carry the same id the vote used — a client change plus a server check,
+  shipping together, with a **"missing id ⇒ merge, don't replace"** fallback so a stale page is degraded
+  rather than permanently blocked. Worth it eventually because co-location needs per-client admission:
+  one headset can be admitted while another is refused.
+
+  *Not* worth reaching for first. Note also that the client hard-codes `replace: true` on every capture
+  (`conjure-client.js:3109`), so every capture is destructive by default — which is why the guard below
+  earns its place independently of either of these.
+- **Refuse a wholesale prune** — the first guard proposed under [*An empty capture wipes a space's
+  geometry*](../backlogs/spaces.md): a post that would remove >50% of the stored set is far more likely a
+  bug than a fact. Here it would have rejected the 25-surface prune outright.
+- **Make styling survive a prune** — the deeper fix in *Still open* above, and the one that turns this
+  class of event from destructive into cosmetic. This recurrence is the second time it has been the
+  difference between an annoyance and lost work.
+
+**Recovery, partial.** There are no `users.bak*` snapshots, but the geometry log recorded the colour on
+every prune, so **37 old ids have a non-default colour on record** (9 pink walls, 3 darkblue windows, 3
+black doors, a `#3B1A08` floor, and so on). Re-applying them needs an old-id → new-id pairing, which is
+derivable from semantic plus position since the surfaces are physically unchanged. Whether that beats
+re-styling by voice is a judgement call — the styling was authored conversationally in the first place.
 
 ## Fixes shipped
 

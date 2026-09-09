@@ -83,6 +83,62 @@ re-homed to a real space once one exists. **No such code exists** — no re-home
 handler. Today a void world stays void; the user has to create a new world once a space is established,
 and anything they built in the void world does not follow.
 
+**And at a new location that escape does not exist either** (found on device 2026-09-06). The advice
+above assumes a space *is* established. In a void world it cannot be, because the three rules compose
+into a closed loop:
+
+| Rule | Where | Effect while `active_space == VOID` |
+|---|---|---|
+| a deliberately-void world is not relocated | `server.py:2248`, [`specs/spaces.md §4.3`](../specs/spaces.md) | `/space/select` claims and **returns before** both the match path and the "somewhere new" mint |
+| a new world inherits the live space | `_space_for_new_world`, `server.py:2971` ([§4.2](../specs/spaces.md)) | every world minted is stamped `<void>` too |
+| boot restores the last active world | `_boot_world`, `server.py:387` | restarting comes back into the same void world |
+
+So: the vote will not mint, creating a world cannot escape, and restarting does not help. A user standing
+in a freshly scanned room, in a void world, **has no route to a world bound to that space.** Observed with
+15 worlds on disk, every one either `<void>` or bound to the *previous* location's space, and not one with
+an absent `space` key — which is the single state (`UNSET`) that would have relocated them.
+
+Each rule is individually right. §4.3 argues the first one carefully and correctly: resolving *which*
+space you are in and *moving* you to its world are different things, and only the first is wanted when
+you chose to be nowhere. The gap is that "claim but stay put" was written for **returning** to a known
+space in an outdoor world, and it also fires for **arriving somewhere entirely new** — where there is no
+world to stay in that has any relationship to where you are standing.
+
+Candidate fixes, cheapest first:
+
+- **Let the void branch still mint on no-match**, while keeping "do not relocate". Claiming a space you
+  have never seen before and minting the world *beside* it is not the same as being dragged out of an
+  outdoor world into your living room. The user stays put; a world bound to that space now exists to
+  switch to.
+- **Say so.** The notice is *"You're in a world with no room — staying put."* It is accurate and it hides
+  the interesting half: that this place is unknown and nothing here can hold it. Naming that would have
+  saved the whole diagnosis.
+- **A re-home endpoint** — the original entry above. Solves this too, and more.
+
+### A space minted before the room is scanned is born empty, and can never match again
+
+Establish at a new location *before* capturing anything and the "somewhere new" path mints a
+geo-stamped `space-N` from a vote that had nothing to vote with. The record is written with
+**`surfaces: []` and `boundary: []`**, and that is terminal: stage 2 is a coverage vote against a
+candidate's constellation, so a space with no constellation can never be matched by any later visit,
+however well scanned. It also keeps being returned by the `/geolocation` prefilter, so it squats the geo
+slot at that address.
+
+Observed 2026-09-06: arrived somewhere new, used the server in AR, *then* scanned the rooms. Left
+`space-2.json` with 0 surfaces, 0 boundary, `last_world: "space-2"` (not a world id — worth a look on its
+own) and `public: true`, while every subsequent scan went into the live void world's entities as
+`meta.real` and was never promoted, because `_save_active` had no space to decompose into.
+
+This is the mirror image of [*An empty capture wipes a space's geometry*](#an-empty-capture-wipes-a-spaces-geometry-with-no-floor-under-it)
+— that one destroys a good record with an empty post, this one creates a permanently useless record from
+an empty vote — and the guards want to be the same shape:
+
+- **Do not mint a space with no constellation.** If the vote had nothing to compare, the honest outcome is
+  "I cannot tell where you are yet, scan the room" rather than a stub that forecloses the answer.
+- **Or make an empty space adoptable**: a candidate with zero surfaces is not a rival to match against, so
+  the next capture in its geo neighbourhood could fill it in rather than mint a sibling.
+- **Prune empty spaces**, since they can only ever be noise in the candidate set.
+
 ### A missing caller header is treated as the owner
 
 The owner-gate middleware (`server.py:609`) reads `X-Conjure-User` and 403s a non-owner, but a

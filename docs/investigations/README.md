@@ -37,7 +37,10 @@ thing. Say what would change your mind.
 | [`wall-art-behind-wall.md`](./wall-art-behind-wall.md) | a wall-art image intermittently lands *behind* its wall | Fix A landed; **Fix B tried and rejected** — do not retry without new evidence |
 | [`stt-accuracy.md`](./stt-accuracy.md) | speech-to-text gets words wrong — is it the recognizer or the microphone? | model fix shipped (`base` → `small.en`, measured); **four options rejected**, two by measurement; mic-vs-model still open pending a real-audio corpus |
 | [`raised-floor.md`](./raised-floor.md) | a room's floor renders inches above the real one, on and off for days | cause established — the Quest anchors that room's stored entity high; three hypotheses **killed by measurement**, and a re-scan does not clear it. **Four correction attempts, all reverted** — the work sits unmerged on `feat/fix-floating-rooms` with a resume guide |
-| [`surface-churn.md`](./surface-churn.md) | surfaces drop out and come back without their colour | cause found and **fixed**: entering AR before the room finished loading gave a frame solved from a fraction of the geometry, ~17 cm out, so walls were not recognised and the originals pruned with their materials. Two alternative fixes **rejected with the evidence that would justify retrying** |
+| [`surface-churn.md`](./surface-churn.md) | surfaces drop out and come back without their colour | first cause found and **fixed** (entering AR on a partial room → a frame ~17 cm out → originals pruned with their materials; the load gate). **Reopened 2026-09-09**: a second path reaches the same symptom — `/space/capture` accepts a destructive capture from a client that has not selected a space yet, so the gate never sees it. Cost a whole room's styling |
+
+| [`figures-frame-rate.md`](./figures-frame-rate.md) | ~32 fps sustained with three figures in the room, on a 90 Hz display | **opened 2026-09-09**, one measurement. Distinct from `pops-and-jitters` (that one is *rare* drops on a healthy session; this is chronic, and *worse standing still than walking*). Cause unknown; the empty-room run splits the theory table |
+
 
 ## Related
 

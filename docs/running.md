@@ -231,6 +231,26 @@ Next session: server → `adb reverse` → browser. 3A is permanent.
 | Page loads but **blank / no 3D** | Quest has no Wi-Fi internet → can't fetch A-Frame from the CDN |
 | A black grid room and nothing else | That's the starter world rendering correctly — see Part 2 |
 | Cube doesn't appear on `send_patch` | Server not running, or venv not activated in that terminal |
+| **Some content renders and some does not — in one browser but not another** | A **stale cached page**. Hard-reload (⌘⇧R / Ctrl-Shift-R) before investigating anything else. See below — this is the one that wastes the most time |
+
+### Stale client code, and why it does not look like stale client code
+
+**Hard-reload before diagnosing any rendering difference between two clients.** The server stamps the
+script URL with the JS mtime (`?v=`), and that is still not enough: a browser will run cached client
+JS across an ordinary reload, and the Quest browser caches `/static` and even `no-store` HTML. The
+reliable ritual on the Quest is **restart the server → restart the Quest browser → reload**.
+
+The reason it costs so much time is that the symptom is **selective, not total**. Measured 2026-09-08:
+figures were visible in the headset and invisible in the Mac browser, while images on walls and every
+room surface rendered correctly in both. Everything about that says "something is wrong with those
+specific models" — and the server was clean on every check it is possible to make from outside a
+browser: the asset served `200 model/gltf-binary` at full length, the GLB was byte-identical to source
+with consistent chunk lengths, materials and textures were sound, and every mesh node was reachable in
+the scene graph. A hard reload fixed it.
+
+So the rule is ordering, not cleverness: **when two clients disagree about what renders, the difference
+is in the clients until proven otherwise.** Reload first; it costs five seconds and rules out the most
+likely cause of a divergence.
 
 ---
 
