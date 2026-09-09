@@ -186,7 +186,7 @@ frame"*).
 | C1a | Mac browser console while posing | **no** `Unknown property \`named\`` warning | no unknown property displayed in browser console |
 | C1b | `[figure]` lines in the log | `posed N bone(s) on <id>`, N = the pose's bone count; no `NO BONE OR AXES` | I saw [figure] posed 7 bone(s) on grace_new, [figure] posed 10 bone(s) on sak, no failure mode error displayed in console |
 | C2 | `inspect_figure` on a posed figure | posed bone names — and probably **not** the pose's name (gap above) | - **Spine** — bent/adjusted (torso not fully upright) - **Both upper arms** — moved from rest (arms not at sides) - **Both upper legs** — adjusted (legs not in a neutral stand) **Both lower legs** — bent (knees have some flex)                                                                                        
-| C3 | grace `kneel` + trish `cheer` | separate log lines, distinct stored state, both correct in the headset | |
+| C3 | grace `kneel` + trish `cheer` | separate log lines, distinct stored state, both correct in the headset | **state layer passed** — saka `sit` + 5f83f1 `stand`: distinct stored state, separate `[patch]` ops each naming its own id. Render not eyeballed |
 | C4 | `PACE` before vs after posing | no change in `jit(sd)` / `late` / `drop` | |
 
 ---
