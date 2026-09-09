@@ -65,7 +65,7 @@ direction, not sinking.
 | A4 | `kneel` → `stand` → `kneel` | back to the floor, then back to the same kneel height | looks goos |
 | A5 | **Kneel her, then walk around and let the room recapture** | she stays put. *This is the real unknown:* the settle moves the MESH inside the entity while the anchor solver sets the ENTITY, so they should not fight — "should" is the word that has been wrong here repeatedly | looks good |
 | A6 | Reload the page with her kneeling | comes back kneeling, at the same height | looks good |
-| A7 | **Grab her while she is kneeling** | *predicted problem.* `grab` selects using `meta.bbox`, which is the BIND-pose box; the settle offsets the mesh inside the entity, so the selection box should sit ~43 cm off her body. If it does, that is a real finding and the same stale-box family as the original `grab` bug | |
+| A7 | **Grab her while she is kneeling** | *predicted problem.* `grab` selects using `meta.bbox`, which is the BIND-pose box; the settle offsets the mesh inside the entity, so the selection box should sit ~43 cm off her body. If it does, that is a real finding and the same stale-box family as the original `grab` bug | grabbing Grace (and others) while kneeling works as expected, though the selection box is the same as when she is standing - wide enough to accomodate arms slightly spread but not deep enough to enclose her bent legs while kneeling |
 
 ---
 
@@ -81,7 +81,7 @@ A 512-pixel clay render cannot answer this and a person standing next to her can
 | B3 | `arms-crossed` | folded, not clasped, not surrender. Took four authoring passes; the last one only just crosses the midline | again, arms folded but inside her chest |
 | B4 | On **Saka** (VRoid, rests in a T-pose): `kneel`, `wave`, `point` | arms at her sides, not straight out. This is the scarecrow fix — the defect the visual check found | kneeling her arms are straight down, they enter her hips a little; no scarecrow in any of those three poses for saka, again pointing and waving look a little more like reaching |
 | B5 | On **Trish**: `bow` | **expected to barely bow.** Her spine bones are siblings rather than a chain, so the mapped `spine` carries her waist and not her shoulders. Confirms a known rig defect on device | confirmed, she is pushing her chest forward instead of bowing |
-| B6 | `sit` on any rig | the *shape* of sitting, seated on nothing. Put a chair under her by hand and see how far off she is — that gap is the size of the tier-3 problem | |
+| B6 | `sit` on any rig | the *shape* of sitting, seated on nothing. Put a chair under her by hand and see how far off she is — that gap is the size of the tier-3 problem | Grace sits about an inch above the chair, saka sits several inches above the chair (even though she is shorter) , but the chair can be accomodated to fit by scaling with grab tool |
 
 ---
 
@@ -177,9 +177,9 @@ frame"*).
 
 | # | Do | Expect | Saw |
 |---|---|---|---|
-| C1a | Mac browser console while posing | **no** `Unknown property \`named\`` warning | |
-| C1b | `[figure]` lines in the log | `posed N bone(s) on <id>`, N = the pose's bone count; no `NO BONE OR AXES` | |
-| C2 | `inspect_figure` on a posed figure | posed bone names — and probably **not** the pose's name (gap above) | |
+| C1a | Mac browser console while posing | **no** `Unknown property \`named\`` warning | no unknown property displayed in browser console |
+| C1b | `[figure]` lines in the log | `posed N bone(s) on <id>`, N = the pose's bone count; no `NO BONE OR AXES` | I saw [figure] posed 7 bone(s) on grace_new, [figure] posed 10 bone(s) on sak, no failure mode error displayed in console |
+| C2 | `inspect_figure` on a posed figure | posed bone names — and probably **not** the pose's name (gap above) | - **Spine** — bent/adjusted (torso not fully upright) - **Both upper arms** — moved from rest (arms not at sides) - **Both upper legs** — adjusted (legs not in a neutral stand) **Both lower legs** — bent (knees have some flex)                                                                                        
 | C3 | grace `kneel` + trish `cheer` | separate log lines, distinct stored state, both correct in the headset | |
 | C4 | `PACE` before vs after posing | no change in `jit(sd)` / `late` / `drop` | |
 
