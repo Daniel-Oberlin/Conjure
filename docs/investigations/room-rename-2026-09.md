@@ -244,3 +244,48 @@ It means the *space* with no figures in it, so by the rule it should move. Left 
 condition being measured, and a merge is the wrong place to smuggle in a judgement call about someone
 else's output. No recorded measurement references the label, so it is free to change whenever it is decided.
 
+## The docs prose pass (2026-09-09, post-merge)
+
+Read, not swept — 450 occurrences across 29 files, every one classified. **119 changed; 331 stayed.**
+
+The majority were already right, and several are *more* right once rooms are a modelled unit: room mics and
+shared room devices, "several people in one room", room cross-talk, room-scale walking, "the wrong room's
+ceiling", "two people in one room see the same campfire", "59 surfaces, two rooms", the Zork rooms, Meta's
+Room Setup, and the leeway sense.
+
+Two results worth keeping:
+
+- **`vision.md` needed nothing** (19 occurrences) — it is all room mics, co-located people and room-scale
+  movement.
+- **`raised-floor.md` needed nothing** (58 occurrences) — it is entirely about genuine physical rooms:
+  bedroom, living room and kitchen; one room's stored entity anchored high; room membership; which room is
+  wrong. *The document that motivated the rooms work was already written in the vocabulary the rooms work
+  introduces* — a decent sign the concept is real rather than imposed.
+
+Likewise 91 of `backlogs/spaces-geometry.md`'s 137 are inside the rooms plan, correct by construction.
+
+### The pattern the pass actually exposed: docs quote code by value
+
+Ten citations had gone stale the moment the code moved, in six files:
+
+| Stale citation | Cited |
+|---|---|
+| *"You're in a world with no room — staying put."* | a broadcast string |
+| `[room] accept …` ×4 | `_slog` output |
+| *"models land INSIDE the room"* ×2 | `query_room`'s docstring |
+| `chars:{prompt, room, …}` | the `context_stats` dict key |
+| `origin` (`"room"`, …) | the patch origin |
+| *"on the golden room"* ×2 | the `golden-room.json` fixture |
+| `query_space reported "no room"` | the tool's own output |
+
+None is a rename problem as such — each is a doc quoting code **by value** rather than by reference, which
+goes stale whenever the value moves. Two were caught by another session reading its own merge; the rest only
+by reading every line. Worth knowing next time a user-visible string changes: **grep the docs for the string
+itself, not just for the identifier.**
+
+### Status
+
+The campaign is complete for identifiers, model-facing prose, and docs. The residue is ~460 in code comments
+and tests, where the same reading applies and much is already correct (the synthetic single-room fixtures
+alone are most of the test count). It blocks nothing.
+
