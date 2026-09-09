@@ -242,7 +242,7 @@ reliable ritual on the Quest is **restart the server → restart the Quest brows
 
 The reason it costs so much time is that the symptom is **selective, not total**. Measured 2026-09-08:
 figures were visible in the headset and invisible in the Mac browser, while images on walls and every
-room surface rendered correctly in both. Everything about that says "something is wrong with those
+real surface rendered correctly in both. Everything about that says "something is wrong with those
 specific models" — and the server was clean on every check it is possible to make from outside a
 browser: the asset served `200 model/gltf-binary` at full length, the GLB was byte-identical to source
 with consistent chunk lengths, materials and textures were sound, and every mesh node was reachable in

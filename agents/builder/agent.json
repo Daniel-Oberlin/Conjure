@@ -10,10 +10,10 @@
       "access": "all",
       "tools": [
         "query_world",
-        "query_room",
+        "query_space",
         "view_relative",
         "set_immersion",
-        "realign_room",
+        "realign_space",
         "reset_world",
         "show_surface",
         "texture_surface",
@@ -62,7 +62,7 @@
     }
   ],
   "context": [
-    "room://current",
+    "space://current",
     "world://current",
     "dynamics://available"
   ],

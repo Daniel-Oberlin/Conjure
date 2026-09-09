@@ -22,7 +22,7 @@ import path from "path";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(path.join(here, "..", "package.json"));
 const THREE = require("three");
-const RS = require(path.join(here, "..", "client", "room-snap.js"));
+const RS = require(path.join(here, "..", "client", "space-snap.js"));
 const WM = require(path.join(here, "..", "client", "world-model.js"));
 const fs = require("fs");
 const os = require("os");

@@ -127,13 +127,13 @@ the reason is the ordering:
 | Time | Event |
 |---|---|
 | 07:15:35 | `[select] space unclaimed (last AR holder left) — re-selection re-opened` |
-| **07:24:49** | `[room] accept surfaces=86 changed=38 seed_ops=38` — 29 NEW ids minted beside the existing 57 |
-| 07:24:51 | `[room] accept surfaces=86 changed=1` |
-| **07:24:53** | `[room] accept surfaces=59 seed_ops=25` — the 25 originals pruned, every one `styled:true` |
+| **07:24:49** | `[space] accept surfaces=86 changed=38 seed_ops=38` — 29 NEW ids minted beside the existing 57 |
+| 07:24:51 | `[space] accept surfaces=86 changed=1` |
+| **07:24:53** | `[space] accept surfaces=59 seed_ops=25` — the 25 originals pruned, every one `styled:true` |
 | 07:24:53 | `space.enter` → the load gate holds → loaded 57/57 |
 | **07:25:12** | `[select] user='daniel' MATCHED daniel/space-3` — selection completes, 23 s after the damage |
 
-So a client that had **not yet selected a space** was accepted as room authority and allowed to rewrite
+So a client that had **not yet selected a space** was accepted as capture authority and allowed to rewrite
 the seed. With no established space at that moment there was nothing to match against in the right
 frame, so the matcher missed everything, minted a parallel set of ids (`real_ceiling_57` …
 `real_door_85`), and pruned the originals with their materials.

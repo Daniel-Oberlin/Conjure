@@ -51,7 +51,7 @@ _ALLOWED_TOOLS: Optional[set[str]] = None if _raw_tools is None else set(filter(
 _ACCESS = os.environ.get("CONJURE_ACCESS", "all")       # "all" | "read"
 # Read-only tools: everything else is treated as mutating (safe default — a NEW tool is denied to a
 # read-only agent until it's classified here). `access: "read"` allows only these.
-_READONLY_TOOLS = {"query_world", "query_room", "view_relative", "list_worlds",
+_READONLY_TOOLS = {"query_world", "query_space", "view_relative", "list_worlds",
                    "list_image_generators", "search_library", "query_assets"}
 
 
@@ -162,13 +162,13 @@ async def _get(path: str, timeout: float = 10.0) -> dict:
 def _entity_line(e: dict) -> str:
     """'<id>: <what it is> at <pos>' — shared by query_world and the world://current resource.
 
-    Neither caller passes a REAL room surface: `world://current` filters them out and `query_world`
+    Neither caller passes a REAL surface: `world://current` filters them out and `query_world`
     collapses them (`_real_surfaces_line`). The guard below only keeps a stray third caller honest."""
     comps = e.get("components", {})
     meta = e.get("meta", {})
     pos = e.get("transform", {}).get("position")
     if meta.get("real"):
-        desc = f"REAL {meta.get('semantic', 'surface')} (room surface — see the room summary)"
+        desc = f"REAL {meta.get('semantic', 'surface')} (real surface — see the space summary)"
     elif "gltf-model" in comps:
         aid = meta.get("asset_id") or comps["gltf-model"].rsplit("/", 1)[-1]
         desc = f"model {meta.get('title', '?')!r} [asset {aid}]"
@@ -199,38 +199,38 @@ def _env_line(env: dict) -> str:
 
 
 def _real_surfaces_line(reals: list[dict]) -> str:
-    """The single line every REAL room surface collapses to in a world dump.
+    """The single line every REAL surface collapses to in a world dump.
 
-    A dump used to spend one line each on these, which in a captured room is most of it — measured at
+    A dump used to spend one line each on these, which in a captured space is most of it — measured at
     59 of 73 entities and **87% of the characters**, for lines carrying a semantic label, a position,
     and nothing else. The cost wasn't the worst of it: those lines READ as complete. Every entity in
     the dump has the same `id: description at pos` shape, so "this floor has no colour" and "this line
     doesn't show colour" are indistinguishable — and an agent that wants a colour concludes the world
-    doesn't store one. It does: `room://current` carries every surface's id, position, colour and
+    doesn't store one. It does: `space://current` carries every surface's id, position, colour and
     visibility, and it's already in the prompt of any agent that cares (observed 2026-08-26 — the
     director read this dump, saw no colours, and reported that surface colours aren't stored, with the
     real answer sitting in its own context).
 
-    So: a count, the per-kind tally the room summary can't give without counting 59 lines, and a
+    So: a count, the per-kind tally the space summary can't give without counting 59 lines, and a
     pointer to where the detail lives. One line can't be mistaken for a full description."""
     kinds: dict[str, int] = {}
     for e in reals:
         k = (e.get("meta") or {}).get("semantic") or "surface"
         kinds[k] = kinds.get(k, 0) + 1
     tally = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0])))
-    return (f"{len(reals)} REAL room surfaces ({tally}) — NOT listed here. Each one's id, position, "
-            f"colour and visibility are in the room summary, already in your context. Restyle/hide/"
+    return (f"{len(reals)} REAL surfaces ({tally}) — NOT listed here. Each one's id, position, "
+            f"colour and visibility are in the space summary, already in your context. Restyle/hide/"
             f"mount them; don't move or remove them.")
 
 
 @mcp.tool()
 async def query_world() -> str:
-    """Full dump of the PLACED scene (every non-room entity + the environment). RARELY needed — your
+    """Full dump of the PLACED scene (every non-surface entity + the environment). RARELY needed — your
     placed objects are already in the Live context each turn; use this only for detail the summary
     omits, or a very large scene.
 
-    Real room surfaces are **summarised in one line, not listed** — their per-surface detail (colour,
-    visibility, position) is in the room summary, which is richer than anything this dump ever showed
+    Real surfaces are **summarised in one line, not listed** — their per-surface detail (colour,
+    visibility, position) is in the space summary, which is richer than anything this dump ever showed
     for them."""
     doc = await _get("/world")
     ents = doc["entities"]
@@ -243,10 +243,10 @@ async def query_world() -> str:
     return "\n".join(lines)
 
 
-# --- Room model (AR / scene understanding) — see docs/specs/worlds-surfaces.md -----------------------------
+# --- Space model (AR / scene understanding) — see docs/specs/worlds-surfaces.md -----------------------------
 
 _IMMERSION = {
-    "virtual_room": {"passthrough": False, "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": True},
+    "virtual_space": {"passthrough": False, "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": True},
     "ar":           {"passthrough": True,  "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": False},
     "mixed":        {"passthrough": True,  "spacePresentation.active": True},
     "authored":     {"passthrough": False, "spacePresentation.active": True, "spacePresentation.defaultSurfaceVisible": False},
@@ -254,17 +254,17 @@ _IMMERSION = {
 }
 
 
-async def _room_summary() -> str:
-    """Text summary of the real room: surfaces (by semantic + short id) + the boundary. Shared by the
-    query_room tool and the `room://current` resource (which agents inject into their prompt each turn,
-    so they needn't call query_room just to see surfaces)."""
+async def _space_summary() -> str:
+    """Text summary of the real space: surfaces (by semantic + short id) + the boundary. Shared by the
+    query_space tool and the `space://current` resource (which agents inject into their prompt each turn,
+    so they needn't call query_space just to see surfaces)."""
     doc = await _get("/world")
     env = doc.get("environment", {})
     pres = env.get("spacePresentation", {})
     reals = [e for e in doc["entities"] if e.get("meta", {}).get("real")]
     if not pres.get("active") or not reals:
-        return "No room model yet — the headset hasn't shared one (capture the room, or work in VR)."
-    lines = [f"Room: {len(reals)} surfaces · passthrough={env.get('passthrough', False)} · "
+        return "No space model yet — the headset hasn't shared one (capture the space, or work in VR)."
+    lines = [f"Space: {len(reals)} surfaces · passthrough={env.get('passthrough', False)} · "
              f"surfaces-visible-by-default={pres.get('defaultSurfaceVisible', False)}"]
     b = env.get("boundary")
     if b:
@@ -279,27 +279,27 @@ async def _room_summary() -> str:
 
 
 @mcp.tool()
-async def query_room() -> str:
-    """Summarize the user's real room: surfaces (by semantic label) + the boundary. Read this before
-    placing things (so models land INSIDE the room, not through a wall) or to pick a surface to mount
+async def query_space() -> str:
+    """Summarize the user's real space: surfaces (by semantic label) + the boundary. Read this before
+    placing things (so models land INSIDE the space, not through a wall) or to pick a surface to mount
     on / restyle. Real surfaces also appear in query_world as REAL entities — restyle or hide them
     with update_entity's color, or show_surface; don't move or remove them.
     """
-    return await _room_summary()
+    return await _space_summary()
 
 
-@mcp.resource("room://current")
-async def room_resource() -> str:
-    """The live real-room summary — injected each turn into agents that list `room://current` in their
-    context (so the builder sees the room without a query_room round-trip)."""
-    return await _room_summary()
+@mcp.resource("space://current")
+async def space_resource() -> str:
+    """The live real-space summary — injected each turn into agents that list `space://current` in their
+    context (so the builder sees the space without a query_space round-trip)."""
+    return await _space_summary()
 
 
 @mcp.resource("world://current")
 async def world_resource() -> str:
     """Live summary of the virtual scene you've built — PLACED objects (models/images) plus the
     ENVIRONMENT (skybox / sky color / fog). Injected each turn so the builder references them without a
-    query_world round-trip. Excludes scaffold and real surfaces (those are in room://current). The skybox
+    query_world round-trip. Excludes scaffold and real surfaces (those are in space://current). The skybox
     lives in the environment, not as an object, so it's reported on its own line — check here before
     telling the user there's no skybox to change/remove."""
     doc = await _get("/world")
@@ -330,12 +330,14 @@ async def dynamics_resource() -> str:
 
 @mcp.tool()
 async def set_immersion(mode: str) -> str:
-    """Set how much real room vs. virtual the user sees:
-    - virtual_room: passthrough off, the room's surfaces rendered (a virtual copy of the room).
-    - ar: passthrough on, real room visible, surfaces hidden (mount/occlude against them).
-    - mixed: passthrough on; then show_surface to reveal specific surfaces (e.g. a virtual ceiling).
-    - authored: passthrough off, captured room hidden — use after build_room to show a built room.
-    - vr_unbounded: ignore the room entirely; the original full synthetic VR space.
+    """Set how much of the real space vs. virtual the user sees:
+    - virtual_space: the captured surfaces are RENDERED — a recolourable virtual copy of the space.
+    - ar: the captured surfaces are hidden; the real space shows through (mount/occlude against them).
+    - mixed: leaves surface visibility alone, so show_surface composes the blend (e.g. a virtual ceiling
+      over real walls).
+    - authored: captured surfaces hidden, the space still in effect — intended for replacement geometry
+      built to the real footprint. No tool builds that geometry yet, so today this matches `ar`.
+    - vr_unbounded: ignore the space entirely; the original full synthetic VR environment.
     """
     env = _IMMERSION.get(mode)
     if env is None:
@@ -345,21 +347,21 @@ async def set_immersion(mode: str) -> str:
 
 
 @mcp.tool()
-async def realign_room() -> str:
-    """Re-align the virtual room to the real room. Use when the user says the room looks misaligned,
+async def realign_space() -> str:
+    """Re-align the virtual surfaces to the real world. Use when the user says things look misaligned,
     drifted, or shifted — e.g. after recentering with the Meta button, putting the headset down, or
-    reloading. Re-captures the room at the current tracking origin. Only affects a headset in AR."""
+    reloading. Re-captures the space at the current tracking origin. Only affects a headset in AR."""
     out = await _post("/space/realign", {})
     if not out.get("ok"):
         return f"Couldn't realign: {_reason(out)}."
-    return "Re-aligning the room to your real space — look around for a moment."
+    return "Re-aligning the virtual surfaces to your real space — look around for a moment."
 
 
 @mcp.tool()
 async def reset_world() -> str:
     """Wipe the world back to the empty holodeck and start over — removes ALL placed objects, images,
-    skybox, primitives, and any captured room. Use when the user asks to reset, clear everything, or
-    start fresh. (A captured room re-appears on its own once they're back in AR.)"""
+    skybox, primitives, and any captured space. Use when the user asks to reset, clear everything, or
+    start fresh. (A captured space re-appears on its own once they're back in AR.)"""
     out = await _post("/reset", {})
     if not out.get("ok"):
         return f"Couldn't reset: {_reason(out)}."
@@ -390,7 +392,7 @@ def _reason(out: dict) -> str:
 
 
 async def _is_real_surface(id: str) -> bool:
-    """Is this entity id a captured room surface? Keyed on `meta.real`, the authoritative marker — the
+    """Is this entity id a captured real surface? Keyed on `meta.real`, the authoritative marker — the
     `real_…` id prefix is a convention, not a guarantee. Returns False if the world can't be read: a
     lookup failure must not turn an ordinary entity update into a no-op."""
     try:
@@ -402,7 +404,7 @@ async def _is_real_surface(id: str) -> bool:
 
 @mcp.tool()
 async def show_surface(target: str, visible: bool = True) -> str:
-    """Show or hide real room surface(s) as virtual geometry. target: a surface id ('real_wall_1'),
+    """Show or hide real surface(s) as virtual geometry. target: a surface id ('real_wall_1'),
     a semantic label ('wall', 'ceiling', 'floor', …), or 'all'. Use to build mixed real+virtual
     views (e.g. show only the ceiling)."""
     doc = await _get("/world")
@@ -412,7 +414,7 @@ async def show_surface(target: str, visible: bool = True) -> str:
                if t == "all" or e["id"] == target or e.get("meta", {}).get("semantic") == t
                or str(e.get("meta", {}).get("friendly_id")) == target]
     if not targets:
-        return f"No room surface matches {target!r} (try query_room)."
+        return f"No real surface matches {target!r} (try query_space)."
     await _post_patch([{"op": "update", "id": e["id"], "set": {"components.material.visible": visible}}
                        for e in targets])
     return f"{'Showed' if visible else 'Hid'} {len(targets)} surface(s) matching {target!r}."
@@ -420,7 +422,7 @@ async def show_surface(target: str, visible: bool = True) -> str:
 
 @mcp.tool()
 async def texture_surface(target: str, image_id: str, repeat: Optional[float] = None) -> str:
-    """Map a procured image onto room surface(s) — e.g. a starfield on the ceiling, grass on the
+    """Map a procured image onto real surface(s) — e.g. a starfield on the ceiling, grass on the
     floor, a mural on a wall. First call generate_image, then pass its image_id here.
 
     target: a surface id ('real_floor'), a semantic label ('floor', 'ceiling', 'wall'), or 'all'.
@@ -435,7 +437,7 @@ async def texture_surface(target: str, image_id: str, repeat: Optional[float] = 
 
 @mcp.tool()
 async def style_surface(target: str, color: Optional[str] = None, opacity: Optional[float] = None) -> str:
-    """Color and/or set the transparency of room surface(s) — e.g. 'make the walls semi-transparent
+    """Color and/or set the transparency of real surface(s) — e.g. 'make the walls semi-transparent
     blue', 'make the ceiling glass', 'paint the floor red'.
 
     target: a surface id ('real_wall_3'), a semantic label ('wall'/'floor'/'ceiling'), or 'all'.
@@ -450,7 +452,7 @@ async def style_surface(target: str, color: Optional[str] = None, opacity: Optio
 
 @mcp.tool()
 async def show_annotations(on: bool = True, dimensions: bool = False) -> str:
-    """Show or hide text labels floating on each room surface — each shows its name + short id (e.g.
+    """Show or hide text labels floating on each real surface — each shows its name + short id (e.g.
     'window (12)'), which the user can reference (e.g. 'make 12 blue'). Turn on when the user wants to
     inspect/identify surfaces. dimensions: also show each surface's size (default off; turn on only if
     the user asks for sizes)."""
@@ -476,8 +478,8 @@ async def style_annotations(color: Optional[str] = None, opacity: Optional[float
 
 @mcp.tool()
 async def show_edges(on: bool = True) -> str:
-    """Show or hide the polygon outline drawn around every room surface (the bright wireframe of the
-    real room). Edges are ON by default; turn them off for a cleaner passthrough view."""
+    """Show or hide the polygon outline drawn around every real surface (the bright wireframe of the
+    real space). Edges are ON by default; turn them off for a cleaner passthrough view."""
     await _post_patch([{"op": "env", "set": {"spacePresentation.edgesVisible": on}}])
     return f"Surface edges are now {'on' if on else 'off'}."
 
@@ -828,7 +830,7 @@ async def view_relative(direction: str = "forward", distance: float = 1.0) -> st
     (default 1).
 
     Returns a world `point` you pass straight to a place tool's `position` (e.g. place_cached_asset/
-    place_image/place_asset) — DON'T hand-compute it. Also returns `surface` (the nearest room surface
+    place_image/place_asset) — DON'T hand-compute it. Also returns `surface` (the nearest real surface
     the ray hits — style/texture it by its id) and `nearby` placed objects. Needs the user connected
     with a live view (an active session)."""
     out = await _post("/view_relative", _body(direction=direction, distance=distance))
@@ -841,7 +843,7 @@ async def view_relative(direction: str = "forward", distance: float = 1.0) -> st
     lines.append(
         f"Surface that way: {s.get('semantic')} #{s.get('friendly_id')} (id {s['id']}), "
         f"{s['distance']:.2f} m away — target it by id to style/texture it." if s
-        else "No room surface that way within reach.")
+        else "No real surface that way within reach.")
     nb = out.get("nearby") or []
     if nb:
         lines.append("Nearby objects: " + ", ".join(f"{n.get('title') or n['id']} ({n['distance']:.1f} m)" for n in nb))
@@ -958,9 +960,9 @@ async def new_world(name: str, public: bool = True, outdoor: bool = False) -> st
     """Create a new, empty world and switch to it. `name` may be hierarchical to organize worlds
     ('castle-quest/dining-hall'). The new world starts from your agent's default setup. Worlds are
     PUBLIC by default (others can discover and visit them); pass public=False to create a PRIVATE world
-    only you can see and enter. Pass outdoor=True for an OUTDOOR/void world — no room geometry, just a
+    only you can see and enter. Pass outdoor=True for an OUTDOOR/void world — no space geometry, just a
     skybox + placed objects (use for 'a world set outdoors', 'floating in space', 'on a beach'); it's not
-    tied to a captured room and holds its orientation on its own."""
+    tied to a captured space and holds its orientation on its own."""
     out = await _post("/worlds/new", _body(name=name, scope=_scope(), public=public, outdoor=outdoor))
     if not out.get("ok"):
         return f"Couldn't create {name!r}: {_reason(out)}."
@@ -985,7 +987,7 @@ async def set_world_visibility(public: bool, name: Optional[str] = None) -> str:
 
 @mcp.tool()
 async def set_space_visibility(public: bool, name: Optional[str] = None) -> str:
-    """Make a physical SPACE public or private. A space is the real room your worlds are anchored in; it's
+    """Make a physical SPACE public or private. A space is the real space your worlds are anchored in; it's
     shared, so anyone co-located can join. Spaces are PUBLIC by default: any co-located user may build their
     OWN worlds in it. Set public=False to make it PRIVATE — then only you can create NEW worlds in it
     (existing worlds are unaffected; joining/viewing still follows each WORLD's visibility). Defaults to your
@@ -1173,7 +1175,7 @@ async def place_image(
 ) -> str:
     """Hang a procured image (by image_id from generate_image/edit_image/...) as a painting.
 
-    on_surface: hang it ON a real room surface — pass the surface's id ('real_wall_art_3'), its
+    on_surface: hang it ON a real surface — pass the surface's id ('real_wall_art_3'), its
         semantic+number ('wall art 18'), or just its number ('18'). The image is aligned to that
         surface (upright, parallel) and fitted INSIDE its frame automatically, keeping the picture's
         aspect ratio — USE THIS whenever the user says "put it in/on wall art N" or any specific surface
@@ -1227,7 +1229,7 @@ async def conjure_module(
         free-standing flat module faces the viewer at creation automatically (fixed, not tracking). An
         image module (e.g. a Water Picture) sizes its plane to the picture's aspect ratio by default —
         pass width/height in config only to force an exact size.
-    on_surface: mount it ON a real room surface (e.g. a Water Picture on a wall) — pass the surface's
+    on_surface: mount it ON a real surface (e.g. a Water Picture on a wall) — pass the surface's
         number or id, like place_image; it's aligned to the surface and, for an image module, fitted
         INSIDE the frame keeping the picture's aspect ratio. (Leave off for volume/ambient modules like a
         firefly swarm.)
@@ -1349,7 +1351,7 @@ async def update_entity(
     rotation: Optional[list[float]] = None,
     scale: Optional[list[float]] = None,
 ) -> str:
-    """Update an entity's color and/or transform. Only provided fields change. (For a real room
+    """Update an entity's color and/or transform. Only provided fields change. (For a real
     surface, style_surface is the direct route — this works too, but it can only recolor.)"""
     changes: dict[str, Any] = {}
     if color is not None:

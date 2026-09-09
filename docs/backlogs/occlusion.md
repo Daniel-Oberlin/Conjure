@@ -25,7 +25,7 @@ WebGL that cannot be unit-tested — every pass needs a headset round trip.
 
 ## Cheaper alternative: mesh-detection occluders
 
-Render the **`mesh-detection` captured room mesh** (walls plus furniture) as depth-only occluders. Sharp
+Render the **`mesh-detection` captured space mesh** (walls plus furniture) as depth-only occluders. Sharp
 and stable, no depth sensor, no per-frame texture wrangling — but **static only**: no hands, people, or
 moving objects. Pairs well with `hands`, which covers exactly what it cannot.
 

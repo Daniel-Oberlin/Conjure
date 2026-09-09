@@ -3,7 +3,7 @@
 // transforms and geometry (no DOM, no A-Frame) can be strict TYPE-CHECKED (npm run typecheck) and
 // unit-tested (tests/js/world-model.test.js). The A-Frame/DOM glue stays in conjure-client.js, which loads
 // this as window.WorldModel; the geometry helpers take the THREE module as their first arg (browser passes
-// AFRAME.THREE, node tests pass require('three')) — same convention as room-snap.js.
+// AFRAME.THREE, node tests pass require('three')) — same convention as space-snap.js.
 
 /**
  * @typedef {typeof import('three')} THREE_NS
@@ -335,7 +335,7 @@
    * PLUS a wall-relative anchor — and the receiving client solved that anchor against different walls
    * and teleported the object. Authoring an anchor you cannot convert back through is never right.
    *
-   * A room-less world legitimately has no basis at all; there the raw pose IS the pose.
+   * A space-less world legitimately has no basis at all; there the raw pose IS the pose.
    */
   function hasFrameBasis(fp) {
     var lp = fp && fp.local, rp = fp && fp.ref;

@@ -10,6 +10,37 @@ Items are grouped by what they block, roughly most-actionable first.
 
 ## Known problems — verified against the code
 
+### `environment.passthrough` is dead — and the director is told it every turn
+
+[`specs/worlds-surfaces.md` §3](../specs/worlds-surfaces.md) documents passthrough as **immersion axis 1**.
+It has no consumer. Traced 2026-09-07 while renaming:
+
+- written only by `set_immersion` (`mcp_server.py`), which is the sole writer of the key;
+- mirrored into the client's `presentation.passthrough` at `conjure-client.js:765`, and reset at `:950`;
+- **read nowhere.** `applyImmersion` gates on `presentation.active`, `.skybox` and `.grounded`. What
+  actually occludes passthrough is whether a sky is drawn.
+
+**It has never been set in the field.** All 14 live world docs carry `passthrough: null` — so
+`set_immersion` has never been called on any of them. The state a captured world is actually in comes from
+the capture path: `ingest_capture` writes `spacePresentation.active = True` (`server.py:3236`) and defaults
+`defaultSurfaceVisible = False` (`:3241`, *"invisible references (AR-style)"*).
+
+Two consequences:
+
+- **`ar` and `authored` are functionally identical.** Both write `active=True, defaultSurfaceVisible=False`;
+  their only stated difference is passthrough. Of five modes there are three distinct behaviours — surfaces
+  drawn (`virtual_space`), surfaces hidden (`ar` / `authored` / `mixed` leaving it alone), space off
+  (`vr_unbounded`).
+- **The space summary misinforms the director.** `mcp_server.py:266` prints
+  `passthrough={env.get('passthrough', False)}` into the per-turn summary, so the model reads
+  `passthrough=False` on every turn — while the user is in AR looking at their real space through the
+  cameras. That is a false statement injected into every prompt, and the cheapest half of this to fix.
+
+**The decision needed** is which way to resolve it: implement the axis (make something render-gating read
+it) or delete it as vestigial and let the sky gating be the honest mechanism. Deliberately *not* resolved
+inside the rename campaign — changing behaviour inside a mechanical refactor is what makes a refactor
+unreviewable. Fixing the summary line does not need that decision and could go first.
+
 ### The `authored` immersion mode has nothing to author with
 
 `set_immersion("authored")` sets passthrough off and hides the captured surfaces — the correct axes for
@@ -20,6 +51,11 @@ What it needs: extrude `boundary`'s floor polygon to the ceiling height into wal
 and style them, constrained to the real footprint so the user cannot walk into a real wall. Blocked in
 practice by the boundary defects in [`backlogs/spaces.md`](./spaces.md) — a single polygon at a
 hard-coded 2.6 m height is not a safe footprint to extrude in a multi-room space.
+
+The route to a safe footprint runs through the room-segmentation plan in
+[`backlogs/spaces-geometry.md`](./spaces-geometry.md) (*rooms as a first-class unit*), which gives the
+space a per-room partition — and therefore a per-room floor polygon and a measured ceiling height — as a
+by-product of piecewise-rigid registration.
 
 ### Only the `outline` edge layer exists
 
@@ -36,7 +72,7 @@ So "hide the internal seams but keep the outline" cannot be expressed today.
 ### Wall-art normals are inconsistent with every other surface
 
 Captured surfaces point **outward** from the space, so interior-facing content is oriented along
-`−normal`. Wall-art arrives **inward** — roughly 180° from its host wall. `_face_room` and `matchRef`
+`−normal`. Wall-art arrives **inward** — roughly 180° from its host wall. `_face_interior` and `matchRef`
 both need a coincident-flip fallback because of it, and it is the mechanism behind the recurring
 "picture lands behind its wall" bug. Documented as a case study in
 [`docs/investigations/`](../investigations/); the durable fix would be normalising the convention at

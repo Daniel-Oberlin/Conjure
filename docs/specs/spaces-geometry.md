@@ -85,7 +85,7 @@ pipeline must use it or the result is silently wrong.
 
 **Normal semantics:** captured surface normals point **outward from the space**, so the interior-facing
 direction is `−normal`. **Wall-art is the exception** — its live normal may arrive *inward*, roughly
-180° from its host wall. Consumers compensate (`_face_room`, and `matchRef`'s coincident-flip fallback)
+180° from its host wall. Consumers compensate (`_face_interior`, and `matchRef`'s coincident-flip fallback)
 rather than the convention being normalised at ingest; see
 [`backlogs/worlds-surfaces.md`](../backlogs/worlds-surfaces.md).
 
@@ -215,8 +215,8 @@ capture. The walls do not move within a session, so re-deriving buys nothing and
 derivation is a fresh opportunity to pick a different largest wall or a different centroid, and a void
 world has no passthrough geometry to contradict the result.
 
-**What the re-derivation actually cost** (measured on `fixtures/golden-room.json`, a real 45-surface
-two-room capture, for content 2.2 m from the frame origin):
+**What the re-derivation actually cost** (measured on `fixtures/golden-space.json`, a real 45-surface
+two-space capture, for content 2.2 m from the frame origin):
 
 | Capture holds | Δθ | Content moves |
 |---|---|---|
@@ -245,7 +245,7 @@ captures cannot walk the gate open one capture at a time.
 
 While the gate holds, the **previous** frame stays in force and the relocalizing fallback is deliberately
 *not* triggered: that fallback reveals passthrough, whose remedy ("step out of the play area") addresses a
-wrong *room*, and in a void world it would show you your real room instead of the void for the 1.2 s grace
+wrong *room*, and in a void world it would show you your real space instead of the void for the 1.2 s grace
 while we merely wait for planes. With no frame at all there is nothing to hold, so the original
 hold-and-mark-lost behaviour stands. `void.establish` records each establish, its wall count, and whether
 it was forced.
@@ -408,7 +408,7 @@ locally.
 
 The single exception is §6.
 
-### 5.4a The basis is per-world, and a room-less world has none
+### 5.4a The basis is per-world, and a space-less world has none
 
 Interaction modules convert a dragged pose through `ConjureFrames` (`anchorFor`, `toRef`), which read one
 cached basis: `framePlanes` — the last capture's **local** walls (F_track) and **seed** walls (F_ref).
@@ -416,7 +416,7 @@ Two rules govern it, and both exist because breaking either produced the same sy
 teleporting on release and snapping back on reload:
 
 - **It is cleared on every world switch.** `_placeContent` is its only writer and runs only when the
-  world has real surfaces, so a room-less world can neither refresh nor blank it. Left alone it carried
+  world has real surfaces, so a space-less world can neither refresh nor blank it. Left alone it carried
   the *previous* room's walls into a void world, where a grab commit authored an anchor against walls
   that world does not have, the inbound `meta.anchor` re-solved against them, and `contentPoseIsLocal`
   then claimed the local solve owned the pose — suppressing the server's correct raw transform in the
@@ -426,7 +426,7 @@ teleporting on release and snapping back on reload:
   wall-relative anchor — two descriptions of the pose that disagree, in a message where one is supposed
   to be the conversion of the other.
 
-**A room-less world still has a frame — just not a plane-relative one.** Absent a basis, the commit falls
+**A space-less world still has a frame — just not a plane-relative one.** Absent a basis, the commit falls
 back to the entity's pose *local to `#world-root`*, not to its scene-space pose. In a void world those
 differ: world-root is parked at `Tmat⁻¹` (§2, item 4), so the world-root-local pose already **is** F_ref
 and needs no per-entity conversion. The fallback is correct *because of* the canonical parking, not in
@@ -580,7 +580,7 @@ reprojects cleanly, which is why it only ever showed while walking.
 
 Four fixes, ~22 ms → ~5 ms on-main:
 
-1. **Solve off the render thread.** `register` runs in a module Web Worker (`client/room-worker.js`).
+1. **Solve off the render thread.** `register` runs in a module Web Worker (`client/space-worker.js`).
    The throttled tick posts compact planes plus the reference constellation — plain numbers, a few kB —
    and the reply drives the render continuation. The worker imports a standalone three (the math takes
    `THREE` as an argument, so a version-independent copy composes fine with A-Frame's on the main
@@ -663,7 +663,7 @@ if (posGap < POS_EPS && angGap < ANG_EPS) { snap exactly; drop from slewSet }
 **Knob:** `--pose-tau`, **default 0 = off** (snap, as before), so it A/Bs on-headset like
 `--geo-slice-ms`.
 
-**Where not to smooth.** Smoothing a single room frame (`#world-root` / `Tmat`) is wrong for a captured
+**Where not to smooth.** Smoothing a single space frame (`#world-root` / `Tmat`) is wrong for a captured
 space and is recorded here so it is not re-proposed: world-root is identity by design, each surface
 carries its own F_track pose, and `Tmat` drives no render transform — smoothing it would smooth nothing
 visible. Smoothing must be **per-surface**. The void/outdoor regime is the exception, since it genuinely
@@ -736,7 +736,7 @@ facing or plane are discarded as *other walls*, not failed matches.
 
 ### 10.2 One room's floor, without anyone noticing
 
-`heightCensus` (pure, in `room-snap.js`, called **before** `sealWalls` — sealing rewrites the very gap being
+`heightCensus` (pure, in `space-snap.js`, called **before** `sealWalls` — sealing rewrites the very gap being
 measured) reports every floor and ceiling height, every inset's height, extent and host, and every wall's gap to
 the floor **below it**, using the
 same `covers` footprint test `sealWalls` uses to decide which room a wall is in. Floor + ceiling + wall gaps
@@ -763,7 +763,7 @@ bias that is immaterial against a 10–15 cm signal and constant across sessions
 delta is exact regardless. Measured in the field (2026-08-31): **bias ~3–4 cm, repeatability ~1 cm, 1 mm
 hysteresis** returning to a spot after walking two rooms away.
 
-The sharpest reading it gives is the **sign of `err` either side of a room boundary**, on a floor known to be
+The sharpest reading it gives is the **sign of `err` either side of a space boundary**, on a floor known to be
 continuous: the room whose `err` is positive is the one whose planes are displaced. No internal probe can
 say that, because internally the space is self-consistent either way. Two presses, one per room, settle it. Input arrives through `ConjurePointers`, already read and cached per `XRFrame`
 by `controller-beams`, so the per-frame cost is a rising-edge check.
@@ -815,7 +815,7 @@ preallocated `LineSegments` per layer rather than an object per surface, and not
 lock puts all four within millimetres and they read as one line.
 
 **The `[aabb]` probe, separately.** Under `--debug-registration`, one line per capture measures the
-rectangle reduction directly — `RoomSnap.polyFit` per plane, reported as `off` (distance from the AABB's own
+rectangle reduction directly — `SpaceSnap.polyFit` per plane, reported as `off` (distance from the AABB's own
 centre to the plane's pose origin) and `fill` (polygon area over box area). These are the two ways the
 reduction can be lossy and they are independent: `off` displaces every rendered surface by that vector,
 identically in the render, the seed, registration and every anchor — invisible *because* it is consistent —
@@ -857,14 +857,14 @@ suite uses — to 1e-6 m / 1e-5 rad. The parity contract is far cheaper than a J
 server pure-Python and the client pure-JS.
 
 The shell geometry (corners, sealing, snapping, inset reconstruction) is **JS-only**; the server never
-reconstructs an inset. If a server-side inset query ever appears, it ports to `conjure/room_snap.py`
+reconstructs an inset. If a server-side inset query ever appears, it ports to `conjure/space_snap.py`
 with a golden test like `plane_anchor`'s.
 
 ---
 
 ## 13. Surface reference
 
-**`client/room-snap.js`** — pure geometry, `THREE` passed in, unit-tested:
+**`client/space-snap.js`** — pure geometry, `THREE` passed in, unit-tested:
 
 `register`, `selectSpace`, `canonicalFrame`, `surfaceToRef`, `matchRef`, `matchWall`, `matchInset`,
 `dupInsetIds`, `wallCorners`, `authorInsetAnchor`, `reconstructInset`, `insetAlong`, `hostWallFor`,
@@ -873,7 +873,7 @@ with a golden test like `plane_anchor`'s.
 
 **`client/surface-overlay.js`** — the three-layer debug overlay (§10.4): `setDevice`, `setSeed`,
 `clearSeed`, `poll`, `hud`. DOM/A-Frame-side, so not in the typechecked set; the geometry claims it rests
-on are pinned in `room-snap.test.js` instead (the `Tmat⁻¹` round-trip).
+on are pinned in `space-snap.test.js` instead (the `Tmat⁻¹` round-trip).
 
 **`client/plane-anchor.js`** — `authorAnchor`, `solveAnchor`; internals `wallFrame`, `averageQuat`,
 `twistAbout`, `solveSym3`, `cond2`.
@@ -883,14 +883,14 @@ on are pinned in `room-snap.test.js` instead (the `Tmat⁻¹` round-trip).
 `loadGate`, `voidFrameGate`, `voidGateAdvance`, `voidGateInit`,
 `levelDeviation`.
 
-**`client/room-worker.js`** — the off-thread `register` host.
+**`client/space-worker.js`** — the off-thread `register` host.
 
 **`conjure/plane_anchor.py`** — the Python port, golden-pinned.
 
 | Concern | Where |
 |---|---|
 | structural-change gate | `conjure/server.py` `_surface_changes` + `_surface_update_set` (write only what changed) |
-| ingest (seed-only, no broadcast) | `conjure/server.py:2909` `ingest_room` |
+| ingest (seed-only, no broadcast) | `conjure/server.py:2909` `ingest_capture` |
 | seed planes for server solves | `conjure/server.py` `_seed_planes` |
 | server-side anchor authoring | `conjure/server.py` `_content_anchor` |
 | pose-relative queries | `conjure/server.py:3898` `/view_relative` |
@@ -901,7 +901,7 @@ on are pinned in `room-snap.test.js` instead (the `Tmat⁻¹` round-trip).
 | geometry event log — client | `client/conjure-client.js` `geoLog` / `_logChurn` / `_logLevel` / `_markProbe` |
 | geometry event log — sink | `conjure/server.py` `_glog`, `_geo_prune`, `/geometry_log` |
 
-**Tests:** `tests/js/room-snap.test.js` (synthetic rooms plus `fixtures/golden-room.json`, a real
+**Tests:** `tests/js/space-snap.test.js` (synthetic rooms plus `fixtures/golden-space.json`, a real
 45-surface two-room Quest capture), `tests/js/plane-anchor.test.js`, `tests/js/world-model.test.js`,
 `tests/test_plane_anchor.py`, `tests/test_geometry_log.py`.
 

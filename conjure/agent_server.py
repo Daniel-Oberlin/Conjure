@@ -503,7 +503,7 @@ async def _follow_world_state(app: FastAPI) -> None:
                         await _reconcile_state(app, state)
                     elif msg.get("type") == "notice" and msg.get("text"):
                         # The world server narrates its own slow or surprising moments ("Setting up your
-                        # new world…", "You're in a world with no room — staying put"). Those went only to
+                        # new world…", "You're in a world with no space — staying put"). Those went only to
                         # world clients — the headset — so the CLI or voice client that ASKED heard
                         # nothing and waited out a generative constructor in silence. Relay them into the
                         # conversation, where the person who typed the command actually is.

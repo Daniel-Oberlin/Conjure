@@ -172,7 +172,7 @@ a per-session-arbitrary centre, not perfect.
 
 ### Reference frames, for the record
 
-`canonicalFrame` (`room-snap.js:390`) builds a void world's `_Tmat` in two parts. **Orientation:** an
+`canonicalFrame` (`space-snap.js:390`) builds a void world's `_Tmat` in two parts. **Orientation:** an
 area-weighted histogram of wall normals mod 90° gives the wall grid; θ snaps to whichever grid direction
 is nearest the *largest* wall's outward normal, which is what makes it invariant to the session's arbitrary
 tracking yaw. **Origin:** the arithmetic mean of the vertical walls' centre points, flattened with `c.y = 0`
@@ -181,9 +181,9 @@ tracking yaw. **Origin:** the arithmetic mean of the vertical walls' centre poin
 So a void world's centre is *"the middle of your room at floor level, as weighted by how the Quest chose to
 split your walls"* — a capture-weighted centroid, not a geometric one.
 
-### Blocked in a captured room
+### Blocked in a captured space
 
-No scale and no translation in a captured room — only skybox yaw. Scale there would shrink the sky's opaque
+No scale and no translation in a captured space — only skybox yaw. Scale there would shrink the sky's opaque
 sphere, which `applyImmersion` deliberately keeps visible to occlude passthrough, until it intersects the
 real walls; since it writes depth, that reads as a hard edge slicing across the room. Void translation is
 meaningless there anyway: local-first forces `#world-root` to identity, so any move is reverted within a
@@ -311,7 +311,7 @@ context — but the *resolution* half is not built.
   refuse with a legible reason — at conjure time, before anything mounts**. `place_image` already degrades
   this way (wall placement becomes free-standing outdoors); modules should reuse that resolution rather
   than each inventing one. Today `anchor: "surface"` with no matching surface just returns
-  `no room surface matches …`.
+  `no real surface matches …`.
 - **A frame of reference always exists** even in a surfaceless meadow: user pose, world origin, up-vector,
   ground reference. That quartet is the universal substrate; anything richer is a bonus a module must do
   without.
@@ -324,7 +324,7 @@ Room-geometry awareness is **decoupled from anchoring**. Fireflies (volume) want
 they do not clip through; a bouncing ball (free) wants a floor. That is a read-only `sceneGeometry`
 capability, requested independently of where a module is anchored.
 
-**One provider, two backends.** Modules must never ask "is this a real room?" They ask `sceneGeometry`,
+**One provider, two backends.** Modules must never ask "is this a real space?" They ask `sceneGeometry`,
 which answers uniformly: passthrough room → captured planes; outdoor VR world → whatever the world
 authored (usually a ground plane and a play-area bound, no walls). Requesting modules **must handle the
 sparse/null case**.
@@ -373,8 +373,8 @@ arbiter. Alignments already made, and the reasons they were made this way, are i
 Related: the world-server → Node question, [`docs/decisions.md`](../decisions.md) §18. The actionable
 first step there is independent of Node and worth doing on its own merits — **extract the shared
 geometry/placement math into one pure-JS module** that the client uses and the server consumes. That
-duplication (`_face_room` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler, all
-shadowed in `room-snap.js` / `world-model.js` / `plane-anchor.js`) is the source of a whole class of
+duplication (`_face_interior` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler, all
+shadowed in `space-snap.js` / `world-model.js` / `plane-anchor.js`) is the source of a whole class of
 parity bugs: YXZ order, quat→euler, the boundary frame-flip, normals-outward.
 
 ## Modules not yet built

@@ -25,7 +25,7 @@ insets on its own side.
 
 ## Why it happens (mechanism)
 
-`snapInsets` (client/room-snap.js) associates each inset with a wall, then the inset adopts that wall's
+`snapInsets` (client/space-snap.js) associates each inset with a wall, then the inset adopts that wall's
 orientation and the on-surface image rides it. If the association picks **27** instead of **36**, the art
 adopts the opposite normal → flips 180° → the 2 cm "in front" image lands behind. The association is
 vulnerable because:
@@ -55,12 +55,12 @@ We tried making the proximity fallback require the host to **co-face** the inset
 instead of `|·|`), reasoning the inset's own normal would match only its true host. **This is wrong** and was
 reverted:
 
-- `matchRef` (client/room-snap.js) and the memory [[quest-normals-not-outward]] both state an inset's **live
+- `matchRef` (client/space-snap.js) and the memory [[quest-normals-not-outward]] both state an inset's **live
   captured normal can be INWARD, ~180° from its host wall's outward normal**. `snapInsets` runs on the raw
   captured `_lq`, so `sn` may be anti-parallel to the true host.
 - A co-facing test would then **reject the true host** and pick the anti-parallel partition wall —
   deterministically wrong for such insets. The existing `Math.abs(...)` is **load-bearing** for exactly this.
-- Our confidence was falsely propped up by fixtures: the golden-room capture *and* the stored space both
+- Our confidence was falsely propped up by fixtures: the golden-space capture *and* the stored space both
   showed insets co-facing their host (dot +1.00) — but those are post-processing/stored normals, and the
   unit tests build insets with outward normals, so none of them exercise the inward-live case the memory
   warns about. **Unresolved contradiction:** stored data says co-face, code+memory say live-can-be-inward.
@@ -88,4 +88,4 @@ Conclusion: the two anti-parallel partition faces **cannot** be disambiguated fr
    wall-art in a live headset capture. If live wall-art is reliably OUTWARD (co-facing), the memory is stale
    and a co-facing fallback becomes viable; if it's INWARD, `|dot|` must stay. Don't assume either.
 4. **If ambiguity persists**, persist the association more defensively (store it against both partition
-   faces, or resolve at ingest with the whole room in hand) rather than relying on any per-capture derivation.
+   faces, or resolve at ingest with the whole space in hand) rather than relying on any per-capture derivation.

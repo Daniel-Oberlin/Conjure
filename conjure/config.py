@@ -265,9 +265,9 @@ CACHE_DIR = DATA_DIR
 USERS_DIR = DATA_DIR / "users"
 SESSION_PTR = DATA_DIR / "_session.txt"
 
-VOID = "<void>"      # sentinel space for an OUTDOOR/void world — not tied to a captured room; it shows a
+VOID = "<void>"      # sentinel space for an OUTDOOR/void world — not tied to a captured space; it shows a
                      # skybox + placed objects, and the client derives its frame on the fly from live walls
-                     # (RoomSnap.canonicalFrame) instead of a space. Lives HERE, not in server.py, because
+                     # (SpaceSnap.canonicalFrame) instead of a space. Lives HERE, not in server.py, because
                      # it travels in `/state` (`_live_state`) and so is read by peripherals that must not
                      # import the world server.
 

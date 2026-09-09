@@ -32,7 +32,7 @@ else's space. That is the point of the fully-qualified space reference (§4).
 
 A space usually contains **more than one room**. `detectedPlanes` reports the whole dwelling, so a
 single space routinely holds several rooms joined by doors — the reference capture in
-`tests/js/fixtures/golden-room.json` is 45 surfaces across two rooms. Nothing in the record models a
+`tests/js/fixtures/golden-space.json` is 45 surfaces across two rooms. Nothing in the record models a
 "room" as a unit; a space is a flat set of surfaces plus one boundary polygon. Code that reasons about
 "the room" as a single convex volume is making an assumption the record does not support (see
 [`backlogs/spaces.md`](../backlogs/spaces.md)).
@@ -78,9 +78,9 @@ single space routinely holds several rooms joined by doors — the reference cap
   contains. It is derived from the largest captured floor (`conjure-client.js:2195`, by `_area`), so in
   a multi-room space the smaller rooms are not represented in it. The height is the constant `2.6`, not
   measured.
-- **It has exactly one consumer: the room summary**, which prints it as a line of text for the director
+- **It has exactly one consumer: the space summary**, which prints it as a line of text for the director
   (`mcp_server.py:267`). Nothing clamps placement against it and nothing renders it — despite
-  `query_room`'s docstring saying models land inside the room, that is advice to the model, not an
+  `query_space`'s docstring saying models land inside the room, that is advice to the model, not an
   enforced invariant. See [`backlogs/spaces.md`](../backlogs/spaces.md).
 - **`recent` is the return-visit history** — `[[scope, world_id], …]`, newest first, capped at
   `_MRU_CAP`. Match this space again and you land back in the newest entry that **still exists**; the
@@ -201,7 +201,7 @@ space: `_boot_world` runs before any space is resolved and is the one caller pas
 leaving the ref absent, which `_activate` reads as the honest "no space chosen yet".
 
 > The stamp lives at the shared chokepoint rather than at each call site because it was previously only at
-> `/worlds/new`. Every other path minted a room-less world, so switching agents inside your own captured
+> `/worlds/new`. Every other path minted a space-less world, so switching agents inside your own captured
 > room dropped you into a void world and the incoming agent reported, correctly, that it had no surfaces.
 
 ### 4.3 Room-less has two meanings: `UNSET` and `VOID`
@@ -211,8 +211,8 @@ treatment when a headset works out which space you are standing in.
 
 | Server state | On disk | Renders | A space selection… |
 |---|---|---|---|
-| **`UNSET`** | the `space` key is **absent** | room-less | **relocates you** — it's a placeholder, not a choice |
-| **`VOID`** (`"<void>"`) | `"space": "<void>"` | room-less | **claims the space and leaves you put** |
+| **`UNSET`** | the `space` key is **absent** | space-less | **relocates you** — it's a placeholder, not a choice |
+| **`VOID`** (`"<void>"`) | `"space": "<void>"` | space-less | **claims the space and leaves you put** |
 | a reference | `"space": "<owner>/<name>"` | that space's geometry | admitted on match, refused otherwise |
 
 `UNSET` is purely in-memory (`server.py`); on disk it is the *absence* of the key, which `_activate`
@@ -228,8 +228,8 @@ space's last world** are two different things, and only the first is wanted when
 Previously they were fused, so leaving and restarting inside an outdoor world and then putting the
 headset on pulled you into whichever agent last used your living room.
 
-**Why that needs `UNSET` to be safe.** A boot placeholder is room-less too, and relocating it is exactly
-right. Before this, `_save_active` stamped `<void>` on any room-less world, so a placeholder became
+**Why that needs `UNSET` to be safe.** A boot placeholder is space-less too, and relocating it is exactly
+right. Before this, `_save_active` stamped `<void>` on any space-less world, so a placeholder became
 *deliberately* outdoor within one autosave (~1 s) — after which the rule above would refuse to relocate
 it and strand a headset user in a blank world. Persisting the absence is what keeps the two apart.
 
@@ -275,7 +275,7 @@ constellation (`_geo_candidates`, `server.py:1649`). Coarse — it separates hom
 separate two rooms at one address.
 
 **Stage 2 — surface vote, client-side.** The client votes its live capture against those candidate
-constellations (`RoomSnap.selectSpace` → the coverage vote of §7 in
+constellations (`SpaceSnap.selectSpace` → the coverage vote of §7 in
 [`spaces-geometry.md`](./spaces-geometry.md)) and commits the verdict via `POST /space/select`. The
 match runs client-side deliberately: it reuses the same tested matcher registration uses, rather than a
 second Python implementation.
@@ -304,7 +304,7 @@ yourself:
 > the space's `last_scope` → the live scope → the default agent
 
 A candidate is skipped when its agent no longer resolves on the search path, or when it declares
-`world.outdoor` (§4.3) — an outdoor agent's worlds are room-less by declaration, so it cannot host one
+`world.outdoor` (§4.3) — an outdoor agent's worlds are space-less by declaration, so it cannot host one
 tied to a space. This scope was previously **hard-coded to `builder`**, so a space whose remembered world
 had been deleted handed you to a general-purpose agent regardless of who you had been talking to.
 
@@ -346,7 +346,7 @@ jitter cannot re-vote and thrash the choice.
 
 Admission depends on whether a connection claims *physical presence*:
 
-| Connection | Presence | Aligned to a real room? | Gate |
+| Connection | Presence | Aligned to a real space? | Gate |
 |---|---|---|---|
 | **AR headset** | physical | yes | **required** — geo + surface match, else refused |
 | **Voice / CLI** | none (control) | no | admitted; edits still owner-gated |
@@ -476,7 +476,7 @@ still needs a second headset.
 | `POST /worlds/new` \| `/worlds/switch` | open to all; every mint path stamps the active space ref or `<void>` (§4.2) |
 | `POST /scope/activate` \| `/session/new` | agent / session switch — mints a world, same stamp (§4.2) |
 
-**MCP tools:** `set_space_visibility`, `realign_room`, `query_room`, `set_world_visibility`,
+**MCP tools:** `set_space_visibility`, `realign_space`, `query_space`, `set_world_visibility`,
 `switch_world(name, owner=…)`, `list_worlds`.
 
 **Code**
@@ -491,7 +491,7 @@ still needs a second headset.
 | occupancy | `conjure/server.py:664` `_space_holders`, `_occupied`, `_unclaim` |
 | world-creation gate | `conjure/server.py:2737` `_may_create_world_in` |
 | owner middleware | `conjure/server.py:609` |
-| geometry ingest | `conjure/server.py:2909` `ingest_room` |
+| geometry ingest | `conjure/server.py:2909` `ingest_capture` |
 | presence relay | `conjure/server.py:4439` |
 | desktop-guest spawn | `client/conjure-client.js` `maybeSpawnGuest` + `WM.shouldSpawnGuest` |
 | rig-origin invariant | `client/conjure-client.js` `resetRigForSession` (on `enter-vr`) |

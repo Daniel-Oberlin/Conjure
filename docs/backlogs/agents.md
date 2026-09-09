@@ -101,11 +101,11 @@ and session, and the world doc is flat. The designed model is a **shared geometr
 view**, composed server-side into the flat doc that already broadcasts, so the client contract is
 unchanged:
 
-- **Shared room base** — written *only* by room capture: per surface `id`, `transform`,
+- **Shared room base** — written *only* by space capture: per surface `id`, `transform`,
   `components.surface`, a seeded default material, `meta`; plus the boundary and capture flags. One
   copy, shared by every world in every agent's space.
 - **`room_view`** — broad presentation rules over the base, targeted by semantic / id / `all`: **hide**
-  (the ceiling; or the whole room), **clip/transform geometry** (crop walls to 1 m, anchored at the
+  (the ceiling; or the whole space), **clip/transform geometry** (crop walls to 1 m, anchored at the
   floor). Non-destructive — the base stays 2.7 m tall; only the render changes.
 - **`surface_overrides`** — per-surface specifics that win over `room_view` (`surfaceId → {material?,
   visible?, …}`).
@@ -838,7 +838,7 @@ Relative placement — "a few metres in front of me", "to my left", "behind me" 
 (`server.gaze`, keyed by `X-Conjure-User`, preferring the plane-relative head anchor over the raw
 presence pose). What doesn't exist is the *prefetched* form: a `viewer://current` context resource
 (position + yaw, injected each turn) so the agent can resolve "in front of me" without a round-trip, the
-same way `room://current` removed the `query_room` hop. A `near="me"` tool argument is the other half of
+same way `space://current` removed the `query_space` hop. A `near="me"` tool argument is the other half of
 the same idea.
 
 ## Record / replay
@@ -914,7 +914,7 @@ the couch *identically* to the tables that worked. If `style_surface(target="cou
 have worked. No couch-specific code path exists — this is LLM behavior (assert-done-without-acting),
 same class as the re-query papercut.
 
-**Possible trigger (unconfirmed):** an unstyled surface shows in the director's room summary as
+**Possible trigger (unconfirmed):** an unstyled surface shows in the director's space summary as
 `visible=False` (styled ones flip to `visible=True`), so the model may treat the couch as "not active"
 and skip to a confirmation.
 
@@ -1120,7 +1120,7 @@ knee, clamp by the window only on small models:
 - The `quality_budget` stays the PRIMARY limit and is tuned **empirically** (watch the `[bcast]`/`[tool]`
   trace as history grows — the window doesn't tell you the degradation knee). Optional per-model overrides.
 
-**Safe here specifically:** `world://current` + `room://current` are re-injected fresh every turn, so
+**Safe here specifically:** `world://current` + `space://current` are re-injected fresh every turn, so
 trimming old chat loses only conversational continuity, never scene knowledge — aggressive trimming is
 safe, and summarizing dropped turns is optional (narrative continuity only).
 

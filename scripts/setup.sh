@@ -48,10 +48,10 @@ if [ ! -f .env ]; then
 fi
 
 if command -v npm >/dev/null 2>&1; then
-  echo "==> Installing JS test deps (room-snap geometry tests; needs Node)"
+  echo "==> Installing JS test deps (space-snap geometry tests; needs Node)"
   npm install --silent || echo "!! npm install failed — JS tests will be skipped by the pre-push hook." >&2
 else
-  echo "==> Node/npm not found — skipping JS test deps (the room-snap tests will be skipped). brew install node to enable."
+  echo "==> Node/npm not found — skipping JS test deps (the space-snap tests will be skipped). brew install node to enable."
 fi
 
 if [ -d .git ]; then

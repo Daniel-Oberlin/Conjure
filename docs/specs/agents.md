@@ -157,7 +157,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
     { "server": "world", "access": "all",      // "all" | "read"
       "tools": ["query_world", "place_asset"] }  // opt-in only, NO wildcard; omitted ⇒ none
   ],
-  "context": ["room://current"],               // MCP resources injected each turn (§5.3)
+  "context": ["space://current"],               // MCP resources injected each turn (§5.3)
   "dynamics": ["fireflies", "water", "grab"],  // required allow-list (specs/dynamics.md §9)
   "world":   { "outdoor": false, "on_create": [ … ], "on_exit": [] },  // §7.5
   "session": { "public": true, "greeting": "…", "first_world": { … } },  // §7.5
@@ -176,7 +176,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
 | `mcp_servers[].tools` | no (`[]`) | each name exists on the live server, at connect | opt-in only; omitted ⇒ **none** |
 | `context` | no (`[]`) | — | MCP resource URIs; fetched only if `{context}` appears in the prompt |
 | `dynamics` | no (`[]`) | every module resolves on the dynamics search path | a dangling name **fails the load** |
-| `world.outdoor` | no (`false`) | — | this agent's worlds are **room-less**: they never adopt the live space (§7.5) |
+| `world.outdoor` | no (`false`) | — | this agent's worlds are **space-less**: they never adopt the live space (§7.5) |
 | `session.public` | no (`true`) | — | visibility a NEW session is born with, on **every** mint path (§7.5) |
 | `world` / `session` / `state` | no (`{}`) | `state[].seed`/`schema` files parsed if present (failures skipped) | read by the world server and the agent server, not the loader |
 | `personas` | no (`[]`) | — | parsed into `AgentDef.personas` and **read by nothing** |
@@ -200,11 +200,11 @@ running interpreter, so the subprocess inherits the venv.
 
 - **`builder`** — the full-access world-building agent. It enumerates the **entire** world tool surface
   (a test asserts the list equals every `@mcp.tool` in `mcp_server.py`, minus the control tool
-  `set_caller`, so a new tool can't go silently un-granted). Context: `room://current`,
+  `set_caller`, so a new tool can't go silently un-granted). Context: `space://current`,
   `world://current`, `dynamics://available`. Dynamics: `fireflies`, `water`, `grab`.
 - **`outdoor`** — skybox-only: twelve tools, no `context` at all (so it pays **zero** per-turn context
   cost — the live contrast with builder), no dynamics. Declares `world.outdoor` — its worlds are
-  room-less and never adopt the live space, which is a property of *the agent* rather than of whichever
+  space-less and never adopt the live space, which is a property of *the agent* rather than of whichever
   request happened to create a world. Its `session.first_world.on_create` runs a
   generative constructor (§7.5). It holds the **read** half of the library (`search_library`,
   `query_assets`) but none of the mutating half — every sky it generates is catalogued, so without
@@ -241,7 +241,7 @@ CONJURE_ACCESS = all | read
 
 This is a *separate process from the LLM*, so it holds regardless of what the model was offered — a
 Layer-1 filter bug or a non-LLM path can't bypass it. `_READONLY_TOOLS` is an explicit set
-(`query_world`, `query_room`, `view_relative`, `list_worlds`, `list_image_generators`,
+(`query_world`, `query_space`, `view_relative`, `list_worlds`, `list_image_generators`,
 `search_library`, `query_assets`); **everything else counts as mutating**, so a newly added tool is
 denied to a read-only agent until it is classified.
 
@@ -326,13 +326,13 @@ A failed or missing context resource is skipped, never fatal. The world server e
 
 | Resource | Contents |
 |---|---|
-| `room://current` | the live real-room summary — the same formatter `query_room` uses |
+| `space://current` | the live real-space summary — the same formatter `query_space` uses |
 | `world://current` | placed objects (excluding scaffold and real surfaces) + the environment line |
 | `dynamics://available` | the **active agent's** conjurable module catalog (specs/dynamics.md §9) |
 
 `query_world` stays a *tool* for anything a prefetched snapshot would make stale. It dumps the
-**placed** scene: real room surfaces collapse to one counted line that names what it withheld and
-points at `room://current`, because a per-surface listing was most of the dump and carried strictly
+**placed** scene: real space surfaces collapse to one counted line that names what it withheld and
+points at `space://current`, because a per-surface listing was most of the dump and carried strictly
 less than the summary — an identical-looking line per surface reads as complete, and a reader that
 wants a colour concludes none is stored.
 
@@ -965,7 +965,7 @@ server → client   {type:"context", …}                    # this connection's
   dead terminal and then flushes the entire backlog at once (observed 2026-08-28). `busy` could not
   fire for a same-connection follow-up, because the follow-up was never read.
 - **World-server notices are relayed into the conversation.** The world server narrates its slow or
-  surprising moments (*"Setting up your new world…"*, *"You're in a world with no room — staying put"*)
+  surprising moments (*"Setting up your new world…"*, *"You're in a world with no space — staying put"*)
   on its own socket, which only world clients — the headset — are on. `_follow_world_state` forwards
   any `notice` it sees to the conversation hub, so the CLI or voice client that *asked* is the one told.
   Without it the reassurance was addressed to whoever was wearing the headset, which is not necessarily
@@ -1332,7 +1332,7 @@ debounce). `_save_active` **splits** it: real-surface geometry + boundary → th
 space owner's scope, so a world built in someone else's space writes its walls back to them); placed
 objects, display prefs and per-surface style overrides → the **world** doc. It also records
 `last_scope`/`last_world` on the space, which is what `/space/select` resumes on a return visit. A
-room-less world has no space to split out and is saved whole — as `<void>` if it is deliberately
+space-less world has no space to split out and is saved whole — as `<void>` if it is deliberately
 outdoor, and with the ref **omitted** if it is merely undecided ([`specs/spaces.md §4.3`](./spaces.md)).
 
 **Autosave never resurrects a deleted session.** `_save_active` returns early when the live session's

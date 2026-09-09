@@ -16,7 +16,7 @@
       client __CLIENT_VERSION__
     </div>
     <a-scene background="color: #1a2233"
-             room-capture
+             space-capture
              controller-beams
              occlusion
              renderer="foveationLevel: 0"
@@ -36,7 +36,7 @@
       <a-entity id="world-root"></a-entity>
 
       <!-- Rig at the ORIGIN so the A-Frame world frame matches the headset's reference space:
-           captured room geometry (poses relative to that reference space) then lines up around you
+           captured space geometry (poses relative to that reference space) then lines up around you
            instead of being offset. Eye height lives on the camera (used on desktop; the headset
            pose overrides it in VR/AR — putting it on the rig would double-count height). -->
       <a-entity id="rig" position="0 0 0">
@@ -52,7 +52,7 @@
          (docs/specs/dynamics.md §9), re-injected on agent switch. -->
     <script src="/static/world-model.js"></script>
     <script src="/static/occlusion.js"></script>
-    <script src="/static/room-snap.js"></script>
+    <script src="/static/space-snap.js"></script>
     <script src="/static/plane-anchor.js"></script>
     <script src="/static/grounded-skybox.js"></script>
     <script src="/static/figure.js"></script>

@@ -755,7 +755,7 @@
       var f = this._floorPoint(origin, dir);
       if (!f) return false;
       if (mode === "void" && !WF.isVoid()) {
-        this._once("novoid", "refusing void mode — this world has a captured room, where #world-root is "
+        this._once("novoid", "refusing void mode — this world has a captured space, where #world-root is "
           + "forced to identity (local-first) and any move is reverted at the next capture");
         return false;
       }
@@ -768,7 +768,7 @@
         st.centre = [sky.centre.x, sky.centre.z];
         st.grab = [f.x, f.z];
         st.scale0 = sky.scale; st.yaw0 = sky.yaw;
-        // Scale is blocked in a captured room: shrinking the sky's opaque sphere — which applyImmersion keeps
+        // Scale is blocked in a captured space: shrinking the sky's opaque sphere — which applyImmersion keeps
         // visible precisely to occlude passthrough — walks it into the real walls, and because it writes
         // depth that reads as a hard edge slicing across the room. The radial term simply goes inert, so the
         // same gesture still yaws rather than becoming a special case.
@@ -905,7 +905,7 @@
       var WF = window.ConjureWorldFrame;
       if (!WF) return mode.toUpperCase() + "  — world frame unavailable";
       if (mode === "void") {
-        if (!WF.isVoid()) return "VOID  — not available in a captured room";
+        if (!WF.isVoid()) return "VOID  — not available in a captured space";
         var fr = WF.frame();
         return "VOID        yaw " + Math.round(fr.yaw) + "°"
           + "   offset " + fr.offset[0].toFixed(2) + ", " + fr.offset[1].toFixed(2) + " m";
@@ -927,7 +927,7 @@
       // FRAME: what we just dragged is in the LOCAL render frame (F_track). The server persists F_ref and
       // re-solves content from it every capture, so committing the raw local pose makes the object jump to
       // wherever that solve lands on release. Convert with ConjureFrames.toRef (the inverse of the client's
-      // solve). With no room basis (void/outdoor world) the frames coincide → commit the local pose as-is.
+      // solve). With no space basis (void/outdoor world) the frames coincide → commit the local pose as-is.
       var wp = obj.getWorldPosition(new THREE.Vector3());
       var wq = obj.getWorldQuaternion(new THREE.Quaternion());
       var mode = st.target.dataset.placement === "grounded" ? "grounded" : "free";

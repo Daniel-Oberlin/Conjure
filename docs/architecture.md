@@ -202,7 +202,7 @@ Invariants: fully serializable & restorable; every entity has a stable id; compo
 open/extensible; nothing is stored in absolute real-world coordinates — every placed entity is
 on-surface, grounded, free, or skybox.
 
-**A real room surface is an ordinary entity**, tagged `meta.real`. There is no separate room-rendering
+**A real space surface is an ordinary entity**, tagged `meta.real`. There is no separate room-rendering
 path: a captured wall carries a `surface` component (polygon, extent, holes) and a `material`, so it
 flows through patches, broadcast and the director's material edits like anything else. `meta.real` is
 the contract — restyle, hide, texture and mount onto it; never move or remove it
@@ -320,7 +320,7 @@ The shell forwards anything that isn't a command to the active agent, which runs
 (one turn):
 
 1. **Perceive** — addressing gate (§ voice) / shell admits agent-directed speech → STT → the agent's
-   LLM. The prompt carries: the **live room**, injected via the `room://current` context resource
+   LLM. The prompt carries: the **live room**, injected via the `space://current` context resource
    ([specs/agents.md §5.3](./specs/agents.md)) so the agent needn't re-query it; the placed scene
    (`world://current`) and its conjurable modules (`dynamics://available`); the agent's scoped MCP
    tools; and the session transcript. (`query_world` is still used where a prefetched snapshot would go
@@ -370,13 +370,13 @@ control tool `set_caller`, so a new tool cannot go silently un-granted ([specs/a
 
 **Built — 45 tools**, in these groups:
 
-- **World & session navigation:** `query_world`, `query_room`, `view_relative`, `list_worlds`,
+- **World & session navigation:** `query_world`, `query_space`, `view_relative`, `list_worlds`,
   `new_world`, `switch_world`, `delete_world`, `reset_world`, `set_world_visibility`,
   `set_space_visibility`
 - **Entities:** `add_entity`, `update_entity`, `move_entity`, `remove_entity`, `set_environment`
-- **Real surfaces** (a captured room is ordinary entities, §4): `show_surface`, `texture_surface`,
+- **Real surfaces** (a captured space is ordinary entities, §4): `show_surface`, `texture_surface`,
   `style_surface`, `show_edges`, `style_edges`, `show_annotations`, `style_annotations`,
-  `set_immersion`, `realign_room`
+  `set_immersion`, `realign_space`
 - **Library:** `place_asset`, `place_cached_asset`, `search_library`, `query_assets`, `update_asset`,
   `delete_asset`
 - **Images — procurement decoupled from scene use (decision #13):** *procure* (return an opaque

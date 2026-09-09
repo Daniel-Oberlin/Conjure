@@ -25,7 +25,7 @@ measured against is the finding. Reproduce with `scripts/c4_frame_cost.py`.
 
 Conditions: `RATE current=90Hz ideal=11.1ms supported=[72,80,90,120]`, one client (`hs_d9hwvn`, a
 headset — not the desktop tab), `rebuilds=0` throughout, `heap` flat at 132.6 MB, 57 real surfaces in a
-two-room capture.
+two-space capture.
 
 ## Why this is not the recorded stutter
 
@@ -134,7 +134,7 @@ rides. Whichever variable wins, the hair is the target.
 | ~~A static-scene throttle~~ | **Killed** — a throttle cannot vary by model, and one light figure is smooth | — |
 | ~~Textures / morph targets~~ | **Killed** — Saka has the most of both and is the smoothest | — |
 | **Probe artefact** — `PACE` measuring callback intervals rather than delivered frames | Low–medium, and it would explain the still-vs-walking inversion while leaving the per-model result intact | Compare against the Quest's own frame overlay for one session |
-| ~~The two-room capture~~ | **Unlikely** — 57 surfaces were present while Saka rendered smoothly | — |
+| ~~The two-space capture~~ | **Unlikely** — 57 surfaces were present while Saka rendered smoothly | — |
 
 ## Next experiment
 

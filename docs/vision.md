@@ -75,7 +75,7 @@ the architecture doesn't foreclose it.
   edges** to turn an ordinary photo into an immersive skybox or wrap-around panorama.
 - **Extensible audio engine.** A plugin-based audio engine — play audio files, **synthesize sound
   programmatically**, spatialize it — extensible with new audio sources and effects.
-- **VR *and* AR.** Build immersive VR worlds or place content into your real room via passthrough.
+- **VR *and* AR.** Build immersive VR worlds or place content into your real space via passthrough.
 - **Embodiment & vehicles.** Occupy an avatar, or climb into a vehicle — car, tank, plane, hot-air
   balloon — each with its own way of moving and being driven.
 - **Bring your own controls.** Pluggable input devices — Quest controllers and hands, Bluetooth
@@ -305,7 +305,7 @@ for **generated** behaviour and is unbuilt; the boundary is drawn in
 ## 7. XR interaction, modes & comfort
 
 - **Session modes**: **VR** (`immersive-vr`) *and* **AR** (`immersive-ar`, passthrough) on
-  request — a world can be placed into the user's real room. Plus a **flat** (non-immersive)
+  request — a world can be placed into the user's real space. Plus a **flat** (non-immersive)
   fallback for any browser (§10 desktop preview).
   *Forward-compat:* the transform model allows **anchor-relative placement**, keeping open
   **persistent AR** — portals/objects fixed to real walls/rooms across sessions — as a later

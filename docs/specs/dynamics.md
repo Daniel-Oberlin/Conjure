@@ -354,7 +354,7 @@ The server places the carrying entity from the manifest before the client render
 
 - **`free`** — free-standing at `default_pos` (or the caller's `position`). If `face_user` is true, it is
   rotated to face the viewer **at creation** (fixed, not tracking).
-- **`surface`** — conjured with `on_surface`, the entity is aligned to a real room surface, fitted to its
+- **`surface`** — conjured with `on_surface`, the entity is aligned to a real space surface, fitted to its
   frame, and stood off by `on_surface_standoff`; `meta.surface_offset` is recorded so it rides recaptures.
   An image-bearing module fits its picture's aspect *inside* the frame by default; `stretch: true` fills it.
 - **`volume`** — a volumetric effect centred on the entity origin (a firefly swarm). Leave `on_surface` off.
@@ -377,7 +377,7 @@ node — a curated capability, not something the contract grants generally.
 
 ### Discovering what is manipulable
 
-Direct children of `#world-root` that have an id and are neither `data-real` (room surfaces) nor
+Direct children of `#world-root` that have an id and are neither `data-real` (real surfaces) nor
 `data-scaffold`, excluding the grab entity itself. Other modules' entities are included: a Water Picture
 is grabbable.
 
@@ -502,7 +502,7 @@ frame, while the server persists the reference frame and re-solves content from 
   slightly off where it was dropped.
 - `surface_offset` — for surface-attached content, the host-local offset (`ConjureFrames.surfaceOffset`).
   Host-relative and therefore frame-independent.
-- `position`/`rotation` — converted with `ConjureFrames.toRef`. With no room basis (a void/outdoor world)
+- `position`/`rotation` — converted with `ConjureFrames.toRef`. With no space basis (a void/outdoor world)
   the frames coincide and the local pose is committed as-is.
 
 If the client sends no anchor, the server re-authors one; without that, a move is reverted at the next
@@ -616,7 +616,7 @@ Gripping empty space is safe here in a way it would not be as default behaviour:
 controller's resting state, so this only ever fires inside a mode the user deliberately entered and that is
 named on screen.
 
-### What is blocked in a captured room
+### What is blocked in a captured space
 
 Only skybox **yaw** works there. Scale would shrink the sky's opaque sphere — which `applyImmersion` keeps
 visible precisely to occlude passthrough — until it intersects the real walls; because it writes depth, that
@@ -688,7 +688,7 @@ Modules are **scoped to an agent**. An agent declares what it may conjure in `ag
 
 ```jsonc
 "dynamics": ["fireflies", "water", "grab"],              // REQUIRED allow-list
-"context": ["room://current", "world://current", "dynamics://available"]
+"context": ["space://current", "world://current", "dynamics://available"]
 ```
 
 Every listed name is **required**: the agent fails to load if one is not found on the search path.
@@ -697,7 +697,7 @@ Scoping governs **conjuring**, in two places at once:
 
 - **Soft (discovery).** `GET /dynamics/available` builds the catalog from the *active agent's* scoped
   modules — one `name — description; params: …` line each — surfaced as the `dynamics://available` MCP
-  resource and injected into the director's prompt each turn, the same mechanism as `room://current`. No
+  resource and injected into the director's prompt each turn, the same mechanism as `space://current`. No
   discovery ritual and no dynamic tool schema; `conjure_module` stays one generic tool.
 - **Hard (enforcement).** `/module` validates the requested module against the active agent's `dynamics`
   and refuses an out-of-scope name, even if the module exists on the server.

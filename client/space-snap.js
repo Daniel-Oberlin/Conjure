@@ -1,6 +1,6 @@
 // @ts-check
-// Pure room-snapping geometry — extracted from the room-capture component so it can be unit-tested
-// (tests/js/room-snap.test.js) independently of A-Frame/WebXR/DOM. Every function takes the THREE
+// Pure space-snapping geometry — extracted from the space-capture component so it can be unit-tested
+// (tests/js/space-snap.test.js) independently of A-Frame/WebXR/DOM. Every function takes the THREE
 // module as its first argument: the browser passes AFRAME.THREE, node tests pass require('three').
 // No state, no DOM, no globals — just the math that turns captured planes into placed surfaces.
 //
@@ -53,7 +53,7 @@
 
 (function (root, factory) {
   if (typeof module !== "undefined" && module.exports) module.exports = factory();
-  else (/** @type {any} */ (root)).RoomSnap = factory();
+  else (/** @type {any} */ (root)).SpaceSnap = factory();
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
@@ -617,7 +617,7 @@
   // it to the wrong room's ceiling and leave a slit). Runs BEFORE snapInsets so door/window holes — placed
   // relative to the wall centre — are computed against the sealed wall (no separate hole compensation).
   // Mutates in place.
-  // A wall on a shared room boundary counts as under BOTH adjoining rooms' footprints.
+  // A wall on a shared space boundary counts as under BOTH adjoining rooms' footprints.
   var COVER_MARGIN = 0.3;
 
   /** @type {Record<string, number>} */
@@ -921,7 +921,7 @@
       // normal, consistent with all other surfaces. Wall art no longer gets a special upright/negated
       // orientation (that flipped its normal 180°, causing per-session re-minting): the surface is an
       // invisible reference, and the CONTENT hung on it is oriented upright toward the room at placement
-      // time (server _face_room), independent of the surface's own roll.
+      // time (server _face_interior), independent of the surface's own roll.
       s.rotation = best.rotation.slice();
       s.debug.snap = "wall=" + best.id.slice(-7) + " clr=" + Math.round(clr * 100) + "cm";
 

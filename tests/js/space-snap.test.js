@@ -1,16 +1,16 @@
-// Unit tests for the pure room-snapping geometry (client/room-snap.js), run with `node --test`.
+// Unit tests for the pure space-snapping geometry (client/space-snap.js), run with `node --test`.
 // Two layers:
 //  • Synthetic rooms (built with `vert`) give full control — known facings/positions to assert each
 //    invariant precisely: insets land in front of their wall toward the interior (incl. junction doors),
 //    openings cut where the inset sits, walls come out square, the frame solve recovers a known
 //    transform, rotations are emitted in A-Frame's YXZ order, wall art renders upright.
-//  • One golden room (fixtures/golden-room.json) is a REAL Quest capture (45 surfaces, two rooms). The
+//  • One golden room (fixtures/golden-space.json) is a REAL Quest capture (45 surfaces, two rooms). The
 //    synthetic tests encode our assumptions about the device's conventions; the golden room pins them to
 //    the actual hardware and guards against a Quest update changing plane orientation. See its test below.
 const { test } = require("node:test");
 const assert = require("node:assert");
 const THREE = require("three");
-const RS = require("../../client/room-snap.js");
+const RS = require("../../client/space-snap.js");
 
 const UP = new THREE.Vector3(0, 1, 0);
 const D2R = Math.PI / 180;
@@ -207,7 +207,7 @@ test("wall squaring is removed: the seed pipeline keeps a near-square wall's RAW
     assert.ok(Math.abs(facingDeg(s) - before[i]) < 1e-6,
       s.id + " kept its raw facing " + before[i].toFixed(2) + "° (got " + facingDeg(s).toFixed(2) + "°)");
   });
-  assert.equal(typeof RS.squareWalls, "undefined", "squareWalls is gone from the RoomSnap API");
+  assert.equal(typeof RS.squareWalls, "undefined", "squareWalls is gone from the SpaceSnap API");
 });
 
 test("joinCorners extends two perpendicular walls that fall short to meet at the corner", () => {
@@ -655,7 +655,7 @@ test("dupInsetIds keeps insets on different walls / of different semantics disti
 // joinCorners → snapInsets the headset runs and asserts the geometry stays sane. It's the check that
 // would have caught the wall-art roll bug, and it'd catch a Quest OS update changing plane conventions.
 test("golden room (real capture): pipeline holds on real geometry", () => {
-  const fixture = require("./fixtures/golden-room.json");
+  const fixture = require("./fixtures/golden-space.json");
   // No active registration ⇒ Tmat = identity, so the local frame is the raw pose (lp = pos, lq = quat),
   // exactly as the client builds it on the first capture.
   const surfaces = fixture.surfaces.map(function (s, i) {
@@ -715,7 +715,7 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
 
   // (4) Wall art that snapped to a wall adopts that wall's orientation — so its normal (a-plane +Z) comes
   // out HORIZONTAL (a vertical-wall normal), regardless of the plane's captured roll. Upright-facing of the
-  // CONTENT hung on it is now handled at placement (server _face_room), not baked into the surface.
+  // CONTENT hung on it is now handled at placement (server _face_interior), not baked into the surface.
   surfaces.filter((s) => s.semantic === "wall art" && s.debug && s.debug.snap).forEach(function (s) {
     const q = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(s.rotation[0] * D2R, s.rotation[1] * D2R, s.rotation[2] * D2R, "YXZ"));
@@ -767,7 +767,7 @@ test("sealWalls seals to the ceiling whose FOOTPRINT covers the wall, ignoring a
 // The wall_11 case: a wall shared between two rooms whose ceilings differ by a few mm. Both footprints cover
 // it; nearest-by-centre would pick the lower and leave a slit under the taller. Seal to the HIGHER.
 test("sealWalls on a shared boundary wall seals to the HIGHER of two covering ceilings", () => {
-  const wall = vert("wall_1", "wall", [0, 1.34, 0], 0, [3, 2.66]);    // top 2.67, on the room boundary
+  const wall = vert("wall_1", "wall", [0, 1.34, 0], 0, [3, 2.66]);    // top 2.67, on the space boundary
   const lower = horiz("ceiling", 0.6, 2.690, 0);                      // covers x=0, 2.690
   const higher = horiz("ceiling", -0.6, 2.695, 0);                    // also covers x=0, 4 mm higher
   RS.sealWalls(THREE, [wall, lower, higher, horiz("floor", 0, 0.0, 0)], 0.15);
@@ -989,7 +989,7 @@ test("polyFit on the golden room: the real device's planes are centred rectangle
   // polyFit's arithmetic against real extents rather than evidence about the device: the on-device answer
   // comes from the [aabb] probe line, and if it ever disagrees with this, the polygon is the thing that
   // differs and the hypothesis is confirmed.
-  const golden = require("./fixtures/golden-room.json");
+  const golden = require("./fixtures/golden-space.json");
   const list = golden.surfaces || golden;
   let checked = 0;
   list.forEach((e) => {
@@ -1000,7 +1000,7 @@ test("polyFit on the golden room: the real device's planes are centred rectangle
     assert.ok(Math.abs(f.off) < 1e-9 && Math.abs(f.fill - 1) < 1e-9, `${e.id} round-trips its extent`);
     checked++;
   });
-  assert.ok(checked > 30, `expected the golden room's surfaces, got ${checked}`);
+  assert.ok(checked > 30, `expected the golden space's surfaces, got ${checked}`);
 });
 
 test("a seed surface carried back through Tmat⁻¹ lands exactly on its F_track plane", () => {

@@ -119,7 +119,7 @@ def _agent_world_config(scope: str) -> dict:
 
 
 def _agent_wants_outdoor(scope: str) -> bool:
-    """Does this agent's `world.outdoor` say its worlds are room-less (specs/agents.md §3)?
+    """Does this agent's `world.outdoor` say its worlds are space-less (specs/agents.md §3)?
 
     Whether a world wants a space is a property of the AGENT, not of the request that happened to
     create it. `new_world(outdoor=True)` covers "this one world is a sky"; an agent whose whole point is
@@ -187,7 +187,7 @@ async def _build_first_world(scope: str) -> tuple[Optional[str], Optional[WorldS
     raw = _new_world_store(scope, extra_on_create=fw_on_create)
     if gen_ops:
         raw.apply_patch(gen_ops, origin="constructor")   # generative results (e.g. the skybox) bake in
-    _reset_room_authority(raw)
+    _reset_capture_authority(raw)
     return wname, raw, None
 
 
@@ -201,9 +201,9 @@ def _new_world_store(scope: str, *, extra_on_create: list[dict] = (),
     The world ADOPTS the live space (`_space_for_new_world`, D5/step 5) — this is the one chokepoint every
     mint path shares, so a world born while you're standing in your room has your room in it no matter
     which path minted it. `adopt_space=False` is for the ONE caller that runs before a space is resolved
-    (`_boot_world`); `outdoor` forces VOID for an explicitly room-less world, and so does the owning
+    (`_boot_world`); `outdoor` forces VOID for an explicitly space-less world, and so does the owning
     agent's `world.outdoor` — the per-request flag and the per-agent declaration OR together, so an
-    outdoor agent's worlds are room-less however they were minted."""
+    outdoor agent's worlds are space-less however they were minted."""
     s = WorldStore.load(SAMPLE_WORLD)
     env = s.doc.setdefault("environment", {})
     env["public"] = True                                          # worlds are public by default (§4)
@@ -289,10 +289,10 @@ async def _build_generative_ops(steps: list[dict]) -> tuple[list[dict], Optional
     return ops, None
 
 
-def _reset_room_authority(s: WorldStore) -> None:
-    """Room authority (the one headset allowed to report geometry) is LIVE-session state, not durable.
+def _reset_capture_authority(s: WorldStore) -> None:
+    """Capture authority (the one headset allowed to report geometry) is LIVE-session state, not durable.
     Each client mints a fresh id per page load, so a *persisted* authority from a past session names a
-    dead headset — and ingest_room would reject the live headset's captures forever (it can't match the
+    dead headset — and ingest_capture would reject the live headset's captures forever (it can't match the
     stale id). Clear it whenever a world becomes active so the live headset reclaims it on next capture."""
     env = s.doc.get("environment") or {}
     if env.get("captureAuthority"):
@@ -400,13 +400,13 @@ def _boot_world() -> tuple[str, str, WorldStore]:
     if active and worlds.exists(scope, active):
         try:
             s = worlds.load(scope, active)
-            _reset_room_authority(s)
+            _reset_capture_authority(s)
             _write_session_ptr(scope, sid)
             return scope, active, s
         except Exception as exc:  # noqa: BLE001
             print(f"[conjure] active world {active!r} unreadable ({exc}); creating a fresh default")
     s = _new_world_store(scope, adopt_space=False)   # boot: no space resolved yet (the globals still hold
-    _reset_room_authority(s)                         # their module defaults) — nothing honest to adopt
+    _reset_capture_authority(s)                         # their module defaults) — nothing honest to adopt
     wid = worlds.save(scope, "default", s)      # upsert by name → mints the permanent id
     worlds.set_active(scope, wid)
     _ensure_session(scope, sid, active_world=wid)
@@ -639,7 +639,7 @@ IMAGES: dict[str, ImageRecord] = {}
 
 # Short, human-friendly per-surface number shown on annotation labels + usable as a director target
 # (e.g. "make 12 blue"). It IS the number already in the surface id (real_wall_3 → 3) — ONE numbering
-# system, so the label, query_room, the id, and the user's reference all agree. (Previously a separate
+# system, so the label, query_space, the id, and the user's reference all agree. (Previously a separate
 # counter started at 1 while the id started at 0, which drifted off-by-one and confused references.)
 # Stable by construction: same surface id → same number, no caching needed.
 def _friendly_id_for(surface_id: str) -> int:
@@ -671,7 +671,7 @@ app = FastAPI(title="Conjure", version="0.0.1", lifespan=_lifespan)
 
 def _slog(tag: str, msg: str) -> None:
     """Append a SERVER-side diagnostic line to temp/conjure.log, same format as the client's lines, so
-    server routing events (world switches, space selection, /room accept vs 403) interleave with the
+    server routing events (world switches, space selection, /space/capture accept vs 403) interleave with the
     client's registration/patch trace by timestamp. Gated like /client_log (debug_log OR debug_registration)."""
     if not (settings.debug_log or settings.debug_registration):
         return
@@ -693,7 +693,7 @@ def _slog(tag: str, msg: str) -> None:
 #
 # Structured rather than prose because the questions are numeric: did floor_10's height move relative to the
 # rest of the space, and by how much. `t` is the SERVER's receive time (one clock for the whole file, so
-# lines from the headset and from ingest_room sort together); the client's own stamp rides along as `ct`.
+# lines from the headset and from ingest_capture sort together); the client's own stamp rides along as `ct`.
 _geo_log_day: str = ""            # the date of the last retention sweep, so it runs once per day, not per line
 
 
@@ -794,7 +794,7 @@ class _ScopeFromHeader:
 app.add_middleware(_ScopeFromHeader)
 
 # Durability: a background task writes the active world to its file whenever its rev advances. Polling
-# debounces naturally — a multi-patch turn or a room-capture flurry coalesces into one write — and it
+# debounces naturally — a multi-patch turn or a space-capture flurry coalesces into one write — and it
 # touches no apply_patch call site. ~1 s of in-flight changes is the only crash-loss window.
 _AUTOSAVE_INTERVAL = 1.0
 _autosave_task: asyncio.Task | None = None
@@ -810,7 +810,7 @@ _autosave_task: asyncio.Task | None = None
 _space_holders: "set[WebSocket]" = set()
 _selected_cids: set[str] = set()
 
-# A world's space reference has THREE states, not two. `VOID` ("<void>") means *deliberately* room-less —
+# A world's space reference has THREE states, not two. `VOID` ("<void>") means *deliberately* space-less —
 # an outdoor world, or one whose agent declares `world.outdoor`. `UNSET` means *not decided yet*: a world
 # minted before anything knew which space we're in (the boot placeholder). Both render identically (no
 # real geometry) and both report VOID to the client, so the client contract is unchanged — the difference
@@ -930,7 +930,7 @@ def _save_active() -> None:
         # legitimately hold worlds before any meta is written, and treating that as deleted would
         # silently disable autosave for it.
         return
-    if _no_space():                                 # room-less world: no geometry to split out
+    if _no_space():                                 # space-less world: no geometry to split out
         world_doc = copy.deepcopy(store.doc)
         env = world_doc.setdefault("environment", {})
         if active_space == UNSET:
@@ -1419,7 +1419,7 @@ async def index() -> HTMLResponse:
     # Stamp the client script URL with its mtime so a code change always busts the cache. The Quest
     # Browser caches /static across reloads even with no-store, which left headsets running stale JS.
     html = (CLIENT_DIR / "index.html").read_text()
-    rwm = int((CLIENT_DIR / "room-worker.js").stat().st_mtime)   # geometry worker (fix/pops-and-jitters)
+    rwm = int((CLIENT_DIR / "space-worker.js").stat().st_mtime)   # geometry worker (fix/pops-and-jitters)
     tmm = int((CLIENT_DIR / "three.module.min.js").stat().st_mtime)  # worker's standalone three (ESM)
     # Dynamic modules are discovered + scoped to the ACTIVE agent (docs/specs/dynamics.md §9): inject a
     # <script> per module from its folder, mtime-stamped so a code change busts the cache.
@@ -1452,7 +1452,7 @@ async def index() -> HTMLResponse:
     jflag = "true" if settings.debug_jitter else "false"   # jitter probes only (clean, no registration diag)
     gflag = "true" if settings.geometry_log else "false"   # always-on, change-gated geometry event log
     soflag = "true" if settings.debug_surface_overlay else "false"   # seed/device wireframe overlay (opt-in)
-    # Co-location robustness knobs (two-headset guest tuning) — read by RoomSnap.register/selectSpace and the
+    # Co-location robustness knobs (two-headset guest tuning) — read by SpaceSnap.register/selectSpace and the
     # capture throttle in conjure-client.js. Omitting a field falls back to the client's built-in default.
     reg = (f"{{minCov:{settings.reg_min_cov},minCovFrac:{settings.reg_min_cov_frac},"
            f"sizeTol:{settings.reg_size_tol},inlierM:{settings.reg_inlier_m},yawPeaks:{settings.reg_yaw_peaks}}}")
@@ -1465,7 +1465,7 @@ async def index() -> HTMLResponse:
     # Render apply-gate tolerances (--apply-tol-*) → the client's surfaceMoved (world-model.js).
     tol = (f"{{pos:{settings.apply_tol_pos},rotDeg:{settings.apply_tol_rot_deg},ext:{settings.apply_tol_ext}}}")
     gwr = "true" if settings.group_surface_relay else "false"   # --group-surface-relay (junction-seam fix)
-    # Wall-identity-by-plane knobs (--wall-*) → RoomSnap.matchWall. yawTol is passed in RADIANS (matchWall's
+    # Wall-identity-by-plane knobs (--wall-*) → SpaceSnap.matchWall. yawTol is passed in RADIANS (matchWall's
     # unit); the CLI/config take degrees for readability.
     wall = (f"{{perpTol:{settings.wall_perp_tol},yawTol:{math.radians(settings.wall_yaw_tol_deg)},"
             f"overlapSlop:{settings.wall_overlap_slop}}}")
@@ -1489,7 +1489,7 @@ async def index() -> HTMLResponse:
                         f"window.CONJURE_BEAM_TRIGGER={settings.beam_trigger};"
                         f"window.CONJURE_BINDINGS={settings.bindings};"
                         f'window.CONJURE_OCCLUSION="{settings.occlusion}";'
-                        f'window.CONJURE_WORKER_URL="/static/room-worker.js?v={v}";</script>\n  </head>')
+                        f'window.CONJURE_WORKER_URL="/static/space-worker.js?v={v}";</script>\n  </head>')
     return HTMLResponse(html, headers=_NO_STORE)
 
 
@@ -1524,10 +1524,10 @@ async def client_js() -> FileResponse:
     return FileResponse(CLIENT_DIR / "conjure-client.js", media_type="application/javascript", headers=_NO_STORE)
 
 
-@app.get("/static/room-snap.js")
-async def room_snap_js() -> FileResponse:
+@app.get("/static/space-snap.js")
+async def space_snap_js() -> FileResponse:
     # Explicit no-store route for the snapping module (loaded before conjure-client.js).
-    return FileResponse(CLIENT_DIR / "room-snap.js", media_type="application/javascript", headers=_NO_STORE)
+    return FileResponse(CLIENT_DIR / "space-snap.js", media_type="application/javascript", headers=_NO_STORE)
 
 
 @app.get("/static/world-model.js")
@@ -1590,7 +1590,7 @@ async def world() -> dict:
 @app.post("/reset")
 async def reset_world() -> dict:
     """Reset the ACTIVE world to the empty starter (+ the agent's constructor) — clears all entities +
-    environment (incl. any captured room) and broadcasts a fresh snapshot. The room re-captures on its
+    environment (incl. any captured space) and broadcasts a fresh snapshot. The room re-captures on its
     own once a headset is back in AR. The world keeps its name; only its contents are wiped."""
     global store
     raw = _new_world_store(active_scope)      # empty starter world (placed content + prefs only)
@@ -1598,7 +1598,7 @@ async def reset_world() -> dict:
         if (spaces and not _no_space() and spaces.exists(active_space_owner, active_space)) \
         else {"surfaces": [], "boundary": None}   # keep the active space's geometry (from its owner's scope)
     store = WorldStore(_compose(raw.doc, space))   # keep the physical room; clear only the world's content
-    _reset_room_authority(store)
+    _reset_capture_authority(store)
     _save_active()                            # persist the reset so it survives a restart
     await _broadcast(_snapshot_msg())
     return {"ok": True, "rev": store.doc["rev"]}
@@ -2060,7 +2060,7 @@ class WorldRef(BaseModel):
     name: str
     scope: str = DEFAULT_SCOPE
     public: bool = True               # new_world: create public (default) or private
-    outdoor: bool = False             # new_world: an OUTDOOR/void world (skybox, no room; space = <void>)
+    outdoor: bool = False             # new_world: an OUTDOOR/void world (skybox, no space; space = <void>)
 
 
 class ScopeRef(BaseModel):
@@ -2099,7 +2099,7 @@ def _unique_space_name(user: str) -> str:
 
 def _candidate_surface(e: dict) -> dict:
     """Trim a stored surface entity to just the geometry the client's registration vote needs
-    (RoomSnap.surfaceToRef) — id, semantic, pose, extent. Drops materials/debug/overlays from the wire."""
+    (SpaceSnap.surfaceToRef) — id, semantic, pose, extent. Drops materials/debug/overlays from the wire."""
     t, comps = e.get("transform") or {}, e.get("components") or {}
     return {"id": e.get("id"),
             "meta": {"semantic": (e.get("meta") or {}).get("semantic", "surface")},
@@ -2111,7 +2111,7 @@ def _geo_candidates(lat: float, lon: float) -> list[dict]:
     """Stage 1 of space selection (specs/spaces.md §6, D2/D7): every space ACROSS ALL USERS whose stored
     geolocation is within `_GEO_RANGE_M` of (lat, lon), each with its surface constellation for the
     client's registration vote. Geolocation only NARROWS the field (two rooms at one address both qualify);
-    the client's `RoomSnap.selectSpace` picks the exact one. Nearest-first is just a tiebreak — the
+    the client's `SpaceSnap.selectSpace` picks the exact one. Nearest-first is just a tiebreak — the
     geometric vote, not distance, decides. A filesystem walk over every user's spaces; index later."""
     out = []
     for owner in spaces.list_users():
@@ -2176,7 +2176,7 @@ def _cid(req) -> str:
 async def report_geolocation(req: GeoReport) -> dict:
     """Stage 1 (discovery) of space selection. The AR client reports its coarse location; we return every
     geo-near candidate space across all users (each with its surface constellation) for the client to
-    disambiguate by registration (`RoomSnap.selectSpace`) and then commit via `/space/select`. **Read-only**
+    disambiguate by registration (`SpaceSnap.selectSpace`) and then commit via `/space/select`. **Read-only**
     — it never changes the active space. Each client commits ONCE per claim epoch (see `/space/select`);
     once it has, later reports from that client return no candidates so GPS jitter can't re-open its choice
     (a DIFFERENT, co-located AR client still gets candidates — it must vote to pass the admission gate)."""
@@ -2236,19 +2236,19 @@ async def select_space(req: SpaceSelect) -> dict:
     # --- Unclaimed (provisional boot / everyone left): this AR user ESTABLISHES the space.
     _selected_cids.add(cid)
 
-    # specs/spaces.md §4.3 — a DELIBERATELY room-less world is not relocated by recognising the room you're standing in.
+    # specs/spaces.md §4.3 — a DELIBERATELY space-less world is not relocated by recognising the room you're standing in.
     # The client votes its capture against the candidates even here, and must: without it, an outdoor
     # re-entry never resolves a space at all. But resolving WHICH space you are in and MOVING you to that
     # space's last world are two different things, and only the first is wanted when you chose to be
     # nowhere. So: claim the space (occupancy + boundary are still real) and stay put.
     #
-    # This is only safe because UNSET exists (§4.3). A boot placeholder is room-less too, and relocating it
+    # This is only safe because UNSET exists (§4.3). A boot placeholder is space-less too, and relocating it
     # is exactly right — it is a guess, not a choice. Were both spelled VOID, this branch would strand a
     # headset user in a blank world.
     if active_space == VOID:
         _slog("select", f"user={who!r} matched {req.owner}/{req.name} but the live world is outdoor "
                         f"→ space claimed, NOT relocating")
-        await _broadcast({"type": "notice", "text": "You're in a world with no room — staying put."})
+        await _broadcast({"type": "notice", "text": "You're in a world with no space — staying put."})
         return {"ok": True, "admitted": True, "kept_outdoor": True,
                 "msg": "You're in an outdoor world, so I've left you in it."}
 
@@ -2323,7 +2323,7 @@ def _entry_scope_for(user: str, *, prefer: Optional[str] = None) -> str:
         the space's remembered scope  →  the live scope  →  the default agent
 
     A candidate is skipped when its agent no longer resolves on the search path (deleted or renamed), or
-    when it declares `world.outdoor` — an outdoor agent's worlds are room-less by declaration (specs/agents.md §3), so
+    when it declares `world.outdoor` — an outdoor agent's worlds are space-less by declaration (specs/agents.md §3), so
     it cannot host a world tied to a space and preferring it would contradict its own definition.
 
     This is what fixed coming back as the *builder*: the scope was hard-coded, so a space whose remembered
@@ -2768,12 +2768,12 @@ async def post_patch(patch: Patch) -> dict:
     return applied
 
 
-# --- Room model: the client→server reverse channel (a headset reports its real room) ------------
+# --- Space model: the client→server reverse channel (a headset reports its real space) ------------
 # Captured surfaces become `real`-tagged stylable entities; `environment.room` holds the boundary,
-# active flag, and the single room **authority** (only that headset may report room geometry).
+# active flag, and the single room **authority** (only that headset may report space geometry).
 # See docs/specs/worlds-surfaces.md.
 
-class RoomSurface(BaseModel):
+class CapturedSurface(BaseModel):
     id: str                                   # stable id from the headset, e.g. "real_wall_3"
     semantic: str = "surface"                 # wall | floor | ceiling | table | …
     position: list[float]
@@ -2795,14 +2795,14 @@ class RoomSurface(BaseModel):
     debug: Optional[dict] = None                  # raw pose/label for diagnosis (stored in meta)
 
 
-class RoomUpdate(BaseModel):
+class CaptureUpdate(BaseModel):
     client_id: str                            # which headset is reporting
-    surfaces: list[RoomSurface] = []
+    surfaces: list[CapturedSurface] = []
     boundary: Optional[dict] = None           # {floorPolygon: [[x,z]…], height: float}
     replace: bool = True                      # replace the whole real-surface set vs merge
 
 
-def _surface_entity(s: RoomSurface) -> dict:
+def _surface_entity(s: CapturedSurface) -> dict:
     """A fresh `real` surface entity. Visibility/style are left to the renderer default
     (environment.spacePresentation.defaultSurfaceVisible) + later director edits, so re-capture never clobbers
     a director's color/visibility (those go through update, below)."""
@@ -2883,7 +2883,7 @@ def _compose(world_doc: dict, space: dict) -> dict:
     if space.get("boundary") is not None:
         env["boundary"] = space["boundary"]        # geometry on loan from the space, live-only
     # A world INHERITING a non-empty space's geometry (created new / switched-to / reset) genuinely has a
-    # room, even with no live headset ingest this session — so mark it active for the director's query_room
+    # room, even with no live headset ingest this session — so mark it active for the director's query_space
     # (which gates on spacePresentation.active). Only default it: an explicit False (a director immersion mode like
     # vr_unbounded, mcp_server.py) is respected. spacePresentation.active only ever meant "a room exists to work with".
     if reals and "active" not in pres:
@@ -2971,9 +2971,9 @@ def _may_create_world_in(user: str, owner: str, name: str) -> bool:
 def _space_for_new_world(scope: str, *, outdoor: bool = False) -> str:
     """The `environment.space` a freshly-minted world adopts (D5/step 5): the LIVE, geo+surface-selected
     space, so a world created while a headset is standing in a room composes THAT room. VOID — the honest
-    "no room here" — in three cases:
+    "no space here" — in three cases:
 
-      - `outdoor`: an explicitly room-less world (skybox only);
+      - `outdoor`: an explicitly space-less world (skybox only);
       - no space is live (`active_space == VOID`) — an unclaimed server, or a void/outdoor world;
       - the creator may not build in the live space (`_may_create_world_in` — someone else's PRIVATE
         space). `/worlds/new` REFUSES that outright because the user asked for it explicitly; the
@@ -2998,19 +2998,19 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     style overrides. The real-surface geometry + boundary live in a shared, user-owned *space* (docs/
     specs/spaces.md §2). `environment.space` points a world at its space:
 
-        VOID ("<void>")     → an outdoor/void world: no room to merge — objects + skybox only.
+        VOID ("<void>")     → an outdoor/void world: no space to merge — objects + skybox only.
         "<owner>/<name>"    → a shared space, possibly ANOTHER user's (D3, the target form).
         "<name>"            → a bare/legacy ref → the world-owner's own space (back-compat).
         absent              → no space chosen YET → UNSET (D5 step 5 + specs/spaces.md §4.3): renders like VOID
-                              (the honest "no room yet", never the old anonymous-'home' fallback), but a
+                              (the honest "no space yet", never the old anonymous-'home' fallback), but a
                               headset selecting a space MAY relocate it, where a deliberate VOID may not.
 
     `_compose` merges the world's objects/prefs with the space's surfaces to build the doc the client
     renders. On the way back out, `_save_active` SPLITS the live doc again (geometry → the space's owner's
     scope, objects + overrides → the world), so geometry only ever flows world→space on real capture.
 
-    Returns `(space_owner, space_name, composed_store)` with room-capture authority reset (fresh session
-    state). A room-less world returns `(world_owner, VOID | UNSET, …)` — the owner is irrelevant for it.
+    Returns `(space_owner, space_name, composed_store)` with space-capture authority reset (fresh session
+    state). A space-less world returns `(world_owner, VOID | UNSET, …)` — the owner is irrelevant for it.
 
     specs/spaces.md §6.1 — the old LEGACY-MIGRATION path is gone (activate is read-only; it never
     rewrites a world doc). **step 2** — space references are now fully-qualified `<owner>/<name>`, so a
@@ -3022,14 +3022,14 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
     doc = world.doc
     space_ref = (doc.get("environment", {}) or {}).get("space")
     if space_ref == VOID or not space_ref:                         # explicit outdoor/void OR no space chosen
-        composed_doc = copy.deepcopy(doc)                          # yet: no room to merge — objects +
+        composed_doc = copy.deepcopy(doc)                          # yet: no space to merge — objects +
         composed_doc["entities"] = [e for e in composed_doc.get("entities", [])   # skybox only. Neither
                                     if not (e.get("meta") or {}).get("real")]     # owns real geometry —
         # The LIVE doc says VOID for both, so the client's two-state contract (`isVoidWorld` → canonical
         # frame) is untouched; only the server keeps the third state, in `active_space`.
         composed_doc.setdefault("environment", {})["space"] = VOID
         composed = WorldStore(composed_doc)
-        _reset_room_authority(composed)
+        _reset_capture_authority(composed)
         return world_owner, (VOID if space_ref == VOID else UNSET), composed
     owner, space_name = _resolve_space_ref(space_ref, world_owner)
     if spaces.exists(owner, space_name):
@@ -3041,7 +3041,7 @@ def _activate(scope: str, name: str, world: WorldStore) -> tuple[str, str, World
         if owner == world_owner:
             spaces.set_active(owner, space_name)                   # only track YOUR OWN space as current
     composed = WorldStore(_compose(doc, space))
-    _reset_room_authority(composed)
+    _reset_capture_authority(composed)
     return owner, space_name, composed
 
 
@@ -3057,10 +3057,10 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 # Removal debounce now lives on the CLIENT (docs §7): it posts its confirmed set only when it structurally
 # changes, so a surface missing from a post is genuinely gone and the server prunes it at once — no
 # server-side absence counter is needed.
-# Room authority (the one headset allowed to report geometry) is claimed by the first capturer's
+# Capture authority (the one headset allowed to report geometry) is claimed by the first capturer's
 # per-page-load client id and cleared only on world-activate/boot — so a RECONNECTING owner (fresh id)
 # used to be locked out until a restart. Fix B: an authority goes STALE after _AUTH_TTL with no post; a
-# new capturer then TAKES IT OVER. Safe because /room is already owner-only (middleware), so only the
+# new capturer then TAKES IT OVER. Safe because /space/capture is already owner-only (middleware), so only the
 # active world's owner ever reaches here — the guard is just against two of their live headsets at once.
 _AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle authority holds before takeover
 _authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
@@ -3157,8 +3157,8 @@ def _surface_update_set(s, aspects) -> dict:
 
 
 @app.post("/space/capture")
-async def ingest_room(req: RoomUpdate) -> dict:
-    """Ingest captured room geometry from the room **authority** headset into the shared MODEL / SEED.
+async def ingest_capture(req: CaptureUpdate) -> dict:
+    """Ingest captured space geometry from the room **authority** headset into the shared MODEL / SEED.
 
     LOCAL-FIRST (docs/specs/spaces-geometry.md §2): every client renders its OWN live capture, so this no
     longer broadcasts geometry for rendering. It just keeps the stored SEED current — the reference
@@ -3176,10 +3176,10 @@ async def ingest_room(req: RoomUpdate) -> dict:
     now = time.time()
     if authority and authority != req.client_id:
         if (now - _authority_ts) < _AUTH_TTL:                 # another headset is live → refuse
-            _slog("room", f"reject client={req.client_id} — {authority!r} holds authority "
+            _slog("space", f"reject client={req.client_id} — {authority!r} holds authority "
                           f"({now - _authority_ts:.1f}s ago)")
-            return {"ok": False, "error": f"another headset ({authority}) is the room authority"}
-        _slog("room", f"authority takeover: {authority!r} idle {now - _authority_ts:.0f}s → {req.client_id}")
+            return {"ok": False, "error": f"another headset ({authority}) is the capture authority"}
+        _slog("space", f"authority takeover: {authority!r} idle {now - _authority_ts:.0f}s → {req.client_id}")
     _authority_ts = now                                       # keep/refresh authority for this client
 
     existing = {e["id"]: e for e in store.doc["entities"] if e.get("meta", {}).get("real")}
@@ -3227,7 +3227,7 @@ async def ingest_room(req: RoomUpdate) -> dict:
             _glog("seed.add", {"id": s.id, "sem": s.semantic})
             _slog("seed", f"surface {s.id} new → added to seed")
     if geo_ops:
-        store.apply_patch(geo_ops, origin="room")             # seed updated in place; NOT broadcast
+        store.apply_patch(geo_ops, origin="space")             # seed updated in place; NOT broadcast
 
     # Only these reach clients: room-activation/boundary env + on-surface image re-anchors (content, which
     # clients DO render). Geometry is theirs to render locally.
@@ -3247,17 +3247,17 @@ async def ingest_room(req: RoomUpdate) -> dict:
              for s in req.surfaces if s.id in changed_ids}
     wire_ops += _reanchor_ops(store.doc, moved)               # re-pin photos on surfaces that moved
     if wire_ops:
-        patch = store.apply_patch(wire_ops, origin="room")
+        patch = store.apply_patch(wire_ops, origin="space")
         await _broadcast({"type": "patch", "patch": patch})
 
     if geo_ops or wire_ops:
-        _slog("room", f"accept client={req.client_id} → {active_scope.split('/', 1)[0]}/{active_world} "
+        _slog("space", f"accept client={req.client_id} → {active_scope.split('/', 1)[0]}/{active_world} "
                       f"surfaces={len(req.surfaces)} changed={len(changed_ids)} seed_ops={len(geo_ops)} wire={len(wire_ops)}")
     return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
 
 
 @app.post("/space/realign")
-async def realign_room() -> dict:
+async def realign_space() -> dict:
     """Ask connected headsets to re-capture the room at the current tracking origin (restores alignment
     after a recenter/reload). No-op for clients not in an AR session. (Clients render their own capture
     locally now, so this is just a nudge to recapture — there's no server-side freeze to reopen.)"""
@@ -3273,14 +3273,14 @@ class TextureSurfaceRequest(BaseModel):
 
 @app.post("/texture_surface")
 async def texture_surface(req: TextureSurfaceRequest) -> dict:
-    """Map a procured image onto room surface(s) — stars on the ceiling, grass on the floor, a mural
+    """Map a procured image onto real surface(s) — stars on the ceiling, grass on the floor, a mural
     on a wall. Sets the real surface's material to the image (white-tinted, visible)."""
     rec, _, err = _get_image(req.image_id)
     if err:
         return {"ok": False, "error": err}
-    targets = _room_targets(req.target)
+    targets = _surface_targets(req.target)
     if not targets:
-        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_room)"}
+        return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     mat = {"components.material.src": rec.url, "components.material.shader": "flat",
            "components.material.color": "#FFFFFF", "components.material.side": "double",
            "components.material.visible": True}
@@ -3309,7 +3309,7 @@ def _real_surface_match(e: dict, target: str) -> bool:
     return bool(mm and mm.group(1).strip() in (sem, "surface") and mm.group(2) == fid)
 
 
-def _room_targets(target: str) -> list[dict]:
+def _surface_targets(target: str) -> list[dict]:
     """Real surfaces matching `target` (see _real_surface_match)."""
     return [e for e in store.doc["entities"] if _real_surface_match(e, target)]
 
@@ -3330,11 +3330,11 @@ class StyleSurfaceRequest(BaseModel):
 
 @app.post("/style_surface")
 async def style_surface(req: StyleSurfaceRequest) -> dict:
-    """Color and/or set the transparency of room surface(s) — e.g. semi-transparent blue walls, a
+    """Color and/or set the transparency of real surface(s) — e.g. semi-transparent blue walls, a
     glass ceiling. (For an image, use /texture_surface.)"""
-    targets = _room_targets(req.target)
+    targets = _surface_targets(req.target)
     if not targets:
-        return {"ok": False, "error": f"no room surface matches {req.target!r} (try query_room)"}
+        return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     setm: dict = {"components.material.visible": True}
     if req.color is not None:
         setm["components.material.color"] = req.color
@@ -3927,7 +3927,7 @@ def _forward(rotation: list[float]) -> list[float]:
 # surface (floor/table/ceiling), where gravity gives no in-plane up: there the content's up is snapped to
 # the surface-rectangle axis whose bottom edge sits nearest the placing viewer (square to the surface,
 # readable from where they stood), stored surface-local so a re-capture reproduces it (see
-# `_content_up_local` / `_face_room(up_local=…)`). A wall never needs this.
+# `_content_up_local` / `_face_interior(up_local=…)`). A wall never needs this.
 # Measured on-device (`[normals]` probe): surface normals are reliably outward-from-room, so -normal is the
 # interior in every room including a multi-room space (each wall's own normal marks its own room).
 def _norm3(v: list[float]) -> list[float]:
@@ -3976,7 +3976,7 @@ def _face_user(user: str, position: list[float] | None, distance: float = 1.2) -
     return {"position": pos, "rotation": [0.0, round(yaw, 2), 0.0]}
 
 
-def _face_room(srot: list[float], up_local: Optional[list[float]] = None) -> dict:
+def _face_interior(srot: list[float], up_local: Optional[list[float]] = None) -> dict:
     """Orientation for content hung on a surface: face the room INTERIOR (upright). Surfaces store their
     OUTWARD normal, so the interior is `-normal`; `up` = gravity projected onto the plane. On a HORIZONTAL
     surface (floor/table/ceiling) gravity gives no in-plane up, so the content's up is ambiguous — pass
@@ -4034,7 +4034,7 @@ def _content_up_local(srot: list[float], spos: list[float], user: str) -> Option
 
 # --- on-surface re-anchoring: keep place_image(on_surface=…) planes glued to their surface across a room
 #     re-registration/re-capture. The image records meta.on_surface = the surface id; we re-derive its pose
-#     (2 cm in front, re-oriented toward the room via _face_room, re-fit to the current frame) from the
+#     (2 cm in front, re-oriented toward the room via _face_interior, re-fit to the current frame) from the
 #     surface's CURRENT geometry — so when the surface moves, the image follows instead of being stranded.
 def _surface_offset(spos: list[float], srot: list[float],
                     ipos: list[float], irot: list[float]) -> dict:
@@ -4063,7 +4063,7 @@ def _dims_component(e: dict) -> Optional[str]:
 
 def _on_surface_set(spos: list[float], srot: list[float], extent, e: dict) -> dict:
     """The `update`-op `set` for on-surface content (a placed image OR an image-bearing dynamic module):
-    face the room interior (upright, via `_face_room`), sit 2 cm in front, re-fit to the surface frame
+    face the room interior (upright, via `_face_interior`), sit 2 cm in front, re-fit to the surface frame
     keeping the content's current aspect, and carry the host-local offset (§7c-B2) so the client can ride
     it without its own copy of the host seed pose. A horizontal surface reuses the placing viewer's facing
     from `meta.content_up` (surface-local), so a re-capture keeps the bottom edge toward where it was placed."""
@@ -4083,7 +4083,7 @@ def _on_surface_set(spos: list[float], srot: list[float], extent, e: dict) -> di
                      "transform.rotation": [round(c, 4) for c in rot]}
     else:
         # No offset yet (first placement / legacy content): centre it on the surface, facing the room.
-        fr = _face_room(srot, (e.get("meta") or {}).get("content_up"))
+        fr = _face_interior(srot, (e.get("meta") or {}).get("content_up"))
         f = fr["forward"]
         pos = [spos[i] + get_settings().on_surface_standoff * f[i] for i in range(3)]
         out = {"transform.position": pos, "transform.rotation": fr["rotation"],
@@ -4114,7 +4114,7 @@ def _reanchor_surface_images(doc: dict) -> None:
 
 def _reanchor_ops(doc: dict, moved: dict) -> list[dict]:
     """`update` ops re-pinning on-surface images whose surface id is in `moved` (id → {position, rotation,
-    extent}, e.g. just re-captured). Used live in ingest_room so the image rides the re-captured surface."""
+    extent}, e.g. just re-captured). Used live in ingest_capture so the image rides the re-captured surface."""
     ops = []
     for e in doc.get("entities", []):
         s = moved.get((e.get("meta") or {}).get("on_surface"))
@@ -4139,7 +4139,7 @@ def _plane_basis(rotation: list[float]) -> tuple[list[float], list[float], list[
 
 
 def _ray_surface(origin: list[float], direction: list[float]) -> Optional[dict]:
-    """Nearest REAL room surface a ray (from `origin` along unit `direction`) hits within its extent —
+    """Nearest REAL real surface a ray (from `origin` along unit `direction`) hits within its extent —
     'the wall I'm looking at'. Returns {id, semantic, friendly_id, distance, point} or None."""
     best = None
     for e in store.doc["entities"]:
@@ -4254,9 +4254,9 @@ async def place_image(req: PlaceImageRequest, request: Request) -> dict:
     width, height = _plane_dims(rec, req.size_m or 1.0, stereo)
     rotation = None
     if req.on_surface:  # hang on a real surface: face the room (upright), fit its frame, sit just in front
-        surfaces = _room_targets(req.on_surface)
+        surfaces = _surface_targets(req.on_surface)
         if not surfaces:
-            return {"ok": False, "error": f"no room surface matches {req.on_surface!r}"}
+            return {"ok": False, "error": f"no real surface matches {req.on_surface!r}"}
         surf = surfaces[0]
         srot = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
         spos = surf.get("transform", {}).get("position") or pos
@@ -4265,7 +4265,7 @@ async def place_image(req: PlaceImageRequest, request: Request) -> dict:
             width, height = (float(extent[0]), float(extent[1])) if req.stretch else _fit_dims(rec, extent, stereo)
         caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
         up_local = _content_up_local(srot, spos, caller)  # horizontal surface → bottom edge toward the viewer
-        fr = _face_room(srot, up_local)                   # face the room interior (-normal), upright
+        fr = _face_interior(srot, up_local)                   # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]   # toward the viewer
     eid = req.name or f"ent_image_{uuid4().hex[:6]}"
@@ -4420,9 +4420,9 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
     meta = {"module": req.module, "dynamic": True}
     extra_components: dict = {}
     if req.on_surface:   # mount on a real surface: align to it, fit its frame, ride it (like place_image)
-        surfaces = _room_targets(req.on_surface)
+        surfaces = _surface_targets(req.on_surface)
         if not surfaces:
-            return {"ok": False, "error": f"no room surface matches {req.on_surface!r}"}
+            return {"ok": False, "error": f"no real surface matches {req.on_surface!r}"}
         surf = surfaces[0]
         srot = surf.get("transform", {}).get("rotation") or [0.0, 0.0, 0.0]
         spos = surf.get("transform", {}).get("position") or pos
@@ -4433,7 +4433,7 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
             config["width"], config["height"] = _module_plane_dims(rec, config, extent, stretch=req.stretch)
         caller = request.headers.get("X-Conjure-User") or active_scope.split("/", 1)[0]
         up_local = _content_up_local(srot, spos, caller)       # horizontal surface → bottom edge toward viewer
-        fr = _face_room(srot, up_local)                        # face the room interior (-normal), upright
+        fr = _face_interior(srot, up_local)                        # face the room interior (-normal), upright
         rotation = fr["rotation"]
         pos = [spos[i] + get_settings().on_surface_standoff * fr["forward"][i] for i in range(3)]
         meta["on_surface"] = surf["id"]
@@ -4668,7 +4668,7 @@ class ManipulateRequest(BaseModel):
     # plane-relative (shared surface ids + offsets), so one authored against any client's walls solves
     # correctly on every other client. Preferring it avoids re-authoring here from the committed position:
     # that adds author/solve hops between plane sets that aren't rigidly related, and the residual shows up
-    # as content settling slightly off where the user dropped it. Omitted (no room basis) ⇒ we re-author.
+    # as content settling slightly off where the user dropped it. Omitted (no space basis) ⇒ we re-author.
     anchor: Optional[dict] = None
     # Likewise for SURFACE-ATTACHED content: the host-local offset (host⁻¹·content) the client computed
     # against its own rendered host. Host-relative ⇒ frame-independent ⇒ stored verbatim.
@@ -4678,13 +4678,13 @@ class ManipulateRequest(BaseModel):
 @app.post("/manipulate")
 async def manipulate_entity(req: ManipulateRequest) -> dict:
     """Commit a placed object's new resting transform after a `grab` manipulation (tier C). Owner-gated
-    like every world write. Real room surfaces are never movable. For on-surface content, recompute
+    like every world write. Real real surfaces are never movable. For on-surface content, recompute
     `meta.surface_offset` from the new pose so it still rides a room recapture (mirrors place_image)."""
     ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
     if ent is None:
         return {"ok": False, "error": f"no entity {req.id!r}"}
     if (ent.get("meta") or {}).get("real"):
-        return {"ok": False, "error": "real room surfaces can't be moved"}
+        return {"ok": False, "error": "real space surfaces can't be moved"}
     sets: dict = {}
     if req.position is not None:
         sets["transform.position"] = req.position
@@ -4711,7 +4711,7 @@ async def manipulate_entity(req: ManipulateRequest) -> dict:
     # on the fly from the F_ref pose every capture, so it's wall-solved either way. Keeping the exact anchor
     # the user's drop produced just replaces a re-derived approximation with the real thing — the same
     # accuracy models get. (Surface-attached content is host-relative; surface_offset covers it below.)
-    # …but NOT in a room-less world. An anchor is plane-relative — surface ids plus offsets — so in a VOID
+    # …but NOT in a space-less world. An anchor is plane-relative — surface ids plus offsets — so in a VOID
     # world it names walls that do not exist here, and any client holding a stale basis will solve it and
     # teleport the object. The client should not send one (it needs a basis to author it), but a stale
     # basis is exactly the bug this guards: refusing it here contains a client-side fault to that client,

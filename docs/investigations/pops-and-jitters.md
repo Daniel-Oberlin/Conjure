@@ -31,7 +31,7 @@ in §7).
 ### 1.2 Wall sealing to the shell — `sealWalls` — **merged** (`6569eca`)
 - **Symptom:** a thin open slit at the wall/ceiling (and wall/floor) line once fills were made solid.
 - **Cause:** the Quest fits walls a few mm–cm short of the ceiling/floor.
-- **Fix:** `client/room-snap.js` `sealWalls` snaps a wall's **top→ceiling / bottom→floor** when the edge is
+- **Fix:** `client/space-snap.js` `sealWalls` snaps a wall's **top→ceiling / bottom→floor** when the edge is
   already within `--wall-seal-tol` (0.15 m) of the plane. Vertical-only (plane/width/registration untouched).
   Guards: a **footprint `covers()` test** + seal to the **highest covering ceiling** (fixed a shared boundary
   wall sealing to the wrong room's ceiling → a 4 mm slit). Unit-tested (pipeline guards).
@@ -212,7 +212,7 @@ path. The only maybe is the **WebXR Layers API** (`XRWebGLBinding` projection la
   counter (`abe7a18`), and this journey doc (`0159f38`).
 
 **Tests added:** `advanceSig` regression tests + slew-math tests (`tests/js/world-model.test.js`);
-`joinCorners`/`sealWalls`/`snapInsets` pipeline-composition guards (`tests/js/room-snap.test.js`). Full suite
+`joinCorners`/`sealWalls`/`snapInsets` pipeline-composition guards (`tests/js/space-snap.test.js`). Full suite
 green at merge (97 JS + 318 Python).
 
 ---

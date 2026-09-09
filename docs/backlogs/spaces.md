@@ -36,14 +36,14 @@ Strip that away and there are exactly two readers:
 
 | Consumer | What it does with it |
 |---|---|
-| `mcp_server.py:267` `_room_summary` | prints one line of text: `boundary: height 2.6m, floor polygon [[x,z],…]` |
+| `mcp_server.py:267` `_space_summary` | prints one line of text: `boundary: height 2.6m, floor polygon [[x,z],…]` |
 | `server.py:2372` shell `status` | a yes/no presence indicator in an inspection table |
 
 So the boundary today is **a hint to the LLM, delivered as raw coordinates, that nothing verifies.**
 
 **There is no in-bounds clamp.** The design promised models would land inside the boundary and never
 through a wall; no such check exists on any placement path, and `floorPolygon` is read in exactly one
-place — the text formatter above. `query_room`'s own docstring still promises the enforcement ("Read
+place — the text formatter above. `query_space`'s own docstring still promises the enforcement ("Read
 this before placing things (so models land INSIDE the room, not through a wall)"), and the builder
 prompt names the boundary in its Live-context bullet, so the raw polygon reaches the model every turn.
 Both are advice, not a guarantee.
@@ -55,7 +55,7 @@ absent when nothing checks.
 Worth noting the codebase already solves this correctly elsewhere. `sealWalls` faces the identical
 question — which floor/ceiling belongs to this wall? — and answers it per-wall with a footprint
 `covers()` test plus a margin, so a wall on a shared boundary counts under both adjoining rooms
-(`room-snap.js:539`). The multi-room-correct machinery exists a few hundred lines from the global
+(`space-snap.js:539`). The multi-room-correct machinery exists a few hundred lines from the global
 `if (area > best)`.
 
 **Three options, in increasing cost. They are not alternatives — 3 depends on 1.**
@@ -75,6 +75,12 @@ only one, do 2 — the director's behaviour is the only thing downstream of this
 
 Fixing (1) also unblocks director-authored replacement geometry, which needs a safe footprint to
 extrude — see [`backlogs/worlds-surfaces.md`](./worlds-surfaces.md).
+
+**Option (1) now has a partition to key on.** The room-segmentation plan in
+[`backlogs/spaces-geometry.md`](./spaces-geometry.md) (*rooms as a first-class unit*, proposed 2026-09-07)
+builds exactly what per-room boundaries need — floor-keyed rooms with persisted identity — as the
+foundation for piecewise-rigid registration. If it lands, this item is mostly a summary-formatting job on
+top of it rather than a segmentation problem of its own.
 
 ### Void worlds cannot be re-homed
 
@@ -110,7 +116,7 @@ Candidate fixes, cheapest first:
   have never seen before and minting the world *beside* it is not the same as being dragged out of an
   outdoor world into your living room. The user stays put; a world bound to that space now exists to
   switch to.
-- **Say so.** The notice is *"You're in a world with no room — staying put."* It is accurate and it hides
+- **Say so.** The notice is *"You're in a world with no space — staying put."* It is accurate and it hides
   the interesting half: that this place is unknown and nothing here can hold it. Naming that would have
   saved the whole diagnosis.
 - **A re-home endpoint** — the original entry above. Solves this too, and more.
@@ -148,7 +154,7 @@ full edit rights. Tighten to require the header once the dev CLI attaches one.
 
 ### An empty capture wipes a space's geometry, with no floor under it
 
-`RoomUpdate.replace` defaults to **`True`** (`server.py:2579`), and under `replace` the server prunes
+`CaptureUpdate.replace` defaults to **`True`** (`server.py:2579`), and under `replace` the server prunes
 every stored surface absent from the post. So a single `POST /space/capture` carrying
 `surfaces: []` deletes the whole seed — 59 surfaces down to the handful that happen to be `anchored`
 (photo-pinned, and protected only for that reason).
@@ -167,7 +173,7 @@ Cheap guards, roughly in order of value:
 
 - **Refuse a wholesale prune.** Reject (or downgrade to merge) a `replace` post that would remove more
   than some fraction of the stored set — say >50% — unless it carries an explicit
-  `confirm_empty`/`force` flag. A real room does not lose 90% of its surfaces in one capture.
+  `confirm_empty`/`force` flag. A real space does not lose 90% of its surfaces in one capture.
 - **Never prune to empty.** A `replace` post with zero surfaces is far more likely a bug than a fact;
   treat it as a no-op and log loudly.
 - **Snapshot before a destructive ingest**, so recovery does not depend on an unrelated backup being
@@ -339,7 +345,7 @@ Two rough edges seen on-device, **not yet fixed**. Captured here so they're not 
 Three distinct mechanisms were found behind these, in order of impact:
 
 1. **Duplicate-space roulette (main driver of "wrong world on re-entry").** `_geo_candidates` returns *every*
-   space within GPS range, and the client's `RoomSnap.selectSpace` picks by best registration coverage. When
+   space within GPS range, and the client's `SpaceSnap.selectSpace` picks by best registration coverage. When
    several **geo-overlapping** spaces exist at one physical location (leftovers accumulated during the
    churn/deadlock era, when garbage seeds couldn't be re-matched so each re-entry minted a fresh `space-N` +
    a world named after it), the vote lands on a *different* space each re-entry — and each space carries its

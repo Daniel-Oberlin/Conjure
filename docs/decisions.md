@@ -306,12 +306,12 @@ active world. A second user may **join a public world** and co-locate. Full plan
   for "which space am I in"; the geometry-registration vote is the fine discriminator.
 
 **Implications:** supersedes #14's agent-first namespace; migration moves existing `private/builder`
-data to user `daniel` and extracts the embedded room surfaces into `daniel`'s first space. Phased
+data to user `daniel` and extracts the embedded real surfaces into `daniel`'s first space. Phased
 build (5 phases) in the plan; Phase 1 (users + namespace + migration) is foundational and user-invisible.
 
 ### 16. Capture solve off the render thread; gated + sliced render — ✅ RESOLVED
-**Choice:** Keep the ~0.5 Hz room capture from ever landing heavy work in a single render frame. Move
-`RoomSnap.register` into a **Web Worker** (the render applies on its reply); split the apply-gate into
+**Choice:** Keep the ~0.5 Hz space capture from ever landing heavy work in a single render frame. Move
+`SpaceSnap.register` into a **Web Worker** (the render applies on its reply); split the apply-gate into
 **pose vs shape** so tracking drift re-lays only cheap transforms; gate the per-surface **styling** to run
 only on change; and **time-slice** the mesh re-triangulation across frames under a per-frame budget
 (`--geo-slice-ms`). Full mechanism in **`docs/specs/spaces-geometry.md` §14**.
@@ -325,7 +325,7 @@ only on change; and **time-slice** the mesh re-triangulation across frames under
   frame** — which also buys headroom as scenes grow (the solve/rebuild cost decouples from frame rate).
 
 **Implications:**
-- New client files `room-worker.js` + vendored `three.module.min.js`; `?v=`-cache-busted like page scripts.
+- New client files `space-worker.js` + vendored `three.module.min.js`; `?v=`-cache-busted like page scripts.
   Synchronous fallback if the worker can't start (`window.CONJURE_WORKER=false` forces it) — no hard
   dependency on worker support.
 - New knobs: `--geo-slice-ms` (slice budget; `<=0` = off) and `--debug-jitter` (probes without the heavy
@@ -350,7 +350,7 @@ therefore stranded references, including two we can't reach at all: schema-free 
 The first design was a move+alias scheme: keep names as identity, patch the breakage with a redirect
 table. It was rejected because every question it raised — chain collapsing, name reuse, alias expiry,
 what `delete` on an alias means — existed *only because aliases existed*, the table grows forever, and it
-still couldn't fix a client-side bug (`conjure-client.js` keyed the room-capture frame on the world
+still couldn't fix a client-side bug (`conjure-client.js` keyed the space-capture frame on the world
 *name*, so a rename read as a world switch and reset the frame). An id removes the cause instead of
 patching the symptom, and is correct on the second rename as well as the first.
 
@@ -410,8 +410,8 @@ see it snap *as you drag*. A server-commit snap would hop after release.
 Node at all. Never a big-bang port.
 
 **Why the prize is real:** one runtime kills the server↔client geometry-math duplication.
-`_face_room` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler all shadow JS in
-`room-snap.js` / `world-model.js` / `plane-anchor.js`, and that duplication is the source of a whole class
+`_face_interior` / `_plane_basis` / `_fit_extent` / `_surface_offset` / quaternion+YXZ-euler all shadow JS in
+`space-snap.js` / `world-model.js` / `plane-anchor.js`, and that duplication is the source of a whole class
 of parity bugs — YXZ order, quat→euler, the boundary frame-flip, normals-outward. It would also give
 module authors one language for both halves.
 
@@ -455,7 +455,7 @@ every pass needs a headset round trip; (2) environment depth is low-res and roug
 edges are inherently blocky and shimmering, unlike the sharp hand mesh; (3) hands are already covered
 sharply by `hands`, so full's marginal value is only *moving real things* — people, pets, held objects.
 
-**Cheaper alternative recorded:** render the `mesh-detection` captured room mesh (walls + furniture) as
+**Cheaper alternative recorded:** render the `mesh-detection` captured space mesh (walls + furniture) as
 depth-only occluders — sharp, stable, no depth sensor, but static only. Pairs well with `hands`. A better
 next step than `full` if static-furniture occlusion is the goal. See
 [`docs/backlogs/occlusion.md`](./backlogs/occlusion.md).

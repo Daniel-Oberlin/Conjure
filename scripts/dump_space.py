@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Print the captured room surfaces (semantic, position, rotation, extent) + boundary — for
+"""Print the captured space surfaces (semantic, position, rotation, extent) + boundary — for
 diagnosing how the headset's planes mapped into the world model.
 
-Usage:  python scripts/dump_room.py
-        CONJURE_URL=http://localhost:8080 python scripts/dump_room.py
+Usage:  python scripts/dump_space.py
+        CONJURE_URL=http://localhost:8080 python scripts/dump_space.py
 """
 
 import json

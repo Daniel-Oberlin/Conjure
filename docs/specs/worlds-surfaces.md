@@ -49,7 +49,7 @@ so the director adjusts it like any other.
 ### 1.1 Friendly ids
 
 Each surface carries a small sequential `meta.friendly_id` assigned at ingest. It is what the user reads
-off a label and speaks back — "make 12 blue". The label, `query_room`, the entity id and the user's
+off a label and speaks back — "make 12 blue". The label, `query_space`, the entity id and the user's
 reference all agree on it deliberately (`server.py:547`).
 
 ---
@@ -115,7 +115,7 @@ never over a captured space or under a skybox.
 
 The whole real/virtual spectrum is two independent axes:
 
-- **Axis 1 — passthrough** (`environment.passthrough`, top-level): is the real room visible through the
+- **Axis 1 — passthrough** (`environment.passthrough`, top-level): is the real space visible through the
   camera?
 - **Axis 2 — surface visibility** (per-surface material, defaulted by
   `spacePresentation.defaultSurfaceVisible`): are the virtual surfaces drawn, and how are they styled?
@@ -124,7 +124,7 @@ The whole real/virtual spectrum is two independent axes:
 
 | Mode | passthrough | `spacePresentation.active` | `defaultSurfaceVisible` | What you get |
 |---|---|---|---|---|
-| `virtual_room` | off | true | **true** | a virtual reconstruction of the space, recolourable |
+| `virtual_space` | off | true | **true** | a virtual reconstruction of the space, recolourable |
 | `ar` | on | true | false | the real space; surfaces invisible but used for mounting and bounds |
 | `mixed` | on | true | *(untouched)* | passthrough plus whatever `show_surface` reveals |
 | `authored` | off | true | false | captured surfaces hidden, ready for replacement geometry |
@@ -155,8 +155,8 @@ id, or `all`.
 | `style_annotations(color, opacity)` | restyle those labels |
 | `show_edges(on)` | the polygon outline around every surface — **on by default** |
 | `style_edges(color, opacity)` | restyle the outline |
-| `query_room()` | surfaces by semantic + friendly id, with colour and visibility, plus the boundary |
-| `realign_room()` | re-capture at the current tracking origin when the space looks drifted |
+| `query_space()` | surfaces by semantic + friendly id, with colour and visibility, plus the boundary |
+| `realign_space()` | re-capture at the current tracking origin when the space looks drifted |
 
 **Styling is the ordinary edit vocabulary.** Because surfaces are entities with a `material`, "make the
 ceiling a galaxy" is `material.src` pointing at a generated image — the same plane-material path
@@ -181,7 +181,7 @@ to the surface and fitted to its frame automatically, so no caller computes a po
 `stretch=true` fills the entire surface. Use `texture_surface` instead when the image should *cover* a
 surface as a mural rather than hang as a framed picture.
 
-Orientation is handled by `_face_room(srot, up_local)` (`server.py:3682`), which turns content to face
+Orientation is handled by `_face_interior(srot, up_local)` (`server.py:3682`), which turns content to face
 the space's interior (along `−normal`) and keeps it upright against gravity rather than trusting the
 surface's own roll. Captured normals point **outward** from the space, so interior-facing is `−normal` —
 except wall-art, whose normal may arrive inward. That asymmetry is a live source of bugs; see
@@ -189,7 +189,7 @@ except wall-art, whose normal may arrive inward. That asymmetry is a live source
 
 ### 4.2 Where the description lives
 
-`room://current` — injected into an agent's prompt each turn — is the **only** place surfaces are
+`space://current` — injected into an agent's prompt each turn — is the **only** place surfaces are
 described. It carries every surface's semantic, friendly id, position, **colour** and visibility.
 
 `query_world` deliberately does **not** list them. It collapses every real surface to one counted line
@@ -208,7 +208,7 @@ cannot see a door as an opening.
 **Openings are cut.** At capture the client snaps each inset onto its host wall — project the centre
 onto the wall plane, adopt its orientation, nudge a fixed ~1 cm into the room — and, for doors and
 windows, records the opening on the wall as `surface.holes`: the inset's rectangle projected into the
-wall's local 2-D frame (`snapInsets`, `client/room-snap.js`). The wall then renders through the
+wall's local 2-D frame (`snapInsets`, `client/space-snap.js`). The wall then renders through the
 **`holed-wall`** geometry — the rectangle minus the hole rects, triangulated with `THREE.ShapeGeometry`
 — so you see through into the next room or outside.
 
@@ -244,21 +244,21 @@ server-side (`specs/spaces.md §7`); and pruning protection keeps a surface with
 ## 7. Surface reference
 
 **MCP tools:** `set_immersion`, `show_surface`, `style_surface`, `texture_surface`, `show_annotations`,
-`style_annotations`, `show_edges`, `style_edges`, `query_room`, `realign_room`,
+`style_annotations`, `show_edges`, `style_edges`, `query_space`, `realign_space`,
 `place_image(on_surface=…)`.
 
-**Resource:** `room://current` — the per-surface summary injected each turn.
+**Resource:** `space://current` — the per-surface summary injected each turn.
 
 | Concern | Where |
 |---|---|
 | immersion mode table | `conjure/mcp_server.py:246` `_IMMERSION` |
-| the room summary | `conjure/mcp_server.py:255` `_room_summary` |
+| the space summary | `conjure/mcp_server.py:255` `_space_summary` |
 | `query_world` collapse | `conjure/mcp_server.py` `_real_surfaces_line` |
 | per-semantic base material | `conjure/server.py:2619` `_default_surface_material` |
 | compose / decompose | `conjure/server.py:2636` / `:2659` |
-| interior-facing orientation | `conjure/server.py:3682` `_face_room` |
+| interior-facing orientation | `conjure/server.py:3682` `_face_interior` |
 | client presentation mirror | `client/conjure-client.js:255` `presentation` |
-| inset snapping + hole cutting | `client/room-snap.js` `snapInsets` |
+| inset snapping + hole cutting | `client/space-snap.js` `snapInsets` |
 | holed-wall geometry | `client/conjure-client.js` `applySurfaceGeometry` |
 
 ---

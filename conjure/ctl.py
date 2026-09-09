@@ -183,7 +183,7 @@ def cmd_grounded_skybox(s: Settings, a) -> None:
 
 
 def cmd_texture(s: Settings, a) -> None:
-    # generate an image, then map it onto a room surface (floor/ceiling/wall/all)
+    # generate an image, then map it onto a real surface (floor/ceiling/wall/all)
     gen_body = {"prompt": a.prompt}
     if a.generator:
         gen_body["generator"] = a.generator
@@ -390,12 +390,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--height", type=float, help="metres above the ground (default 1.6)")
     a.add_argument("--radius", type=float, help="ground reach before the horizon (default 30)")
 
-    a = sub.add_parser("texture", help="map a generated image onto a room surface"); a.set_defaults(fn=cmd_texture)
+    a = sub.add_parser("texture", help="map a generated image onto a real surface"); a.set_defaults(fn=cmd_texture)
     a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")
     a.add_argument("prompt"); a.add_argument("--repeat", type=float, help="tile NxN (use a seamless image)")
     a.add_argument("--generator", help="force an image generator")
 
-    a = sub.add_parser("style", help="color / set transparency of a room surface"); a.set_defaults(fn=cmd_style)
+    a = sub.add_parser("style", help="color / set transparency of a real surface"); a.set_defaults(fn=cmd_style)
     a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")
     a.add_argument("--color", help="CSS name or #hex"); a.add_argument("--opacity", type=float, help="0..1")
 

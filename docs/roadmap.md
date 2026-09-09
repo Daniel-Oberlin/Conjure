@@ -29,7 +29,7 @@ with something you can actually experience on the Quest.
   director is now generalized into a deterministic **shell** (reliable control: switch agent/LLM,
   status — no LLM) above declarative, scoped **agents**. The director loads as the `builder` agent
   (`agents/builder/`), with its prompt, allowed LLMs, scoped MCP servers (from `agents/servers.json`),
-  and injected context (`room://current`). Shipped: loader, shell skeleton, room-context injection.
+  and injected context (`space://current`). Shipped: loader, shell skeleton, room-context injection.
   Next: world spaces, personas. Spec: [specs/agents.md](./specs/agents.md); unbuilt work:
   [backlogs/agents.md](./backlogs/agents.md).
 - **Audio-polish follow-ups (open):** (1) room-speaker support without earbuds — acoustic echo

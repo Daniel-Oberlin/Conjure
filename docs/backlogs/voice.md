@@ -91,8 +91,8 @@ scratch dumps and `conjure.log`, so the corpus cannot ride along in a commit by 
 
 Enabled by **`--stt-corpus`** on `conjure.voice`, off by default.
 
-*On the flag name:* not `--capture-*`. "Capture" already means **room capture** throughout this
-codebase (`spaces-geometry.md`, "the captured room"), and a voice flag borrowing it would read as
+*On the flag name:* not `--capture-*`. "Capture" already means **space capture** throughout this
+codebase (`spaces-geometry.md`, "the captured space"), and a voice flag borrowing it would read as
 something to do with Room Setup. `--stt-corpus` says what the artifact is and what it is for.
 
 ### Layout: separate what the machine writes from what the human writes

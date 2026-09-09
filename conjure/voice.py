@@ -347,7 +347,7 @@ def main() -> int:
                          f"can ride along (--wake-word computer,computa). Must NOT be the shell's wake "
                          f"word ({WAKE_WORDS[0]!r}) — the gate strips its own word first, so sharing one "
                          f"would make spoken shell commands unreachable")
-    # Not --capture-*: "capture" already means ROOM capture throughout this codebase, so a voice flag
+    # Not --capture-*: "capture" already means SPACE capture throughout this codebase, so a voice flag
     # borrowing the word would read as something to do with Room Setup.
     ap.add_argument("--stt-corpus", action="store_true",
                     help=f"record each utterance to {CORPUS_DIR.relative_to(CORPUS_DIR.parent.parent)}/ "

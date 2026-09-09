@@ -273,7 +273,7 @@ agents/     bundled agent defs (builder/: agent.json + prompt.md) + servers.json
 client/     A-Frame WebXR client + live patch applier
 examples/   starter world + hand-authored example patches
 scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
-            send_room.py (synthetic room), mcp_smoke.py, mic_check.py, vad_check.py,
+            send_space.py (synthetic space), mcp_smoke.py, mic_check.py, vad_check.py,
             blend_to_glb.py + pose_test.py (figure conversion / render a pose),
             pose_eval.py (does the pose tool description still steer the director?),
             pose_library.py (check every named pose against every rig),
