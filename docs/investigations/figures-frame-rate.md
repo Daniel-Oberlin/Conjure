@@ -12,9 +12,9 @@ sustained frame interval of **~31 ms standing still** against an `ideal` of **11
 on a display asking for 90. Every frame trips the `drop(>1.5×ideal)` counter, because every frame is
 over budget.
 
-Found while running [C4 of the figures device run](./figures-device-run-2026-09.md) — an A/B on whether
-*posing* a figure costs frames. It does not (that result stands). The baseline it was measured against
-is the finding.
+Found while running an A/B on whether *posing* a figure costs frames — it does not, and that result
+stands ([`backlogs/figures.md` § *Device run 2026-09-09*](../backlogs/figures.md)). The baseline it was
+measured against is the finding. Reproduce with `scripts/c4_frame_cost.py`.
 
 | Phase | frames | mean ms | jit(sd) | late | drop | rebuilds |
 |---|---|---|---|---|---|---|

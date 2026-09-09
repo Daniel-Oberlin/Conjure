@@ -2083,9 +2083,10 @@ check doing its job rather than a nuisance to tune away.
 
 ### Device run 2026-09-09 — it works, and the mesh is the problem now
 
-The full run is [`investigations/figures-device-run-2026-09.md`](../investigations/figures-device-run-2026-09.md)
-(spent; kept only as the raw record). Twenty-two checks across re-grounding, the pose library at human
-scale, the client seam, frame cost and the tool surface.
+Twenty-two checks across re-grounding, the pose library at human scale, the client seam, frame cost and
+the tool surface. The run's own checklist has been deleted now its findings are here — the method, if it
+needs repeating: `python -m conjure.cli -v` shows each tool call, `[patch]` in `temp/conjure.log` proves
+a curl-driven pose landed, and `scripts/c4_frame_cost.py` runs the frame-cost A/B hands-free.
 
 **What passed, and two of these were the real unknowns:**
 
