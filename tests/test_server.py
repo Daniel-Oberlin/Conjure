@@ -4664,3 +4664,82 @@ def test_figure_is_owner_gated(srv, client, tmp_path):
     r = client.post("/figure", json={"id": eid, "pose": {"head": {"bend": 10}}},
                     headers={"X-Conjure-User": "someone-else"})
     assert r.status_code == 403
+
+
+# --- rooms as a first-class unit -------------------------------------------------------------------
+# The client segments a capture into rooms (SpaceSnap.segmentRooms); the server decides which of the
+# space's PERSISTENT rooms each group is (conjure/rooms.py) and records it. These cover the wiring —
+# `tests/test_rooms.py` covers the resolution rule itself.
+
+def _two_room_capture(rooms=True):
+    surfaces = [
+        {"id": "real_floor_1", "semantic": "floor", "position": [0, 0, 0], "extent": [4, 4]},
+        {"id": "real_wall_1", "semantic": "wall", "position": [2, 1.2, 0], "extent": [4, 2.4]},
+        {"id": "real_floor_2", "semantic": "floor", "position": [4.3, 0, 0], "extent": [4, 4]},
+        {"id": "real_wall_2", "semantic": "wall", "position": [2.3, 1.2, 0], "extent": [4, 2.4]},
+        {"id": "real_door_1", "semantic": "door", "position": [2, 1, 0], "extent": [0.9, 2],
+         "hostWall": "real_wall_1"},
+    ]
+    body = {"client_id": "h1", "surfaces": surfaces}
+    if rooms:
+        body["rooms"] = [
+            {"floor": "real_floor_1", "ceiling": None, "ids": ["real_floor_1", "real_wall_1", "real_door_1"]},
+            {"floor": "real_floor_2", "ceiling": None, "ids": ["real_floor_2", "real_wall_2"]},
+        ]
+        body["links"] = [{"door": "real_door_1", "a": "real_floor_1", "b": "real_floor_2"}]
+    return body
+
+
+def test_a_capture_with_rooms_labels_every_surface_and_records_the_rooms(srv, client):
+    assert client.post("/space/capture", json=_two_room_capture()).json()["ok"] is True
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_floor_1"]["meta"]["room"] == "room_1"
+    assert ents["real_wall_1"]["meta"]["room"] == "room_1"
+    assert ents["real_floor_2"]["meta"]["room"] == "room_2"
+    rooms = client.get("/world").json()["environment"]["rooms"]
+    assert rooms["room_1"]["n"] == 1 and rooms["room_1"]["floor"] == "real_floor_1"
+    assert "name" not in rooms["room_1"], "the default display name is derived, never stored"
+
+
+def test_a_door_records_the_room_it_leads_to(srv, client):
+    client.post("/space/capture", json=_two_room_capture())
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_door_1"]["meta"]["leads_to"] == "room_2", \
+        "the link names the far side by FLOOR id; the room id is resolved server-side"
+
+
+def test_a_capture_without_rooms_leaves_existing_labels_alone(srv, client):
+    """A client that sends no segmentation is saying nothing about rooms, not saying there are none.
+    Older clients exist, and a capture from one must not strip the labels — or the names they anchor."""
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/space/capture", json=_two_room_capture(rooms=False))
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_floor_1"]["meta"]["room"] == "room_1"
+    assert client.get("/world").json()["environment"]["rooms"]["room_1"]["n"] == 1
+
+
+def test_a_room_name_survives_a_recapture_and_is_not_per_world(srv, client):
+    """The name is a fact about the PLACE, so it lives on the space and every world sees the same one.
+    That is the same reasoning that keeps `boundary` out of spacePresentation."""
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/patch", json={"origin": "test", "ops": [
+        {"op": "env", "set": {"rooms.room_1.name": "kitchen"}}]})
+    client.post("/space/capture", json=_two_room_capture())          # a later capture must not clobber it
+    rooms = client.get("/world").json()["environment"]["rooms"]
+    assert rooms["room_1"]["name"] == "kitchen"
+    assert rooms["room_1"]["floor"] == "real_floor_1"
+
+
+def test_the_room_record_lives_on_the_space_not_the_world(srv, client):
+    """`rooms` rides the same path as `boundary`: composed in from the space, stripped on save. A room
+    name is a fact about the physical place, so the same kitchen cannot be "kitchen" in one world and
+    "room #2" in another — which is exactly why `boundary` is a sibling of `spacePresentation` rather
+    than a member of it."""
+    from conjure import server as S
+    rec = {"room_1": {"n": 1, "name": "kitchen", "floor": "real_floor_1"}}
+    live = {"entities": [], "environment": {"rooms": rec, "spacePresentation": {}}}
+    assert "rooms" not in S._decompose(live, {"surfaces": [], "boundary": None}).get("environment", {}), \
+        "never persisted per-world"
+    composed = S._compose({"entities": [], "environment": {}},
+                          {"surfaces": [], "boundary": None, "rooms": rec})
+    assert composed["environment"]["rooms"]["room_1"]["name"] == "kitchen", "loaned back on load"

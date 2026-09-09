@@ -46,6 +46,7 @@ from . import poses
 from .figures import FRAME_REV, POSE_AXES, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
+from .rooms import resolve_rooms
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from . import config, namespace
@@ -947,6 +948,9 @@ def _save_active() -> None:
          "surfaces": [], "boundary": None}
     fresh = _space_from_world_doc(owner, active_space, store.doc)      # geometry + boundary, default-materialed
     space["surfaces"], space["boundary"] = fresh["surfaces"], fresh["boundary"]
+    rooms_rec = (store.doc.get("environment") or {}).get("rooms")
+    if rooms_rec:                                  # never CLEAR the record from a doc that has none:
+        space["rooms"] = rooms_rec                 # a room name is unrecoverable, an empty entry is free
     # What was open HERE, newest first — the space's own MRU (specs/spaces.md §6.1). `last_scope`/
     # `last_world` stay as the head of it: several readers still want just "the last one" (the admin
     # listing, public-space discovery), and a space saved before this field existed has only those.
@@ -2800,6 +2804,12 @@ class CaptureUpdate(BaseModel):
     surfaces: list[CapturedSurface] = []
     boundary: Optional[dict] = None           # {floorPolygon: [[x,z]…], height: float}
     replace: bool = True                      # replace the whole real-surface set vs merge
+    # The client's ROOM segmentation of this capture (SpaceSnap.segmentRooms). Groups, not per-surface
+    # labels: the server owns which persistent room each group IS (conjure/rooms.py), and a client that
+    # sent labels would be asserting an identity it cannot know. Absent ⇒ this capture says nothing about
+    # rooms and the stored labels stand.
+    rooms: Optional[list[dict]] = None        # [{floor, ceiling, ids: [...]}]
+    links: Optional[list[dict]] = None        # [{door, a: <floor id>, b: <floor id>|null}]
 
 
 def _surface_entity(s: CapturedSurface) -> dict:
@@ -2882,6 +2892,8 @@ def _compose(world_doc: dict, space: dict) -> dict:
     doc["entities"] = placed + reals
     if space.get("boundary") is not None:
         env["boundary"] = space["boundary"]        # geometry on loan from the space, live-only
+    if space.get("rooms"):
+        env["rooms"] = space["rooms"]              # the room record — on loan too (§ rooms as a unit)
     # A world INHERITING a non-empty space's geometry (created new / switched-to / reset) genuinely has a
     # room, even with no live headset ingest this session — so mark it active for the director's query_space
     # (which gates on spacePresentation.active). Only default it: an explicit False (a director immersion mode like
@@ -2909,6 +2921,9 @@ def _decompose(composed: dict, space: dict) -> dict:
     doc["entities"] = placed
     env = doc.setdefault("environment", {})
     env.pop("boundary", None)                      # the space owns the boundary; never persisted per-world
+    env.pop("rooms", None)                         # …and the room record, for the same reason: a room
+                                                   # name is a fact about the PLACE, not a presentation
+                                                   # choice, so it cannot differ between two worlds
     pres = env.setdefault("spacePresentation", {})
     if overrides:
         pres["surfaceStyles"] = overrides
@@ -3229,9 +3244,52 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
     if geo_ops:
         store.apply_patch(geo_ops, origin="space")             # seed updated in place; NOT broadcast
 
+    # --- rooms ------------------------------------------------------------------------------------
+    # The client segments; `resolve_rooms` decides which of the space's EXISTING rooms each group is
+    # (docs/backlogs/spaces-geometry.md, *rooms as a first-class unit*). `meta.room` doubles as the label
+    # the director reads AND the previous membership the next resolution matches against, so it is stored
+    # per surface rather than only in the room record.
+    #
+    # These go in the SEED and are not broadcast, like the geometry: the client did the segmentation, so
+    # it already knows its own grouping. What it does not know is the persistent identity, and that rides
+    # `environment.rooms` below with the rest of the env.
+    rooms_rec = dict(env.get("rooms") or {})
+    if req.rooms is not None:
+        reals = {e["id"]: e for e in store.doc["entities"] if (e.get("meta") or {}).get("real")}
+        prev = {eid: (e.get("meta") or {}).get("room") for eid, e in reals.items()}
+        prev = {k: v for k, v in prev.items() if v}
+        groups = [{"floor": g.get("floor"), "ceiling": g.get("ceiling"), "ids": list(g.get("ids") or [])}
+                  for g in req.rooms]
+        assigned, rooms_rec = resolve_rooms(groups, rooms_rec, prev)
+        label: dict[str, str] = {}
+        for rid, g in zip(assigned, groups):
+            for sid in g["ids"]:
+                label[sid] = rid
+        # A link names the far side by FLOOR id, because that is what the client's own segmentation keys
+        # on; the room id it maps to is only decided here.
+        leads: dict[str, Optional[str]] = {}
+        for ln in (req.links or []):
+            did, far = ln.get("door"), ln.get("b")
+            if did:
+                leads[did] = label.get(far) if far else None
+        room_ops: list[dict] = []
+        for eid, e in reals.items():
+            m = e.get("meta") or {}
+            rid = label.get(eid)
+            if rid and m.get("room") != rid:
+                room_ops.append({"op": "update", "id": eid, "set": {"meta.room": rid}})
+            if eid in leads and m.get("leads_to") != leads[eid]:
+                room_ops.append({"op": "update", "id": eid, "set": {"meta.leads_to": leads[eid]}})
+        if room_ops:
+            store.apply_patch(room_ops, origin="space")
+            _slog("space", f"rooms: {len(groups)} group(s) → {', '.join(sorted(set(assigned)))} "
+                          f"({len(room_ops)} label op(s))")
+
     # Only these reach clients: room-activation/boundary env + on-surface image re-anchors (content, which
     # clients DO render). Geometry is theirs to render locally.
     env_set: dict = {}
+    if rooms_rec != (env.get("rooms") or {}):
+        env_set["rooms"] = rooms_rec
     if not pres.get("active"):
         env_set["spacePresentation.active"] = True
     if env.get("captureAuthority") != req.client_id:
