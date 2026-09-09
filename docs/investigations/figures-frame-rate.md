@@ -1,6 +1,6 @@
 # Chronic ~32 fps with three figures in the room
 
-**Status: opened 2026-09-09, one measurement, cause unknown.** This does not yet meet
+**Status: opened 2026-09-09. Narrowed to two candidates the same day; four theories killed.** This does not yet meet
 [this folder's bar](./README.md) — it has produced no negative knowledge. It is here because the
 measurement was incidental to something else and would otherwise be lost, and because the first
 experiment that would narrow it is cheap. It graduates or it is deleted.
@@ -52,14 +52,64 @@ renderer is doing *less* work when idle, not more — which points at something 
 static scene rather than at a load problem. It could equally be an artefact of how the probe samples
 frame callbacks. Unresolved, and the thing most likely to explain the rest.
 
+## Per-model comparison, 2026-09-09 (subjective, and decisive anyway)
+
+Each figure placed **alone** and walked around. Subjective, but an ordered comparison over a 4.6× range,
+same room and same route, and monotonic:
+
+| model | tris | **joints** | prims | texture MB | morphs | observed |
+|---|---|---|---|---|---|---|
+| Saka | 27,266 | **249** | 12 | 9.1 | 399 | smooth |
+| Grace | 73,586 | **482** | 21 | 4.1 | 0 | occasional jitter |
+| Trish | 125,558 | **1041** | 24 | 5.9 | 0 | steady jitter |
+
+**This kills the static-scene throttle.** A throttle cannot vary by model. And if one 27k-triangle figure
+is smooth, the idle baseline is healthy — so the figures own the cost, and the empty-room run is no longer
+needed to establish that.
+
+**It also exonerates textures and morph targets.** Saka carries the *most* texture data of the three and
+399 morph targets, and she is the smooth one. Neither correlates with the symptom; both anti-correlate.
+
+## The confound: triangles or bones?
+
+Across those three, **triangles rise 4.6× and joints rise 4.2×**. The observation cannot separate them,
+and "high-poly models at fault" is the natural reading only because triangles are the number we habitually
+quote.
+
+The prior should favour **bones**, on two grounds:
+
+- 125 k triangles is *small* for a Quest 3 GPU; it draws far heavier scenes. Whereas **1041 bone matrices
+  recomputed per frame in JavaScript** on a mobile CPU is real work, and it is CPU work on the critical
+  path rather than GPU work that can overlap.
+- Our own code does **no** per-frame work for a pose — `figure.js` writes quaternions once on `apply()`
+  and `_ride` runs only then. So whatever is per-frame belongs to three's skinning, which is where the
+  joint count lands.
+
+Trish's 1041 is inflated by a **679-bone hair rig** — a second armature that earns nothing here, since
+`VRMC_springBone` is unsupported and the hair merely rides. That is what makes the discriminator cheap.
+
+## Next experiment — the discriminator
+
+**Re-export Trish without the hair armature.** She keeps all 125 k triangles and drops to ~362 joints:
+
+| Outcome | Conclusion | Fix |
+|---|---|---|
+| jitter goes | **bones** | strip unused armatures in `blend_to_glb.py`; nothing renders from them |
+| jitter stays | **triangles** | decimation at conversion, or LOD |
+
+The mirror test works too and needs no re-export of Trish: a **decimated Grace** — same 482 joints, a
+third of the triangles. Either one splits it.
+
 ## Remaining theories
 
 | Theory | Likelihood | How to test |
 |---|---|---|
-| **The figures' skinned-mesh cost** — 226 k tris of GPU skinning across three characters | Medium. It is the obvious suspect and the reason this was noticed, but `rebuilds=0` and flat heap argue against churn | Run the same probe with **no figures in the room**, then one, then three. Three data points, ten minutes |
-| **A static-scene throttle** — the compositor or browser coalescing frames when nothing moves, making "31 ms idle" not a cost at all | Medium, and it would explain the inversion | Same empty-room run: if idle sits at ~31 ms with nothing in the scene, the figures are exonerated entirely |
-| **Probe artefact** — `PACE` measuring callback intervals rather than delivered frames | Low–medium | Compare against the Quest's own frame overlay for one session |
-| **The two-room capture** — 57 real surfaces rendering, unrelated to figures | Low. Surfaces were present for the healthy sessions in `pops-and-jitters` too | Falls out of the empty-room run |
+| **Per-frame skeleton update, O(joints)** | **High** — best fit. Monotonic with joint count, and the only candidate that is CPU work in JS on the critical path | Trish without her hair rig: same triangles, 1041 → ~362 joints |
+| **GPU skinning cost, O(vertices)** | Medium — also monotonic, but 125 k tris is small for this hardware | A decimated Grace: same joints, a third of the triangles |
+| ~~A static-scene throttle~~ | **Killed** — a throttle cannot vary by model, and one light figure is smooth | — |
+| ~~Textures / morph targets~~ | **Killed** — Saka has the most of both and is the smoothest | — |
+| **Probe artefact** — `PACE` measuring callback intervals rather than delivered frames | Low–medium, and it would explain the still-vs-walking inversion while leaving the per-model result intact | Compare against the Quest's own frame overlay for one session |
+| ~~The two-room capture~~ | **Unlikely** — 57 surfaces were present while Saka rendered smoothly | — |
 
 ## Next experiment
 
@@ -78,4 +128,15 @@ Cheap, and it splits the theory table in half whichever way it lands.
 
 ## Tried and rejected
 
-*(nothing yet — one measurement, no hypotheses eliminated)*
+**A static-scene throttle** explaining the ~31 ms idle. Killed by the per-model run: a throttle cannot
+vary by model, and one 27 k-triangle figure walked smoothly. Retry only if the idle rate turns out to be
+high with *nothing* in the room, which the per-model result now makes unlikely.
+
+**Textures and morph targets.** Killed and in fact anti-correlated — Saka has 9.1 MB of texture and 399
+morph targets against Grace's 4.1 MB and none, and Saka is the smooth one. Retry would need a case where
+the texture *budget* rather than the byte count is at issue (a resolution cliff), for which there is no
+evidence.
+
+**The empty-room run as the next step.** Superseded before it was run: the per-model comparison answered
+the same question more directly, because a single light figure rendering smoothly establishes both that
+idle is healthy *and* that the cost scales with the figure.
