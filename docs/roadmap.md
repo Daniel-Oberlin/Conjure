@@ -29,7 +29,7 @@ with something you can actually experience on the Quest.
   director is now generalized into a deterministic **shell** (reliable control: switch agent/LLM,
   status — no LLM) above declarative, scoped **agents**. The director loads as the `builder` agent
   (`agents/builder/`), with its prompt, allowed LLMs, scoped MCP servers (from `agents/servers.json`),
-  and injected context (`space://current`). Shipped: loader, shell skeleton, room-context injection.
+  and injected context (`space://current`). Shipped: loader, shell skeleton, space-context injection.
   Next: world spaces, personas. Spec: [specs/agents.md](./specs/agents.md); unbuilt work:
   [backlogs/agents.md](./backlogs/agents.md).
 - **Audio-polish follow-ups (open):** (1) room-speaker support without earbuds — acoustic echo
@@ -73,7 +73,7 @@ with something you can actually experience on the Quest.
   (`wall`/`floor`/`ceiling`/`table`/…) are **stylable entities** the director can **show/hide, recolor,
   and texture** ("make the ceiling a galaxy"), with **labels** for reference and **mounting** for images
   and objects. A full **immersion spectrum** from two axes (passthrough × surface-visibility):
-  **virtual room** ↔ **AR** ↔ **mixed** ↔ **hide it for the original unbounded VR**.
+  **virtual space** ↔ **AR** ↔ **mixed** ↔ **hide it for the original unbounded VR**.
   *Milestone: "hang that dragon on my real wall," "make my walls glass and the ceiling a galaxy,"
   "drop into full VR."*
 - **Shipped:** the **client→server reverse channel**; capture with stable surface ids; corner-joining and
@@ -110,7 +110,7 @@ with something you can actually experience on the Quest.
 - **Phase 2:** addressing gate (wake word + PTT) + audio capture (shared room device with
   diarization, or per-headset mics) so the director only acts on agent-directed speech.
 - **Dedicated milestone — users + spaces + co-location (`specs/spaces.md`).** Primitive users
-  own first-class **spaces** (the shared room layer); a second user joins a public world and co-locates
+  own first-class **spaces** (the shared space layer); a second user joins a public world and co-locates
   via shared-geometry registration (**no** Quest "Shared Spaces" dependency) + presence avatars —
   *two people in one room see the same campfire in the same physical spot.*
 - **Future:** remote voice bridge over Tailscale relay (decisions.md #3 tier 3, #9).

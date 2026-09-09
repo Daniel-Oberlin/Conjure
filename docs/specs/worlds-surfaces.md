@@ -19,7 +19,7 @@ Where a surface *is* — capture, registration, identity — is
 
 ## 1. A real surface is an ordinary entity
 
-There is no separate room-rendering path. Each captured surface is a normal, patchable, stylable entity
+There is no separate space-rendering path. Each captured surface is a normal, patchable, stylable entity
 tagged `meta.real`, so it flows through the entity machinery, the patch protocol, broadcast, and the
 director's material edits unchanged:
 
@@ -100,7 +100,7 @@ The space stores each surface at a **default** material; the world stores only t
 - `_decompose` writes back only materials that differ from the base.
 
 So the same physical wall is green in one world and marble in another with one geometry record and two
-small override maps, and switching worlds restyles the room without recapturing it.
+small override maps, and switching worlds restyles the space without recapturing it.
 
 ### 2.2 The client mirror
 
@@ -160,7 +160,7 @@ id, or `all`.
 
 **Styling is the ordinary edit vocabulary.** Because surfaces are entities with a `material`, "make the
 ceiling a galaxy" is `material.src` pointing at a generated image — the same plane-material path
-`place_image` uses. There is no separate room-rendering code to maintain.
+`place_image` uses. There is no separate space-rendering code to maintain.
 
 **But colour alone is not enough on a captured surface.** Its fill draws only when
 `material.visible` is *explicitly* true; absent that it falls back to `defaultSurfaceVisible`, which is

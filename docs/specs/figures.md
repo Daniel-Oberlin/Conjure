@@ -277,7 +277,7 @@ radius. Exact would mean skinning the mesh, and the error is centimetres against
 tens of them.
 
 **Verified on device 2026-09-09**, including the case static analysis could not settle: the settle
-survives a room recapture. It moves the mesh *inside* the entity while the anchor solver moves the
+survives a space recapture. It moves the mesh *inside* the entity while the anchor solver moves the
 entity, and the two do not fight. It also survives a reload, does not accumulate over repeated poses, and
 stays silent when nothing rests any lower.
 

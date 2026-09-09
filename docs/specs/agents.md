@@ -309,7 +309,7 @@ Two forms (`director._fill_injection`):
 - `{name}` — bare substitution.
 - `{#name}…{name}…{/name}` — a **conditional section**: the inner block is kept only when the value is
   non-blank and dropped entirely otherwise, so a header vanishes with its value (no dangling
-  `--- Live context ---` when the room is empty).
+  `--- Live context ---` when the space is empty).
 
 Only the exact registered names are touched, so JSON or SQL braces elsewhere in a prompt survive.
 
@@ -393,7 +393,7 @@ Two distinct things ride on it:
   view only. The cap exists because context bloat degrades tool-calling well before the window fills —
   a bloated history was observed to make the director skip tool calls.
 
-`context_stats()` reports `{turns, cap, chars:{prompt, room, tools, history}}`, measured at the moment
+`context_stats()` reports `{turns, cap, chars:{prompt, space, tools, history}}`, measured at the moment
 a turn is assembled (the only point where all four exist together). Characters, not tokens: every
 provider tokenises differently, so a char count is the one figure that means the same thing across the
 roster. `tools` is usually the largest and least visible slice. This is what the CLI's status bar shows.
@@ -1024,10 +1024,10 @@ turns by `floor_lock`.
 
 **Announcing an unasked change.** The most common cause of a surprise agent change is co-location: an
 AR client votes its capture against the geo candidates, the world server matches a space, and joins that
-space's last-active world in whatever scope owns it. Your room can hand you a different agent. That is
+space's last-active world in whatever scope owns it. Your space can hand you a different agent. That is
 intended, but it used to happen in silence — you kept talking and something else answered. `state`
 carries no reason, so the notice names the destination (world and space are the evidence that makes a
-room match recognisable as one).
+space match recognisable as one).
 
 `app.state.expect_agent` is the hook's claim on the echo of a switch **this** server asked for, so it
 isn't announced on top of the client's own narration. It is consumed only when the switch it named
@@ -1138,7 +1138,7 @@ is told the new state and re-gates its own clients from it.
 
 | Gate | Applies to | Enforced at |
 |---|---|---|
-| **surface-match** | AR headsets only; VOID-exempt | `/space/select` — a headset can only move the pointer to the world for the room it is physically in |
+| **surface-match** | AR headsets only; VOID-exempt | `/space/select` — a headset can only move the pointer to the world for the space it is physically in |
 | **privacy** | everyone | the live **session**'s `public` flag: the `/ws` join gate, `_regate_clients`, and the agent server's `_permitted` |
 | **edit-ownership** | everyone | `_owner_only_writes` — only the active world's owner may mutate it |
 

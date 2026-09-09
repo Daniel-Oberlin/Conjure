@@ -530,7 +530,7 @@ Object mode has no competitor — nothing else writes a placed entity's transfor
 
 | Target | Written by | Derived from |
 |---|---|---|
-| skybox pose | `_pinSky` | `_Tmat⁻¹` — registration in a room, `canonicalFrame` in a void world |
+| skybox pose | `_pinSky` | `_Tmat⁻¹` — registration in a space, `canonicalFrame` in a void world |
 | `#world-root` parking (void) | `_updateWorldFrame` | the same, inverted |
 
 A gesture that wrote either transform would be erased within about two seconds. So what persists is a
@@ -708,7 +708,7 @@ the `__DYNAMIC_MODULES__` marker (`_dynamic_module_tags`). The `?v=<mtime>` stam
 stubborn cache when a module's code changes.
 
 Scoping the tags to the active agent was a bug, because a page's scripts are fixed the moment it loads
-and the live agent is not. Space selection joins the matched room's world in whatever scope owns it
+and the live agent is not. Space selection joins the matched space's world in whatever scope owns it
 (`/space/select`), `agent <name>` moves the pointer, a session switch moves it again — any of which can
 hand a headset a world full of components its page never registered. The failure is silent:
 `el.setAttribute("grab", {…})` on an unregistered A-Frame component is just a DOM attribute, so the

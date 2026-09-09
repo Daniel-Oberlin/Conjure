@@ -41,7 +41,7 @@
   is therefore an **MRU list** rather than a single id: rung 1 walks past however many of its entries
   have been deleted, which is what makes it a rung and not a coin flip
   ([specs/agents.md §7.6](./specs/agents.md)). A **space** keeps the same history of what was open in it
-  ([specs/spaces.md §2](./specs/spaces.md)), so returning to a room whose last world was deleted opens
+  ([specs/spaces.md §2](./specs/spaces.md)), so returning to a space whose last world was deleted opens
   the one you had there before it.
 
   **The rungs are per candidate set, and the sets are not interchangeable.** A session's worlds are
@@ -202,7 +202,7 @@ Invariants: fully serializable & restorable; every entity has a stable id; compo
 open/extensible; nothing is stored in absolute real-world coordinates — every placed entity is
 on-surface, grounded, free, or skybox.
 
-**A real space surface is an ordinary entity**, tagged `meta.real`. There is no separate room-rendering
+**A real space surface is an ordinary entity**, tagged `meta.real`. There is no separate space-rendering
 path: a captured wall carries a `surface` component (polygon, extent, holes) and a `material`, so it
 flows through patches, broadcast and the director's material edits like anything else. `meta.real` is
 the contract — restyle, hide, texture and mount onto it; never move or remove it
@@ -320,7 +320,7 @@ The shell forwards anything that isn't a command to the active agent, which runs
 (one turn):
 
 1. **Perceive** — addressing gate (§ voice) / shell admits agent-directed speech → STT → the agent's
-   LLM. The prompt carries: the **live room**, injected via the `space://current` context resource
+   LLM. The prompt carries: the **live space**, injected via the `space://current` context resource
    ([specs/agents.md §5.3](./specs/agents.md)) so the agent needn't re-query it; the placed scene
    (`world://current`) and its conjurable modules (`dynamics://available`); the agent's scoped MCP
    tools; and the session transcript. (`query_world` is still used where a prefetched snapshot would go
@@ -593,7 +593,7 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
   it persists and reloads on this path like anything else (§4).
 - **Space store** — one record per real physical environment: surfaces, boundary, geolocation, owner,
   visibility, and a return-visit pointer to the last world used in it. **User-owned and
-  agent-agnostic** — the room belongs to the person who captured it, not to an agent — and shared across
+  agent-agnostic** — the space belongs to the person who captured it, not to an agent — and shared across
   all their worlds, so re-styling a wall in one world never touches the geometry or another world. Also
   the server's own solver geometry: pose-relative queries ("the wall I'm looking at") run against the
   seed. See [specs/spaces.md](./specs/spaces.md).

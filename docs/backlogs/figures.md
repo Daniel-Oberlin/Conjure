@@ -156,7 +156,7 @@ correct and the current placement path would actively *damage* them, squashing E
 Grace (1.61 m) to an identical 1.8 m — discarding a real, authored, meaningful height difference.
 
 **9 — Vertex counts are 117 k–526 k for a single figure.** Against `Budget.maxTris = 500_000` for the
-*entire world*, one Grace is already over budget before a room is drawn. Decimation is not optional at
+*entire world*, one Grace is already over budget before a space is drawn. Decimation is not optional at
 these sizes, and hair dominates: Eve's two hair meshes are 116 k of her 154 k, and only one is worn.
 **Stripping unworn outfits and unused hair is the single biggest lever**, and it is exactly what the
 collection structure in finding 1 tells us how to do.
@@ -1722,7 +1722,7 @@ Two things learned in passing, both about testing rather than posing:
   is exact and sign-insensitive (`q` and `-q` are the same rotation). An assertion tight enough to be
   worth writing was failing on arithmetic that was already correct.
 - **The frame payload is now 11.6 KB for Saka's 52 bones** (5.3 KB for Grace's 21), up from 6.4 KB, and
-  it rides every pose patch because it lives in the `figure` component. Still small against a room
+  it rides every pose patch because it lives in the `figure` component. Still small against a space
   snapshot and fine at director cadence, but this is the point at which the fix is worth naming: the map
   and the frame are static per model and belong in `meta` → a `data-` attribute, the way `bbox` already
   does, leaving the patch to carry only the pose.
@@ -2091,7 +2091,7 @@ a curl-driven pose landed, and `scripts/c4_frame_cost.py` runs the frame-cost A/
 **What passed, and two of these were the real unknowns:**
 
 - **Re-grounding, completely.** A kneel lands on the floor; an arm pose moves her not at all vertically;
-  repeating a pose does not creep; kneel → stand → kneel returns to the same height; **it survives a room
+  repeating a pose does not creep; kneel → stand → kneel returns to the same height; **it survives a space
   recapture** (the one thing static analysis could not answer — the settle moves the mesh inside the
   entity while the anchor solver moves the entity, and they do not fight); and it survives a reload.
 - **The tool surface.** "Have her kneel" → `pose_figure(named="kneel")`, not seven invented rotations.

@@ -136,7 +136,7 @@ this first if the investigation resumes.
 | Content shimmer, pose rings | wall world-pos frozen to 4 dp; content wandered ~5–6 mm | Content re-solve (raw basis, no deadband) → fixed by §1.6; content froze. |
 | `--foveation` 0 → 0.3 → 0.5, walking | drop rate fell monotonically; bursts gone by 0.5 | Some drops are **GPU-bound** (full-res render); foveation is a real lever, not a full fix. |
 | Tick self-time on dropped frames | a 66 ms frame with **0.2 ms** of our JS | The stall is **entirely outside our JavaScript**. |
-| `--group-surface-relay off`, walking | **no difference** to the walking stutter | Whole-room mesh re-lay is **not** the stutter's cause. |
+| `--group-surface-relay off`, walking | **no difference** to the walking stutter | Whole-space mesh re-lay is **not** the stutter's cause. |
 | `rebuilds` counter, walking | **`rebuilds=0`** during a run where pops were seen | Mesh rebuilds are **not** the cause (closed by number). |
 | Camera JERK + head sampling, walk-then-rotate | jerks present; **rotation-only walk → clean** (user tested ~1 min) | The effect is **translation-only** — the signature of positional reprojection. |
 | Count correlation | one run: **23 drops**, **6** coincided with a view-jerk >2 mm; user saw **5–10 pops** | **6 ≈ 5–10** → the pops are the **subset of drops that land while the head is translating**. |
