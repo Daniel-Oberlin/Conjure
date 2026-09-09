@@ -101,17 +101,17 @@ and session, and the world doc is flat. The designed model is a **shared geometr
 view**, composed server-side into the flat doc that already broadcasts, so the client contract is
 unchanged:
 
-- **Shared room base** — written *only* by space capture: per surface `id`, `transform`,
+- **Shared space base** — written *only* by space capture: per surface `id`, `transform`,
   `components.surface`, a seeded default material, `meta`; plus the boundary and capture flags. One
   copy, shared by every world in every agent's space.
-- **`room_view`** — broad presentation rules over the base, targeted by semantic / id / `all`: **hide**
+- **`space_view`** — broad presentation rules over the base, targeted by semantic / id / `all`: **hide**
   (the ceiling; or the whole space), **clip/transform geometry** (crop walls to 1 m, anchored at the
   floor). Non-destructive — the base stays 2.7 m tall; only the render changes.
-- **`surface_overrides`** — per-surface specifics that win over `room_view` (`surfaceId → {material?,
+- **`surface_overrides`** — per-surface specifics that win over `space_view` (`surfaceId → {material?,
   visible?, …}`).
 - **`environment`** — sky, fog, passthrough/immersion mode, occlusion mode, `defaultSurfaceVisible`.
-  Hiding the room's *render* is independent of occlusion and safety: boundary and occlusion geometry
-  persist from the base even when nothing of the room is drawn.
+  Hiding the space's *render* is independent of occlusion and safety: boundary and occlusion geometry
+  persist from the base even when nothing of the space is drawn.
 - **Mounting** — a generated entity declares `mount: {surface: <id>, at: …}` and composition resolves its
   world pose from that surface's *current* transform, so re-capture carries it along. This generalizes
   "mounting resolves against planes": surfaces are the stable anchors, mounted content is expressed
@@ -127,9 +127,9 @@ Remaining work is implementation shape, not concept: the store refactor, patch-a
 settled: defaults live in the base; undo is per-world (the base isn't user-undoable); orphan overrides
 stay dormant so they re-apply if a surface returns; holes and cutouts are geometry and therefore base.
 
-Worked examples: *planetarium* = `room_view: hide all` + `environment: {passthrough: off, sky: <image>}`
-— the walls' geometry still exists but nothing of the room is drawn. *"Crop walls to 1 m, remove the
-ceiling"* = `room_view: {clip_height: {walls: 1.0}, hide: [ceiling]}` — reality, and every other world,
+Worked examples: *planetarium* = `space_view: hide all` + `environment: {passthrough: off, sky: <image>}`
+— the walls' geometry still exists but nothing of the space is drawn. *"Crop walls to 1 m, remove the
+ceiling"* = `space_view: {clip_height: {walls: 1.0}, hide: [ceiling]}` — reality, and every other world,
 untouched.
 
 **Multi-server agents.** `Director.connect` raises unless the def resolves to **exactly one** registered
@@ -290,8 +290,8 @@ the two things around it:
 
 - **Action grouping** — one director turn is one undoable unit, not N patches. Without this, "undo that"
   walks back a fragment of a turn.
-- **Origin filtering** — never undo an automatic room re-capture, a re-anchor, or an embedding
-  write-through. Patches already carry an `origin` (`"room"`, etc.), so the filter has something to key
+- **Origin filtering** — never undo an automatic space re-capture, a re-anchor, or an embedding
+  write-through. Patches already carry an `origin` (`"space"`, etc.), so the filter has something to key
   on.
 
 MVP shape: session-level, in-memory, voice-accessible. This is also what unblocks state undo (see
@@ -808,7 +808,7 @@ first.
 
 ## Server decomposition
 
-Splitting the monolithic world MCP server (world-edit / asset-search / room-query) is what would make
+Splitting the monolithic world MCP server (world-edit / asset-search / space-query) is what would make
 per-server scoping meaningful — today every agent references the one `world` server and scoping bites
 only at the tool level. The registry already supports it (`{"assets": {…}}` was sketched); it needs the
 multi-server launch above, and a decision on where the seam falls.
@@ -927,9 +927,9 @@ a valid `style_surface` target. Both are soft (prompt-level).
 - **`style_surface(target="couch")` fires but the couch still doesn't change** → flips to a CLIENT
   rendering bug (couch `material.color` not applied), a different investigation.
 
-**Side note:** the same log shows the room re-ingesting all ~45 surfaces every ~2s continuously — heavy
+**Side note:** the same log shows the space re-ingesting all ~45 surfaces every ~2s continuously — heavy
 and noisy (recapture never touches `material.color`, so not the couch cause); may be amplified by the
-shared-room layer in the multi-world code. Worth watching.
+shared-space layer in the multi-world code. Worth watching.
 
 ## Grok narrates one tool and calls another, then loops on it
 
@@ -1113,7 +1113,7 @@ knee, clamp by the window only on small models:
 **Proposed fix:**
 - Add a static `context_window` (public, known metadata) to each roster adapter; conservative default
   (~128k) for unknowns. (Provider APIs don't expose it reliably → curated map.)
-- `reserved` = system prompt (incl. the injected room+world context) + tool schemas + current turn +
+- `reserved` = system prompt (incl. the injected space+world context) + tool schemas + current turn +
   response headroom (`max_tokens`); roughly constant since the injected context is bounded.
 - `_recent_history` keeps the most-recent turns whose cumulative token estimate ≤ available; `chars/4`
   is plenty for trimming (no exact tokenizer needed).

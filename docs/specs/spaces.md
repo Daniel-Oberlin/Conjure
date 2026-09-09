@@ -23,7 +23,7 @@ Three things are separate and stay separate:
 | **world** | its creator | placed entities, per-surface style overrides, display prefs, a ref to one space | `<user>/agents/<agent>/sessions/<id>/worlds/<name>` |
 | **session** | its creator | transcript, state, worlds | see [`specs/agents.md §7`](./agents.md) |
 
-A space is **user-owned and agent-agnostic**: the physical room does not belong to the builder or to the
+A space is **user-owned and agent-agnostic**: the physical space does not belong to the builder or to the
 outdoor agent, it belongs to the person who first captured it. Worlds, assets and state are
 agent-owned *under* a user. Every one of them carries a `public` flag.
 
@@ -80,7 +80,7 @@ single space routinely holds several rooms joined by doors — the reference cap
   measured.
 - **It has exactly one consumer: the space summary**, which prints it as a line of text for the director
   (`mcp_server.py:267`). Nothing clamps placement against it and nothing renders it — despite
-  `query_space`'s docstring saying models land inside the room, that is advice to the model, not an
+  `query_space`'s docstring saying models land inside the space, that is advice to the model, not an
   enforced invariant. See [`backlogs/spaces.md`](../backlogs/spaces.md).
 - **`recent` is the return-visit history** — `[[scope, world_id], …]`, newest first, capped at
   `_MRU_CAP`. Match this space again and you land back in the newest entry that **still exists**; the
@@ -93,13 +93,13 @@ single space routinely holds several rooms joined by doors — the reference cap
   Reading it filters on **two** things, not one: the world must still exist, and the caller must be able
   to enter it (`_may_join_world_in` — you own the scope, or its live session is public). The second
   filter matters because the history is genuinely **cross-user**: it is written under the space's owner
-  using whichever scope is live, so your own room remembers a guest's worlds alongside your own. Without
-  it, matching your room could switch you into someone else's private world and `_regate_clients` would
-  then evict you — from your own room — to passthrough, with the switch already committed.
+  using whichever scope is live, so your own space remembers a guest's worlds alongside your own. Without
+  it, matching your space could switch you into someone else's private world and `_regate_clients` would
+  then evict you — from your own space — to passthrough, with the switch already committed.
 
   It is a history rather than a single pointer for the reason given in
   [architecture.md §1](../architecture.md): a lone pointer has no answer to *the thing it names was
-  deleted*, so walking back into your own room after a cleanup minted a new world instead of opening the
+  deleted*, so walking back into your own space after a cleanup minted a new world instead of opening the
   one you had there before it. The world and session pointers are MRU lists for the same reason.
 
 ---
@@ -168,8 +168,8 @@ The live in-memory document is always **fully composed**; only persistence split
 the per-surface material deltas as `surfaceStyles`. Real-surface **geometry** and the boundary are the
 space's job and are stripped from the world doc.
 
-The consequence worth stating plainly: **the same physical room, styled two different ways in two
-different worlds, is one space record and two `surfaceStyles` maps.** Switching worlds restyles the room
+The consequence worth stating plainly: **the same physical space, styled two different ways in two
+different worlds, is one space record and two `surfaceStyles` maps.** Switching worlds restyles the space
 without recapturing it.
 
 ### 4.2 Where a new world's space ref comes from
@@ -178,8 +178,8 @@ Six paths mint a world: `/worlds/new`, an agent switch (`_activate_scope`), a se
 (`/session/new`), a session switch into a session with no world yet, `/space/select` establishing one
 (`_establish_world_in`), and boot with nothing to restore (`_boot_world`). **They all mint through
 `_new_world_store` (`server.py:140`), and it stamps the ref** — `_space_for_new_world`
-(`server.py:2748`) returns the live space, so a world born while a headset is standing in a room
-composes that room. The two exceptions are explicit: `_establish_world_in` overwrites the stamp with the
+(`server.py:2748`) returns the live space, so a world born while a headset is standing in a space
+composes that space. The two exceptions are explicit: `_establish_world_in` overwrites the stamp with the
 space it was told to establish, and `_boot_world` opts out (below).
 
 `<void>` in three cases, and only these:
@@ -202,9 +202,9 @@ leaving the ref absent, which `_activate` reads as the honest "no space chosen y
 
 > The stamp lives at the shared chokepoint rather than at each call site because it was previously only at
 > `/worlds/new`. Every other path minted a space-less world, so switching agents inside your own captured
-> room dropped you into a void world and the incoming agent reported, correctly, that it had no surfaces.
+> space dropped you into a void world and the incoming agent reported, correctly, that it had no surfaces.
 
-### 4.3 Room-less has two meanings: `UNSET` and `VOID`
+### 4.3 Space-less has two meanings: `UNSET` and `VOID`
 
 A world with no space is either **not decided yet** or **decided to have none**, and those want opposite
 treatment when a headset works out which space you are standing in.
@@ -289,7 +289,7 @@ second Python implementation.
 | Vote | Outcome |
 |---|---|
 | matched an existing space, whose newest remembered world is **there and joinable** | join that world (return visit), silently |
-| matched, but that world is **gone** or **not yours to enter** | join the newest entry of `recent` that is both — a world you had *in this room* — and say which of the two it was |
+| matched, but that world is **gone** or **not yours to enter** | join the newest entry of `recent` that is both — a world you had *in this space* — and say which of the two it was |
 | matched, but **nothing** in its history is joinable, or it has none | mint the connecting user a world tied to it, **in the agent that space was last used from** (below), and say so |
 | matched, private, no joinable world, not the owner | refused |
 | **the live world is deliberately `<void>`** | claim the space, **do not relocate** (§4.3) |
@@ -312,7 +312,7 @@ had been deleted handed you to a general-purpose agent regardless of who you had
 ([specs/agents.md §7.6](./agents.md)) has one. The candidate sets are not the same shape: a session's
 worlds are siblings in one working context, whereas a world carries its own `environment.space` and
 `_activate` composes it against *that* space. Reaching sideways into the session would hand a headset
-standing in one room a world built for another and render its walls on top of the real ones — a wrong
+standing in one space a world built for another and render its walls on top of the real ones — a wrong
 answer, not a degradation. When a space's own history is spent, the correct move is to build a world
 **bound to this space**, which is what `_establish_world_in` does.
 
@@ -322,10 +322,10 @@ agent you landed in. *Gone* and *private* are reported differently on purpose �
 the other is someone else's door shut, and they call for different reactions. Resuming the *head* of the
 history is not a fallback and stays silent.
 
-**So is being moved by the room.** A match relocates you to that space's world in whatever scope owns it
-— your room can hand you a different world, and a different agent, which is the design (decision #20).
+**So is being moved by the space.** A match relocates you to that space's world in whatever scope owns it
+— your space can hand you a different world, and a different agent, which is the design (decision #20).
 An agent change is narrated by the agent server (`_agent_change_notice`); a relocation that keeps the
-same agent — restart the server in a different room — used to be silent, the same surprise minus the
+same agent — restart the server in a different space — used to be silent, the same surprise minus the
 attribution. `/space/select` now says *"You're in daniel/office now — opened 'workshop'."* when it moved
 you and the agent notice will not fire, so the event is announced exactly once.
 
@@ -337,7 +337,7 @@ you and the agent notice will not fire, so the event is announced exactly once.
 | matched a different space, or no match | **refused** — nothing minted, nothing switched |
 
 A refusal is an info message plus a **blanked world**: the client shows passthrough only, so content
-never floats over the wrong room. The refused user never becomes a holder.
+never floats over the wrong space. The refused user never becomes a holder.
 
 Selection is **idempotent per claim epoch**, keyed by a page-load `cid` in `_selected_cids`, so GPS
 jitter cannot re-vote and thrash the choice.

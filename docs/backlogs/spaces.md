@@ -44,7 +44,7 @@ So the boundary today is **a hint to the LLM, delivered as raw coordinates, that
 **There is no in-bounds clamp.** The design promised models would land inside the boundary and never
 through a wall; no such check exists on any placement path, and `floorPolygon` is read in exactly one
 place — the text formatter above. `query_space`'s own docstring still promises the enforcement ("Read
-this before placing things (so models land INSIDE the room, not through a wall)"), and the builder
+this before placing things (so models land INSIDE the space, not through a wall)"), and the builder
 prompt names the boundary in its Live-context bullet, so the raw polygon reaches the model every turn.
 Both are advice, not a guarantee.
 
@@ -100,7 +100,7 @@ into a closed loop:
 | boot restores the last active world | `_boot_world`, `server.py:387` | restarting comes back into the same void world |
 
 So: the vote will not mint, creating a world cannot escape, and restarting does not help. A user standing
-in a freshly scanned room, in a void world, **has no route to a world bound to that space.** Observed with
+in a freshly scanned space, in a void world, **has no route to a world bound to that space.** Observed with
 15 worlds on disk, every one either `<void>` or bound to the *previous* location's space, and not one with
 an absent `space` key — which is the single state (`UNSET`) that would have relocated them.
 
@@ -121,7 +121,7 @@ Candidate fixes, cheapest first:
   saved the whole diagnosis.
 - **A re-home endpoint** — the original entry above. Solves this too, and more.
 
-### A space minted before the room is scanned is born empty, and can never match again
+### A space minted before the space is scanned is born empty, and can never match again
 
 Establish at a new location *before* capturing anything and the "somewhere new" path mints a
 geo-stamped `space-N` from a vote that had nothing to vote with. The record is written with
@@ -167,7 +167,7 @@ surface list against the live server took `space-1` from 59 surfaces to 4. Recov
 The design reasoning is sound as far as it goes: the *client* owns removal confidence (a 3-capture
 debounce), so a surface missing from a post is genuinely gone and the server can prune at once with no
 server-side absence counter. But that trusts the client completely, and nothing distinguishes "I
-carefully confirmed this room is empty" from "I sent you a malformed or empty frame".
+carefully confirmed this space is empty" from "I sent you a malformed or empty frame".
 
 Cheap guards, roughly in order of value:
 
@@ -179,7 +179,7 @@ Cheap guards, roughly in order of value:
 - **Snapshot before a destructive ingest**, so recovery does not depend on an unrelated backup being
   lucky.
 
-Worth weighing against the current property that a settled room sends no traffic at all — a guard must
+Worth weighing against the current property that a settled space sends no traffic at all — a guard must
 not reintroduce per-capture churn.
 
 ### The desktop guest is spawned, then stranded
@@ -255,7 +255,7 @@ there is no leak, but the policy deserves an explicit decision.
 
 ### Per-agent world spaces
 
-An agent could declare how it wants a space presented — a `room_view` block with visibility and style
+An agent could declare how it wants a space presented — a `space_view` block with visibility and style
 rules over the base, targeted by semantic, id, or `all`. See
 [`backlogs/agents.md`](./agents.md), where this is tracked against the agent definition.
 
@@ -307,7 +307,7 @@ mismatches the behavior. Three orthogonal concerns share too few words: (1) **co
 physically in the room (a fact, not a permission; the admission gate); (2) **content visibility** — can you
 enter a given world (`world.public` + the `/ws` refusal); (3) **authoring control** — can you anchor a NEW
 world here (`space.public`, D8). We labeled #3 "private/public," but users reach for "private" expecting #2
-at the room level.
+at the space level.
 
 **Concrete smell:** a "private" space still mints **public, joinable** worlds by default — flip your space
 private, create a world, and it comes up public and any co-located person can join it. The privacy doesn't
@@ -364,8 +364,8 @@ Three distinct mechanisms were found behind these, in order of impact:
    fix times out (`code=3`), the space-selection overlay never dismisses: the give-up fallback
    (`endAwaitingSpace()` after `GEO_MAX_TRIES`) never fires because `geoTries` is reset to 0 on every
    `onEnterAR` (`conjure-client.js`), so with the 20 s GPS timeout it can't accumulate to the limit before a
-   re-entry resets it (`grep 'giving up after' temp/conjure.log` → 0 hits). The room actually locks fine
-   underneath (`[coloc] … LOCK`, `[room] accept …`); only the overlay is stuck. *Workaround:* run with
+   re-entry resets it (`grep 'giving up after' temp/conjure.log` → 0 hits). The space actually locks fine
+   underneath (`[coloc] … LOCK`, `[space] accept …`); only the overlay is stuck. *Workaround:* run with
    `--force-geo /<user>/spaces/<name>` to bypass the flaky Quest GPS. *Fix:* give "awaiting a space" a
    **wall-clock deadline** independent of `geoTries`, so a dropped fix falls back to the active world.
 
