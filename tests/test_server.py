@@ -1114,7 +1114,7 @@ def test_reset_capture_authority_clears_stale_id(srv):
     srv._reset_capture_authority(s)
     assert s.doc["environment"]["captureAuthority"] is None
     srv._reset_capture_authority(WorldStore({"id": "y", "name": "y", "rev": 0, "entities": [],
-                                          "environment": {}}))   # no room/env → must not raise
+                                          "environment": {}}))   # no space/env → must not raise
 
 
 def test_switching_into_a_world_drops_its_stale_authority(srv, client):
@@ -2075,7 +2075,7 @@ def test_an_outdoor_agents_worlds_are_space_less_however_they_are_minted(srv, cl
     r = client.post("/scope/activate", json={"scope": "daniel/agents/outdoor"}).json()
     assert r["ok"]
     assert srv.worlds.load("daniel/agents/outdoor", r["id"]).doc["environment"]["space"] == "<void>"
-    assert not any(e.get("meta", {}).get("real") for e in _entities(client))   # no room composed in
+    assert not any(e.get("meta", {}).get("real") for e in _entities(client))   # no space composed in
     # the explicit path, with the flag omitted — the agent's declaration still wins
     assert client.post("/worlds/new", json={"name": "dunes",
                                             "scope": "daniel/agents/outdoor"}).json()["ok"]
@@ -2962,7 +2962,7 @@ def test_admin_delete_empty_path_refused(srv, client):
 
 # --- a world inheriting a non-empty space's geometry is spacePresentation.active (director can see it) --------------
 # Regression: creating/switching to a world that inherits an existing space's surfaces left spacePresentation.active
-# unset (only ingest_capture set it), so the CLI/voice director's query_space reported "no room" though the
+# unset (only ingest_capture set it), so the CLI/voice director's query_space reported "no space model yet" though the
 # geometry was merged. _compose now defaults spacePresentation.active True when reals are merged (respecting an
 # explicit False from an immersion mode like vr_unbounded).
 def _space_with_walls():

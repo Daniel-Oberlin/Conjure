@@ -186,7 +186,7 @@ space it was told to establish, and `_boot_world` opts out (below).
 
 | Case | Why |
 |---|---|
-| the world is `outdoor` | a sky world has no room to tie to. Either the request said so (`new_world(outdoor=True)`) **or the agent did** (`world.outdoor` — [`specs/agents.md §3`](./agents.md)); they OR together, so an agent whose point is to put you elsewhere doesn't inherit whatever room you were standing in |
+| the world is `outdoor` | a sky world has no space to tie to. Either the request said so (`new_world(outdoor=True)`) **or the agent did** (`world.outdoor` — [`specs/agents.md §3`](./agents.md)); they OR together, so an agent whose point is to put you elsewhere doesn't inherit whatever space you were standing in |
 | `active_space == VOID` | nothing is live — an unclaimed server, or the current world is itself void |
 | the creator may not build in the live space | someone else's **private** space (§5) |
 
@@ -206,7 +206,7 @@ leaving the ref absent, which `_activate` reads as the honest "no space chosen y
 
 ### 4.3 Room-less has two meanings: `UNSET` and `VOID`
 
-A world with no room is either **not decided yet** or **decided to have none**, and those want opposite
+A world with no space is either **not decided yet** or **decided to have none**, and those want opposite
 treatment when a headset works out which space you are standing in.
 
 | Server state | On disk | Renders | A space selection… |
