@@ -97,7 +97,7 @@ idle:
 
 ```bash
 python -m conjure --debug-jitter
-tail -f temp/conjure.log | grep -E "\[figure\]|/tool|PACE|RATE"
+tail -f temp/conjure.log | grep -E "\[patch\]|\[figure\]|\[bcast\]|/tool|PACE|RATE"
 ```
 
 ### C1 — does the pose's NAME reach the client?
@@ -110,7 +110,13 @@ browser console and nowhere else. **Do this half in the Mac browser** (⌘⌥J �
 it is a wire-and-schema question, not an XR one, and Quest remote debugging costs ten minutes to set up
 for the same answer. This is the bug fixed in `8648ef8`; its **absence** is the check.
 
-**The success signal is in the log.** Pose a figure and watch for:
+**Which line proves it depends on how you drove it.** A `curl` straight to `/figure` produces
+`[patch] update <id> found=true {components.figure}` and **nothing else** — no `/tool` line, because there
+is no director in the loop, and often no `[figure]` line either (see `_once` below). Driving it by voice
+or REPL adds the `/tool` pair. The curl's own JSON reply is the better signal in any case: it is
+synchronous and says more than the log, including `needs` and `skipped`.
+
+**The success signal from the client.** Pose a figure and watch for:
 
 ```
 [figure] posed 7 bone(s) on grace
