@@ -306,11 +306,11 @@ active world. A second user may **join a public world** and co-locate. Full plan
   for "which space am I in"; the geometry-registration vote is the fine discriminator.
 
 **Implications:** supersedes #14's agent-first namespace; migration moves existing `private/builder`
-data to user `daniel` and extracts the embedded room surfaces into `daniel`'s first space. Phased
+data to user `daniel` and extracts the embedded real surfaces into `daniel`'s first space. Phased
 build (5 phases) in the plan; Phase 1 (users + namespace + migration) is foundational and user-invisible.
 
 ### 16. Capture solve off the render thread; gated + sliced render — ✅ RESOLVED
-**Choice:** Keep the ~0.5 Hz room capture from ever landing heavy work in a single render frame. Move
+**Choice:** Keep the ~0.5 Hz space capture from ever landing heavy work in a single render frame. Move
 `SpaceSnap.register` into a **Web Worker** (the render applies on its reply); split the apply-gate into
 **pose vs shape** so tracking drift re-lays only cheap transforms; gate the per-surface **styling** to run
 only on change; and **time-slice** the mesh re-triangulation across frames under a per-frame budget
@@ -455,7 +455,7 @@ every pass needs a headset round trip; (2) environment depth is low-res and roug
 edges are inherently blocky and shimmering, unlike the sharp hand mesh; (3) hands are already covered
 sharply by `hands`, so full's marginal value is only *moving real things* — people, pets, held objects.
 
-**Cheaper alternative recorded:** render the `mesh-detection` captured room mesh (walls + furniture) as
+**Cheaper alternative recorded:** render the `mesh-detection` captured space mesh (walls + furniture) as
 depth-only occluders — sharp, stable, no depth sensor, but static only. Pairs well with `hands`. A better
 next step than `full` if static-furniture occlusion is the goal. See
 [`docs/backlogs/occlusion.md`](./backlogs/occlusion.md).

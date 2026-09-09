@@ -88,4 +88,4 @@ Conclusion: the two anti-parallel partition faces **cannot** be disambiguated fr
    wall-art in a live headset capture. If live wall-art is reliably OUTWARD (co-facing), the memory is stale
    and a co-facing fallback becomes viable; if it's INWARD, `|dot|` must stay. Don't assume either.
 4. **If ambiguity persists**, persist the association more defensively (store it against both partition
-   faces, or resolve at ingest with the whole room in hand) rather than relying on any per-capture derivation.
+   faces, or resolve at ingest with the whole space in hand) rather than relying on any per-capture derivation.

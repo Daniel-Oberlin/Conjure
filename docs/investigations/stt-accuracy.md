@@ -194,7 +194,7 @@ is — which points effort at the recognizer rather than at buying microphones.
 
 The honest limit of that conclusion: `say`-synthesized speech is clean and hyper-articulated, and the
 filter only removes the *band*. It does not reproduce noise-suppression artifacts, AGC pumping,
-packet-loss concealment, or a real room — which are plausibly the parts that actually hurt. So 4.1 is
+packet-loss concealment, or a real space — which are plausibly the parts that actually hurt. So 4.1 is
 **downgraded, not eliminated**, and only real audio can settle it.
 
 ### On sample size — why nothing above closes the question

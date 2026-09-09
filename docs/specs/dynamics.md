@@ -354,7 +354,7 @@ The server places the carrying entity from the manifest before the client render
 
 - **`free`** — free-standing at `default_pos` (or the caller's `position`). If `face_user` is true, it is
   rotated to face the viewer **at creation** (fixed, not tracking).
-- **`surface`** — conjured with `on_surface`, the entity is aligned to a real room surface, fitted to its
+- **`surface`** — conjured with `on_surface`, the entity is aligned to a real space surface, fitted to its
   frame, and stood off by `on_surface_standoff`; `meta.surface_offset` is recorded so it rides recaptures.
   An image-bearing module fits its picture's aspect *inside* the frame by default; `stretch: true` fills it.
 - **`volume`** — a volumetric effect centred on the entity origin (a firefly swarm). Leave `on_surface` off.
@@ -377,7 +377,7 @@ node — a curated capability, not something the contract grants generally.
 
 ### Discovering what is manipulable
 
-Direct children of `#world-root` that have an id and are neither `data-real` (room surfaces) nor
+Direct children of `#world-root` that have an id and are neither `data-real` (real surfaces) nor
 `data-scaffold`, excluding the grab entity itself. Other modules' entities are included: a Water Picture
 is grabbable.
 
@@ -422,23 +422,63 @@ Chosen by what the beam is on when the action starts, and held for as long as **
 it** is held, so a gesture can never be ended by a different control:
 
 - **`grab` on the body** → move. *Free* objects: rigid 6DOF, plus `reel` to push/pull along the beam.
-  *Grounded* models: slide on the floor plane, yaw only — matching how they are re-solved on every capture.
+  *Grounded* models: slide on the floor plane, yaw only — matching how they are re-solved on every capture
+  — plus `reel`, which there pushes and pulls along the beam's **compass heading**, staying on the floor.
   *Surface-attached*: slide on the host plane, clamped to its extent, keeping the original stand-off.
+
+A grounded `reel` cannot ride the controller's forward axis the way a free object's does: the pose is
+rebuilt from the ray every frame and would overwrite it. It accumulates as a **reach** along the beam's
+horizontal heading instead, floored at 0.3 m so reeling in cannot drag the model through you and out behind
+your head, where the beam no longer reaches it to push it back. This was lost when the grounded branch was
+added (`49390d8`, 2026-08-24): until then every non-surface object took the free-rigid path and reeled, and
+the branch's early `return` took push/pull away from the content that needs it most — a model across the
+room is a small target, and the alternative is walking to it.
 - **`resize` on a corner handle** → uniform scale, proportions preserved. Progress is measured **signed
   along the grabbed corner's outward axis** rather than radially: dragging a corner out is mostly lateral
   hand movement that barely changes controller→centre distance, and an unsigned measure bounced back
   through zero at the centre.
-- **sticks, while holding anything with a body** → `yaw` about gravity-up; a *free* one also takes `pitch`
+- **sticks, on anything with a body** → `yaw` about gravity-up; a *free* one also takes `pitch`
   and `bank`, measured against the **viewer**. Viewer-relative because nothing in a glTF records which way
   a model faces, so its own axes cannot define pitch or bank — and the viewer's frame is well-defined from
   wherever you stand, which makes it the one convention that fits every kind of content.
   A **body** means a loaded model or a `geometry` (an image plane, a primitive). Two exclusions:
   a **billboard**, which re-aims at each viewer every frame and would overwrite the spin on the next tick;
   and a **dynamic module's own entity**, which carries only its component and has nothing of its own to
-  turn. Surface-attached content never reaches the stick path at all — it returns from its own branch, so
-  wall art stays flush. A free-standing image can therefore be turned edge-on and effectively vanish;
-  that is the user's call to make, and one nudge back undoes it.
+  turn. Surface-attached content never reaches the stick path at all — while held it returns from its own
+  branch and while hovered `_stickHover` refuses it, so wall art stays flush. A free-standing image can
+  therefore be turned edge-on and effectively vanish; that is the user's call to make, and one nudge back
+  undoes it.
 - **release** → commit.
+
+**The stick does not require a grip.** It turns the object that is **highlighted**, held or not. Requiring
+a grip first looked like consistency with the drag and was a step with nothing behind it — the same finding
+that already put the stick on the sky with no grip in §8b, applied back to object mode. Highlighting is a
+sufficient gate on its own: it already means a beam is up (`armed()`), aimed at that object, and it is the
+object the HUD box is drawn around, so what will turn is exactly what you can see is selected. Two
+consequences follow from the same place the frame modes' stick does:
+
+- **Applied once per tick, not per pointer.** `yaw`/`pitch`/`bank` are hand-qualified bindings, which
+  resolve *globally* (§6), so every pointer reports the same deflection and a per-pointer loop would double
+  it. A gesture in flight suppresses the hover path entirely, since the held branch already folds the stick
+  into its own drag.
+- **A stick has no release event**, so the commit fires once the sticks have *stayed* neutral for 300 ms,
+  and also on every other
+  path that stops tracking the object — focus moving on, a grab starting *on something else*, the pointers
+  going away, a mode switch, teardown. That breadth is not belt-and-braces: an uncommitted rotation is not
+  merely unshared, because anchored content re-derives its pose from `meta.anchor` at the next capture, so
+  it would be silently undone. Gripping the object you were *just turning* is the one exception, and the
+  only one that needs no commit: that drag carries the turn and commits the combined pose on release.
+  The 300 ms is on the neutral path alone. Feathering a turn crosses the dead zone repeatedly, and
+  committing on each crossing made one adjustment six POSTs and six broadcasts on device (2026-09-08) —
+  the wait is what makes "one POST per turn" true rather than merely intended. Every other path has
+  genuinely stopped tracking the object, so there is nothing left to coalesce and delaying would only
+  risk losing the turn.
+
+A **grounded** object is the one case where held and hovered differ internally. While dragged its yaw is
+rebuilt from the wrist every frame, so the stick has to *fold into* that (`st.stickYaw`) — a direct write
+would be overwritten on the next tick. While merely hovered nothing is rebuilding it, so the same spin a
+free object gets is both correct and the only thing that would show. Either way the axis is gravity-up, so
+it stays upright.
 
 Scale is clamped twice: within one gesture (0.25×–4×) and in total against the size the object was first
 seen at (0.02×–50×), so repeated gestures cannot compound their way to absurdity. Bounds are **relative**
@@ -576,7 +616,7 @@ Gripping empty space is safe here in a way it would not be as default behaviour:
 controller's resting state, so this only ever fires inside a mode the user deliberately entered and that is
 named on screen.
 
-### What is blocked in a captured room
+### What is blocked in a captured space
 
 Only skybox **yaw** works there. Scale would shrink the sky's opaque sphere — which `applyImmersion` keeps
 visible precisely to occlude passthrough — until it intersects the real walls; because it writes depth, that

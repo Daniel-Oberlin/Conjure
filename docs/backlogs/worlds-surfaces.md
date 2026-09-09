@@ -31,7 +31,7 @@ Two consequences:
   their only stated difference is passthrough. Of five modes there are three distinct behaviours — surfaces
   drawn (`virtual_space`), surfaces hidden (`ar` / `authored` / `mixed` leaving it alone), space off
   (`vr_unbounded`).
-- **The room summary misinforms the director.** `mcp_server.py:266` prints
+- **The space summary misinforms the director.** `mcp_server.py:266` prints
   `passthrough={env.get('passthrough', False)}` into the per-turn summary, so the model reads
   `passthrough=False` on every turn — while the user is in AR looking at their real space through the
   cameras. That is a false statement injected into every prompt, and the cheapest half of this to fix.

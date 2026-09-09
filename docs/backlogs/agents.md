@@ -101,11 +101,11 @@ and session, and the world doc is flat. The designed model is a **shared geometr
 view**, composed server-side into the flat doc that already broadcasts, so the client contract is
 unchanged:
 
-- **Shared room base** — written *only* by room capture: per surface `id`, `transform`,
+- **Shared room base** — written *only* by space capture: per surface `id`, `transform`,
   `components.surface`, a seeded default material, `meta`; plus the boundary and capture flags. One
   copy, shared by every world in every agent's space.
 - **`room_view`** — broad presentation rules over the base, targeted by semantic / id / `all`: **hide**
-  (the ceiling; or the whole room), **clip/transform geometry** (crop walls to 1 m, anchored at the
+  (the ceiling; or the whole space), **clip/transform geometry** (crop walls to 1 m, anchored at the
   floor). Non-destructive — the base stays 2.7 m tall; only the render changes.
 - **`surface_overrides`** — per-surface specifics that win over `room_view` (`surfaceId → {material?,
   visible?, …}`).
@@ -914,7 +914,7 @@ the couch *identically* to the tables that worked. If `style_surface(target="cou
 have worked. No couch-specific code path exists — this is LLM behavior (assert-done-without-acting),
 same class as the re-query papercut.
 
-**Possible trigger (unconfirmed):** an unstyled surface shows in the director's room summary as
+**Possible trigger (unconfirmed):** an unstyled surface shows in the director's space summary as
 `visible=False` (styled ones flip to `visible=True`), so the model may treat the couch as "not active"
 and skip to a confirmation.
 

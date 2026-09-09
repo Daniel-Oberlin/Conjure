@@ -115,7 +115,7 @@ never over a captured space or under a skybox.
 
 The whole real/virtual spectrum is two independent axes:
 
-- **Axis 1 — passthrough** (`environment.passthrough`, top-level): is the real room visible through the
+- **Axis 1 — passthrough** (`environment.passthrough`, top-level): is the real space visible through the
   camera?
 - **Axis 2 — surface visibility** (per-surface material, defaulted by
   `spacePresentation.defaultSurfaceVisible`): are the virtual surfaces drawn, and how are they styled?
@@ -252,7 +252,7 @@ server-side (`specs/spaces.md §7`); and pruning protection keeps a surface with
 | Concern | Where |
 |---|---|
 | immersion mode table | `conjure/mcp_server.py:246` `_IMMERSION` |
-| the room summary | `conjure/mcp_server.py:255` `_space_summary` |
+| the space summary | `conjure/mcp_server.py:255` `_space_summary` |
 | `query_world` collapse | `conjure/mcp_server.py` `_real_surfaces_line` |
 | per-semantic base material | `conjure/server.py:2619` `_default_surface_material` |
 | compose / decompose | `conjure/server.py:2636` / `:2659` |

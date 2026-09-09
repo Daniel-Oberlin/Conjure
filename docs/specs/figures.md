@@ -201,6 +201,86 @@ wrong.
 - Composition order is **turn, then bend, then spread** — twist innermost, the swing-twist decomposition
   — mirrored exactly in `figures.resolve_pose` and `figure.js` so a Blender render and a headset agree.
 
+### Named poses — tier 2
+
+`POST /figure {"named": "kneel"}`, and `conjure/poses.py` is the library. **13 poses**: `kneel`,
+`kneel-one`, `crouch`, `sit`, `t-pose`, `cheer`, `reach-out`, `hands-on-hips`, `arms-crossed`, `wave`,
+`point`, `bow`, `stand`.
+
+A pose is a dict in the vocabulary above, so **one authored pose works on every figure** — that is what
+the rig-independent axes buy rather than merely protect, and `scripts/pose_library.py` measures it:
+every pose against every rig of the eval cast, 12 of 13 clean on all three (the exception is `crouch`'s
+torso lean on Trish, whose spine does not carry her head).
+
+**Two verifiers, and they fail differently.**
+
+- `Pose.signature` holds `pose_corpus` predicates, so "is this a kneel" is arithmetic. This is what
+  **fails** a pose. The library and the eval corpus are the same kind of object over one evaluator,
+  `pose_corpus.check_predicates`.
+- `scripts/pose_library.py --identify` renders each pose and asks a vision model **which of the library
+  it is looking at**. Recognition, never "is this pose any good" — that framing is a judgement and does
+  not work (§ *The utterance layer*). Calibrated first against the wrong `kneel`, which it must decline.
+  **Advisory**: it confuses poses that genuinely resemble one another (a deep `crouch` reads as a
+  `sit`), so it reports rather than gates.
+
+**The visual check is not decoration — it catches what a signature structurally cannot.** A signature
+only asserts the bones a pose *sets*, so it is blind to the bones a pose *forgets*, and both defects of
+that shape were found this way: leg poses left the arms at the rig's bind pose (a T-posed VRoid figure
+knelt like a scarecrow), and one-armed poses never said what the other arm does. The fix for both is
+`aim`, which is absolute and so lands an arm at the side from a T-pose and an A-pose alike.
+
+| | Behaviour |
+|---|---|
+| Expansion | server-side, so there is one definition of "kneel", in Python, beside its signature |
+| `stand` | a **stance**, not a reset: arms at the sides, everything else back to rest (`Pose.clears`). Returning to the file's own bind pose is `clear=true` — and on a VRoid rig that is a T-pose, which is not what anyone means by "have her stand" |
+| Durable state | the expansion **and** the name (`components.figure.named`), so the state reads "she is kneeling" |
+| Overrides | `{"named": "kneel", "pose": {...}}` in one call — *"kneel, but with her arms out"* |
+| Hand-editing after | drops the name: she is no longer kneeling, she is in a pose of her own |
+| A bone the rig lacks | **skipped and reported**, not refused — the opposite of a hand-written pose, where an unknown bone is a typo and must be loud |
+| No bones in common | refused. Filtered-to-nothing is not `stand`, and clearing her would be a wrong answer wearing a right one |
+| `needs` | said out loud. `sit` makes the *shape* of sitting; a seat is tier 3 and is not built |
+
+**Tier 3 — solving against the world** ("hand flat on that table") is not built and wants a solver.
+Measured cost of its absence: `sit` leaves a figure floating above a real chair — about an inch on Grace,
+several on the shorter Saka — so the error is rig-dependent and not a constant to subtract.
+
+**Known limits of posing by joint**, all measured on device 2026-09-09 and none catchable by a signature,
+which asserts where joints are and never whether flesh intersects flesh:
+
+- Arms aimed `down` **enter the body**; `arms-crossed` folds inside the chest; `hands-on-hips` does not
+  quite touch. A real arm hangs a few degrees out from the torso axis, and nothing has ever consulted the
+  mesh about a pose.
+- `point` and `wave` read as *reaching*, because there is **no finger vocabulary** — fingers are not
+  recoverable from topology (§3), so no inferred map has them.
+
+### Re-grounding
+
+Rotations cannot ground a figure: the hips do not move, so posing alone leaves the body wherever the
+bind pose put it, and `grounded` placement will not save it — that snaps the entity by its **bind-pose**
+bounds, the same stale box `grab` used to select with.
+
+**The direction is the surprise.** A kneeling figure does not sink through the floor; she **floats
+54 cm** (measured on Grace and Saka). Every joint hangs off hips that rotation cannot move, so a folded
+leg can only raise the foot, and the knee that becomes the lowest joint sits well above where the toes
+were. A lift-only correction — the obvious reading of "stop her sinking" — would do nothing at all for
+the one pose it was written for.
+
+So the rule is symmetric, lives in `figure.js`, and is one line of intent: **put the lowest mapped joint
+back at the height the lowest mapped joint had at rest.** Raise one leg and the standing foot is still
+the lowest, so nothing moves. Kneel and she settles onto her knees. It is measured in the model's own
+frame, so placement and scale cancel; it is undone before each re-measure, so poses do not accumulate;
+and it uses **mapped** bones only, because a hair rig's bones sprawl half a metre past the body and are
+not what anything rests on.
+
+Approximate by construction — joint positions, not skinned vertices, so a knee sinks by about its own
+radius. Exact would mean skinning the mesh, and the error is centimetres against a decision measured in
+tens of them.
+
+**Verified on device 2026-09-09**, including the case static analysis could not settle: the settle
+survives a room recapture. It moves the mesh *inside* the entity while the anchor solver moves the
+entity, and the two do not fight. It also survives a reload, does not accumulate over repeated poses, and
+stays silent when nothing rests any lower.
+
 ### Joint limits
 
 The vocabulary can express poses a body cannot make. Limits are per **semantic** bone — one table is
@@ -421,7 +501,7 @@ animation channel is the one thing it applies over everything else.
 | `tests/test_figures.py` (55) | inference, `validate`'s every rule, pruning, `follow_bones`, the frame, forward kinematics through a posed bone, aiming, limits, the convention table |
 | `tests/test_importer.py` (27) | `glb_bounds`' skinned/unskinned/armature-scale cases, the VRM maps, what a rigged model records |
 | `tests/test_server.py` (~35) | life-size placement, the catalog revision and its tripwire, `refresh-models`, and `/figure` end to end through the real import → place → pose path |
-| `tests/js/figure.test.js` (40) | rest composition on a deliberately non-identity rest rotation, clearing, riding, client-side clamping |
+| `tests/js/figure.test.js` (46) | rest composition on a deliberately non-identity rest rotation, clearing, riding, client-side clamping, and re-grounding (including that it does not accumulate and does not scale with placement) |
 
 `tests/js/fixtures/figure-pose-golden.json` is **shared** by `tests/test_figures.py` and
 `tests/js/figure.test.js`. Pose resolution exists twice — in Python, which renders the verification
@@ -430,20 +510,107 @@ digit. It covers what is easy to get subtly different: composition order, side m
 antiparallel half-turn, and every clamp. (Comparisons are by quaternion **dot product**: three's
 `Quaternion.angleTo` has a ~3e-8 noise floor even between bit-identical quaternions.)
 
+### The utterance layer — `scripts/pose_eval.py`
+
+Everything above verifies the **frame**: given `{"leftUpperArm": {"bend": 45}}`, does the right joint
+move the right way. None of it verifies the **tool surface**: given *"raise her right arm up"*, does the
+director produce that call at all. The two fail independently, and the second is the one with no other
+net — a change to a sentence of English in `pose_figure`'s description is otherwise unfalsifiable.
+
+| | Verify the frame | Verify the tool surface |
+|---|---|---|
+| Input | `{"leftUpperArm": {"bend": 45}}` | *"raise her right arm up"* |
+| Runs | every commit, free | on demand — real API calls, real Blender |
+| Catches | a bone mapped to a fingertip, an axis that is self-consistently wrong | the director picking the wrong bone or sign |
+
+**The corpus is data** (`conjure/pose_corpus.py`): 20 phrases × the 3-rig cast, with the expectations
+written per *phrase* and never per rig — the claim the whole vocabulary rests on is that one sentence
+means the same thing on every skeleton. Distances are fractions of the figure's own height, so a 1.55 m
+rig and a 1.87 m one score alike.
+
+**Three layers, cheapest first, and each fails for a different reason:**
+
+| Layer | Checks | A failure means | Gates? |
+|---|---|---|---|
+| `check_call` | `touches` / `leaves` / `signs` — which bones were set, and which way | the tool description is wrong | yes |
+| `check_geometry` | where the joints landed once the pose is applied to a real bind pose | the words and the frame disagree | yes |
+| the judge | up to two multiple-choice questions about a rendered pair | *see below — it did not reproduce* | no |
+
+**`points` for an absolute request, `moved` for a relative one.** Scoring *"hold both arms out to the
+sides"* by displacement marks Saka wrong, because she rests in a T-pose and correctly does not move: an
+`aim` is a claim about where the limb **ends up**. That distinction is the corpus's half of the same
+argument that produced `aim` itself.
+
+**What the harness does not do is execute anything.** It reads the live tool schemas off the MCP server
+(never a transcription — a transcribed description would pass forever after the first edit), runs one
+real director turn per cell, and answers the tool calls from the model file: `inspect_figure` returns
+`figures.figure_description`, the same wording the real tool returns, and `pose_figure` runs
+`figures.clean_pose` and reports the joint limits the endpoint would have reported. No world, no server,
+no headset.
+
+**The judge** (`conjure/judge.py`) is a seam beside `Captioner`, returning a structured verdict rather
+than prose. Every question is **multiple choice against a reference render from fixed viewpoints** —
+never free-form spatial description, because vision models are unreliable at 3-D reasoning and reliable
+at recognition. A model that will not pick an option returns `choice == -1`, which is an abstention and
+never scores as a pass. Gemini 2.5 Flash by default (`judge_provider` / `judge_model`), Claude for
+rubric-heavy work, `FakeJudge` offline.
+
+It asks two questions:
+
+- **Which way did it move** — asked only where the corpus claims one word is true of the motion on every
+  rig (`Phrase.moves`; empty means do not ask). A trunk bone barely translates, an absolute request
+  means something else on a rig already resting in the target pose, and a lifted knee goes up *and*
+  forward — none of those has a one-word answer, so none is asked.
+- **Could a body hold this** — asked of every cell.
+
+**Neither one gates a cell.** (Both are *judgement* framings. Asking the same models a **recognition**
+question — "which of these thirteen poses is this?" — works, and is used by the pose library; see
+§ *Named poses*. The failure below is of the question, not of vision models.) As of 2026-09-05 the judge layer is advisory (`--judge-gates` to make it
+count), because it does not reproduce: across four full runs its disagreements were 29, 8, 2 and 7 out
+of 60, with cells moving in and out of the failure column while nothing but the model changed. Before
+each battery the harness renders a **calibration pose** — a 170° twist of the skull, so the figure faces
+forward with the back of its head to the camera — and asks the same plausibility question. Gemini 2.5
+Flash and Claude Sonnet 4.6 both answer *"yes, a person could hold this"*.
+
+**The calibration is the point, not a footnote.** An instrument that cannot detect the defect it exists
+to find does not become trustworthy by being run over sixty cells, and the only way to know is to ask it
+something whose answer is already known. What gates a cell is `check_call` and `check_geometry`, which
+were 60/60 on every one of those runs.
+
+Renders come from `scripts/pose_test.py --clay`, which also gained `--frame` so the posed and rest shots
+share one camera — *"compared to the first image"* means nothing between two differently-zoomed pictures.
+Clay was chosen over textures for three reasons at once: materials are irrelevant to which way an arm
+went, several of the library's are still wrong, and a hosted judge might decline to look at an undressed
+figure. Measured 2026-09-05: it does not decline, and it distinguishes up / down / forward / back /
+barely-moved correctly on a four-way probe.
+
+Three views, not two: front, **three-quarter** and side. A dead-on view is degenerate for any limb aimed
+along it — an arm pointing forward foreshortens into what looks like a folded elbow — and the extra shot
+is nearly free, because the ~3 s the script costs is Blender starting and importing a GLB while each
+render is about 30 ms.
+
+    python scripts/pose_eval.py --calls-only          # the fast loop after editing a description
+    python scripts/pose_eval.py --phrases arm-up --rigs Saka --keep out/
+
+A full battery is 60 cells in ~20 minutes and a few cents. `--calls-only` runs the layer a
+tool-description edit can actually break, needs no Blender and no judge, and takes about twenty seconds.
+
 ## 11. Surface reference
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /figure` | pose a placed figure, or `clear=true` to return it to rest. Owner-gated (`_OWNER_ONLY_PATHS`) |
+| `POST /figure` | pose a placed figure by bone or by `named` pose, or `clear=true` to return it to rest. Owner-gated (`_OWNER_ONLY_PATHS`) |
 | `POST /library/import` | ingest a `.glb`/`.vrm` — the figure attributes come out of this path |
 | `POST /library/refresh-models` | re-derive every model row's attributes |
 
 **MCP tools:** `inspect_figure` (height, triangle count, the bones this figure actually has, current
-pose) and `pose_figure`. Neither is in `_READONLY_TOOLS`, so a `access: "read"` agent gets neither.
+pose), `list_poses` (the named library, read from the data rather than written into a prompt) and
+`pose_figure`. Neither is in `_READONLY_TOOLS`, so a `access: "read"` agent gets neither.
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
-**CLI:** `conjure-import` (ingest), `conjure-ctl refresh-models [--force]`.
+**CLI:** `conjure-import` (ingest), `conjure-ctl refresh-models [--force]`,
+`python scripts/pose_eval.py` (the utterance-layer battery), `scripts/pose_test.py` (render one pose).
 
 **Deps:** none new. GLB reading is stdlib; `trimesh` was already there. Blender is a soft dependency of
 the conversion scripts only, never of the world server.
@@ -457,11 +624,11 @@ Recorded here so the spec can be trusted about its own edges; the design work is
   no retargeting, and no decision yet on how a pose and a clip compose.
 - **No outfits.** Collection structure is used at *conversion* time to choose what to export; there is no
   runtime show/hide, no slot vocabulary, and no `set_model_parts`.
-- **No named poses** ("kneel", "sit"), and therefore no re-grounding — rotations cannot ground a figure,
-  so a pose that lowers the body would leave it standing in the floor.
+- **No tier 3.** Nothing solves against the world: "sit on that chair" makes the shape of sitting and
+  says so; "hand flat on the table" is not expressible at all.
 - **No discovery layers 3–6:** no LLM labelling, no multimodal verification, no human confirmation.
-- **No evaluation of the utterance layer.** `validate()` checks the bone map, renders check the axes, and
-  nothing at all checks whether a change to a tool description still steers the director correctly.
+- **No named-pose authoring loop.** The judge exists and the renderer exists, but nothing yet proposes
+  a pose, renders it, verifies it and freezes it into a library.
 - **No FBX front door**, so no Mixamo.
 - **No morph, spring-bone or MToon support.** VRM material data is in the file and A-Frame's plain glTF
   loader ignores it.

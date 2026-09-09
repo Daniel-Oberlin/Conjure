@@ -78,7 +78,7 @@ single space routinely holds several rooms joined by doors — the reference cap
   contains. It is derived from the largest captured floor (`conjure-client.js:2195`, by `_area`), so in
   a multi-room space the smaller rooms are not represented in it. The height is the constant `2.6`, not
   measured.
-- **It has exactly one consumer: the room summary**, which prints it as a line of text for the director
+- **It has exactly one consumer: the space summary**, which prints it as a line of text for the director
   (`mcp_server.py:267`). Nothing clamps placement against it and nothing renders it — despite
   `query_space`'s docstring saying models land inside the room, that is advice to the model, not an
   enforced invariant. See [`backlogs/spaces.md`](../backlogs/spaces.md).
@@ -346,7 +346,7 @@ jitter cannot re-vote and thrash the choice.
 
 Admission depends on whether a connection claims *physical presence*:
 
-| Connection | Presence | Aligned to a real room? | Gate |
+| Connection | Presence | Aligned to a real space? | Gate |
 |---|---|---|---|
 | **AR headset** | physical | yes | **required** — geo + surface match, else refused |
 | **Voice / CLI** | none (control) | no | admitted; edits still owner-gated |

@@ -216,7 +216,7 @@ derivation is a fresh opportunity to pick a different largest wall or a differen
 world has no passthrough geometry to contradict the result.
 
 **What the re-derivation actually cost** (measured on `fixtures/golden-space.json`, a real 45-surface
-two-room capture, for content 2.2 m from the frame origin):
+two-space capture, for content 2.2 m from the frame origin):
 
 | Capture holds | Δθ | Content moves |
 |---|---|---|
@@ -245,7 +245,7 @@ captures cannot walk the gate open one capture at a time.
 
 While the gate holds, the **previous** frame stays in force and the relocalizing fallback is deliberately
 *not* triggered: that fallback reveals passthrough, whose remedy ("step out of the play area") addresses a
-wrong *room*, and in a void world it would show you your real room instead of the void for the 1.2 s grace
+wrong *room*, and in a void world it would show you your real space instead of the void for the 1.2 s grace
 while we merely wait for planes. With no frame at all there is nothing to hold, so the original
 hold-and-mark-lost behaviour stands. `void.establish` records each establish, its wall count, and whether
 it was forced.
@@ -663,7 +663,7 @@ if (posGap < POS_EPS && angGap < ANG_EPS) { snap exactly; drop from slewSet }
 **Knob:** `--pose-tau`, **default 0 = off** (snap, as before), so it A/Bs on-headset like
 `--geo-slice-ms`.
 
-**Where not to smooth.** Smoothing a single room frame (`#world-root` / `Tmat`) is wrong for a captured
+**Where not to smooth.** Smoothing a single space frame (`#world-root` / `Tmat`) is wrong for a captured
 space and is recorded here so it is not re-proposed: world-root is identity by design, each surface
 carries its own F_track pose, and `Tmat` drives no render transform — smoothing it would smooth nothing
 visible. Smoothing must be **per-surface**. The void/outdoor regime is the exception, since it genuinely
@@ -763,7 +763,7 @@ bias that is immaterial against a 10–15 cm signal and constant across sessions
 delta is exact regardless. Measured in the field (2026-08-31): **bias ~3–4 cm, repeatability ~1 cm, 1 mm
 hysteresis** returning to a spot after walking two rooms away.
 
-The sharpest reading it gives is the **sign of `err` either side of a room boundary**, on a floor known to be
+The sharpest reading it gives is the **sign of `err` either side of a space boundary**, on a floor known to be
 continuous: the room whose `err` is positive is the one whose planes are displaced. No internal probe can
 say that, because internally the space is self-consistent either way. Two presses, one per room, settle it. Input arrives through `ConjurePointers`, already read and cached per `XRFrame`
 by `controller-beams`, so the per-frame cost is a rising-edge check.

@@ -326,12 +326,12 @@ A failed or missing context resource is skipped, never fatal. The world server e
 
 | Resource | Contents |
 |---|---|
-| `space://current` | the live real-room summary — the same formatter `query_space` uses |
+| `space://current` | the live real-space summary — the same formatter `query_space` uses |
 | `world://current` | placed objects (excluding scaffold and real surfaces) + the environment line |
 | `dynamics://available` | the **active agent's** conjurable module catalog (specs/dynamics.md §9) |
 
 `query_world` stays a *tool* for anything a prefetched snapshot would make stale. It dumps the
-**placed** scene: real room surfaces collapse to one counted line that names what it withheld and
+**placed** scene: real space surfaces collapse to one counted line that names what it withheld and
 points at `space://current`, because a per-surface listing was most of the dump and carried strictly
 less than the summary — an identical-looking line per surface reads as complete, and a reader that
 wants a colour concludes none is stored.

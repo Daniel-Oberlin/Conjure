@@ -42,8 +42,8 @@ from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
-from .figures import (AIM_DIRECTIONS, FRAME_REV, FRAME_VECTORS, POSE_AXES, TRUNK_BONES,
-                      resolve_pose)
+from . import poses
+from .figures import FRAME_REV, POSE_AXES, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
@@ -4478,41 +4478,20 @@ async def place_module(req: PlaceModuleRequest, request: Request) -> dict:
 
 
 # --- figures: pose a rigged model through its humanoid bone map (docs/backlogs/figures.md) ---------
-def _aim_problem(bone: str, aim, frame: dict, rot: dict) -> Optional[str]:
-    """What is wrong with an `aim` request, or None. Every branch refuses LOUDLY rather than no-op.
-
-    That is not politeness. A pose that silently does nothing is indistinguishable from a pose the user
-    simply cannot see from where they are standing, and this feature has now shipped that failure twice
-    (grab's unreachable modes; three fixes the headset never ran)."""
-    if bone in TRUNK_BONES:
-        return (f"{bone}: aim points a bone along its own LENGTH, so on the trunk it would mean aiming "
-                f"the top of the skull — use bend, spread or turn there")
-    for other in ("bend", "spread"):
-        if other in rot:
-            return f"{bone}: aim and {other} both set the swing — use one or the other"
-    if isinstance(aim, str):
-        if aim not in AIM_DIRECTIONS:
-            return (f"{bone}: unknown direction {aim!r} — use {', '.join(AIM_DIRECTIONS)}, "
-                    "or a vector [out, up, forward]")
-    else:
-        if not isinstance(aim, (list, tuple)) or len(aim) != 3:
-            return (f"{bone}: aim takes a direction ({', '.join(AIM_DIRECTIONS)}) or a vector "
-                    "[out, up, forward]")
-        try:
-            vals = [float(c) for c in aim]
-        except (TypeError, ValueError):
-            return f"{bone}: aim vector must be three numbers"
-        if not all(math.isfinite(v) for v in vals) or not any(vals):
-            return f"{bone}: aim vector must be finite and not all zero"
-    if not all(k in frame for k in FRAME_VECTORS):
-        # The bone map is fine; the FRAME was measured by an older build. Placing again re-measures it.
-        return f"{bone}: this figure's frame predates aiming — place it again to measure one"
-    return None
+#: What `stand` has to touch to undo whatever came before it. A named pose merges per BONE, so a pose
+#: whose dict is empty would merge nothing and leave the last one standing — the one case where "do
+#: nothing" and "undo everything" look identical from the data.
+_POSE_CLEARS = ("hips", "spine", "chest", "neck", "head",
+                "leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand",
+                "rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand",
+                "leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes",
+                "rightUpperLeg", "rightLowerLeg", "rightFoot", "rightToes")
 
 
 class FigureRequest(BaseModel):
     id: str                                       # entity id of a placed rigged model
     pose: Optional[dict] = None                   # {semanticBone: {bend|spread|turn: DEGREES}}
+    named: Optional[str] = None                   # ...or a pose from the library ("kneel"), tier 2
     clear: bool = False                           # drop the pose and return to the bind pose
 
 
@@ -4565,45 +4544,46 @@ async def figure(req: FigureRequest) -> dict:
                                                      origin="figure")})
         return {"ok": True, "id": req.id, "cleared": True}
 
-    pose = req.pose or {}
+    # A NAMED pose expands into the same tier-1 request the axis vocabulary already takes, here on the
+    # server rather than in the client — one source of truth for what "kneel" means, in Python, next to
+    # the signature that says whether a rig actually performed it. The NAME is kept beside the expansion
+    # so the durable state stays semantic and readable ("she is kneeling", not seven quaternion sources),
+    # which is what makes personas and "stand up again" possible later.
+    named = None
+    if req.named:
+        named = poses.resolve(req.named)
+        if named is None:
+            return {"ok": False, "error": f"no pose called {req.named!r}. Poses: "
+                    f"{', '.join(p.name for p in poses.POSES)}"}
+    # A NAMED pose is filtered to the bones this figure has; a hand-written one is not. The asymmetry is
+    # the point: naming a bone that does not exist is a typo and must be refused loudly, but a library
+    # pose is authored once against no rig in particular, and refusing `kneel` outright because a
+    # figure has no toes would make one authored pose stop working on exactly the rigs it was meant to
+    # span. What got dropped is reported rather than swallowed.
+    skipped: list = []
+    pose = {}
+    if named:
+        # A pose that `clears` starts by returning every bone to rest, so "stand" after "kneel" is a
+        # stance and not an adjustment — a named pose merges per BONE, and one that mentions only the
+        # arms would otherwise leave her kneeling with her arms neatly at her sides.
+        if named.clears:
+            pose = {b: {} for b in _POSE_CLEARS if b in axes}
+        pose.update({b: r for b, r in named.bones.items() if b in axes})
+        skipped = sorted(set(named.bones) - set(pose))
+    # Per-bone overrides ON TOP of the named pose, in one call: "kneel, but with her arms out".
+    pose.update(req.pose or {})
+    if named and not pose and not req.pose:
+        # Filtered down to nothing: this figure has none of the bones the pose is made of. NOT the same
+        # as `stand`, and quietly clearing her instead would be a wrong answer wearing a right one.
+        return {"ok": False, "error": f"{named.name!r} needs {', '.join(sorted(named.bones))}, and this "
+                f"figure has none of them — it maps {', '.join(sorted(axes))}"}
     if not isinstance(pose, dict) or not pose:
-        return {"ok": False, "error": "pass a pose like {\"leftUpperArm\": {\"bend\": 45}}, or clear=true"}
+        return {"ok": False, "error": "pass a pose like {\"leftUpperArm\": {\"bend\": 45}}, "
+                "a named one, or clear=true"}
 
-    # A bone with a name but no frame is not posable: two of Saka's 54 have no measurable direction.
-    # Saying so is the point — a silent no-op on something nobody can see is the failure mode this
-    # feature keeps rediscovering (docs/backlogs/figures.md, grab's mode fiasco).
-    unknown = [b for b in pose if b not in axes]
-    if unknown:
-        return {"ok": False, "error": f"unknown bone(s) {', '.join(sorted(unknown))}; "
-                f"this figure has: {', '.join(sorted(axes))}"}
-    clean: dict = {}
-    for bone, rot in pose.items():
-        if not isinstance(rot, dict):
-            return {"ok": False, "error": f"{bone}: expected {{{', '.join(sorted(POSE_AXES))}}} in degrees "
-                    "or {\"aim\": \"up\"}"}
-        bad = [k for k in rot if k not in POSE_AXES and k != "aim"]
-        if bad:
-            return {"ok": False, "error": f"{bone}: unknown rotation(s) {', '.join(sorted(bad))} — "
-                    f"use {', '.join(sorted(POSE_AXES))} or aim"}
-        vals: dict = {}
-        if rot.get("aim") is not None:
-            problem = _aim_problem(bone, rot["aim"], axes.get(bone) or {}, rot)
-            if problem:
-                return {"ok": False, "error": problem}
-            vals["aim"] = rot["aim"] if isinstance(rot["aim"], str) else [float(c) for c in rot["aim"]]
-        for k, v in rot.items():
-            if k == "aim":
-                continue
-            try:
-                angle = float(v)
-            except (TypeError, ValueError):
-                return {"ok": False, "error": f"{bone}.{k}: expected degrees, got {v!r}"}
-            if not math.isfinite(angle):
-                # Same hazard as /world_frame: a non-finite angle blanks that branch of the scene graph
-                # and stays blanked, and a persisted one comes back on every reload.
-                return {"ok": False, "error": f"{bone}.{k}: angles must be finite"}
-            vals[k] = angle
-        clean[bone] = vals                      # an empty {} is legal: it returns that bone to rest
+    clean, problem = clean_pose(pose, axes)
+    if problem:
+        return {"ok": False, "error": problem}
 
     # Merge onto any existing pose so a caller can move one arm without resetting the rest. Per BONE,
     # not per axis: "bend her elbow" after "turn her elbow" replaces the elbow, which is what a reader
@@ -4617,7 +4597,12 @@ async def figure(req: FigureRequest) -> dict:
             merged = {}
     merged.update(clean)
     merged = {b: r for b, r in merged.items() if r}          # a cleared bone leaves no trace
-    sets = {"components.figure": {**component, "pose": json.dumps(merged)}}
+    figure_state = {**component, "pose": json.dumps(merged)}
+    if named:
+        figure_state["named"] = named.name
+    elif req.pose:
+        figure_state["named"] = ""                 # a hand-made adjustment is no longer "kneeling"
+    sets = {"components.figure": figure_state}
     # Resolve it once here purely to REPORT what the joints refused. The client resolves it again for
     # real; this costs a few hundred multiplications and is what turns a silent clamp into feedback the
     # caller can act on — the director asked for 90 degrees of hip extension twice in one session, and
@@ -4628,6 +4613,15 @@ async def figure(req: FigureRequest) -> dict:
                       "patch": store.apply_patch([{"op": "update", "id": req.id, "set": sets}],
                                                  origin="figure")})
     out = {"ok": True, "id": req.id, "posed": sorted(clean), "bones": len(merged)}
+    if named:
+        out["named"] = named.name
+        if skipped:
+            out["skipped"] = skipped
+        if named.needs:
+            # Said out loud rather than left to look like a bug: `sit` makes the SHAPE of sitting and
+            # there is nothing under her until someone puts it there. Solving against the world is
+            # tier 3 (docs/backlogs/figures.md) and is not built.
+            out["needs"] = named.needs
     if limited:
         out["limited"] = limited
     return out

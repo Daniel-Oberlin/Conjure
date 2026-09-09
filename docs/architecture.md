@@ -202,7 +202,7 @@ Invariants: fully serializable & restorable; every entity has a stable id; compo
 open/extensible; nothing is stored in absolute real-world coordinates — every placed entity is
 on-surface, grounded, free, or skybox.
 
-**A real room surface is an ordinary entity**, tagged `meta.real`. There is no separate room-rendering
+**A real space surface is an ordinary entity**, tagged `meta.real`. There is no separate room-rendering
 path: a captured wall carries a `surface` component (polygon, extent, holes) and a `material`, so it
 flows through patches, broadcast and the director's material edits like anything else. `meta.real` is
 the contract — restyle, hide, texture and mount onto it; never move or remove it
@@ -374,7 +374,7 @@ control tool `set_caller`, so a new tool cannot go silently un-granted ([specs/a
   `new_world`, `switch_world`, `delete_world`, `reset_world`, `set_world_visibility`,
   `set_space_visibility`
 - **Entities:** `add_entity`, `update_entity`, `move_entity`, `remove_entity`, `set_environment`
-- **Real surfaces** (a captured room is ordinary entities, §4): `show_surface`, `texture_surface`,
+- **Real surfaces** (a captured space is ordinary entities, §4): `show_surface`, `texture_surface`,
   `style_surface`, `show_edges`, `style_edges`, `show_annotations`, `style_annotations`,
   `set_immersion`, `realign_space`
 - **Library:** `place_asset`, `place_cached_asset`, `search_library`, `query_assets`, `update_asset`,
