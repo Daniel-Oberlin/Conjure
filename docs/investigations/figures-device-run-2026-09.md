@@ -80,19 +80,108 @@ A 512-pixel clay render cannot answer this and a person standing next to her can
 | B2 | `crouch` then `sit`, back to back | distinguishable. A vision model confused these two — the question is whether a person does | distinguishable, crouching is leaned forward a little|
 | B3 | `arms-crossed` | folded, not clasped, not surrender. Took four authoring passes; the last one only just crosses the midline | again, arms folded but inside her chest |
 | B4 | On **Saka** (VRoid, rests in a T-pose): `kneel`, `wave`, `point` | arms at her sides, not straight out. This is the scarecrow fix — the defect the visual check found | kneeling her arms are straight down, they enter her hips a little; no scarecrow in any of those three poses for saka, again pointing and waving look a little more like reaching |
-| B5 | On **Trish**: `bow` | **expected to barely bow.** Her spine bones are siblings rather than a chain, so the mapped `spine` carries her waist and not her shoulders. Confirms a known rig defect on device | |
+| B5 | On **Trish**: `bow` | **expected to barely bow.** Her spine bones are siblings rather than a chain, so the mapped `spine` carries her waist and not her shoulders. Confirms a known rig defect on device | confirmed, she is pushing her chest forward instead of bowing |
 | B6 | `sit` on any rig | the *shape* of sitting, seated on nothing. Put a chair under her by hand and see how far off she is — that gap is the size of the tier-3 problem | |
 
 ---
 
 ## C. The seam
 
+Everything here is about whether server state arrives intact and cheaply. **The client logs its own
+diagnostics to the server**, so most of this is read from `temp/conjure.log` rather than a browser —
+`figure.js` posts to `/client_log` under the tag `figure`, gated on `window.CONJURE_DEBUG_LOG` (baked
+into the page from `debug_log`, default on).
+
+**Setup.** Restart the server with the frame probe on, because C4 needs it and it costs nothing when
+idle:
+
+```bash
+python -m conjure --debug-jitter
+tail -f temp/conjure.log | grep -E "\[figure\]|/tool|PACE|RATE"
+```
+
+### C1 — does the pose's NAME reach the client?
+
+Two halves, and they want different instruments.
+
+**The failure signal is console-only.** A-Frame drops an undeclared component property with
+`Unknown property \`named\` for component \`figure\`` — that is A-Frame's own warning, so it goes to the
+browser console and nowhere else. **Do this half in the Mac browser** (⌘⌥J → Console), not the headset:
+it is a wire-and-schema question, not an XR one, and Quest remote debugging costs ten minutes to set up
+for the same answer. This is the bug fixed in `8648ef8`; its **absence** is the check.
+
+**The success signal is in the log.** Pose a figure and watch for:
+
+```
+[figure] posed 7 bone(s) on grace
+```
+
+Two things about that line. It fires **once per component instance** (`_once`), so re-posing the same
+figure will *not* log again — reload the page to get a fresh one. And the count is the number of bones
+that actually resolved, so it is also the check that a named pose reached the whole figure: `kneel` is 11
+bones on a rig that has them all, and fewer means bones were skipped.
+
+The failure line names what it could not find:
+
+```
+[figure] NO BONE OR AXES for rightToes on grace — map has 21 entries, axes 21, model has 489 bones
+```
+
+### C2 — what `inspect_figure` says about a posed figure
+
+In the `-v` REPL (§D setup), ask *"what can you tell me about her?"*. The director's prose is not the
+evidence — read the raw tool reply on the `->` line in the log.
+
+**Predicted gap, worth confirming rather than assuming:** it will report *"Currently posed:
+leftLowerLeg, leftUpperLeg, …"* — the bone names — and **not** that she is kneeling. The server stores
+`named` beside the expansion for exactly this reason, and `inspect_figure` does not read it. If that is
+what you see, the semantic half of the state is being kept and then not used, and the fix is one line in
+`figure_description`.
+
+### C3 — two figures, posed differently, no cross-talk
+
+```bash
+curl -s localhost:8080/figure -H 'content-type: application/json' -d '{"id":"grace","named":"kneel"}'
+curl -s localhost:8080/figure -H 'content-type: application/json' -d '{"id":"trish","named":"cheer"}'
+```
+
+Three checks, cheapest first: the log shows a `[figure]` line naming **each id separately**; the stored
+state differs per entity —
+
+```bash
+curl -s localhost:8080/world | jq '.entities[] | select(.components.figure)
+    | {id, named: .components.figure.named, pose: (.components.figure.pose|fromjson|keys)}'
+```
+
+— and your eyes agree that one is kneeling and one has her arms up. The failure this looks for is a
+component written to the wrong entity, or one figure's axes resolving against another's map.
+
+### C4 — frame cost
+
+**Take a baseline first or the number means nothing.** [`pops-and-jitters.md`](./pops-and-jitters.md)
+established that dropped frames are already present on this hardware as a platform characteristic, so
+the question is not "are there drops" but "did posing add any".
+
+With `--debug-jitter` on, a `PACE` line lands every ~2 s. Stand still, then walk a fixed path:
+
+| Phase | What to capture |
+|---|---|
+| figures placed, **unposed** | 3–4 `PACE` lines standing, 3–4 walking — this is the baseline |
+| the same figures **posed** (kneel + cheer + crouch) | the same again, same path |
+
+Compare `jit(sd)` (frame-interval stddev — the real smoothness metric), `late`, `drop` and `heap`. A pose
+is a one-off quaternion write per bone with no per-frame work, so the honest expectation is **no
+difference at all**; a rise in `jit`/`drop` between the two phases would mean something in the pose path
+is running every frame, which is exactly the hazard the design flagged (*"the mixer rewrites bones every
+frame"*).
+
 | # | Do | Expect | Saw |
 |---|---|---|---|
-| C1 | Watch the browser console while posing | **no** `Unknown property named for component figure`. That warning was the bug fixed in `8648ef8`; its absence is the check | |
-| C2 | `inspect_figure` after a named pose (ask "what can you tell me about her?") | reports the posed bones; watch the `->` line in Terminal 2 for the raw reply | |
-| C3 | Pose two figures at once, differently | no cross-talk; each holds its own | |
-| C4 | Frame cost with 2–3 figures posed | no new stutter. [`investigations/pops-and-jitters.md`](./pops-and-jitters.md) says dropped frames are already live on this hardware — the question is whether posing adds any | |
+| C1a | Mac browser console while posing | **no** `Unknown property \`named\`` warning | |
+| C1b | `[figure]` lines in the log | `posed N bone(s) on <id>`, N = the pose's bone count; no `NO BONE OR AXES` | |
+| C2 | `inspect_figure` on a posed figure | posed bone names — and probably **not** the pose's name (gap above) | |
+| C3 | grace `kneel` + trish `cheer` | separate log lines, distinct stored state, both correct in the headset | |
+| C4 | `PACE` before vs after posing | no change in `jit(sd)` / `late` / `drop` | |
 
 ---
 
