@@ -409,8 +409,16 @@ have no room and should say so rather than guess.
 
 ### Staging
 
-1. **Segmentation + room record + names + connectivity + director queries and targeting.** Offline-testable,
-   immediately user-visible, no registration change at all.
+1. **Segmentation + room record + names + connectivity + director queries and targeting.** ✅ **Built
+   2026-09-09** on `feat/rooms`: `SpaceSnap.segmentRooms` / `roomLinks` (client, pure, pinned against the
+   golden capture — 2 rooms, 45/45 placed, the doorway resolving from both of its faces);
+   `conjure/rooms.py` identity resolution (overlap → floor → mint, mutation-checked);
+   `environment.rooms` riding the `boundary` path onto the space; a room as a target through
+   `_real_surface_match`, so every surface tool gained it at once; `name_room`; room grouping and door
+   destinations in the per-turn summary; and which room the user is standing in, from the presence tick.
+
+   **Still open in this step:** the `room=` filter for room ∩ semantic ("the kitchen walls"). A room works
+   as a whole target today; the composable form is not built.
 2. **Per-room residuals into the geometry event log** (`room.*`, change-gated), applying nothing. Field-read
    before correcting — the same `[aabb]`-first discipline.
 3. **Apply the refinement**, with the guards above.
