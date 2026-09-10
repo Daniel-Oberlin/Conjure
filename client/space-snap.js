@@ -1273,7 +1273,7 @@
    * @param {{id: string|undefined, res: number, tx: number, ty: number, tz: number}[]} residuals
    * @param {RefSurface[]} ref
    * @param {Record<string, string>} roomOf        reference surface id → room id
-   * @param {{minPairs?: number, maxM?: number}} [opts]
+   * @param {{minPairs?: number, maxM?: number, maxYM?: number}} [opts]
    * @returns {{room: string, n: number, nz: number, before: number, after: number,
    *            dx: number, dz: number, dy: number|null, ok: boolean}[]}
    */
