@@ -280,3 +280,21 @@ def test_a_vrm_imports_as_a_model_and_records_its_humanoid_map():
 
 def test_vrm_extension_is_importable():
     assert ".vrm" in importable_extensions()
+
+
+def test_a_label_hint_names_the_asset_instead_of_the_filename():
+    """`--label` exists because the filename IS the catalog name otherwise, so `EveMaccaro.glb` becomes
+    "EveMaccaro" and `char_v3_final.glb` becomes that. Distinct from `creator`, which is whoever made
+    the model — putting a character's name there pollutes the attribution licence tracking depends on."""
+    from conjure.importer import plan_import
+    glb = b"glTF" + bytes(40)
+    assert plan_import("EveMaccaro.glb", glb, {}).label == "EveMaccaro"
+    assert plan_import("EveMaccaro.glb", glb, {"label": "Eve Maccaro"}).label == "Eve Maccaro"
+
+
+def test_the_label_hint_does_not_touch_creator():
+    """The two fields mean different things and the same string must not land in both."""
+    from conjure.importer import plan_import
+    res = plan_import("EveMaccaro.glb", b"glTF" + bytes(40), {"label": "Eve Maccaro"})
+    assert res.label == "Eve Maccaro"
+    assert getattr(res, "creator", None) in (None, "")

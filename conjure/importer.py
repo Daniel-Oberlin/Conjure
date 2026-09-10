@@ -540,6 +540,10 @@ def main() -> int:
     ap.add_argument("--kind", choices=["auto", "image", "stereo", "model"], default="auto",
                     help="force a handler (default: auto — sniff by extension/name)")
     ap.add_argument("--stereo", choices=["sbs", "tb"], help="treat image inputs as this stereo layout")
+    # The catalog label — the model's NAME, and distinct from `--creator`, which is whoever made it.
+    # Without this the label is the filename stem, so `EveMaccaro.glb` catalogues as "EveMaccaro" and
+    # `char_v3_final.glb` catalogues as that. Quote it if it has spaces.
+    ap.add_argument("--label", help="catalog name for the asset (default: the filename stem)")
     ap.add_argument("--license", dest="licence", help="license string to record on every asset")
     ap.add_argument("--attribution", help="attribution to record")
     ap.add_argument("--creator", help="creator to record")
@@ -548,6 +552,16 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="report what would import; write nothing")
     ap.add_argument("-v", "--verbose", action="store_true", help="print full JSON results")
     a = ap.parse_args()
+
+    # Argument validation before the network check, so a bad invocation says what is wrong with it
+    # rather than complaining the server is down.
+    files_preview = _collect(a.paths, a.recursive)
+    if a.label and len(files_preview) > 1:
+        # A label names ONE asset. Applied to a batch it would catalogue every file under the same
+        # name, which is silently wrong and tedious to undo — refuse instead.
+        print(f"--label names one asset, but {len(files_preview)} files matched. Import them one at a "
+              f"time, or drop --label to use each filename.", file=sys.stderr)
+        return 1
 
     s = get_settings()
     try:
@@ -562,7 +576,7 @@ def main() -> int:
         return 1
 
     hints = {k: v for k, v in {"kind": None if a.kind == "auto" else a.kind, "stereo": a.stereo,
-                               "licence": a.licence, "attribution": a.attribution,
+                               "label": a.label, "licence": a.licence, "attribution": a.attribution,
                                "creator": a.creator}.items() if v}
     items = [{"filename": p.name, "data_b64": base64.b64encode(p.read_bytes()).decode(), "hints": hints}
              for p in files]
