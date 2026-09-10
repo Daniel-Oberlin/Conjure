@@ -197,13 +197,18 @@
       /** @type {Set<RefSurface>} */
       var claimed = new Set();   // distinct reference surfaces covered (extras/fragmentation don't inflate)
       var rawInl = 0;
-      /** @type {{id: string|undefined, res: number, dist: number}[]} */
+      /** @type {{id: string|undefined, res: number, dist: number, tx: number, ty: number, tz: number}[]} */
       var res = [];              // per-covered-plane residual + the reference's distance from origin (diag)
       cur.forEach(function (c) {
         var tp = c.pos.clone().applyMatrix4(Tmat), bd = INLIER_M;
         var hit = /** @type {RefSurface|null} */ (null);
         ref.forEach(function (r) { if (r.sem === c.sem && sameFacing(c, r)) { var d = tp.distanceTo(r.pos); if (d < bd) { bd = d; hit = r; } } });
-        if (hit) { claimed.add(hit); rawInl++; res.push({ id: hit.id, res: bd, dist: Math.hypot(hit.pos.x, hit.pos.z) }); }
+        // `tx/ty/tz` is the CURRENT plane carried through the global transform — the paired point, kept as
+        // plain numbers so it survives the worker's structured clone. Without it a per-room refinement
+        // would have to redo the pairing, and a second copy of the matching rule is how the two drift.
+        if (hit) { claimed.add(hit); rawInl++;
+                   res.push({ id: hit.id, res: bd, dist: Math.hypot(hit.pos.x, hit.pos.z),
+                              tx: tp.x, ty: tp.y, tz: tp.z }); }
       });
       var cov = claimed.size;
       if (!best || cov > best.cov) best = { Tmat: Tmat, cov: cov, inl: rawInl, res: res };
@@ -1240,6 +1245,85 @@
     return out;
   }
 
+  /**
+   * Per-ROOM residuals after a global registration — how far each room is from where one rigid transform
+   * says it should be, and what small translation would close that gap.
+   *
+   * §1's measurement is the reason this exists: the Quest's map of a multi-room space is locally
+   * non-rigid by up to ~9 cm, so `register`'s single transform cannot fit every room at once. It is
+   * measured here and **applied nowhere** — the point of the first increment is to find out how large
+   * the effect really is in the field before anything moves.
+   *
+   * The fit is **perpendicular offsets, never centroid deltas.** A wall's captured centre slides metres
+   * along the wall between captures (§4.2 — it is a scan artifact, which is why `matchWall` refuses to
+   * key on it), so averaging centre-to-centre offsets would be averaging that noise. Each matched
+   * reference plane instead contributes only the component along its own normal, which is the part it
+   * actually measures.
+   *
+   * **x/z and y are solved separately, because they are separately constrained**: a vertical plane says
+   * nothing about height and a horizontal says nothing about ground position. Solving them together
+   * would let a room with no floor invent a y from wall noise. A room with no horizontal surface simply
+   * reports no `dy` — an absent number rather than a fabricated one.
+   *
+   * `dy` is reported and never folded into a transform. §10.2's floating-room detector rests on
+   * registration not touching height — that is what makes a stored height a valid baseline for a live
+   * one — so an applied per-room y would cancel exactly the quantity it measures.
+   *
+   * @param {THREE_NS} THREE
+   * @param {{id: string|undefined, res: number, tx: number, ty: number, tz: number}[]} residuals
+   * @param {RefSurface[]} ref
+   * @param {Record<string, string>} roomOf        reference surface id → room id
+   * @param {{minPairs?: number, maxM?: number}} [opts]
+   * @returns {{room: string, n: number, nz: number, before: number, after: number,
+   *            dx: number, dz: number, dy: number|null, ok: boolean}[]}
+   */
+  function roomResiduals(THREE, residuals, ref, roomOf, opts) {
+    opts = opts || {};
+    var MINP = opts.minPairs != null ? opts.minPairs : 4;
+    var MAXM = opts.maxM != null ? opts.maxM : 0.25;
+    /** @type {Record<string, RefSurface>} */ var byId = {};
+    (ref || []).forEach(function (r) { if (r.id) byId[r.id] = r; });
+    /** @type {Record<string, any[]>} */ var groups = {};
+    (residuals || []).forEach(function (p) {
+      var r = p.id && byId[p.id], rid = p.id && roomOf[p.id];
+      if (!r || !rid || p.tx == null) return;
+      (groups[rid] = groups[rid] || []).push({ p: p, r: r });
+    });
+    /** @type {{room: string, n: number, nz: number, before: number, after: number,
+     *          dx: number, dz: number, dy: number|null, ok: boolean}[]} */
+    var out = [];
+    Object.keys(groups).sort().forEach(function (rid) {
+      var g = groups[rid];
+      // verticals → x/z (a 2x2 normal-equation solve); horizontals → y (a 1-DOF mean)
+      var a00 = 0, a01 = 0, a11 = 0, b0 = 0, b1 = 0, nv = 0, sy = 0, nh = 0, sqr = 0;
+      g.forEach(function (m) {
+        var r = m.r, p = m.p;
+        sqr += p.res * p.res;
+        if (r.orient === "horizontal") { sy += (r.pos.y - p.ty); nh++; return; }
+        var nx = Math.sin(r.nyaw), nz = Math.cos(r.nyaw);
+        var d = nx * (r.pos.x - p.tx) + nz * (r.pos.z - p.tz);   // perpendicular offset only
+        a00 += nx * nx; a01 += nx * nz; a11 += nz * nz; b0 += nx * d; b1 += nz * d; nv++;
+      });
+      var det = a00 * a11 - a01 * a01, dx = 0, dz = 0;
+      if (Math.abs(det) > 1e-9) { dx = (b0 * a11 - b1 * a01) / det; dz = (a00 * b1 - a01 * b0) / det; }
+      var before = Math.sqrt(sqr / g.length);
+      var after2 = 0;
+      g.forEach(function (m) {
+        var r = m.r, p = m.p;
+        var ex = r.pos.x - (p.tx + dx), ey = r.pos.y - p.ty, ez = r.pos.z - (p.tz + dz);
+        after2 += ex * ex + ey * ey + ez * ez;
+      });
+      var after = Math.sqrt(after2 / g.length);
+      var mag = Math.hypot(dx, dz);
+      out.push({ room: rid, n: g.length, nz: nv, before: before, after: after,
+                 dx: dx, dz: dz, dy: nh ? sy / nh : null,
+                 // The guards a future APPLY would use, evaluated now so the log says whether the
+                 // refinement would have been accepted — not merely what it computed.
+                 ok: g.length >= MINP && nv >= 2 && Math.abs(det) > 1e-9 && mag <= MAXM && after < before });
+    });
+    return out;
+  }
+
   // How well does the RECTANGLE we derive from a captured plane fit the polygon the device actually
   // reported? Pass A reduces `plane.polygon` to an axis-aligned bounding box in the plane's own X-Z frame
   // and keeps only its two spans as `extent` (conjure-client Pass A) — the polygon itself is then discarded
@@ -1281,7 +1365,7 @@
   }
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
-           heightCensus: heightCensus, explainNoMatch: explainNoMatch, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks,
+           heightCensus: heightCensus, explainNoMatch: explainNoMatch, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals,
            polyFit: polyFit, planeCorners: planeCorners,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,

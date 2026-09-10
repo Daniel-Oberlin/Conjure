@@ -168,6 +168,39 @@ tracking* both surface as the same no-lock.
 vantage; the vote can lock 180° off. Distinguishing features (differently-sized walls, doors, wall-art)
 resolve it. This is the same class as the boundary-flip below.
 
+### 4.4 Per-room residuals — measured, applied nowhere
+
+§1's finding is that one rigid transform cannot fit a multi-room space: the map is locally non-rigid by up
+to ~9 cm. Registration still solves exactly one, so every room but the one the fit favours carries a
+residual offset, and `matchWall`'s 150 mm perpendicular budget absorbs it silently.
+
+`SpaceSnap.roomResiduals` measures that per room, given the correspondences `register` already produced.
+**Nothing is applied.** The first increment is finding out how large the effect is in the field, because
+~9 cm is an aggregate from one space on one day.
+
+**Perpendicular offsets, never centroid deltas.** A wall's captured centre slides metres along the wall
+between captures — a scan artifact, which is exactly why `matchWall` refuses to key on it (§4.2) — so
+averaging centre-to-centre offsets averages that noise. Each matched reference plane contributes only the
+component along its own normal, and the room's x/z translation is the small least-squares fit over those.
+
+**x/z and y are solved apart, because they are constrained apart.** A vertical plane says nothing about
+height; a horizontal says nothing about ground position. Solving them together would let a room with no
+captured floor invent a height out of wall noise, so a room without a horizontal surface reports **no
+`dy`** rather than a fabricated one.
+
+**`dy` is reported beside the fit and never folded into it.** §10.2's floating-room detector rests on
+registration never touching height — that is what makes a stored height a valid baseline for a live one —
+so an applied per-room y would cancel exactly the quantity the detector measures. The two are the same
+measurement by different routes, and keeping them separate is what makes them a cross-check.
+
+The guards a future *apply* would use (≥4 pairs, ≥2 walls, a non-degenerate solve, ≤0.25 m, and the fit
+must reduce the room's residual) are evaluated now and logged as `would_apply`, so the field data says
+whether the refinement would have been accepted rather than only what it computed.
+
+Emission is change-gated by `WM.roomResidualGate` — first fit, a move past 1 cm, or a flipped verdict —
+so a settled space still emits nothing, which is what makes §10's log affordable to leave running for
+weeks.
+
 ### 4.1 The boundary flip
 
 Measured on-device: **leaving the guardian boundary and returning relocalizes the whole tracking frame**
@@ -713,6 +746,7 @@ it now confirms a measurement rather than an argument.
 | `churn.restyle_lost` | an id that used to render with a material now renders bare |
 | `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
+| `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict (§4.4) |
 | `void.establish` | a void world's canonical frame was established — wall count, held captures, `forced` (§4.1.2) |
 | `seed.add` / `.update` / `.prune` | the server's own view — a prune is where a surface's material is destroyed |
 | `mark` | the controller-button ground-truth probe (§10.3) |

@@ -1336,3 +1336,89 @@ test("golden space (real capture): two rooms, every surface placed, one doorway 
   });
   assert.notEqual(joins[0].a, joins[1].a, "the two faces are seen from opposite rooms");
 });
+
+// ---------------------------------------------------------------------------------------------------
+// roomResiduals — how far each room sits from where one rigid transform says it should be.
+// ---------------------------------------------------------------------------------------------------
+
+// A reference constellation for one room: four walls facing out on the compass, plus a floor.
+function refRoom(prefix, cx, cz) {
+  const wall = (id, yawDeg, x, z) => ({
+    id, sem: "wall", ext: [4, 2.4], pos: new THREE.Vector3(x, 1.2, z),
+    nyaw: yawDeg * D2R, orient: "vertical",
+  });
+  return [
+    wall(prefix + "_n", 0, cx, cz + 2), wall(prefix + "_s", 180, cx, cz - 2),
+    wall(prefix + "_e", 90, cx + 2, cz), wall(prefix + "_w", 270, cx - 2, cz),
+    { id: prefix + "_f", sem: "floor", ext: [4, 4], pos: new THREE.Vector3(cx, 0, cz),
+      nyaw: 0, orient: "horizontal" },
+  ];
+}
+
+// Pair each reference plane with a "current" point carried through the global transform, displaced by
+// `err` and optionally slid ALONG the wall by `slide` (which is scan noise, not signal).
+function pairs(ref, err, slide) {
+  return ref.map((r) => {
+    let x = r.pos.x + err[0], y = r.pos.y + err[1], z = r.pos.z + err[2];
+    if (slide && r.orient === "vertical") {
+      const tx = Math.cos(r.nyaw), tz = -Math.sin(r.nyaw);          // along-wall tangent
+      x += tx * slide; z += tz * slide;
+    }
+    return { id: r.id, res: Math.hypot(err[0], err[1], err[2]), dist: 0, tx: x, ty: y, tz: z };
+  });
+}
+
+test("roomResiduals recovers a room's rigid displacement and says it would improve", () => {
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const [r] = RS.roomResiduals(THREE, pairs(ref, [0.09, 0, -0.04]), ref, roomOf);
+  assert.equal(r.room, "room_1");
+  assert.ok(Math.abs(r.dx - -0.09) < 1e-6, "dx undoes the displacement, got " + r.dx);
+  assert.ok(Math.abs(r.dz - 0.04) < 1e-6, "dz likewise, got " + r.dz);
+  assert.ok(r.after < r.before, "and it is an improvement");
+  assert.equal(r.ok, true);
+});
+
+test("roomResiduals fits PERPENDICULAR offsets, so along-wall scan noise cannot move it", () => {
+  // The load-bearing claim. A wall's captured centre slides metres along the wall between captures — it
+  // is a scan artifact, which is why matchWall refuses to key on it (§4.2). Averaging centre-to-centre
+  // offsets would average exactly that noise; projecting onto each plane's own normal discards it.
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const clean = RS.roomResiduals(THREE, pairs(ref, [0.09, 0, -0.04]), ref, roomOf)[0];
+  const slid = RS.roomResiduals(THREE, pairs(ref, [0.09, 0, -0.04], 1.5), ref, roomOf)[0];
+  assert.ok(Math.abs(slid.dx - clean.dx) < 1e-6, "1.5 m of along-wall slide changed dx by nothing");
+  assert.ok(Math.abs(slid.dz - clean.dz) < 1e-6, "nor dz");
+});
+
+test("roomResiduals reports dy separately, and not at all without a horizontal surface", () => {
+  // x/z and y are separately constrained: a vertical plane says nothing about height. Solving them
+  // together would let a room with no floor invent a y out of wall noise.
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const withFloor = RS.roomResiduals(THREE, pairs(ref, [0, 0.1, 0]), ref, roomOf)[0];
+  assert.ok(Math.abs(withFloor.dy - -0.1) < 1e-6, "the floor carries the height, got " + withFloor.dy);
+
+  const noFloor = ref.filter((r) => r.orient === "vertical");
+  const only = RS.roomResiduals(THREE, pairs(noFloor, [0, 0.1, 0]), noFloor,
+                                Object.fromEntries(noFloor.map((r) => [r.id, "room_1"])))[0];
+  assert.equal(only.dy, null, "absent, not fabricated");
+});
+
+test("roomResiduals separates rooms and refuses a room it cannot fit", () => {
+  const a = refRoom("A", 0, 0), b = refRoom("B", 20, 0);
+  const roomOf = { ...Object.fromEntries(a.map((r) => [r.id, "room_1"])),
+                   ...Object.fromEntries(b.map((r) => [r.id, "room_2"])) };
+  const out = RS.roomResiduals(THREE, [...pairs(a, [0, 0, 0]), ...pairs(b, [0.09, 0, 0])],
+                               [...a, ...b], roomOf);
+  const byRoom = Object.fromEntries(out.map((r) => [r.room, r]));
+  assert.ok(Math.abs(byRoom["room_1"].dx) < 1e-6, "the undisplaced room needs no correction");
+  assert.ok(Math.abs(byRoom["room_2"].dx - -0.09) < 1e-6, "the displaced one does");
+
+  // Too few pairs to trust, and a delta past the bound: both reported, neither endorsed.
+  const thin = RS.roomResiduals(THREE, pairs(a, [0.02, 0, 0]).slice(0, 2), a, roomOf)[0];
+  assert.equal(thin.ok, false, "two pairs is not a fit");
+  const wild = RS.roomResiduals(THREE, pairs(a, [3, 0, 0]), a, roomOf)[0];
+  assert.equal(wild.ok, false, "3 m is a mis-registration, not a room that moved");
+  assert.ok(Math.abs(wild.dx - -3) < 1e-6, "still measured, just not endorsed");
+});

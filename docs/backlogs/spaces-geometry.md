@@ -419,8 +419,13 @@ have no room and should say so rather than guess.
 
    The `room=` filter for room ∩ semantic ("the kitchen walls") landed with it. **Step 1 is complete**, and
    [`specs/spaces.md` §1.1](../specs/spaces.md) now describes rooms as built rather than absent.
-2. **Per-room residuals into the geometry event log** (`room.*`, change-gated), applying nothing. Field-read
-   before correcting — the same `[aabb]`-first discipline.
+2. **Per-room residuals into the geometry event log** (`room.*`, change-gated), applying nothing. ✅ **Built
+   2026-09-09**: `SpaceSnap.roomResiduals` + `WM.roomResidualGate`, emitting `room.residual` with the
+   fit, its before/after, `dy` reported separately, and the `would_apply` verdict the guards give. See
+   [`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md).
+
+   **Nothing has been read on device.** The whole point of this increment is the field data, and there is
+   none yet — every number so far is from synthetic pairs and the golden capture.
 3. **Apply the refinement**, with the guards above.
 4. **Per-room boundary**, separately: it changes a schema with two consumers and deserves its own increment.
 

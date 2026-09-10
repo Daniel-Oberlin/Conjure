@@ -2163,6 +2163,36 @@
       // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
       _euler: function (q) { return window.SpaceSnap.eulerYXZ(AFRAME.THREE, q); },
       _yawOf: function (n) { return window.SpaceSnap.yawOf(n); },
+      // Per-room registration residuals → the geometry event log (§10). MEASURES ONLY: nothing here moves
+      // a surface. The first increment of piecewise-rigid registration is finding out how large the
+      // effect is in the field, because §1's ~9 cm is an aggregate over one space on one day.
+      //
+      // Change-gated like every other event in that log, so a settled space emits nothing: a room is
+      // reported when it first has a fit, when its residual moves by more than a centimetre, or when the
+      // verdict flips. Without that this would post ~0.5 Hz forever and the log would stop being
+      // affordable to leave running for weeks.
+      _logRoomResiduals: function (seg) {
+        if (!seg || !seg.rooms || !this._regRes || !this._ref || !this._ref.length) return;
+        var roomOf = {};
+        seg.rooms.forEach(function (rm) { rm.ids.forEach(function (id) { roomOf[id] = rm.floor; }); });
+        var rows;
+        try {
+          rows = window.SpaceSnap.roomResiduals(AFRAME.THREE, this._regRes, this._ref, roomOf);
+        } catch (err) { return; }
+        var gate = WM.roomResidualGate(this._roomRes || {}, rows);
+        this._roomRes = gate.next;
+        gate.emit.forEach(function (r) {
+          geoLog("room.residual", {
+            room: r.room, n: r.n, walls: r.nz,
+            before: +r.before.toFixed(4), after: +r.after.toFixed(4),
+            dx: +r.dx.toFixed(4), dz: +r.dz.toFixed(4),
+            // Reported beside the fit, never folded into it: §10.2's detector rests on registration not
+            // touching height, so an applied per-room y would cancel what it measures.
+            dy: r.dy == null ? null : +r.dy.toFixed(4),
+            would_apply: r.ok, applied: false,
+          });
+        });
+      },
       _register: function (cur) {
         var r = window.SpaceSnap.register(AFRAME.THREE, cur, this._ref, window.CONJURE_REG);
         this._regStat = r.stat;
@@ -3082,6 +3112,26 @@
         // the room is churning — the case the log exists for.
         var self2 = this, curById = {};
         surfaces.forEach(function (s) { curById[s.id] = s; self2._absent[s.id] = 0; self2._known[s.id] = s; });
+
+        // Rooms (docs/backlogs/spaces-geometry.md, *rooms as a first-class unit*). Segment the LIVE
+        // capture, not `_known`: `_known` is seeded from the persisted doc on entry, whose entries carry
+        // `position`/`rotation` rather than the `_lp`/`_lq` the geometry needs. Surfaces in `_known` but
+        // absent from this capture simply keep the labels they have — the server only relabels ids this
+        // segmentation actually names.
+        //
+        // Groups, never per-surface labels: which PERSISTENT room a group is belongs to the server
+        // (conjure/rooms.py), and a client cannot know it — its own ids are all it has.
+        //
+        // Computed BEFORE the POST gate below, which returns early on a settled space. The residual
+        // reading wants a settled space most of all — that is when a stable inter-room offset is real
+        // rather than a capture still arriving.
+        var seg = null;
+        try {
+          seg = window.SpaceSnap.segmentRooms(AFRAME.THREE, surfaces);
+        } catch (err) {
+          console.warn("[conjure] room segmentation failed", err);       // never block the capture POST
+        }
+        this._logRoomResiduals(seg);
         var reasons = [];
         Object.keys(self2._known).forEach(function (id) {                 // debounced removals (3 misses)
           if (curById[id]) return;
@@ -3106,21 +3156,6 @@
         if (bstr && bstr !== self2._postedBoundary) reasons.push("boundary");
         if (!reasons.length) return;                                      // settled → nothing to POST
         var reason = reasons.join(", ");
-
-        // Rooms (docs/backlogs/spaces-geometry.md, *rooms as a first-class unit*). Segment the LIVE
-        // capture, not `_known`: `_known` is seeded from the persisted doc on entry, whose entries carry
-        // `position`/`rotation` rather than the `_lp`/`_lq` the geometry needs. Surfaces in `_known` but
-        // absent from this capture simply keep the labels they have — the server only relabels ids this
-        // segmentation actually names.
-        //
-        // Groups, never per-surface labels: which PERSISTENT room a group is belongs to the server
-        // (conjure/rooms.py), and a client cannot know it — its own ids are all it has.
-        var seg = null;
-        try {
-          seg = window.SpaceSnap.segmentRooms(AFRAME.THREE, surfaces);
-        } catch (err) {
-          console.warn("[conjure] room segmentation failed", err);       // never block the capture POST
-        }
 
         var payload = Object.keys(self2._known).map(function (id) { return self2._known[id]; });
         self2._posted = {};

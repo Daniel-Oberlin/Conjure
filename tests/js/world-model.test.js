@@ -706,3 +706,34 @@ test("void world: holding the frame means a thin capture cannot move content at 
   }));
   assert.ok(worst > 2.0, `re-deriving from thin captures should move content metres, worst was ${worst.toFixed(2)} m`);
 });
+
+test("roomResidualGate: a settled space emits nothing", () => {
+  // The geometry log is affordable to leave running for weeks precisely because it is change-gated
+  // (spaces-geometry §10). A per-capture residual would post at ~0.5 Hz forever and end that.
+  const rows = [{ room: "room_1", before: 0.031, ok: true }];
+  const first = WM.roomResidualGate({}, rows);
+  assert.equal(first.emit.length, 1, "the first fit is news");
+  const again = WM.roomResidualGate(first.next, rows);
+  assert.equal(again.emit.length, 0, "the same reading is not");
+  const drift = WM.roomResidualGate(first.next, [{ room: "room_1", before: 0.0315, ok: true }]);
+  assert.equal(drift.emit.length, 0, "nor is half a millimetre of it");
+});
+
+test("roomResidualGate reports a room past the tolerance, and a flipped verdict at any size", () => {
+  const state = WM.roomResidualGate({}, [{ room: "room_1", before: 0.031, ok: true }]).next;
+  assert.equal(WM.roomResidualGate(state, [{ room: "room_1", before: 0.055, ok: true }]).emit.length, 1,
+               "moved past a centimetre");
+  // The verdict is part of the gate on purpose: crossing from "would apply" to "would not" is the
+  // interesting moment even when the number barely moved — that is the boundary a correction would
+  // be switching on and off.
+  assert.equal(WM.roomResidualGate(state, [{ room: "room_1", before: 0.0311, ok: false }]).emit.length, 1,
+               "or changed its mind while barely moving");
+});
+
+test("roomResidualGate keeps rooms independent and does not mutate its input", () => {
+  const state = WM.roomResidualGate({}, [{ room: "room_1", before: 0.03, ok: true }]).next;
+  const out = WM.roomResidualGate(state, [{ room: "room_1", before: 0.03, ok: true },
+                                          { room: "room_2", before: 0.09, ok: true }]);
+  assert.deepEqual(out.emit.map((r) => r.room), ["room_2"], "only the room with news");
+  assert.equal(Object.keys(state).length, 1, "callers keep their copy");
+});

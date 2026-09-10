@@ -342,6 +342,41 @@
     return !!(lp && lp.length >= 2 && rp && rp.length >= 2);
   }
 
+  
+  /**
+   * Which per-room residuals are worth writing to the geometry log this capture?
+   *
+   * The log's affordability rests on being change-gated — a settled space emits nothing, which is what
+   * makes it safe to leave running for weeks (§10). A per-capture residual would post at ~0.5 Hz forever
+   * and break that, so a room is reported only when it first has a fit, when its residual moves past
+   * `tol`, or when the accept/refuse verdict flips.
+   *
+   * The verdict is part of the gate deliberately: a room crossing from "would apply" to "would not" is
+   * the interesting moment even when the number barely moved, because that is the boundary a future
+   * correction would be switching on.
+   *
+   * Returns the rows to emit and the state to carry forward. Pure, so the decision is testable while the
+   * emitter around it is not.
+   *
+   * @param {Record<string, {before: number, ok: boolean}>} last
+   * @param {{room: string, before: number, ok: boolean}[]} rows
+   * @param {{tolM?: number}} [opts]
+   * @returns {{emit: any[], next: Record<string, {before: number, ok: boolean}>}}
+   */
+  function roomResidualGate(last, rows, opts) {
+    var TOL = (opts && opts.tolM != null) ? opts.tolM : 0.01;
+    /** @type {Record<string, {before: number, ok: boolean}>} */ var next = {};
+    Object.keys(last || {}).forEach(function (k) { next[k] = last[k]; });
+    /** @type {any[]} */ var emit = [];
+    (rows || []).forEach(function (r) {
+      var was = next[r.room];
+      if (was && Math.abs(was.before - r.before) < TOL && was.ok === r.ok) return;
+      next[r.room] = { before: r.before, ok: r.ok };
+      emit.push(r);
+    });
+    return { emit: emit, next: next };
+  }
+
   /**
    * Per floor/ceiling, how far its LIVE height sits from the SEED's once the whole-space offset is removed
    * — the self-triggering half of the raised-floor investigation (docs/backlogs/spaces-geometry.md).
@@ -556,7 +591,7 @@
     return { dYaw: (a0 - a) * 180 / Math.PI, scale: r / r0 };
   }
 
-  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, loadGate: loadGate,
+  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate,
            rotXZ: rotXZ, yawAboutPivot: yawAboutPivot, polarDrag: polarDrag,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,
