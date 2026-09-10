@@ -116,7 +116,7 @@ async def identify(judge, shots, options) -> str:
 
     **Recognition, not judgement.** Asking a vision model whether a pose is anatomically possible does
     not work: it passes a figure with its head on backwards, and its verdicts move between identical
-    calls (docs/backlogs/figures.md). Asking it WHICH of thirteen named poses this is turns the same
+    calls (docs/backlogs/figures.md). Asking it WHICH of the named poses this is turns the same
     model into a reliable instrument, because recognition against a fixed list is what it is good at —
     which is the discipline the design stated all along and the plausibility question quietly broke.
     """

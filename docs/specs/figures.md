@@ -203,14 +203,19 @@ wrong.
 
 ### Named poses — tier 2
 
-`POST /figure {"named": "kneel"}`, and `conjure/poses.py` is the library. **13 poses**: `kneel`,
+`POST /figure {"named": "kneel"}`, and `conjure/poses.py` is the library. **17 poses**: `kneel`,
 `kneel-one`, `crouch`, `sit`, `t-pose`, `cheer`, `reach-out`, `hands-on-hips`, `arms-crossed`, `wave`,
-`point`, `bow`, `stand`.
+`point`, `bow`, `hug`, `all-fours`, `bend-over`, `bend-over-wide`, `stand`.
 
 A pose is a dict in the vocabulary above, so **one authored pose works on every figure** — that is what
 the rig-independent axes buy rather than merely protect, and `scripts/pose_library.py` measures it:
-every pose against every rig of the eval cast, 12 of 13 clean on all three (the exception is `crouch`'s
+every pose against every rig of the eval cast, 16 of 17 clean on all three (the exception is `crouch`'s
 torso lean on Trish, whose spine does not carry her head).
+
+The last four fold the trunk forward, and they only became possible once an aim resolved against the
+parent frame *as posed* — see § *What is not built* for what that replaced. They also carry the one
+naming rule this library has learned the hard way: `bend-over` is not called `touch-toes`, because
+measured on the cast the hands stop at about knee height.
 
 **Two verifiers, and they fail differently.**
 
@@ -228,6 +233,11 @@ only asserts the bones a pose *sets*, so it is blind to the bones a pose *forget
 that shape were found this way: leg poses left the arms at the rig's bind pose (a T-posed VRoid figure
 knelt like a scarecrow), and one-armed poses never said what the other arm does. The fix for both is
 `aim`, which is absolute and so lands an arm at the side from a T-pose and an A-pose alike.
+
+A third defect of the same shape, found the same way: every pose that folds the trunk has to re-aim the
+LEGS, because `hips` is the root of the whole figure and bending it carries the legs along with the
+torso. Rendered, the figure was tipped over bodily and floating diagonally in the air, while its
+signature passed. `points leftUpperLeg down` now guards it.
 
 | | Behaviour |
 |---|---|
@@ -597,7 +607,7 @@ It asks two questions:
 - **Could a body hold this** — asked of every cell.
 
 **Neither one gates a cell.** (Both are *judgement* framings. Asking the same models a **recognition**
-question — "which of these thirteen poses is this?" — works, and is used by the pose library; see
+question — "which of these poses is this?" — works, and is used by the pose library; see
 § *Named poses*. The failure below is of the question, not of vision models.) As of 2026-09-05 the judge layer is advisory (`--judge-gates` to make it
 count), because it does not reproduce: across four full runs its disagreements were 29, 8, 2 and 7 out
 of 60, with cells moving in and out of the failure column while nothing but the model changed. Before
@@ -661,8 +671,13 @@ Recorded here so the spec can be trusted about its own edges; the design work is
 - **No tier 3.** Nothing solves against the world: "sit on that chair" makes the shape of sitting and
   says so; "hand flat on the table" is not expressible at all.
 - **No discovery layers 3–6:** no LLM labelling, no multimodal verification, no human confirmation.
-- **`aim` is not absolute once the trunk is posed.** It resolves against the bind pose, so a limb aimed
-  under a folded trunk is carried elsewhere by its ancestors — blocking every fold-forward pose.
+- ~~**`aim` is not absolute once the trunk is posed.**~~ Built 2026-09-10 as `figures.compose_frame`
+  and its mirror in `figure.js`: an aim resolves against the parent frame *as posed*, so a limb aimed
+  `down` under a folded trunk hangs plumb on every rig in the cast. `bend`, `spread` and `turn` stay
+  relative, which is the point of having both.
+- **`downward-dog` is not expressible**, and it is the clearest measure of tier 3's absence in tier 1's
+  own terms: the pose needs hands and feet both on the floor, and at the fullest trunk fold the joint
+  limits allow, with the arms plumb, the hands are still 0.15–0.41h above it across the cast.
 - **Forward self-intersection is invisible.** `clears` reads lateral clearance only; a forearm inside the
   chest is not detectable, and `arms-crossed` was fixed by rendering and looking.
 - ~~**No named-pose authoring loop.**~~ Built as `scripts/pose_library.py`: propose → check the signature

@@ -371,11 +371,14 @@ def test_every_pose_speaks_only_tier_one():
 
 
 def test_every_pose_that_changes_anything_says_how_to_check_it():
-    """A pose with no signature is a dict of numbers someone once liked the look of. `stand` and `bow`
-    are the exceptions and both are deliberate — `stand` asserts nothing because it IS nothing, and the
-    trunk carries different bones on different rigs."""
+    """A pose with no signature is a dict of numbers someone once liked the look of.
+
+    There used to be one exception. `bow` carried an empty signature because `aim` was resolved against
+    the BIND pose, so arms asked for `down` under a bowed spine came out 40 degrees off vertical and
+    there was nothing honest to assert about them. `figures.compose_frame` (2026-09-10) made an aim
+    absolute for real, and the exception went with it — so this now says what it always wanted to."""
     unchecked = {p.name for p in POSES if p.bones and not p.signature}
-    assert unchecked == {"bow"}, f"unchecked poses: {unchecked}"
+    assert not unchecked, f"unchecked poses: {unchecked}"
 
 
 def test_signatures_use_predicates_the_checker_understands():

@@ -15,7 +15,8 @@ from conjure.figures import (CONVENTIONS, CORE_BONES, FRAME_VECTORS, POSE_AXES, 
                              TRUNK_BONES, best_humanoid, convention_humanoid, follow_bones,
                              joint_limits,
                              prune_map,
-                             anatomical_axes, body_frame, infer_humanoid,
+                             anatomical_axes, apply_pose, body_frame, bone_directions,
+                             compose_frame, infer_humanoid,
                              node_world_matrices, node_world_positions, parent_map, resolve_pose,
                              score, validate)
 from conjure.figures import _ancestors, _local_matrix, _mul, _quat_mul, _sub
@@ -796,3 +797,92 @@ def test_a_map_whose_limbs_drive_nothing_is_rejected():
                           {"buffer": 0, "byteOffset": 8, "byteLength": 16}]
     problems = validate(doc, mapping, blob)
     assert any("drive no geometry" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------- aim, under a trunk that has moved
+#
+# `aim` names a destination, and the claim that makes it worth having is that the same request means the
+# same thing on any rig. That was only ever true while the limb's ancestors sat at their bind pose —
+# which every pose in the library happened to keep. Fold the trunk and an arm asked to aim `down` came
+# out pointing UP on Saka (cos -0.71 against down) and BACK on Grace (cos 0.00). The frame is measured
+# once, in the parent's coordinates, and rotating the parent leaves its body directions naming something
+# else. Measured in docs/backlogs/figures.md; the fix is `compose_frame`.
+#
+# In this fixture the arms hang off the HIPS, so bending the hips is what carries them.
+
+
+def _after(pose):
+    """`(bone -> world direction, doc, mapping)` after `pose` lands on a fresh fixture."""
+    doc, mapping, _ = _posed()
+    apply_pose(doc, mapping, pose)
+    return bone_directions(doc, mapping), doc, mapping
+
+
+def test_an_aim_is_absolute_even_under_a_folded_trunk():
+    dirs, _, _ = _after({"hips": {"bend": 50}, "leftUpperArm": {"aim": "down"}})
+    assert dirs["leftUpperArm"] == pytest.approx([0, -1, 0], abs=1e-6)
+
+
+def test_the_fold_can_be_extreme_and_the_aim_still_holds():
+    # The point of the fix: `all-fours` and `downward-dog` fold the trunk right over, and it is the far
+    # end where the old behaviour INVERTED rather than merely drifted.
+    for deg in (20, 50, 80, 110):
+        dirs, _, _ = _after({"hips": {"bend": deg}, "leftUpperArm": {"aim": "down"}})
+        assert dirs["leftUpperArm"] == pytest.approx([0, -1, 0], abs=1e-6), f"hips bent {deg}"
+
+
+def test_nested_aims_resolve_root_first():
+    # Two aims on one limb, one carrying the other. Resolving them in dictionary order would leave the
+    # forearm composed against an upper arm that had not moved yet.
+    dirs, _, _ = _after({"leftLowerArm": {"aim": "down"}, "leftUpperArm": {"aim": "down"},
+                         "hips": {"bend": 60}})
+    assert dirs["leftUpperArm"] == pytest.approx([0, -1, 0], abs=1e-6)
+    assert dirs["leftLowerArm"] == pytest.approx([0, -1, 0], abs=1e-6)
+
+
+def test_a_relative_bend_still_rides_the_trunk():
+    """The other half of the design, and it must NOT change. `bend`, `spread` and `turn` are relative by
+    design: "bend her elbow 90 degrees" means the same whatever her trunk is doing. Only `aim` is
+    absolute, so only an aim is composed."""
+    _, flat, mapping = _after({"leftUpperArm": {"bend": 40}})
+    _, folded, _ = _after({"hips": {"bend": 50}, "leftUpperArm": {"bend": 40}})
+    i = {n.get("name"): k for k, n in enumerate(flat["nodes"])}[mapping["leftUpperArm"]]
+    assert folded["nodes"][i]["rotation"] == pytest.approx(flat["nodes"][i]["rotation"])
+
+
+def test_composition_is_skipped_entirely_when_no_ancestor_moved():
+    """So every pose authored before this existed behaves exactly as it did — not approximately."""
+    alone, _, _ = _after({"leftUpperArm": {"aim": "down"}})
+    beside, _, _ = _after({"leftUpperArm": {"aim": "down"}, "head": {"bend": 20}})
+    assert alone["leftUpperArm"] == pytest.approx(beside["leftUpperArm"])
+
+
+# Column-major, as glTF and three both store them. A parent that started square and has since been
+# rotated a quarter turn about X: its columns are the images of the basis vectors, so `y` now points
+# along world `z`.
+_SQUARE = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+_TIPPED = [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1]
+
+
+def test_compose_frame_moves_the_body_directions_and_nothing_else():
+    _, _, axes = _posed()
+    frame = axes["leftUpperArm"]
+    turned = compose_frame(frame, _SQUARE, _TIPPED)
+    # Read `up` back through the tipped parent and it has to name the same WORLD direction it always
+    # did. The parent turned +90 about X, so in the parent's own coordinates world up is now -z.
+    assert turned["up"] == pytest.approx([0, 0, -1], abs=1e-9)
+    assert turned["forward"] == pytest.approx([0, 1, 0], abs=1e-9)
+    for key in ("rest", "bend", "spread", "turn"):
+        # A bone's rest direction lives in its own local bind rotation and rides the parent unchanged;
+        # the three swing axes are relative on purpose.
+        assert turned[key] == pytest.approx(frame[key])
+
+
+def test_compose_frame_with_a_parent_that_has_not_moved_is_a_no_op():
+    doc, mapping, axes = _posed()
+    mats = node_world_matrices(doc)
+    by = {n.get("name"): i for i, n in enumerate(doc["nodes"])}
+    hips = mats[by[mapping["hips"]]]
+    same = compose_frame(axes["leftUpperArm"], hips, hips)
+    for key in ("up", "forward", "out", "rest"):
+        assert same[key] == pytest.approx(axes["leftUpperArm"][key], abs=1e-9)

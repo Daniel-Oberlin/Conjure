@@ -208,14 +208,17 @@ POSES: tuple[Pose, ...] = (
                     ("points", "leftUpperArm", "down"))),
     Pose("bow", "bent forward from the waist, head lowered",
          {"spine": {"bend": 40}, "chest": {"bend": 15}, "neck": {"bend": 15}, **_ARMS_DOWN},
-         # Nothing is asserted here, and both halves of that are deliberate. The trunk carries different
-         # bones on different rigs (see the module docstring). And the ARMS cannot be asserted either:
-         # `aim` is absolute with respect to the BIND pose, not to wherever the bone's ancestors have
-         # since been rotated — so arms aimed `down` under a spine bent 40 degrees come out 40 degrees
-         # off vertical. That is correct behaviour and correct anatomy (arms hang from a bowed torso and
-         # swing with it), and it is a real limit of `aim` worth knowing: aiming a limb while also
-         # rotating what it hangs from compounds the two.
-         signature=()),
+         # The trunk still cannot be asserted — it carries different bones on different rigs, see the
+         # module docstring. The ARMS now can, and that is new. This pose used to carry an empty
+         # signature because `aim` was resolved against the BIND pose, so arms asked for `down` under a
+         # spine bent 40 degrees came out 40 degrees off vertical, and the note here recorded that as
+         # correct anatomy — arms hang from a bowed torso and swing with it.
+         #
+         # `figures.compose_frame` (2026-09-10) makes an aim absolute for real, so they hang PLUMB
+         # instead. That IS the behaviour change, and it is the right way round: plumb is what arms
+         # under gravity do, and it turns a pose nobody could check into one that checks itself. Whoever
+         # wants arms that swing with the torso has `bend` for it, which is relative by design.
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))),
     # `stand` is a POSE, not a reset: arms at the sides and legs straight, which is what standing looks
     # like on any rig. Returning to the FILE's bind pose is `clear=true`, and on a VRoid rig that is a
     # T-pose — a perfectly good reference stance and not what anyone means by "have her stand".
@@ -236,6 +239,73 @@ POSES: tuple[Pose, ...] = (
                     ("moved", "leftHand", "in", 0.05), ("moved", "rightHand", "in", 0.05)),
          needs="someone to hold — it is the shape of an embrace, and tier 3 is what would aim it at "
                "another figure"),
+    # ---------------------------------------------------------------- folding forward
+    #
+    # These four were drafted 2026-09-10 and all four failed on all three rigs, because `aim` was
+    # resolved against the BIND pose: an arm asked to point `down` under a folded trunk came out
+    # pointing UP on Saka. They are here now because `figures.compose_frame` resolves an aim against
+    # the parent frame AS POSED, which is what makes a destination a destination. Arms now land within
+    # a degree of plumb on Grace, Trish, Saka and Jane whatever the trunk is doing.
+    #
+    # **The trunk is what they cannot promise, and the spread is measured.** The same request —
+    # hips 45, spine 50, chest 40 — folds the head 70 deg off vertical on Grace, 115 deg on Saka,
+    # 112 deg on Jane and **6 deg on Trish**, whose flat spine is a known rig defect. So the signatures
+    # assert the LIMBS, which are now rig-independent, and say nothing about the trunk — the same
+    # decision `bow` made, for the same reason. On Trish these read as a standing figure with her arms
+    # down; that is the flat-spine defect showing through, not these poses being wrong.
+    #
+    # **`clears` is deliberately absent.** It looks up the torso's half-width at the joint's HEIGHT,
+    # which is only meaningful while the torso is vertical. Folded over, that lookup returns the width
+    # of whatever part of the body happens to be at that height, and would read as authoritative.
+    #
+    # **Every one of them re-aims the LEGS, and that is not decoration.** `hips` is the root of the
+    # whole figure, so bending it rotates the legs along with the trunk and what comes out is a figure
+    # tipped over bodily, floating diagonally in the air. Rendered and caught, 2026-09-10. Folding at
+    # the waist means rotating the hips forward AND putting the legs back under the body, because there
+    # is no hip-flexion axis that moves the trunk alone. `points leftUpperLeg down` is in the signatures
+    # for exactly this: a tipped figure fails it, and only became assertable once an aim composed.
+    #
+    # **`downward-dog` was drafted and is NOT here.** What makes it that pose rather than a deep forward
+    # fold is hands and feet both on the floor, and rotation cannot get the hands there: at the fullest
+    # trunk fold the joint limits allow, with the arms hanging plumb — which is as low as they reach —
+    # the hands still sit 0.21h above the floor on Grace, 0.15h on Saka and 0.41h on Trish. It is
+    # waiting on tier 3, where a pose is solved against the world instead of authored.
+    Pose("all-fours", "on hands and knees, back level, head up",
+         {"hips": {"bend": 45}, "spine": {"bend": 50}, "chest": {"bend": 40}, "neck": {"bend": -30},
+          "leftUpperArm": {"aim": "down"}, "rightUpperArm": {"aim": "down"},
+          "leftLowerArm": {"aim": "down"}, "rightLowerArm": {"aim": "down"},
+          "leftUpperLeg": {"aim": "down"}, "leftLowerLeg": {"bend": 90}, "leftFoot": {"bend": -25},
+          "rightUpperLeg": {"aim": "down"}, "rightLowerLeg": {"bend": 90}, "rightFoot": {"bend": -25}},
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"),
+                    ("points", "leftLowerLeg", "back"), ("points", "rightLowerLeg", "back"),
+                    ("below", "leftHand", "hips"), ("below", "rightHand", "hips")),
+         needs="a floor to put four points on"),
+    Pose("bend-over", "bent forward from the hips, arms hanging down towards the feet",
+         {"hips": {"bend": 45}, "spine": {"bend": 50}, "chest": {"bend": 40}, "neck": {"bend": -20},
+          "leftUpperArm": {"aim": "down"}, "rightUpperArm": {"aim": "down"},
+          "leftLowerArm": {"aim": "down"}, "rightLowerArm": {"aim": "down"},
+          "leftUpperLeg": {"aim": "down"}, "rightUpperLeg": {"aim": "down"}},
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"),
+                    ("points", "leftUpperLeg", "down"), ("points", "rightUpperLeg", "down"),
+                    ("below", "leftHand", "hips"), ("below", "rightHand", "hips"))),
+    # `bend-over` / `bend-over-wide` follows the `kneel` / `kneel-one` variant pattern: the plain name
+    # is the one a director reaches for, and the variant spells out its difference.
+    #
+    # **Named `bend-over` and not `touch-toes`, because the hands do not reach the toes.** Measured on
+    # the cast: they come down to about knee height — 0.24h off the floor on Grace against a knee at
+    # 0.26h, 0.18h on Saka, 0.43h on Trish. A name that promises contact is a name the pose cannot
+    # keep, and a director reading the library would author around it. The wide one aims
+    # the legs OUT as well as down rather than using `spread`, because an aim replaces the relative
+    # swing outright and the legs have to be re-aimed here whatever else they do.
+    Pose("bend-over-wide", "bent forward with the legs spread, arms hanging down between them",
+         {"hips": {"bend": 45}, "spine": {"bend": 50}, "chest": {"bend": 40}, "neck": {"bend": -20},
+          "leftUpperArm": {"aim": "down"}, "rightUpperArm": {"aim": "down"},
+          "leftLowerArm": {"aim": "down"}, "rightLowerArm": {"aim": "down"},
+          "leftUpperLeg": {"aim": [0.45, -1, 0]}, "rightUpperLeg": {"aim": [0.45, -1, 0]}},
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"),
+                    ("points", "leftUpperLeg", "down"), ("points", "rightUpperLeg", "down"),
+                    ("below", "leftHand", "hips"), ("below", "rightHand", "hips"),
+                    ("apart", "leftFoot", "rightFoot", 0.08))),
     Pose("stand", "a plain neutral stance, arms at the sides",
          dict(_ARMS_DOWN), clears=True,
          signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))

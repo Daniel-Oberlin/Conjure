@@ -299,17 +299,25 @@ def convention_humanoid(doc: dict) -> tuple[Optional[dict[str, str]], Optional[s
                         found[key] = lookup[node]
                         break
         # The hips slot is chosen by ANATOMY where the names are ambiguous: a rig may carry `pelvis`,
-        # `hip`, `hips` and `torso`, and only one of them is the root of the legs. Tamaki's `pelvis` is
-        # a tweak bone off to one side; her `hips` is what the thighs actually hang from. This is the
-        # same definition `validate` uses — ancestry of the FEET is what makes a bone the hips.
-        feet = [by_index.get(found.get(b)) for b in ("leftFoot", "rightFoot")]
-        feet = [f for f in feet if f is not None]
-        if feet and "hips" in table:
+        # `hip`, `hips` and `torso`, and only one of them is the root of the body. Tamaki's `pelvis` is
+        # a tweak bone off to one side; her `hips` is what the thighs actually hang from.
+        #
+        # The legs are not enough to say which, and getting this wrong is expensive rather than
+        # cosmetic. On both Daz ports `pelvis` and `hip` are BOTH above the feet, `pelvis` is listed
+        # first, and it is a SIBLING of the spine — so `hips` landed on a bone that carries the legs and
+        # nothing else, and `{"hips": {"bend": 45}}` moved Grace's trunk by exactly zero degrees while
+        # moving Saka's by 122. Every fold-forward pose inherited that as "the trunk is rig-dependent".
+        # The hips are what the legs AND the spine hang from; requiring both picks `hip` on those two
+        # rigs and changes nothing on any other, because a rig that names its hips sensibly has the
+        # spine under them already.
+        below = [by_index.get(found.get(b)) for b in ("leftFoot", "rightFoot", "spine")]
+        below = [x for x in below if x is not None]
+        if below and "hips" in table:
             parent = parent_map(doc)
             for candidate in table["hips"].split("|"):
                 node = lookup.get(candidate)
                 i = by_index.get(node)
-                if i is not None and all(i in _ancestors(f, parent) for f in feet):
+                if i is not None and all(i in _ancestors(f, parent) for f in below):
                     found["hips"] = node
                     break
         score = sum(1 for b in REQUIRED_BONES if b in found)
@@ -1306,7 +1314,7 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 9
+FRAME_REV = 10          # 10: the hips must be above the SPINE as well as the feet
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")
@@ -1623,6 +1631,46 @@ def figure_description(*, label: str, height_m: Optional[float] = None, tris=Non
     return "\n".join(lines)
 
 
+def _basis(m) -> Optional[list]:
+    """A world matrix's three axis directions, as unit vectors in world space.
+
+    Normalized rather than inverted for the same reason `anatomical_axes.to_parent` does it: a rig can
+    carry scale on a parent node, and a direction has to stay a direction through it.
+    """
+    cols = [_unit((m[0], m[1], m[2])), _unit((m[4], m[5], m[6])), _unit((m[8], m[9], m[10]))]
+    return cols if all(cols) else None
+
+
+def compose_frame(frame: dict, rest, now) -> dict:
+    """`frame` with its BODY DIRECTIONS re-expressed for a parent that has since rotated.
+
+    A frame is measured once, at bind time, and every vector in it is written in the coordinates of the
+    bone's parent. Three of them — `up`, `forward`, `out` — describe where the BODY faces, and those are
+    the ones that go stale: rotate the chest and the arm's parent frame turns with it, so the numbers
+    that meant "world up" now mean something else entirely. An arm asked to aim `down` under a folded
+    trunk came out pointing UP on Saka, which is how this was found.
+
+    So: read each of those three through the parent's REST basis to recover the world direction it was
+    always meant to name, then write it back through the parent's CURRENT basis.
+
+    `rest` is deliberately NOT corrected, and neither are `bend`, `spread` and `turn`. A bone's rest
+    direction is a property of its own local bind rotation and does not change when its parent moves —
+    the bone rides along. And the three swing axes are relative BY DESIGN: "bend her elbow 90 degrees"
+    should mean the same thing whatever her trunk is doing, and it does.
+    """
+    rest_cols, now_cols = _basis(rest), _basis(now)
+    if not rest_cols or not now_cols:
+        return frame
+    out = dict(frame)
+    for key in ("up", "forward", "out"):
+        v = frame.get(key)
+        if not v:
+            continue
+        world = [sum(v[k] * rest_cols[k][c] for k in range(3)) for c in range(3)]
+        out[key] = [_dot(world, now_cols[c]) for c in range(3)]
+    return out
+
+
 def apply_pose(doc: dict, mapping: dict[str, str], pose: dict,
                notes: Optional[list] = None) -> dict[str, int]:
     """Write `pose` into `doc`'s node rotations IN PLACE. Returns `{bone: node index}` for what moved.
@@ -1630,17 +1678,50 @@ def apply_pose(doc: dict, mapping: dict[str, str], pose: dict,
     A pose is a delta on a node's local rotation, which is exactly what the client applies — so a doc
     mutated here is the posed figure, and `node_world_positions` on it gives the joint positions the
     headset would show. Bones the file does not have are skipped; the caller reports them.
+
+    `doc` must arrive at its BIND pose, because the frame is measured from it.
+
+    **Aims are resolved LAST and root-first**, against the parent frame as posed rather than as bound —
+    see `compose_frame`. Relative requests are order-free (each writes one node's local rotation and
+    reads nothing), so they go first in a single pass; an aim has to see what its ancestors did, so the
+    world matrices are recomputed as the trunk lands. A frame is only composed when an ancestor of that
+    bone actually moved, which keeps every pose that leaves the trunk alone bit-identical to before.
     """
     by_name = {n.get("name"): i for i, n in enumerate(doc.get("nodes") or []) if n.get("name")}
     axes = anatomical_axes(doc, mapping)                  # PARENT space: where a node's rotation lives
+    parent = parent_map(doc)
+    rest_mats = node_world_matrices(doc)
     moved: dict[str, int] = {}
-    for bone, delta in resolve_pose(axes, pose, notes).items():
+
+    def write(bone: str, request: dict, frame: dict) -> None:
         i = by_name.get(mapping.get(bone, ""))
         if i is None:
-            continue
+            return
+        delta = resolve_pose({bone: frame}, {bone: request}, notes).get(bone)
+        if delta is None:
+            return
         node = doc["nodes"][i]
         node["rotation"] = _quat_mul(delta, node.get("rotation", [0.0, 0.0, 0.0, 1.0]))
         moved[bone] = i
+
+    aiming = []
+    for bone, request in (pose or {}).items():
+        frame = axes.get(bone)
+        if not frame or not isinstance(request, dict):
+            continue
+        if request.get("aim") is not None:
+            aiming.append((bone, request, frame))
+        else:
+            write(bone, request, frame)
+
+    depth = {i: len(_ancestors(i, parent)) for i in range(len(doc.get("nodes") or []))}
+    aiming.sort(key=lambda t: depth.get(by_name.get(mapping.get(t[0], ""), -1), 0))
+    for bone, request, frame in aiming:
+        i = by_name.get(mapping.get(bone, ""))
+        p = parent.get(i) if i is not None else None
+        if p is not None and any(j in set(moved.values()) for j in _ancestors(i, parent)):
+            frame = compose_frame(frame, rest_mats.get(p), node_world_matrices(doc).get(p))
+        write(bone, request, frame)
     return moved
 
 
