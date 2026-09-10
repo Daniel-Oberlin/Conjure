@@ -289,3 +289,27 @@ The campaign is complete for identifiers, model-facing prose, and docs. The resi
 and tests, where the same reading applies and much is already correct (the synthetic single-room fixtures
 alone are most of the test count). It blocks nothing.
 
+### The prose sweep corrupted 15 phrases, and I shipped it
+
+Recorded because it is the exact failure this document argues against, committed anyway.
+
+At merge time the "unambiguous phrase" set — built and reviewed against **code** — was re-run over
+**docs** without the per-file read. Fifteen phrases where `room` was correct were overwritten:
+
+| Rule | Ate |
+|---|---|
+| `room record` → `space record` | *"Segmentation + **room record** + names"* — the rooms plan's own step 1 |
+| `room boundary` → `space boundary` | *"per-**room** boundary"* ×3, and *"the `err` sign flip at a **room** boundary"* ×2 — the sharpest single reading in the geometry log, whose entire point is which ROOM is displaced |
+| `room entity` → `space entity` | *"the Quest's own **room** entity for the bedroom"* ×5 — the cause statement of the raised-floor fault |
+| `room's surfaces` → `space's surfaces` | *"manipulate a **room's** surfaces"* — a row in the rooms plan's own director table |
+| `two-room capture` → `two-space capture` | ×3, describing the golden fixture |
+
+All restored. Two lessons, both cheap and both learned late:
+
+- **A phrase set is only unambiguous relative to the corpus it was classified against.** These rules were
+  genuinely safe in `conjure/` and `client/`; in the geometry docs, which are *about* rooms, several of
+  them were exactly backwards.
+- **`raised-floor.md` "needing no changes" was a conclusion about the file as it then stood** — it had
+  already been silently altered by the merge sweep before I read it. Reading a file does not audit what a
+  previous commit did to it; `git show <sweep> -- <path>` does, and that is what caught this.
+

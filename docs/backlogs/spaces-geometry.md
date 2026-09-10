@@ -74,7 +74,7 @@ attempted fixes and why each was reverted, is in
 The Quest anchors one room's stored entity high, and every plane in that room rides with it. Proven by
 known-equal surface pairs: `floor_32` = `floor_8` (one continuous wooden floor) and
 `ceiling_13` = `ceiling_25`. The room translates as a **rigid** unit — room heights are preserved — so it is
-a mis-anchored space entity, not a distorted capture. The tracking frame is sound and registration is clean
+a mis-anchored room entity, not a distorted capture. The tracking frame is sound and registration is clean
 throughout. **A Room Setup re-scan does not clear it.**
 
 **It is not fixed to one room, and its size is not bounded.** Observed:
@@ -386,7 +386,7 @@ and `_resolve_op_ids` (`:3316`) go through it, and it already handles a compound
 |---|---|
 | query room identities | `query_space()` groups its output by room and names each |
 | which room am I in | the **client reports it in the presence tick**, using the `floorUnder` it already calls for `_markProbe` — free, and avoids the Python port |
-| manipulate a space's surfaces | room accepted as a target through `_real_surface_match` |
+| manipulate a room's surfaces | room accepted as a target through `_real_surface_match` |
 | connectivity | an adjacency summary in `query_space` and `space://current` |
 | rename | `name_room(room, name)`, owner-gated, rejecting reserved semantic words and duplicates |
 
@@ -401,7 +401,7 @@ have no room and should say so rather than guess.
 
 | Item | Source |
 |---|---|
-| per-space boundary — the top open item, "make it honest" | [`backlogs/spaces.md`](./spaces.md) |
+| per-room boundary — the top open item, "make it honest" | [`backlogs/spaces.md`](./spaces.md) |
 | `authored` immersion mode (needs a safe footprint to extrude) | [`backlogs/worlds-surfaces.md`](./worlds-surfaces.md) |
 | multi-room culling for the surface overlay | this file, above |
 | `levelDeviation` per-room instead of one global median | spec §10.2 |
@@ -409,12 +409,12 @@ have no room and should say so rather than guess.
 
 ### Staging
 
-1. **Segmentation + space record + names + connectivity + director queries and targeting.** Offline-testable,
+1. **Segmentation + room record + names + connectivity + director queries and targeting.** Offline-testable,
    immediately user-visible, no registration change at all.
 2. **Per-room residuals into the geometry event log** (`room.*`, change-gated), applying nothing. Field-read
    before correcting — the same `[aabb]`-first discipline.
 3. **Apply the refinement**, with the guards above.
-4. **Per-space boundary**, separately: it changes a schema with two consumers and deserves its own increment.
+4. **Per-room boundary**, separately: it changes a schema with two consumers and deserves its own increment.
 
 Step 1 is verifiable with no device. `fixtures/golden-space.json` is 45 surfaces across two rooms — a known
 answer — and this space's three rooms have their ground truth written down above. The registration claim is
@@ -507,7 +507,7 @@ since a device-side map re-fit would produce both symptoms and the value is in r
 - **The marker's characteristics, measured:** grip bias ~3–4 cm, gesture repeatability ~1 cm, and 1 mm
   hysteresis returning to the same spot after walking two rooms away. Comfortably sharp enough for a 10 cm
   signal.
-- **The `err` sign flip at a space boundary is the sharpest single reading in the log** — it says which room
+- **The `err` sign flip at a room boundary is the sharpest single reading in the log** — it says which room
   is wrong, which no internal probe can. Worth reaching for first next time.
 
 ### A structural change during a displaced session corrupted the seed — **fixed 2026-08-31**

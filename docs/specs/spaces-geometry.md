@@ -216,7 +216,7 @@ derivation is a fresh opportunity to pick a different largest wall or a differen
 world has no passthrough geometry to contradict the result.
 
 **What the re-derivation actually cost** (measured on `fixtures/golden-space.json`, a real 45-surface
-two-space capture, for content 2.2 m from the frame origin):
+two-room capture, for content 2.2 m from the frame origin):
 
 | Capture holds | Δθ | Content moves |
 |---|---|---|
@@ -763,7 +763,7 @@ bias that is immaterial against a 10–15 cm signal and constant across sessions
 delta is exact regardless. Measured in the field (2026-08-31): **bias ~3–4 cm, repeatability ~1 cm, 1 mm
 hysteresis** returning to a spot after walking two rooms away.
 
-The sharpest reading it gives is the **sign of `err` either side of a space boundary**, on a floor known to be
+The sharpest reading it gives is the **sign of `err` either side of a room boundary**, on a floor known to be
 continuous: the room whose `err` is positive is the one whose planes are displaced. No internal probe can
 say that, because internally the space is self-consistent either way. Two presses, one per room, settle it. Input arrives through `ConjurePointers`, already read and cached per `XRFrame`
 by `controller-beams`, so the per-frame cost is a rising-edge check.
