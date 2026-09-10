@@ -222,6 +222,20 @@ POSES: tuple[Pose, ...] = (
     # `clears` is what makes this a stance rather than an adjustment. A named pose merges per BONE, so
     # "stand" after "kneel" would otherwise put her arms down and leave her kneeling. It is the one pose
     # whose meaning includes everything it does NOT mention.
+    # --- arms only, so it ports everywhere, and it MERGES: `sit` then `hug` is a seated embrace,
+    # because a named pose replaces only the bones it names.
+    Pose("hug", "arms forward and curled inward, as if holding someone",
+         # Elbows OUT and forearms IN is what encircles. The first attempt used negative spread to
+         # bring the arms together and read as pleading — hands clasped under the chin — because
+         # pulling the elbows in leaves the forearms nowhere to go but up.
+         {"leftUpperArm": {"bend": 45, "spread": 25, "turn": 45},
+          "leftLowerArm": {"bend": 85, "turn": 15},
+          "rightUpperArm": {"bend": 45, "spread": 25, "turn": 45},
+          "rightLowerArm": {"bend": 85, "turn": 15}},
+         signature=(("moved", "leftHand", "forward", 0.08), ("moved", "rightHand", "forward", 0.08),
+                    ("moved", "leftHand", "in", 0.05), ("moved", "rightHand", "in", 0.05)),
+         needs="someone to hold — it is the shape of an embrace, and tier 3 is what would aim it at "
+               "another figure"),
     Pose("stand", "a plain neutral stance, arms at the sides",
          dict(_ARMS_DOWN), clears=True,
          signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))

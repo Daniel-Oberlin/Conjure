@@ -2199,6 +2199,65 @@ The general lesson is the one this feature keeps relearning: **a measurement bui
 inherits its errors silently.** The bone map was already known to be the weak link; nothing warned that
 the new mesh code sits downstream of it.
 
+### `aim` is only absolute while the limb's ancestors are at rest (2026-09-10)
+
+Four poses were drafted — `all-fours`, `downward-dog`, `touch-toes`, `touch-toes-wide` — and **all four
+failed on all three rigs.** Not the trunk this time, or not only: the limbs went wrong.
+
+**`aim` is resolved against the BIND pose.** `resolve_pose` computes the swing from a bone's measured
+rest direction onto the requested world direction, and that delta is then applied on top of whatever the
+bone's ancestors are doing. While the ancestors are at rest — which every pose in the library until now
+kept them — the result is genuinely absolute, and that is the whole argument for `aim`. Fold the trunk
+and it stops being true: the chest carries the arm, and the arm arrives somewhere else.
+
+Measured on Saka, whose trunk folds furthest: arms asked to aim `down` under a folded trunk come out
+**pointing UP** — `cos -0.71` against `down`. On Grace they land pointing `back`, `cos 0.00`. The pose is
+asking for the right thing and getting the opposite.
+
+This was already recorded under `bow`, where it is cosmetic — arms hanging from a bowed torso swing with
+it, which is correct anatomy. It is fatal here, and it rules out **an entire category**: any pose that
+rotates the trunk and aims a limb.
+
+**The fix, and it is the right semantics anyway.** An aim should resolve against the bone's parent frame
+*as posed*, not as bound. The client is the natural place — `figure.js` has the live skeleton and applies
+poses in dependency order, so by the time it reaches an arm the chest has already moved and the correct
+delta is computable. The server's `resolve_pose` would need the same change to keep the two in step
+(they are golden-fixture matched, `tests/js/fixtures/figure-pose-golden.json`), and `bow`'s arms would
+start hanging plumb instead of swinging with the torso — which is a behaviour change to decide on, not
+obviously an improvement.
+
+**Ranked against the per-model clearance work**: this is bigger. Clearance is a constant that is wrong
+by a few degrees on figures outside the sample; this blocks a whole class of poses outright.
+
+**The four drafts, kept so re-adding is cheap once aim composes.** The trunk numbers are maximum
+flexion, which gave 127° / 78° / 45° off vertical on Saka / Grace / Eve — rig-dependent for the separate
+reason that `hips` carries the whole body on a VRM rig and only the legs on a Daz one:
+
+```python
+"all-fours":       hips 45, spine 50, chest 40, neck -30; upper arms aim down; upper legs aim down;
+                   knees bend 90; feet bend -25
+"downward-dog":    hips 45, spine 50, chest 45, neck 20; upper arms aim [0.1, -0.5, 1]; legs aim down;
+                   feet bend 20
+"touch-toes":      hips 45, spine 50, chest 40, neck -20; upper arms aim down
+"touch-toes-wide": as touch-toes, plus upper legs spread 30
+```
+
+**Naming, for when they land.** `all-fours` rather than `crawl` — crawling is motion and this library
+holds static shapes. `downward-dog` keeps the name people actually say, with the shape spelled out in
+`about`. `touch-toes` / `touch-toes-wide` follows the `kneel` / `kneel-one` variant pattern.
+
+### `hug` (2026-09-10)
+
+Added, and it ports — arms only, so no trunk involved. **It merges usefully**: `sit` then `hug` is a
+seated embrace, because a named pose replaces only the bones it names.
+
+Elbows OUT and forearms IN is what encircles. The first attempt pulled the elbows in with negative
+spread and read as *pleading* — hands clasped under the chin — because tucking the elbows leaves the
+forearms nowhere to go but up. Rendered and corrected, the same loop that caught the wrong `kneel`.
+
+Its `needs` says the honest thing: it is the shape of an embrace with nobody in it. Aiming it at another
+figure is tier 3.
+
 ## Animation — the long-term plan
 
 Sequenced **after** aiming (built), the eval harness, named poses and outfits. Written down now because
@@ -2444,6 +2503,8 @@ export is byte-identical to the `c8421e03…` already catalogued — the colour 
   from topology.
 - **`inspect_figure` never reports the pose name**, though `named` is stored for exactly that.
 - **Trish's legs deform when kneeling** — right orientation, wrong shape. Same rig as the flat spine.
+- **`aim` is not absolute once the trunk is posed** — the chest carries the arm, so an arm aimed `down`
+  under a folded trunk points UP on Saka. Blocks every fold-forward pose; see above.
 - **Eve's inferred map is shifted one joint up the spine**, so trunk poses act too high — and the mesh
   measurement believed it, reporting a 10 cm "torso". See above; the measurement needs a sanity check.
 - Figures already placed in a world hold the meta they were placed with. Re-place after any refresh.
