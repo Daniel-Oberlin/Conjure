@@ -11,6 +11,7 @@
       "tools": [
         "query_world",
         "query_space",
+        "name_room",
         "view_relative",
         "set_immersion",
         "realign_space",

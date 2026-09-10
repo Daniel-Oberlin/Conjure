@@ -46,7 +46,7 @@ from . import poses
 from .figures import FRAME_REV, POSE_AXES, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
-from .rooms import resolve_rooms
+from .rooms import display_name as rooms_display_name, resolve_rooms
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from . import config, namespace
@@ -2526,6 +2526,53 @@ class SpaceVisibilityRequest(BaseModel):
     name: Optional[str] = None        # default: your CURRENT space (only if you own the active one)
 
 
+class RoomNameRequest(BaseModel):
+    scope: str = ""
+    room: str                                  # id ('room_2'), ordinal ('room 2'), or the current name
+    name: str = ""                             # "" clears it, back to the derived 'room #N'
+
+
+# Words a room may not be called, because the surface-target vocabulary already means something by them
+# (docs/specs/worlds-surfaces.md §4). `_real_surface_match` also tries rooms LAST, so a collision would
+# degrade rather than break — but a name that silently never resolves is worse than a refusal.
+_RESERVED_ROOM_NAMES = {"all", "surface", "surfaces", "wall", "walls", "floor", "floors", "ceiling",
+                        "ceilings", "door", "doors", "window", "windows", "wall art", "table", "tables",
+                        "shelf", "shelves", "couch", "room", "rooms", "space"}
+
+
+@app.post("/room/name")
+async def name_room(req: RoomNameRequest) -> dict:
+    """Name a room in the ACTIVE space — 'room #2' becomes 'kitchen'.
+
+    Space-owner-gated, not world-owner-gated, and scope-bound like `/space/visibility`: the name is
+    written into the space document, so a guest building their own world in your space must not be able
+    to rename your kitchen.
+
+    The name is stored **once**, on the room record. Surfaces carry only the room id, and the default
+    display name is derived rather than stored, so this cannot leave a stale copy anywhere."""
+    caller = (req.scope or "").split("/", 1)[0]
+    if _no_space():
+        return {"ok": False, "error": "no space is active"}
+    if caller and active_space_owner and caller != active_space_owner:
+        return {"ok": False, "error": f"{active_space_owner} owns this space — only they can name its rooms"}
+    rid = _room_id_for(req.room)
+    if not rid:
+        return {"ok": False, "error": f"no room {req.room!r} — try query_space to see them"}
+    rooms = (store.doc.get("environment") or {}).get("rooms") or {}
+    want = (req.name or "").strip()
+    if want.lower() in _RESERVED_ROOM_NAMES:
+        return {"ok": False, "error": f"{want!r} already means something when targeting surfaces — pick another name"}
+    for other, rec in rooms.items():
+        if other != rid and (rec.get("name") or "").strip().lower() == want.lower() and want:
+            return {"ok": False, "error": f"another room is already called {want!r}"}
+    was = rooms_display_name(rooms, rid)
+    patch = store.apply_patch([{"op": "env", "set": {f"rooms.{rid}.name": want or None}}], origin="space")
+    await _broadcast({"type": "patch", "patch": patch})
+    now = rooms_display_name((store.doc.get("environment") or {}).get("rooms") or {}, rid)
+    _slog("space", f"room {rid}: {was!r} → {now!r}")
+    return {"ok": True, "room": rid, "was": was, "name": now}
+
+
 @app.post("/space/visibility")
 async def space_visibility(req: SpaceVisibilityRequest) -> dict:
     """Make one of YOUR spaces public or private (D8/step 6). A PUBLIC space lets any admitted (co-located)
@@ -3353,9 +3400,38 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
 _SEM_NUM = re.compile(r"^([a-z][a-z ]*?)\s*#?\s*(\d+)$")
 
 
+_ROOM_NUM = re.compile(r"^room\s*#?\s*(\d+)$")
+
+
+def _room_id_for(target: str) -> Optional[str]:
+    """A room reference → its persistent id. Accepts the id (`room_2`), the ordinal the user reads off a
+    label (`room 2`, `room #2`), or the name they gave it (`kitchen`). Returns None if it names no room."""
+    rooms = (store.doc.get("environment") or {}).get("rooms") or {}
+    t = str(target or "").strip().lower()
+    if not t:
+        return None
+    if t in rooms:
+        return t
+    mm = _ROOM_NUM.match(t)
+    if mm:
+        n = int(mm.group(1))
+        for rid, rec in rooms.items():
+            if rec.get("n") == n:
+                return rid
+    for rid, rec in rooms.items():
+        if (rec.get("name") or "").strip().lower() == t:
+            return rid
+    return None
+
+
 def _real_surface_match(e: dict, target: str) -> bool:
     """Does real surface `e` match a director target — a surface id, semantic label ('wall'), friendly
-    number ('4'), the combined 'wall 4' form, or 'all'? The friendly number equals the id's number."""
+    number ('4'), the combined 'wall 4' form, a ROOM (its id, `room 2`, or the name the user gave it),
+    or 'all'? The friendly number equals the id's number.
+
+    The room test runs LAST so a semantic can never be shadowed: if someone names a room "wall", `wall`
+    keeps meaning every wall in the space. `name_room` refuses the reserved words as well, so this is a
+    second line rather than the only one."""
     m = e.get("meta", {})
     if not m.get("real"):
         return False
@@ -3364,7 +3440,10 @@ def _real_surface_match(e: dict, target: str) -> bool:
     if t in ("all", e["id"].lower(), sem) or t == fid:
         return True
     mm = _SEM_NUM.match(t)                       # 'wall 4' / 'wall #4'
-    return bool(mm and mm.group(1).strip() in (sem, "surface") and mm.group(2) == fid)
+    if mm and mm.group(1).strip() in (sem, "surface") and mm.group(2) == fid:
+        return True
+    rid = _room_id_for(t)
+    return bool(rid and m.get("room") == rid)
 
 
 def _surface_targets(target: str) -> list[dict]:

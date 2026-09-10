@@ -3097,6 +3097,21 @@
         if (!reasons.length) return;                                      // settled → nothing to POST
         var reason = reasons.join(", ");
 
+        // Rooms (docs/backlogs/spaces-geometry.md, *rooms as a first-class unit*). Segment the LIVE
+        // capture, not `_known`: `_known` is seeded from the persisted doc on entry, whose entries carry
+        // `position`/`rotation` rather than the `_lp`/`_lq` the geometry needs. Surfaces in `_known` but
+        // absent from this capture simply keep the labels they have — the server only relabels ids this
+        // segmentation actually names.
+        //
+        // Groups, never per-surface labels: which PERSISTENT room a group is belongs to the server
+        // (conjure/rooms.py), and a client cannot know it — its own ids are all it has.
+        var seg = null;
+        try {
+          seg = window.SpaceSnap.segmentRooms(AFRAME.THREE, surfaces);
+        } catch (err) {
+          console.warn("[conjure] room segmentation failed", err);       // never block the capture POST
+        }
+
         var payload = Object.keys(self2._known).map(function (id) { return self2._known[id]; });
         self2._posted = {};
         payload.forEach(function (s) { self2._posted[s.id] = { position: s.position, rotation: s.rotation,
@@ -3106,7 +3121,8 @@
         fetch("/space/capture", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Conjure-User": currentUser() || "" },
-          body: JSON.stringify({ client_id: this.clientId, surfaces: payload, boundary: boundary, replace: true }),
+          body: JSON.stringify({ client_id: this.clientId, surfaces: payload, boundary: boundary, replace: true,
+                                 rooms: seg ? seg.rooms : null, links: seg ? seg.links : null }),
         }).catch(function (e) { console.warn("[conjure] room post failed", e); });
         if (JIT) {                                        // owner: POST gate (structural diff + fetch dispatch)
           this._jMark("postO");

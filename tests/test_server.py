@@ -4743,3 +4743,48 @@ def test_the_room_record_lives_on_the_space_not_the_world(srv, client):
     composed = S._compose({"entities": [], "environment": {}},
                           {"surfaces": [], "boundary": None, "rooms": rec})
     assert composed["environment"]["rooms"]["room_1"]["name"] == "kitchen", "loaned back on load"
+
+
+def test_a_room_is_a_surface_target_everywhere_at_once(srv, client):
+    """`_real_surface_match` is the single chokepoint both `_surface_targets` and `_resolve_op_ids` go
+    through, so making it understand rooms makes every surface tool understand them."""
+    client.post("/space/capture", json=_two_room_capture())
+    r = client.post("/style_surface", json={"target": "room 1", "color": "blue"}).json()
+    assert r["ok"] is True and r["count"] == 3, "the whole room, and only that room"
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_floor_1"]["components"]["material"]["color"] == "blue"
+    assert ents["real_floor_2"]["components"]["material"]["color"] != "blue"
+
+
+def test_a_named_room_is_targetable_by_its_name(srv, client):
+    client.post("/space/capture", json=_two_room_capture())
+    assert client.post("/room/name", json={"room": "room 2", "name": "kitchen"}).json()["ok"] is True
+    r = client.post("/style_surface", json={"target": "kitchen", "color": "red"}).json()
+    assert r["count"] == 2
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_floor_2"]["components"]["material"]["color"] == "red"
+
+
+def test_a_semantic_always_beats_a_room_name(srv, client):
+    """A room called "wall" must not stop `wall` meaning every wall. The room test runs last, and
+    name_room refuses the reserved words as well — belt and braces, because a target that silently
+    resolves to the wrong set is the worst outcome available here."""
+    client.post("/space/capture", json=_two_room_capture())
+    out = client.post("/room/name", json={"room": "room 1", "name": "wall"}).json()
+    assert out["ok"] is False and "means something" in out["error"]
+
+
+def test_naming_a_room_clears_back_to_the_derived_default(srv, client):
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/room/name", json={"room": "room 1", "name": "kitchen"})
+    out = client.post("/room/name", json={"room": "kitchen", "name": ""}).json()
+    assert out["ok"] is True and out["name"] == "room #1", "derived, so there is no stale copy to clear"
+    rooms = client.get("/world").json()["environment"]["rooms"]
+    assert not rooms["room_1"].get("name")
+
+
+def test_two_rooms_cannot_share_a_name(srv, client):
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/room/name", json={"room": "room 1", "name": "kitchen"})
+    out = client.post("/room/name", json={"room": "room 2", "name": "Kitchen"}).json()
+    assert out["ok"] is False, "case-insensitively, since the user says it rather than types it"

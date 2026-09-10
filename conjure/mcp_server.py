@@ -269,12 +269,44 @@ async def _space_summary() -> str:
     b = env.get("boundary")
     if b:
         lines.append(f"boundary: height {b.get('height')}m, floor polygon {b.get('floorPolygon')}")
-    for e in reals:
+    # Group by ROOM when the space has been segmented. The grouping is the point: a flat list of 59
+    # surfaces tells the director nothing about which of them are in the same physical place, which is
+    # exactly what it needs to act on "make the kitchen blue".
+    rooms = env.get("rooms") or {}
+
+    def _room_label(rid: str) -> str:
+        rec = rooms.get(rid) or {}
+        nm = (rec.get("name") or "").strip()
+        return nm or f"room #{rec.get('n', '?')}"
+
+    def _surface_line(e: dict) -> str:
         m = e.get("meta", {})
         mat = e.get("components", {}).get("material", {})
         vis = mat.get("visible", pres.get("defaultSurfaceVisible", False))
-        lines.append(f"  - {m.get('semantic', 'surface')} #{m.get('friendly_id', '?')} ({e['id']}) at "
-                     f"{e.get('transform', {}).get('position')} (visible={vis}, color={mat.get('color')})")
+        leads = m.get("leads_to")
+        via = ""
+        if m.get("semantic") in ("door", "window"):
+            via = f" → {_room_label(leads)}" if leads else " → outside"
+        return (f"  - {m.get('semantic', 'surface')} #{m.get('friendly_id', '?')} ({e['id']}) at "
+                f"{e.get('transform', {}).get('position')} (visible={vis}, color={mat.get('color')}){via}")
+
+    grouped: dict[str, list[dict]] = {}
+    loose: list[dict] = []
+    for e in reals:
+        rid = (e.get("meta") or {}).get("room")
+        (grouped.setdefault(rid, []) if rid in rooms else loose).append(e)
+    if grouped:
+        order = sorted(grouped, key=lambda r: (rooms.get(r) or {}).get("n", 0))
+        lines.append(f"rooms: {', '.join(_room_label(r) for r in order)}"
+                     + (" — name one with name_room" if not any((rooms.get(r) or {}).get("name") for r in order) else ""))
+        for rid in order:
+            lines.append(f"{_room_label(rid)} ({len(grouped[rid])} surfaces):")
+            lines.extend(_surface_line(e) for e in grouped[rid])
+        if loose:
+            lines.append(f"not in any room ({len(loose)}):")
+            lines.extend(_surface_line(e) for e in loose)
+    else:
+        lines.extend(_surface_line(e) for e in reals)
     return "\n".join(lines)
 
 
@@ -344,6 +376,22 @@ async def set_immersion(mode: str) -> str:
         return f"Unknown mode {mode!r}. Use one of: {', '.join(_IMMERSION)}."
     await _post_patch([{"op": "env", "set": dict(env)}])
     return f"Immersion is now {mode}."
+
+
+@mcp.tool()
+async def name_room(room: str, name: str = "") -> str:
+    """Give a room a name the user chose — 'room #2' becomes 'kitchen'.
+
+    room: the room's current name, or its number ('room 2'). name: the new name; pass "" to clear it
+    back to 'room #N'.
+
+    Once named, the room works anywhere a surface target does: style_surface('kitchen', color='blue')
+    styles every surface in it. Only the owner of the space can name its rooms.
+    """
+    out = await _post("/room/name", _body(room=room, name=name))
+    if not out.get("ok"):
+        return f"Couldn't name {room!r}: {_reason(out)}."
+    return f"{out['was']} is now called {out['name']}."
 
 
 @mcp.tool()
