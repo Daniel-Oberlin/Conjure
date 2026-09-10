@@ -4674,19 +4674,19 @@ def test_figure_is_owner_gated(srv, client, tmp_path):
 def _two_room_capture(rooms=True):
     surfaces = [
         {"id": "real_floor_1", "semantic": "floor", "position": [0, 0, 0], "extent": [4, 4]},
-        {"id": "real_wall_1", "semantic": "wall", "position": [2, 1.2, 0], "extent": [4, 2.4]},
-        {"id": "real_floor_2", "semantic": "floor", "position": [4.3, 0, 0], "extent": [4, 4]},
-        {"id": "real_wall_2", "semantic": "wall", "position": [2.3, 1.2, 0], "extent": [4, 2.4]},
-        {"id": "real_door_1", "semantic": "door", "position": [2, 1, 0], "extent": [0.9, 2],
-         "hostWall": "real_wall_1"},
+        {"id": "real_wall_2", "semantic": "wall", "position": [2, 1.2, 0], "extent": [4, 2.4]},
+        {"id": "real_floor_3", "semantic": "floor", "position": [4.3, 0, 0], "extent": [4, 4]},
+        {"id": "real_wall_4", "semantic": "wall", "position": [2.3, 1.2, 0], "extent": [4, 2.4]},
+        {"id": "real_door_5", "semantic": "door", "position": [2, 1, 0], "extent": [0.9, 2],
+         "hostWall": "real_wall_2"},
     ]
     body = {"client_id": "h1", "surfaces": surfaces}
     if rooms:
         body["rooms"] = [
-            {"floor": "real_floor_1", "ceiling": None, "ids": ["real_floor_1", "real_wall_1", "real_door_1"]},
-            {"floor": "real_floor_2", "ceiling": None, "ids": ["real_floor_2", "real_wall_2"]},
+            {"floor": "real_floor_1", "ceiling": None, "ids": ["real_floor_1", "real_wall_2", "real_door_5"]},
+            {"floor": "real_floor_3", "ceiling": None, "ids": ["real_floor_3", "real_wall_4"]},
         ]
-        body["links"] = [{"door": "real_door_1", "a": "real_floor_1", "b": "real_floor_2"}]
+        body["links"] = [{"door": "real_door_5", "a": "real_floor_1", "b": "real_floor_3"}]
     return body
 
 
@@ -4694,8 +4694,8 @@ def test_a_capture_with_rooms_labels_every_surface_and_records_the_rooms(srv, cl
     assert client.post("/space/capture", json=_two_room_capture()).json()["ok"] is True
     ents = {e["id"]: e for e in _entities(client)}
     assert ents["real_floor_1"]["meta"]["room"] == "room_1"
-    assert ents["real_wall_1"]["meta"]["room"] == "room_1"
-    assert ents["real_floor_2"]["meta"]["room"] == "room_2"
+    assert ents["real_wall_2"]["meta"]["room"] == "room_1"
+    assert ents["real_floor_3"]["meta"]["room"] == "room_2"
     rooms = client.get("/world").json()["environment"]["rooms"]
     assert rooms["room_1"]["n"] == 1 and rooms["room_1"]["floor"] == "real_floor_1"
     assert "name" not in rooms["room_1"], "the default display name is derived, never stored"
@@ -4704,7 +4704,7 @@ def test_a_capture_with_rooms_labels_every_surface_and_records_the_rooms(srv, cl
 def test_a_door_records_the_room_it_leads_to(srv, client):
     client.post("/space/capture", json=_two_room_capture())
     ents = {e["id"]: e for e in _entities(client)}
-    assert ents["real_door_1"]["meta"]["leads_to"] == "room_2", \
+    assert ents["real_door_5"]["meta"]["leads_to"] == "room_2", \
         "the link names the far side by FLOOR id; the room id is resolved server-side"
 
 
@@ -4753,7 +4753,7 @@ def test_a_room_is_a_surface_target_everywhere_at_once(srv, client):
     assert r["ok"] is True and r["count"] == 3, "the whole room, and only that room"
     ents = {e["id"]: e for e in _entities(client)}
     assert ents["real_floor_1"]["components"]["material"]["color"] == "blue"
-    assert ents["real_floor_2"]["components"]["material"]["color"] != "blue"
+    assert ents["real_floor_3"]["components"]["material"]["color"] != "blue"
 
 
 def test_a_named_room_is_targetable_by_its_name(srv, client):
@@ -4762,7 +4762,7 @@ def test_a_named_room_is_targetable_by_its_name(srv, client):
     r = client.post("/style_surface", json={"target": "kitchen", "color": "red"}).json()
     assert r["count"] == 2
     ents = {e["id"]: e for e in _entities(client)}
-    assert ents["real_floor_2"]["components"]["material"]["color"] == "red"
+    assert ents["real_floor_3"]["components"]["material"]["color"] == "red"
 
 
 def test_a_semantic_always_beats_a_room_name(srv, client):
@@ -4796,7 +4796,7 @@ def test_whereami_maps_the_floor_you_are_over_to_a_room(srv, client):
     returns the stored document verbatim."""
     from conjure import server as S
     client.post("/space/capture", json=_two_room_capture())
-    S.standing["daniel"] = "real_floor_2"
+    S.standing["daniel"] = "real_floor_3"
     try:
         out = client.get("/room/whereami", params={"user": "daniel"}).json()
         assert out["standing"]["daniel"] == "room_2"
@@ -4811,3 +4811,39 @@ def test_a_user_who_is_not_standing_anywhere_is_reported_as_such(srv, client):
     client.post("/space/capture", json=_two_room_capture())
     out = client.get("/room/whereami", params={"user": "nobody"}).json()
     assert out["you"] is None and out["standing"] == {}
+
+
+def test_show_surface_resolves_the_full_target_vocabulary(srv, client):
+    """Visibility used to match targets in the MCP layer, with a weaker vocabulary than every other
+    surface tool. Through the endpoint it gets the same one: friendly ids, semantics, rooms."""
+    client.post("/space/capture", json=_two_room_capture())
+    ents = {e["id"]: e for e in _entities(client)}
+    fid = ents["real_wall_2"]["meta"]["friendly_id"]
+    r = client.post("/show_surface", json={"target": str(fid), "visible": False}).json()
+    assert r["ok"] is True and r["count"] == 1, "the friendly id picks one surface"
+    r = client.post("/show_surface", json={"target": "room 2", "visible": False}).json()
+    assert r["count"] == 2, "and a room picks that room"
+
+
+def test_the_room_filter_composes_with_the_target(srv, client):
+    """"The kitchen walls" is what neither can say alone: a room as a bare target takes the whole room,
+    a semantic takes it across the whole space."""
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/room/name", json={"room": "room 1", "name": "kitchen"})
+    both = client.post("/style_surface", json={"target": "wall", "color": "grey"}).json()
+    assert both["count"] == 2, "the semantic alone spans the space"
+    one = client.post("/style_surface", json={"target": "wall", "color": "blue", "room": "kitchen"}).json()
+    assert one["count"] == 1, "narrowed to the room"
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_wall_2"]["components"]["material"]["color"] == "blue"
+    assert ents["real_wall_4"]["components"]["material"]["color"] == "grey"
+
+
+def test_an_unknown_room_filter_matches_NOTHING_rather_than_everything(srv, client):
+    """The one failure mode that repaints surfaces the user never mentioned. A scoped edit whose scope
+    does not resolve must not silently widen to the whole space."""
+    client.post("/space/capture", json=_two_room_capture())
+    out = client.post("/style_surface", json={"target": "all", "color": "red", "room": "attic"}).json()
+    assert out["ok"] is False, "refused, not applied space-wide"
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_wall_2"]["components"]["material"].get("color") != "red"

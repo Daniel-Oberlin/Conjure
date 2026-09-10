@@ -463,25 +463,23 @@ async def _is_real_surface(id: str) -> bool:
 
 
 @mcp.tool()
-async def show_surface(target: str, visible: bool = True) -> str:
+async def show_surface(target: str, visible: bool = True, room: Optional[str] = None) -> str:
     """Show or hide real surface(s) as virtual geometry. target: a surface id ('real_wall_1'),
-    a semantic label ('wall', 'ceiling', 'floor', …), or 'all'. Use to build mixed real+virtual
-    views (e.g. show only the ceiling)."""
-    doc = await _get("/world")
-    reals = [e for e in doc["entities"] if e.get("meta", {}).get("real")]
-    t = target.lower()
-    targets = [e for e in reals
-               if t == "all" or e["id"] == target or e.get("meta", {}).get("semantic") == t
-               or str(e.get("meta", {}).get("friendly_id")) == target]
-    if not targets:
-        return f"No real surface matches {target!r} (try query_space)."
-    await _post_patch([{"op": "update", "id": e["id"], "set": {"components.material.visible": visible}}
-                       for e in targets])
-    return f"{'Showed' if visible else 'Hid'} {len(targets)} surface(s) matching {target!r}."
+    a semantic label ('wall', 'ceiling', 'floor', …), a room, or 'all'. Use to build mixed real+virtual
+    views (e.g. show only the ceiling).
+
+    room: narrow it to one room — show_surface('wall', room='kitchen') is the kitchen's walls only.
+    """
+    out = await _post("/show_surface", _body(target=target, visible=visible, room=room))
+    if not out.get("ok"):
+        return f"Couldn't show/hide {target!r}: {_reason(out)}."
+    where = f" in {room}" if room else ""
+    return f"{'Showed' if visible else 'Hid'} {out['count']} surface(s) matching {target!r}{where}."
 
 
 @mcp.tool()
-async def texture_surface(target: str, image_id: str, repeat: Optional[float] = None) -> str:
+async def texture_surface(target: str, image_id: str, repeat: Optional[float] = None,
+                          room: Optional[str] = None) -> str:
     """Map a procured image onto real surface(s) — e.g. a starfield on the ceiling, grass on the
     floor, a mural on a wall. First call generate_image, then pass its image_id here.
 
@@ -489,22 +487,24 @@ async def texture_surface(target: str, image_id: str, repeat: Optional[float] = 
     repeat: tile the image NxN across the surface (e.g. 4) — for this, generate a SEAMLESS/tileable
         image (grass, brick). Omit to stretch a single copy (good for a starfield, sky, or mural).
     """
-    out = await _post("/texture_surface", _body(target=target, image_id=image_id, repeat=repeat))
+    out = await _post("/texture_surface", _body(target=target, image_id=image_id, repeat=repeat, room=room))
     if not out.get("ok"):
         return f"Couldn't texture {target!r}: {_reason(out)}."
     return f"Mapped the image onto {out['count']} surface(s) ({target})." + _notice(out)
 
 
 @mcp.tool()
-async def style_surface(target: str, color: Optional[str] = None, opacity: Optional[float] = None) -> str:
+async def style_surface(target: str, color: Optional[str] = None, opacity: Optional[float] = None,
+                        room: Optional[str] = None) -> str:
     """Color and/or set the transparency of real surface(s) — e.g. 'make the walls semi-transparent
     blue', 'make the ceiling glass', 'paint the floor red'.
 
-    target: a surface id ('real_wall_3'), a semantic label ('wall'/'floor'/'ceiling'), or 'all'.
+    target: a surface id ('real_wall_3'), a semantic label ('wall'/'floor'/'ceiling'), a room, or 'all'.
+    room: narrow to one room — style_surface('wall', color='blue', room='kitchen') paints only its walls.
     color: CSS name or #hex. opacity: 0 (invisible) … 1 (solid); < 1 makes it see-through.
     (To map an image onto a surface, use texture_surface instead.)
     """
-    out = await _post("/style_surface", _body(target=target, color=color, opacity=opacity))
+    out = await _post("/style_surface", _body(target=target, color=color, opacity=opacity, room=room))
     if not out.get("ok"):
         return f"Couldn't style {target!r}: {_reason(out)}."
     return f"Styled {out['count']} surface(s) ({target})."

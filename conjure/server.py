@@ -3392,6 +3392,7 @@ async def realign_space() -> dict:
 
 
 class TextureSurfaceRequest(BaseModel):
+    room: Optional[str] = None       # narrow to one room — composes with `target` ("the kitchen walls")
     target: str                        # surface id, semantic label ('floor'/'ceiling'/'wall'), or 'all'
     image_id: str
     repeat: Optional[float] = None     # tile NxN across the surface (e.g. grass); None = stretch one copy
@@ -3404,7 +3405,7 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
     rec, _, err = _get_image(req.image_id)
     if err:
         return {"ok": False, "error": err}
-    targets = _surface_targets(req.target)
+    targets = _surface_targets(req.target, req.room)
     if not targets:
         return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     mat = {"components.material.src": rec.url, "components.material.shader": "flat",
@@ -3467,9 +3468,22 @@ def _real_surface_match(e: dict, target: str) -> bool:
     return bool(rid and m.get("room") == rid)
 
 
-def _surface_targets(target: str) -> list[dict]:
-    """Real surfaces matching `target` (see _real_surface_match)."""
-    return [e for e in store.doc["entities"] if _real_surface_match(e, target)]
+def _surface_targets(target: str, room: Optional[str] = None) -> list[dict]:
+    """Real surfaces matching `target` (see _real_surface_match), optionally narrowed to one room.
+
+    The two compose rather than overlap: `target` says WHAT ("wall", "all", a friendly number) and `room`
+    says WHERE. That is what expresses "the kitchen walls", which neither can say alone — a room used as
+    a bare target takes the whole room, and a semantic takes it across the whole space.
+
+    An unresolvable `room` yields nothing rather than everything. Silently widening a scoped edit to the
+    entire space is the one failure here that repaints surfaces the user never mentioned."""
+    out = [e for e in store.doc["entities"] if _real_surface_match(e, target)]
+    if room:
+        rid = _room_id_for(room)
+        if not rid:
+            return []
+        out = [e for e in out if (e.get("meta") or {}).get("room") == rid]
+    return out
 
 
 def _resolve_op_ids(target: str) -> list[str]:
@@ -3480,7 +3494,31 @@ def _resolve_op_ids(target: str) -> list[str]:
     return exact or [e["id"] for e in store.doc["entities"] if _real_surface_match(e, target)]
 
 
+class ShowSurfaceRequest(BaseModel):
+    room: Optional[str] = None
+    target: str
+    visible: bool = True
+
+
+@app.post("/show_surface")
+async def show_surface(req: ShowSurfaceRequest) -> dict:
+    """Show or hide real surfaces as virtual geometry.
+
+    Exists so visibility resolves targets HERE, through `_surface_targets`, like every other surface tool.
+    The MCP layer used to do its own matching, which quietly meant a weaker vocabulary for this one tool:
+    no `wall 4` form and, once rooms landed, no rooms either. One chokepoint or it is not a chokepoint."""
+    targets = _surface_targets(req.target, req.room)
+    if not targets:
+        return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
+    patch = store.apply_patch([{"op": "update", "id": e["id"],
+                                "set": {"components.material.visible": req.visible}} for e in targets],
+                              origin="director")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "count": len(targets)}
+
+
 class StyleSurfaceRequest(BaseModel):
+    room: Optional[str] = None       # narrow to one room — composes with `target` ("the kitchen walls")
     target: str                        # surface id, semantic label, or 'all'
     color: Optional[str] = None        # CSS name or #hex
     opacity: Optional[float] = None    # 0..1; < 1 makes it see-through
@@ -3490,7 +3528,7 @@ class StyleSurfaceRequest(BaseModel):
 async def style_surface(req: StyleSurfaceRequest) -> dict:
     """Color and/or set the transparency of real surface(s) — e.g. semi-transparent blue walls, a
     glass ceiling. (For an image, use /texture_surface.)"""
-    targets = _surface_targets(req.target)
+    targets = _surface_targets(req.target, req.room)
     if not targets:
         return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     setm: dict = {"components.material.visible": True}

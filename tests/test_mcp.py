@@ -287,17 +287,17 @@ async def test_set_immersion_rejects_unknown_mode(monkeypatch):
 
 
 @respx.mock
-async def test_show_surface_updates_matching_surfaces(monkeypatch):
+async def test_show_surface_resolves_targets_on_the_SERVER(monkeypatch):
+    """It used to match targets here, in the MCP layer, which quietly gave this one tool a weaker
+    vocabulary than every other surface tool — no `wall 4` form, and no rooms once they landed. It now
+    posts the target and lets `_surface_targets` resolve it, like style_surface and texture_surface."""
     monkeypatch.setattr(m, "BASE", "http://world")
-    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={"entities": [
-        {"id": "real_wall_1", "meta": {"real": True, "semantic": "wall"}},
-        {"id": "real_wall_2", "meta": {"real": True, "semantic": "wall"}},
-        {"id": "cube", "meta": {}}]}))
-    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 2}))
-    await _tool("show_surface")(target="wall", visible=True)
-    ops = json.loads(route.calls.last.request.content)["ops"]
-    assert {o["id"] for o in ops} == {"real_wall_1", "real_wall_2"}      # both walls, not the cube
-    assert all(o["set"] == {"components.material.visible": True} for o in ops)
+    route = respx.post("http://world/show_surface").mock(
+        return_value=httpx.Response(200, json={"ok": True, "count": 2}))
+    out = await _tool("show_surface")(target="wall", visible=True, room="kitchen")
+    body = json.loads(route.calls.last.request.content)
+    assert body == {"target": "wall", "visible": True, "room": "kitchen"}, "target and scope go as-is"
+    assert "2 surface(s)" in out and "kitchen" in out
 
 
 @respx.mock
@@ -387,15 +387,15 @@ async def test_style_edges_noop_without_args(monkeypatch):
 
 
 @respx.mock
-async def test_show_surface_matches_friendly_id(monkeypatch):
+async def test_show_surface_reports_the_servers_refusal(monkeypatch):
+    """Target resolution moved server-side, so the no-match case is now a refusal to relay rather than an
+    empty list to notice here. Friendly-id and room matching are covered in test_server.py, against the
+    matcher itself."""
     monkeypatch.setattr(m, "BASE", "http://world")
-    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={"entities": [
-        {"id": "real_wall_a", "meta": {"real": True, "semantic": "wall", "friendly_id": 12}},
-        {"id": "real_wall_b", "meta": {"real": True, "semantic": "wall", "friendly_id": 13}}]}))
-    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 2}))
-    await _tool("show_surface")(target="12", visible=False)
-    ops = json.loads(route.calls.last.request.content)["ops"]
-    assert {o["id"] for o in ops} == {"real_wall_a"}            # the friendly id picks one wall
+    respx.post("http://world/show_surface").mock(
+        return_value=httpx.Response(200, json={"ok": False, "error": "no real surface matches 'sofa'"}))
+    out = await _tool("show_surface")(target="sofa")
+    assert "Couldn't" in out and "sofa" in out
 
 
 @respx.mock
