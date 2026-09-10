@@ -1508,6 +1508,16 @@
       var anchor = window.PlaneAnchor.authorAnchor(THREE, { position: hp, quaternion: hq, mode: "free" }, rc._localPlanes);
       if (anchor.walls.length >= 2) msg.anchor = anchor;
     }
+    // Which ROOM am I standing in? Report the FLOOR I am over, not a room id — the client has no way to
+    // know which persistent room that is (the server assigns them, conjure/rooms.py), and the room record
+    // stores its defining floor, so the reverse lookup is free on that side. Uses the same local floors
+    // and the same F_track head pose the marker probe does; the F_ref pose above is for gaze.
+    if (rc && rc._censusFloors && rc._censusFloors.length && window.SpaceSnap) {
+      var hp2 = new THREE.Vector3();
+      cam.matrixWorld.decompose(hp2, new THREE.Quaternion(), new THREE.Vector3());
+      var fl = window.SpaceSnap.floorUnder(THREE, rc._censusFloors, hp2.x, hp2.z);
+      if (fl && fl.id) msg.floor = fl.id;
+    }
     socket.send(JSON.stringify(msg));
   }
 

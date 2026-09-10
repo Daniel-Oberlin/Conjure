@@ -4788,3 +4788,26 @@ def test_two_rooms_cannot_share_a_name(srv, client):
     client.post("/room/name", json={"room": "room 1", "name": "kitchen"})
     out = client.post("/room/name", json={"room": "room 2", "name": "Kitchen"}).json()
     assert out["ok"] is False, "case-insensitively, since the user says it rather than types it"
+
+
+def test_whereami_maps_the_floor_you_are_over_to_a_room(srv, client):
+    """The AR client reports the FLOOR it is standing over, never a room id — it has no way to know which
+    persistent room that is. Live occupancy, so it is its own endpoint rather than a key on /world, which
+    returns the stored document verbatim."""
+    from conjure import server as S
+    client.post("/space/capture", json=_two_room_capture())
+    S.standing["daniel"] = "real_floor_2"
+    try:
+        out = client.get("/room/whereami", params={"user": "daniel"}).json()
+        assert out["standing"]["daniel"] == "room_2"
+        assert out["you"] == "room_2"
+    finally:
+        S.standing.pop("daniel", None)
+
+
+def test_a_user_who_is_not_standing_anywhere_is_reported_as_such(srv, client):
+    """A CLI, voice or desktop connection is not in a room, and saying so is the honest answer — the
+    alternative is the director confidently naming a room the user is not in."""
+    client.post("/space/capture", json=_two_room_capture())
+    out = client.get("/room/whereami", params={"user": "nobody"}).json()
+    assert out["you"] is None and out["standing"] == {}

@@ -290,6 +290,16 @@ async def _space_summary() -> str:
         return (f"  - {m.get('semantic', 'surface')} #{m.get('friendly_id', '?')} ({e['id']}) at "
                 f"{e.get('transform', {}).get('position')} (visible={vis}, color={mat.get('color')}){via}")
 
+    # Who is standing where — live occupancy, so it comes from its own endpoint rather than the stored
+    # document. Failure here must not cost the director its space summary.
+    here = None
+    try:
+        w = await _get("/room/whereami")
+        standing = (w or {}).get("standing") or {}
+        here = next(iter(standing.values()), None) if len(standing) == 1 else None
+    except Exception:
+        pass
+
     grouped: dict[str, list[dict]] = {}
     loose: list[dict] = []
     for e in reals:
@@ -297,6 +307,8 @@ async def _space_summary() -> str:
         (grouped.setdefault(rid, []) if rid in rooms else loose).append(e)
     if grouped:
         order = sorted(grouped, key=lambda r: (rooms.get(r) or {}).get("n", 0))
+        if here and here in rooms:
+            lines.append(f"the user is standing in {_room_label(here)}")
         lines.append(f"rooms: {', '.join(_room_label(r) for r in order)}"
                      + (" — name one with name_room" if not any((rooms.get(r) or {}).get("name") for r in order) else ""))
         for rid in order:

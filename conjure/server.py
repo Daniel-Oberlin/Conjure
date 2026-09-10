@@ -420,6 +420,9 @@ clients: "dict[WebSocket, str]" = {}     # connected render clients → their us
 _blocked: "dict[WebSocket, str]" = {}    # sockets bumped out of a now-PRIVATE live session (§6c/6d): kept
                                          # (ws → user) so they can be re-admitted when it goes public, but
                                          # OUT of `clients` so they get no world broadcasts meanwhile
+standing: "dict[str, str]" = {}          # user → the FLOOR surface id they are over, from presence.
+                                        # Only an AR client reports one: a CLI, voice or desktop user is
+                                        # not standing anywhere, and should be told so rather than guessed at.
 gaze: "dict[str, dict]" = {}             # user → {"origin","forward","right","up"} in the reference frame,
                                          # from presence — where each headset is looking. May also carry
                                          # "anchor" (plane-relative head anchor) for the §7b seed-solve.
@@ -2538,6 +2541,24 @@ class RoomNameRequest(BaseModel):
 _RESERVED_ROOM_NAMES = {"all", "surface", "surfaces", "wall", "walls", "floor", "floors", "ceiling",
                         "ceilings", "door", "doors", "window", "windows", "wall art", "table", "tables",
                         "shelf", "shelves", "couch", "room", "rooms", "space"}
+
+
+@app.get("/room/whereami")
+async def room_whereami(user: str = "") -> dict:
+    """Which room is each present user standing in? Reported by the AR client as the FLOOR it is over
+    (presence, ~10 Hz) and mapped here, since only this side knows which persistent room a floor defines.
+
+    Deliberately a separate endpoint rather than a key on `/world`: that returns the stored document
+    verbatim, and occupancy is live per-session state that must never reach the persisted doc — the same
+    reason `captureAuthority` is nulled on activation rather than saved.
+
+    A user with no entry is not standing anywhere we know of, which is the honest answer for a CLI, voice
+    or desktop connection rather than a guess."""
+    rooms = (store.doc.get("environment") or {}).get("rooms") or {}
+    by_floor = {rec.get("floor"): rid for rid, rec in rooms.items() if rec.get("floor")}
+    out = {u: by_floor[f] for u, f in standing.items() if f in by_floor}
+    return {"ok": True, "rooms": rooms, "standing": out,
+            "you": out.get(user) if user else None}
 
 
 @app.post("/room/name")
@@ -5149,6 +5170,10 @@ async def ws(websocket: WebSocket) -> None:
                     if msg.get("anchor"):                        # §7b: keep the plane-relative head anchor so
                         g["anchor"] = msg["anchor"]              # view_relative can solve it against the seed
                     gaze[user] = g                               # remember where this user is looking
+                if msg.get("floor"):                         # which ROOM this user is standing in, by
+                    standing[user] = msg["floor"]                # the floor they are over (they cannot know
+                elif "floor" in msg:                             # the room id; the room record does)
+                    standing.pop(user, None)
                 await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": pose})
     except WebSocketDisconnect:
         pass
