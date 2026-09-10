@@ -175,12 +175,23 @@ POSES: tuple[Pose, ...] = (
          # Negative spread tucks the elbows against the ribs, which is what lets the hands travel PAST
          # the midline instead of meeting at it — the difference between folded arms and clasped hands,
          # and 3 cm of hand travel either side of it.
-         {"leftUpperArm": {"bend": 8, "turn": 75, "spread": -30}, "leftLowerArm": {"bend": 115},
-          "rightUpperArm": {"bend": 20, "turn": 75, "spread": -30}, "rightLowerArm": {"bend": 115}},
+         # Shoulder FLEXION is the third thing this pose needed. Turn crosses the forearms and negative
+         # spread tucks the elbows, but at 8/20 degrees of bend the forearms crossed *inside* her chest
+         # — reported from the headset, and invisible to every assertion here because each joint was
+         # exactly where it belonged. 40/52 brings them in front of the ribs. Not measured the way the
+         # arms-down angle was: `clears` reads LATERAL clearance from the body midline, which the hips
+         # joint sits on, and the forward equivalent needs an origin at the centre of the torso's depth
+         # that nothing computes yet. So this one was rendered and looked at.
+         {"leftUpperArm": {"bend": 40, "turn": 75, "spread": -30}, "leftLowerArm": {"bend": 130},
+          "rightUpperArm": {"bend": 52, "turn": 75, "spread": -30}, "rightLowerArm": {"bend": 130}},
          # Crossing the midline is what makes it crossed, so that is what is asserted. `nearer` alone
          # let the wrong pose through.
-         signature=(("moved", "leftHand", "in", 0.25), ("moved", "rightHand", "in", 0.25),
-                    ("points", "leftLowerArm", "in"), ("points", "rightLowerArm", "in"))),
+         # The `points … in` pair was dropped rather than loosened. It was written when the forearms
+         # were horizontal; with the shoulder flexed they run diagonally up-and-across at about 45° to
+         # `in`, which is what folded arms actually do — and `AIMED` is deliberately one global number,
+         # so a per-pose tolerance would be a knob turned until the library went green. What makes the
+         # arms CROSSED is the hands passing the midline, which the two `moved` assertions already say.
+         signature=(("moved", "leftHand", "in", 0.25), ("moved", "rightHand", "in", 0.25))),
     # A ONE-ARMED pose still has to say what the other arm does. Same defect as the leg poses had, found
     # the same way: `wave` and `point` were misread on all three rigs at once, which is the signature of
     # a bad pose rather than a noisy judge. On a T-posed rig the idle arm stayed straight out, so a wave
