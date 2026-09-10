@@ -2152,6 +2152,53 @@ does state 30 finger bones. The second is a real feature; the first is honest to
   being the rig with the flat spine and the 679-bone hair rig; likely another artefact of that conversion.
 - **`crouch` and `sit` are distinguishable** to a person, which the vision judge could not manage.
 
+### Clearance is a per-rig measurement forced into a global constant (2026-09-10)
+
+`_ARMS_DOWN` aims 8° out from the body, and that number is **hard-coded and identical for every
+figure**, like every other angle in `poses.py`. It is the worst case of three measurements:
+
+| rig | needs | gets |
+|---|---|---|
+| Saka | 0.8° | 8° |
+| Grace | 4.2° | 8° |
+| Trish | 4.2° | 8° |
+
+Saka is over-corrected by 7°, which is visually minor and was easy to accept because 8° is also
+anatomically natural. But the constant only holds for bodies between these three: a wider figure — a
+heavy character, or a clothed one — needs more and will clip again, and a very slim one gets arms
+hanging oddly wide. Three rigs is not much of a sample, and `aim` being absolute does **not** rescue
+this: an absolute direction adapts to the rest pose, not to how wide the body is.
+
+**The fix is to stop guessing:** measure `body_profile` + `limb_radius` at IMPORT, ship them in the
+frame beside `humanoid_axes`, and let `aim: "down"` resolve with the clearance of whatever rig it lands
+on. Then the poses stay rig-independent *and* every rig gets its own correct number — including
+hand-written poses, which the library's constants do nothing for. Costs a `FRAME_REV` bump.
+
+Worth doing the first time a clothed figure is imported, or when the cast grows past three.
+
+### A bad bone map makes the mesh measurement confidently wrong (2026-09-10)
+
+Found within a minute of pointing it at a fourth model. `EveMaccaro.glb` infers a 21-bone map that is
+**shifted one joint up the spine** — `hips`→`ORG-spine`, `spine`→`chest`, `chest`→`neckLower`,
+`neck`→`neckUpper` — so `body_profile` dutifully measured her *neck* and called it a torso: 22 bands
+spanning 10 cm of a 1.90 m figure, 5.8 cm at the widest. The clearance calculation then reported
+**"0.0° of outward aim needed"** with no hesitation, which would make `clears` pass anything on her.
+
+Two separate things, and the second is the dangerous one:
+
+1. **Layer-2 inference mis-assigns Eve's trunk.** Same family as Trish's flat spine — the trunk is where
+   inference is weakest and where `validate()` is most permissive. Her limbs look right; only the trunk
+   is shifted, so `bow` will bend her at the chest.
+2. **The measurement has no sanity check.** A torso spanning 10 cm of a 1.9 m body is not a torso, and
+   `body_profile` should say so rather than return it. Cheap guards: the profile's height span should be
+   a plausible fraction of the figure's height, and its widest band a plausible fraction of the shoulder
+   width. Returning `[]` — which callers already treat as "cannot measure, skip the check" — is the
+   right failure, and is strictly better than a confident wrong number.
+
+The general lesson is the one this feature keeps relearning: **a measurement built on a derived input
+inherits its errors silently.** The bone map was already known to be the weak link; nothing warned that
+the new mesh code sits downstream of it.
+
 ## Animation — the long-term plan
 
 Sequenced **after** aiming (built), the eval harness, named poses and outfits. Written down now because
@@ -2397,6 +2444,8 @@ export is byte-identical to the `c8421e03…` already catalogued — the colour 
   from topology.
 - **`inspect_figure` never reports the pose name**, though `named` is stored for exactly that.
 - **Trish's legs deform when kneeling** — right orientation, wrong shape. Same rig as the flat spine.
+- **Eve's inferred map is shifted one joint up the spine**, so trunk poses act too high — and the mesh
+  measurement believed it, reporting a 10 cm "torso". See above; the measurement needs a sanity check.
 - Figures already placed in a world hold the meta they were placed with. Re-place after any refresh.
 - The anatomical-pose work and the void-frame branch are both merged to `main` and pushed.
 
