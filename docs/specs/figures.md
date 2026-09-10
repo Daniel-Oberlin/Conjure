@@ -244,12 +244,45 @@ knelt like a scarecrow), and one-armed poses never said what the other arm does.
 Measured cost of its absence: `sit` leaves a figure floating above a real chair — about an inch on Grace,
 several on the shorter Saka — so the error is rig-dependent and not a constant to subtract.
 
+### Measuring the mesh
+
+Until 2026-09-10 nothing in the pipeline had looked at a vertex, so a pose could put every joint exactly
+where it belonged while the flesh around them was inside the chest. Three functions in `figures`:
+
+| | |
+|---|---|
+| `body_profile(doc, blob, mapping)` | the torso's half-width and depth per height band |
+| `limb_radius(doc, blob, mapping, bone)` | a limb's median thickness about its own axis |
+| `deform_subtree(doc, mapping, bones)` | whose vertices belong to a bone — the mapped node **plus its descendants** |
+
+Vertices are classified by the bone they are most heavily weighted to, because skin weights are what
+separate torso from limb; a bounding box or a name convention would be guesswork. `deform_subtree` is
+what makes it work on a rig whose mapped bones are controls: Trish's `spine` is a control whose only
+child is `spine.twk`, and matching the mapped node alone found zero torso and zero arm on her.
+
+**What it found.** A shoulder sits almost exactly at the torso's edge, so an arm hanging straight down
+overlaps by its own radius — the term joint positions structurally cannot see:
+
+| rig | torso half-width | shoulder out | arm radius | overlap |
+|---|---|---|---|---|
+| Saka | 6.5 cm | 8.0 cm | 2.2 cm | 0.6 cm |
+| Grace | 15.9 cm | 15.2 cm | 3.0 cm | 3.7 cm |
+| Trish | 15.9 cm | 14.8 cm | 2.9 cm | 4.0 cm |
+
+So `_ARMS_DOWN` aims 8° out rather than straight down, and the `clears` predicate asserts it — the only
+predicate that reads a vertex.
+
+**Three limits, recorded in the backlog rather than fixed:** the 8° is a hard-coded constant, so a figure
+outside the sample is under- or over-corrected (Eve already is); `clears` measures **lateral** clearance
+only, because the forward equivalent needs an origin at the centre of the torso's depth that nothing
+computes; and it sits downstream of the bone map, so a bad map gives a confident wrong answer — Eve's
+shifted map made her neck read as a 10 cm torso.
+
 **Known limits of posing by joint**, all measured on device 2026-09-09 and none catchable by a signature,
 which asserts where joints are and never whether flesh intersects flesh:
 
-- Arms aimed `down` **enter the body**; `arms-crossed` folds inside the chest; `hands-on-hips` does not
-  quite touch. A real arm hangs a few degrees out from the torso axis, and nothing has ever consulted the
-  mesh about a pose.
+- ~~Arms aimed `down` **enter the body**, `arms-crossed` folds inside the chest~~ — **fixed 2026-09-10**
+  by measuring the mesh (below). `hands-on-hips` still does not quite touch.
 - `point` and `wave` read as *reaching*, because there is **no finger vocabulary** — fingers are not
   recoverable from topology (§3), so no inferred map has them.
 
@@ -609,7 +642,8 @@ pose), `list_poses` (the named library, read from the data rather than written i
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
-**CLI:** `conjure-import` (ingest), `conjure-ctl refresh-models [--force]`,
+**CLI:** `conjure-import` (ingest; `--label` names the asset, defaulting to the filename stem, and is
+distinct from `--creator`, which is whoever made it), `conjure-ctl refresh-models [--force]`,
 `python scripts/pose_eval.py` (the utterance-layer battery), `scripts/pose_test.py` (render one pose).
 
 **Deps:** none new. GLB reading is stdlib; `trimesh` was already there. Blender is a soft dependency of
@@ -627,7 +661,13 @@ Recorded here so the spec can be trusted about its own edges; the design work is
 - **No tier 3.** Nothing solves against the world: "sit on that chair" makes the shape of sitting and
   says so; "hand flat on the table" is not expressible at all.
 - **No discovery layers 3–6:** no LLM labelling, no multimodal verification, no human confirmation.
-- **No named-pose authoring loop.** The judge exists and the renderer exists, but nothing yet proposes
+- **`aim` is not absolute once the trunk is posed.** It resolves against the bind pose, so a limb aimed
+  under a folded trunk is carried elsewhere by its ancestors — blocking every fold-forward pose.
+- **Forward self-intersection is invisible.** `clears` reads lateral clearance only; a forearm inside the
+  chest is not detectable, and `arms-crossed` was fixed by rendering and looking.
+- ~~**No named-pose authoring loop.**~~ Built as `scripts/pose_library.py`: propose → check the signature
+  → have a model say which pose it sees → glance → freeze. The older text follows.
+- The judge exists and the renderer exists, but nothing yet proposes
   a pose, renders it, verifies it and freezes it into a library.
 - **No FBX front door**, so no Mixamo.
 - **No morph, spring-bone or MToon support.** VRM material data is in the file and A-Frame's plain glTF

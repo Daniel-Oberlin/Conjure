@@ -2504,7 +2504,15 @@ export is byte-identical to the `c8421e03…` already catalogued — the colour 
 - **`inspect_figure` never reports the pose name**, though `named` is stored for exactly that.
 - **Trish's legs deform when kneeling** — right orientation, wrong shape. Same rig as the flat spine.
 - **`aim` is not absolute once the trunk is posed** — the chest carries the arm, so an arm aimed `down`
-  under a folded trunk points UP on Saka. Blocks every fold-forward pose; see above.
+  under a folded trunk points UP on Saka. Blocks every fold-forward pose; see above. **Ranked first** of
+  the open figure work: it blocks a category, where the others are wrong by degrees.
+- **`clears` measures LATERAL clearance only.** The forward case — a forearm inside the chest — needs an
+  origin at the centre of the torso's depth, which nothing computes; measuring "forward" from the hips
+  joint produced numbers that looked authoritative and were not. `arms-crossed` was fixed by rendering
+  and looking instead, so it has no regression guard.
+- **`hands-on-hips` hands still do not touch.** Untouched by the mesh work; wants the same treatment.
+- **Eve confirmed on device 2026-09-10**: `bow` and `crouch` bend her one joint too high (the shifted
+  map), and she is heavier than the cast so 8° of arm clearance is not enough for her.
 - **Eve's inferred map is shifted one joint up the spine**, so trunk poses act too high — and the mesh
   measurement believed it, reporting a 10 cm "torso". See above; the measurement needs a sanity check.
 - Figures already placed in a world hold the meta they were placed with. Re-place after any refresh.
