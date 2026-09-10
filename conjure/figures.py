@@ -185,6 +185,24 @@ def split_glb(data: bytes):
     return doc, b""
 
 
+def write_glb(doc: dict, blob: bytes = b"") -> bytes:
+    """The inverse of `split_glb` — a container-relocatable GLB, chunks padded as the spec requires.
+
+    Here rather than in a script because three callers now write GLBs (`scripts/glb_strip.py`,
+    `conjure.playcanvas`, and the tests that check both), and a second copy of a binary format is a
+    second place for the padding rules to be got subtly wrong.
+    """
+    import json as _json
+    import struct
+    body = _json.dumps(doc, separators=(",", ":")).encode()
+    body += b" " * (-len(body) % 4)                      # JSON pads with SPACES, BIN with zeros
+    out = struct.pack("<II", len(body), 0x4E4F534A) + body
+    if blob:
+        pad = blob + b"\x00" * (-len(blob) % 4)
+        out += struct.pack("<II", len(pad), 0x004E4942) + pad
+    return b"glTF" + struct.pack("<II", 2, 12 + len(out)) + out
+
+
 # ---------------------------------------------------------------- layer 1: known conventions
 #
 # Names are free and exact where they hit, and they work on a rig whose BIND POSE defeats geometry —

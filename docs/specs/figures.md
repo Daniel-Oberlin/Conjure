@@ -473,6 +473,56 @@ arrives first would find no skeleton. Every `/static/*.js` reference is mtime-st
 `server.py`; `figure.js` shipped without a stamp once and the headset served a stale copy through several
 reloads, so three fixes never ran.
 
+## 9a. Re-assembling a PlayCanvas build
+
+`conjure/playcanvas.py` + `scripts/playcanvas_rebuild.py`. A second out-of-band ingest path, and the
+only one that needs no Blender at all.
+
+PlayCanvas's converter splits an upload deliberately: geometry and skinning into the GLB, materials and
+textures into separate registry entries the engine rejoins at load time. A build downloaded from it
+therefore hands over a model that renders **flat white in any ordinary viewer**, with every texture
+sitting beside it and nothing in the file saying which goes where. Jane arrived exactly like that —
+4.5 MB of correct geometry, zero materials, 87 MB of orphaned 4K PNGs.
+
+The binding is stated outright, so this **transcribes rather than guesses**:
+
+```
+config.json   -> assets by id (containers, renders, materials, textures)
+<scene>.json  -> entities, each with a `render` component holding
+                   `asset`          -> a render asset -> (containerAsset, renderIndex)
+                   `materialAssets` -> ONE PER PRIMITIVE, in order
+```
+
+A glTF mesh is split into primitives precisely because each had its own material, so the ordering
+survived conversion and the list drops straight back on. **The materials are on the SCENE, not the
+container**: a container ships whatever its own import produced and the scene overrides it — Jane's hair
+container carries an untextured grey, and reading it instead of the scene gives grey hair with the real
+texture unused on disk.
+
+The blend and cull constants and the `glossPS` shader chunk are read out of the `playcanvas-stable.min.js`
+shipped **in the build being converted**, not remembered. Each is a silent wrongness if guessed: a wrong
+blend mode is invisible until something stands behind the figure, and an inverted roughness map reads as
+a lighting problem.
+
+Four things it detects rather than assumes, all of which Jane exercises:
+
+| | |
+|---|---|
+| an `opacityMap` on a texture with **no alpha channel** | a no-op — five of her eight materials do this, and believing them emits `MASK` and punches holes through her |
+| an indexed PNG with a `tRNS` chunk | alpha that is not a channel; her eyelashes are one, and read as RGB become a rectangle across her face |
+| `glossInvert` | decides whether the source is gloss or roughness. One build uses it **both ways** — her lips (invert, shininess 0) and her mouth (no invert, shininess 90) are both wet, from opposite settings |
+| a mesh no entity binds | left untextured, because that is what the scene does. `--adopt` will take the material from an identically-named render asset elsewhere, reported as INFERRED — how her hair comes back |
+
+It is **additive**: images become buffer views on the end of the existing binary chunk and nothing that
+was in the file moves, so the geometry comes out bit-identical and a map derived from the original still
+applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17
+named poses — with 8 materials where there were none.
+
+**`--max-texture` defaults to 1024, and that is a budget rather than an optimisation.** Her textures are
+4096 square throughout: roughly 90 MB of VRAM each once mipmapped, nine of them for one character who
+already costs 111k triangles. At the default the whole capture — 9 containers across 3 nested builds —
+rebuilds in about four seconds and she lands at 6.8 MB.
+
 ## 9. Conversion — out of band, and Blender-only
 
 `.blend` cannot be loaded by a browser and has no third-party reader worth trusting, so something must

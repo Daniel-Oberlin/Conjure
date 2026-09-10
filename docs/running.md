@@ -146,6 +146,25 @@ python scripts/mcp_smoke.py                                        # exercise th
 Entry points (all installed by `pip install -e .`): `conjure`, `conjure-agent`, `conjure-cli`,
 `conjure-ctl`, `conjure-voice`, `conjure-mcp`, `conjure-doctor`, `conjure-import`.
 
+### A model that imports but renders white
+
+If a GLB arrives with correct geometry and no materials at all, check where it came from. PlayCanvas
+keeps materials and textures as assets **separate** from the mesh and rejoins them at load time, so a
+build downloaded from one is white by design, with every texture beside it and nothing in the file
+saying which goes where. Re-join them first:
+
+```bash
+python scripts/playcanvas_rebuild.py <build-dir> --list           # what it would bind, writes nothing
+python scripts/playcanvas_rebuild.py <build-dir> --out temp/rebuilt --adopt
+conjure-import temp/rebuilt/jane_export.glb --label "Jane"
+```
+
+`--adopt` gives a mesh no entity binds the material from an identically-named one elsewhere in the
+build, reported as INFERRED — a character's hair is often shipped both inside the body file and as a
+standalone swappable container, and only the standalone one is bound. Textures are downscaled to 1024
+by default because these builds routinely use 4096-square maps, which is about 90 MB of VRAM each. See
+§ 9a of [`specs/figures.md`](./specs/figures.md).
+
 ---
 
 # Part 3 — Into the headset, on a cable
