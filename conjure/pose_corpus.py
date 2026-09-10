@@ -305,7 +305,10 @@ def check_call(phrase: Phrase, pose: dict) -> list[str]:
 #: Each predicate and how many of its arguments are BONE names — the rest is a direction or a distance.
 #: One table, read by both the checker and `bones_used`, because a predicate the corpus can write and
 #: the checker cannot read is a cell that passes by never being looked at.
-PREDICATES = {"points": 1, "moved": 1, "above": 2, "below": 2, "apart": 2, "nearer": 2}
+#: `clears` counts as ONE bone argument, not two: its second argument names a limb whose RADIUS is
+#: looked up, not a joint whose position is read. Counting it as two sent the whole predicate through the
+#: missing-joint skip below and quietly disabled it — the failure mode this table exists to prevent.
+PREDICATES = {"points": 1, "moved": 1, "above": 2, "below": 2, "apart": 2, "nearer": 2, "clears": 1}
 
 #: How far off a requested direction a limb may land and still count — the cosine, so 0.8 is about 37
 #: degrees. Loose enough for a director that aims [0, 1, 0.4] instead of straight up, tight enough that a
@@ -342,7 +345,8 @@ def check_geometry(phrase: Phrase, before: dict, after: dict, frame: dict, heigh
 
 
 def check_predicates(predicates, before: dict, after: dict, frame: dict, height: float,
-                     dirs: Optional[dict] = None, label: str = "") -> list[str]:
+                     dirs: Optional[dict] = None, label: str = "",
+                     mesh: Optional[dict] = None) -> list[str]:
     """The predicate evaluator, split out from `check_geometry` so a named pose can be scored by the
     same vocabulary that scores an utterance.
 
@@ -364,7 +368,26 @@ def check_predicates(predicates, before: dict, after: dict, frame: dict, height:
         names = args[:PREDICATES[kind]]
         if any(n not in before or n not in after for n in names):
             continue                                     # this rig cannot answer; not a failure
-        if kind == "points":
+        if kind == "clears":
+            # `("clears", joint, limb)` — the joint must sit outside the TORSO by at least the limb's own
+            # radius. The one predicate that consults the mesh: every other one asks where a joint is,
+            # and a joint can be exactly where it should be while the flesh around it is inside the
+            # chest. Measured on device 2026-09-09 as arms that enter the body, arms folded inside the
+            # ribcage, and hands on hips that do not touch.
+            #
+            # Skipped, not failed, without a `mesh` — an unrigged or unweighted file cannot answer, and
+            # inventing a body width would be worse than declining.
+            joint, limb = args[0], args[1]
+            if not mesh or not mesh.get("profile") or joint not in after:
+                continue
+            from .figures import torso_half_width
+            rel = _components(frame, joint, sub(after[joint], after.get("hips", after[joint])))
+            lateral = abs(rel["out"])
+            need = torso_half_width(mesh["profile"], after[joint][1]) + (mesh.get("radii") or {}).get(limb, 0.0)
+            if lateral < need:
+                fails.append(f"{joint} sits {lateral * 100:.1f} cm from the midline; the torso plus "
+                             f"{limb}'s own radius needs {need * 100:.1f} cm — it is inside the body")
+        elif kind == "points":
             bone, way = args[0], args[1]
             if bone not in dirs:
                 continue

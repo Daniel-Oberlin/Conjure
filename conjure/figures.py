@@ -1701,3 +1701,196 @@ def clean_pose(pose: dict, axes: dict) -> tuple[dict, Optional[str]]:
             vals[k] = angle
         clean[bone] = vals                      # an empty {} is legal: it returns that bone to rest
     return clean, None
+
+
+# ---------------------------------------------------------------- consulting the MESH
+#
+# Everything above reasons about joints. A pose authored and checked that way can be geometrically
+# perfect and still look wrong, because flesh intersects flesh: measured on device 2026-09-09, arms
+# aimed `down` enter the body, `arms-crossed` folds inside the chest, `hands-on-hips` does not touch.
+# No signature catches any of it — a signature asserts where a joint IS, never what is already there.
+#
+# So: read the skinned vertices and ask how wide the body is. Cheap, because the question is narrow —
+# not "do these two meshes intersect" but "how far from the body's axis is its surface, at this height".
+
+
+def _read_vec3(doc: dict, blob: bytes, accessor_index: int, limit: int = 400000):
+    """Yield up to `limit` VEC3 float triples from an accessor — the vertex-position counterpart to
+    `_read_vec4`. Skinned positions are stored in BIND space, which is exactly the frame the bone map
+    and `anatomical_axes` are measured in, so no transform is needed to compare them."""
+    import struct
+    acc = (doc.get("accessors") or [])[accessor_index]
+    fmt, size = _COMPONENT.get(acc.get("componentType"), (None, 0))
+    if not fmt or acc.get("type") != "VEC3" or "bufferView" not in acc:
+        return
+    bv = (doc.get("bufferViews") or [])[acc["bufferView"]]
+    base = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+    stride = bv.get("byteStride") or (size * 3)
+    for i in range(min(acc.get("count", 0), limit)):
+        off = base + i * stride
+        if off + size * 3 > len(blob):
+            return
+        yield struct.unpack_from("<" + fmt * 3, blob, off)
+
+
+#: The bones whose vertices are the TORSO — what a hanging arm has to clear. Deliberately not the whole
+#: body: including arm vertices would inflate the profile with the very limb being tested, and a T-posed
+#: rig would report a body two metres wide.
+TORSO_BONES = ("hips", "spine", "chest", "upperChest", "neck")
+
+
+def deform_subtree(doc: dict, mapping: dict[str, str], bones) -> set[int]:
+    """The node indices whose vertices belong to `bones` — the mapped nodes plus their descendants.
+
+    **A mapped bone is not necessarily a DEFORM bone.** Trish's `spine` is a control whose only child is
+    `spine.twk`, and every torso vertex is weighted to the twk, so matching the mapped node alone found
+    zero torso on her rig — and zero arm, for the same reason. The subtree fixes both.
+
+    It stops at any node belonging to a DIFFERENT mapped bone, or the arms (which descend from the chest)
+    would count as torso and report a T-posed figure two metres wide.
+    """
+    nodes = doc.get("nodes") or []
+    by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
+    stop = {by_name.get(n) for b, n in mapping.items() if b not in bones} - {None}
+    out: set[int] = set()
+    for bone in bones:
+        root = by_name.get(mapping.get(bone, ""))
+        if root is None:
+            continue
+        stack = [root]
+        while stack:
+            i = stack.pop()
+            if i in out:
+                continue
+            out.add(i)
+            for c in nodes[i].get("children") or []:
+                if c not in stop:
+                    stack.append(c)
+    return out
+
+
+def body_profile(doc: dict, blob: bytes, mapping: dict[str, str], bands: int = 24,
+                 bones=TORSO_BONES) -> list[tuple[float, float, float]]:
+    """`[(height, half_width, depth)]` per height band through the torso, in the model's own units.
+
+    Each vertex is assigned to the bone it is most heavily weighted to, and only vertices belonging to
+    `bones` are counted — skin weights are what separate torso from limb, and they are exact where a
+    name convention or a bounding box would be guesswork. Within a band, `half_width` is the larger of
+    the two sides' extents from the body's midline and `depth` the front-to-back extent.
+
+    Empty when the file has no skin or no weights, which is the honest answer for an unrigged mesh; the
+    caller then has nothing to clear and should not invent a number.
+    """
+    skins = doc.get("skins") or []
+    if not skins:
+        return []
+    wanted = deform_subtree(doc, mapping, bones)
+    if not wanted:
+        return []
+    frame = body_frame(doc, mapping)
+    up, left, forward = frame["up"], frame["left"], frame["forward"]
+    dot = lambda a, b: sum(x * y for x, y in zip(a, b))              # noqa: E731
+
+    mesh_skin: dict[int, int] = {}
+    for n in doc.get("nodes") or []:
+        if "mesh" in n and "skin" in n:
+            mesh_skin.setdefault(n["mesh"], n["skin"])
+
+    pts: list[tuple[float, float, float]] = []                       # (height, lateral, depth)
+    for mi, mesh in enumerate(doc.get("meshes") or []):
+        si = mesh_skin.get(mi)
+        if si is None or si >= len(skins):
+            continue
+        joints = skins[si].get("joints") or []
+        for prim in mesh.get("primitives") or []:
+            attrs = prim.get("attributes") or {}
+            if not {"POSITION", "JOINTS_0", "WEIGHTS_0"} <= set(attrs):
+                continue
+            positions = _read_vec3(doc, blob, attrs["POSITION"])
+            js = _read_vec4(doc, blob, attrs["JOINTS_0"])
+            ws = _read_vec4(doc, blob, attrs["WEIGHTS_0"])
+            for pos, j4, w4 in zip(positions, js, ws):
+                k = max(range(4), key=lambda n: w4[n])               # the dominant bone
+                if w4[k] <= 0:
+                    continue
+                ji = int(j4[k])
+                if ji >= len(joints) or joints[ji] not in wanted:
+                    continue
+                pts.append((dot(pos, up), dot(pos, left), dot(pos, forward)))
+    if not pts:
+        return []
+
+    lo = min(p[0] for p in pts)
+    hi = max(p[0] for p in pts)
+    span = (hi - lo) or 1.0
+    buckets: dict[int, list] = {}
+    for h, lat, dep in pts:
+        buckets.setdefault(min(bands - 1, int((h - lo) / span * bands)), []).append((h, lat, dep))
+    out = []
+    for b in sorted(buckets):
+        rows = buckets[b]
+        out.append((sum(r[0] for r in rows) / len(rows),
+                    max(abs(r[1]) for r in rows),
+                    max(r[2] for r in rows) - min(r[2] for r in rows)))
+    return out
+
+
+def limb_radius(doc: dict, blob: bytes, mapping: dict[str, str], bone: str) -> float:
+    """How thick a limb is — the median perpendicular distance from its own axis to its surface.
+
+    **The term that was missing.** A shoulder sits almost exactly at the torso's edge, so an arm hanging
+    straight down from it looks clear on joint positions alone and still overlaps, by its own radius.
+    Median rather than max: a max picks up the shoulder cap where the arm meets the torso, which is the
+    one place the limb is legitimately as wide as the body.
+    """
+    skins = doc.get("skins") or []
+    by_name = {n.get("name"): i for i, n in enumerate(doc.get("nodes") or []) if n.get("name")}
+    node = by_name.get(mapping.get(bone, ""))
+    if not skins or node is None:
+        return 0.0
+    own = deform_subtree(doc, mapping, (bone,))
+    directions = bone_directions(doc, mapping)
+    axis = directions.get(bone)
+    origin = node_world_positions(doc).get(node)
+    if not axis or not origin:
+        return 0.0
+
+    mesh_skin: dict[int, int] = {}
+    for n in doc.get("nodes") or []:
+        if "mesh" in n and "skin" in n:
+            mesh_skin.setdefault(n["mesh"], n["skin"])
+    radii: list[float] = []
+    for mi, mesh in enumerate(doc.get("meshes") or []):
+        si = mesh_skin.get(mi)
+        if si is None or si >= len(skins):
+            continue
+        joints = skins[si].get("joints") or []
+        for prim in mesh.get("primitives") or []:
+            attrs = prim.get("attributes") or {}
+            if not {"POSITION", "JOINTS_0", "WEIGHTS_0"} <= set(attrs):
+                continue
+            for pos, j4, w4 in zip(_read_vec3(doc, blob, attrs["POSITION"]),
+                                   _read_vec4(doc, blob, attrs["JOINTS_0"]),
+                                   _read_vec4(doc, blob, attrs["WEIGHTS_0"])):
+                k = max(range(4), key=lambda n: w4[n])
+                if w4[k] <= 0:
+                    continue
+                ji = int(j4[k])
+                if ji >= len(joints) or joints[ji] not in own:
+                    continue
+                v = _sub(pos, origin)
+                along = _dot(v, axis)
+                perp = _sub(v, _scaled(axis, along))
+                radii.append(math.sqrt(_dot(perp, perp)))
+    if not radii:
+        return 0.0
+    radii.sort()
+    return radii[len(radii) // 2]
+
+
+def torso_half_width(profile, height: float) -> float:
+    """The torso's half-width at `height`, from the nearest band. 0.0 for an empty profile — a caller
+    with no measurement should do nothing rather than apply a default."""
+    if not profile:
+        return 0.0
+    return min(profile, key=lambda row: abs(row[0] - height))[1]

@@ -4293,7 +4293,12 @@ def test_stand_still_puts_the_arms_down(srv, client, tmp_path):
     eid = _place_figure(srv, client, tmp_path)          # has a left arm
     client.post("/figure", json={"id": eid, "named": "stand"})
     stored = json.loads(_ent(client, eid)["components"]["figure"]["pose"])
-    assert stored["leftUpperArm"] == {"aim": "down"}
+    # An aim VECTOR, not the word "down": aimed along the body's own axis an arm ends up inside the
+    # torso, because a shoulder sits at the torso's edge and the arm has its own radius (measured
+    # 2026-09-10). Asserted by meaning — mostly down, and a real outward component — so tuning the
+    # angle does not break the test, but losing the clearance does.
+    aim = stored["leftUpperArm"]["aim"]
+    assert aim[1] < 0 and abs(aim[1]) > abs(aim[0]) > 0.05, aim
 
 
 def _place_legged_figure(client):

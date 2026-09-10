@@ -57,10 +57,33 @@ class Pose:
 #:
 #: `aim` is the right tool precisely because it is ABSOLUTE: "point the arm down" lands the same way
 #: from a T-pose and an A-pose, which is the whole reason it exists.
+#:
+#: **`down` is not straight down, and the 8° is measured.** Aimed along the body's own axis, an arm ends
+#: up INSIDE the torso — reported from the headset 2026-09-09. A shoulder sits almost exactly at the
+#: torso's edge, so the overlap is the arm's own radius, which joint positions cannot see. Measured with
+#: `figures.body_profile` + `limb_radius` across the cast:
+#:
+#:     rig      torso half-width   shoulder out   arm radius   overlap   tangent angle
+#:     Saka           6.5 cm           8.0 cm       2.2 cm      0.6 cm       0.8°
+#:     Grace         15.9 cm          15.2 cm       3.0 cm      3.7 cm       4.2°
+#:     Trish         15.9 cm          14.8 cm       2.9 cm      4.0 cm       4.2°
+#:
+#: 4.2° is where the arm is exactly tangent to the body on the worst rig. 8° carries a margin over that
+#: and is also what a person does — an arm hangs abducted, not plumb. The `clears` predicate on every
+#: pose that uses this is what stops it regressing.
 _ARMS_DOWN = {
-    "leftUpperArm": {"aim": "down"}, "rightUpperArm": {"aim": "down"},
+    "leftUpperArm": {"aim": [0.14, -1, 0]}, "rightUpperArm": {"aim": [0.14, -1, 0]},
     "leftLowerArm": {}, "rightLowerArm": {},
 }
+
+#: Asserted by every pose whose arms hang: the wrist must sit outside the torso by the forearm's own
+#: radius. Needs a mesh measurement, so it is skipped rather than failed on a file that cannot answer.
+#: The ELBOW is checked as well as the wrist, because the wrist alone misses where a body flares. On
+#: Saka the wrist clears by 6 mm while the hips below it are wider — reported from the headset as arms
+#: entering her hips "a little". Two samples along the limb, not one.
+_ARMS_CLEAR = (("clears", "leftHand", "leftLowerArm"), ("clears", "rightHand", "rightLowerArm"),
+               ("clears", "leftLowerArm", "leftLowerArm"),
+               ("clears", "rightLowerArm", "rightLowerArm"))
 
 #: Both knees down. The pose that motivated re-grounding, and the one that proved the design note wrong
 #: twice over.
@@ -102,7 +125,8 @@ POSES: tuple[Pose, ...] = (
          signature=(("points", "leftLowerLeg", "back"), ("points", "rightLowerLeg", "back"),
                     ("below", "leftLowerLeg", "hips"), ("below", "rightLowerLeg", "hips"),
                     ("moved", "leftFoot", "back", 0.05), ("moved", "rightFoot", "back", 0.05),
-                    ("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))),
+                    ("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))
+                   + _ARMS_CLEAR),
     Pose("kneel-one", "down on the right knee with the left foot planted in front — a proposal",
          {"rightUpperLeg": {"bend": -10}, "rightLowerLeg": {"bend": 95}, "rightFoot": {"bend": -35},
           "leftUpperLeg": {"bend": 75}, "leftLowerLeg": {"bend": 80}, "spine": {"bend": 5},
@@ -189,7 +213,8 @@ POSES: tuple[Pose, ...] = (
     # whose meaning includes everything it does NOT mention.
     Pose("stand", "a plain neutral stance, arms at the sides",
          dict(_ARMS_DOWN), clears=True,
-         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))),
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))
+                   + _ARMS_CLEAR),
 )
 
 BY_NAME: dict[str, Pose] = {p.name: p for p in POSES}
