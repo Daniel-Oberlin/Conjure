@@ -707,6 +707,10 @@
 
   function applyEnv(env) {
     env = env || {};
+    // Mirror the space's room record. The client cannot ASSIGN room identity — the server does — but it
+    // needs the mapping to report a residual against `room_2` rather than against the floor surface that
+    // happens to define it, so field data lines up with what query_space prints.
+    if (env.rooms) spaceRooms = env.rooms;
     var sky = document.getElementById("sky");
     var groundedSky = document.getElementById("grounded-sky");
     // User adjustments to the derived frames, echoed back from the server (or on a fresh snapshot). ALL of
@@ -1480,6 +1484,8 @@
     var el = document.getElementById("avatar-" + user);
     if (el && el.parentNode) el.parentNode.removeChild(el);
   }
+  var spaceRooms = {};                 // env.rooms mirror: room id → {n, name?, floor} (see applyEnv)
+
   function presenceTick() {
     if (!socket || socket.readyState !== 1) return;
     var sc = document.querySelector("a-scene");
@@ -2173,8 +2179,19 @@
       // affordable to leave running for weeks.
       _logRoomResiduals: function (seg) {
         if (!seg || !seg.rooms || !this._regRes || !this._ref || !this._ref.length) return;
+        // Key the residual by the PERSISTENT room id where we know it, falling back to the defining floor
+        // before the first resolution has come back. A log keyed by a floor surface id is readable only
+        // against another log; keyed by room_2 it is readable against query_space.
+        var byFloor = {};
+        Object.keys(spaceRooms).forEach(function (rid) {
+          var fl = spaceRooms[rid] && spaceRooms[rid].floor;
+          if (fl) byFloor[fl] = rid;
+        });
         var roomOf = {};
-        seg.rooms.forEach(function (rm) { rm.ids.forEach(function (id) { roomOf[id] = rm.floor; }); });
+        seg.rooms.forEach(function (rm) {
+          var rid = byFloor[rm.floor] || rm.floor;
+          rm.ids.forEach(function (id) { roomOf[id] = rid; });
+        });
         var rows;
         try {
           rows = window.SpaceSnap.roomResiduals(AFRAME.THREE, this._regRes, this._ref, roomOf);
