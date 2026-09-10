@@ -143,7 +143,16 @@ holodeck.
 
 All of these write `environment.spacePresentation` or a surface's material, and all accept the same **target**
 vocabulary: a surface id (`real_wall_3`), a semantic label (`wall`, `floor`, `ceiling`, …), a friendly
-id, or `all`.
+id, a **room** (its name, or `room 2`), or `all`.
+
+`show_surface`, `style_surface` and `texture_surface` also take **`room=`**, which narrows `target` to one
+room. The two compose because neither says the other's half: a room used as a bare target takes the whole
+room, a semantic takes it across the whole space, and `style_surface("wall", room="kitchen")` is the
+kitchen's walls. An unresolvable `room` matches **nothing** rather than everything — silently widening a
+scoped edit to the whole space is the one failure here that repaints surfaces nobody mentioned.
+
+A room is tried **last**, so naming a room "wall" cannot stop `wall` meaning every wall; `name_room`
+refuses the reserved words as well. Rooms themselves are [`specs/spaces.md` §1.1](./spaces.md).
 
 | Tool | Effect |
 |---|---|
@@ -156,6 +165,7 @@ id, or `all`.
 | `show_edges(on)` | the polygon outline around every surface — **on by default** |
 | `style_edges(color, opacity)` | restyle the outline |
 | `query_space()` | surfaces by semantic + friendly id, with colour and visibility, plus the boundary |
+| `name_room(room, name)` | name a room — `room #2` becomes `kitchen`; space-owner-gated |
 | `realign_space()` | re-capture at the current tracking origin when the space looks drifted |
 
 **Styling is the ordinary edit vocabulary.** Because surfaces are entities with a `material`, "make the

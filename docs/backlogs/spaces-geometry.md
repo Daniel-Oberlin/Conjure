@@ -417,8 +417,8 @@ have no room and should say so rather than guess.
    `_real_surface_match`, so every surface tool gained it at once; `name_room`; room grouping and door
    destinations in the per-turn summary; and which room the user is standing in, from the presence tick.
 
-   **Still open in this step:** the `room=` filter for room ∩ semantic ("the kitchen walls"). A room works
-   as a whole target today; the composable form is not built.
+   The `room=` filter for room ∩ semantic ("the kitchen walls") landed with it. **Step 1 is complete**, and
+   [`specs/spaces.md` §1.1](../specs/spaces.md) now describes rooms as built rather than absent.
 2. **Per-room residuals into the geometry event log** (`room.*`, change-gated), applying nothing. Field-read
    before correcting — the same `[aabb]`-first discipline.
 3. **Apply the refinement**, with the guards above.
