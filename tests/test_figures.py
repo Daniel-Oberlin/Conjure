@@ -650,6 +650,43 @@ def test_a_convention_that_only_half_matches_is_not_claimed():
     assert convention_humanoid(doc) == (None, None)
 
 
+def test_a_baked_rigify_rig_is_read_from_its_deform_chain():
+    """A Rigify export with the FK controls stripped out — only `DEF-` bones survive, and the spine is
+    numbered rather than named. `temp/vrh/jane` arrives this way out of PlayCanvas, and before this row
+    existed nothing mapped her at all: inference failed too, so a perfectly good 22-bone rig was
+    invisible."""
+    doc, _ = _named_skeleton("rigify-def")
+    mapping, scheme = convention_humanoid(doc)
+    assert scheme == "rigify-def"
+    assert mapping["leftUpperArm"] == "DEF-upper_arm.L"
+    # The spine is the part addressed by index, so it is the part worth asserting: the head is the
+    # DEEPEST segment present, and the neck is not mistaken for it.
+    assert mapping["hips"] == "DEF-spine" and mapping["spine"] == "DEF-spine.001"
+    assert mapping["neck"] == "DEF-spine.004" and mapping["head"] == "DEF-spine.007"
+
+
+def test_a_rig_carrying_both_rigify_chains_prefers_the_controls():
+    """A full Rigify rig has both chains: the FK controls a human poses, and the DEF bones they drive.
+    Both rows then match in full, and the tie has to break towards the controls — which is why the
+    deform chain is its own scheme listed second, rather than extra spellings on `rigify-fk`."""
+    doc, idx = _named_skeleton("rigify-fk", arms_down=False)
+    parent = idx["hips"]                                    # a parallel deform chain, hung off the hips
+    for name in ("DEF-spine", "DEF-spine.001", "DEF-spine.002", "DEF-spine.003", "DEF-spine.004",
+                 "DEF-spine.005", "DEF-spine.006", "DEF-spine.007"):
+        doc["nodes"].append({"name": name, "translation": [0, 0.12, 0], "children": []})
+        doc["nodes"][parent]["children"].append(len(doc["nodes"]) - 1)
+        parent = len(doc["nodes"]) - 1
+    for pattern in ("DEF-upper_arm.{X}", "DEF-forearm.{X}", "DEF-hand.{X}",
+                    "DEF-thigh.{X}", "DEF-shin.{X}", "DEF-foot.{X}"):
+        for side in ("L", "R"):
+            doc["nodes"].append({"name": pattern.format(X=side), "translation": [0, 0, 0],
+                                 "children": []})
+            doc["nodes"][parent]["children"].append(len(doc["nodes"]) - 1)
+    mapping, scheme = convention_humanoid(doc)
+    assert scheme == "rigify-fk"
+    assert mapping["leftUpperArm"] == "upper_arm.fk.L"
+
+
 # ---------------------------------------------------------------- partial maps
 #
 # A rig often names a bone that is not the one it looks like: both `Animated Woman` models and `Steve`

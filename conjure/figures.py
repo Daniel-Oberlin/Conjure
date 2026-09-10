@@ -228,6 +228,30 @@ CONVENTIONS: dict[str, dict[str, str]] = {
         "{s}Foot": "foot.fk.{X}|foot_fk.{X}",
         "{s}Toes": "toe.fk.{X}|toe_fk.{X}|toe.{X}",
     },
+    # Rigify's DEFORM chain, with no FK controls in the file at all — what you get when the export
+    # bakes the rig down (`temp/vrh/jane` came through PlayCanvas that way). Its own scheme rather than
+    # extra alternates on `rigify-fk`, because a rig carrying BOTH chains should keep preferring the FK
+    # controls, and equal scores keep the earlier scheme.
+    #
+    # The spine is addressed by INDEX, which is the one soft spot: Rigify numbers the deform chain from
+    # the pelvis up, so a rig with a different number of spine or neck segments spells its head
+    # differently. `neck` is stable at `.004` across the lengths seen so far, and `head` is listed
+    # deepest-first so the longest chain present wins. A chain shorter than five leaves `head` unmatched
+    # and drops the whole row on the floor — which is the safe failure, since it falls through to
+    # inference rather than mapping a neck as a head.
+    "rigify-def": {
+        "hips": "DEF-spine", "spine": "DEF-spine.001", "chest": "DEF-spine.002",
+        "upperChest": "DEF-spine.003", "neck": "DEF-spine.004",
+        "head": "DEF-spine.007|DEF-spine.006|DEF-spine.005",
+        "{s}Shoulder": "DEF-shoulder.{X}",
+        "{s}UpperArm": "DEF-upper_arm.{X}",
+        "{s}LowerArm": "DEF-forearm.{X}",
+        "{s}Hand": "DEF-hand.{X}",
+        "{s}UpperLeg": "DEF-thigh.{X}",
+        "{s}LowerLeg": "DEF-shin.{X}",
+        "{s}Foot": "DEF-foot.{X}",
+        "{s}Toes": "DEF-toe.{X}",
+    },
     # The Blender-side-suffix scheme used across several free asset packs (both `Animated Woman` models
     # and `Steve` in the dev library). Torso/Abdomen rather than Spine1/Spine2, and the side is a suffix.
     "dot-side": {
