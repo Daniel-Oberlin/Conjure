@@ -1280,7 +1280,9 @@
   function roomResiduals(THREE, residuals, ref, roomOf, opts) {
     opts = opts || {};
     var MINP = opts.minPairs != null ? opts.minPairs : 4;
-    var MAXM = opts.maxM != null ? opts.maxM : 0.25;
+    var MAXM = opts.maxM != null ? opts.maxM : 0.25;      // x/z: past this it is a bad lock, not a room
+    var MAXY = opts.maxYM != null ? opts.maxYM : 0.6;    // y: the fault is unbounded, so this is a sanity
+                                                         // rail rather than a threshold (see below)
     /** @type {Record<string, RefSurface>} */ var byId = {};
     (ref || []).forEach(function (r) { if (r.id) byId[r.id] = r; });
     /** @type {Record<string, any[]>} */ var groups = {};
@@ -1306,20 +1308,31 @@
       });
       var det = a00 * a11 - a01 * a01, dx = 0, dz = 0;
       if (Math.abs(det) > 1e-9) { dx = (b0 * a11 - b1 * a01) / det; dz = (a00 * b1 - a01 * b0) / det; }
+      var dy = nh ? sy / nh : null;
       var before = Math.sqrt(sqr / g.length);
       var after2 = 0;
       g.forEach(function (m) {
         var r = m.r, p = m.p;
-        var ex = r.pos.x - (p.tx + dx), ey = r.pos.y - p.ty, ez = r.pos.z - (p.tz + dz);
+        // dy is PART of the fit. A room displaced only in height — the raised-floor fault, 90–276 mm —
+        // would otherwise keep its whole residual here and be refused by the `after < before` guard,
+        // which is precisely the case this exists to catch. What must never happen is the opposite
+        // direction: feeding a corrected height into `levelDeviation`, whose baseline is valid only
+        // because the comparison is raw seed against raw live (§10.2).
+        var ex = r.pos.x - (p.tx + dx), ey = r.pos.y - (p.ty + (dy || 0)), ez = r.pos.z - (p.tz + dz);
         after2 += ex * ex + ey * ey + ez * ez;
       });
       var after = Math.sqrt(after2 / g.length);
+      // Bounded SEPARATELY, because they fail differently. A large x/z delta is evidence of a bad global
+      // lock; a large y is not — the floating-room displacement is genuinely unbounded (observed 3x
+      // larger between one morning and one afternoon), and the unmerged correction's own 0.15 m ceiling
+      // would have refused the very fault it was written for.
       var mag = Math.hypot(dx, dz);
       out.push({ room: rid, n: g.length, nz: nv, before: before, after: after,
-                 dx: dx, dz: dz, dy: nh ? sy / nh : null,
+                 dx: dx, dz: dz, dy: dy,
                  // The guards a future APPLY would use, evaluated now so the log says whether the
                  // refinement would have been accepted — not merely what it computed.
-                 ok: g.length >= MINP && nv >= 2 && Math.abs(det) > 1e-9 && mag <= MAXM && after < before });
+                 ok: g.length >= MINP && nv >= 2 && Math.abs(det) > 1e-9 && mag <= MAXM
+                     && (dy == null || Math.abs(dy) <= MAXY) && after < before });
     });
     return out;
   }

@@ -1422,3 +1422,28 @@ test("roomResiduals separates rooms and refuses a room it cannot fit", () => {
   assert.equal(wild.ok, false, "3 m is a mis-registration, not a room that moved");
   assert.ok(Math.abs(wild.dx - -3) < 1e-6, "still measured, just not endorsed");
 });
+
+test("roomResiduals: a room wrong ONLY in height is fitted and endorsed", () => {
+  // The raised-floor case (investigations/raised-floor.md): one room's planes ride 90–276 mm high while
+  // its ground position is right. dy is part of the fit for exactly this — leave it out and the room
+  // keeps its whole residual, `after < before` fails, and the log reports would_apply:false for the one
+  // fault the measurement exists to catch.
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const [r] = RS.roomResiduals(THREE, pairs(ref, [0, 0.104, 0]), ref, roomOf);
+  assert.ok(Math.abs(r.dy - -0.104) < 1e-6, "the displacement is recovered");
+  assert.ok(r.after < r.before * 0.01, "and closed — after " + r.after + " vs before " + r.before);
+  assert.equal(r.ok, true, "so it would be applied");
+});
+
+test("roomResiduals bounds x/z and y separately, because they fail differently", () => {
+  // A large x/z delta says the global lock is bad. A large y does not: the floating-room displacement is
+  // genuinely unbounded — observed 3x larger between one morning and one afternoon — and the unmerged
+  // correction's own 0.15 m ceiling would have refused the very fault it was written for.
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const tallFault = RS.roomResiduals(THREE, pairs(ref, [0, 0.28, 0]), ref, roomOf)[0];
+  assert.equal(tallFault.ok, true, "0.28 m of HEIGHT is a real fault, not a mis-fit");
+  const wideFault = RS.roomResiduals(THREE, pairs(ref, [0.28, 0, 0]), ref, roomOf)[0];
+  assert.equal(wideFault.ok, false, "0.28 m of GROUND offset is a bad lock");
+});

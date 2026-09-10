@@ -188,10 +188,19 @@ height; a horizontal says nothing about ground position. Solving them together w
 captured floor invent a height out of wall noise, so a room without a horizontal surface reports **no
 `dy`** rather than a fabricated one.
 
-**`dy` is reported beside the fit and never folded into it.** §10.2's floating-room detector rests on
-registration never touching height — that is what makes a stored height a valid baseline for a live one —
-so an applied per-room y would cancel exactly the quantity the detector measures. The two are the same
-measurement by different routes, and keeping them separate is what makes them a cross-check.
+**`dy` is part of the per-room fit, and never reaches the detector.** Those are two different statements
+and conflating them is easy. The refinement *does* use y — that is what recovers the identity of a room
+displaced only in height, which is the raised-floor fault (90–276 mm); leave y out and such a room keeps
+its whole residual, fails the `after < before` guard, and gets logged as *would not apply* for precisely
+the fault the measurement exists to catch. What must never happen is the other direction: `levelDeviation`
+compares raw seed height against raw live height, and its baseline is valid **only** because that
+comparison passes through no transform (§10.2). Feed it a corrected height and it cancels the quantity it
+measures. Kept apart, the two are independent estimates of one displacement — a cross-check.
+
+**x/z and y are bounded separately, because they fail differently.** A large ground offset is evidence of
+a bad global lock; a large height offset is not. The floating-room displacement is genuinely unbounded —
+observed three times larger between one morning and one afternoon — and the unmerged correction's own
+0.15 m ceiling would have refused the very fault it was written for.
 
 The guards a future *apply* would use (≥4 pairs, ≥2 walls, a non-degenerate solve, ≤0.25 m, and the fit
 must reduce the room's residual) are evaluated now and logged as `would_apply`, so the field data says
