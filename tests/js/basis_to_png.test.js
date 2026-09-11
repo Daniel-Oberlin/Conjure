@@ -7,9 +7,8 @@
 // whole trick: that is the name the registry already gives the texture, so the
 // Python rebuild finds it knowing nothing about Basis.
 //
-// The transcode itself needs the site's wasm, which is not committed — those
-// tests skip when it is absent. The PNG encoder and the file-finding are pure
-// and always run.
+// The transcoder is committed under `vendor/basis`, so nothing here depends on
+// a capture having carried one. The PNG encoder and the file-finding are pure.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
