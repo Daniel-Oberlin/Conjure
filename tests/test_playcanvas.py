@@ -405,6 +405,21 @@ def test_a_real_cutout_becomes_a_mask_with_its_cutoff(tmp_path):
     assert m["alphaMode"] == "MASK" and m["alphaCutoff"] == pytest.approx(0.399)
 
 
+def test_alpha_to_coverage_is_a_cutout_whatever_the_blend_mode_says(tmp_path):
+    """Alpha-to-coverage resolves a hard edge through MSAA — it is a CUTOUT, so MASK is the honest
+    translation even when the blend mode says premultiplied. One build shares a single atlas between
+    shorts, shirt and hair with this mask selecting each garment's region; read as BLEND, the regions
+    that should vanish came through as patches of the other garments' colours."""
+    build, ids = _tex(tmp_path, atlas=("RGB", False), mask=("RGBA", True))
+    tex = _Textures(build, 1024, 90)
+    m = material_from({"diffuseMap": ids["atlas"], "opacityMap": ids["mask"],
+                       "opacityMapChannel": "r", "alphaToCoverage": True,
+                       "alphaTest": 0, "blendType": 4}, "Agnes2", tex)
+    assert m["alphaMode"] == "MASK"
+    assert m["alphaCutoff"] == pytest.approx(0.5), "a default cutoff, since alphaTest is 0"
+    assert not any("alpha to coverage" in w for w in tex.warnings), "carried, so no longer warned about"
+
+
 def test_blend_normal_becomes_blend(tmp_path):
     build, ids = _tex(tmp_path, glass=("RGBA", True))
     m = material_from({"diffuseMap": ids["glass"], "opacityMap": ids["glass"],

@@ -74,7 +74,7 @@ _UNCARRIED = (
     ("refraction", lambda d: bool(d.get("useDynamicRefraction")) or float(d.get("refraction") or 0) > 0,
      "KHR_materials_transmission — the material will read as opaque"),
     ("iridescence", lambda d: bool(d.get("useIridescence")), "KHR_materials_iridescence"),
-    ("alpha to coverage", lambda d: bool(d.get("alphaToCoverage")), "no glTF equivalent"),
+
     ("depth write off", lambda d: d.get("depthWrite") is False, "no glTF equivalent"),
     ("depth test off", lambda d: d.get("depthTest") is False, "no glTF equivalent"),
 )
@@ -649,7 +649,17 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     blend = int(d.get("blendType", BLEND_NONE))
     cutoff = float(d.get("alphaTest", 0) or 0)
     alpha_real = "baseColorTexture" in pbr and tex.has_alpha(pbr["baseColorTexture"]["index"])
-    if blend in (BLEND_NORMAL, BLEND_PREMULTIPLIED) and (alpha_real or opacity < 1):
+    if d.get("alphaToCoverage") and alpha_real:
+        # Alpha-to-coverage is a CUTOUT technique — it resolves a hard edge
+        # through MSAA rather than blending — so glTF's MASK is the honest
+        # equivalent even where the blend mode says otherwise. Getting this wrong
+        # is not subtle: one build shares a single atlas between shorts, shirt and
+        # hair with this mask selecting each garment's region, and translated as
+        # BLEND the unselected regions came through as patches of the other
+        # garments' colours instead of vanishing.
+        out["alphaMode"] = "MASK"
+        out["alphaCutoff"] = cutoff or 0.5
+    elif blend in (BLEND_NORMAL, BLEND_PREMULTIPLIED) and (alpha_real or opacity < 1):
         out["alphaMode"] = "BLEND"
     elif cutoff > 0 and alpha_real:
         out["alphaMode"] = "MASK"

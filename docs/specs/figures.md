@@ -519,6 +519,7 @@ Four things it detects rather than assumes, all of which Jane exercises:
 | an `opacityMap` on a texture with **no alpha channel** | a no-op — five of her eight materials do this, and believing them emits `MASK` and punches holes through her |
 | an indexed PNG with a `tRNS` chunk | alpha that is not a channel; her eyelashes are one, and read as RGB become a rectangle across her face |
 | `glossInvert` | decides whether the source is gloss or roughness. One build uses it **both ways** — her lips (invert, shininess 0) and her mouth (no invert, shininess 90) are both wet, from opposite settings |
+| `alphaToCoverage` | a CUTOUT, so it becomes `MASK` whatever the blend mode says. One model shares a single atlas between shorts, shirt and hair with a separate mask selecting each garment's region; read as `BLEND`, the regions that should vanish came through as patches of the other garments' colours |
 | a mesh no entity binds | left untextured, and the note says so — the scene does not render such a mesh at all, so grey is the one outcome the source never produces. `--adopt` takes the material from an identically-named render asset elsewhere, reported as INFERRED. Reading templates removed the need for it on both models here |
 
 **Nothing in it is keyed to any particular model** — every string in the module is a PlayCanvas or glTF
