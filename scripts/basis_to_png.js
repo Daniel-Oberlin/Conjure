@@ -160,8 +160,91 @@ async function loadTranscoder(glue, root) {
   return Module;
 }
 
+/**
+ * Every texture a build uses as a NORMAL map, by the path the registry records.
+ *
+ * Guessing this from pixels does not work. Basis packs a normal map's X into
+ * RGB and Y into alpha, which decodes to a greyscale image with an independent
+ * alpha — and a genuine greyscale mask with an alpha channel looks exactly the
+ * same. One build has both, and a heuristic wrecked its specular maps while
+ * fixing its normals. The registry simply says which is which.
+ */
+function normalMapPaths(root) {
+  var out = new Set();
+  for (const config of findFiles(root, /^config\.json$/i, 10)) {
+    var registry;
+    try {
+      registry = JSON.parse(fs.readFileSync(config, 'utf8')).assets;
+    } catch (_) {
+      continue;
+    }
+    if (!registry) continue;
+    var base = path.dirname(config);
+    var wanted = new Set();
+    for (const asset of Object.values(registry)) {
+      var data = asset && asset.data;
+      if (data && typeof data.normalMap === 'number') wanted.add(String(data.normalMap));
+      if (data && typeof data.clearCoatNormalMap === 'number') {
+        wanted.add(String(data.clearCoatNormalMap));
+      }
+    }
+    for (const [id, asset] of Object.entries(registry)) {
+      if (!wanted.has(String(id)) || !asset.file) continue;
+      // Both forms: the registry names the original and we decode the variant.
+      for (const url of [asset.file.url].concat(
+        Object.values(asset.file.variants || {}).map((v) => v.url))) {
+        if (url) out.add(path.resolve(base, decodeURIComponent(url)));
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Is this RGBA a normal map in Basis's packed form — X in RGB, Y in alpha?
+ *
+ * The encoder has a mode for normal maps that stores the two meaningful
+ * channels this way, because a tangent-space normal's Z is recoverable and
+ * compressing it wastes bits. Transcoded to RGBA32 the result LOOKS like a
+ * greyscale image with an unrelated alpha, and handed to glTF's normalTexture
+ * as-is it is worse than useless: grey means (0,0,0) after the usual remap,
+ * a zero-length normal, and the lighting breaks out in dark blotches over
+ * every surface that uses it.
+ *
+ * Detected rather than declared, because the flag does not survive into the
+ * file: an honest colour texture is not grey in RGB, and a genuinely grey one
+ * rarely carries an alpha that disagrees with it.
+ */
+function looksPackedNormal(rgba) {
+  var pixels = rgba.length / 4;
+  var step = Math.max(1, Math.floor(pixels / 4096));
+  var checked = 0;
+  var grey = 0;
+  var differs = 0;
+  for (var i = 0; i < pixels; i += step) {
+    var o = i * 4;
+    checked += 1;
+    if (rgba[o] === rgba[o + 1] && rgba[o + 1] === rgba[o + 2]) grey += 1;
+    if (Math.abs(rgba[o + 3] - rgba[o]) > 8) differs += 1;
+  }
+  return checked > 64 && grey / checked > 0.98 && differs / checked > 0.2;
+}
+
+/** Rebuild (x, y, z) into RGB from the packed form, and drop the alpha. */
+function unpackNormal(rgba) {
+  for (var i = 0; i < rgba.length; i += 4) {
+    var x = rgba[i] / 127.5 - 1;
+    var y = rgba[i + 3] / 127.5 - 1;
+    var z = Math.sqrt(Math.max(0, 1 - x * x - y * y));
+    rgba[i] = Math.round((x * 0.5 + 0.5) * 255);
+    rgba[i + 1] = Math.round((y * 0.5 + 0.5) * 255);
+    rgba[i + 2] = Math.round((z * 0.5 + 0.5) * 255);
+    rgba[i + 3] = 255;
+  }
+}
+
 /** `{width, height, rgba}` for image 0, mip 0 — the full-size level. */
-function transcode(Module, bytes) {
+function transcode(Module, bytes, isNormal) {
   // Read the format off the module rather than hardcoding it: the enum's
   // numbering has moved between Basis releases, and the capture chooses the
   // version.
@@ -178,7 +261,11 @@ function transcode(Module, bytes) {
     if (size !== width * height * 4) {
       throw new Error(`expected ${width * height * 4} bytes of RGBA, got ${size}`);
     }
-    return { width, height, rgba };
+    // The registry says it is a normal map AND the pixels agree it is packed.
+    // Both, because a normal map may also be stored plainly.
+    var packed = !!isNormal && looksPackedNormal(rgba);
+    if (packed) unpackNormal(rgba);
+    return { width, height, rgba, packedNormal: packed };
   } finally {
     file.close();
     file.delete();
@@ -247,16 +334,20 @@ async function main() {
   }
   console.log(`transcoder: ${glue} (${source})`);
   const Module = await loadTranscoder(glue, root);
+  const normals = normalMapPaths(root);
+  if (normals.size) console.log(`${normals.size} texture(s) are used as normal maps`);
 
   let ok = 0;
   const failures = [];
   for (const file of todo) {
     const dest = file.replace(/\.basis$/i, '.png');
     try {
-      const { width, height, rgba } = transcode(Module, fs.readFileSync(file));
+      const { width, height, rgba, packedNormal } =
+        transcode(Module, fs.readFileSync(file), normals.has(path.resolve(file)));
       fs.writeFileSync(dest, encodePng(width, height, rgba));
       ok += 1;
-      console.log(`  ${path.relative(root, dest)}  ${width}x${height}`);
+      console.log(`  ${path.relative(root, dest)}  ${width}x${height}`
+        + (packedNormal ? '  [packed normal map, X/Y unpacked]' : ''));
     } catch (err) {
       failures.push(`${path.relative(root, file)}: ${err.message}`);
     }
@@ -274,4 +365,4 @@ if (require.main === module) {
 }
 
 module.exports = { encodePng, transcode, loadTranscoder, findBasis, findTranscoder, findWasm,
-  VENDORED };
+  normalMapPaths, looksPackedNormal, VENDORED };

@@ -550,6 +550,13 @@ contains one if the grabber happened to save it, and that is the file everything
 output is byte-identical on the textures here. The PNG is written by hand over `zlib`, Node shipping no encoder
 and a truecolour-with-alpha PNG being cheaper to write than to justify a dependency for.
 
+**A normal map needs unpacking.** Basis stores one as X in RGB and Y in alpha, which transcodes to a
+greyscale image with an independent alpha — and handed to glTF's `normalTexture` that way, grey remaps
+to a ZERO-LENGTH normal and the lighting breaks out in dark blotches over every surface using it. Z is
+recomputed and the alpha dropped. Which textures to treat this way comes from the REGISTRY, not from the
+pixels: a genuine greyscale mask with an alpha channel is indistinguishable, and one build has both — a
+pixel heuristic alone wrecked its specular maps while fixing its normals.
+
 Measured on Akari: 42 files decoded, 0 failed, and she rebuilt at 9 materials over 3 meshes.
 
 **A texture may be on disk in a form nothing here can read.** PlayCanvas transcodes textures to Basis

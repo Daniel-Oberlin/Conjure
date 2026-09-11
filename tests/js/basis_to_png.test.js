@@ -17,8 +17,8 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 
-const { encodePng, findBasis, findWasm, findTranscoder,
-  VENDORED } = require('../../scripts/basis_to_png.js');
+const { encodePng, findBasis, findWasm, findTranscoder, normalMapPaths,
+  looksPackedNormal, VENDORED } = require('../../scripts/basis_to_png.js');
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'basis-test-'));
@@ -123,6 +123,60 @@ test('a vendored transcoder is committed, so a capture without one still decodes
   const glue = fs.readFileSync(VENDORED, 'utf8');
   assert.ok(/ENVIRONMENT_IS_NODE/.test(glue), 'the glue must support Node');
   assert.ok(/module\.exports/.test(glue), 'and export its factory');
+});
+
+test('a packed normal map is recognised, and a grey mask with alpha is not', () => {
+  // Basis stores a normal map's X in RGB and Y in alpha, which decodes to a
+  // greyscale image with an independent alpha. Fed to glTF's normalTexture that
+  // way, grey remaps to a ZERO-LENGTH normal and the lighting breaks out in dark
+  // blotches over every surface using it.
+  const packed = new Uint8Array(64 * 4);
+  for (let i = 0; i < 64; i++) {
+    packed[i * 4] = packed[i * 4 + 1] = packed[i * 4 + 2] = 120 + (i % 5);
+    packed[i * 4 + 3] = 60 + (i % 7) * 9;             // alpha carries Y
+  }
+  assert.equal(looksPackedNormal(packed), false, 'too few pixels to judge');
+
+  const big = new Uint8Array(4096 * 4);
+  for (let i = 0; i < 4096; i++) {
+    big[i * 4] = big[i * 4 + 1] = big[i * 4 + 2] = 120 + (i % 5);
+    big[i * 4 + 3] = 60 + (i % 7) * 9;
+  }
+  assert.equal(looksPackedNormal(big), true);
+
+  // A colour texture is not grey, whatever its alpha does.
+  const colour = new Uint8Array(4096 * 4);
+  for (let i = 0; i < 4096; i++) {
+    colour[i * 4] = 200; colour[i * 4 + 1] = 120; colour[i * 4 + 2] = 90;
+    colour[i * 4 + 3] = i % 256;
+  }
+  assert.equal(looksPackedNormal(colour), false);
+});
+
+test('which textures are normal maps comes from the registry, not from pixels', () => {
+  // The pixels cannot tell a packed normal from a genuine greyscale mask with an
+  // alpha channel, and one build has both — a heuristic alone wrecked its
+  // specular maps while fixing its normals.
+  const root = tmpdir();
+  const dir = path.join(root, 'files', 'assets', '7', '1');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({
+    assets: {
+      1: { type: 'material', data: { diffuseMap: 2, normalMap: 3 } },
+      2: { type: 'texture', file: { url: 'files/assets/7/1/skin.png' } },
+      3: {
+        type: 'texture',
+        file: {
+          url: 'files/assets/7/1/skin_normal.png',
+          variants: { basis: { url: 'files/assets/7/1/skin_normal.basis' } }
+        }
+      }
+    }
+  }));
+  const normals = normalMapPaths(root);
+  assert.ok(normals.has(path.join(dir, 'skin_normal.basis')), 'the variant we actually decode');
+  assert.ok(normals.has(path.join(dir, 'skin_normal.png')), 'and the name the registry records');
+  assert.ok(!normals.has(path.join(dir, 'skin.png')), 'the diffuse is left alone');
 });
 
 test('basis files are found at the depth a capture actually nests them', () => {
