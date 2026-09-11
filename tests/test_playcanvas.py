@@ -358,6 +358,19 @@ def test_the_written_glb_is_spec_shaped(tmp_path):
                for bv in doc["bufferViews"])
 
 
+def test_an_unbound_mesh_is_reported_for_what_it_actually_is(tmp_path):
+    """It comes out GREY, and the report has to say so. The scene does not render such a mesh at all,
+    so untextured is the one outcome the source never produces — an earlier wording claimed the
+    opposite, which reads as reassurance. On Jane that grey mesh is her hair."""
+    root = _build(tmp_path, renders=[(20, "body", 10, 0), (21, "hair", 10, 1)],
+                  entities=[("body", 20, [30])])                    # nothing binds mesh 1
+    build = read_build(root)
+    _out, notes = rebuild(_glb(), build.bindings, build)
+    note = next(n for n in notes if "UNTEXTURED" in n)
+    assert "[1]" in note and "--adopt" in note
+    assert "what the scene does" not in note
+
+
 def test_a_mesh_the_file_does_not_have_is_reported_not_raised(tmp_path):
     root = _build(tmp_path)
     build = read_build(root)

@@ -161,7 +161,10 @@ conjure-import temp/rebuilt/jane_export.glb --label "Jane"
 
 `--adopt` gives a mesh no entity binds the material from an identically-named one elsewhere in the
 build, reported as INFERRED — a character's hair is often shipped both inside the body file and as a
-standalone swappable container, and only the standalone one is bound. Textures are downscaled to 1024
+standalone swappable container, and only the standalone one is bound. **Without it that mesh comes out
+grey**, which is neither what the build shows (the scene does not render it at all) nor what you want;
+on Jane it is her hair. It stays opt-in because it is the one inference here, but for a character you
+almost always want it. Textures are downscaled to 1024
 by default because these builds routinely use 4096-square maps, which is about 90 MB of VRAM each. See
 § 9a of [`specs/figures.md`](./specs/figures.md).
 

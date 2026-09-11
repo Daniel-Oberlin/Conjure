@@ -535,8 +535,13 @@ def rebuild(glb: bytes, binds: list[Binding], build: Build, *,
     unbound = [i for i, m in enumerate(doc.get("meshes") or [])
                for p in (m.get("primitives") or []) if "material" not in p]
     if unbound:
-        notes.append(f"mesh(es) {sorted(set(unbound))} carry primitives no entity binds — left "
-                     f"untextured, which is what the scene does with them")
+        # Careful about what this claims. The scene does not leave these untextured — it does not
+        # render them AT ALL, so coming out grey is the one outcome the source never produces. Saying
+        # otherwise reads as reassurance, and on Jane that grey is her hair.
+        notes.append(f"mesh(es) {sorted(set(unbound))} are bound by no entity and come out UNTEXTURED. "
+                     f"The scene does not render them at all, so this is not what it does either — "
+                     f"`--adopt` takes the material from an identically-named render asset elsewhere "
+                     f"in the build, which is usually the same mesh shipped twice")
     if not materials:
         return glb, notes + ["nothing to bind"]
 
