@@ -539,6 +539,16 @@ was in the file moves, so the geometry comes out bit-identical and a map derived
 applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17
 named poses — with 8 materials where there were none.
 
+**Basis textures are decoded by a pre-pass**, `scripts/basis_to_png.js`, which writes `Foo.png` beside
+`Foo.basis` — the exact name the registry already gives that texture, so the rebuild finds it knowing
+nothing about Basis at all. It uses the transcoder **the site itself ships** (`basis.wasm.js` +
+`basis.wasm.wasm`, two separate PlayCanvas assets in unrelated directories), so a capture carries its own
+matching decoder and this needs no dependency; `--transcoder` points at another capture of the same site
+when a build skipped its `wasm` assets. The PNG is written by hand over `zlib`, Node shipping no encoder
+and a truecolour-with-alpha PNG being cheaper to write than to justify a dependency for.
+
+Measured on Akari: 42 files decoded, 0 failed, and she rebuilt at 9 materials over 3 meshes.
+
 **A texture may be on disk in a form nothing here can read.** PlayCanvas transcodes textures to Basis
 Universal and the engine asks for that in preference, so a capture made by BROWSING holds `.basis` and
 never the PNG beside it — 91 of Akari's 105 textures declare such a variant. Basis is GPU-compressed,
