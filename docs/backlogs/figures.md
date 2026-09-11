@@ -2308,9 +2308,19 @@ convertible at all. It also retired `--adopt` for Jane: one of her templates bin
 to the *textured* hair material, which is the stated answer where `--adopt` was a name-match guess. Both
 models now come out fully bound, 8/8 and 9/9 primitives, with the flag off.
 
-**Her textures are not in the capture** — 0 of 105 — so she rebuilds with materials but no images.
-`--fetch-list` writes the 120 absent URLs for `curl`/`wget`, and missing files are reported once as a
-list rather than once per use, which on her was 200-odd identical lines burying the two real findings.
+**Her textures are not in the capture** — 0 of 105, in any form, across two attempts at collecting
+them. `--fetch-list` writes the 120 absent URLs for `curl`/`wget`, and missing files are reported once
+as a list rather than once per use, which on her was 200-odd identical lines burying the two real
+findings (she needs the specular/gloss workflow, and two materials declare an `alphaTest` on a texture
+with no alpha).
+
+**And there is a reason browsing will never collect them.** PlayCanvas transcodes textures to Basis
+Universal and the engine requests that in preference — 91 of her 105 textures declare a `.basis`
+variant, typically a seventh of the PNG's size. So a capture made by using the app holds `.basis` files
+and never the originals. `variant_only` now reports those apart from absent ones (it was overstating the
+app build's gap by eight), but Basis is GPU-compressed and Pillow cannot open it, so the uncompressed
+URL is what the fetch list asks for. **If a future capture arrives with only `.basis`, we need a
+transcoder** — `basis_universal`'s CLI or `KTX2` via `libktx`, neither carried today.
 
 **Forty animation clips, and some of them are poses.** They retarget exactly — 189 targets, none absent
 from the model — and the named ones are static shapes rather than motion: `pc_onFour_headLeft/Right`,

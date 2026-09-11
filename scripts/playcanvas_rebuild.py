@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from conjure.playcanvas import (adopt_unbound, build_origin, by_container,     # noqa: E402
                                 find_builds, missing_files, read_build, rebuild_build,
-                                report_orphans)
+                                report_orphans, variant_only)
 
 
 def survey(root: str) -> int:
@@ -55,6 +55,10 @@ def survey(root: str) -> int:
         if absent:
             print(f"    ! {len(absent)} referenced file(s) are not in this capture — "
                   f"{'--fetch-list writes the URLs' if build.origin else 'no origin in the path'}")
+        compressed = variant_only(build)
+        if compressed:
+            print(f"    ! {len(compressed)} texture(s) are here ONLY as Basis-compressed variants "
+                  f"(e.g. {compressed[0][1]}) — needs a transcoder this does not carry")
         if not groups:
             print("    nothing bound — no entity in any scene uses a container")
         for container, binds in sorted(groups.items()):

@@ -22,7 +22,7 @@ from conjure.figures import split_glb, write_glb
 from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, Build, adopt_unbound, build_origin,
                                 by_container, find_builds, find_orphans, has_alpha, load_image,
                                 material_from, missing_files, read_build, rebuild, report_orphans,
-                                _Textures)
+                                variant_only, _Textures)
 
 PIL = pytest.importorskip("PIL.Image")
 
@@ -215,6 +215,41 @@ def test_referenced_files_that_are_absent_are_listed_with_their_urls(tmp_path):
     build.origin = "https://api.example.com/release/abc"
     absent = dict(missing_files(build))
     assert absent["skin.png"] == "https://api.example.com/release/abc/files/assets/1/1/skin.png"
+
+
+def _with_variant(tmp_path, *, write_png, write_basis):
+    os.makedirs(tmp_path / "files", exist_ok=True)
+    if write_png:
+        _png(tmp_path / "files" / "skin.png", "RGB")
+    if write_basis:
+        (tmp_path / "files" / "skin.basis").write_bytes(b"not really basis")
+    asset = {"id": "100", "type": "texture", "name": "skin.png",
+             "file": {"filename": "skin.png", "url": "files/skin.png",
+                      "variants": {"basis": {"filename": "skin.basis", "url": "files/skin.basis"}}}}
+    b = Build(root=str(tmp_path), assets={100: asset})
+    b.origin = "https://api.example.com/release/abc"
+    return b
+
+
+def test_a_texture_present_only_as_a_basis_variant_is_not_called_missing(tmp_path):
+    """PlayCanvas transcodes textures to Basis Universal and the engine asks for THAT in preference, so
+    a capture made by browsing holds `.basis` and never the PNG beside it — 91 of Akari's 105 textures
+    declare one. Counting those as absent overstated one capture's gap by eight files."""
+    b = _with_variant(tmp_path, write_png=False, write_basis=True)
+    assert missing_files(b) == []
+    name, on_disk, url = variant_only(b)[0]
+    assert (name, on_disk) == ("skin.png", "skin.basis")
+    assert url.endswith("/files/skin.png"), "the form we can actually read is what to go and get"
+
+
+def test_a_texture_absent_in_every_form_is_missing(tmp_path):
+    b = _with_variant(tmp_path, write_png=False, write_basis=False)
+    assert [n for n, _ in missing_files(b)] == ["skin.png"] and variant_only(b) == []
+
+
+def test_a_texture_present_as_named_is_neither(tmp_path):
+    b = _with_variant(tmp_path, write_png=True, write_basis=True)
+    assert missing_files(b) == [] and variant_only(b) == []
 
 
 def test_a_texture_missing_from_six_materials_is_reported_once(tmp_path):

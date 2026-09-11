@@ -197,12 +197,20 @@ def build_origin(capture_root: str, build_root: str) -> str:
     return ("https://" + "/".join(parts[host:])) if host is not None else ""
 
 
+def _variant_urls(asset: dict) -> list[str]:
+    return [v.get("url") for v in (((asset.get("file") or {}).get("variants")) or {}).values()
+            if v.get("url")]
+
+
 def missing_files(build: Build, *, kinds=("texture", "container")) -> list[tuple[str, str]]:
     """`[(name, url-or-"")]` for every asset the registry references and the capture does not hold.
 
     Reported as a LIST rather than one warning per use, because a texture shared by six materials went
     missing six times in the log — Akari's build references 105 textures and holds none of them, which
     was 200-odd identical lines burying the two findings that mattered.
+
+    A texture present only as a compressed VARIANT is not missing and is excluded here; see
+    `variant_only`, which is a different problem with a different answer.
     """
     out: list[tuple[str, str]] = []
     for aid, asset in sorted(build.assets.items()):
@@ -211,7 +219,33 @@ def missing_files(build: Build, *, kinds=("texture", "container")) -> list[tuple
         url = (asset.get("file") or {}).get("url")
         if not url or os.path.exists(os.path.join(build.root, url)):
             continue
+        if any(os.path.exists(os.path.join(build.root, v)) for v in _variant_urls(asset)):
+            continue
         out.append((asset.get("name") or str(aid), f"{build.origin}/{url}" if build.origin else url))
+    return out
+
+
+def variant_only(build: Build) -> list[tuple[str, str, str]]:
+    """`[(name, the variant on disk, the url of the form we CAN read)]`.
+
+    PlayCanvas transcodes textures to Basis Universal and the engine asks for that in preference, so a
+    capture made by browsing holds `.basis` and never the PNG beside it — 91 of Akari's 105 textures
+    declare one. Basis is a GPU-compressed format that Pillow cannot open and decoding it wants a
+    transcoder this does not carry, so the honest report is "here is the file you actually need", with
+    the original's URL, rather than a texture silently coming out untextured.
+    """
+    out: list[tuple[str, str, str]] = []
+    for aid, asset in sorted(build.assets.items()):
+        if asset.get("type") != "texture":
+            continue
+        url = (asset.get("file") or {}).get("url")
+        if not url or os.path.exists(os.path.join(build.root, url)):
+            continue
+        on_disk = next((v for v in _variant_urls(asset)
+                        if os.path.exists(os.path.join(build.root, v))), "")
+        if on_disk:
+            out.append((asset.get("name") or str(aid), os.path.basename(on_disk),
+                        f"{build.origin}/{url}" if build.origin else url))
     return out
 
 
@@ -711,6 +745,13 @@ def rebuild_build(root: str, out_dir: str, *, max_texture: int = 1024, quality: 
                 + (" — use --fetch-list to write the URLs" if build.origin else ""))
             if fetch_list is not None:
                 fetch_list.extend(u for _n, u in absent if build.origin)
+        compressed = variant_only(build)
+        if compressed:
+            say(f"    ! {len(compressed)} texture(s) are here ONLY as Basis-compressed variants "
+                f"(e.g. {compressed[0][1]}), which needs a transcoder this does not carry — the "
+                f"uncompressed originals are in the fetch list")
+            if fetch_list is not None:
+                fetch_list.extend(u for _n, _v, u in compressed if build.origin)
         for container, binds in sorted(groups.items()):
             name = build.name(container)
             path = build.path(container)

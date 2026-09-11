@@ -539,6 +539,13 @@ was in the file moves, so the geometry comes out bit-identical and a map derived
 applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17
 named poses — with 8 materials where there were none.
 
+**A texture may be on disk in a form nothing here can read.** PlayCanvas transcodes textures to Basis
+Universal and the engine asks for that in preference, so a capture made by BROWSING holds `.basis` and
+never the PNG beside it — 91 of Akari's 105 textures declare such a variant. Basis is GPU-compressed,
+Pillow cannot open it, and decoding wants a transcoder this does not carry. So `variant_only` reports
+those separately from absent ones, with the URL of the uncompressed original, and counting them as
+missing (which an earlier pass did) overstated one capture's gap by eight files.
+
 **What the capture does not hold is reported as a list, with URLs.** Akari's release references 105
 textures and holds none of them; reported per use that was 200-odd identical lines burying the two
 findings that mattered, so missing files are collected once and `--fetch-list` writes their addresses
