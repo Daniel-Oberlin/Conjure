@@ -32,6 +32,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import subprocess
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -122,11 +124,17 @@ class Build:
         """
         if not url:
             return None
-        for candidate in (urllib.parse.unquote(url), url):
+        decoded = urllib.parse.unquote(url)
+        # `.png` last: decoding a Basis variant always produces a PNG, whatever the
+        # registry calls the original. One texture here is named `.jpeg` and its
+        # only surviving form is `Hands_diffuse_2K.basis`, so the decoded file and
+        # the recorded name agree about everything except the extension.
+        stem = os.path.splitext(decoded)[0] + ".png"
+        for candidate in (decoded, url, stem):
             full = os.path.join(self.root, candidate)
             if os.path.exists(full):
                 return full
-        return os.path.join(self.root, urllib.parse.unquote(url))
+        return os.path.join(self.root, decoded)
 
     def name(self, aid) -> str:
         return ((self.asset(aid) or {}).get("name")) or f"asset {aid}"
@@ -719,6 +727,51 @@ def rebuild(glb: bytes, binds: list[Binding], build: Build, *,
     return write_glb(doc, bytes(out)), notes
 
 
+BASIS_DECODER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "scripts", "basis_to_png.js")
+
+
+def undecoded_basis(root: str) -> list[str]:
+    """`.basis` files with no `.png` beside them — textures nothing downstream can read."""
+    out = []
+    for path, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for name in files:
+            if name.lower().endswith(".basis") and not os.path.exists(
+                    os.path.join(path, name[:-6] + ".png")):
+                out.append(os.path.join(path, name))
+    return out
+
+
+def decode_basis(root: str, say: Callable[[str], None]) -> int:
+    """Run the Basis pre-pass over `root`. Returns how many files it decoded.
+
+    Called automatically, because leaving it to be remembered does not work: a
+    fresh capture overwrites the decoded PNGs, and a rebuild then produces a
+    figure textured only where a PNG happened to be served — outfit yes, skin no,
+    room not at all. That looked like a capture problem and was not.
+
+    It stays a separate script with its own output on disk. This only spares you
+    from remembering to run it, and `--no-decode` opts out.
+    """
+    pending = undecoded_basis(root)
+    if not pending:
+        return 0
+    node = shutil.which("node")
+    if not node or not os.path.exists(BASIS_DECODER):
+        say(f"    ! {len(pending)} Basis texture(s) are not decoded and node is "
+            f"{'missing' if not node else 'available but the decoder is not'} — run "
+            f"`node scripts/basis_to_png.js {root}` before rebuilding, or those textures are lost")
+        return 0
+    say(f"    decoding {len(pending)} Basis texture(s) first "
+        f"(scripts/basis_to_png.js; --no-decode to skip)")
+    result = subprocess.run([node, BASIS_DECODER, root], capture_output=True, text=True)
+    if result.returncode != 0:
+        say(f"    ! the Basis decoder failed: {(result.stderr or result.stdout).strip()[:200]}")
+        return 0
+    return len(pending) - len(undecoded_basis(root))
+
+
 def report_orphans(root: str, say: Callable[[str], None]) -> int:
     """Say what a registry-less asset tree is missing, and where to get it. Returns how many there are."""
     orphans = find_orphans(root)
@@ -739,10 +792,13 @@ def report_orphans(root: str, say: Callable[[str], None]) -> int:
 
 
 def rebuild_build(root: str, out_dir: str, *, max_texture: int = 1024, quality: int = 90,
-                  only: str = "", adopt: bool = False, fetch_list: Optional[list] = None,
+                  only: str = "", adopt: bool = False, decode: bool = True,
+                  fetch_list: Optional[list] = None,
                   report: Optional[Callable[[str], None]] = None) -> list[str]:
     """Convert every container in every build under `root`. Returns the files written."""
     say = report or (lambda _s: None)
+    if decode:
+        decode_basis(root, say)
     report_orphans(root, say)
     written: list[str] = []
     for build_root in find_builds(root):
@@ -766,9 +822,10 @@ def rebuild_build(root: str, out_dir: str, *, max_texture: int = 1024, quality: 
                 fetch_list.extend(u for _n, u in absent if build.origin)
         compressed = variant_only(build)
         if compressed:
-            say(f"    ! {len(compressed)} texture(s) are here ONLY as Basis-compressed variants "
-                f"(e.g. {compressed[0][1]}), which needs a transcoder this does not carry — the "
-                f"uncompressed originals are in the fetch list")
+            say(f"    ! {len(compressed)} texture(s) remain ONLY as Basis-compressed variants "
+                f"(e.g. {compressed[0][1]}) and will come out UNTEXTURED. Decode them with "
+                f"`node scripts/basis_to_png.js {root}` — the uncompressed originals are also in "
+                f"the fetch list if that fails")
             if fetch_list is not None:
                 fetch_list.extend(u for _n, _v, u in compressed if build.origin)
         for container, binds in sorted(groups.items()):

@@ -215,6 +215,21 @@ def test_a_percent_encoded_url_finds_the_file_a_browser_actually_saved(tmp_path)
     assert missing_files(build) == [], "and it is not reported as absent"
 
 
+def test_a_decoded_basis_is_found_even_when_the_original_was_a_jpeg(tmp_path):
+    """Decoding a Basis variant always produces a PNG, whatever the registry calls the original. One
+    texture in the capture is named `.jpeg` and its only surviving form is `Hands_diffuse_2K.basis`, so
+    the decoded file agrees with the recorded name about everything but the extension — and without
+    this it reported as missing right after being successfully decoded."""
+    os.makedirs(tmp_path / "files", exist_ok=True)
+    (tmp_path / "files" / "hands.png").write_bytes(b"decoded")
+    build = Build(root=str(tmp_path), assets={9: {
+        "id": "9", "type": "texture", "name": "hands",
+        "file": {"filename": "hands.jpeg", "url": "files/hands.jpeg",
+                 "variants": {"basis": {"url": "files/hands.basis"}}}}})
+    assert build.path(9).endswith("hands.png")
+    assert missing_files(build) == [] and variant_only(build) == []
+
+
 def test_a_name_that_genuinely_contains_a_percent_still_resolves(tmp_path):
     os.makedirs(tmp_path / "files", exist_ok=True)
     (tmp_path / "files" / "100%25.png").write_bytes(b"x")

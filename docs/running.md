@@ -168,18 +168,18 @@ build, reported as INFERRED. It is rarely needed: `template` assets are read as 
 between them they usually bind everything — both models here come out fully bound with the flag off.
 Reach for it only when the report says a mesh came out UNTEXTURED.
 
-If the report says **N texture(s) are here ONLY as Basis-compressed variants**, decode them first — the
-engine asks for `.basis` in preference and on a gated origin the original PNG is unreachable, so the
-compressed form is the only copy you will ever have:
+**Basis textures are decoded automatically.** The rebuild runs `scripts/basis_to_png.js` over the
+capture first and says so; `--no-decode` opts out. It needs `node`, and the decoder itself is committed
+in `vendor/basis`, so nothing has to be in the capture for this to work.
+
+This is automatic because forgetting it is invisible in the worst way: a fresh capture overwrites the
+decoded PNGs, and the rebuild then produces a figure textured only where a PNG happened to be served —
+outfit yes, skin no, room not at all. That reads as a capture problem and is not one. Run it by hand if
+you prefer:
 
 ```bash
 node scripts/basis_to_png.js <capture-dir>
-# ...or borrow the decoder from another capture of the same site:
-node scripts/basis_to_png.js <capture-dir> --transcoder <other-capture>/…/basis.wasm.js
 ```
-
-It writes each PNG beside its `.basis` under the name the registry already uses, so the rebuild needs no
-flags and re-running is free.
 
 If the report says **N referenced file(s) are not in this capture**, add `--fetch-list urls.txt` and
 feed it to `xargs -n1 curl -O` or `wget -i`; the addresses are derived from the capture's own path. Textures are downscaled to 1024

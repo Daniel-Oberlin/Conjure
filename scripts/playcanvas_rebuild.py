@@ -83,6 +83,8 @@ def main() -> int:
     ap.add_argument("--fetch-list", default="",
                     help="write the URLs of referenced-but-absent files here, one per line — feed it "
                          "to `xargs -n1 curl -O` or wget -i")
+    ap.add_argument("--no-decode", action="store_true",
+                    help="do NOT decode Basis textures first (they come out untextured)")
     ap.add_argument("--adopt", action="store_true",
                     help="give a mesh no entity binds the material from an identically-named one "
                          "elsewhere in the build — INFERRED, and how Jane gets her hair back")
@@ -99,7 +101,7 @@ def main() -> int:
     urls: list[str] = []
     written = rebuild_build(args.build, args.out, max_texture=args.max_texture,
                             quality=args.quality, only=args.only, adopt=args.adopt,
-                            fetch_list=urls, report=print)
+                            decode=not args.no_decode, fetch_list=urls, report=print)
     if args.fetch_list:
         with open(args.fetch_list, "w") as fh:
             fh.write("\n".join(dict.fromkeys(urls)) + "\n")
