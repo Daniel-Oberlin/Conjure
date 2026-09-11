@@ -541,10 +541,12 @@ named poses — with 8 materials where there were none.
 
 **Basis textures are decoded by a pre-pass**, `scripts/basis_to_png.js`, which writes `Foo.png` beside
 `Foo.basis` — the exact name the registry already gives that texture, so the rebuild finds it knowing
-nothing about Basis at all. It uses the transcoder **the site itself ships** (`basis.wasm.js` +
-`basis.wasm.wasm`, two separate PlayCanvas assets in unrelated directories), so a capture carries its own
-matching decoder and this needs no dependency; `--transcoder` points at another capture of the same site
-when a build skipped its `wasm` assets. The PNG is written by hand over `zlib`, Node shipping no encoder
+nothing about Basis at all. The transcoder is **found, not required**: `--transcoder` if given, else the one the build ships
+(`basis.wasm.js` + `basis.wasm.wasm`, two separate PlayCanvas assets in unrelated directories), else the
+upstream build committed in `vendor/basis`. The capture's own copy is preferred because a decoder
+shipped beside the data is the one certain to read it; the vendored one exists because a capture only
+contains one if the grabber happened to save it, and that is the file everything else depends on. Their
+output is byte-identical on the textures here. The PNG is written by hand over `zlib`, Node shipping no encoder
 and a truecolour-with-alpha PNG being cheaper to write than to justify a dependency for.
 
 Measured on Akari: 42 files decoded, 0 failed, and she rebuilt at 9 materials over 3 meshes.

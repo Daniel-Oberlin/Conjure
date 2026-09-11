@@ -18,7 +18,8 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 
-const { encodePng, findBasis, findWasm, findTranscoder } = require('../../scripts/basis_to_png.js');
+const { encodePng, findBasis, findWasm, findTranscoder,
+  VENDORED } = require('../../scripts/basis_to_png.js');
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'basis-test-'));
@@ -109,6 +110,20 @@ test('a wasm beside the glue still wins', () => {
   fs.writeFileSync(path.join(root, 'basis.js'), '// glue');
   fs.writeFileSync(path.join(root, 'basis.wasm'), 'not really wasm');
   assert.equal(findWasm(path.join(root, 'basis.js'), root), path.join(root, 'basis.wasm'));
+});
+
+test('a vendored transcoder is committed, so a capture without one still decodes', () => {
+  // The one file everything else depends on. A capture only contains a
+  // transcoder if the grabber happened to save it, and one build's capture
+  // arrived without and had to borrow from another's. Without a decoder a
+  // Basis-compressed capture cannot be read at all, so the fallback is
+  // committed rather than fetched.
+  assert.ok(fs.existsSync(VENDORED), `${VENDORED} must be committed`);
+  assert.ok(fs.existsSync(VENDORED.replace(/\.js$/, '.wasm')), 'and its wasm beside it');
+  // Node-capable: a browser-only Emscripten build cannot be loaded here at all.
+  const glue = fs.readFileSync(VENDORED, 'utf8');
+  assert.ok(/ENVIRONMENT_IS_NODE/.test(glue), 'the glue must support Node');
+  assert.ok(/module\.exports/.test(glue), 'and export its factory');
 });
 
 test('basis files are found at the depth a capture actually nests them', () => {

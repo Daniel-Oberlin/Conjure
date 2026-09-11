@@ -21,16 +21,20 @@
  * knowledge of Basis at all, the result is an ordinary PNG anyone can open and
  * check, and re-running is free because existing files are skipped.
  *
- * **The transcoder is the site's own.** A PlayCanvas build ships
- * `basis.wasm.js` and `basis.wasm.wasm`, so the capture already contains the
- * exact decoder that produced the files, at the matching version, and this
- * needs no dependency to use it. `--transcoder` points elsewhere if a capture
- * arrives without one.
+ * **The transcoder is found, not required.** A PlayCanvas build ships its own
+ * (`basis.wasm.js` + `basis.wasm.wasm`) and that copy is preferred when
+ * present, because a decoder shipped beside the data is the one certain to
+ * read it. Failing that there is a vendored upstream build in `vendor/basis`,
+ * so a capture that missed the site's — which is easy to do, and happened —
+ * still decodes. `--transcoder` overrides both.
  */
 
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+
+/** The upstream build committed under `vendor/basis`, used when a capture has none. */
+const VENDORED = path.join(__dirname, '..', 'vendor', 'basis', 'basis_transcoder.js');
 
 // ---------------------------------------------------------------- PNG, by hand
 //
@@ -214,15 +218,23 @@ async function main() {
     return 0;
   }
 
-  let glue = flag('--transcoder') || findTranscoder(root);
-  if (glue && fs.statSync(glue).isDirectory()) glue = findTranscoder(glue);
+  let glue = flag('--transcoder');
+  if (glue && fs.existsSync(glue) && fs.statSync(glue).isDirectory()) glue = findTranscoder(glue);
+  let source = 'given';
   if (!glue) {
-    console.error('no basis.wasm.js found in the capture; point at one with --transcoder.\n'
-      + 'A PlayCanvas build ships it as a `wasm` asset — if the capture skipped those, '
-      + 'take it from another capture of the same site.');
+    glue = findTranscoder(root);
+    source = 'from the capture';
+  }
+  if (!glue) {
+    glue = VENDORED;
+    source = 'vendored';
+  }
+  if (!glue || !fs.existsSync(glue)) {
+    console.error('no Basis transcoder: none in the capture, none vendored, none given.\n'
+      + 'Point at one with --transcoder — a PlayCanvas build ships it as a `wasm` asset.');
     return 2;
   }
-  console.log(`transcoder: ${glue}`);
+  console.log(`transcoder: ${glue} (${source})`);
   const Module = await loadTranscoder(glue, root);
 
   let ok = 0;
@@ -250,4 +262,5 @@ if (require.main === module) {
   });
 }
 
-module.exports = { encodePng, transcode, loadTranscoder, findBasis, findTranscoder, findWasm };
+module.exports = { encodePng, transcode, loadTranscoder, findBasis, findTranscoder, findWasm,
+  VENDORED };
