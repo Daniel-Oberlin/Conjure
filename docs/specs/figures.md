@@ -531,6 +531,12 @@ was in the file moves, so the geometry comes out bit-identical and a map derived
 applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17
 named poses — with 8 materials where there were none.
 
+**A capture without a registry is a different failure, and it is reported as one.** The second one to
+arrive had the right layout, valid GLBs, and no `config.json` anywhere — so there was nothing saying
+which material went where, and no texture files either. `find_orphans` reports that shape and derives
+the address to fetch from the directory path, because a capture mirrors the URL it came from: a path
+segment with a dot in it is the host, and everything between it and `files` is the build.
+
 **`--max-texture` defaults to 1024, and that is a budget rather than an optimisation.** Her textures are
 4096 square throughout: roughly 90 MB of VRAM each once mipmapped, nine of them for one character who
 already costs 111k triangles. At the default the whole capture — 9 containers across 3 nested builds —

@@ -2269,6 +2269,46 @@ against four candidate aims — the hands still sit **0.21h above the floor on G
 on Trish**. Raising the `hips` limit from 45° to 130° moves that by 0.07h and no further. It wants tier
 3, where a pose is solved against the world rather than authored.
 
+### Akari, and what a second PlayCanvas model showed (2026-09-11)
+
+A second capture, `temp/vrh/akari` — `MainModelToiletJapaneseVER2.glb`, 1.80 m, 193 nodes, 3 meshes
+(Body_Agnes / Hair / Kimono, 9 material slots).
+
+**The `rigify-def` convention row paid for itself immediately.** She maps with no work at all: 22 bones,
+`validate()` passes, 15 of 17 named poses clean. That row was added for Jane the day before, and the
+whole argument for a convention table is that the second rig of a family is free. It was.
+
+**She is the second confirmation of the per-model clearance defect, and the first with a number
+attached.** She fails `kneel` and `stand` on `clears`, both arms, wrist and elbow:
+
+| rig | torso half-width | `_ARMS_DOWN` clearance needed |
+|---|---|---|
+| Saka | 6.5 cm | 0.8° |
+| Grace / Trish | 15.9 cm | 4.2° |
+| **Akari** | **18.0 cm** | more than the hard-coded 8° |
+
+Eve was the first (reported from the headset, no measurement). Akari is measured, by the same
+`body_profile` + `limb_radius` pass the predicate uses, and the failure is arithmetic rather than a
+judgement about a render. Two models outside the sample now, which is what moves per-model clearance
+from "a constant that is probably wrong somewhere" to a defect with a reproduction.
+
+**The capture had no registry**, which is a different problem from Jane's. 74 files, every one a GLB
+with zero materials, and no `config.json` or scene JSON anywhere — so the rebuild has nothing to bind
+and no textures to bind to. `find_orphans` now reports that shape and derives the URL to fetch from the
+directory path, since the capture mirrors the address it came from. The directory LAYOUT was never the
+issue; it is the same `files/assets/<id>/<version>/<file>` shape Jane's build used.
+
+**Forty animation clips, and some of them are poses.** They retarget exactly — 189 targets, none absent
+from the model — and the named ones are static shapes rather than motion: `pc_onFour_headLeft/Right`,
+`pc_leanOnSink_*`, `pc_sitOnToilet_*`, `pc_leanOnWall_*`, `pc_legOnSink_*`, `pc_leanOnCorner_*`,
+`pc_leanOnDoor_*`, plus face shapes `pc_blink`, `pc_squint`, `pc_openMouth`, `pc_eye_closed`.
+
+That is directly relevant twice over. `pc_onFour_*` is an **authored all-fours on a rig our vocabulary
+already maps**, against which the hand-authored `all-fours` can be compared rather than just looked at —
+the first external reference this library has had. And the `leanOn*` / `sitOn*` family are tier-3 poses:
+each one is a figure solved against a specific piece of furniture, which is the thing § *Tier 3* says is
+not built. Worth reading before designing it.
+
 ### `hips` was the wrong bone on both Daz rigs (2026-09-10)
 
 Found while re-adding the fold-forward poses, and it is the actual root of "the trunk is rig-dependent".
@@ -2581,6 +2621,9 @@ export is byte-identical to the `c8421e03…` already catalogued — the colour 
 - **`hands-on-hips` hands still do not touch.** Untouched by the mesh work; wants the same treatment.
 - **Eve confirmed on device 2026-09-10**: `bow` and `crouch` bend her one joint too high (the shifted
   map), and she is heavier than the cast so 8° of arm clearance is not enough for her.
+- **Akari measured 2026-09-11**: an 18.0 cm torso half-width against the cast's 6.5–15.9, and she fails
+  `clears` on `kneel` and `stand` at wrist AND elbow. Second model outside the sample, first with a
+  number — per-model clearance now has a reproduction rather than an anecdote.
 - **Eve's inferred map is shifted one joint up the spine**, so trunk poses act too high — and the mesh
   measurement believed it, reporting a 10 cm "torso". See above; the measurement needs a sanity check.
 - Figures already placed in a world hold the meta they were placed with. Re-place after any refresh.

@@ -159,6 +159,10 @@ python scripts/playcanvas_rebuild.py <build-dir> --out temp/rebuilt --adopt
 conjure-import temp/rebuilt/jane_export.glb --label "Jane"
 ```
 
+If `--list` reports **"NO config.json"**, the capture is geometry only — the layout is fine, the
+registry is what is missing, and it prints the URL to fetch plus a reminder that `config.json` names the
+scene file and the textures you also need.
+
 `--adopt` gives a mesh no entity binds the material from an identically-named one elsewhere in the
 build, reported as INFERRED — a character's hair is often shipped both inside the body file and as a
 standalone swappable container, and only the standalone one is bound. **Without it that mesh comes out

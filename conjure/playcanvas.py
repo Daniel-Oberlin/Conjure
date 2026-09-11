@@ -136,6 +136,55 @@ def find_builds(root: str) -> list[str]:
     return found
 
 
+@dataclass
+class Orphan:
+    """An asset tree with no registry above it — geometry captured, `config.json` not."""
+
+    root: str                      # the directory that should hold config.json
+    assets: int                    # how many files are under files/assets
+    kinds: dict                    # extension -> count, so "all GLB" is visible at a glance
+    origin: str = ""               # best-effort URL for the missing registry, or ""
+
+
+def find_orphans(root: str) -> list[Orphan]:
+    """Asset trees that look like a published build with the REGISTRY missing.
+
+    Worth its own report because the failure is silent otherwise and the diagnosis is not obvious: the
+    directory layout is right, the GLBs are valid, and every one of them is untextured — so "no
+    PlayCanvas build here" sends you looking at the structure, which is fine. What is missing is
+    `config.json` and the scene beside it, and without those there is nothing that says which material
+    goes where, and usually no texture files either.
+
+    The capture mirrors the URL it came from, so the address to fetch is derivable from the path: a
+    segment with a dot in it is the host, and everything between it and `files` is the build. That turns
+    a dead end into a shopping list.
+    """
+    out: list[Orphan] = []
+    for path, dirs, _files in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        if os.path.basename(path) != "assets" or os.path.basename(os.path.dirname(path)) != "files":
+            continue
+        base = os.path.dirname(os.path.dirname(path))            # the dir that should hold config.json
+        if os.path.exists(os.path.join(base, "config.json")):
+            continue                                             # a proper build; not our business
+        kinds: dict[str, int] = {}
+        count = 0
+        for _p, _d, fs in os.walk(path):
+            for f in fs:
+                if f.startswith("."):
+                    continue
+                count += 1
+                kinds[os.path.splitext(f)[1].lstrip(".").lower() or "?"] = kinds.get(
+                    os.path.splitext(f)[1].lstrip(".").lower() or "?", 0) + 1
+        if not count:
+            continue
+        parts = os.path.relpath(base, root).split(os.sep)
+        host = next((i for i, p in enumerate(parts) if "." in p and not p.startswith(".")), None)
+        origin = ("https://" + "/".join(parts[host:]) + "/config.json") if host is not None else ""
+        out.append(Orphan(root=base, assets=count, kinds=kinds, origin=origin))
+    return out
+
+
 def read_build(root: str) -> Build:
     """Load a build and resolve every entity → container → mesh → per-primitive material binding."""
     cfg = json.load(open(os.path.join(root, "config.json")))
@@ -564,11 +613,31 @@ def rebuild(glb: bytes, binds: list[Binding], build: Build, *,
     return write_glb(doc, bytes(out)), notes
 
 
+def report_orphans(root: str, say: Callable[[str], None]) -> int:
+    """Say what a registry-less asset tree is missing, and where to get it. Returns how many there are."""
+    orphans = find_orphans(root)
+    for o in orphans:
+        kinds = ", ".join(f"{n} {k}" for k, n in sorted(o.kinds.items(), key=lambda kv: -kv[1]))
+        say(f"\n{os.path.relpath(o.root, root) or '.'} — {o.assets} asset file(s) ({kinds}) and NO "
+            f"config.json")
+        say("    The layout is right and the GLBs are fine; what is missing is the registry, so nothing "
+            "says which material goes where.")
+        if o.origin:
+            say(f"    Fetch:  {o.origin}")
+            say("            ...then the scene file it names under `scenes[].url`, and the texture "
+                "assets it lists.")
+        else:
+            say("    This is the app's own build; its config.json sits at the root of wherever the "
+                "page was served from.")
+    return len(orphans)
+
+
 def rebuild_build(root: str, out_dir: str, *, max_texture: int = 1024, quality: int = 90,
                   only: str = "", adopt: bool = False,
                   report: Optional[Callable[[str], None]] = None) -> list[str]:
     """Convert every container in every build under `root`. Returns the files written."""
     say = report or (lambda _s: None)
+    report_orphans(root, say)
     written: list[str] = []
     for build_root in find_builds(root):
         build = read_build(build_root)

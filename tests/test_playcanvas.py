@@ -20,8 +20,8 @@ import pytest
 
 from conjure.figures import split_glb, write_glb
 from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, Build, adopt_unbound, by_container,
-                                find_builds, has_alpha, load_image, material_from, read_build,
-                                rebuild, _Textures)
+                                find_builds, find_orphans, has_alpha, load_image, material_from,
+                                read_build, rebuild, report_orphans, _Textures)
 
 PIL = pytest.importorskip("PIL.Image")
 
@@ -153,6 +153,56 @@ def test_an_unbound_mesh_can_adopt_a_material_by_render_name(tmp_path):
     got = [b for b in build.bindings if b.container == 10 and b.mesh == 1][0]
     assert got.materials == (31,) and got.adopted, "flagged, because a name match is evidence not proof"
     assert any("INFERRED" in n for n in build.notes)
+
+
+# ---------------------------------------------------------------- a capture with no registry
+#
+# The second capture to arrive had the right directory layout, valid GLBs, and no `config.json`
+# anywhere — 74 files, every one untextured. "No PlayCanvas build here" sends you looking at the
+# structure, which is fine; what is missing is the registry. Since the capture mirrors the URL it came
+# from, the address to fetch is derivable from the path.
+
+
+def _orphan_tree(tmp_path, rel, n=3):
+    d = tmp_path / rel / "files" / "assets" / "220331523" / "1"
+    d.mkdir(parents=True)
+    for i in range(n):
+        (d / f"model{i}.glb").write_bytes(_glb())
+    return tmp_path / rel
+
+
+def test_an_asset_tree_with_no_registry_is_reported_with_where_to_get_it(tmp_path):
+    _orphan_tree(tmp_path, "api.example.com/release/abc123")
+    orphans = find_orphans(str(tmp_path))
+    assert len(orphans) == 1
+    o = orphans[0]
+    assert o.assets == 3 and o.kinds == {"glb": 3}
+    # A path segment with a dot in it is the host; everything between it and `files` is the build.
+    assert o.origin == "https://api.example.com/release/abc123/config.json"
+
+
+def test_a_tree_with_no_host_in_its_path_says_so_rather_than_guessing(tmp_path):
+    _orphan_tree(tmp_path, "somewhere")
+    assert find_orphans(str(tmp_path))[0].origin == ""
+
+
+def test_a_proper_build_is_not_reported_as_missing_its_registry(tmp_path):
+    _build(tmp_path)                                   # writes config.json AND files/
+    assert find_orphans(str(tmp_path)) == []
+
+
+def test_an_empty_asset_tree_is_not_reported(tmp_path):
+    (tmp_path / "files" / "assets").mkdir(parents=True)
+    assert find_orphans(str(tmp_path)) == []
+
+
+def test_the_orphan_report_names_the_url_and_the_scene_it_leads_to(tmp_path):
+    _orphan_tree(tmp_path, "api.example.com/release/abc123")
+    lines = []
+    assert report_orphans(str(tmp_path), lines.append) == 1
+    text = "\n".join(lines)
+    assert "NO config.json" in text and "https://api.example.com/release/abc123/config.json" in text
+    assert "scenes[].url" in text, "config.json alone is not enough; it names the scene"
 
 
 # ---------------------------------------------------------------- images

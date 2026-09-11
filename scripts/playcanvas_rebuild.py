@@ -25,15 +25,18 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from conjure.playcanvas import (adopt_unbound, by_container, find_builds,      # noqa: E402
-                                read_build, rebuild_build)
+                                read_build, rebuild_build, report_orphans)
 
 
 def survey(root: str) -> int:
     """What is here and what would be bound — the read-only half, for looking before converting."""
     builds = find_builds(root)
+    orphans = report_orphans(root, print)
     if not builds:
-        print(f"no PlayCanvas build under {root} (looking for a config.json with assets and scenes)")
-        return 2
+        if not orphans:
+            print(f"no PlayCanvas build under {root} (looking for a config.json with assets and "
+                  f"scenes, or a files/assets tree)")
+        return 2 if not orphans else 1
     for build_root in builds:
         build = read_build(build_root)
         adopt_unbound(build)
