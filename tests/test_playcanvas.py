@@ -200,6 +200,30 @@ def test_a_template_can_bind_a_mesh_the_scene_leaves_alone(tmp_path):
 # ---------------------------------------------------------------- what the capture does not hold
 
 
+def test_a_percent_encoded_url_finds_the_file_a_browser_actually_saved(tmp_path):
+    """A registry records `JAPANESEROOM%20BAKED.glb`; a browser saves
+    `JAPANESEROOM BAKED.glb`. Joining the raw URL finds nothing and the container reads as MISSING
+    while sitting right there — which is how an entire room went unnoticed in a capture that had it.
+    Any asset with a space or a non-ASCII character in its name hits this."""
+    os.makedirs(tmp_path / "files", exist_ok=True)
+    (tmp_path / "files" / "JAPANESEROOM BAKED.glb").write_bytes(_glb())
+    build = Build(root=str(tmp_path), assets={7: {
+        "id": "7", "type": "container", "name": "room",
+        "file": {"filename": "JAPANESEROOM BAKED.glb",
+                 "url": "files/JAPANESEROOM%20BAKED.glb"}}})
+    assert os.path.exists(build.path(7))
+    assert missing_files(build) == [], "and it is not reported as absent"
+
+
+def test_a_name_that_genuinely_contains_a_percent_still_resolves(tmp_path):
+    os.makedirs(tmp_path / "files", exist_ok=True)
+    (tmp_path / "files" / "100%25.png").write_bytes(b"x")
+    build = Build(root=str(tmp_path), assets={8: {
+        "id": "8", "type": "texture", "name": "odd",
+        "file": {"filename": "100%25.png", "url": "files/100%25.png"}}})
+    assert os.path.exists(build.path(8)), "the raw form is tried as a fallback"
+
+
 def test_the_origin_is_derived_from_the_capture_path(tmp_path):
     base = tmp_path / "api.example.com" / "release" / "abc123"
     base.mkdir(parents=True)

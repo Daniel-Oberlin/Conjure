@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -105,9 +106,27 @@ class Build:
         return self.assets.get(int(aid)) if aid is not None else None
 
     def path(self, aid) -> Optional[str]:
-        a = self.asset(aid)
-        url = ((a or {}).get("file") or {}).get("url")
-        return os.path.join(self.root, url) if url else None
+        return self.locate(((self.asset(aid) or {}).get("file") or {}).get("url"))
+
+    def locate(self, url: Optional[str]) -> Optional[str]:
+        """Where a registry URL landed on disk, PERCENT-DECODED.
+
+        A registry records `JAPANESEROOM%20BAKED.glb` and a browser saves
+        `JAPANESEROOM BAKED.glb`, so joining the raw URL finds nothing and the
+        container reads as missing while sitting right there. Any asset with a
+        space or a non-ASCII character in its name hits this; on the capture that
+        found it, the one casualty was the room.
+
+        The raw form is tried as a fallback, because a file whose name genuinely
+        contains a `%` is likelier than a capture tool that re-encodes.
+        """
+        if not url:
+            return None
+        for candidate in (urllib.parse.unquote(url), url):
+            full = os.path.join(self.root, candidate)
+            if os.path.exists(full):
+                return full
+        return os.path.join(self.root, urllib.parse.unquote(url))
 
     def name(self, aid) -> str:
         return ((self.asset(aid) or {}).get("name")) or f"asset {aid}"
@@ -217,9 +236,9 @@ def missing_files(build: Build, *, kinds=("texture", "container")) -> list[tuple
         if asset.get("type") not in kinds:
             continue
         url = (asset.get("file") or {}).get("url")
-        if not url or os.path.exists(os.path.join(build.root, url)):
+        if not url or os.path.exists(build.locate(url) or ""):
             continue
-        if any(os.path.exists(os.path.join(build.root, v)) for v in _variant_urls(asset)):
+        if any(os.path.exists(build.locate(v) or "") for v in _variant_urls(asset)):
             continue
         out.append((asset.get("name") or str(aid), f"{build.origin}/{url}" if build.origin else url))
     return out
@@ -239,10 +258,10 @@ def variant_only(build: Build) -> list[tuple[str, str, str]]:
         if asset.get("type") != "texture":
             continue
         url = (asset.get("file") or {}).get("url")
-        if not url or os.path.exists(os.path.join(build.root, url)):
+        if not url or os.path.exists(build.locate(url) or ""):
             continue
         on_disk = next((v for v in _variant_urls(asset)
-                        if os.path.exists(os.path.join(build.root, v))), "")
+                        if os.path.exists(build.locate(v) or "")), "")
         if on_disk:
             out.append((asset.get("name") or str(aid), os.path.basename(on_disk),
                         f"{build.origin}/{url}" if build.origin else url))
