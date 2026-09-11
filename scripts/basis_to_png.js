@@ -211,7 +211,18 @@ async function main() {
     console.log(`no .basis files under ${root}`);
     return 0;
   }
-  const todo = files.filter((f) => force || !fs.existsSync(f.replace(/\.basis$/i, '.png')));
+  // Skipped only when the PNG beside it has BYTES. A failed download leaves a
+  // zero-length file behind, and treating that as "already decoded" is how ten
+  // textures stayed empty while a perfectly good `.basis` sat next to each one —
+  // the model rebuilt with no textures at all and nothing said why.
+  const decoded = (f) => {
+    try {
+      return fs.statSync(f.replace(/\.basis$/i, '.png')).size > 0;
+    } catch (_) {
+      return false;
+    }
+  };
+  const todo = files.filter((f) => force || !decoded(f));
   console.log(`${files.length} .basis file(s), ${files.length - todo.length} already decoded`);
   if (!todo.length || dryRun) {
     for (const f of todo) console.log(`  would decode ${path.relative(root, f)}`);

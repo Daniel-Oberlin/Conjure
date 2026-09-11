@@ -132,7 +132,11 @@ class Build:
         stem = os.path.splitext(decoded)[0] + ".png"
         for candidate in (decoded, url, stem):
             full = os.path.join(self.root, candidate)
-            if os.path.exists(full):
+            # Size, not existence. A failed download can leave a zero-byte file
+            # behind, and an empty texture is not "present" in any sense that
+            # helps — treated as there, it reads as a capture that succeeded and
+            # then breaks the image decoder instead.
+            if os.path.exists(full) and os.path.getsize(full) > 0:
                 return full
         return os.path.join(self.root, decoded)
 
@@ -484,6 +488,17 @@ class _Textures:
         self._by_key[key] = len(self.textures) - 1
         return self._by_key[key]
 
+    def _open(self, path, name):
+        """`load_image`, or None and a warning. One unreadable file must not take
+        the whole run down with it — a capture with ten empty PNGs in it aborted
+        every container, including the ones that were fine."""
+        try:
+            return load_image(path)
+        except Exception as err:                      # noqa: BLE001 — any decoder failure
+            self.warn(f"texture {name} could not be read ({type(err).__name__}) — that surface "
+                      f"comes out untextured; re-capture the file")
+            return None
+
     def plain(self, aid) -> Optional[int]:
         if self.build.asset(aid) is None:
             # A material naming a texture the registry does not contain. Not a
@@ -497,7 +512,8 @@ class _Textures:
         if not path or not os.path.exists(path):
             self.warn(f"texture {self.build.name(aid)} is missing from disk")
             return None
-        return self._add(("plain", int(aid)), load_image(path))
+        img = self._open(path, self.build.name(aid))
+        return self._add(("plain", int(aid)), img) if img is not None else None
 
     def base_colour(self, diffuse, opacity, opacity_channel: str) -> Optional[int]:
         """The base colour, with opacity composited into its alpha when it does not already live there.
@@ -511,7 +527,12 @@ class _Textures:
         d_path, o_path = self.build.path(diffuse), self.build.path(opacity)
         if not d_path or not o_path or not os.path.exists(d_path) or not os.path.exists(o_path):
             return self.plain(diffuse) if diffuse is not None else None
-        base, mask = load_image(d_path), load_image(o_path)
+        base = self._open(d_path, self.build.name(diffuse))
+        mask = self._open(o_path, self.build.name(opacity))
+        if base is None:
+            return None
+        if mask is None:
+            return self._add(("plain", int(diffuse)), base)
         alpha = _channel(mask, opacity_channel)
         if alpha.size != base.size:
             alpha = alpha.resize(base.size)
@@ -538,14 +559,18 @@ class _Textures:
         size = None
         rough = metalness = None
         if gloss is not None and self.build.path(gloss) and os.path.exists(self.build.path(gloss)):
-            src = load_image(self.build.path(gloss))
+            src = self._open(self.build.path(gloss), self.build.name(gloss))
+            if src is None:
+                return None
             size = src.size
             rough = _channel(src, d.get("glossMapChannel"))
             if not d.get("glossInvert"):
                 from PIL import ImageOps                        # noqa: PLC0415
                 rough = ImageOps.invert(rough)                  # a gloss map is roughness upside down
         if metal is not None and self.build.path(metal) and os.path.exists(self.build.path(metal)):
-            src = load_image(self.build.path(metal))
+            src = self._open(self.build.path(metal), self.build.name(metal))
+            if src is None:
+                return None if size is None else None
             size = size or src.size
             metalness = _channel(src, d.get("metalnessMapChannel"))
         if size is None:
@@ -756,8 +781,13 @@ def undecoded_basis(root: str) -> list[str]:
     for path, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for name in files:
-            if name.lower().endswith(".basis") and not os.path.exists(
-                    os.path.join(path, name[:-6] + ".png")):
+            if not name.lower().endswith(".basis"):
+                continue
+            png = os.path.join(path, name[:-6] + ".png")
+            # Size, not existence — the same rule `locate` uses. A failed download
+            # leaves a zero-length PNG, and counting that as decoded left ten
+            # textures empty with a good `.basis` sitting beside each one.
+            if not (os.path.exists(png) and os.path.getsize(png) > 0):
                 out.append(os.path.join(path, name))
     return out
 
