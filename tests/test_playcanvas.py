@@ -244,6 +244,57 @@ def test_a_gloss_map_lands_in_the_green_channel(tmp_path):
     assert m["pbrMetallicRoughness"]["metallicFactor"] == pytest.approx(1.0)
 
 
+def test_emissive_intensity_is_folded_into_the_colour(tmp_path):
+    """glTF has the emissive colour and no multiplier, so an unlit sign authored at intensity 0.5 comes
+    out twice as bright unless the two are combined."""
+    build, _ = _tex(tmp_path)
+    m = material_from({"emissive": [0.8, 0.4, 0.2], "emissiveIntensity": 0.5}, "sign",
+                      _Textures(build, 1024, 90))
+    assert m["emissiveFactor"] == pytest.approx([0.4, 0.2, 0.1])
+
+
+def test_ao_intensity_becomes_occlusion_strength(tmp_path):
+    build, ids = _tex(tmp_path, ao=("RGB", False))
+    m = material_from({"aoMap": ids["ao"], "aoIntensity": 0.25}, "wall", _Textures(build, 1024, 90))
+    assert m["occlusionTexture"]["strength"] == pytest.approx(0.25)
+
+
+def test_a_second_uv_set_is_carried_as_texcoord(tmp_path):
+    """PlayCanvas can read any map off a second UV set; glTF spells it `texCoord`, and carrying it is
+    free. Dropping it puts a lightmap on the wrong coordinates, which reads as scrambled texture."""
+    build, ids = _tex(tmp_path, d=("RGB", False), n=("RGB", False))
+    m = material_from({"diffuseMap": ids["d"], "diffuseMapUv": 1,
+                       "normalMap": ids["n"], "normalMapUv": 0}, "wall", _Textures(build, 1024, 90))
+    assert m["pbrMetallicRoughness"]["baseColorTexture"]["texCoord"] == 1
+    assert "texCoord" not in m["normalTexture"], "UV 0 is the default and says so by omission"
+
+
+def test_a_feature_switched_off_does_not_warn(tmp_path):
+    """The cry-wolf lesson, and it is measured. PlayCanvas leaves `sheen` at a default WHITE with
+    `useSheen: false`, so a warning keyed on the colour fires for all 208 materials across the three
+    builds this was written against — and a warning that always fires is one nobody reads. Gate on the
+    `use*` flag. `useDynamicRefraction` is true exactly ONCE in those 208, on Jane's eyes, which is the
+    case the whole list exists to surface."""
+    build, _ = _tex(tmp_path)
+    quiet = _Textures(build, 1024, 90)
+    material_from({"sheen": [1, 1, 1], "useSheen": False, "useIridescence": False}, "skin", quiet)
+    assert not quiet.warnings
+
+    loud = _Textures(build, 1024, 90)
+    material_from({"sheen": [1, 1, 1], "useSheen": True, "useDynamicRefraction": True}, "eyes", loud)
+    assert any("sheen" in w for w in loud.warnings)
+    assert any("refraction" in w and "opaque" in w for w in loud.warnings)
+
+
+def test_a_tiled_or_rotated_map_is_reported_rather_than_dropped(tmp_path):
+    build, ids = _tex(tmp_path, d=("RGB", False))
+    tex = _Textures(build, 1024, 90)
+    material_from({"diffuseMap": ids["d"], "diffuseMapTiling": [0.1, 0.47],
+                   "normalMapRotation": 180}, "bar", tex)
+    assert any("KHR_texture_transform" in w for w in tex.warnings)
+    assert any("diffuse" in w and "normal" in w for w in tex.warnings), "listed together, once"
+
+
 def test_culling_off_means_double_sided(tmp_path):
     build, _ = _tex(tmp_path)
     tex = _Textures(build, 1024, 90)

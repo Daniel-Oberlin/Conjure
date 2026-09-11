@@ -513,6 +513,19 @@ Four things it detects rather than assumes, all of which Jane exercises:
 | `glossInvert` | decides whether the source is gloss or roughness. One build uses it **both ways** — her lips (invert, shininess 0) and her mouth (no invert, shininess 90) are both wet, from opposite settings |
 | a mesh no entity binds | left untextured, because that is what the scene does. `--adopt` will take the material from an identically-named render asset elsewhere, reported as INFERRED — how her hair comes back |
 
+**Nothing in it is keyed to any particular model** — every string in the module is a PlayCanvas or glTF
+schema key, and the one heuristic (`--adopt`) matches on render-asset names read from the build. But the
+coverage was shaped by one character, so what it CANNOT carry is listed in `_UNCARRIED` and warned about
+per material rather than dropped quietly: the specular/gloss workflow, light and environment maps,
+height maps, clear coat, sheen, refraction, iridescence, and texture tiling/offset/rotation. Second UV
+sets, `emissiveIntensity` and `aoIntensity` are carried.
+
+Those tests gate on PlayCanvas's `use*` flags, never on a value, and that distinction is measured: it
+leaves `sheen` at a default WHITE with `useSheen: false`, so a check keyed on the colour fires for all
+208 materials across the three builds here — and a warning that always fires is one nobody reads.
+`useDynamicRefraction` is true exactly **once** in those 208, on Jane's eyes, which is the case the list
+earns its keep for and the one visible thing this does not reproduce.
+
 It is **additive**: images become buffer views on the end of the existing binary chunk and nothing that
 was in the file moves, so the geometry comes out bit-identical and a map derived from the original still
 applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17

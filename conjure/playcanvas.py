@@ -48,6 +48,37 @@ CULLFACE_NONE = 0
 #: glTF wants roughness in G and metalness in B of one texture. PlayCanvas names a channel per map.
 _CHANNEL = {"r": 0, "g": 1, "b": 2, "a": 3}
 
+#: Settings that change how a material LOOKS and that this does not carry across, with the test for
+#: "actually in use" and a word on what is lost. Warned about per material rather than dropped quietly.
+#:
+#: The list exists because the translation was written against ONE character, and a tool whose coverage
+#: was shaped by its first input should say where that shows rather than let the next model come out
+#: subtly wrong with a clean report. Several have a KHR extension waiting if a model needs them; none is
+#: worth writing blind.
+_UNCARRIED = (
+    ("specular workflow", lambda d: d.get("specularMap") is not None and not d.get("useMetalness"),
+     "specular/gloss, which glTF core does not have — KHR_materials_specular"),
+    ("light map", lambda d: d.get("lightMap") is not None, "baked lighting, no glTF core equivalent"),
+    ("environment map", lambda d: d.get("cubeMap") is not None or d.get("sphereMap") is not None,
+     "a per-material environment, which glTF leaves to the viewer"),
+    ("height map", lambda d: d.get("heightMap") is not None, "parallax, no glTF equivalent"),
+    ("clear coat", lambda d: float(d.get("clearCoat") or 0) > 0, "KHR_materials_clearcoat"),
+    # Gated on the `use*` flag, never on the value. PlayCanvas leaves sheen at a default WHITE with
+    # `useSheen: false`, so testing the colour fires on every material in every build — 208 of them —
+    # and a warning that always fires is one nobody reads. `useDynamicRefraction` is true exactly once
+    # across all three builds, on Jane's eyes, which is the one this list earns its keep for.
+    ("sheen", lambda d: bool(d.get("useSheen")), "KHR_materials_sheen"),
+    ("refraction", lambda d: bool(d.get("useDynamicRefraction")) or float(d.get("refraction") or 0) > 0,
+     "KHR_materials_transmission — the material will read as opaque"),
+    ("iridescence", lambda d: bool(d.get("useIridescence")), "KHR_materials_iridescence"),
+    ("alpha to coverage", lambda d: bool(d.get("alphaToCoverage")), "no glTF equivalent"),
+    ("depth write off", lambda d: d.get("depthWrite") is False, "no glTF equivalent"),
+    ("depth test off", lambda d: d.get("depthTest") is False, "no glTF equivalent"),
+)
+
+#: Every map PlayCanvas can put on a second UV set. glTF spells it `texCoord`, and carrying it is free.
+_UV_KEYS = ("diffuse", "normal", "gloss", "metalness", "opacity", "emissive", "ao", "light")
+
 
 @dataclass
 class Binding:
@@ -366,6 +397,15 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     """
     pbr: dict = {}
     warn: list[str] = []
+
+    def ref(index: int, slot: str, **extra) -> dict:
+        """A glTF texture reference, carrying the second UV set if PlayCanvas was reading one."""
+        out = {"index": index, **extra}
+        uv = int(d.get(f"{slot}MapUv", 0) or 0)
+        if uv:
+            out["texCoord"] = uv
+        return out
+
     diffuse = list(d.get("diffuse") or [1, 1, 1])[:3]
     opacity = float(d.get("opacity", 1) or 0)
     if diffuse != [1, 1, 1] or opacity != 1:
@@ -374,7 +414,7 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     o_map, o_ch = d.get("opacityMap"), (d.get("opacityMapChannel") or "a")
     idx = tex.base_colour(d.get("diffuseMap"), o_map, o_ch)
     if idx is not None:
-        pbr["baseColorTexture"] = {"index": idx}
+        pbr["baseColorTexture"] = ref(idx, "diffuse")
 
     # PlayCanvas multiplies the scalar by the map, then inverts under `glossInvert` — so an inverted
     # gloss IS roughness, and the factor rides along with it either way.
@@ -383,27 +423,31 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     pbr["metallicFactor"] = float(d.get("metalness", 0) or 0) if d.get("useMetalness") else 0.0
     mr = tex.metallic_roughness(d)
     if mr is not None:
-        pbr["metallicRoughnessTexture"] = {"index": mr}
+        pbr["metallicRoughnessTexture"] = ref(mr, "gloss" if d.get("glossMap") else "metalness")
 
     out: dict = {"name": name, "pbrMetallicRoughness": pbr}
 
     if d.get("normalMap") is not None:
         idx = tex.plain(d["normalMap"])
         if idx is not None:
-            out["normalTexture"] = {"index": idx}
-            if float(d.get("bumpMapFactor", 1)) != 1:
-                out["normalTexture"]["scale"] = float(d.get("bumpMapFactor", 1))
+            scale = float(d.get("bumpMapFactor", 1))
+            out["normalTexture"] = ref(idx, "normal", **({"scale": scale} if scale != 1 else {}))
     if d.get("aoMap") is not None:
         idx = tex.plain(d["aoMap"])
         if idx is not None:
-            out["occlusionTexture"] = {"index": idx}
+            strength = float(d.get("aoIntensity", 1))
+            out["occlusionTexture"] = ref(idx, "ao",
+                                          **({"strength": strength} if strength != 1 else {}))
     if d.get("emissiveMap") is not None:
         idx = tex.plain(d["emissiveMap"])
         if idx is not None:
-            out["emissiveTexture"] = {"index": idx}
-    emissive = [float(c) for c in (d.get("emissive") or [0, 0, 0])[:3]]
+            out["emissiveTexture"] = ref(idx, "emissive")
+    # PlayCanvas multiplies the emissive colour by an intensity; glTF has only the colour, so fold it in
+    # rather than lose it — an unlit sign at intensity 0.5 comes out twice as bright otherwise.
+    intensity = float(d.get("emissiveIntensity", 1))
+    emissive = [float(c) * intensity for c in (d.get("emissive") or [0, 0, 0])[:3]]
     if any(emissive):
-        out["emissiveFactor"] = emissive
+        out["emissiveFactor"] = [min(1.0, c) for c in emissive]
 
     # Alpha. `BLEND_NONE` with a cutoff is a MASK; a cutoff whose alpha does not exist is nothing at
     # all, which is why this asks the IMAGE rather than trusting the material.
@@ -422,10 +466,16 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
 
     if int(d.get("cull", 1)) == CULLFACE_NONE:
         out["doubleSided"] = True
-    for k in ("diffuseMapTiling", "normalMapTiling", "diffuseMapOffset", "normalMapOffset"):
-        v = d.get(k)
-        if v and list(v) not in ([1, 1], [0, 0]):
-            warn.append(f"{name}: {k}={v} is not carried over (needs KHR_texture_transform)")
+    moved = sorted({k[:-len(suffix)] for k, v in d.items() for suffix in ("MapTiling", "MapOffset",
+                                                                          "MapRotation")
+                    if k.endswith(suffix) and v
+                    and list(v if isinstance(v, list) else [v]) not in ([1, 1], [0, 0], [0])})
+    if moved:
+        warn.append(f"{name}: {', '.join(moved)} map(s) are tiled, offset or rotated — not carried "
+                    f"(needs KHR_texture_transform)")
+    for label, used, lost in _UNCARRIED:
+        if used(d):
+            warn.append(f"{name}: {label} is set and not carried — {lost}")
     tex.warnings.extend(warn)
     return out
 
