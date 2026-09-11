@@ -2292,11 +2292,25 @@ Eve was the first (reported from the headset, no measurement). Akari is measured
 judgement about a render. Two models outside the sample now, which is what moves per-model clearance
 from "a constant that is probably wrong somewhere" to a defect with a reproduction.
 
-**The capture had no registry**, which is a different problem from Jane's. 74 files, every one a GLB
-with zero materials, and no `config.json` or scene JSON anywhere — so the rebuild has nothing to bind
-and no textures to bind to. `find_orphans` now reports that shape and derives the URL to fetch from the
-directory path, since the capture mirrors the address it came from. The directory LAYOUT was never the
-issue; it is the same `files/assets/<id>/<version>/<file>` shape Jane's build used.
+**The registry was there; I was looking at a partial copy.** `temp/vrh/akari` held only the GLBs — the
+full capture is at `assets/vr-holes/akari`, 211 files with `config.json` at the top level and a 3.4 MB
+one for the character release. The directory LAYOUT was never the issue either; it is the same
+`files/assets/<id>/<version>/<file>` shape Jane's build used. Two real things came out of the detour:
+
+**`find_orphans`** reports an asset tree with no registry above it and derives the URL to fetch from the
+path, since a capture mirrors the address it came from. That is what the partial copy actually was, and
+it is worth diagnosing rather than reporting as "no build here".
+
+**Templates are a second place the binding lives, and reading them mattered twice.** Akari's release has
+no scene file on disk but sixteen `template` assets, one per skin-tone variant of the same model, each
+binding its OWN container — so there is no ambiguity to resolve and reading them is what makes her
+convertible at all. It also retired `--adopt` for Jane: one of her templates binds the in-file hair copy
+to the *textured* hair material, which is the stated answer where `--adopt` was a name-match guess. Both
+models now come out fully bound, 8/8 and 9/9 primitives, with the flag off.
+
+**Her textures are not in the capture** — 0 of 105 — so she rebuilds with materials but no images.
+`--fetch-list` writes the 120 absent URLs for `curl`/`wget`, and missing files are reported once as a
+list rather than once per use, which on her was 200-odd identical lines burying the two real findings.
 
 **Forty animation clips, and some of them are poses.** They retarget exactly — 189 targets, none absent
 from the model — and the named ones are static shapes rather than motion: `pc_onFour_headLeft/Right`,

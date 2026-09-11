@@ -164,11 +164,12 @@ registry is what is missing, and it prints the URL to fetch plus a reminder that
 scene file and the textures you also need.
 
 `--adopt` gives a mesh no entity binds the material from an identically-named one elsewhere in the
-build, reported as INFERRED — a character's hair is often shipped both inside the body file and as a
-standalone swappable container, and only the standalone one is bound. **Without it that mesh comes out
-grey**, which is neither what the build shows (the scene does not render it at all) nor what you want;
-on Jane it is her hair. It stays opt-in because it is the one inference here, but for a character you
-almost always want it. Textures are downscaled to 1024
+build, reported as INFERRED. It is rarely needed: `template` assets are read as well as scenes, and
+between them they usually bind everything — both models here come out fully bound with the flag off.
+Reach for it only when the report says a mesh came out UNTEXTURED.
+
+If the report says **N referenced file(s) are not in this capture**, add `--fetch-list urls.txt` and
+feed it to `xargs -n1 curl -O` or `wget -i`; the addresses are derived from the capture's own path. Textures are downscaled to 1024
 by default because these builds routinely use 4096-square maps, which is about 90 MB of VRAM each. See
 § 9a of [`specs/figures.md`](./specs/figures.md).
 

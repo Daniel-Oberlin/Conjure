@@ -19,9 +19,10 @@ import struct
 import pytest
 
 from conjure.figures import split_glb, write_glb
-from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, Build, adopt_unbound, by_container,
-                                find_builds, find_orphans, has_alpha, load_image, material_from,
-                                read_build, rebuild, report_orphans, _Textures)
+from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, Build, adopt_unbound, build_origin,
+                                by_container, find_builds, find_orphans, has_alpha, load_image,
+                                material_from, missing_files, read_build, rebuild, report_orphans,
+                                _Textures)
 
 PIL = pytest.importorskip("PIL.Image")
 
@@ -69,8 +70,12 @@ def _png(path, mode, *, transparent=False, size=(8, 8)):
     return str(path)
 
 
-def _build(tmp_path, *, materials=None, entities=None, renders=None, containers=None, textures=()):
-    """Write a minimal published build to disk and return its directory."""
+def _build(tmp_path, *, materials=None, entities=None, renders=None, containers=None, textures=(),
+           templates=(), scene=True):
+    """Write a minimal published build to disk and return its directory.
+
+    `templates` is `[(id, name, [(entity, render, [materials])])]`; `scene=False` leaves the scene
+    REFERENCED but absent, which is the shape the second capture arrived in."""
     assets = {}
     for aid, name, url in containers or [(10, "body.glb", "files/body.glb")]:
         assets[str(aid)] = {"id": str(aid), "type": "container", "name": name,
@@ -84,17 +89,22 @@ def _build(tmp_path, *, materials=None, entities=None, renders=None, containers=
     for aid, name, data in materials or [(30, "skin", {}), (31, "hair", {})]:
         assets[str(aid)] = {"id": str(aid), "type": "material", "name": name, "data": data}
 
-    ents = {}
-    for i, (name, render, mats) in enumerate(entities or [("body", 20, [30]),
-                                                          ("hair", 21, [31, 31, 31])]):
-        ents[f"guid-{i}"] = {"name": name,
-                             "components": {"render": {"type": "asset", "asset": render,
-                                                       "materialAssets": mats}}}
+    def hierarchy(specs):
+        return {f"guid-{i}": {"name": n, "components": {
+            "render": {"type": "asset", "asset": r, "materialAssets": m}}}
+            for i, (n, r, m) in enumerate(specs)}
+
+    ents = hierarchy(entities if entities is not None else [("body", 20, [30]),
+                                                            ("hair", 21, [31, 31, 31])])
+    for aid, name, specs in templates:
+        assets[str(aid)] = {"id": str(aid), "type": "template", "name": name,
+                            "data": {"entities": hierarchy(specs)}}
     os.makedirs(tmp_path / "files", exist_ok=True)
     (tmp_path / "files" / "body.glb").write_bytes(_glb())
     (tmp_path / "config.json").write_text(json.dumps(
         {"assets": assets, "scenes": [{"name": "main", "url": "scene.json"}]}))
-    (tmp_path / "scene.json").write_text(json.dumps({"entities": ents}))
+    if scene:
+        (tmp_path / "scene.json").write_text(json.dumps({"entities": ents}))
     return str(tmp_path)
 
 
@@ -153,6 +163,67 @@ def test_an_unbound_mesh_can_adopt_a_material_by_render_name(tmp_path):
     got = [b for b in build.bindings if b.container == 10 and b.mesh == 1][0]
     assert got.materials == (31,) and got.adopted, "flagged, because a name match is evidence not proof"
     assert any("INFERRED" in n for n in build.notes)
+
+
+def test_a_template_supplies_the_binding_when_the_scene_is_absent(tmp_path):
+    """A PlayCanvas template is a serialised entity hierarchy — the same structure as a scene, and a
+    second place the binding lives. Akari's capture had NO scene file on disk and sixteen templates,
+    one per skin-tone variant, each binding its own container; reading them is what made it
+    convertible at all."""
+    root = _build(tmp_path, scene=False, entities=[],
+                  templates=[(40, "JapaneseVER2", [("body", 20, [30]), ("hair", 21, [31, 31, 31])])])
+    build = read_build(root)
+    assert {b.mesh: b.materials for b in build.bindings} == {0: (30,), 1: (31, 31, 31)}
+    assert any("falling back to the template" in n for n in build.notes)
+
+
+def test_a_scene_wins_over_a_template_where_both_speak(tmp_path):
+    """Both are read, scenes first, because the scene is what actually runs. Jane's build has both, and
+    her templates name a different material for one mesh than her scene does."""
+    root = _build(tmp_path, entities=[("body", 20, [30])],
+                  templates=[(40, "variant", [("body-template", 20, [31])])])
+    build = read_build(root)
+    got = [b for b in build.bindings if b.mesh == 0][0]
+    assert got.materials == (30,) and got.entity == "body"
+
+
+def test_a_template_can_bind_a_mesh_the_scene_leaves_alone(tmp_path):
+    """Which is how Jane's in-file hair copy gets its material from the build rather than from the
+    `--adopt` guess: her scene ignores that mesh and a template binds it."""
+    root = _build(tmp_path, entities=[("body", 20, [30])],
+                  templates=[(40, "variant", [("hair", 21, [31, 31, 31])])])
+    build = read_build(root)
+    assert {b.mesh: b.materials for b in build.bindings} == {0: (30,), 1: (31, 31, 31)}
+    assert adopt_unbound(build) == 0, "nothing left to guess at"
+
+
+# ---------------------------------------------------------------- what the capture does not hold
+
+
+def test_the_origin_is_derived_from_the_capture_path(tmp_path):
+    base = tmp_path / "api.example.com" / "release" / "abc123"
+    base.mkdir(parents=True)
+    assert build_origin(str(tmp_path), str(base)) == "https://api.example.com/release/abc123"
+    assert build_origin(str(tmp_path), str(tmp_path / "local")) == "", "no host in the path, no guess"
+
+
+def test_referenced_files_that_are_absent_are_listed_with_their_urls(tmp_path):
+    """Akari's build references 105 textures and holds none of them. Reported per USE that was 200-odd
+    identical lines burying the two findings that mattered, so it is a list now."""
+    root = _build(tmp_path, textures=[(100, "skin.png", "files/assets/1/1/skin.png")])
+    build = read_build(root)
+    build.origin = "https://api.example.com/release/abc"
+    absent = dict(missing_files(build))
+    assert absent["skin.png"] == "https://api.example.com/release/abc/files/assets/1/1/skin.png"
+
+
+def test_a_texture_missing_from_six_materials_is_reported_once(tmp_path):
+    build, ids = _tex(tmp_path, gone=("RGB", False))
+    os.remove(tmp_path / "files" / "gone.png")
+    tex = _Textures(build, 1024, 90)
+    for i in range(6):
+        material_from({"diffuseMap": ids["gone"]}, f"m{i}", tex)
+    assert len([w for w in tex.warnings if "missing from disk" in w]) == 1
 
 
 # ---------------------------------------------------------------- a capture with no registry

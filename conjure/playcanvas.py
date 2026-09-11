@@ -99,6 +99,7 @@ class Build:
     assets: dict[int, dict]
     bindings: list[Binding] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    origin: str = ""               # the URL it was captured from, when the path says (see `build_origin`)
 
     def asset(self, aid) -> dict:
         return self.assets.get(int(aid)) if aid is not None else None
@@ -178,10 +179,39 @@ def find_orphans(root: str) -> list[Orphan]:
                     os.path.splitext(f)[1].lstrip(".").lower() or "?", 0) + 1
         if not count:
             continue
-        parts = os.path.relpath(base, root).split(os.sep)
-        host = next((i for i, p in enumerate(parts) if "." in p and not p.startswith(".")), None)
-        origin = ("https://" + "/".join(parts[host:]) + "/config.json") if host is not None else ""
-        out.append(Orphan(root=base, assets=count, kinds=kinds, origin=origin))
+        origin = build_origin(root, base)
+        out.append(Orphan(root=base, assets=count, kinds=kinds,
+                          origin=f"{origin}/config.json" if origin else ""))
+    return out
+
+
+def build_origin(capture_root: str, build_root: str) -> str:
+    """The URL a build was captured from, or `""`.
+
+    A capture mirrors the address it came from, so the path carries it: a segment with a dot in it is
+    the host, and everything from there on is the build. That is what turns "this texture is missing"
+    into something you can hand to `curl`.
+    """
+    parts = os.path.relpath(build_root, capture_root).split(os.sep)
+    host = next((i for i, p in enumerate(parts) if "." in p and not p.startswith(".")), None)
+    return ("https://" + "/".join(parts[host:])) if host is not None else ""
+
+
+def missing_files(build: Build, *, kinds=("texture", "container")) -> list[tuple[str, str]]:
+    """`[(name, url-or-"")]` for every asset the registry references and the capture does not hold.
+
+    Reported as a LIST rather than one warning per use, because a texture shared by six materials went
+    missing six times in the log — Akari's build references 105 textures and holds none of them, which
+    was 200-odd identical lines burying the two findings that mattered.
+    """
+    out: list[tuple[str, str]] = []
+    for aid, asset in sorted(build.assets.items()):
+        if asset.get("type") not in kinds:
+            continue
+        url = (asset.get("file") or {}).get("url")
+        if not url or os.path.exists(os.path.join(build.root, url)):
+            continue
+        out.append((asset.get("name") or str(aid), f"{build.origin}/{url}" if build.origin else url))
     return out
 
 
@@ -193,13 +223,9 @@ def read_build(root: str) -> Build:
 
     seen: dict[tuple[int, int], Binding] = {}
     clashes: dict[tuple[int, int], set] = {}
-    for scene in cfg.get("scenes") or []:
-        url = scene.get("url")
-        if not url or not os.path.exists(os.path.join(root, url)):
-            build.notes.append(f"scene {scene.get('name')!r} is referenced but not on disk ({url})")
-            continue
-        doc = json.load(open(os.path.join(root, url)))
-        for entity in (doc.get("entities") or {}).values():
+
+    def take(entities: dict) -> None:
+        for entity in (entities or {}).values():
             render = (entity.get("components") or {}).get("render")
             if not render or render.get("type") != "asset" or render.get("asset") is None:
                 continue                      # a primitive box or a disabled slot: no container behind it
@@ -212,14 +238,35 @@ def read_build(root: str) -> Build:
             key = (int(container), int(index))
             bound = Binding(entity.get("name") or "?", key[0], key[1], mats)
             if key in seen and seen[key].materials != mats:
-                # Two entities dressing the same mesh differently is a legitimate thing to do in a
-                # scene — a props library reuses one button mesh in a dozen colours — and it has no
-                # single answer in a file format that allows one material per primitive. First wins,
-                # and the clash is reported ONCE however many instances there are, because a props
-                # library produces dozens of them and they would bury everything else.
+                # Two entities dressing the same mesh differently is a legitimate thing to do — a props
+                # library reuses one button mesh in a dozen colours — and it has no single answer in a
+                # file format that allows one material per primitive. First wins, and the clash is
+                # reported ONCE however many instances there are, because a props library produces
+                # dozens of them and they would bury everything else.
                 clashes.setdefault(key, set()).add(bound.entity)
                 continue
-            seen[key] = bound
+            seen.setdefault(key, bound)
+
+    for scene in cfg.get("scenes") or []:
+        url = scene.get("url")
+        if not url or not os.path.exists(os.path.join(root, url)):
+            build.notes.append(f"scene {scene.get('name')!r} is referenced but not on disk ({url}) — "
+                               f"falling back to the template assets, which carry the same bindings")
+            continue
+        take(json.load(open(os.path.join(root, url))).get("entities"))
+
+    # TEMPLATES are the same structure and a second place the binding lives. Read AFTER the scenes, so
+    # a scene wins where both speak — it is what actually runs.
+    #
+    # Not a fallback bolted on. A PlayCanvas template is a serialised entity hierarchy, which is how a
+    # reusable thing is packaged, and a character is exactly that: the second capture to arrive had NO
+    # scene file on disk and sixteen templates, one per skin-tone variant of the same model, each
+    # binding its OWN container. So there is no ambiguity to resolve — reading them is what makes that
+    # capture convertible at all, and it costs nothing where a scene is present because identical
+    # bindings are deduplicated rather than reported as a clash.
+    for asset in build.assets.values():
+        if asset.get("type") == "template":
+            take((asset.get("data") or {}).get("entities"))
     for (container, index), others in sorted(clashes.items()):
         build.notes.append(
             f"{build.name(container)} mesh {index}: {len(others)} other entity binding(s) disagree "
@@ -361,6 +408,11 @@ class _Textures:
         self._by_key: dict[tuple, int] = {}
         self.warnings: list[str] = []
 
+    def warn(self, message: str) -> None:
+        """Once per distinct message. A texture shared by six materials was reported six times."""
+        if message not in self.warnings:
+            self.warnings.append(message)
+
     def _add(self, key: tuple, img) -> int:
         if key in self._by_key:
             return self._by_key[key]
@@ -374,7 +426,7 @@ class _Textures:
     def plain(self, aid) -> Optional[int]:
         path = self.build.path(aid)
         if not path or not os.path.exists(path):
-            self.warnings.append(f"texture {self.build.name(aid)} is missing from disk")
+            self.warn(f"texture {self.build.name(aid)} is missing from disk")
             return None
         return self._add(("plain", int(aid)), load_image(path))
 
@@ -525,7 +577,8 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     for label, used, lost in _UNCARRIED:
         if used(d):
             warn.append(f"{name}: {label} is set and not carried — {lost}")
-    tex.warnings.extend(warn)
+    for message in warn:
+        tex.warn(message)
     return out
 
 
@@ -633,7 +686,7 @@ def report_orphans(root: str, say: Callable[[str], None]) -> int:
 
 
 def rebuild_build(root: str, out_dir: str, *, max_texture: int = 1024, quality: int = 90,
-                  only: str = "", adopt: bool = False,
+                  only: str = "", adopt: bool = False, fetch_list: Optional[list] = None,
                   report: Optional[Callable[[str], None]] = None) -> list[str]:
     """Convert every container in every build under `root`. Returns the files written."""
     say = report or (lambda _s: None)
@@ -641,6 +694,7 @@ def rebuild_build(root: str, out_dir: str, *, max_texture: int = 1024, quality: 
     written: list[str] = []
     for build_root in find_builds(root):
         build = read_build(build_root)
+        build.origin = build_origin(root, build_root)
         if adopt:
             adopt_unbound(build)
         groups = by_container(build)
@@ -650,6 +704,13 @@ def rebuild_build(root: str, out_dir: str, *, max_texture: int = 1024, quality: 
             f"{len(groups)} container(s) bound")
         for note in build.notes:
             say(f"    ! {note}")
+        absent = missing_files(build)
+        if absent:
+            say(f"    ! {len(absent)} referenced file(s) are not in this capture "
+                f"({', '.join(n for n, _ in absent[:3])}{', ...' if len(absent) > 3 else ''})"
+                + (" — use --fetch-list to write the URLs" if build.origin else ""))
+            if fetch_list is not None:
+                fetch_list.extend(u for _n, u in absent if build.origin)
         for container, binds in sorted(groups.items()):
             name = build.name(container)
             path = build.path(container)

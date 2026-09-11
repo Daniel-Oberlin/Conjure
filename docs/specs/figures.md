@@ -499,6 +499,14 @@ container**: a container ships whatever its own import produced and the scene ov
 container carries an untextured grey, and reading it instead of the scene gives grey hair with the real
 texture unused on disk.
 
+**`template` assets carry the same bindings and are read too**, after the scenes so a scene wins where
+both speak. Not a fallback bolted on: a template is a serialised entity hierarchy, which is how
+PlayCanvas packages a reusable thing, and a character is exactly that. The second capture had NO scene
+file on disk and sixteen templates — one per skin-tone variant, each binding its own container, so
+nothing to disambiguate — and reading them is what makes it convertible at all. It also retired
+`--adopt` for Jane, whose template binds the in-file hair copy to the textured hair material: the
+build's own answer in place of a name-match guess.
+
 The blend and cull constants and the `glossPS` shader chunk are read out of the `playcanvas-stable.min.js`
 shipped **in the build being converted**, not remembered. Each is a silent wrongness if guessed: a wrong
 blend mode is invisible until something stands behind the figure, and an inverted roughness map reads as
@@ -511,7 +519,7 @@ Four things it detects rather than assumes, all of which Jane exercises:
 | an `opacityMap` on a texture with **no alpha channel** | a no-op — five of her eight materials do this, and believing them emits `MASK` and punches holes through her |
 | an indexed PNG with a `tRNS` chunk | alpha that is not a channel; her eyelashes are one, and read as RGB become a rectangle across her face |
 | `glossInvert` | decides whether the source is gloss or roughness. One build uses it **both ways** — her lips (invert, shininess 0) and her mouth (no invert, shininess 90) are both wet, from opposite settings |
-| a mesh no entity binds | left untextured, because that is what the scene does. `--adopt` will take the material from an identically-named render asset elsewhere, reported as INFERRED — how her hair comes back |
+| a mesh no entity binds | left untextured, and the note says so — the scene does not render such a mesh at all, so grey is the one outcome the source never produces. `--adopt` takes the material from an identically-named render asset elsewhere, reported as INFERRED. Reading templates removed the need for it on both models here |
 
 **Nothing in it is keyed to any particular model** — every string in the module is a PlayCanvas or glTF
 schema key, and the one heuristic (`--adopt`) matches on render-asset names read from the build. But the
@@ -530,6 +538,11 @@ It is **additive**: images become buffer views on the end of the existing binary
 was in the file moves, so the geometry comes out bit-identical and a map derived from the original still
 applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17
 named poses — with 8 materials where there were none.
+
+**What the capture does not hold is reported as a list, with URLs.** Akari's release references 105
+textures and holds none of them; reported per use that was 200-odd identical lines burying the two
+findings that mattered, so missing files are collected once and `--fetch-list` writes their addresses
+for `curl` or `wget`.
 
 **A capture without a registry is a different failure, and it is reported as one.** The second one to
 arrive had the right layout, valid GLBs, and no `config.json` anywhere — so there was nothing saying

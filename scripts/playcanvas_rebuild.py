@@ -24,8 +24,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from conjure.playcanvas import (adopt_unbound, by_container, find_builds,      # noqa: E402
-                                read_build, rebuild_build, report_orphans)
+from conjure.playcanvas import (adopt_unbound, build_origin, by_container,     # noqa: E402
+                                find_builds, missing_files, read_build, rebuild_build,
+                                report_orphans)
 
 
 def survey(root: str) -> int:
@@ -39,6 +40,7 @@ def survey(root: str) -> int:
         return 2 if not orphans else 1
     for build_root in builds:
         build = read_build(build_root)
+        build.origin = build_origin(root, build_root)
         adopt_unbound(build)
         groups = by_container(build)
         kinds: dict[str, int] = {}
@@ -49,6 +51,10 @@ def survey(root: str) -> int:
               + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1])))
         for note in build.notes:
             print(f"    ! {note}")
+        absent = missing_files(build)
+        if absent:
+            print(f"    ! {len(absent)} referenced file(s) are not in this capture — "
+                  f"{'--fetch-list writes the URLs' if build.origin else 'no origin in the path'}")
         if not groups:
             print("    nothing bound — no entity in any scene uses a container")
         for container, binds in sorted(groups.items()):
@@ -70,6 +76,9 @@ def main() -> int:
     ap.add_argument("--max-texture", type=int, default=1024,
                     help="longest texture side, in pixels (default 1024 — read the docstring)")
     ap.add_argument("--quality", type=int, default=90, help="JPEG quality for textures with no alpha")
+    ap.add_argument("--fetch-list", default="",
+                    help="write the URLs of referenced-but-absent files here, one per line — feed it "
+                         "to `xargs -n1 curl -O` or wget -i")
     ap.add_argument("--adopt", action="store_true",
                     help="give a mesh no entity binds the material from an identically-named one "
                          "elsewhere in the build — INFERRED, and how Jane gets her hair back")
@@ -83,8 +92,14 @@ def main() -> int:
     if not args.out:
         print("--out is required (or use --list to look first)")
         return 2
+    urls: list[str] = []
     written = rebuild_build(args.build, args.out, max_texture=args.max_texture,
-                            quality=args.quality, only=args.only, adopt=args.adopt, report=print)
+                            quality=args.quality, only=args.only, adopt=args.adopt,
+                            fetch_list=urls, report=print)
+    if args.fetch_list:
+        with open(args.fetch_list, "w") as fh:
+            fh.write("\n".join(dict.fromkeys(urls)) + "\n")
+        print(f"\n{len(set(urls))} URL(s) written to {args.fetch_list}")
     print(f"\n{len(written)} file(s) written to {args.out}" if written else "\nnothing written")
     return 0 if written else 1
 
