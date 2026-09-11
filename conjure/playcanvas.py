@@ -485,6 +485,14 @@ class _Textures:
         return self._by_key[key]
 
     def plain(self, aid) -> Optional[int]:
+        if self.build.asset(aid) is None:
+            # A material naming a texture the registry does not contain. Not a
+            # capture problem and not fixable by fetching: the asset was deleted
+            # from the project and the material kept pointing at it, so the
+            # surface is untextured in the source too.
+            self.warn(f"a material points at texture asset {aid}, which is NOT IN THE REGISTRY — "
+                      f"deleted from the project, so that surface has no texture at source either")
+            return None
         path = self.build.path(aid)
         if not path or not os.path.exists(path):
             self.warn(f"texture {self.build.name(aid)} is missing from disk")
@@ -694,6 +702,17 @@ def rebuild(glb: bytes, binds: list[Binding], build: Build, *,
                 materials.append(material_from(data, build.name(pc), tex))
                 by_pc[pc] = len(materials) - 1
             prim["material"] = by_pc[pc]
+
+    # Materials the REGISTRY gives no texture at all. Worth separating from a
+    # texture that failed to arrive: one is a capture to re-run, the other is how
+    # the project was authored and no amount of downloading will change it.
+    flat = [m["name"] for m in materials
+            if "baseColorTexture" not in m.get("pbrMetallicRoughness", {})]
+    if flat:
+        notes.append(f"{len(flat)} material(s) carry no base-colour texture in the registry and come "
+                     f"out flat-shaded ({', '.join(flat[:4])}"
+                     f"{', ...' if len(flat) > 4 else ''}) — that is how the project is authored, "
+                     f"not something missing from the capture")
 
     unbound = [i for i, m in enumerate(doc.get("meshes") or [])
                for p in (m.get("primitives") or []) if "material" not in p]
