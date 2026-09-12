@@ -110,6 +110,51 @@ def test_validate_catches_a_left_right_swap():
     assert any("swapped" in p for p in validate(doc, swapped))
 
 
+def test_validate_reads_the_side_rule_off_THE_FIGURES_FACING():
+    """"+X is the model's left" is a property of how a model was authored, not of glTF.
+
+    Two figures in the capture set are built facing -z, a clean 180 degrees from the rest, and for them
+    the left hand is correctly at NEGATIVE x. The absolute rule rejected their name-based maps on four
+    counts at once, so `best_humanoid` threw away a correct map and fell through to inference — which
+    honoured +x and produced a genuinely MIRRORED one. Asking either figure for a left hand returned
+    the right, and a pose would have come out reflected.
+
+    Facing is read off the FEET: toes are forward of the ankle whichever way a figure faces, and each
+    toe is compared against its own foot, so the cue survives the very swap it is there to adjudicate."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    assert not validate(doc, m), "the fixture faces +z and is consistent"
+
+    # Turn the figure around: negate x and z on every joint, which is a 180-degree spin about y.
+    for node in doc["nodes"]:
+        t = node.get("translation")
+        if t:
+            node["translation"] = [-t[0], t[1], -t[2]]
+    # The MAP is untouched and still correct — `l_hand` is still this figure's left hand.
+    assert not [p for p in validate(doc, m) if "sides look swapped" in p], \
+        "a figure that faces the other way is not a figure with its sides swapped"
+
+    # And a genuine swap is still caught, in the turned-around frame.
+    swapped = dict(m)
+    swapped["leftHand"], swapped["rightHand"] = m["rightHand"], m["leftHand"]
+    problems = validate(doc, swapped)
+    assert any("sides look swapped" in p for p in problems), problems
+    assert any("faces -z" in p for p in problems), "and it should say which frame it judged in"
+
+
+def test_validate_falls_back_to_plus_x_when_no_toes_are_mapped():
+    """The cue needs feet. Without them the rule is what it always was — which is the right fallback,
+    since every figure in the corpus but two is authored facing +z."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    for bone in ("leftToes", "rightToes"):
+        m.pop(bone, None)
+    assert not validate(doc, m)
+    swapped = dict(m)
+    swapped["leftHand"], swapped["rightHand"] = m["rightHand"], m["leftHand"]
+    assert any("sides look swapped" in p for p in validate(doc, swapped))
+
+
 def test_validate_catches_one_node_used_for_several_bones():
     """Grace's inference mapped upper leg, lower leg AND foot to the same IK control. Every ordering
     comparison was then equal-not-less and every segment length zero, so the map passed as clean."""

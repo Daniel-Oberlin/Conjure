@@ -125,7 +125,7 @@ Pure Python over the glTF JSON, unit-testable with no headset. Empty list means 
 | # | Check | The failure it catches |
 |---|---|---|
 | 0 | distinctness, and every `REQUIRED_BONES` entry present | three leg bones mapped to one IK control — every ordering comparison equal-not-less, laundered as clean |
-| 1 | `left*` is at +X of `right*` for hands, feet, upper arms, upper legs | a side swap inverts every later pose |
+| 1 | `left*` is on the expected side of `right*` for hands, feet, upper arms, upper legs — **relative to the figure's FACING**, read off toes-vs-ankle | a side swap inverts every later pose. "+X is the left" is a property of how a model was authored, not of glTF: two captured figures are built facing −z, and the absolute rule rejected their correct name-based maps, so discovery fell through to inference and produced genuinely MIRRORED ones |
 | 2 | vertical order down head→neck→chest→spine→hips and along each leg, with 5 mm of slack | a knee above a hip |
 | 3 | `hips` is an ancestor of both feet | that is what makes a bone the root of a body |
 | 3a | `hips` carries the legs but not the spine, while its **own parent** carries both | a bone one step too far down a fork. Reallusion forks `CC_Base_Hip` into `CC_Base_Pelvis` (thighs only) and `CC_Base_Waist` (spine only) at the **same world height**, so every ordering check passes either way and inference took the Pelvis — bending those hips swings the legs and leaves the torso upright. Deliberately NOT "hips is an ancestor of the spine": on a full Rigify export the trunk hangs off a `torso` control four levels away and that map is correct |

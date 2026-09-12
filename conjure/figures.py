@@ -969,6 +969,30 @@ def validate(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> list[str]
         i = idx(bone)
         return pos[i][0] if i is not None and i in pos else None
 
+    def z(bone: str) -> Optional[float]:
+        i = idx(bone)
+        return pos[i][2] if i is not None and i in pos else None
+
+    # WHICH WAY THE FIGURE FACES, because "+X is the model's left" is only true of one facing and is
+    # not a property of glTF — it is a property of how the model happened to be authored. Two figures
+    # in the corpus are built facing -Z, a clean 180 degrees from the rest, and for them the left hand
+    # is correctly at NEGATIVE x. The absolute rule rejected their name-based maps on four counts at
+    # once ("sides look swapped"), so `best_humanoid` discarded a correct map and fell through to
+    # inference — which then honoured +X and produced a genuinely MIRRORED one. Asking either of them
+    # for a left hand returned the right.
+    #
+    # Read off the FEET: toes are forward of the ankle on any figure, whichever way it faces, and that
+    # holds under a side swap because each toe is compared against its own foot. Measured across every
+    # rigged model in the corpus the two sides agree unanimously, with a margin of 2.2 cm at worst and
+    # 9 cm typically — so it is read as a sign, not trusted as a magnitude. With no toes mapped it
+    # falls back to +Z, which is what the rule assumed all along.
+    forward = 0.0
+    for side in ("left", "right"):
+        toe, ankle = z(f"{side}Toes"), z(f"{side}Foot")
+        if toe is not None and ankle is not None:
+            forward += toe - ankle
+    facing = -1.0 if forward < 0 else 1.0
+
     # 0. Distinctness and completeness. These fire FIRST because they are what let a hopeless map pass
     #    as clean: Grace's inference mapped leftUpperLeg, leftLowerLeg and leftFoot all to the same IK
     #    control, so every ordering comparison was equal-not-less and every segment length was zero —
@@ -988,12 +1012,14 @@ def validate(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> list[str]
         problems.append(f"{len(missing)} required bone(s) unmapped: {', '.join(missing[:6])}"
                         + (" …" if len(missing) > 6 else ""))
 
-    # 1. Sides. +X is the model's left in every sample; a swap here inverts every later pose.
+    # 1. Sides, RELATIVE TO THE FACING computed above. A swap here inverts every later pose.
     for l, r in (("leftHand", "rightHand"), ("leftFoot", "rightFoot"),
                  ("leftUpperArm", "rightUpperArm"), ("leftUpperLeg", "rightUpperLeg")):
         xl, xr = x(l), x(r)
-        if xl is not None and xr is not None and xl <= xr:
-            problems.append(f"{l} is not left of {r} ({xl:+.3f} vs {xr:+.3f}) — sides look swapped")
+        if xl is not None and xr is not None and (xl - xr) * facing <= 0:
+            which = "+x" if facing > 0 else "-x (this figure faces -z)"
+            problems.append(f"{l} is not on the {which} side of {r} ({xl:+.3f} vs {xr:+.3f}) — "
+                            f"sides look swapped")
 
     # 2. Vertical order along the body.
     for upper, lower in (("head", "neck"), ("neck", "chest"), ("chest", "spine"), ("spine", "hips"),
@@ -1382,7 +1408,8 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 11          # 11: the `cc-base` convention, and hips rejected one level below a fork
+FRAME_REV = 12          # 12: the side rule is read off the figure's FACING, not absolute +X
+                        # 11: the `cc-base` convention, and hips rejected one level below a fork
                         # 10: the hips must be above the SPINE as well as the feet
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
