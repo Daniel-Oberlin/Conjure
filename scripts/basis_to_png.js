@@ -247,14 +247,29 @@ function looksPackedNormal(rgba) {
   var step = Math.max(1, Math.floor(pixels / 4096));
   var checked = 0;
   var grey = 0;
-  var differs = 0;
+  var opaque = 0;
   for (var i = 0; i < pixels; i += step) {
     var o = i * 4;
     checked += 1;
     if (rgba[o] === rgba[o + 1] && rgba[o + 1] === rgba[o + 2]) grey += 1;
-    if (Math.abs(rgba[o + 3] - rgba[o]) > 8) differs += 1;
+    if (rgba[o + 3] >= 250) opaque += 1;
   }
-  return checked > 64 && grey / checked > 0.98 && differs / checked > 0.2;
+  // GREYSCALE says packed: a normal map stored plainly is blue-dominant, since
+  // Z is near 1 over most of a surface. Nothing else is needed to tell those
+  // two apart, and the registry has already said this texture is a normal map.
+  //
+  // The second test is only asking whether the alpha carries anything. A
+  // greyscale image whose alpha is a solid 255 has no Y to unpack, and running
+  // the reconstruction on it yields y = 1 and therefore z = 0 everywhere —
+  // worse than leaving it alone.
+  //
+  // It used to ask whether alpha DIFFERED from red, which is a different
+  // question and the wrong one. On a mostly-flat normal map X and Y are both
+  // near 0.5, so the two channels agree almost everywhere precisely BECAUSE the
+  // surface is flat: the teacher's skin measured 1.000 greyscale and 0.108 on
+  // that test against a 0.2 gate, so the registry was overruled and her body
+  // kept a greyscale normal map. Every lit surface came out mottled.
+  return checked > 64 && grey / checked > 0.98 && opaque / checked < 0.98;
 }
 
 /** Rebuild (x, y, z) into RGB from the packed form, and drop the alpha. */

@@ -153,6 +153,38 @@ test('a packed normal map is recognised, and a grey mask with alpha is not', () 
   assert.equal(looksPackedNormal(colour), false);
 });
 
+test('a MOSTLY FLAT packed normal map is still a packed normal map', () => {
+  // The test used to ask whether alpha DIFFERED from red, which is a different
+  // question and the wrong one. On a flat normal map X and Y are both near 0.5,
+  // so the channels agree almost everywhere precisely BECAUSE the surface is
+  // flat. The teacher's skin measured 1.000 greyscale but only 0.108 on that
+  // test, against a 0.2 gate — so the registry was overruled, her body kept a
+  // greyscale normal map, and every lit surface came out mottled.
+  const flat = new Uint8Array(4096 * 4);
+  for (let i = 0; i < 4096; i++) {
+    const x = 127 + ((i * 7) % 11) - 5;        // tight spread about 127, as a real one has
+    const y = 127 + ((i * 13) % 9) - 4;
+    flat[i * 4] = flat[i * 4 + 1] = flat[i * 4 + 2] = x;
+    flat[i * 4 + 3] = y;
+  }
+  let differs = 0;
+  for (let i = 0; i < 4096; i++) if (Math.abs(flat[i * 4 + 3] - flat[i * 4]) > 8) differs += 1;
+  assert.ok(differs / 4096 < 0.2, 'the fixture must be flat enough to have failed the old gate');
+  assert.equal(looksPackedNormal(flat), true);
+});
+
+test('a greyscale image with a SOLID alpha has no Y to unpack', () => {
+  // The one case the second test still has to catch. Reconstructing from a
+  // constant 255 alpha gives y = 1 everywhere, so z = 0 everywhere — a normal
+  // map of zero-length normals, which is worse than leaving it alone.
+  const solid = new Uint8Array(4096 * 4);
+  for (let i = 0; i < 4096; i++) {
+    solid[i * 4] = solid[i * 4 + 1] = solid[i * 4 + 2] = 100 + (i % 40);
+    solid[i * 4 + 3] = 255;
+  }
+  assert.equal(looksPackedNormal(solid), false);
+});
+
 test('which textures are normal maps comes from the registry, not from pixels', () => {
   // The pixels cannot tell a packed normal from a genuine greyscale mask with an
   // alpha channel, and one build has both — a heuristic alone wrecked its
