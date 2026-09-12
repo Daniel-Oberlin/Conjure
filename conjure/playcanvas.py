@@ -46,7 +46,14 @@ from .figures import split_glb, write_glb
 # translation is meaningless without them and "3" reads like "the third blend mode" rather than "none".
 
 BLEND_SUBTRACTIVE, BLEND_ADDITIVE, BLEND_NORMAL, BLEND_NONE, BLEND_PREMULTIPLIED = 0, 1, 2, 3, 4
+BLEND_MULTIPLICATIVE, BLEND_ADDITIVEALPHA, BLEND_MULTIPLICATIVE2X, BLEND_SCREEN = 5, 6, 7, 8
 CULLFACE_NONE = 0
+
+#: Blend modes where BLACK contributes nothing — the layer only ever lightens. glTF has none of them,
+#: and the choice of what to do instead is not free: rendered OPAQUE such a layer OCCLUDES whatever it
+#: was meant to enhance. One model's corneas are pure black on `BLEND_SCREEN`, invisible by design, and
+#: as opaque geometry they turned both her eyes into solid black discs.
+LIGHTENING_BLENDS = (BLEND_ADDITIVE, BLEND_ADDITIVEALPHA, BLEND_SCREEN)
 
 #: glTF wants roughness in G and metalness in B of one texture. PlayCanvas names a channel per map.
 _CHANNEL = {"r": 0, "g": 1, "b": 2, "a": 3}
@@ -316,7 +323,10 @@ def read_build(root: str) -> Build:
         url = scene.get("url")
         if not url or not os.path.exists(os.path.join(root, url)):
             build.notes.append(f"scene {scene.get('name')!r} is referenced but not on disk ({url}) — "
-                               f"falling back to the template assets, which carry the same bindings")
+                               f"falling back to the templates, which carry the CONTAINER's own "
+                               f"bindings and not the scene's. Materials may be silently wrong: one "
+                               f"room came out with flat grey cushions and panelling this way, while "
+                               f"the textures for both sat decoded on disk. Capture the scene.")
             continue
         take(json.load(open(os.path.join(root, url))).get("entities"))
 
@@ -649,7 +659,21 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     blend = int(d.get("blendType", BLEND_NONE))
     cutoff = float(d.get("alphaTest", 0) or 0)
     alpha_real = "baseColorTexture" in pbr and tex.has_alpha(pbr["baseColorTexture"]["index"])
-    if d.get("alphaToCoverage") and alpha_real:
+    lightening = blend in LIGHTENING_BLENDS
+    if lightening:
+        # The least-wrong translation: BLEND, so the alpha at least applies, and
+        # fully transparent where the layer is a flat black with no texture —
+        # because that is a layer which contributes nothing, and saying so is
+        # closer to the truth than drawing it.
+        out["alphaMode"] = "BLEND"
+        if "baseColorTexture" not in pbr and not any(diffuse):
+            pbr["baseColorFactor"] = [0.0, 0.0, 0.0, 0.0]
+            warn.append(f"{name}: blend mode {blend} only ever lightens and this material is flat "
+                        f"black, so it contributes nothing — made invisible rather than drawn")
+        else:
+            warn.append(f"{name}: blend mode {blend} lightens and glTF cannot express it — "
+                        f"approximated as BLEND, which will look heavier than it should")
+    elif d.get("alphaToCoverage") and alpha_real:
         # Alpha-to-coverage is a CUTOUT technique — it resolves a hard edge
         # through MSAA rather than blending — so glTF's MASK is the honest
         # equivalent even where the blend mode says otherwise. Getting this wrong
@@ -666,8 +690,9 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
         out["alphaCutoff"] = cutoff
     elif cutoff > 0:
         warn.append(f"{name}: alphaTest {cutoff} on a texture with no alpha — left OPAQUE")
-    if blend in (BLEND_ADDITIVE, BLEND_SUBTRACTIVE):
-        warn.append(f"{name}: blend mode {blend} has no glTF equivalent — left OPAQUE")
+    if blend in (BLEND_SUBTRACTIVE, BLEND_MULTIPLICATIVE, BLEND_MULTIPLICATIVE2X):
+        warn.append(f"{name}: blend mode {blend} darkens what is behind it and glTF cannot express "
+                    f"that — left OPAQUE, which will look wrong")
 
     if int(d.get("cull", 1)) == CULLFACE_NONE:
         out["doubleSided"] = True
