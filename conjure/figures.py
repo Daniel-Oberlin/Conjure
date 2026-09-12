@@ -325,11 +325,30 @@ def convention_humanoid(doc: dict) -> tuple[Optional[dict[str, str]], Optional[s
     """
     lookup: dict[str, str] = {}
     by_index: dict[str, int] = {}
+    # A second index that ignores CASE, consulted only when the exact spelling misses and only when it
+    # is unambiguous. One base rig in the capture set spells nineteen of its right-side bones with a
+    # LOWERCASE side letter — `CC_Base_r_Hand` beside `CC_Base_L_Hand`, and `R_Forearm` uppercase two
+    # bones above it — so a strict match lost the right hand, foot, clavicle, toes and every finger,
+    # on two different characters built from it. The rig is complete and symmetric; only the spelling
+    # is not, and `validate()` said nothing because hands and feet are not REQUIRED_BONES.
+    folded: dict[str, set[str]] = {}
     for i, node in enumerate(doc.get("nodes") or []):
         name = node.get("name")
         if name:
             lookup.setdefault(_bare(name), name)      # first spelling wins; ties are vanishingly rare
+            folded.setdefault(_bare(name).lower(), set()).add(name)
             by_index.setdefault(name, i)
+
+    def resolve(node: str) -> Optional[str]:
+        """The file's own spelling of `node`, exact first then case-insensitively.
+
+        Ambiguity is refused rather than guessed: if two nodes differ only by case, neither is worth
+        more than the other and a wrong bone is worse than a missing one.
+        """
+        if node in lookup:
+            return lookup[node]
+        same = folded.get(node.lower())
+        return next(iter(same)) if same and len(same) == 1 else None
     best: tuple[int, Optional[dict], Optional[str]] = (0, None, None)
     for scheme, table in CONVENTIONS.items():
         found: dict[str, str] = {}
@@ -339,8 +358,9 @@ def convention_humanoid(doc: dict) -> tuple[Optional[dict[str, str]], Optional[s
                 key = slot.format(s=side) if side else slot
                 for candidate in candidates.split("|"):
                     node = candidate.format(S=S, X=X) if side else candidate
-                    if node in lookup:
-                        found[key] = lookup[node]
+                    spelled = resolve(node)
+                    if spelled is not None:
+                        found[key] = spelled
                         break
         # The hips slot is chosen by ANATOMY where the names are ambiguous: a rig may carry `pelvis`,
         # `hip`, `hips` and `torso`, and only one of them is the root of the body. Tamaki's `pelvis` is
@@ -1408,7 +1428,8 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 12          # 12: the side rule is read off the figure's FACING, not absolute +X
+FRAME_REV = 13          # 13: a side letter in the wrong case still matches
+                        # 12: the side rule is read off the figure's FACING, not absolute +X
                         # 11: the `cc-base` convention, and hips rejected one level below a fork
                         # 10: the hips must be above the SPINE as well as the feet
 

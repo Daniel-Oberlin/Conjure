@@ -770,6 +770,47 @@ def test_reallusion_bones_are_recognised_by_name():
     assert not validate(doc, got)
 
 
+def test_a_side_letter_spelled_in_the_WRONG_CASE_still_matches():
+    """One base rig in the capture set spells nineteen of its right-side bones with a LOWERCASE side
+    letter — `CC_Base_r_Hand` sitting directly beneath an uppercase `CC_Base_R_Forearm`, on the same
+    arm. A strict match lost the right hand, foot, clavicle, toes and every finger, on two different
+    characters built from that rig, and `validate()` said nothing because hands and feet are not in
+    REQUIRED_BONES. I read the gap as nineteen missing bones and reported it as a broken export; the
+    rigs are complete and symmetric, and only the spelling is not."""
+    doc, idx = _skeleton()
+    names = {"hips": "CC_Base_Hip", "spine": "CC_Base_Waist", "chest": "CC_Base_Spine01",
+             "neck": "CC_Base_NeckTwist01", "head": "CC_Base_Head"}
+    for bone, node in names.items():
+        doc["nodes"][idx[bone]]["name"] = node
+    for side, prefix in (("l", "L"), ("r", "R")):
+        for part, cc in (("thigh", "Thigh"), ("shin", "Calf"), ("foot", "Foot"),
+                         ("shoulder", "Clavicle"), ("upperarm", "Upperarm"), ("lowerarm", "Forearm")):
+            doc["nodes"][idx[f"{side}_{part}"]]["name"] = f"CC_Base_{prefix}_{cc}"
+        # ...and the hand and toes in the wrong case, exactly as the real rig does.
+        doc["nodes"][idx[f"{side}_hand"]]["name"] = f"CC_Base_{prefix.lower()}_Hand"
+        doc["nodes"][idx[f"{side}_toes"]]["name"] = f"CC_Base_{prefix.lower()}_ToeBase"
+
+    got, scheme = convention_humanoid(doc)
+    assert scheme == "cc-base", scheme
+    assert got["leftHand"] == "CC_Base_l_Hand", "matched case-insensitively..."
+    assert got["rightToes"] == "CC_Base_r_ToeBase"
+    assert got["leftFoot"] == "CC_Base_L_Foot", "...without disturbing the ones that matched exactly"
+
+
+def test_a_name_that_is_ambiguous_only_by_case_is_refused():
+    """The fallback guesses nothing. If two nodes differ only in case, neither is worth more than the
+    other, and a wrong bone is worse than a missing one — a control bone mapped over the deform bone it
+    drives is the failure this whole layer is gated to avoid."""
+    doc, idx = _skeleton()
+    doc["nodes"][idx["l_hand"]]["name"] = "CC_Base_l_Hand"
+    doc["nodes"].append({"name": "CC_Base_L_HAND", "translation": [0, 0, 0], "children": []})
+    doc["nodes"][idx["l_lowerarm"]]["children"].append(len(doc["nodes"]) - 1)
+    lookup = {n["name"] for n in doc["nodes"]}
+    assert {"CC_Base_l_Hand", "CC_Base_L_HAND"} <= lookup
+    got, scheme = convention_humanoid(doc)
+    assert (got or {}).get("leftHand") != "CC_Base_L_HAND", "an ambiguous case match must not be taken"
+
+
 def test_a_convention_that_only_half_matches_is_not_claimed():
     doc, _ = _named_skeleton("mixamo")
     for node in doc["nodes"]:                               # break both arms
