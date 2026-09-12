@@ -487,6 +487,47 @@ def test_a_diffuse_with_no_map_is_the_material(tmp_path):
     assert m["pbrMetallicRoughness"]["baseColorFactor"][:3] == [0.0115, 0.0032, 0.0009]
 
 
+def test_a_neutral_layer_in_a_blend_gltf_cannot_express_is_made_invisible(tmp_path):
+    """Two models lost their eyes to this, in opposite directions.
+
+    PlayCanvas has blend modes glTF has none of. Rendered OPAQUE such a layer OCCLUDES exactly what it
+    was meant to enhance — and on both figures the thing behind it was the eyeball, drawn by the body
+    mesh. One pair of corneas is a flat black on BLEND_SCREEN and came out as solid black discs; the
+    other is a flat white on BLEND_MULTIPLICATIVE2X and came out solid white. Same bug, mirrored: what
+    differs is only which colour means "contribute nothing"."""
+    tex = _Textures(_tex(tmp_path)[0], 1024, 90)
+    from conjure.playcanvas import BLEND_MULTIPLICATIVE2X, BLEND_SCREEN
+
+    black = material_from({"diffuse": [0, 0, 0], "diffuseTint": True, "blendType": BLEND_SCREEN},
+                          "Cornea", tex)
+    assert black["alphaMode"] == "BLEND"
+    assert black["pbrMetallicRoughness"]["baseColorFactor"] == [0.0, 0.0, 0.0, 0.0]
+
+    white = material_from({"diffuse": [1, 1, 1], "diffuseTint": True,
+                           "blendType": BLEND_MULTIPLICATIVE2X}, "Eyes", tex)
+    assert white["alphaMode"] == "BLEND"
+    assert white["pbrMetallicRoughness"]["baseColorFactor"] == [0.0, 0.0, 0.0, 0.0], \
+        "white is the no-op for a mode that MODULATES, as black is for one that lightens"
+
+
+def test_a_blend_layer_that_carries_detail_is_still_drawn(tmp_path):
+    """Invisibility is only for a layer with nothing of its own to say. A multiplicative layer with a
+    texture, or one tinted away from its neutral colour, is real content — approximated as BLEND and
+    warned about, not dropped."""
+    build, ids = _tex(tmp_path, glow=("RGBA", True))
+    tex = _Textures(build, 1024, 90)
+    from conjure.playcanvas import BLEND_MULTIPLICATIVE2X
+
+    textured = material_from({"diffuseMap": ids["glow"], "diffuseTint": True,
+                              "blendType": BLEND_MULTIPLICATIVE2X}, "Eyes", tex)
+    assert textured["alphaMode"] == "BLEND"
+    assert textured["pbrMetallicRoughness"].get("baseColorFactor") != [0.0, 0.0, 0.0, 0.0]
+
+    tinted = material_from({"diffuse": [0.5, 0.2, 0.2], "diffuseTint": True,
+                            "blendType": BLEND_MULTIPLICATIVE2X}, "Tint", tex)
+    assert tinted["pbrMetallicRoughness"]["baseColorFactor"][:3] == [0.5, 0.2, 0.2]
+
+
 def test_blend_normal_becomes_blend(tmp_path):
     build, ids = _tex(tmp_path, glass=("RGBA", True))
     m = material_from({"diffuseMap": ids["glass"], "opacityMap": ids["glass"],

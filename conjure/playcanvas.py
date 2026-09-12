@@ -55,6 +55,15 @@ CULLFACE_NONE = 0
 #: as opaque geometry they turned both her eyes into solid black discs.
 LIGHTENING_BLENDS = (BLEND_ADDITIVE, BLEND_ADDITIVEALPHA, BLEND_SCREEN)
 
+#: And the mirror image: blend modes that MODULATE what is behind them, where WHITE is the no-op. Same
+#: problem, opposite neutral colour — the stewardess's corneas are an untextured white on
+#: `BLEND_MULTIPLICATIVE2X`, a highlight over an eyeball the body mesh draws underneath, and as opaque
+#: geometry they became solid white discs. Her irises were there the whole time, behind them.
+#:
+#: Both lists are one idea: a blend glTF cannot express, on a layer carrying no detail of its own. What
+#: differs is only which colour means "contribute nothing".
+MODULATING_BLENDS = (BLEND_MULTIPLICATIVE, BLEND_MULTIPLICATIVE2X)
+
 #: glTF wants roughness in G and metalness in B of one texture. PlayCanvas names a channel per map.
 _CHANNEL = {"r": 0, "g": 1, "b": 2, "a": 3}
 
@@ -707,18 +716,29 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     cutoff = float(d.get("alphaTest", 0) or 0)
     alpha_real = "baseColorTexture" in pbr and tex.has_alpha(pbr["baseColorTexture"]["index"])
     lightening = blend in LIGHTENING_BLENDS
-    if lightening:
+    modulating = blend in MODULATING_BLENDS
+    if lightening or modulating:
         # The least-wrong translation: BLEND, so the alpha at least applies, and
-        # fully transparent where the layer is a flat black with no texture —
+        # fully transparent where the layer carries no detail of its own —
         # because that is a layer which contributes nothing, and saying so is
         # closer to the truth than drawing it.
+        #
+        # "No detail" means no texture AND the neutral colour for the family:
+        # black where the mode only lightens, white where it modulates. Both
+        # have cost a model its eyes — one pair went solid black, the other
+        # solid white, and in each case the real eyeball was being drawn by the
+        # body mesh directly behind the layer we had made opaque.
         out["alphaMode"] = "BLEND"
-        if "baseColorTexture" not in pbr and not any(diffuse):
+        neutral = (not any(diffuse)) if lightening else diffuse == [1, 1, 1]
+        if "baseColorTexture" not in pbr and neutral:
             pbr["baseColorFactor"] = [0.0, 0.0, 0.0, 0.0]
-            warn.append(f"{name}: blend mode {blend} only ever lightens and this material is flat "
-                        f"black, so it contributes nothing — made invisible rather than drawn")
+            warn.append(f"{name}: blend mode {blend} "
+                        f"{'only ever lightens' if lightening else 'modulates what is behind it'} and "
+                        f"this material is a flat {'black' if lightening else 'white'} with no texture, "
+                        f"so it contributes nothing — made invisible rather than drawn")
         else:
-            warn.append(f"{name}: blend mode {blend} lightens and glTF cannot express it — "
+            warn.append(f"{name}: blend mode {blend} "
+                        f"{'lightens' if lightening else 'modulates'} and glTF cannot express it — "
                         f"approximated as BLEND, which will look heavier than it should")
     elif d.get("alphaToCoverage") and alpha_real:
         # Alpha-to-coverage is a CUTOUT technique — it resolves a hard edge
@@ -737,9 +757,13 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
         out["alphaCutoff"] = cutoff
     elif cutoff > 0:
         warn.append(f"{name}: alphaTest {cutoff} on a texture with no alpha — left OPAQUE")
-    if blend in (BLEND_SUBTRACTIVE, BLEND_MULTIPLICATIVE, BLEND_MULTIPLICATIVE2X):
-        warn.append(f"{name}: blend mode {blend} darkens what is behind it and glTF cannot express "
-                    f"that — left OPAQUE, which will look wrong")
+    if blend == BLEND_SUBTRACTIVE:
+        # The multiplicative modes used to be warned about here and left opaque anyway. The warning was
+        # right and nothing acted on it: the stewardess's corneas are `BLEND_MULTIPLICATIVE2X`, and
+        # "left OPAQUE, which will look wrong" was printed while two white discs covered her irises.
+        # They are handled above now, with the rest of the blends glTF cannot express.
+        warn.append(f"{name}: blend mode {blend} subtracts from what is behind it and glTF cannot "
+                    f"express that — left OPAQUE, which will look wrong")
 
     if int(d.get("cull", 1)) == CULLFACE_NONE:
         out["doubleSided"] = True
