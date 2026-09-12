@@ -18,7 +18,7 @@ const path = require('path');
 const zlib = require('zlib');
 
 const { encodePng, findBasis, findWasm, findTranscoder, normalMapPaths,
-  looksPackedNormal, VENDORED } = require('../../scripts/basis_to_png.js');
+  looksPackedNormal, openTranscoder, VENDORED } = require('../../scripts/basis_to_png.js');
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'basis-test-'));
@@ -187,4 +187,35 @@ test('basis files are found at the depth a capture actually nests them', () => {
   fs.writeFileSync(path.join(deep, 'skin.png'), 'x');
   fs.writeFileSync(path.join(root, 'top.basis'), 'x');
   assert.deepEqual(findBasis(root).map((f) => path.basename(f)).sort(), ['skin.basis', 'top.basis']);
+});
+
+test("a capture's transcoder that will not start in Node falls back to the vendored one", async () => {
+  // A capture's own transcoder is preferred — it is the exact build the site
+  // decoded with. But it is a BROWSER bundle, and some are Closure-compiled
+  // against `$jscomp` polyfills Node does not have. One capture's threw
+  // `ReferenceError: $jscomp is not defined` on require, and because that
+  // happened before any file was read it took all FOURTEEN of that build's
+  // textures down at once: every `.basis` sat on disk beside a `.png` that was
+  // never written, and the character rebuilt flat grey with no error that named
+  // a texture. Aborting the run is the wrong response to a decoder that cannot
+  // start when a working one is committed.
+  const root = tmpdir();
+  const broken = path.join(root, 'basis.js');
+  fs.writeFileSync(broken, 'module.exports = function () { throw new ReferenceError("$jscomp is not defined"); };');
+  fs.writeFileSync(path.join(root, 'basis.wasm'), 'not really wasm');
+
+  const warnings = [];
+  const opened = await openTranscoder(broken, root, 'from the capture', (m) => warnings.push(m));
+
+  assert.equal(opened.glue, VENDORED, 'it must fall back, not give up');
+  assert.equal(opened.source, 'vendored');
+  assert.ok(opened.Module, 'and hand back a usable transcoder');
+  assert.ok(warnings.some((w) => /\$jscomp/.test(w)), 'saying WHY, so the capture can be fixed');
+});
+
+test('a vendored transcoder that fails is a real failure, not another fallback', async () => {
+  // The fallback has exactly one step. If the committed copy is what broke,
+  // there is nothing left to try and pretending otherwise would loop.
+  const root = tmpdir();
+  await assert.rejects(() => openTranscoder(VENDORED.replace(/\.js$/, '.missing.js'), root, 'vendored'));
 });

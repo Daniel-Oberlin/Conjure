@@ -456,6 +456,37 @@ def test_alpha_to_coverage_is_a_cutout_whatever_the_blend_mode_says(tmp_path):
     assert not any("alpha to coverage" in w for w in tex.warnings), "carried, so no longer warned about"
 
 
+def test_an_untinted_diffuse_is_dead_data_beside_a_map(tmp_path):
+    """`diffuse` is a TINT and PlayCanvas only applies it when asked. From the engine in the build:
+
+        o = e.diffuseTint || (!e.diffuseMap && !e.diffuseVertexColor)   // MAPCOLOR
+        getAlbedo() { dAlbedo = vec3(1.0); #ifdef MAPCOLOR dAlbedo *= material_diffuse.rgb; #endif ... }
+
+    So beside a map with the tint off, the field is whatever the editor last left there. glTF has no
+    such switch — `baseColorFactor` always multiplies — so copying it across rendered one character's
+    skin as pure black over a perfectly good 2K texture: `diffuse: [0,0,0]`, `diffuseTint: false`."""
+    build, ids = _tex(tmp_path, skin=("RGB", False))
+    tex = _Textures(build, 1024, 90)
+
+    dead = material_from({"diffuseMap": ids["skin"], "diffuse": [0, 0, 0], "diffuseTint": False},
+                         "BlackGirl", tex)
+    assert "baseColorFactor" not in dead["pbrMetallicRoughness"], "the engine never applied it"
+    assert "baseColorTexture" in dead["pbrMetallicRoughness"]
+
+    live = material_from({"diffuseMap": ids["skin"], "diffuse": [1, 0, 0], "diffuseTint": True},
+                         "tinted", tex)
+    assert live["pbrMetallicRoughness"]["baseColorFactor"] == [1.0, 0.0, 0.0, 1.0], "asked for, so kept"
+
+
+def test_a_diffuse_with_no_map_is_the_material(tmp_path):
+    """The other half of the same engine expression: with no map and no vertex colour, MAPCOLOR is ON
+    regardless of the tint flag, because the colour is all there is. Dropping it would turn a figure's
+    eyelashes and sclera white — both are untinted, mapless, and deliberately coloured."""
+    tex = _Textures(_tex(tmp_path)[0], 1024, 90)
+    m = material_from({"diffuse": [0.0115, 0.0032, 0.0009], "diffuseTint": False}, "Eyelashes", tex)
+    assert m["pbrMetallicRoughness"]["baseColorFactor"][:3] == [0.0115, 0.0032, 0.0009]
+
+
 def test_blend_normal_becomes_blend(tmp_path):
     build, ids = _tex(tmp_path, glass=("RGBA", True))
     m = material_from({"diffuseMap": ids["glass"], "opacityMap": ids["glass"],

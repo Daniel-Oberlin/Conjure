@@ -161,6 +161,33 @@ async function loadTranscoder(glue, root) {
 }
 
 /**
+ * Load a transcoder, falling back to the vendored one if the chosen glue will
+ * not start.
+ *
+ * A capture's own transcoder is preferred — it is the exact build the site
+ * decoded with — but it is a BROWSER bundle, and some are Closure-compiled
+ * against `$jscomp` polyfills that do not exist in Node. One throws
+ * `ReferenceError: $jscomp is not defined` on require, and because that happens
+ * before any file is read it took all fourteen of a capture's textures down with
+ * it: the character rebuilt flat grey with every `.basis` sitting on disk beside
+ * a `.png` that was never written. The vendored copy is committed precisely so
+ * there is something that always loads here, so a transcoder that cannot start
+ * is a reason to fall back rather than to give up.
+ */
+async function openTranscoder(glue, root, source, warn) {
+  try {
+    return { Module: await loadTranscoder(glue, root), glue: glue, source: source };
+  } catch (err) {
+    if (source === 'vendored' || !fs.existsSync(VENDORED)) throw err;
+    if (warn) {
+      warn(`  ${glue} would not load in Node (${String(err.message).split('\n')[0]})`);
+      warn('  falling back to the vendored transcoder');
+    }
+    return { Module: await loadTranscoder(VENDORED, root), glue: VENDORED, source: 'vendored' };
+  }
+}
+
+/**
  * Every texture a build uses as a NORMAL map, by the path the registry records.
  *
  * Guessing this from pixels does not work. Basis packs a normal map's X into
@@ -333,7 +360,18 @@ async function main() {
     return 2;
   }
   console.log(`transcoder: ${glue} (${source})`);
-  const Module = await loadTranscoder(glue, root);
+  // A capture's own transcoder is preferred — it is the exact build the site
+  // decoded with — but it is a BROWSER bundle, and some are Closure-compiled
+  // against `$jscomp` polyfills that do not exist in Node. One throws
+  // `ReferenceError: $jscomp is not defined` on require, and because that
+  // happened before any file was read it took all fourteen textures down with
+  // it and the character rebuilt flat grey. The vendored copy is known to load
+  // here, so a transcoder that cannot start is a reason to fall back, not to
+  // give up.
+  const opened = await openTranscoder(glue, root, source, console.warn);
+  const Module = opened.Module;
+  glue = opened.glue;
+  source = opened.source;
   const normals = normalMapPaths(root);
   if (normals.size) console.log(`${normals.size} texture(s) are used as normal maps`);
 
@@ -364,5 +402,5 @@ if (require.main === module) {
   });
 }
 
-module.exports = { encodePng, transcode, loadTranscoder, findBasis, findTranscoder, findWasm,
+module.exports = { openTranscoder, encodePng, transcode, loadTranscoder, findBasis, findTranscoder, findWasm,
   normalMapPaths, looksPackedNormal, VENDORED };

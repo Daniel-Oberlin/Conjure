@@ -640,8 +640,26 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
             out["texCoord"] = uv
         return out
 
+    # `diffuse` is a TINT, and PlayCanvas only applies it when asked. From the engine shipped in the
+    # build being converted:
+    #
+    #     o = e.diffuseTint || (!e.diffuseMap && !e.diffuseVertexColor)
+    #     t.diffuseTint = o ? 2 : 0            // 2 turns MAPCOLOR on
+    #
+    #     getAlbedo() { dAlbedo = vec3(1.0);
+    #       #ifdef MAPCOLOR  dAlbedo *= material_diffuse.rgb;  #endif
+    #       #ifdef MAPTEXTURE dAlbedo *= <the map>;            #endif }
+    #
+    # So with a map and `diffuseTint: false` the colour is DEAD DATA — the editor leaves whatever was
+    # last set sitting in the field. glTF has no such switch: `baseColorFactor` always multiplies the
+    # texture. Copying the field across regardless is how `AR_BlackGirl` came out rendering her skin
+    # as pure black: `diffuse: [0, 0, 0]`, `diffuseTint: false`, a perfectly good 2K skin texture
+    # underneath, multiplied to nothing. Her second material was the same bug 20% quieter — a stale
+    # [0.8, 0.8, 0.8] dimming a texture the engine showed at full strength.
     diffuse = list(d.get("diffuse") or [1, 1, 1])[:3]
     opacity = float(d.get("opacity", 1) or 0)
+    if not (d.get("diffuseTint") or not (d.get("diffuseMap") or d.get("diffuseVertexColor"))):
+        diffuse = [1, 1, 1]
     if diffuse != [1, 1, 1] or opacity != 1:
         pbr["baseColorFactor"] = [float(c) for c in diffuse] + [opacity]
 
