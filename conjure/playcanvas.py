@@ -296,6 +296,31 @@ def read_build(root: str) -> Build:
     seen: dict[tuple[int, int], Binding] = {}
     clashes: dict[tuple[int, int], set] = {}
 
+    def dressed(mats) -> int:
+        """How many distinct textures a binding's materials reference — how DRESSED the mesh is.
+
+        The tie-break when several entities claim one mesh. First-wins was arbitrary and it picked
+        wrong: three entities bind Jane's right hand, and the one the scene happens to list first is
+        `handmodeltutorial`, wearing a placeholder with nothing but a sphere map. Her left hand has
+        two claimants and got the real material by luck, so the pair came out mismatched — a textured
+        left hand and a chrome right one — with nothing missing from the capture to explain it.
+
+        A placeholder is a DEGENERATE version of the real material, so the richest binding is the
+        authored one. Ties keep first-wins, which is what separates `ArmsVR` from `ArmsVRToolMode`:
+        both fill two slots, and the plain one is listed first.
+
+        Counted as FILLED SLOTS, not distinct textures. A build reuses one image across several slots
+        far more than you would guess — 33 of the 43 mapped materials in Jane's build point every map
+        they have at a single texture, the hands among them, where `Hands_diffuse_2K.jpeg` is both the
+        diffuse and the light map. Counting distinct textures scores all three claimants 1 and decides
+        nothing.
+        """
+        slots = 0
+        for material in mats:
+            data = (build.asset(material) or {}).get("data") or {}
+            slots += sum(1 for key, value in data.items() if key.endswith("Map") and value)
+        return slots
+
     def take(entities: dict) -> None:
         for entity in (entities or {}).values():
             render = (entity.get("components") or {}).get("render")
@@ -312,10 +337,14 @@ def read_build(root: str) -> Build:
             if key in seen and seen[key].materials != mats:
                 # Two entities dressing the same mesh differently is a legitimate thing to do — a props
                 # library reuses one button mesh in a dozen colours — and it has no single answer in a
-                # file format that allows one material per primitive. First wins, and the clash is
-                # reported ONCE however many instances there are, because a props library produces
-                # dozens of them and they would bury everything else.
+                # file format that allows one material per primitive. The best-dressed wins, and the
+                # clash is reported ONCE however many instances there are, because a props library
+                # produces dozens of them and they would bury everything else.
                 clashes.setdefault(key, set()).add(bound.entity)
+                if dressed(mats) > dressed(seen[key].materials):
+                    clashes[key].add(seen[key].entity)
+                    clashes[key].discard(bound.entity)
+                    seen[key] = bound
                 continue
             seen.setdefault(key, bound)
 

@@ -137,8 +137,9 @@ def test_a_render_component_with_no_container_behind_it_is_skipped(tmp_path):
 
 
 def test_two_entities_dressing_one_mesh_differently_is_reported_once(tmp_path):
-    """A props library reuses one button mesh in a dozen colours. First wins, and the clash is reported
-    ONCE however many instances there are — reporting per instance buried everything else."""
+    """A props library reuses one button mesh in a dozen colours. Between equally dressed claimants the
+    first wins, and the clash is reported ONCE however many instances there are — reporting per instance
+    buried everything else."""
     root = _build(tmp_path)
     scene = json.loads((tmp_path / "scene.json").read_text())
     for i in range(5):
@@ -148,6 +149,41 @@ def test_two_entities_dressing_one_mesh_differently_is_reported_once(tmp_path):
     build = read_build(root)
     assert {b.mesh: b.materials for b in build.bindings}[0] == (30,), "the first binding wins"
     assert len([n for n in build.notes if "bind different" in n or "disagree" in n]) == 1
+
+
+def test_the_best_dressed_claimant_wins_a_mesh_not_the_first_one(tmp_path):
+    """Three entities bind Jane's right hand and the scene lists the TUTORIAL one first, wearing a
+    placeholder with a single sphere map. First-wins gave her a chrome right hand beside a textured left
+    one — a mismatch with nothing missing from the capture to explain it. A placeholder is a degenerate
+    version of the real material, so the claimant with the most filled map slots is the authored one."""
+    root = _build(
+        tmp_path,
+        materials=[(30, "New Material", {"sphereMap": 40}),
+                   (31, "ArmsVR", {"diffuseMap": 40, "lightMap": 40}),
+                   (32, "ArmsVRToolMode", {"diffuseMap": 40, "opacityMap": 40})],
+        renders=[(20, "hand", 10, 0)],
+        # The placeholder first, which is the order that used to decide it.
+        entities=[("handmodeltutorial", 20, [30]), ("handmodel", 20, [31]), ("handmodel", 20, [32])],
+    )
+    build = read_build(root)
+    assert {b.mesh: b.materials for b in build.bindings}[0] == (31,), "the dressed material, not the first"
+    assert "keeping 'handmodel'" in " ".join(build.notes)
+
+
+def test_equally_dressed_claimants_keep_first_wins(tmp_path):
+    """`ArmsVR` and `ArmsVRToolMode` fill two slots each, so richness cannot separate them and the scene
+    order does. Counted as SLOTS rather than distinct textures on purpose: 33 of the 43 mapped materials
+    in Jane's build point every map they have at one image — the hands among them, where one JPEG is both
+    the diffuse and the light map — and counting textures scores every claimant 1 and decides nothing."""
+    root = _build(
+        tmp_path,
+        materials=[(31, "ArmsVR", {"diffuseMap": 40, "lightMap": 40}),
+                   (32, "ArmsVRToolMode", {"diffuseMap": 40, "opacityMap": 40})],
+        renders=[(20, "hand", 10, 0)],
+        entities=[("handmodel", 20, [31]), ("toolmode", 20, [32])],
+    )
+    build = read_build(root)
+    assert {b.mesh: b.materials for b in build.bindings}[0] == (31,)
 
 
 def test_an_unbound_mesh_can_adopt_a_material_by_render_name(tmp_path):
