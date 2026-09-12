@@ -170,6 +170,46 @@ def test_validate_does_not_require_the_trunk_to_be_a_chain():
     assert not [p for p in validate(doc, m) if "in the skeleton" in p]
 
 
+def test_validate_catches_a_hips_one_level_too_low():
+    """Reallusion forks the body immediately below `CC_Base_Hip`: `CC_Base_Pelvis` carries the thighs
+    and nothing else, `CC_Base_Waist` carries the spine and nothing else. They sit at the SAME world
+    height, so every ordering check passes whichever is chosen — inference took the Pelvis, and bending
+    those hips would have swung Susan's legs while her torso stayed upright. That is the 0-versus-122
+    degree trunk bug wearing different bone names."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    assert not validate(doc, m)
+    # Fork the skeleton the way Character Creator does: a pelvis and a waist as SIBLINGS under hips.
+    hips = doc["nodes"][idx["hips"]]
+    pelvis = len(doc["nodes"])
+    doc["nodes"].append({"name": "pelvis", "translation": [0, 0, 0],
+                         "children": [idx["l_thigh"], idx["r_thigh"]]})
+    doc["skins"][0]["joints"].append(pelvis)
+    hips["children"] = [c for c in hips["children"] if c not in (idx["l_thigh"], idx["r_thigh"])]
+    hips["children"].append(pelvis)
+
+    m["hips"] = "pelvis"                       # the bone carrying the legs, one step too far down
+    problems = validate(doc, m)
+    assert any("one level too low" in p for p in problems), problems
+    assert any("'hips'" in p for p in problems), "it must name the parent that carries both"
+
+    m["hips"] = "hips"                         # the fork point itself is fine
+    assert not [p for p in validate(doc, m) if "one level too low" in p]
+
+
+def test_validate_allows_a_trunk_on_a_separate_branch():
+    """NOT "hips must be an ancestor of the spine". On a full Rigify export the trunk hangs off a
+    `torso` control while `ORG-spine` carries the legs, four levels apart, and that map is correct —
+    Eve Maccaro in the dev library is exactly this. The check is only for the ONE-STEP case, where the
+    chosen bone's own parent carries both."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    # Re-parent the trunk far away, as conversion does: hips is no longer above spine at all.
+    doc["nodes"][idx["hips"]]["children"].remove(idx["spine"])
+    doc["scenes"][0]["nodes"].append(idx["spine"])
+    assert not [p for p in validate(doc, m) if "one level too low" in p]
+
+
 def test_score_separates_misses_from_disagreements():
     stated = {"hips": "hips", "head": "head", "leftHand": "l_hand"}
     inferred = {"hips": "hips", "head": "WRONG"}
@@ -641,6 +681,48 @@ def test_an_unknown_rig_falls_through_to_shape():
     assert convention_humanoid(doc) == (None, None)
     mapping, source, _follows = best_humanoid(doc)
     assert source == "inferred" and mapping["leftUpperArm"] == "l_upperarm"
+
+
+def test_reallusion_bones_are_recognised_by_name():
+    """Character Creator exports everything under `CC_Base_`, and the row exists mainly for the hips:
+    inference put them on `CC_Base_Pelvis`, which carries the thighs and not the spine. `head` and
+    `toes` were wrong the same quiet way — `NeckTwist02` sits 3.4 cm below the real head, and `BigToe1`
+    is a child of the toe base rather than the base."""
+    names = {
+        "hips": "CC_Base_Hip", "spine": "CC_Base_Waist", "chest": "CC_Base_Spine01",
+        "upperChest": "CC_Base_Spine02", "neck": "CC_Base_NeckTwist01", "head": "CC_Base_Head",
+    }
+    for side in ("L", "R"):
+        names.update({
+            f"{'left' if side == 'L' else 'right'}Shoulder": f"CC_Base_{side}_Clavicle",
+            f"{'left' if side == 'L' else 'right'}UpperArm": f"CC_Base_{side}_Upperarm",
+            f"{'left' if side == 'L' else 'right'}LowerArm": f"CC_Base_{side}_Forearm",
+            f"{'left' if side == 'L' else 'right'}Hand": f"CC_Base_{side}_Hand",
+            f"{'left' if side == 'L' else 'right'}UpperLeg": f"CC_Base_{side}_Thigh",
+            f"{'left' if side == 'L' else 'right'}LowerLeg": f"CC_Base_{side}_Calf",
+            f"{'left' if side == 'L' else 'right'}Foot": f"CC_Base_{side}_Foot",
+            f"{'left' if side == 'L' else 'right'}Toes": f"CC_Base_{side}_ToeBase",
+        })
+    doc, idx = _skeleton()
+    for bone, node in names.items():
+        canonical = {"hips": "hips", "spine": "spine", "chest": "chest", "neck": "neck",
+                     "head": "head"}.get(bone)
+        if canonical:
+            doc["nodes"][idx[canonical]]["name"] = node
+    # The decoy: a Pelvis sibling carrying nothing, which is what inference reached for.
+    doc["nodes"].append({"name": "CC_Base_Pelvis", "translation": [0, 0, 0], "children": []})
+    doc["nodes"][idx["hips"]]["children"].append(len(doc["nodes"]) - 1)
+    for side, prefix in (("l", "L"), ("r", "R")):
+        for part, cc in (("thigh", "Thigh"), ("shin", "Calf"), ("foot", "Foot"), ("toes", "ToeBase"),
+                         ("shoulder", "Clavicle"), ("upperarm", "Upperarm"),
+                         ("lowerarm", "Forearm"), ("hand", "Hand")):
+            doc["nodes"][idx[f"{side}_{part}"]]["name"] = f"CC_Base_{prefix}_{cc}"
+    got, scheme = convention_humanoid(doc)
+    assert scheme == "cc-base", scheme
+    assert got["hips"] == "CC_Base_Hip", "not the Pelvis, which carries no spine"
+    assert got["head"] == "CC_Base_Head"
+    assert got["leftToes"] == "CC_Base_L_ToeBase"
+    assert not validate(doc, got)
 
 
 def test_a_convention_that_only_half_matches_is_not_claimed():

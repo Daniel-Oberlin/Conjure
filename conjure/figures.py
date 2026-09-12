@@ -270,6 +270,32 @@ CONVENTIONS: dict[str, dict[str, str]] = {
         "{s}Foot": "DEF-foot.{X}",
         "{s}Toes": "DEF-toe.{X}",
     },
+    # Reallusion Character Creator, which exports every bone under a `CC_Base_` prefix. Verified
+    # against `Alice.glb` — a 78-joint body skin among fifteen skins in one 57 MB file.
+    #
+    # The row exists mainly for the HIPS. CC forks the body immediately below `CC_Base_Hip` into two
+    # siblings: `CC_Base_Pelvis` carries the thighs and nothing else, `CC_Base_Waist` carries the
+    # spine and nothing else. They sit at the SAME world height, so every ordering check in
+    # `validate()` passes whichever one is chosen — inference picked `Pelvis`, and bending those
+    # "hips" would have swung her legs while her torso stayed upright. Naming them outright removes
+    # the choice.
+    #
+    # `head` and `toes` were wrong the same quiet way: inference stopped at `NeckTwist02` (3.4 cm
+    # below the real head) and at `BigToe1` (a child of the toe base rather than the base itself).
+    "cc-base": {
+        "hips": "CC_Base_Hip", "spine": "CC_Base_Waist",
+        "chest": "CC_Base_Spine01", "upperChest": "CC_Base_Spine02",
+        # Two neck segments, named as twists; the FIRST parents the chain, as `rigify-fk` reads it.
+        "neck": "CC_Base_NeckTwist01", "head": "CC_Base_Head",
+        "{s}Shoulder": "CC_Base_{X}_Clavicle",
+        "{s}UpperArm": "CC_Base_{X}_Upperarm",
+        "{s}LowerArm": "CC_Base_{X}_Forearm",
+        "{s}Hand": "CC_Base_{X}_Hand",
+        "{s}UpperLeg": "CC_Base_{X}_Thigh",
+        "{s}LowerLeg": "CC_Base_{X}_Calf",
+        "{s}Foot": "CC_Base_{X}_Foot",
+        "{s}Toes": "CC_Base_{X}_ToeBase",
+    },
     # The Blender-side-suffix scheme used across several free asset packs (both `Animated Woman` models
     # and `Steve` in the dev library). Torso/Abdomen rather than Spine1/Spine2, and the side is a suffix.
     "dot-side": {
@@ -990,6 +1016,30 @@ def validate(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> list[str]
             if i is not None and hips_i not in _ancestors(i, parent):
                 problems.append(f"hips is not an ancestor of {bone}")
 
+    # 3a. Hips ONE LEVEL TOO LOW. Not "hips must be an ancestor of the spine" — that is the check this
+    #     deliberately is not, because conversion re-parents the trunk onto a torso control and the two
+    #     legitimately sit on separate branches (Eve Maccaro: `ORG-spine` carries the legs while `chest`
+    #     hangs off `torso`, four levels away, and the map is fine).
+    #
+    #     The failure this DOES catch is narrower and has a signature: the chosen hips carries the legs
+    #     and not the spine, while its OWN PARENT carries both. That is a bone one step too far down a
+    #     fork, and it is what Reallusion's rig invites — `CC_Base_Hip` forks into `CC_Base_Pelvis`
+    #     (thighs only) and `CC_Base_Waist` (spine only), the two sit at the SAME world height so every
+    #     ordering check passes, and inference took the Pelvis. Bending those hips swings the legs and
+    #     leaves the torso upright, which is the 0°-versus-122° trunk bug wearing different names.
+    #
+    #     Measured across all eleven rigged models in the dev library plus the four captured figures:
+    #     it fires on the bad map and on nothing else.
+    if hips_i is not None:
+        spine_i = idx("spine")
+        above = parent.get(hips_i)
+        if (spine_i is not None and above is not None
+                and hips_i not in _ancestors(spine_i, parent)
+                and above in _ancestors(spine_i, parent)):
+            problems.append(f"hips {mapping.get('hips')!r} carries the legs but not the spine, while its "
+                            f"parent {(nodes[above] or {}).get('name')!r} carries both — hips is one "
+                            f"level too low, and bending it would leave the torso behind")
+
     # 3b. A limb must be a CHAIN — the forearm's node has to sit UNDER the upper arm's, or rotating the
     #     upper arm leaves the forearm behind. That is not a hypothetical: it is the zig-zag arm reported
     #     from the headset, and the maps that produced it validated CLEAN here for a week. Every other
@@ -1332,7 +1382,8 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 10          # 10: the hips must be above the SPINE as well as the feet
+FRAME_REV = 11          # 11: the `cc-base` convention, and hips rejected one level below a fork
+                        # 10: the hips must be above the SPINE as well as the feet
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")

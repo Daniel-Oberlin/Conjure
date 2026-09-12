@@ -86,7 +86,7 @@ silently.
 | Layer | Where | How it works | Cost |
 |---|---|---|---|
 | **stated** | `importer.vrm_humanoid` | VRM's `VRMC_vrm.humanoid.humanBones` (1.0 dict form) or `VRM.humanoid.humanBones` (0.x list form), stored as node **names** so a re-export that reorders nodes cannot break it | free, exact |
-| **names** | `figures.CONVENTIONS` | three verified tables — `mixamo`, `rigify-fk` (what `blend_to_glb.py` emits from Daz/Rigify ports, both `upper_arm.fk.L` and `upper_arm_fk.L` spellings), `dot-side` (a free-asset-pack scheme). Exporter prefixes (`mixamorig:`, `Armature|`) are stripped before matching | free, exact |
+| **names** | `figures.CONVENTIONS` | five verified tables — `mixamo`, `rigify-fk` (what `blend_to_glb.py` emits from Daz/Rigify ports, both `upper_arm.fk.L` and `upper_arm_fk.L` spellings), `rigify-def` (the deform chain, with no FK controls in the file — what a PlayCanvas export bakes down to), `dot-side` (a free-asset-pack scheme), `cc-base` (Reallusion Character Creator). Exporter prefixes (`mixamorig:`, `Armature|`) are stripped before matching | free, exact |
 | **shape** | `figures.infer_humanoid` | pure topology and geometry: feet are the lowest joints, hands the widest (walked up to the first branch point, since the widest joint is a fingertip), the head is the common ancestor of the tallest trunk joints, hips is where the two leg chains meet. Joints along a limb are picked by **fraction of height or reach**, never by index, because chains vary from 4 to 12 joints | reads every vertex weight |
 
 A stated map is read by the importer before either. Names are tried before shape and shape is not run at
@@ -128,6 +128,7 @@ Pure Python over the glTF JSON, unit-testable with no headset. Empty list means 
 | 1 | `left*` is at +X of `right*` for hands, feet, upper arms, upper legs | a side swap inverts every later pose |
 | 2 | vertical order down head→neck→chest→spine→hips and along each leg, with 5 mm of slack | a knee above a hip |
 | 3 | `hips` is an ancestor of both feet | that is what makes a bone the root of a body |
+| 3a | `hips` carries the legs but not the spine, while its **own parent** carries both | a bone one step too far down a fork. Reallusion forks `CC_Base_Hip` into `CC_Base_Pelvis` (thighs only) and `CC_Base_Waist` (spine only) at the **same world height**, so every ordering check passes either way and inference took the Pelvis — bending those hips swings the legs and leaves the torso upright. Deliberately NOT "hips is an ancestor of the spine": on a full Rigify export the trunk hangs off a `torso` control four levels away and that map is correct |
 | 3b | each **limb** is a real parent-child chain | the zig-zag arm: a forearm parented to the armature root passed every positional check for a week. **Limbs only** — conversion legitimately re-parents the trunk onto a torso control |
 | 3c | mapped upper arms and legs **drive some geometry** (needs the BIN chunk) | a stock Rigify FK control sits exactly where an upper arm belongs, in a proper chain, and moves nothing |
 | 4 | limb segments within 0.4–2.5× of each other | a twist helper mistaken for a joint |
