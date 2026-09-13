@@ -1099,7 +1099,7 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
 #: is not worth keeping, since it was computed from the same file by older code.
 _DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
                         "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows",
-                        "spring_bones", "tris")
+                        "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified")
 
 
 def _extracted_model_attrs(asset_id: str) -> dict:

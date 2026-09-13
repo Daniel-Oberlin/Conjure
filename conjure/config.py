@@ -44,6 +44,7 @@ DEFAULT_USER = "daniel"
 
 BUNDLED_AGENTS_DIR = ROOT / "agents"    # example/bundled agent defs shipped with the repo (never moved)
 BUNDLED_DYNAMICS_DIR = ROOT / "dynamics"  # bundled dynamic-module defs, sibling to agents/ (never moved)
+BUNDLED_PARTS_DIR = ROOT / "parts"      # bundled figure-parts vocabulary (which mesh is clothing)
 
 
 def _home(env: Mapping[str, str]) -> Path | None:
@@ -91,6 +92,7 @@ DEFAULT_SETTINGS: dict = {
     "cache_dir": None,       # override the disposable cache root
     "agents_path": None,     # list of dirs; user-first search path for agent definitions
     "dynamics_path": None,   # list of dirs; user-first search path for dynamic-module definitions
+    "parts_path": None,      # list of dirs; user-first search path for the figure-parts vocabulary
     "wake_words": None,      # list; the shell wake word + STT mis-hearings (null = DEFAULT_WAKE_WORDS)
     "voice_wake_words": None,  # list; the voice mic-activation word — must NOT overlap wake_words
     "default_user": DEFAULT_USER,
@@ -224,6 +226,22 @@ def resolve_dynamics_path(env: Mapping[str, str], settings: Mapping, config_dir:
     return [config_dir / "dynamics", BUNDLED_DYNAMICS_DIR]
 
 
+def resolve_parts_path(env: Mapping[str, str], settings: Mapping, config_dir: Path) -> list[Path]:
+    """The ordered search path for the FIGURE PARTS vocabulary — which mesh names are clothing, hair,
+    shoes, a body. Mirrors `resolve_dynamics_path`: env `CONJURE_PARTS_PATH` >
+    settings["parts_path"] > [<config>/parts, bundled].
+
+    Data rather than code because the vocabulary is never finished: a capture arrives with `Kimono`,
+    `Strap_Top` or `clothes_maiddress` and adding the word should be an edit, not a release."""
+    explicit = env.get("CONJURE_PARTS_PATH", "").strip()
+    if explicit:
+        return [Path(p).expanduser() for p in explicit.split(os.pathsep) if p]
+    from_settings = settings.get("parts_path")
+    if from_settings:
+        return [Path(str(p)).expanduser() for p in from_settings]
+    return [config_dir / "parts", BUNDLED_PARTS_DIR]
+
+
 def resolve_paths(env: Mapping[str, str] | None = None, settings: Mapping | None = None) -> dict:
     """Resolve the whole user home in one shot → {config_dir, data_dir, cache_dir, agents_path,
     dynamics_path}. Pure over its `env`/`settings` inputs (defaults: process env + the on-disk settings
@@ -242,6 +260,7 @@ def resolve_paths(env: Mapping[str, str] | None = None, settings: Mapping | None
         "cache_dir": cache_dir,
         "agents_path": resolve_agents_path(env, settings, config_dir),
         "dynamics_path": resolve_dynamics_path(env, settings, config_dir),
+        "parts_path": resolve_parts_path(env, settings, config_dir),
         "wake_words": resolve_wake_words(env, settings),
         "voice_wake_words": resolve_voice_wake_words(env, settings),
     }
@@ -255,6 +274,7 @@ DATA_DIR = _RESOLVED["data_dir"]
 CACHE_ROOT = _RESOLVED["cache_dir"]      # genuinely-disposable cache (NOT the precious data tree)
 AGENTS_PATH: list[Path] = _RESOLVED["agents_path"]
 DYNAMICS_PATH: list[Path] = _RESOLVED["dynamics_path"]
+PARTS_PATH: list[Path] = _RESOLVED["parts_path"]
 WAKE_WORDS: list[str] = _RESOLVED["wake_words"]      # [0] is canonical; the rest are STT mis-hearings
 VOICE_WAKE_WORDS: list[str] = _RESOLVED["voice_wake_words"]   # the mic gate — MUST be disjoint from above
 

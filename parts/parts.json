@@ -1,0 +1,136 @@
+{
+  "revision": 1,
+  "_comment": [
+    "Which mesh on a figure is clothing, hair, a shoe, an accessory \u2014 or the body itself.",
+    "",
+    "Fitted to 96 distinct mesh-node names across twenty captured figures, and DATA rather than code",
+    "because that set is never finished: the next capture arrives with a word nobody listed.",
+    "Adding one should be an edit, not a release. Bump `revision` when you do \u2014 every import records",
+    "which revision classified it, so a change says which assets are worth reclassifying instead of",
+    "silently disagreeing with the ones already catalogued.",
+    "",
+    "Rules are tried IN ORDER and the first match wins, so the specific ones come first. Matching is",
+    "case-insensitive substring, because these names run together \u2014 `clothes_weddingdress_heels_L`",
+    "Rules are tried IN ORDER and the first match wins. SPECIFIC FIRST, with `body` LAST: it is the least specific category and its matches (`model_britney`, `agnes`) are substrings of the more specific ones (`model_britney_hair`). Matching is case-insensitive substring, because these names run together \u2014 `clothes_weddingdress_heels_L` is a shoe and a word-boundary rule finds none."
+  ],
+  "rules": [
+    {
+      "category": "face",
+      "match": [
+        "eyelash",
+        "eylash",
+        "eyebrow",
+        "brows",
+        "cc_base_eye",
+        "eyes",
+        "teeth",
+        "tongue",
+        "cornea",
+        "sclera"
+      ]
+    },
+    {
+      "category": "shoes",
+      "match": [
+        "heel",
+        "shoe",
+        "boot",
+        "sandal",
+        "sneaker"
+      ]
+    },
+    {
+      "category": "accessory",
+      "match": [
+        "item_",
+        "glasses",
+        "sunglass",
+        "earring",
+        "necklace",
+        "ring",
+        "diamond",
+        "purse",
+        "bag",
+        "hat",
+        "veil",
+        "flower",
+        "watch",
+        "belt",
+        "garter"
+      ]
+    },
+    {
+      "category": "hair",
+      "match": [
+        "hair",
+        "pigtail",
+        "braid",
+        "swept",
+        "ponytail",
+        "bun",
+        "scalp"
+      ]
+    },
+    {
+      "category": "clothing",
+      "match": [
+        "clothes",
+        "cloth",
+        "dress",
+        "skirt",
+        "shirt",
+        "top",
+        "jacket",
+        "coat",
+        "shorts",
+        "jeans",
+        "trouser",
+        "pant",
+        "bra",
+        "panty",
+        "underwear",
+        "lingerie",
+        "kimono",
+        "uniform",
+        "nightwear",
+        "swimsuit",
+        "sock",
+        "stocking",
+        "scarf",
+        "apron",
+        "strap"
+      ]
+    },
+    {
+      "category": "body",
+      "match": [
+        "cc_base_body",
+        "body",
+        "model_britney",
+        "model_granny",
+        "model_stewardspussy",
+        "oktoberfest_milf",
+        "model_bianca",
+        "agnes",
+        "alice",
+        "female_",
+        "teacher_v",
+        "barbie",
+        "goddess",
+        "kawaii",
+        "granny"
+      ]
+    }
+  ],
+  "removable": [
+    "clothing",
+    "shoes",
+    "accessory",
+    "hair"
+  ],
+  "_removable_note": [
+    "Categories a figure can be stripped of. `face` and `body` are not removable: taking the eyes out",
+    "of a head is not undressing it. `hair` is removable but is NOT clothing \u2014 stripping a figure to",
+    "check its integrity should not scalp it, so it is its own category and its own toggle."
+  ]
+}

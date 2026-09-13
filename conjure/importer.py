@@ -470,6 +470,20 @@ class ModelImporter(AssetImporter):
                     used = doc.get("extensionsUsed") or []
                     if "VRMC_springBone" in used or "VRM" in (doc.get("extensions") or {}):
                         attributes["spring_bones"] = "VRMC_springBone" in used
+                    # WHICH MESH IS THE CLOTHING. Classified once, here, where the answer can be
+                    # inspected and corrected — a heuristic that fires at render time is invisible
+                    # and fires again on every load. `unclassified` is reported rather than swallowed:
+                    # it is the vocabulary's backlog and the only honest measure of its coverage.
+                    try:
+                        from .parts import classify
+                        found = classify(doc)
+                        if found.get("parts"):
+                            attributes["parts"] = found["parts"]
+                            attributes["parts_rev"] = found["revision"]
+                        if found.get("unclassified"):
+                            attributes["parts_unclassified"] = found["unclassified"]
+                    except Exception as exc:  # noqa: BLE001 — a figure without a wardrobe still poses
+                        print(f"[conjure] parts classification failed for {filename}: {exc}")
         # Stamped on EVERY model, not only the ones that turn out to be figures. The stamp records which
         # build looked at this file, and "we looked and it is a prop" is exactly as much worth recording
         # as a bone map — three rigged characters sat in the catalog as props because an earlier ingest
