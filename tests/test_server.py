@@ -4811,3 +4811,20 @@ def test_a_figure_with_no_parts_says_WHY_rather_than_doing_nothing(srv, client, 
     assert r["ok"] is False
     assert "no classified parts" in r["error"]
     assert "separate model" in r["error"], "it must point at the other mechanism"
+
+
+def test_hiding_reports_WHICH_CATEGORIES_not_just_mesh_names(srv, client, tmp_path):
+    """Three times running the director said "clothing's all off" after a call that also took the hair,
+    because the reply listed only mesh names and nobody reads those back. The caller has to be able to
+    say what it actually did."""
+    eid = _place_dressed_figure(srv, client, tmp_path)
+    r = client.post("/figure/parts", json={"id": eid, "only_body": True}).json()
+    assert r["hidden_by_category"] == {
+        "clothing": ["clothes_maiddress"],
+        "hair": ["model_britney_hair"],
+        "shoes": ["Canvas_shoes"],
+    }, "only_body takes the hair too, and the reply has to say so"
+
+    r = client.post("/figure/parts", json={"id": eid, "show": ["hair"]}).json()
+    assert "hair" not in r["hidden_by_category"]
+    assert sorted(r["hidden_by_category"]) == ["clothing", "shoes"]

@@ -1549,6 +1549,13 @@ async def grounded_skybox_js() -> FileResponse:
     return FileResponse(CLIENT_DIR / "grounded-skybox.js", media_type="application/javascript", headers=_NO_STORE)
 
 
+@app.get("/static/scene-environment.js")
+async def scene_environment_js() -> FileResponse:
+    # Explicit no-store route for the IBL environment module (loaded before conjure-client.js).
+    return FileResponse(CLIENT_DIR / "scene-environment.js", media_type="application/javascript",
+                        headers=_NO_STORE)
+
+
 @app.get("/static/conjure-pointers.js")
 async def conjure_pointers_js() -> FileResponse:
     # Explicit no-store route for the unified XR input layer (loaded before every module that reads input).
@@ -4667,7 +4674,13 @@ async def figure_parts(req: FigurePartsRequest) -> dict:
     patch = [{"op": "update", "id": req.id,
               "set": {"components.figure-parts": {"hidden": json.dumps(sorted(hidden))}}}]
     await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-parts")})
+    # Grouped as well as flat: the caller has to be able to SAY what it did, and a list of mesh names
+    # is not something anyone reads back to a user.
+    by_category: dict[str, list[str]] = {}
+    for node in sorted(hidden):
+        by_category.setdefault(parts.get(node, "other"), []).append(node)
     out = {"ok": True, "id": req.id, "hidden": sorted(hidden),
+           "hidden_by_category": by_category,
            "removable": {k: len(v) for k, v in groups.items()}}
     if unknown:
         out["unknown"] = unknown

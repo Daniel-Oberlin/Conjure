@@ -20,9 +20,9 @@ import pytest
 
 from conjure.figures import split_glb, write_glb
 from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, BLEND_PREMULTIPLIED, Build, adopt_unbound, build_origin,
-                                by_container, find_builds, find_orphans, has_alpha, load_image,
-                                material_from, missing_files, read_build, rebuild, report_orphans,
-                                variant_only, _Textures)
+                                by_container, container_meshes, find_builds, find_orphans, has_alpha,
+                                load_image, material_from, missing_files, read_build, rebuild,
+                                regroup_materials, report_orphans, variant_only, _Textures)
 
 PIL = pytest.importorskip("PIL.Image")
 
@@ -41,6 +41,31 @@ def _glb(meshes=(1, 3)) -> bytes:
                    for n in meshes],
         "nodes": [{"name": "root", "mesh": 0}],
         "scenes": [{"nodes": [0]}], "scene": 0,
+    }
+    return write_glb(doc, b"01234567")
+
+
+def _glb_named(meshes) -> bytes:
+    """A GLB whose meshes carry NAMES and real vertex counts — `[(name, [count, ...]), ...]`.
+
+    `adopt_unbound` reads both off the container FILE, because the registry does not always describe
+    every mesh in it: office-babe's body has no render asset at all, and her file still calls it `Body`.
+    """
+    accessors, prims = [], []
+    for _name, counts in meshes:
+        row = []
+        for n in counts:
+            accessors.append({"componentType": 5126, "count": n, "type": "VEC3"})
+            row.append({"attributes": {"POSITION": len(accessors) - 1}})
+        prims.append(row)
+    doc = {
+        "asset": {"version": "2.0", "generator": "test"},
+        "buffers": [{"byteLength": 8}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 8}],
+        "accessors": accessors,
+        "meshes": [{"primitives": p} for p in prims],
+        "nodes": [{"name": n, "mesh": i} for i, (n, _c) in enumerate(meshes)],
+        "scenes": [{"nodes": list(range(len(meshes)))}], "scene": 0,
     }
     return write_glb(doc, b"01234567")
 
@@ -71,7 +96,7 @@ def _png(path, mode, *, transparent=False, size=(8, 8)):
 
 
 def _build(tmp_path, *, materials=None, entities=None, renders=None, containers=None, textures=(),
-           templates=(), scene=True):
+           templates=(), scene=True, glbs=()):
     """Write a minimal published build to disk and return its directory.
 
     `templates` is `[(id, name, [(entity, render, [materials])])]`; `scene=False` leaves the scene
@@ -101,6 +126,9 @@ def _build(tmp_path, *, materials=None, entities=None, renders=None, containers=
                             "data": {"entities": hierarchy(specs)}}
     os.makedirs(tmp_path / "files", exist_ok=True)
     (tmp_path / "files" / "body.glb").write_bytes(_glb())
+    for url, data in glbs:                       # containers that are not all the same file
+        os.makedirs(os.path.dirname(tmp_path / url), exist_ok=True)
+        (tmp_path / url).write_bytes(data)
     (tmp_path / "config.json").write_text(json.dumps(
         {"assets": assets, "scenes": [{"name": "main", "url": "scene.json"}]}))
     if scene:
@@ -199,6 +227,90 @@ def test_an_unbound_mesh_can_adopt_a_material_by_render_name(tmp_path):
     got = [b for b in build.bindings if b.container == 10 and b.mesh == 1][0]
     assert got.materials == (31,) and got.adopted, "flagged, because a name match is evidence not proof"
     assert any("INFERRED" in n for n in build.notes)
+
+
+def test_a_mesh_no_render_asset_describes_at_all_can_still_adopt(tmp_path):
+    """Office-babe came out matte black and her body was the reason. The scene renders it from
+    `manager_fixing.glb`, so her OWN container's copy is bound by nobody — and, unlike Jane's hair, the
+    registry has no render asset for it either: her eight render assets start at index 1. A search that
+    only ever looked at render assets could not see the mesh, let alone adopt for it. The file still
+    calls it `Body`, which is where the name has to come from."""
+    root = _build(
+        tmp_path,
+        containers=[(10, "office-babe.glb", "files/office-babe.glb"),
+                    (11, "manager_fixing.glb", "files/manager_fixing.glb")],
+        # Note what is NOT here: nothing describes (10, 0). Her registry begins at mesh 1.
+        renders=[(21, "Hair", 10, 1), (22, "Body", 11, 0)],
+        entities=[("Hair", 21, [31]), ("Body", 22, [30])],
+        glbs=[("files/office-babe.glb", _glb_named([("Body", [7]), ("Hair", [1])])),
+              ("files/manager_fixing.glb", _glb_named([("Body", [7])]))],
+    )
+    build = read_build(root)
+    assert not [b for b in build.bindings if b.container == 10 and b.mesh == 0], "nobody binds her body"
+    assert adopt_unbound(build) == 1
+    got = [b for b in build.bindings if b.container == 10 and b.mesh == 0][0]
+    assert got.materials == (30,) and got.adopted
+
+
+def test_adoption_carries_materials_across_a_different_primitive_split(tmp_path):
+    """A glTF primitive break IS a material break, so two copies of one mesh need not be split the same
+    way: the copy exported WITH materials splits where they change and the copy exported without them
+    does not. Office-babe's body is 5 primitives in her container and 6 in the one the scene renders —
+    the mouth, one span there and two here, both wearing `Mouth`. Match by vertex count and the spans
+    line up."""
+    root = _build(
+        tmp_path,
+        containers=[(10, "her.glb", "files/her.glb"), (11, "fixing.glb", "files/fixing.glb")],
+        renders=[(21, "Hair", 10, 1), (22, "Body", 11, 0)],
+        entities=[("Hair", 21, [31]), ("Body", 22, [30, 31, 31])],
+        glbs=[("files/her.glb", _glb_named([("Body", [4, 2]), ("Hair", [1])])),
+              ("files/fixing.glb", _glb_named([("Body", [4, 1, 1])]))],
+    )
+    build = read_build(root)
+    assert adopt_unbound(build) == 1
+    got = [b for b in build.bindings if b.container == 10 and b.mesh == 0][0]
+    assert got.materials == (30, 31), "the merged span takes the material its parts agree on"
+    assert "regrouped" in " ".join(build.notes)
+
+
+def test_adoption_refuses_a_name_match_whose_vertices_do_not_line_up(tmp_path):
+    """A name match is evidence, not proof, and exporters hand out names like `Object_4` — `computer_desk`
+    and `cool_button` each have one, at 2,147 and 149 vertices. Adopting across that paints a desk with a
+    button's material and looks exactly like a conversion bug. Different vertex counts mean different
+    meshes, so refuse and say why."""
+    root = _build(
+        tmp_path,
+        containers=[(10, "computer_desk.glb", "files/desk.glb"),
+                    (11, "cool_button.glb", "files/button.glb")],
+        renders=[(21, "Lamp", 10, 1), (22, "Object_4", 11, 0)],
+        entities=[("Lamp", 21, [31]), ("Object_4", 22, [30])],
+        glbs=[("files/desk.glb", _glb_named([("Object_4", [2147]), ("Lamp", [5])])),
+              ("files/button.glb", _glb_named([("Object_4", [149])]))],
+    )
+    build = read_build(root)
+    assert adopt_unbound(build) == 0
+    assert any("NOT adopting" in n for n in build.notes)
+
+
+def test_regroup_refuses_a_span_that_covers_two_materials():
+    """A merged primitive whose parts wore DIFFERENT materials has no answer in a format that allows one
+    material per primitive. Picking either is a coin toss, so pick neither."""
+    assert regroup_materials((4, 1, 1), (30, 31, 31), (4, 2)) == (30, 31)
+    assert regroup_materials((4, 1, 1), (30, 31, 32), (4, 2)) is None, "the span disagrees with itself"
+    assert regroup_materials((4, 2), (30, 31), (4, 3)) is None, "a sum that never lands"
+    assert regroup_materials((4, 2), (30, 31), (4,)) is None, "donor primitives left over"
+
+
+def test_container_meshes_reports_unknown_counts_rather_than_guessing(tmp_path):
+    """A count it cannot resolve is not a count of zero. All-or-nothing, because a partial list cannot
+    align two primitive runs — and `adopt_unbound` then falls back to carrying the materials as they are,
+    which is what it always did."""
+    root = _build(tmp_path, glbs=[("files/named.glb", _glb_named([("Body", [7, 2])]))],
+                  containers=[(10, "named.glb", "files/named.glb")])
+    build = read_build(root)
+    assert container_meshes(build, 10) == [("Body", (7, 2))]
+    build.assets[10]["file"]["url"] = "files/body.glb"          # the fixture GLB: no accessors at all
+    assert container_meshes(build, 10) == [("root", ()), ("", ())], "unknown, not zero"
 
 
 def test_a_template_supplies_the_binding_when_the_scene_is_absent(tmp_path):

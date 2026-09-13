@@ -19,6 +19,7 @@
              space-capture
              controller-beams
              occlusion
+             scene-environment
              renderer="foveationLevel: 0"
              webxr="optionalFeatures: plane-detection, mesh-detection, hit-test, anchors, depth-sensing, hand-tracking, local-floor">
       <!-- foveationLevel: 0 disables fixed foveated rendering (A-Frame's default is 1 = MAX), which
@@ -55,6 +56,8 @@
     <script src="/static/space-snap.js"></script>
     <script src="/static/plane-anchor.js"></script>
     <script src="/static/grounded-skybox.js"></script>
+    <!-- IBL for metal. Without it every metallicFactor-1 material renders black — see the file. -->
+    <script src="/static/scene-environment.js"></script>
     <script src="/static/figure.js"></script>
     <script src="/static/controller-beams.js"></script>
     <!-- Debug-only surface overlay (--debug-surface-overlay): seed / device-rect / device-polygon

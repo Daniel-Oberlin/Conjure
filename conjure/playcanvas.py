@@ -397,8 +397,68 @@ def read_build(root: str) -> Build:
     return build
 
 
+def container_meshes(build: Build, container: int) -> list[tuple[str, tuple[int, ...]]]:
+    """`(node name, per-primitive vertex counts)` for each mesh of a container GLB, in mesh order.
+
+    The container file, not the registry. A render asset is the registry's NAME for a mesh, and a build
+    does not always have one: `office-babe.glb` holds nine meshes and the registry describes eight,
+    starting at index 1. The missing one is her body.
+    """
+    path = build.path(container)
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        doc, _bin = split_glb(open(path, "rb").read())
+    except Exception:                                       # noqa: BLE001  (a bad file is not fatal here)
+        return []
+    if not doc:
+        return []
+    names: dict[int, str] = {}
+    for node in doc.get("nodes") or []:
+        if node.get("mesh") is not None:
+            names.setdefault(int(node["mesh"]), node.get("name") or "")
+    accessors = doc.get("accessors") or []
+    out = []
+    for i, mesh in enumerate(doc.get("meshes") or []):
+        counts = []
+        for prim in mesh.get("primitives") or []:
+            pos = (prim.get("attributes") or {}).get("POSITION")
+            n = int((accessors[pos] or {}).get("count") or 0) if isinstance(pos, int) and pos < len(accessors) else 0
+            counts.append(n)
+        # All or nothing. A partial count cannot align two primitive lists, and an empty tuple is the
+        # honest way to say so — `adopt_unbound` then adopts the materials as they are, as it always did.
+        out.append((names.get(i) or mesh.get("name") or "", tuple(counts) if all(counts) else ()))
+    return out
+
+
+def regroup_materials(donor: tuple[int, ...], mats: tuple, counts: tuple[int, ...]) -> Optional[tuple]:
+    """Carry a donor's per-primitive materials onto the same mesh split into different primitives.
+
+    Two copies of one mesh need not be split the same way, because a glTF primitive break IS a material
+    break: the copy that was exported with materials splits where they change, and the copy that was
+    exported without them does not. Office-babe's body is 5 primitives in her own container and 6 in
+    `manager_fixing.glb`, which the scene actually renders — the difference is the mouth, one span there
+    and two here, both wearing `Mouth`.
+
+    So match by VERTEX COUNT and refuse anything else. Consume donor primitives until they sum to the
+    recipient's, and take their material only if they agree on one; a span covering two materials has no
+    answer, and a sum that never lands means these are not the same mesh and nothing should be adopted.
+    """
+    out, i = [], 0
+    for want in counts:
+        got, span = 0, []
+        while i < len(donor) and got < want:
+            got += donor[i]
+            span.append(mats[i] if i < len(mats) else None)
+            i += 1
+        if got != want or len(set(span)) != 1:
+            return None
+        out.append(span[0])
+    return tuple(out) if i == len(donor) else None
+
+
 def adopt_unbound(build: Build) -> int:
-    """Give an unbound mesh the material bound to an identically-named render asset elsewhere. Inferred.
+    """Give an unbound mesh the material bound to an identically-named mesh elsewhere. Inferred.
 
     A character build routinely ships the same mesh twice: once inside the body container and once as a
     standalone container so it can be swapped. Jane's hair is both `jane_export.glb` mesh 3 and the whole
@@ -408,7 +468,13 @@ def adopt_unbound(build: Build) -> int:
     Faithfully, that IS what the scene does. But a figure has to arrive as ONE file here, and a
     swappable-outfit vocabulary does not exist yet (specs/figures.md, § What is not built), so the
     useful answer and the literal answer differ. This is the useful one, kept behind a flag and reported
-    as inferred every time, because a render asset's NAME matching is good evidence and not proof.
+    as inferred every time, because a NAME matching is good evidence and not proof.
+
+    Candidates come from the registry AND from the container files, because the registry can be silent.
+    Office-babe's skin, hair and glasses came out matte black — the black of glTF's default material,
+    metallic 1 — and her body was the reason: the scene renders it from `manager_fixing.glb`, so her own
+    container's copy has no render asset, no name in the registry, and was invisible to a search that
+    only ever looked at render assets. Her mesh is still called `Body` inside the file.
     """
     renders = {}
     for aid, a in build.assets.items():
@@ -419,16 +485,44 @@ def adopt_unbound(build: Build) -> int:
             renders[(int(d["containerAsset"]), int(d["renderIndex"]))] = a.get("name") or ""
     bound = {(b.container, b.mesh) for b in build.bindings}
     by_name = {renders.get((b.container, b.mesh), ""): b for b in build.bindings}
+
+    # Only containers the build already binds something in. Enough to reach a stale sibling mesh, and it
+    # keeps this from opening every GLB in a props library to look at meshes nothing refers to.
+    geometry = {c: container_meshes(build, c) for c in sorted({b.container for b in build.bindings})}
+    for container, meshes in geometry.items():
+        for i, (name, _counts) in enumerate(meshes):
+            renders.setdefault((container, i), name)
+    for bind in build.bindings:                 # a bound mesh can be a donor under its in-file name too
+        meshes = geometry.get(bind.container) or []
+        if bind.mesh < len(meshes) and meshes[bind.mesh][0]:
+            by_name.setdefault(meshes[bind.mesh][0], bind)
+
     adopted = 0
     for key, name in sorted(renders.items()):
         if key in bound or not name or name not in by_name:
             continue
         donor = by_name[name]
+        mats, how = donor.materials, ""
+        mine = geometry.get(key[0]) or []
+        theirs = geometry.get(donor.container) or []
+        if key[1] < len(mine) and donor.mesh < len(theirs):
+            counts, donor_counts = mine[key[1]][1], theirs[donor.mesh][1]
+            if counts and donor_counts and counts != donor_counts:
+                mats = regroup_materials(donor_counts, donor.materials, counts)
+                if mats is None:
+                    build.notes.append(
+                        f"{build.name(key[0])} mesh {key[1]} is bound by no entity and shares the name "
+                        f"{name!r} with {build.name(donor.container)} mesh {donor.mesh}, but their "
+                        f"primitives do not line up ({list(counts)} vs {list(donor_counts)}) — NOT "
+                        f"adopting, they are not the same mesh")
+                    continue
+                how = (f", regrouped from {len(donor_counts)} primitive(s) to {len(counts)} by matching "
+                       f"vertex counts")
         build.bindings.append(Binding(f"{donor.entity} (adopted by name {name!r})",
-                                      key[0], key[1], donor.materials, adopted=True))
+                                      key[0], key[1], mats, adopted=True))
         build.notes.append(f"{build.name(key[0])} mesh {key[1]} is bound by no entity; adopting the "
                            f"material from {build.name(donor.container)} mesh {donor.mesh}, which shares "
-                           f"the render name {name!r} — INFERRED, look at it")
+                           f"the name {name!r}{how} — INFERRED, look at it")
         adopted += 1
     build.bindings.sort(key=lambda b: (b.container, b.mesh))
     return adopted

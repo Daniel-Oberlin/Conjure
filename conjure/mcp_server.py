@@ -578,9 +578,20 @@ async def dress_figure(id: str, hide: Optional[list[str]] = None, show: Optional
                        only_body: bool = False) -> str:
     """Turn parts of a figure off and on — clothing, hair, shoes, accessories.
 
-    Use for 'take her jacket off', 'lose the shoes', 'show me the model underneath'. hide/show take
-    CATEGORIES — clothing, hair, shoes, accessory — or the name of one mesh when a category is too
-    broad. only_body: strip everything removable in one go.
+    **Match the request to the narrowest thing that satisfies it.** The categories are separate because
+    people mean them separately:
+
+      "remove her clothes" / "take her dress off"  -> hide=["clothing"]     NOT only_body
+      "lose the shoes" / "barefoot"                -> hide=["shoes"]
+      "take off her necklace" / "no jewellery"     -> hide=["accessory"]
+      "shave her" / "remove the hair"              -> hide=["hair"]
+      "strip her" / "show me the model underneath" -> only_body=True
+
+    `only_body` removes EVERYTHING removable INCLUDING HER HAIR, which is almost never what "remove her
+    clothes" means. Reach for it only when the user asked for everything off.
+
+    hide/show also take the name of a single mesh, for when a category is too broad — 'take off the
+    left shoe'. The tool reports which categories it hid, so say that back rather than guessing.
 
     The face and the body itself are never removable. Hiding is visibility, not deletion: a pose
     survives it and showing a part again is instant. What counts as clothing was decided when the model
@@ -592,8 +603,16 @@ async def dress_figure(id: str, hide: Optional[list[str]] = None, show: Optional
         return f"Couldn't change that figure's parts: {_reason(out)}."
     hidden = out.get("hidden") or []
     groups = out.get("removable") or {}
-    lines = [f"{id}: {len(hidden)} mesh(es) hidden" + (f" — {', '.join(hidden)}" if hidden else "")]
-    lines.append("Removable: " + (", ".join(f"{k} ({n})" for k, n in groups.items()) or "nothing"))
+    by_cat = out.get("hidden_by_category") or {}
+    # Report by CATEGORY as well as by mesh, so the answer given back to the user is what actually
+    # happened. Three times running the director said "clothing's all off" after a call that also took
+    # the hair, because the reply only listed mesh names and nobody reads those.
+    summary = ", ".join(f"{c} ({len(n)})" for c, n in sorted(by_cat.items())) if by_cat else "nothing"
+    lines = [f"{id}: hidden — {summary}."]
+    if hidden:
+        lines.append(f"Meshes: {', '.join(hidden)}")
+    lines.append("Still removable: "
+                 + (", ".join(f"{k} ({n})" for k, n in groups.items()) or "nothing"))
     if out.get("unknown"):
         lines.append(f"Not a category or a mesh on this figure: {', '.join(out['unknown'])}")
     return "\n".join(lines)
