@@ -1153,7 +1153,8 @@ def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dic
 
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
                      bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
-                     humanoid=None, humanoid_axes=None, humanoid_follows=None) -> dict:
+                     humanoid=None, humanoid_axes=None, humanoid_follows=None,
+                     parts=None) -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
@@ -1186,6 +1187,12 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
             # from a planted foot to a raised ankle — reported from the headset on two of three
             # asset-pack characters.
             meta["humanoid_follows"] = dict(humanoid_follows)
+        if parts:
+            # Which mesh is clothing, hair, a shoe. Travels with the entity for the same reason the bone
+            # map does: `/figure/parts` resolves "take her coat off" into node names without a catalog
+            # lookup, and the client stays generic — it hides the nodes it is given and knows nothing
+            # about garments.
+            meta["parts"] = dict(parts)
         if humanoid_axes:
             # And the anatomical frame beside it: which way to rotate each bone so "bend 45" is the
             # same motion on a VRM and on a re-parented Daz rig. Measured from the bind pose at import
@@ -3582,7 +3589,8 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m,
                           placement=req.placement, rigged=bool(attrs.get("rigged")),
                           humanoid=attrs.get("humanoid"), humanoid_axes=attrs.get("humanoid_axes"),
-                          humanoid_follows=attrs.get("humanoid_follows"))
+                          humanoid_follows=attrs.get("humanoid_follows"),
+                          parts=attrs.get("parts"))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
@@ -4586,6 +4594,84 @@ class FigureRequest(BaseModel):
     pose: Optional[dict] = None                   # {semanticBone: {bend|spread|turn: DEGREES}}
     named: Optional[str] = None                   # ...or a pose from the library ("kneel"), tier 2
     clear: bool = False                           # drop the pose and return to the bind pose
+
+
+class FigurePartsRequest(BaseModel):
+    id: str
+    hide: list[str] = []                 # categories or node names to hide
+    show: list[str] = []                 # ...and to bring back
+    only_body: bool = False              # strip everything removable, in one word
+
+
+@app.post("/figure/parts")
+async def figure_parts(req: FigurePartsRequest) -> dict:
+    """Turn parts of a figure off and on — clothing, hair, shoes, accessories.
+
+    Takes CATEGORIES or node names; the entity stores NODE NAMES. The classifier proposes a default
+    grouping at import and the entity holds the truth, so a wrong classification is corrected by naming
+    the node and does not have to be argued with.
+
+    Hiding is a visibility flag, never a deletion: the mesh is still there, still skinned, still posed
+    with the rest of the figure, so showing it again needs no reload and a pose survives undressing.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+    meta = ent.get("meta") or {}
+    parts = meta.get("parts") or {}
+    if not parts:
+        # A figure with no classified parts is not a figure that cannot be undressed — its clothing may
+        # be a SEPARATE CONTAINER, which is a different mechanism with a different answer. Say which,
+        # because "nothing happened" is the one response that teaches nobody anything.
+        hint = ""
+        if meta.get("rigged"):
+            hint = (" It may have been placed before parts were classified — place it again — or its "
+                    "clothing may be a separate model, in which case remove that entity instead.")
+        return {"ok": False, "error": f"{req.id!r} has no classified parts.{hint}"}
+
+    from .parts import load_vocabulary, removable as removable_parts
+    vocabulary = load_vocabulary()
+    groups = removable_parts(parts, vocabulary)
+
+    def resolve(words: list[str]) -> tuple[set[str], list[str]]:
+        """Category names expand; a node name passes through; anything else is REPORTED."""
+        nodes: set[str] = set()
+        unknown: list[str] = []
+        for word in words:
+            if word in groups:
+                nodes |= set(groups[word])
+            elif word in parts:
+                nodes.add(word)
+            else:
+                unknown.append(word)
+        return nodes, unknown
+
+    # The component stores a JSON STRING (A-Frame schema types are strings), so decode before making a
+    # set of it — `set("[\"a\"]")` is a set of punctuation, and it accumulates silently.
+    stored = (ent.get("components") or {}).get("figure-parts", {}).get("hidden") or []
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored or "[]")
+        except ValueError:
+            stored = []
+    hidden = set(stored)
+    if req.only_body:
+        hidden = {n for ns in groups.values() for n in ns}
+        unknown: list[str] = []
+    else:
+        add, bad_hide = resolve(req.hide)
+        drop, bad_show = resolve(req.show)
+        unknown = bad_hide + bad_show
+        hidden = (hidden | add) - drop
+
+    patch = [{"op": "update", "id": req.id,
+              "set": {"components.figure-parts": {"hidden": json.dumps(sorted(hidden))}}}]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-parts")})
+    out = {"ok": True, "id": req.id, "hidden": sorted(hidden),
+           "removable": {k: len(v) for k, v in groups.items()}}
+    if unknown:
+        out["unknown"] = unknown
+    return out
 
 
 @app.post("/figure")

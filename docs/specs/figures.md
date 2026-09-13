@@ -389,6 +389,38 @@ direction lists the six; a figure with no map or no frame says which it is missi
 it. A pose that silently does nothing is indistinguishable from one the user cannot see from where they
 are standing.
 
+### 5a. Parts — which mesh is clothing
+
+A capture's figure is one GLB carrying a body, a dress, hair, shoes and a pair of eyelashes as separate
+meshes. Turning a garment off needs a list of the nodes that ARE the garment, and somewhere to put it
+that a person can correct.
+
+**Classified once, at import**, into `attributes.parts` — `{nodeName: category}` over six categories:
+`body`, `face`, `hair`, `clothing`, `shoes`, `accessory`. Same argument as reading a normal map from the
+registry instead of its pixels: a guess made at import can be inspected, overruled and versioned, while
+one made at render time is invisible and fires again on every load.
+
+**The vocabulary is data** — `parts/parts.json` on the user-first search path `config.PARTS_PATH`
+([`specs/config.md §4`](./config.md)) — because it is never finished: the next capture arrives with a
+word nobody listed. `attributes.parts_rev` records which revision classified an asset, so a change says
+which rows are worth reclassifying instead of silently disagreeing with them.
+
+A prefix rule is the obvious approach and does not work: `clothes_*` appears in only **8 of 20**
+captures and the rest say `Dress`, `Shorts`, `underwear`, `Kimono`, `Strap_Top` — bare words. Rules are
+matched as case-insensitive **substrings**, in order, first match wins, with `body` **last**: its names
+(`model_britney`, `agnes`) are substrings of the specific ones, and with it first `model_britney_hair`
+classified as body and could never be taken off.
+
+Only nodes carrying a **mesh** are parts. A bone called `DEF_Skirt01` drives a garment and is not one;
+hiding it would do nothing while implying it had.
+
+`attributes.parts_unclassified` is **reported, not swallowed** — it is the vocabulary's backlog and the
+only honest measure of its coverage. Across all twenty captured figures exactly one name is unclassified:
+`Beer`, genuinely a prop mesh inside a figure.
+
+`body` and `face` are **never removable**: taking the eyes out of a head is not undressing it. `hair` is
+removable and is **not** clothing — stripping a figure to check its integrity should not scalp it.
+
 ## 6. Placement
 
 `_normalize(record, pos, target_m, rigged=…)` in `server.py` treats a figure differently in two ways:
@@ -412,6 +444,7 @@ them onto DOM data attributes:
 | `humanoid` | — | `/figure` resolves bone names without a catalog lookup |
 | `humanoid_axes` | — | the `figure` component resolves poses against it |
 | `humanoid_follows` | — | the `figure` component's parent constraint |
+| `parts` | — | `/figure/parts` expands a category into node names (§5a, §8a) |
 
 **`grab` and figures.** Two changes, both in `dynamics/grab/grab.js`, after a 348 k-triangle figure made
 grabbing stutter at 90 Hz:
@@ -430,8 +463,9 @@ graph.**
 ## 7. `FRAME_REV` — a catalog row is a snapshot of what we understood
 
 A figure's map, frame and limits are **cached in the catalog**, and understanding keeps changing while
-rows do not. `figures.FRAME_REV` (**13** today) is bumped whenever anything that changes a derived
-result changes — inference, the axes, `validate()`, the convention table, which skin is chosen.
+rows do not. `figures.FRAME_REV` (**14** today) is bumped whenever anything that changes a derived
+result changes — inference, the axes, `validate()`, the convention table, which skin is chosen, the
+parts vocabulary.
 
 `figures.RIG_SIG_REV` (**1**) is a **separate** stamp, and the separation is the point: a discovery fix
 can change a signature without changing what a signature *means*, and the two need telling apart when
@@ -456,6 +490,27 @@ revision once left every row marked current and the fix reached nobody.
 Note the ordering on the fetch path: `/place_asset` catalogues the corrected figure attributes but places
 **that first instance** as a prop, from the resolver's own trimesh bounds. Placing it again from the
 library (`/place_cached_asset`) is what gives it the figure treatment.
+
+### 8a. The `figure-parts` component
+
+A sibling to `figure`, and deliberately **generic**: it hides the glTF nodes it is handed and knows
+nothing about garments. One field, `hidden` — a JSON array of node names — because what counts as
+clothing was decided at import where the answer is recorded and correctable.
+
+`POST /figure/parts` (`dress_figure`) resolves the semantics: it takes **categories** or node names,
+expands categories against the entity's `meta.parts`, and writes node names to the component. So the
+classifier proposes and **the entity holds the truth** — a wrong grouping is corrected by naming the
+mesh, not argued with. A word that is neither a category nor a mesh on this figure is reported back,
+since silently ignoring it reads as a working command.
+
+Hiding is **visibility, never removal**. The mesh stays in the scene, stays skinned and stays posed with
+the rest of the figure, so showing it again needs no reload and a pose survives undressing. Re-applied
+on `model-loaded`, exactly as `figure` re-applies a pose, or undressing a figure that is still loading
+does nothing and looks like a broken tool.
+
+**A figure with no classified parts is not a figure that cannot be undressed.** Its clothing may be a
+separate container — Jane's `hair.glb` and `underwear.glb` are their own assets — which is a different
+mechanism: remove that entity. The endpoint says so rather than returning success and doing nothing.
 
 ## 8. The runtime — the `figure` component
 
@@ -798,8 +853,10 @@ Recorded here so the spec can be trusted about its own edges; the design work is
 
 - **No animation.** `clips` is recorded and never read. There is no mixer component, no `animate_model`,
   no retargeting, and no decision yet on how a pose and a clip compose.
-- **No outfits.** Collection structure is used at *conversion* time to choose what to export; there is no
-  runtime show/hide, no slot vocabulary, and no `set_model_parts`.
+- ~~**No outfits.**~~ Built 2026-09-13 as §8a: a parts vocabulary classifies each mesh at import, and
+  `dress_figure` / `POST /figure/parts` turn categories off and on at runtime. What is still absent is
+  the other mechanism — clothing that arrived as a SEPARATE CONTAINER (Jane's `hair.glb`) is a separate
+  entity, and taking it off means removing that, which the endpoint reports rather than does.
 - **No tier 3.** Nothing solves against the world: "sit on that chair" makes the shape of sitting and
   says so; "hand flat on the table" is not expressible at all.
 - **No discovery layers 3–6:** no LLM labelling, no multimodal verification, no human confirmation.

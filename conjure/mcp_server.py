@@ -560,6 +560,32 @@ async def inspect_figure(id: str) -> str:
 
 
 @mcp.tool()
+async def dress_figure(id: str, hide: Optional[list[str]] = None, show: Optional[list[str]] = None,
+                       only_body: bool = False) -> str:
+    """Turn parts of a figure off and on — clothing, hair, shoes, accessories.
+
+    Use for 'take her jacket off', 'lose the shoes', 'show me the model underneath'. hide/show take
+    CATEGORIES — clothing, hair, shoes, accessory — or the name of one mesh when a category is too
+    broad. only_body: strip everything removable in one go.
+
+    The face and the body itself are never removable. Hiding is visibility, not deletion: a pose
+    survives it and showing a part again is instant. What counts as clothing was decided when the model
+    was imported, so if something is in the wrong group, name that mesh directly.
+    """
+    out = await _post("/figure/parts", _body(id=id, hide=hide or [], show=show or [],
+                                             only_body=only_body))
+    if not out.get("ok"):
+        return f"Couldn't change that figure's parts: {_reason(out)}."
+    hidden = out.get("hidden") or []
+    groups = out.get("removable") or {}
+    lines = [f"{id}: {len(hidden)} mesh(es) hidden" + (f" — {', '.join(hidden)}" if hidden else "")]
+    lines.append("Removable: " + (", ".join(f"{k} ({n})" for k, n in groups.items()) or "nothing"))
+    if out.get("unknown"):
+        lines.append(f"Not a category or a mesh on this figure: {', '.join(out['unknown'])}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 async def list_poses() -> str:
     """The named poses a figure can be put into, and what each one is.
 

@@ -57,7 +57,8 @@
         "reset_world_frame",
         "inspect_figure",
         "list_poses",
-        "pose_figure"
+        "pose_figure",
+        "dress_figure"
       ]
     }
   ],

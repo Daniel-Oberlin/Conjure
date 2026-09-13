@@ -457,4 +457,55 @@
       });
     }
   });
+
+  // ---------------------------------------------------------------- figure-parts
+  //
+  // Turn parts of a figure off and on. Deliberately GENERIC: it hides the nodes it is handed and knows
+  // nothing about garments. What counts as clothing is decided once at import, where the answer can be
+  // inspected and corrected (conjure/parts.py); a client that classified meshes by name would re-decide
+  // it invisibly on every load and there would be nowhere to record that it was wrong.
+  //
+  // Visibility, never removal. The mesh stays in the scene, stays skinned and stays posed with the rest
+  // of the figure — so showing it again needs no reload, and a pose survives undressing.
+  AFRAME.registerComponent("figure-parts", {
+    schema: {
+      hidden: { type: "string", default: "" }      // JSON array of glTF node names
+    },
+
+    init: function () {
+      var self = this;
+      // `gltf-model` loads asynchronously and a patch can arrive first, so re-apply on every load —
+      // exactly as `figure` does for a pose. Without it, undressing a figure that is still loading
+      // silently does nothing and looks like a broken tool.
+      this._onLoad = function () { self.apply(); };
+      this.el.addEventListener("model-loaded", this._onLoad);
+      this.apply();
+    },
+
+    update: function () { this.apply(); },
+
+    apply: function () {
+      var root = this.el.getObject3D("mesh");
+      if (!root) return;
+      var hidden;
+      try {
+        hidden = JSON.parse(this.data.hidden || "[]");
+      } catch (e) {
+        hidden = [];
+      }
+      var want = Object.create(null);
+      for (var i = 0; i < hidden.length; i++) want[hidden[i]] = true;
+      // Every named node is visited, not just the hidden ones, so SHOWING is the same operation as
+      // hiding and a node dropped from the list comes back without a reload.
+      root.traverse(function (o) {
+        if (o.name) o.visible = !want[o.name];
+      });
+    },
+
+    remove: function () {
+      this.el.removeEventListener("model-loaded", this._onLoad);
+      var root = this.el.getObject3D("mesh");
+      if (root) root.traverse(function (o) { if (o.name) o.visible = true; });
+    }
+  });
 })();

@@ -84,6 +84,7 @@ env var  >  key in settings.json  >  $CONJURE_HOME/<sub>  >  XDG default
 | cache dir | `CONJURE_CACHE_DIR` | `cache_dir` | `$XDG_CACHE_HOME/conjure` |
 | agent search path | `CONJURE_AGENTS_PATH` | `agents_path` | `[<config>/agents, <bundled>]` |
 | dynamics search path | `CONJURE_DYNAMICS_PATH` | `dynamics_path` | `[<config>/dynamics, <bundled>]` |
+| figure-parts vocabulary | `CONJURE_PARTS_PATH` | `parts_path` | `[<config>/parts, <bundled>]` |
 | shell wake words | `CONJURE_WAKE_WORDS` | `wake_words` | `DEFAULT_WAKE_WORDS` (§5) |
 | voice wake words | `CONJURE_VOICE_WAKE_WORDS` | `voice_wake_words` | *empty* (§5) |
 
@@ -109,7 +110,7 @@ constants, which is the form the rest of the app consumes:
 | `CONFIG_DIR` | the authored-config root |
 | `DATA_DIR` | the precious root |
 | `CACHE_ROOT` | the disposable root |
-| `AGENTS_PATH`, `DYNAMICS_PATH` | ordered search paths, user-first |
+| `AGENTS_PATH`, `DYNAMICS_PATH`, `PARTS_PATH` | ordered search paths, user-first |
 | `WAKE_WORDS`, `VOICE_WAKE_WORDS` | resolved word lists, `[0]` canonical |
 | `CACHE_DIR`, `USERS_DIR`, `SESSION_PTR` | aliases into `DATA_DIR` |
 
@@ -131,7 +132,7 @@ can gain keys without disturbing anyone.
 ```json
 { "preferences": {},
   "data_dir": null, "cache_dir": null,
-  "agents_path": null, "dynamics_path": null,
+  "agents_path": null, "dynamics_path": null, "parts_path": null,
   "wake_words": null, "voice_wake_words": null,
   "default_user": "daniel" }
 ```
@@ -198,6 +199,11 @@ DYNAMICS_PATH = [ <config>/dynamics , <project>/dynamics ]
   spoken form drops the tag, like every other typographic marker — [`specs/agents.md`](./agents.md).)
 - The path is read **live** from `config.AGENTS_PATH` at each call (not captured at import), which is
   what lets a test monkeypatch it.
+- The figure-parts vocabulary resolves identically (`resolve_parts_path`,
+  [`specs/figures.md §5a`](./figures.md)) — which mesh is clothing is DATA, so a capture that
+  arrives with a word nobody listed is an edit rather than a release. A user file **shadows**
+  the bundled one rather than merging: a merged rule list has an order nobody can predict from
+  either file, and order is what decides a match.
 - Dynamic modules resolve identically (`resolve_dynamics_path`, [`specs/dynamics.md §3`](./dynamics.md)),
   and an agent's declared `dynamics` are validated against that path at load — a module that doesn't
   resolve fails the agent loudly instead of vanishing at runtime.
