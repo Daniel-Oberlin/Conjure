@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from conjure import capture_set                                          # noqa: E402
 from conjure.importer import plan_import                                 # noqa: E402
 from conjure.library import AssetLibrary                                 # noqa: E402
-from conjure.playcanvas import find_builds                               # noqa: E402
+from conjure.playcanvas import find_builds, read_build                               # noqa: E402
 
 
 def _asset_id(data: bytes, ext: str) -> str:
@@ -62,25 +62,30 @@ def _store(cache: str, asset_id: str, data: bytes) -> bool:
 
 
 def _containers_by_build(capture: str) -> dict[str, str]:
-    """Container filename -> the build directory it belongs to.
+    """Rebuilt-GLB stem -> the build directory it came from.
 
     This is what makes `shipped_with` mean what it says. A capture holds several builds — a character
     in one, the shared hands and props in another — and the authored set is the clips that shipped in
-    the FIGURE's OWN build. Without this, every rigged thing in the capture claims every clip, and the
-    VR hands end up owning Jane's twenty-one animations.
+    the FIGURE's OWN build. Without it, every rigged thing in the capture claims every clip and the VR
+    hands end up owning Jane's twenty-one animations.
+
+    Keyed on the container's FILE name, because that is what the rebuild names its output after
+    (`playcanvas.rebuild_build`: `stem = basename(path)`). The registry's asset NAME is a different
+    string and keying on it silently loses the match: Susan's container is filed as `Alice.glb` and
+    called `aula_Aliceglb`, so her figure claimed none of her eight clips.
     """
     out: dict[str, str] = {}
     for build in find_builds(capture):
         try:
-            cfg = json.load(open(os.path.join(build, "config.json")))
+            read = read_build(build)
         except Exception:                                                # noqa: BLE001
             continue
-        for asset in (cfg.get("assets") or {}).values():
+        for aid, asset in read.assets.items():
             if asset.get("type") != "container":
                 continue
-            name = asset.get("name") or ""
-            if name:
-                out.setdefault(os.path.splitext(name)[0].replace("%20", " ").strip(), build)
+            path = read.path(aid)
+            if path:
+                out.setdefault(os.path.splitext(os.path.basename(path))[0], build)
     return out
 
 
