@@ -211,7 +211,9 @@ independently.
   Being able to see what goes with what is how we will check the linking is right at all.
 
 **Done when:** Jane's 21 clips and 20 audio files import; her 20 `voiced_by` relations exist and
-Bianca's `2-10_action` links to two clips; querying clips by `rig_sig` returns them for Akari and Nancy
+moon-girl's `1-4-5-7-10_idle` links to **five** clips (this said Bianca's `2-10_action` and two — she
+has no clip 10, so linking one was the rule working, not failing; there are 120 many-to-many links in
+the corpus and the largest is five); querying clips by `rig_sig` returns them for Akari and Nancy
 without either figure being named; the shell can list a figure's clips and their audio; and the
 authored set and the compatible set are separately visible for a figure that has both.
 
