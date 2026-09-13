@@ -55,6 +55,12 @@ CULLFACE_NONE = 0
 #: as opaque geometry they turned both her eyes into solid black discs.
 LIGHTENING_BLENDS = (BLEND_ADDITIVE, BLEND_ADDITIVEALPHA, BLEND_SCREEN)
 
+#: THREE ways a layer can be all environment and no content, and glTF expresses none of them: a blend
+#: mode that only lightens (black is the no-op), one that modulates (white is), and a see-through
+#: MIRROR whose colour is entirely a reflection. Each is made invisible when it carries no detail of
+#: its own, because drawn opaque each one OCCLUDES the thing it was meant to enhance — and in all three
+#: cases the thing behind it was an eye.
+#:
 #: And the mirror image: blend modes that MODULATE what is behind them, where WHITE is the no-op. Same
 #: problem, opposite neutral colour — the stewardess's corneas are an untextured white on
 #: `BLEND_MULTIPLICATIVE2X`, a highlight over an eyeball the body mesh draws underneath, and as opaque
@@ -731,9 +737,28 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     blend = int(d.get("blendType", BLEND_NONE))
     cutoff = float(d.get("alphaTest", 0) or 0)
     alpha_real = "baseColorTexture" in pbr and tex.has_alpha(pbr["baseColorTexture"]["index"])
+    # A third way a layer can be all environment and no content: a MIRROR. `useMetalness` with
+    # `metalness: 1`, a gloss of 100, a skybox and no texture of its own is a reflection shell — the
+    # wet film over an eye. glTF carries no per-material environment (see `_UNCARRIED`), so it renders
+    # as a black mirror: the teacher's `Sclera` sits as its own primitive over the eye the body mesh
+    # draws, and came out as a dark disc that reads as a closed eye.
+    #
+    # Gated on being SEE-THROUGH, which is the line between an overlay and an object. `Sclera` is 0.2,
+    # `Cornea_v2` 0.2, `EyeMoisture` 0.5 — all films over something. `DIAMANT` is 0.963: also a
+    # reflection material, also wrong without an environment, but there is nothing behind it, so a dark
+    # gem is worse than no gem and it is left alone.
+    mirror = (bool(d.get("useMetalness")) and float(d.get("metalness") or 0) >= 0.9
+              and (d.get("useSkybox") or d.get("cubeMap") or d.get("sphereMap"))
+              and d.get("diffuseMap") is None and opacity <= 0.6)
     lightening = blend in LIGHTENING_BLENDS
     modulating = blend in MODULATING_BLENDS
-    if lightening or modulating:
+    if mirror and not (lightening or modulating):
+        out["alphaMode"] = "BLEND"
+        pbr["baseColorFactor"] = [0.0, 0.0, 0.0, 0.0]
+        warn.append(f"{name}: a see-through mirror ({opacity:.2f} opacity, metalness 1, reflecting a "
+                    f"skybox glTF cannot carry) — it has no colour of its own, so it is made invisible "
+                    f"rather than drawn as a black film over whatever it was meant to catch the light on")
+    elif lightening or modulating:
         # The least-wrong translation: BLEND, so the alpha at least applies, and
         # fully transparent where the layer carries no detail of its own —
         # because that is a layer which contributes nothing, and saying so is

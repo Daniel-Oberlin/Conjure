@@ -19,7 +19,7 @@ import struct
 import pytest
 
 from conjure.figures import split_glb, write_glb
-from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, Build, adopt_unbound, build_origin,
+from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, BLEND_PREMULTIPLIED, Build, adopt_unbound, build_origin,
                                 by_container, find_builds, find_orphans, has_alpha, load_image,
                                 material_from, missing_files, read_build, rebuild, report_orphans,
                                 variant_only, _Textures)
@@ -748,3 +748,37 @@ def test_with_no_gloss_MAP_the_factor_still_carries_the_scalar(tmp_path):
     m = material_from({"shininess": 60, "glossInvert": False}, "plain", tex)
     assert m["pbrMetallicRoughness"]["roughnessFactor"] == pytest.approx(0.4)
     assert "metallicRoughnessTexture" not in m["pbrMetallicRoughness"]
+
+
+def test_a_SEE_THROUGH_MIRROR_is_made_invisible_rather_than_drawn_black(tmp_path):
+    """A third way a layer can be all environment and no content. `useMetalness` with metalness 1, a
+    gloss of 100, a skybox and no texture of its own is a reflection shell — the wet film over an eye.
+    glTF carries no per-material environment, so it renders as a BLACK MIRROR: the teacher's `Sclera`
+    is its own primitive over the eye her body mesh draws, and came out as a dark disc that read as a
+    closed eye."""
+    tex = _Textures(_tex(tmp_path)[0], 1024, 90)
+    m = material_from({"diffuse": [0.8, 0.8, 0.8], "diffuseTint": True, "opacity": 0.2,
+                       "useMetalness": True, "metalness": 1, "shininess": 100,
+                       "useSkybox": True, "blendType": BLEND_PREMULTIPLIED}, "Sclera", tex)
+    assert m["alphaMode"] == "BLEND"
+    assert m["pbrMetallicRoughness"]["baseColorFactor"] == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_a_mirror_you_cannot_see_THROUGH_is_the_object_and_is_left_alone(tmp_path):
+    """`DIAMANT` at 0.963 opacity is also a reflection material and also wrong without an environment —
+    but there is nothing behind it, so a dark gem is better than no gem. See-through is the line
+    between an overlay and an object."""
+    tex = _Textures(_tex(tmp_path)[0], 1024, 90)
+    m = material_from({"diffuse": [1, 1, 1], "diffuseTint": True, "opacity": 0.963,
+                       "useMetalness": True, "metalness": 1, "shininess": 100,
+                       "useSkybox": True, "blendType": BLEND_PREMULTIPLIED}, "DIAMANT", tex)
+    assert m["pbrMetallicRoughness"]["baseColorFactor"] != [0.0, 0.0, 0.0, 0.0]
+
+
+def test_a_textured_metal_is_not_a_mirror(tmp_path):
+    """The rule is for a layer with no colour of its OWN. A metal that carries a texture has one."""
+    build, ids = _tex(tmp_path, skin=("RGB", False))
+    tex = _Textures(build, 1024, 90)
+    m = material_from({"diffuseMap": ids["skin"], "opacity": 0.4, "useMetalness": True,
+                       "metalness": 1, "useSkybox": True}, "chrome", tex)
+    assert m["pbrMetallicRoughness"].get("baseColorFactor") != [0.0, 0.0, 0.0, 0.0]
