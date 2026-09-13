@@ -32,14 +32,15 @@ Three properties follow, and they are the whole design:
 
 ## 2. The record
 
-One SQLite file, schema-versioned by `PRAGMA user_version` (**v6** today). A version bump **drops and
-rebuilds** the catalog from disk, which is safe only because the *derivable* parts are derivable — hence
-the backup on the curation columns.
+One SQLite file, schema-versioned by `PRAGMA user_version` (**v7** today). Known versions migrate in
+place — ALTER, never DROP, because captions and user curation are not recoverable from the
+content-addressed cache. Only a fresh or unrecognised database is rebuilt from disk.
 
 ```sql
 assets(
   id TEXT PRIMARY KEY,             -- <sha16>.<ext>, also the /assets filename
-  kind TEXT,                       -- image | model | skybox | grounded_skybox | audio | photo | …
+  kind TEXT,                       -- image | model | animation | audio | set | skybox |
+                                   --   grounded_skybox | photo | …
   scope TEXT,                      -- <user>/agents/<agent> — the capability namespace (§5)
   public INTEGER DEFAULT 1,        -- visibility FLAG, never a path segment
   source TEXT,                     -- cache://<id> | nas://<path> | https://…
@@ -74,6 +75,54 @@ and guessing it from a label was wrong often enough to matter.
 
 `faces` and `persons` are reserved and stay empty. They exist so the NAS seam is honest about being a
 sub-entity model rather than a column.
+
+### 2a. Clips, audio, and what links them
+
+Three kinds arrived together, because a captured character is not one file.
+
+| kind | what it is | what the record carries |
+|---|---|---|
+| `animation` | a skeleton-only GLB: channels bound to bone **names**, no geometry | `clips`, `channels`, `targets`, `rig_sig`, and a descriptor — `duration_s`, `activity_deg_s`, `travel_deg` per bone, `dominant` |
+| `audio` | the voice of a clip, or a room's ambience | `duration_s`, `sample_rate`, `channels`, `bitrate_kbps`, `role` |
+| `set` | one capture, **asserted** at import | the grouping is not in the build — nothing links a character's registry to the room it appears in — so it is an argument, not a guess |
+
+**`rig_sig` is what makes a clip and a figure comparable without either naming the other.** It
+fingerprints a skeleton over its *mapped humanoid bones*, so the same value comes out of a character's
+GLB and of a clip authored on it. Sixteen of twenty captured figures share one signature. Over the
+mapped bones and not every node on purpose: two of them differ by 51 skirt and anatomy bones while
+agreeing on all 37 core ones, and a fingerprint that split them would answer a question nobody asks.
+`None` for a rig no map could be recovered from. `RIG_SIG_REV` stands apart from `FRAME_REV` — a
+discovery fix can change a signature without changing what a signature *means*.
+
+**The descriptor exists so a clip can be chosen before it has a name.** Slot names like `1_idle` are
+per-figure labels: that one exists in 16 captures in 14 distinct versions, 10 to 43 seconds long.
+Summing the angle between successive keyframe quaternions separates them objectively and costs one pass
+over the accessors — `stands still, arms only` at 8 deg/s against `busy hands` at 66.
+
+**Three axes, kept separate** ([decisions.md §27](../decisions.md)):
+
+| question | answered by | nature |
+|---|---|---|
+| can it drive this skeleton? | `rig_sig` equality | mechanical, total |
+| was it authored for this figure? | `shipped_with` | the original intent, unrecoverable once lost |
+| does it need something in the room? | `wants_props`, parsed from the name | a **hint**, never a gate |
+
+The third is why the first is not sufficiency: `pc_leanOnSink_headLeft` plays on any figure of the right
+rig and is wrong on one standing in a field. 93 of 206 clip names call out a fixture.
+
+Relations, in the table that was always there:
+
+```
+figure  --shipped_with-->  clip      the clips that shipped in the figure's OWN build
+clip    --voiced_by----->  audio     MANY-TO-MANY: `1-4-5-7-10_idle` voices five clips
+env     --ambience------>  audio     room soundtracks
+asset   --part_of------->  set       provenance only, never the compatibility test
+```
+
+`conjure/capture_set.py` holds the rules, and the point of it is where they **stop**. A name that does
+not parse is left unlinked rather than guessed — `HotelAction0`'s number indexes a script we do not
+have, and 698 of 898 audio files across twenty captures attach to nothing by name. They are still
+imported and still searchable; they simply carry no assertion.
 
 ## 3. Ingest — one write-through
 
@@ -147,6 +196,28 @@ Writes and deletes are checked per-id against the caller's scope. `query_assets`
 against a **temp view on a read-only connection** with the predicate already applied, so an agent cannot
 `SELECT` its way out.
 
+### 5a. More than one owner
+
+An asset id is a **content address** (`sha256(data)[:16] + ext`), so the id *is* the bytes and two
+agents cannot hold one asset under two rows. Ownership is therefore a join table,
+`asset_scopes(asset_id, scope)`, and the predicate gains a second half:
+
+```sql
+scope = ? OR (public = 1 AND scope GLOB '*/agents/<agent>')      -- the CREATING scope
+  OR EXISTS (SELECT 1 FROM asset_scopes s WHERE s.asset_id = id AND s.scope = ?)   -- a grant
+```
+
+`assets.scope` remains the scope that *created* an asset — provenance, and what keeps every earlier
+query meaning what it meant. A grant is **exact**: it names one scope and widens nothing, which is what
+stops it being a way around the agent wall. `grant` / `revoke` / `transfer` / `owners`; a transfer is a
+grant then a revoke, in that order so a failure leaves two owners rather than none.
+
+**Curation is shared.** Notes, tags and rating live on the asset, so two owners cannot disagree about
+one. That is knowingly given up — a composite `(id, scope)` key would have allowed it — and is a later
+migration if it is ever wanted ([decisions.md §26](../decisions.md)). The join table carries no `public`
+flag of its own: it had one briefly, and the first `update` that flipped an asset private proved why —
+a copy of the flag per owner drifts the moment one owner changes it.
+
 ## 6. Embeddings
 
 `Embedder` is a two-method protocol (`embed_text`, `embed_image`) with the model recorded per row, so
@@ -216,6 +287,21 @@ index specifically, so that swap is the one anticipated.
 | `POST /library/reindex` | embed rows with no vector |
 | `POST /library/caption` | backfill labels for label-less visual assets |
 | `POST /library/retag-skyboxes` | re-tag wide images as skyboxes |
+
+**Admin (shell `dir`):** `POST /admin/tree` and `/admin/match` take optional `kind`, `related` and
+`relation` — listing filters, so a capture's figure, sixty clips and thirty audio files can be asked
+apart. `related` resolves an id or an exact label, and refuses an ambiguous one rather than picking.
+
+**Ownership:** `library.grant(id, scope)` / `revoke` / `transfer(id, from, to)` / `owners(id)` (§5a).
+**Relations:** `add_relation(from, to, type)`, `related(id, type, reverse=)`, `relations_of(id)`.
+
+**Importers** (`conjure/importer.py`): one handler per asset family, claiming extensions and confirming
+by content — `image`, `model`, `animation`, `audio`, plus the stereo variant. `.glb` is claimed by two
+of them, so `plan_import` asks the FILE: channels and no mesh is an `animation`.
+
+**Capture ingest:** `scripts/import_capture.py <capture> [--commit]` — dry by default, because the bytes
+are content-addressed and shared, so deleting a row is not the inverse of an import that went wrong.
+Its linking rules are `conjure/capture_set.py`.
 
 **MCP tools:** `search_library`, `place_cached_asset`, `query_assets`, `update_asset`, `delete_asset`.
 `search_library` and `query_assets` are in `_READONLY_TOOLS`, so a `access: "read"` agent gets them and

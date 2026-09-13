@@ -320,9 +320,9 @@ def test_transparent_column_roundtrips(tmp_path):
     assert lib.get("un.png")["transparent"] is None
 
 
-def test_migration_v4_to_v6_preserves_data_reworks_scope_and_adds_public(tmp_path):
-    """A schema bump must ALTER, never DROP — and v4→v6 cumulatively adds transparent (v5), the public
-    flag, and rewrites scope to user-first <user>/agents/<agent> (v6)."""
+def test_migration_v4_to_v7_preserves_data_reworks_scope_and_adds_public(tmp_path):
+    """A schema bump must ALTER, never DROP — and v4→v7 cumulatively adds transparent (v5), the public
+    flag and user-first scope (v6), and many-to-many ownership (v7)."""
     import sqlite3
     path = tmp_path / "library.db"
     raw = sqlite3.connect(str(path))
@@ -340,4 +340,86 @@ def test_migration_v4_to_v6_preserves_data_reworks_scope_and_adds_public(tmp_pat
     assert "transparent" in rec and rec["transparent"] is None     # v4→v5 column
     assert rec["public"] == 1                                      # v5→v6 flag, default public
     assert rec["scope"] == "daniel/agents/builder"                 # v5→v6 user-first scope rewrite
-    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 7
+    # v6→v7: the single owner is backfilled as the first row, so nothing changes for anyone until a
+    # second owner is granted.
+    owners = lib._db.execute("SELECT scope FROM asset_scopes WHERE asset_id='keep.png'").fetchall()
+    assert [r["scope"] for r in owners] == ["daniel/agents/builder"]
+
+
+# ---------------------------------------------------------------- ownership by more than one agent
+
+
+def _visible(lib, text, scope):
+    return [r["id"] for r in lib.search(text, scope=scope)]
+
+
+def test_a_second_agent_can_be_granted_an_asset_without_copying_the_bytes(tmp_path):
+    """An asset id is a CONTENT ADDRESS — the id is the bytes — so two agents cannot hold the same
+    asset under two rows. Ownership is a join table instead, and a transfer is a grant plus a revoke
+    (decisions.md §26)."""
+    lib = _lib(tmp_path)
+    lib.upsert("x.glb", kind="model", label="a dragon",
+               scope="daniel/agents/builder", public=0, source="cache://x.glb")
+
+    assert _visible(lib, "dragon", "daniel/agents/builder") == ["x.glb"]
+    assert _visible(lib, "dragon", "daniel/agents/curator") == [], \
+        "a private asset is invisible to another agent until it is granted"
+
+    assert lib.grant("x.glb", "daniel/agents/curator")
+    assert _visible(lib, "dragon", "daniel/agents/curator") == ["x.glb"], "and visible once it is"
+    assert _visible(lib, "dragon", "daniel/agents/builder") == ["x.glb"], \
+        "without taking it from the original owner"
+    assert lib.owners("x.glb") == ["daniel/agents/builder", "daniel/agents/curator"]
+
+
+def test_transfer_is_grant_then_revoke(tmp_path):
+    lib = _lib(tmp_path)
+    lib.upsert("y.glb", kind="model", label="a castle",
+               scope="daniel/agents/builder", public=0, source="cache://y.glb")
+    assert lib.transfer("y.glb", "daniel/agents/builder", "daniel/agents/curator")
+    assert lib.owners("y.glb") == ["daniel/agents/curator"]
+    assert _visible(lib, "castle", "daniel/agents/curator") == ["y.glb"]
+    # The row's creating scope is untouched — it is provenance, not permission.
+    assert lib.get("y.glb")["scope"] == "daniel/agents/builder"
+
+
+def test_a_grant_does_not_cross_the_agent_wall(tmp_path):
+    """The wall is per-AGENT and applies to a grant exactly as it applies to a creating scope —
+    otherwise granting would be a way around it."""
+    lib = _lib(tmp_path)
+    lib.upsert("z.glb", kind="model", label="a lantern",
+               scope="daniel/agents/builder", public=0, source="cache://z.glb")
+    lib.grant("z.glb", "amy/agents/builder")
+    assert _visible(lib, "lantern", "amy/agents/builder") == ["z.glb"], "the scope actually granted"
+    assert _visible(lib, "lantern", "daniel/agents/stylist") == [], "a different agent stays walled off"
+    assert _visible(lib, "lantern", "amy/agents/stylist") == [], \
+        "a grant is EXACT — it names one scope and widens nothing"
+
+
+def test_granting_an_unknown_asset_fails_rather_than_inventing_a_row(tmp_path):
+    lib = _lib(tmp_path)
+    assert lib.grant("nope.glb", "daniel/agents/builder") is False
+    assert lib.owners("nope.glb") == []
+
+
+# ---------------------------------------------------------------- relations, in both directions
+
+
+def test_a_relation_reads_from_either_end(tmp_path):
+    """One audio file serves several clips — `1-5-8-9_idle` names four of them — so the clip-to-audio
+    link is many-to-many and both directions get asked for in practice."""
+    lib = _lib(tmp_path)
+    for i in (1, 5):
+        lib.upsert(f"clip{i}.glb", kind="animation", label=f"{i}_idle", scope="s", source="cache://")
+    lib.upsert("voice.mp3", kind="audio", label="1-5-8-9_idle", scope="s", source="cache://")
+    for i in (1, 5):
+        lib.add_relation(f"clip{i}.glb", "voice.mp3", "voiced_by")
+
+    assert [r["id"] for r in lib.related("clip1.glb", "voiced_by")] == ["voice.mp3"]
+    assert sorted(r["id"] for r in lib.related("voice.mp3", "voiced_by", reverse=True)) == \
+        ["clip1.glb", "clip5.glb"], "one file, several clips"
+    assert lib.related("clip1.glb", "shipped_with") == [], "a type never asserted is empty"
+
+    edges = lib.relations_of("voice.mp3")
+    assert {(e["type"], e["direction"]) for e in edges} == {("voiced_by", "in")}

@@ -2152,6 +2152,233 @@ does state 30 finger bones. The second is a real feature; the first is honest to
   being the rig with the flat spine and the 679-bone hair rig; likely another artefact of that conversion.
 - **`crouch` and `sit` are distinguishable** to a person, which the vision judge could not manage.
 
+### Clearance is a per-rig measurement forced into a global constant (2026-09-10)
+
+`_ARMS_DOWN` aims 8° out from the body, and that number is **hard-coded and identical for every
+figure**, like every other angle in `poses.py`. It is the worst case of three measurements:
+
+| rig | needs | gets |
+|---|---|---|
+| Saka | 0.8° | 8° |
+| Grace | 4.2° | 8° |
+| Trish | 4.2° | 8° |
+
+Saka is over-corrected by 7°, which is visually minor and was easy to accept because 8° is also
+anatomically natural. But the constant only holds for bodies between these three: a wider figure — a
+heavy character, or a clothed one — needs more and will clip again, and a very slim one gets arms
+hanging oddly wide. Three rigs is not much of a sample, and `aim` being absolute does **not** rescue
+this: an absolute direction adapts to the rest pose, not to how wide the body is.
+
+**The fix is to stop guessing:** measure `body_profile` + `limb_radius` at IMPORT, ship them in the
+frame beside `humanoid_axes`, and let `aim: "down"` resolve with the clearance of whatever rig it lands
+on. Then the poses stay rig-independent *and* every rig gets its own correct number — including
+hand-written poses, which the library's constants do nothing for. Costs a `FRAME_REV` bump.
+
+Worth doing the first time a clothed figure is imported, or when the cast grows past three.
+
+### A bad bone map makes the mesh measurement confidently wrong (2026-09-10)
+
+Found within a minute of pointing it at a fourth model. `EveMaccaro.glb` infers a 21-bone map that is
+**shifted one joint up the spine** — `hips`→`ORG-spine`, `spine`→`chest`, `chest`→`neckLower`,
+`neck`→`neckUpper` — so `body_profile` dutifully measured her *neck* and called it a torso: 22 bands
+spanning 10 cm of a 1.90 m figure, 5.8 cm at the widest. The clearance calculation then reported
+**"0.0° of outward aim needed"** with no hesitation, which would make `clears` pass anything on her.
+
+Two separate things, and the second is the dangerous one:
+
+1. **Layer-2 inference mis-assigns Eve's trunk.** Same family as Trish's flat spine — the trunk is where
+   inference is weakest and where `validate()` is most permissive. Her limbs look right; only the trunk
+   is shifted, so `bow` will bend her at the chest.
+2. **The measurement has no sanity check.** A torso spanning 10 cm of a 1.9 m body is not a torso, and
+   `body_profile` should say so rather than return it. Cheap guards: the profile's height span should be
+   a plausible fraction of the figure's height, and its widest band a plausible fraction of the shoulder
+   width. Returning `[]` — which callers already treat as "cannot measure, skip the check" — is the
+   right failure, and is strictly better than a confident wrong number.
+
+The general lesson is the one this feature keeps relearning: **a measurement built on a derived input
+inherits its errors silently.** The bone map was already known to be the weak link; nothing warned that
+the new mesh code sits downstream of it.
+
+### `aim` is only absolute while the limb's ancestors are at rest (2026-09-10)
+
+Four poses were drafted — `all-fours`, `downward-dog`, `touch-toes`, `touch-toes-wide` — and **all four
+failed on all three rigs.** Not the trunk this time, or not only: the limbs went wrong.
+
+**`aim` is resolved against the BIND pose.** `resolve_pose` computes the swing from a bone's measured
+rest direction onto the requested world direction, and that delta is then applied on top of whatever the
+bone's ancestors are doing. While the ancestors are at rest — which every pose in the library until now
+kept them — the result is genuinely absolute, and that is the whole argument for `aim`. Fold the trunk
+and it stops being true: the chest carries the arm, and the arm arrives somewhere else.
+
+Measured on Saka, whose trunk folds furthest: arms asked to aim `down` under a folded trunk come out
+**pointing UP** — `cos -0.71` against `down`. On Grace they land pointing `back`, `cos 0.00`. The pose is
+asking for the right thing and getting the opposite.
+
+This was already recorded under `bow`, where it is cosmetic — arms hanging from a bowed torso swing with
+it, which is correct anatomy. It is fatal here, and it rules out **an entire category**: any pose that
+rotates the trunk and aims a limb.
+
+### FIXED 2026-09-10 — `compose_frame`
+
+An aim now resolves against the bone's parent frame *as posed*. `figures.compose_frame` reads the three
+BODY directions in a frame (`up`, `forward`, `out`) back through the parent's REST basis to recover the
+world direction each was always meant to name, then writes them through the parent's CURRENT one.
+`rest` is left alone — a bone's rest direction lives in its own local bind rotation and rides the parent
+unchanged — and so are `bend`, `spread` and `turn`, which are relative by design.
+
+Measured, arms asked to aim `down` under a trunk folded by `{hips 45, spine 50, chest 40}`:
+
+| | Grace | Trish | Saka |
+|---|---|---|---|
+| before, cosine to `down` | +0.00 (pointing BACK) | +0.77 | **-0.71 (pointing UP)** |
+| after | **+1.00** | **+1.00** | **+1.00** |
+
+Two things had to move with it. `resolve_pose` stays PURE and unchanged — the correction is a frame
+transform applied before it, so the golden fixture still holds Python and JS to the same arithmetic.
+And relative requests are order-free while an aim is not, so `apply_pose` and `figure.js` both write the
+relative bones in one pass and then the aims ROOT-FIRST, recomputing world matrices as the trunk lands.
+A frame is only composed when an ancestor of that bone actually moved, so every pose that leaves the
+trunk at rest is untouched rather than approximately untouched. (The claim recorded here that `figure.js`
+"applies poses in dependency order" was wrong — it was an unordered `forEach` over the pose keys.)
+
+**`bow` was the behaviour change, and it resolved in favour of the fix.** Its arms hang plumb now instead
+of swinging with the torso, which is what arms under gravity do — and it turned the one pose in the
+library carrying an EMPTY signature into one that checks itself. The "every pose says how to check it"
+test no longer needs its exception.
+
+**Three of the four drafts landed** the same day: `all-fours`, `bend-over`, `bend-over-wide`. Rendered
+and looked at on Grace and Saka; 9 of 9 cells pass their signatures.
+
+Two things had to change from the drafts, and both were found by rendering rather than by arithmetic.
+
+**Every fold-forward pose has to re-aim the LEGS.** `hips` is the root of the whole figure, so bending it
+rotates the legs along with the trunk, and what came out was a figure tipped over bodily and floating
+diagonally in the air. Folding at the waist means rotating the hips forward AND putting the legs back
+under the body, because there is no hip-flexion axis that moves the trunk alone. `points leftUpperLeg
+down` is now in each signature for exactly this, and it only became assertable once an aim composed.
+
+**`touch-toes` is called `bend-over`, because the hands do not reach the toes.** They come down to about
+knee height — 0.24h off the floor on Grace against a knee at 0.26h, 0.18h on Saka, 0.43h on Trish. A name
+that promises contact is a name the pose cannot keep. `all-fours` rather than `crawl` still holds:
+crawling is motion and this library holds static shapes.
+
+**`downward-dog` is NOT built, and it is not an aim problem.** What makes it that pose rather than a deep
+forward fold is hands and feet BOTH on the floor, and rotation cannot get the hands there. At the fullest
+trunk fold the joint limits allow, with the arms hanging plumb — which is as low as they reach, measured
+against four candidate aims — the hands still sit **0.21h above the floor on Grace, 0.15h on Saka, 0.41h
+on Trish**. Raising the `hips` limit from 45° to 130° moves that by 0.07h and no further. It wants tier
+3, where a pose is solved against the world rather than authored.
+
+### Akari, and what a second PlayCanvas model showed (2026-09-11)
+
+A second capture, `temp/vrh/akari` — `MainModelToiletJapaneseVER2.glb`, 1.80 m, 193 nodes, 3 meshes
+(Body_Agnes / Hair / Kimono, 9 material slots).
+
+**The `rigify-def` convention row paid for itself immediately.** She maps with no work at all: 22 bones,
+`validate()` passes, 15 of 17 named poses clean. That row was added for Jane the day before, and the
+whole argument for a convention table is that the second rig of a family is free. It was.
+
+**She is the second confirmation of the per-model clearance defect, and the first with a number
+attached.** She fails `kneel` and `stand` on `clears`, both arms, wrist and elbow:
+
+| rig | torso half-width | `_ARMS_DOWN` clearance needed |
+|---|---|---|
+| Saka | 6.5 cm | 0.8° |
+| Grace / Trish | 15.9 cm | 4.2° |
+| **Akari** | **18.0 cm** | more than the hard-coded 8° |
+
+Eve was the first (reported from the headset, no measurement). Akari is measured, by the same
+`body_profile` + `limb_radius` pass the predicate uses, and the failure is arithmetic rather than a
+judgement about a render. Two models outside the sample now, which is what moves per-model clearance
+from "a constant that is probably wrong somewhere" to a defect with a reproduction.
+
+**The registry was there; I was looking at a partial copy.** `temp/vrh/akari` held only the GLBs — the
+full capture is at `assets/vr-holes/akari`, 211 files with `config.json` at the top level and a 3.4 MB
+one for the character release. The directory LAYOUT was never the issue either; it is the same
+`files/assets/<id>/<version>/<file>` shape Jane's build used. Two real things came out of the detour:
+
+**`find_orphans`** reports an asset tree with no registry above it and derives the URL to fetch from the
+path, since a capture mirrors the address it came from. That is what the partial copy actually was, and
+it is worth diagnosing rather than reporting as "no build here".
+
+**Templates are a second place the binding lives, and reading them mattered twice.** Akari's release has
+no scene file on disk but sixteen `template` assets, one per skin-tone variant of the same model, each
+binding its OWN container — so there is no ambiguity to resolve and reading them is what makes her
+convertible at all. It also retired `--adopt` for Jane: one of her templates binds the in-file hair copy
+to the *textured* hair material, which is the stated answer where `--adopt` was a name-match guess. Both
+models now come out fully bound, 8/8 and 9/9 primitives, with the flag off.
+
+**Her textures are not in the capture** — 0 of 105, in any form, across two attempts at collecting
+them. `--fetch-list` writes the 120 absent URLs for `curl`/`wget`, and missing files are reported once
+as a list rather than once per use, which on her was 200-odd identical lines burying the two real
+findings (she needs the specular/gloss workflow, and two materials declare an `alphaTest` on a texture
+with no alpha).
+
+**And there is a reason browsing will never collect them.** PlayCanvas transcodes textures to Basis
+Universal and the engine requests that in preference — 91 of her 105 textures declare a `.basis`
+variant, typically a seventh of the PNG's size. So a capture made by using the app holds `.basis` files
+and never the originals. `variant_only` now reports those apart from absent ones (it was overstating the
+app build's gap by eight), but Basis is GPU-compressed and Pillow cannot open it, so the uncompressed
+URL is what the fetch list asks for. **If a future capture arrives with only `.basis`, we need a
+transcoder** — `basis_universal`'s CLI or `KTX2` via `libktx`, neither carried today.
+
+**Forty animation clips, and some of them are poses.** They retarget exactly — 189 targets, none absent
+from the model — and the named ones are static shapes rather than motion: `pc_onFour_headLeft/Right`,
+`pc_leanOnSink_*`, `pc_sitOnToilet_*`, `pc_leanOnWall_*`, `pc_legOnSink_*`, `pc_leanOnCorner_*`,
+`pc_leanOnDoor_*`, plus face shapes `pc_blink`, `pc_squint`, `pc_openMouth`, `pc_eye_closed`.
+
+That is directly relevant twice over. `pc_onFour_*` is an **authored all-fours on a rig our vocabulary
+already maps**, against which the hand-authored `all-fours` can be compared rather than just looked at —
+the first external reference this library has had. And the `leanOn*` / `sitOn*` family are tier-3 poses:
+each one is a figure solved against a specific piece of furniture, which is the thing § *Tier 3* says is
+not built. Worth reading before designing it.
+
+### `hips` was the wrong bone on both Daz rigs (2026-09-10)
+
+Found while re-adding the fold-forward poses, and it is the actual root of "the trunk is rig-dependent".
+
+`{"hips": {"bend": 45}}` moved Saka's trunk 122° off vertical and **Grace's by exactly zero**. Raising
+the joint limit to 130° changed Saka to 153° and Grace still to zero. The limit was never the problem:
+
+```
+Grace  hips='pelvis'   spine's ancestors: spine <- MCH-spine <- hip <- hip(drv) <- Grace_RIG
+Trish  hips='pelvis'   spine's ancestors: spine <- back <- hip <- master <- Genesis 8 Female
+```
+
+On both Daz ports `pelvis` is a **sibling** of the spine. It carries the legs and nothing else, so
+bending it rotated the legs and left the torso where it was. The real trunk root on both is `hip`, which
+the convention table already lists as a `hips` candidate — `pelvis` is simply listed first and won.
+
+`convention_humanoid` has an anatomy override for exactly this ambiguity, added when Tamaki's `pelvis`
+turned out to be a tweak bone off to one side. It required the candidate to be an ancestor of the FEET,
+and both bones are. **The legs are not enough to say which bone is the hips: the legs AND the spine hang
+from them.** Requiring both picks `hip` on the two Daz rigs and changes nothing on any other, because a
+rig that names its hips sensibly has the spine under them already.
+
+| trunk fold from `{hips 45, spine 50, chest 40}` | Grace | Trish | Saka | Jane |
+|---|---|---|---|---|
+| before | 70° | 6° | 115° | 112° |
+| after | **113°** | **39°** | 115° | 112° |
+
+Three of the four rigs now agree within 3°. **Trish is still the outlier and it is still her flat spine**
+— a separate, already-recorded defect, now with a second witness: `downward-dog` failed on her alone
+before it was cut, and `crouch` still does.
+
+`FRAME_REV` 9 → 10, because this changes a stored MAP and not merely a frame. Re-place any figure already
+in a world.
+
+### `hug` (2026-09-10)
+
+Added, and it ports — arms only, so no trunk involved. **It merges usefully**: `sit` then `hug` is a
+seated embrace, because a named pose replaces only the bones it names.
+
+Elbows OUT and forearms IN is what encircles. The first attempt pulled the elbows in with negative
+spread and read as *pleading* — hands clasped under the chin — because tucking the elbows leaves the
+forearms nowhere to go but up. Rendered and corrected, the same loop that caught the wrong `kneel`.
+
+Its `needs` says the honest thing: it is the shape of an embrace with nobody in it. Aiming it at another
+figure is tier 3.
+
 ## Animation — the long-term plan
 
 Sequenced **after** aiming (built), the eval harness, named poses and outfits. Written down now because
@@ -2304,12 +2531,18 @@ run found instead is that **the poses are geometrically right and the mesh inter
 [*Device run 2026-09-09*](#device-run-2026-09-09--it-works-and-the-mesh-is-the-problem-now). Take those
 next, in this order:
 
-1. **Arms that hang outside the body.** One number per pose, and it wants measuring against the mesh
-   rather than guessed — a capability that does not exist yet, since nothing has ever consulted the mesh
-   about a pose. Affects `stand` and every leg pose, so it is the most visible thing on the list.
-2. **`inspect_figure` should say she is kneeling.** One line; `named` is already stored.
-3. **The trunk deform-reach check in `validate()`** — three failures now (Trish's spine, Grace's `hips`,
-   `crouch` on Trish), and it silently decides which poses port to which rig.
+1. ~~**Arms that hang outside the body.**~~ **Built 2026-09-10** — `body_profile`, `limb_radius` and the
+   `clears` predicate. Lateral only; the forward case is still invisible.
+1b. ~~**`aim` composition.**~~ **Built 2026-09-10** — `compose_frame`, and the three fold-forward poses
+   it unblocked. See above.
+2. **Trish's flat spine**, which is now the one thing making the library rig-dependent: 39° of trunk
+   against 112–115° on the other three. It fails `crouch`, and it is why `downward-dog` failed on her
+   alone. Start with the deform-reach check below — it is the same rig.
+3. **The trunk deform-reach check in `validate()`** — four failures now (Trish's spine, Grace's `hips`
+   as `pelvis`, `crouch` on Trish, Eve's shifted map), and it silently decides which poses port to which
+   rig. Grace's has since been fixed by the anatomy override; the check would have caught it first.
+4. **`inspect_figure` should say she is kneeling.** One line; `named` is already stored.
+5. **Per-model clearance** — measure at import, ship it in the frame. Eve is the proof it is needed.
 4. **`grab`'s selection box** ignores the pose — the stale-box family again.
 5. Decide what `point` and `wave` are, given there is no finger vocabulary and there cannot be one from
    topology alone.
@@ -2397,6 +2630,26 @@ export is byte-identical to the `c8421e03…` already catalogued — the colour 
   from topology.
 - **`inspect_figure` never reports the pose name**, though `named` is stored for exactly that.
 - **Trish's legs deform when kneeling** — right orientation, wrong shape. Same rig as the flat spine.
+- ~~**`aim` is not absolute once the trunk is posed**~~ **Fixed 2026-09-10** by `figures.compose_frame`;
+  arms land within a degree of plumb on all four rigs under any trunk fold. `all-fours`, `bend-over` and
+  `bend-over-wide` shipped with it.
+- **`downward-dog` needs hands ON the floor and rotation cannot reach.** 0.21h short on Grace, 0.15h on
+  Saka, 0.41h on Trish, at the fullest fold the limits allow with the arms plumb. Tier 3, not tier 1.
+- **Trish's flat spine is now the biggest single rig defect.** Her trunk folds 39° where Grace, Saka and
+  Jane all reach 112–115°, and it is what fails `crouch` on her and what cut `downward-dog`. Same rig as
+  the legs that deform when kneeling. **Ranked first** of the open figure work now.
+- **`clears` measures LATERAL clearance only.** The forward case — a forearm inside the chest — needs an
+  origin at the centre of the torso's depth, which nothing computes; measuring "forward" from the hips
+  joint produced numbers that looked authoritative and were not. `arms-crossed` was fixed by rendering
+  and looking instead, so it has no regression guard.
+- **`hands-on-hips` hands still do not touch.** Untouched by the mesh work; wants the same treatment.
+- **Eve confirmed on device 2026-09-10**: `bow` and `crouch` bend her one joint too high (the shifted
+  map), and she is heavier than the cast so 8° of arm clearance is not enough for her.
+- **Akari measured 2026-09-11**: an 18.0 cm torso half-width against the cast's 6.5–15.9, and she fails
+  `clears` on `kneel` and `stand` at wrist AND elbow. Second model outside the sample, first with a
+  number — per-model clearance now has a reproduction rather than an anecdote.
+- **Eve's inferred map is shifted one joint up the spine**, so trunk poses act too high — and the mesh
+  measurement believed it, reporting a 10 cm "torso". See above; the measurement needs a sanity check.
 - Figures already placed in a world hold the meta they were placed with. Re-place after any refresh.
 - The anatomical-pose work and the void-frame branch are both merged to `main` and pushed.
 

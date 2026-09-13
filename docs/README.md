@@ -20,6 +20,15 @@ dynamic behavior, and the ability to pull in generated or pre-existing web conte
 how much of it is real; [`specs/`](./specs/) is what is built; [`backlogs/`](./backlogs/) is what is
 not. `decisions.md` records the forks. Nothing is called "spec" except the living specs.
 
+**And one that is meant to go away.** [`plans/`](./plans/) holds a plan while it is being executed —
+a single sequence across areas the specs and backlogs deliberately keep apart. A plan names its
+dissolution target on the way in and is deleted when its last phase settles: finished work to
+`specs/`, abandoned or deferred work to `backlogs/`, forks to `decisions.md`. Ten `*-plan.md` files
+lived at this level before and were consolidated away in August 2026 (see the note below); they
+earned their keep while live, and what went wrong was only that nothing said when they should end.
+A plan that outlives its phases has become a backlog with worse organisation — dissolve it
+([decisions.md §25](./decisions.md)).
+
 ## Specs and backlogs
 
 Going forward, each area gets a **pure living spec** in [`specs/`](./specs/) — what is built and how it

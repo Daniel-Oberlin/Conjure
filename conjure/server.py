@@ -1106,7 +1106,7 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
 #: is not worth keeping, since it was computed from the same file by older code.
 _DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
                         "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows",
-                        "spring_bones", "tris")
+                        "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified")
 
 
 def _extracted_model_attrs(asset_id: str) -> dict:
@@ -1160,7 +1160,8 @@ def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dic
 
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
                      bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
-                     humanoid=None, humanoid_axes=None, humanoid_follows=None) -> dict:
+                     humanoid=None, humanoid_axes=None, humanoid_follows=None,
+                     parts=None) -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
@@ -1193,6 +1194,12 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
             # from a planted foot to a raised ankle — reported from the headset on two of three
             # asset-pack characters.
             meta["humanoid_follows"] = dict(humanoid_follows)
+        if parts:
+            # Which mesh is clothing, hair, a shoe. Travels with the entity for the same reason the bone
+            # map does: `/figure/parts` resolves "take her coat off" into node names without a catalog
+            # lookup, and the client stays generic — it hides the nodes it is given and knows nothing
+            # about garments.
+            meta["parts"] = dict(parts)
         if humanoid_axes:
             # And the anatomical frame beside it: which way to rotate each bone so "bend 45" is the
             # same motion on a VRM and on a re-parented Daz rig. Measured from the bind pose at import
@@ -2629,6 +2636,12 @@ async def space_visibility(req: SpaceVisibilityRequest) -> dict:
 
 class AdminPath(BaseModel):
     path: str = "/"
+    # Listing filters. A capture puts a figure, sixty clips and thirty audio files in one place, and
+    # a flat list of them is how a wrong link stays invisible — being able to ask "her clips" and
+    # "what voices this" is how the linking gets checked at all.
+    kind: Optional[str] = None          # asset kind: model | animation | audio | image | set | …
+    related: Optional[str] = None       # only assets related to this one (id or label)
+    relation: Optional[str] = None      # ...by this relation type; any type when omitted
 
 
 def _active_sid_for(scope: str) -> str:
@@ -2642,6 +2655,84 @@ def _active_sid_for(scope: str) -> str:
 def _session_worlds(scope: str, sid: str):
     """The WorldDir for one specific session — `worlds.<op>` only ever reaches the ACTIVE one."""
     return sessions.worlds(scope, sid)
+
+
+def _row_asset_kind(row: dict) -> str:
+    """The ASSET kind of a listing row — `animation`, `model`, `audio`.
+
+    Not `row["type"]`, which does not exist. A row is `{label, kind, ref, cells}` where `kind` is the
+    NAMESPACE kind (always `asset` here) and the asset's own kind is `cells[0]`; `type` is a column
+    HEADING out of `COLUMNS["assets"]`, which is what made the wrong guess look right.
+    """
+    cells = row.get("cells") or []
+    return cells[0] if row.get("kind") == "asset" and cells else ""
+
+
+def _filter_rows(rows: list[dict], req: AdminPath) -> list[dict]:
+    """Narrow a listing by asset kind and by relation.
+
+    Applied to the ROWS rather than pushed into the namespace walk because a namespace location is not
+    always an asset — the same `dir` lists sessions and worlds — and a filter that only some entries can
+    answer should drop the ones it cannot judge rather than error on them.
+    """
+    if req.kind:
+        rows = [r for r in rows if _row_asset_kind(r) == req.kind]
+    if req.related:
+        ids = _related_ids(req.related, req.relation)
+        rows = [r for r in rows if (r.get("ref") or "") in ids]
+    return rows
+
+
+def _related_problem(other: str) -> Optional[str]:
+    """Why a `--with` name found nothing, when the reason is the NAME rather than the relation.
+
+    An empty listing is the same shape whether a name is unknown, ambiguous, or simply has no
+    relations — and those want different responses from a person. `3_idle` is ambiguous in a captured
+    set, because the clip and the audio that voices it share a label by design.
+    """
+    if library is None or library.get(other) is not None:
+        return None
+    if not _safe_label(other):
+        return f"{other!r} is not a usable name"
+    hits = library.query(f"SELECT id, kind FROM assets WHERE label = '{other}'",
+                         scope=active_scope, limit=5)
+    if not hits:
+        return f"nothing here is called {other!r}"
+    if len(hits) > 1:
+        kinds = ", ".join(sorted({h["kind"] for h in hits}))
+        return (f"{other!r} is ambiguous — {len(hits)} assets share that label ({kinds}). "
+                f"Use an id, or add --kind to say which you mean.")
+    return None
+
+
+def _safe_label(text: str) -> bool:
+    """A label safe to inline into the read-only view's SQL. Refused rather than escaped: the query
+    path is a temp VIEW over the catalog and a quote in a label has no business reaching it."""
+    return bool(re.fullmatch(r"[\w .:/-]{1,120}", text or ""))
+
+
+def _related_ids(other: str, relation: Optional[str]) -> set[str]:
+    """Asset ids on the far side of a relation from `other`, in EITHER direction.
+
+    Both directions because the useful questions point opposite ways: a figure's clips
+    (`shipped_with`, outbound) and the clips one audio file voices (`voiced_by`, inbound) are the same
+    query from different ends. `other` resolves as an id first, then as an exact label, because a
+    person types the label and a script has the id.
+    """
+    if library is None:
+        return set()
+    if library.get(other) is None:
+        hit = library.query(f"SELECT id FROM assets WHERE label = '{other}'",
+                            scope=active_scope, limit=2) if _safe_label(other) else []
+        if len(hit) != 1:                               # absent, or ambiguous — refuse rather than pick
+            return set()
+        other = hit[0]["id"]
+    out = set()
+    for edge in library.relations_of(other):
+        if relation and edge["type"] != relation:
+            continue
+        out.add(edge["other"])
+    return out
 
 
 @app.post("/admin/tree")
@@ -2660,9 +2751,15 @@ async def admin_tree(req: AdminPath) -> dict:
     # `self` is the row for the node ITSELF when it has one (a session's own summary, say). A session's
     # children are just `worlds/` and `state/`, so without this a delete confirmation for one could only
     # say "nothing" — see Shell._summarize.
-    return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
-            "kind": loc.kind, "self": namespace.leaf_row(loc), "children": namespace.children(loc),
-            "columns": namespace.columns_for(loc.kind)}
+    out = {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
+           "kind": loc.kind, "self": namespace.leaf_row(loc),
+           "children": _filter_rows(namespace.children(loc), req),
+           "columns": namespace.columns_for(loc.kind)}
+    if req.related:
+        problem = _related_problem(req.related)
+        if problem:
+            out["note"] = problem
+    return out
 
 
 @app.post("/admin/show")
@@ -2758,10 +2855,13 @@ async def admin_match(req: AdminPath) -> dict:
     if isinstance(found, str):
         return {"ok": False, "error": found}
     kind = found[0].kind if found else ""
+    matches = [{"path": namespace.loc_path(l), "display": namespace.display_path(l),
+                "kind": l.kind, "row": namespace.leaf_row(l)} for l in found]
+    if req.kind or req.related:
+        keep = {id(r) for r in _filter_rows([m["row"] for m in matches if m.get("row")], req)}
+        matches = [m for m in matches if m.get("row") is not None and id(m["row"]) in keep]
     return {"ok": True, "glob": namespace.is_glob(req.path.rstrip("/").rsplit("/", 1)[-1]),
-            "columns": namespace.columns_for(kind + "s"),
-            "matches": [{"path": namespace.loc_path(l), "display": namespace.display_path(l),
-                         "kind": l.kind, "row": namespace.leaf_row(l)} for l in found]}
+            "columns": namespace.columns_for(kind + "s"), "matches": matches}
 
 
 @app.post("/admin/file")
@@ -3685,7 +3785,8 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           bbox_max=attrs.get("bbox_max"), pos=pos, size_m=req.size_m,
                           placement=req.placement, rigged=bool(attrs.get("rigged")),
                           humanoid=attrs.get("humanoid"), humanoid_axes=attrs.get("humanoid_axes"),
-                          humanoid_follows=attrs.get("humanoid_follows"))
+                          humanoid_follows=attrs.get("humanoid_follows"),
+                          parts=attrs.get("parts"))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
@@ -4689,6 +4790,84 @@ class FigureRequest(BaseModel):
     pose: Optional[dict] = None                   # {semanticBone: {bend|spread|turn: DEGREES}}
     named: Optional[str] = None                   # ...or a pose from the library ("kneel"), tier 2
     clear: bool = False                           # drop the pose and return to the bind pose
+
+
+class FigurePartsRequest(BaseModel):
+    id: str
+    hide: list[str] = []                 # categories or node names to hide
+    show: list[str] = []                 # ...and to bring back
+    only_body: bool = False              # strip everything removable, in one word
+
+
+@app.post("/figure/parts")
+async def figure_parts(req: FigurePartsRequest) -> dict:
+    """Turn parts of a figure off and on — clothing, hair, shoes, accessories.
+
+    Takes CATEGORIES or node names; the entity stores NODE NAMES. The classifier proposes a default
+    grouping at import and the entity holds the truth, so a wrong classification is corrected by naming
+    the node and does not have to be argued with.
+
+    Hiding is a visibility flag, never a deletion: the mesh is still there, still skinned, still posed
+    with the rest of the figure, so showing it again needs no reload and a pose survives undressing.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+    meta = ent.get("meta") or {}
+    parts = meta.get("parts") or {}
+    if not parts:
+        # A figure with no classified parts is not a figure that cannot be undressed — its clothing may
+        # be a SEPARATE CONTAINER, which is a different mechanism with a different answer. Say which,
+        # because "nothing happened" is the one response that teaches nobody anything.
+        hint = ""
+        if meta.get("rigged"):
+            hint = (" It may have been placed before parts were classified — place it again — or its "
+                    "clothing may be a separate model, in which case remove that entity instead.")
+        return {"ok": False, "error": f"{req.id!r} has no classified parts.{hint}"}
+
+    from .parts import load_vocabulary, removable as removable_parts
+    vocabulary = load_vocabulary()
+    groups = removable_parts(parts, vocabulary)
+
+    def resolve(words: list[str]) -> tuple[set[str], list[str]]:
+        """Category names expand; a node name passes through; anything else is REPORTED."""
+        nodes: set[str] = set()
+        unknown: list[str] = []
+        for word in words:
+            if word in groups:
+                nodes |= set(groups[word])
+            elif word in parts:
+                nodes.add(word)
+            else:
+                unknown.append(word)
+        return nodes, unknown
+
+    # The component stores a JSON STRING (A-Frame schema types are strings), so decode before making a
+    # set of it — `set("[\"a\"]")` is a set of punctuation, and it accumulates silently.
+    stored = (ent.get("components") or {}).get("figure-parts", {}).get("hidden") or []
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored or "[]")
+        except ValueError:
+            stored = []
+    hidden = set(stored)
+    if req.only_body:
+        hidden = {n for ns in groups.values() for n in ns}
+        unknown: list[str] = []
+    else:
+        add, bad_hide = resolve(req.hide)
+        drop, bad_show = resolve(req.show)
+        unknown = bad_hide + bad_show
+        hidden = (hidden | add) - drop
+
+    patch = [{"op": "update", "id": req.id,
+              "set": {"components.figure-parts": {"hidden": json.dumps(sorted(hidden))}}}]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-parts")})
+    out = {"ok": True, "id": req.id, "hidden": sorted(hidden),
+           "removable": {k: len(v) for k, v in groups.items()}}
+    if unknown:
+        out["unknown"] = unknown
+    return out
 
 
 @app.post("/figure")

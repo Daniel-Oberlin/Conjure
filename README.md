@@ -277,6 +277,10 @@ scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
             blend_to_glb.py + pose_test.py (figure conversion / render a pose),
             pose_eval.py (does the pose tool description still steer the director?),
             pose_library.py (check every named pose against every rig),
+            playcanvas_rebuild.py (re-join a downloaded PlayCanvas build's geometry
+            with its textures — they ship as separate assets, so the GLB alone is white),
+            basis_to_png.js (decode a capture's Basis-compressed textures first,
+            using the transcoder the site itself ships),
             c4_frame_cost.py (hands-free A/B of frame cost while posing)
 tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`); a
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`

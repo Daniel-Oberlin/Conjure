@@ -3,7 +3,8 @@
 import pytest
 from conftest import FAKE_GLB, TINY_PNG, WIDE_PNG
 
-from conjure.importer import ImportResult, _ext, _stereo_from_name, importable_extensions, plan_import
+from conjure.importer import (ImportResult, _ext, _stereo_from_name, clip_activity,
+                              importable_extensions, looks_like_clip, mp3_meta, plan_import)
 
 
 def test_ext_normalizes_jpeg_and_lowercases():
@@ -280,3 +281,129 @@ def test_a_vrm_imports_as_a_model_and_records_its_humanoid_map():
 
 def test_vrm_extension_is_importable():
     assert ".vrm" in importable_extensions()
+
+
+def test_a_label_hint_names_the_asset_instead_of_the_filename():
+    """`--label` exists because the filename IS the catalog name otherwise, so `EveMaccaro.glb` becomes
+    "EveMaccaro" and `char_v3_final.glb` becomes that. Distinct from `creator`, which is whoever made
+    the model — putting a character's name there pollutes the attribution licence tracking depends on."""
+    from conjure.importer import plan_import
+    glb = b"glTF" + bytes(40)
+    assert plan_import("EveMaccaro.glb", glb, {}).label == "EveMaccaro"
+    assert plan_import("EveMaccaro.glb", glb, {"label": "Eve Maccaro"}).label == "Eve Maccaro"
+
+
+def test_the_label_hint_does_not_touch_creator():
+    """The two fields mean different things and the same string must not land in both."""
+    from conjure.importer import plan_import
+    res = plan_import("EveMaccaro.glb", b"glTF" + bytes(40), {"label": "Eve Maccaro"})
+    assert res.label == "Eve Maccaro"
+    assert getattr(res, "creator", None) in (None, "")
+
+
+# ---------------------------------------------------------------- animation clips
+
+
+def _clip_doc(names=("DEF-upper_arm.L",), keys=4):
+    """A skeleton-only animation: channels over named nodes, and no geometry at all.
+
+    That shape is the whole dispatch fork. A build ships motion as its own `.glb` — 47.7 MB of clips
+    against a 5 MB character — and the extension cannot say which handler a `.glb` wants.
+    """
+    nodes = [{"name": n} for n in names]
+    channels, samplers = [], []
+    for i in range(len(names)):
+        samplers.append({"input": 0, "output": 1, "interpolation": "LINEAR"})
+        channels.append({"sampler": i, "target": {"node": i, "path": "rotation"}})
+    return {"scenes": [{"nodes": list(range(len(names)))}], "scene": 0, "nodes": nodes,
+            "animations": [{"name": "1_idle", "channels": channels, "samplers": samplers}],
+            "accessors": [{"componentType": 5126, "count": keys, "type": "SCALAR", "bufferView": 0},
+                          {"componentType": 5126, "count": keys, "type": "VEC4", "bufferView": 1}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": keys * 4},
+                            {"buffer": 0, "byteOffset": keys * 4, "byteLength": keys * 16}],
+            "buffers": [{"byteLength": keys * 20}]}
+
+
+def test_a_glb_with_channels_and_no_mesh_is_an_ANIMATION_not_a_model():
+    """The dispatch fork. `_BY_EXT` is one handler per extension and `.glb` now wants two, so content
+    decides: routed to the model handler a clip imports as a rigless prop and pollutes every model
+    search, while its 200-node skeleton exists only to be addressed by name."""
+    doc = _clip_doc()
+    assert looks_like_clip(doc)
+    result = plan_import("1_idle.glb", _glb(doc), {})
+    assert result.kind == "animation"
+    assert result.attributes["clips"] == ["1_idle"]
+    assert result.attributes["channels"] == 1
+
+    # ...and a `.glb` that DOES carry geometry is still a model, animations or not.
+    model = _figure_doc(skinned=False)
+    model["animations"] = doc["animations"]
+    assert not looks_like_clip(model)
+    assert plan_import("figure.glb", _glb(model), {}).kind == "model"
+
+
+def test_clip_activity_is_angular_TRAVEL_not_a_pose_count():
+    """Summing the angle between successive keyframe quaternions is what separates `stands still, arms
+    only` (8 deg/s) from `busy hands` (66 deg/s) without rendering anything — the descriptor that lets
+    a director choose between clips before any of them has a name."""
+    import math
+    import struct as _s
+
+    doc = _clip_doc(names=("arm",), keys=3)
+    # Three keys a quarter-turn apart about Y: 90 degrees of travel, over 2 seconds.
+    times = _s.pack("<fff", 0.0, 1.0, 2.0)
+    quats = b"".join(_s.pack("<ffff", 0.0, math.sin(a / 2), 0.0, math.cos(a / 2))
+                     for a in (0.0, math.radians(45), math.radians(90)))
+    out = clip_activity(doc, times + quats, {"leftUpperArm": "arm"})
+    assert out["duration_s"] == 2.0
+    assert out["travel_deg"]["leftUpperArm"] == pytest.approx(90, abs=1)
+    assert out["activity_deg_s"] == pytest.approx(45, abs=1)
+    assert out["dominant"] == "leftUpperArm"
+
+
+def test_clip_activity_never_fails_an_import():
+    """A descriptor is a nicety. An unreadable accessor must cost the clip its numbers, not its row."""
+    doc = _clip_doc()
+    doc["accessors"][0]["bufferView"] = 99               # dangling
+    assert clip_activity(doc, b"", {}) in ({}, {"duration_s": 0.0, "travel_deg": {}})
+
+
+# ---------------------------------------------------------------- audio
+
+
+def _mp3(bitrate_kbps=96, sample_rate=48000, mono=True, seconds=2.0):
+    """A CBR MPEG-1 Layer III stream: one real frame header followed by enough bytes to imply length."""
+    rates = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320]
+    header = bytes([0xFF, 0xFB,
+                    (rates.index(bitrate_kbps) << 4) | ({44100: 0, 48000: 1, 32000: 2}[sample_rate] << 2),
+                    (3 if mono else 0) << 6])
+    return header + b"\x00" * int(bitrate_kbps * 1000 * seconds / 8 - len(header))
+
+
+def test_mp3_meta_reads_the_frame_header_with_no_dependency():
+    """The importer deliberately has none of the server's dependencies — one that cannot run without
+    ffmpeg is one that cannot run in a test. Measured against four clips of known length, this landed
+    within 0.04 s of what Whisper reported."""
+    meta = mp3_meta(_mp3(bitrate_kbps=96, sample_rate=48000, mono=True, seconds=5.0))
+    assert meta["sample_rate"] == 48000
+    assert meta["channels"] == 1
+    assert meta["bitrate_kbps"] == 96
+    assert meta["duration_s"] == pytest.approx(5.0, abs=0.05)
+
+    stereo = mp3_meta(_mp3(bitrate_kbps=128, sample_rate=44100, mono=False, seconds=3.0))
+    assert (stereo["channels"], stereo["sample_rate"]) == (2, 44100)
+
+
+def test_an_id3_tag_does_not_hide_the_first_frame():
+    """A tagged file starts with metadata, whose length is 7 bits per byte — read it as 8 and the
+    frame search starts inside the audio."""
+    tagged = b"ID3\x03\x00\x00" + bytes([0, 0, 2, 1]) + b"\x00" * 257 + _mp3(seconds=1.0)
+    meta = mp3_meta(tagged)
+    assert meta and meta["duration_s"] == pytest.approx(1.0, abs=0.05)
+
+
+def test_plan_import_routes_mp3_to_audio():
+    result = plan_import("3_idle.mp3", _mp3(seconds=4.0), {})
+    assert result.kind == "audio"
+    assert result.attributes["duration_s"] == pytest.approx(4.0, abs=0.05)
+    assert ".mp3" in importable_extensions()

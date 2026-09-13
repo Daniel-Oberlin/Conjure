@@ -146,6 +146,46 @@ python scripts/mcp_smoke.py                                        # exercise th
 Entry points (all installed by `pip install -e .`): `conjure`, `conjure-agent`, `conjure-cli`,
 `conjure-ctl`, `conjure-voice`, `conjure-mcp`, `conjure-doctor`, `conjure-import`.
 
+### A model that imports but renders white
+
+If a GLB arrives with correct geometry and no materials at all, check where it came from. PlayCanvas
+keeps materials and textures as assets **separate** from the mesh and rejoins them at load time, so a
+build downloaded from one is white by design, with every texture beside it and nothing in the file
+saying which goes where. Re-join them first:
+
+```bash
+python scripts/playcanvas_rebuild.py <build-dir> --list           # what it would bind, writes nothing
+python scripts/playcanvas_rebuild.py <build-dir> --out temp/rebuilt --adopt
+conjure-import temp/rebuilt/jane_export.glb --label "Jane"
+```
+
+If `--list` reports **"NO config.json"**, the capture is geometry only — the layout is fine, the
+registry is what is missing, and it prints the URL to fetch plus a reminder that `config.json` names the
+scene file and the textures you also need.
+
+`--adopt` gives a mesh no entity binds the material from an identically-named one elsewhere in the
+build, reported as INFERRED. It is rarely needed: `template` assets are read as well as scenes, and
+between them they usually bind everything — both models here come out fully bound with the flag off.
+Reach for it only when the report says a mesh came out UNTEXTURED.
+
+**Basis textures are decoded automatically.** The rebuild runs `scripts/basis_to_png.js` over the
+capture first and says so; `--no-decode` opts out. It needs `node`, and the decoder itself is committed
+in `vendor/basis`, so nothing has to be in the capture for this to work.
+
+This is automatic because forgetting it is invisible in the worst way: a fresh capture overwrites the
+decoded PNGs, and the rebuild then produces a figure textured only where a PNG happened to be served —
+outfit yes, skin no, room not at all. That reads as a capture problem and is not one. Run it by hand if
+you prefer:
+
+```bash
+node scripts/basis_to_png.js <capture-dir>
+```
+
+If the report says **N referenced file(s) are not in this capture**, add `--fetch-list urls.txt` and
+feed it to `xargs -n1 curl -O` or `wget -i`; the addresses are derived from the capture's own path. Textures are downscaled to 1024
+by default because these builds routinely use 4096-square maps, which is about 90 MB of VRAM each. See
+§ 9a of [`specs/figures.md`](./specs/figures.md).
+
 ---
 
 # Part 3 — Into the headset, on a cable

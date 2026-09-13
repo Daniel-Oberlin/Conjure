@@ -57,10 +57,33 @@ class Pose:
 #:
 #: `aim` is the right tool precisely because it is ABSOLUTE: "point the arm down" lands the same way
 #: from a T-pose and an A-pose, which is the whole reason it exists.
+#:
+#: **`down` is not straight down, and the 8° is measured.** Aimed along the body's own axis, an arm ends
+#: up INSIDE the torso — reported from the headset 2026-09-09. A shoulder sits almost exactly at the
+#: torso's edge, so the overlap is the arm's own radius, which joint positions cannot see. Measured with
+#: `figures.body_profile` + `limb_radius` across the cast:
+#:
+#:     rig      torso half-width   shoulder out   arm radius   overlap   tangent angle
+#:     Saka           6.5 cm           8.0 cm       2.2 cm      0.6 cm       0.8°
+#:     Grace         15.9 cm          15.2 cm       3.0 cm      3.7 cm       4.2°
+#:     Trish         15.9 cm          14.8 cm       2.9 cm      4.0 cm       4.2°
+#:
+#: 4.2° is where the arm is exactly tangent to the body on the worst rig. 8° carries a margin over that
+#: and is also what a person does — an arm hangs abducted, not plumb. The `clears` predicate on every
+#: pose that uses this is what stops it regressing.
 _ARMS_DOWN = {
-    "leftUpperArm": {"aim": "down"}, "rightUpperArm": {"aim": "down"},
+    "leftUpperArm": {"aim": [0.14, -1, 0]}, "rightUpperArm": {"aim": [0.14, -1, 0]},
     "leftLowerArm": {}, "rightLowerArm": {},
 }
+
+#: Asserted by every pose whose arms hang: the wrist must sit outside the torso by the forearm's own
+#: radius. Needs a mesh measurement, so it is skipped rather than failed on a file that cannot answer.
+#: The ELBOW is checked as well as the wrist, because the wrist alone misses where a body flares. On
+#: Saka the wrist clears by 6 mm while the hips below it are wider — reported from the headset as arms
+#: entering her hips "a little". Two samples along the limb, not one.
+_ARMS_CLEAR = (("clears", "leftHand", "leftLowerArm"), ("clears", "rightHand", "rightLowerArm"),
+               ("clears", "leftLowerArm", "leftLowerArm"),
+               ("clears", "rightLowerArm", "rightLowerArm"))
 
 #: Both knees down. The pose that motivated re-grounding, and the one that proved the design note wrong
 #: twice over.
@@ -102,7 +125,8 @@ POSES: tuple[Pose, ...] = (
          signature=(("points", "leftLowerLeg", "back"), ("points", "rightLowerLeg", "back"),
                     ("below", "leftLowerLeg", "hips"), ("below", "rightLowerLeg", "hips"),
                     ("moved", "leftFoot", "back", 0.05), ("moved", "rightFoot", "back", 0.05),
-                    ("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))),
+                    ("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))
+                   + _ARMS_CLEAR),
     Pose("kneel-one", "down on the right knee with the left foot planted in front — a proposal",
          {"rightUpperLeg": {"bend": -10}, "rightLowerLeg": {"bend": 95}, "rightFoot": {"bend": -35},
           "leftUpperLeg": {"bend": 75}, "leftLowerLeg": {"bend": 80}, "spine": {"bend": 5},
@@ -151,12 +175,23 @@ POSES: tuple[Pose, ...] = (
          # Negative spread tucks the elbows against the ribs, which is what lets the hands travel PAST
          # the midline instead of meeting at it — the difference between folded arms and clasped hands,
          # and 3 cm of hand travel either side of it.
-         {"leftUpperArm": {"bend": 8, "turn": 75, "spread": -30}, "leftLowerArm": {"bend": 115},
-          "rightUpperArm": {"bend": 20, "turn": 75, "spread": -30}, "rightLowerArm": {"bend": 115}},
+         # Shoulder FLEXION is the third thing this pose needed. Turn crosses the forearms and negative
+         # spread tucks the elbows, but at 8/20 degrees of bend the forearms crossed *inside* her chest
+         # — reported from the headset, and invisible to every assertion here because each joint was
+         # exactly where it belonged. 40/52 brings them in front of the ribs. Not measured the way the
+         # arms-down angle was: `clears` reads LATERAL clearance from the body midline, which the hips
+         # joint sits on, and the forward equivalent needs an origin at the centre of the torso's depth
+         # that nothing computes yet. So this one was rendered and looked at.
+         {"leftUpperArm": {"bend": 40, "turn": 75, "spread": -30}, "leftLowerArm": {"bend": 130},
+          "rightUpperArm": {"bend": 52, "turn": 75, "spread": -30}, "rightLowerArm": {"bend": 130}},
          # Crossing the midline is what makes it crossed, so that is what is asserted. `nearer` alone
          # let the wrong pose through.
-         signature=(("moved", "leftHand", "in", 0.25), ("moved", "rightHand", "in", 0.25),
-                    ("points", "leftLowerArm", "in"), ("points", "rightLowerArm", "in"))),
+         # The `points … in` pair was dropped rather than loosened. It was written when the forearms
+         # were horizontal; with the shoulder flexed they run diagonally up-and-across at about 45° to
+         # `in`, which is what folded arms actually do — and `AIMED` is deliberately one global number,
+         # so a per-pose tolerance would be a knob turned until the library went green. What makes the
+         # arms CROSSED is the hands passing the midline, which the two `moved` assertions already say.
+         signature=(("moved", "leftHand", "in", 0.25), ("moved", "rightHand", "in", 0.25))),
     # A ONE-ARMED pose still has to say what the other arm does. Same defect as the leg poses had, found
     # the same way: `wave` and `point` were misread on all three rigs at once, which is the signature of
     # a bad pose rather than a noisy judge. On a T-posed rig the idle arm stayed straight out, so a wave
@@ -173,23 +208,108 @@ POSES: tuple[Pose, ...] = (
                     ("points", "leftUpperArm", "down"))),
     Pose("bow", "bent forward from the waist, head lowered",
          {"spine": {"bend": 40}, "chest": {"bend": 15}, "neck": {"bend": 15}, **_ARMS_DOWN},
-         # Nothing is asserted here, and both halves of that are deliberate. The trunk carries different
-         # bones on different rigs (see the module docstring). And the ARMS cannot be asserted either:
-         # `aim` is absolute with respect to the BIND pose, not to wherever the bone's ancestors have
-         # since been rotated — so arms aimed `down` under a spine bent 40 degrees come out 40 degrees
-         # off vertical. That is correct behaviour and correct anatomy (arms hang from a bowed torso and
-         # swing with it), and it is a real limit of `aim` worth knowing: aiming a limb while also
-         # rotating what it hangs from compounds the two.
-         signature=()),
+         # The trunk still cannot be asserted — it carries different bones on different rigs, see the
+         # module docstring. The ARMS now can, and that is new. This pose used to carry an empty
+         # signature because `aim` was resolved against the BIND pose, so arms asked for `down` under a
+         # spine bent 40 degrees came out 40 degrees off vertical, and the note here recorded that as
+         # correct anatomy — arms hang from a bowed torso and swing with it.
+         #
+         # `figures.compose_frame` (2026-09-10) makes an aim absolute for real, so they hang PLUMB
+         # instead. That IS the behaviour change, and it is the right way round: plumb is what arms
+         # under gravity do, and it turns a pose nobody could check into one that checks itself. Whoever
+         # wants arms that swing with the torso has `bend` for it, which is relative by design.
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))),
     # `stand` is a POSE, not a reset: arms at the sides and legs straight, which is what standing looks
     # like on any rig. Returning to the FILE's bind pose is `clear=true`, and on a VRoid rig that is a
     # T-pose — a perfectly good reference stance and not what anyone means by "have her stand".
     # `clears` is what makes this a stance rather than an adjustment. A named pose merges per BONE, so
     # "stand" after "kneel" would otherwise put her arms down and leave her kneeling. It is the one pose
     # whose meaning includes everything it does NOT mention.
+    # --- arms only, so it ports everywhere, and it MERGES: `sit` then `hug` is a seated embrace,
+    # because a named pose replaces only the bones it names.
+    Pose("hug", "arms forward and curled inward, as if holding someone",
+         # Elbows OUT and forearms IN is what encircles. The first attempt used negative spread to
+         # bring the arms together and read as pleading — hands clasped under the chin — because
+         # pulling the elbows in leaves the forearms nowhere to go but up.
+         {"leftUpperArm": {"bend": 45, "spread": 25, "turn": 45},
+          "leftLowerArm": {"bend": 85, "turn": 15},
+          "rightUpperArm": {"bend": 45, "spread": 25, "turn": 45},
+          "rightLowerArm": {"bend": 85, "turn": 15}},
+         signature=(("moved", "leftHand", "forward", 0.08), ("moved", "rightHand", "forward", 0.08),
+                    ("moved", "leftHand", "in", 0.05), ("moved", "rightHand", "in", 0.05)),
+         needs="someone to hold — it is the shape of an embrace, and tier 3 is what would aim it at "
+               "another figure"),
+    # ---------------------------------------------------------------- folding forward
+    #
+    # These four were drafted 2026-09-10 and all four failed on all three rigs, because `aim` was
+    # resolved against the BIND pose: an arm asked to point `down` under a folded trunk came out
+    # pointing UP on Saka. They are here now because `figures.compose_frame` resolves an aim against
+    # the parent frame AS POSED, which is what makes a destination a destination. Arms now land within
+    # a degree of plumb on Grace, Trish, Saka and Jane whatever the trunk is doing.
+    #
+    # **The trunk is what they cannot promise, and the spread is measured.** The same request —
+    # hips 45, spine 50, chest 40 — folds the head 70 deg off vertical on Grace, 115 deg on Saka,
+    # 112 deg on Jane and **6 deg on Trish**, whose flat spine is a known rig defect. So the signatures
+    # assert the LIMBS, which are now rig-independent, and say nothing about the trunk — the same
+    # decision `bow` made, for the same reason. On Trish these read as a standing figure with her arms
+    # down; that is the flat-spine defect showing through, not these poses being wrong.
+    #
+    # **`clears` is deliberately absent.** It looks up the torso's half-width at the joint's HEIGHT,
+    # which is only meaningful while the torso is vertical. Folded over, that lookup returns the width
+    # of whatever part of the body happens to be at that height, and would read as authoritative.
+    #
+    # **Every one of them re-aims the LEGS, and that is not decoration.** `hips` is the root of the
+    # whole figure, so bending it rotates the legs along with the trunk and what comes out is a figure
+    # tipped over bodily, floating diagonally in the air. Rendered and caught, 2026-09-10. Folding at
+    # the waist means rotating the hips forward AND putting the legs back under the body, because there
+    # is no hip-flexion axis that moves the trunk alone. `points leftUpperLeg down` is in the signatures
+    # for exactly this: a tipped figure fails it, and only became assertable once an aim composed.
+    #
+    # **`downward-dog` was drafted and is NOT here.** What makes it that pose rather than a deep forward
+    # fold is hands and feet both on the floor, and rotation cannot get the hands there: at the fullest
+    # trunk fold the joint limits allow, with the arms hanging plumb — which is as low as they reach —
+    # the hands still sit 0.21h above the floor on Grace, 0.15h on Saka and 0.41h on Trish. It is
+    # waiting on tier 3, where a pose is solved against the world instead of authored.
+    Pose("all-fours", "on hands and knees, back level, head up",
+         {"hips": {"bend": 45}, "spine": {"bend": 50}, "chest": {"bend": 40}, "neck": {"bend": -30},
+          "leftUpperArm": {"aim": "down"}, "rightUpperArm": {"aim": "down"},
+          "leftLowerArm": {"aim": "down"}, "rightLowerArm": {"aim": "down"},
+          "leftUpperLeg": {"aim": "down"}, "leftLowerLeg": {"bend": 90}, "leftFoot": {"bend": -25},
+          "rightUpperLeg": {"aim": "down"}, "rightLowerLeg": {"bend": 90}, "rightFoot": {"bend": -25}},
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"),
+                    ("points", "leftLowerLeg", "back"), ("points", "rightLowerLeg", "back"),
+                    ("below", "leftHand", "hips"), ("below", "rightHand", "hips")),
+         needs="a floor to put four points on"),
+    Pose("bend-over", "bent forward from the hips, arms hanging down towards the feet",
+         {"hips": {"bend": 45}, "spine": {"bend": 50}, "chest": {"bend": 40}, "neck": {"bend": -20},
+          "leftUpperArm": {"aim": "down"}, "rightUpperArm": {"aim": "down"},
+          "leftLowerArm": {"aim": "down"}, "rightLowerArm": {"aim": "down"},
+          "leftUpperLeg": {"aim": "down"}, "rightUpperLeg": {"aim": "down"}},
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"),
+                    ("points", "leftUpperLeg", "down"), ("points", "rightUpperLeg", "down"),
+                    ("below", "leftHand", "hips"), ("below", "rightHand", "hips"))),
+    # `bend-over` / `bend-over-wide` follows the `kneel` / `kneel-one` variant pattern: the plain name
+    # is the one a director reaches for, and the variant spells out its difference.
+    #
+    # **Named `bend-over` and not `touch-toes`, because the hands do not reach the toes.** Measured on
+    # the cast: they come down to about knee height — 0.24h off the floor on Grace against a knee at
+    # 0.26h, 0.18h on Saka, 0.43h on Trish. A name that promises contact is a name the pose cannot
+    # keep, and a director reading the library would author around it. The wide one aims
+    # the legs OUT as well as down rather than using `spread`, because an aim replaces the relative
+    # swing outright and the legs have to be re-aimed here whatever else they do.
+    Pose("bend-over-wide", "bent forward with the legs spread, arms hanging down between them",
+         {"hips": {"bend": 45}, "spine": {"bend": 50}, "chest": {"bend": 40}, "neck": {"bend": -20},
+          "leftUpperArm": {"aim": "down"}, "rightUpperArm": {"aim": "down"},
+          "leftLowerArm": {"aim": "down"}, "rightLowerArm": {"aim": "down"},
+          "leftUpperLeg": {"aim": [0.45, -1, 0]}, "rightUpperLeg": {"aim": [0.45, -1, 0]}},
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"),
+                    ("points", "leftUpperLeg", "down"), ("points", "rightUpperLeg", "down"),
+                    ("below", "leftHand", "hips"), ("below", "rightHand", "hips"),
+                    ("apart", "leftFoot", "rightFoot", 0.08))),
     Pose("stand", "a plain neutral stance, arms at the sides",
          dict(_ARMS_DOWN), clears=True,
-         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))),
+         signature=(("points", "leftUpperArm", "down"), ("points", "rightUpperArm", "down"))
+                   + _ARMS_CLEAR),
 )
 
 BY_NAME: dict[str, Pose] = {p.name: p for p in POSES}

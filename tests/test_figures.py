@@ -15,7 +15,8 @@ from conjure.figures import (CONVENTIONS, CORE_BONES, FRAME_VECTORS, POSE_AXES, 
                              TRUNK_BONES, best_humanoid, convention_humanoid, follow_bones,
                              joint_limits,
                              prune_map,
-                             anatomical_axes, body_frame, infer_humanoid,
+                             anatomical_axes, apply_pose, body_frame, bone_directions,
+                             compose_frame, infer_humanoid,
                              node_world_matrices, node_world_positions, parent_map, resolve_pose,
                              score, validate)
 from conjure.figures import _ancestors, _local_matrix, _mul, _quat_mul, _sub
@@ -109,6 +110,51 @@ def test_validate_catches_a_left_right_swap():
     assert any("swapped" in p for p in validate(doc, swapped))
 
 
+def test_validate_reads_the_side_rule_off_THE_FIGURES_FACING():
+    """"+X is the model's left" is a property of how a model was authored, not of glTF.
+
+    Two figures in the capture set are built facing -z, a clean 180 degrees from the rest, and for them
+    the left hand is correctly at NEGATIVE x. The absolute rule rejected their name-based maps on four
+    counts at once, so `best_humanoid` threw away a correct map and fell through to inference — which
+    honoured +x and produced a genuinely MIRRORED one. Asking either figure for a left hand returned
+    the right, and a pose would have come out reflected.
+
+    Facing is read off the FEET: toes are forward of the ankle whichever way a figure faces, and each
+    toe is compared against its own foot, so the cue survives the very swap it is there to adjudicate."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    assert not validate(doc, m), "the fixture faces +z and is consistent"
+
+    # Turn the figure around: negate x and z on every joint, which is a 180-degree spin about y.
+    for node in doc["nodes"]:
+        t = node.get("translation")
+        if t:
+            node["translation"] = [-t[0], t[1], -t[2]]
+    # The MAP is untouched and still correct — `l_hand` is still this figure's left hand.
+    assert not [p for p in validate(doc, m) if "sides look swapped" in p], \
+        "a figure that faces the other way is not a figure with its sides swapped"
+
+    # And a genuine swap is still caught, in the turned-around frame.
+    swapped = dict(m)
+    swapped["leftHand"], swapped["rightHand"] = m["rightHand"], m["leftHand"]
+    problems = validate(doc, swapped)
+    assert any("sides look swapped" in p for p in problems), problems
+    assert any("faces -z" in p for p in problems), "and it should say which frame it judged in"
+
+
+def test_validate_falls_back_to_plus_x_when_no_toes_are_mapped():
+    """The cue needs feet. Without them the rule is what it always was — which is the right fallback,
+    since every figure in the corpus but two is authored facing +z."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    for bone in ("leftToes", "rightToes"):
+        m.pop(bone, None)
+    assert not validate(doc, m)
+    swapped = dict(m)
+    swapped["leftHand"], swapped["rightHand"] = m["rightHand"], m["leftHand"]
+    assert any("sides look swapped" in p for p in validate(doc, swapped))
+
+
 def test_validate_catches_one_node_used_for_several_bones():
     """Grace's inference mapped upper leg, lower leg AND foot to the same IK control. Every ordering
     comparison was then equal-not-less and every segment length zero, so the map passed as clean."""
@@ -167,6 +213,46 @@ def test_validate_does_not_require_the_trunk_to_be_a_chain():
     doc["nodes"][idx["spine"]]["translation"] = [0, 1.15, 0]         # same place, different parent
     doc["scenes"][0]["nodes"].append(idx["spine"])
     assert not [p for p in validate(doc, m) if "in the skeleton" in p]
+
+
+def test_validate_catches_a_hips_one_level_too_low():
+    """Reallusion forks the body immediately below `CC_Base_Hip`: `CC_Base_Pelvis` carries the thighs
+    and nothing else, `CC_Base_Waist` carries the spine and nothing else. They sit at the SAME world
+    height, so every ordering check passes whichever is chosen — inference took the Pelvis, and bending
+    those hips would have swung Susan's legs while her torso stayed upright. That is the 0-versus-122
+    degree trunk bug wearing different bone names."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    assert not validate(doc, m)
+    # Fork the skeleton the way Character Creator does: a pelvis and a waist as SIBLINGS under hips.
+    hips = doc["nodes"][idx["hips"]]
+    pelvis = len(doc["nodes"])
+    doc["nodes"].append({"name": "pelvis", "translation": [0, 0, 0],
+                         "children": [idx["l_thigh"], idx["r_thigh"]]})
+    doc["skins"][0]["joints"].append(pelvis)
+    hips["children"] = [c for c in hips["children"] if c not in (idx["l_thigh"], idx["r_thigh"])]
+    hips["children"].append(pelvis)
+
+    m["hips"] = "pelvis"                       # the bone carrying the legs, one step too far down
+    problems = validate(doc, m)
+    assert any("one level too low" in p for p in problems), problems
+    assert any("'hips'" in p for p in problems), "it must name the parent that carries both"
+
+    m["hips"] = "hips"                         # the fork point itself is fine
+    assert not [p for p in validate(doc, m) if "one level too low" in p]
+
+
+def test_validate_allows_a_trunk_on_a_separate_branch():
+    """NOT "hips must be an ancestor of the spine". On a full Rigify export the trunk hangs off a
+    `torso` control while `ORG-spine` carries the legs, four levels apart, and that map is correct —
+    Eve Maccaro in the dev library is exactly this. The check is only for the ONE-STEP case, where the
+    chosen bone's own parent carries both."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    # Re-parent the trunk far away, as conversion does: hips is no longer above spine at all.
+    doc["nodes"][idx["hips"]]["children"].remove(idx["spine"])
+    doc["scenes"][0]["nodes"].append(idx["spine"])
+    assert not [p for p in validate(doc, m) if "one level too low" in p]
 
 
 def test_score_separates_misses_from_disagreements():
@@ -642,12 +728,132 @@ def test_an_unknown_rig_falls_through_to_shape():
     assert source == "inferred" and mapping["leftUpperArm"] == "l_upperarm"
 
 
+def test_reallusion_bones_are_recognised_by_name():
+    """Character Creator exports everything under `CC_Base_`, and the row exists mainly for the hips:
+    inference put them on `CC_Base_Pelvis`, which carries the thighs and not the spine. `head` and
+    `toes` were wrong the same quiet way — `NeckTwist02` sits 3.4 cm below the real head, and `BigToe1`
+    is a child of the toe base rather than the base."""
+    names = {
+        "hips": "CC_Base_Hip", "spine": "CC_Base_Waist", "chest": "CC_Base_Spine01",
+        "upperChest": "CC_Base_Spine02", "neck": "CC_Base_NeckTwist01", "head": "CC_Base_Head",
+    }
+    for side in ("L", "R"):
+        names.update({
+            f"{'left' if side == 'L' else 'right'}Shoulder": f"CC_Base_{side}_Clavicle",
+            f"{'left' if side == 'L' else 'right'}UpperArm": f"CC_Base_{side}_Upperarm",
+            f"{'left' if side == 'L' else 'right'}LowerArm": f"CC_Base_{side}_Forearm",
+            f"{'left' if side == 'L' else 'right'}Hand": f"CC_Base_{side}_Hand",
+            f"{'left' if side == 'L' else 'right'}UpperLeg": f"CC_Base_{side}_Thigh",
+            f"{'left' if side == 'L' else 'right'}LowerLeg": f"CC_Base_{side}_Calf",
+            f"{'left' if side == 'L' else 'right'}Foot": f"CC_Base_{side}_Foot",
+            f"{'left' if side == 'L' else 'right'}Toes": f"CC_Base_{side}_ToeBase",
+        })
+    doc, idx = _skeleton()
+    for bone, node in names.items():
+        canonical = {"hips": "hips", "spine": "spine", "chest": "chest", "neck": "neck",
+                     "head": "head"}.get(bone)
+        if canonical:
+            doc["nodes"][idx[canonical]]["name"] = node
+    # The decoy: a Pelvis sibling carrying nothing, which is what inference reached for.
+    doc["nodes"].append({"name": "CC_Base_Pelvis", "translation": [0, 0, 0], "children": []})
+    doc["nodes"][idx["hips"]]["children"].append(len(doc["nodes"]) - 1)
+    for side, prefix in (("l", "L"), ("r", "R")):
+        for part, cc in (("thigh", "Thigh"), ("shin", "Calf"), ("foot", "Foot"), ("toes", "ToeBase"),
+                         ("shoulder", "Clavicle"), ("upperarm", "Upperarm"),
+                         ("lowerarm", "Forearm"), ("hand", "Hand")):
+            doc["nodes"][idx[f"{side}_{part}"]]["name"] = f"CC_Base_{prefix}_{cc}"
+    got, scheme = convention_humanoid(doc)
+    assert scheme == "cc-base", scheme
+    assert got["hips"] == "CC_Base_Hip", "not the Pelvis, which carries no spine"
+    assert got["head"] == "CC_Base_Head"
+    assert got["leftToes"] == "CC_Base_L_ToeBase"
+    assert not validate(doc, got)
+
+
+def test_a_side_letter_spelled_in_the_WRONG_CASE_still_matches():
+    """One base rig in the capture set spells nineteen of its right-side bones with a LOWERCASE side
+    letter — `CC_Base_r_Hand` sitting directly beneath an uppercase `CC_Base_R_Forearm`, on the same
+    arm. A strict match lost the right hand, foot, clavicle, toes and every finger, on two different
+    characters built from that rig, and `validate()` said nothing because hands and feet are not in
+    REQUIRED_BONES. I read the gap as nineteen missing bones and reported it as a broken export; the
+    rigs are complete and symmetric, and only the spelling is not."""
+    doc, idx = _skeleton()
+    names = {"hips": "CC_Base_Hip", "spine": "CC_Base_Waist", "chest": "CC_Base_Spine01",
+             "neck": "CC_Base_NeckTwist01", "head": "CC_Base_Head"}
+    for bone, node in names.items():
+        doc["nodes"][idx[bone]]["name"] = node
+    for side, prefix in (("l", "L"), ("r", "R")):
+        for part, cc in (("thigh", "Thigh"), ("shin", "Calf"), ("foot", "Foot"),
+                         ("shoulder", "Clavicle"), ("upperarm", "Upperarm"), ("lowerarm", "Forearm")):
+            doc["nodes"][idx[f"{side}_{part}"]]["name"] = f"CC_Base_{prefix}_{cc}"
+        # ...and the hand and toes in the wrong case, exactly as the real rig does.
+        doc["nodes"][idx[f"{side}_hand"]]["name"] = f"CC_Base_{prefix.lower()}_Hand"
+        doc["nodes"][idx[f"{side}_toes"]]["name"] = f"CC_Base_{prefix.lower()}_ToeBase"
+
+    got, scheme = convention_humanoid(doc)
+    assert scheme == "cc-base", scheme
+    assert got["leftHand"] == "CC_Base_l_Hand", "matched case-insensitively..."
+    assert got["rightToes"] == "CC_Base_r_ToeBase"
+    assert got["leftFoot"] == "CC_Base_L_Foot", "...without disturbing the ones that matched exactly"
+
+
+def test_a_name_that_is_ambiguous_only_by_case_is_refused():
+    """The fallback guesses nothing. If two nodes differ only in case, neither is worth more than the
+    other, and a wrong bone is worse than a missing one — a control bone mapped over the deform bone it
+    drives is the failure this whole layer is gated to avoid."""
+    doc, idx = _skeleton()
+    doc["nodes"][idx["l_hand"]]["name"] = "CC_Base_l_Hand"
+    doc["nodes"].append({"name": "CC_Base_L_HAND", "translation": [0, 0, 0], "children": []})
+    doc["nodes"][idx["l_lowerarm"]]["children"].append(len(doc["nodes"]) - 1)
+    lookup = {n["name"] for n in doc["nodes"]}
+    assert {"CC_Base_l_Hand", "CC_Base_L_HAND"} <= lookup
+    got, scheme = convention_humanoid(doc)
+    assert (got or {}).get("leftHand") != "CC_Base_L_HAND", "an ambiguous case match must not be taken"
+
+
 def test_a_convention_that_only_half_matches_is_not_claimed():
     doc, _ = _named_skeleton("mixamo")
     for node in doc["nodes"]:                               # break both arms
         if node.get("name", "").endswith("ForeArm"):
             node["name"] = "elbow_thing"
     assert convention_humanoid(doc) == (None, None)
+
+
+def test_a_baked_rigify_rig_is_read_from_its_deform_chain():
+    """A Rigify export with the FK controls stripped out — only `DEF-` bones survive, and the spine is
+    numbered rather than named. `temp/vrh/jane` arrives this way out of PlayCanvas, and before this row
+    existed nothing mapped her at all: inference failed too, so a perfectly good 22-bone rig was
+    invisible."""
+    doc, _ = _named_skeleton("rigify-def")
+    mapping, scheme = convention_humanoid(doc)
+    assert scheme == "rigify-def"
+    assert mapping["leftUpperArm"] == "DEF-upper_arm.L"
+    # The spine is the part addressed by index, so it is the part worth asserting: the head is the
+    # DEEPEST segment present, and the neck is not mistaken for it.
+    assert mapping["hips"] == "DEF-spine" and mapping["spine"] == "DEF-spine.001"
+    assert mapping["neck"] == "DEF-spine.004" and mapping["head"] == "DEF-spine.007"
+
+
+def test_a_rig_carrying_both_rigify_chains_prefers_the_controls():
+    """A full Rigify rig has both chains: the FK controls a human poses, and the DEF bones they drive.
+    Both rows then match in full, and the tie has to break towards the controls — which is why the
+    deform chain is its own scheme listed second, rather than extra spellings on `rigify-fk`."""
+    doc, idx = _named_skeleton("rigify-fk", arms_down=False)
+    parent = idx["hips"]                                    # a parallel deform chain, hung off the hips
+    for name in ("DEF-spine", "DEF-spine.001", "DEF-spine.002", "DEF-spine.003", "DEF-spine.004",
+                 "DEF-spine.005", "DEF-spine.006", "DEF-spine.007"):
+        doc["nodes"].append({"name": name, "translation": [0, 0.12, 0], "children": []})
+        doc["nodes"][parent]["children"].append(len(doc["nodes"]) - 1)
+        parent = len(doc["nodes"]) - 1
+    for pattern in ("DEF-upper_arm.{X}", "DEF-forearm.{X}", "DEF-hand.{X}",
+                    "DEF-thigh.{X}", "DEF-shin.{X}", "DEF-foot.{X}"):
+        for side in ("L", "R"):
+            doc["nodes"].append({"name": pattern.format(X=side), "translation": [0, 0, 0],
+                                 "children": []})
+            doc["nodes"][parent]["children"].append(len(doc["nodes"]) - 1)
+    mapping, scheme = convention_humanoid(doc)
+    assert scheme == "rigify-fk"
+    assert mapping["leftUpperArm"] == "upper_arm.fk.L"
 
 
 # ---------------------------------------------------------------- partial maps
@@ -759,3 +965,92 @@ def test_a_map_whose_limbs_drive_nothing_is_rejected():
                           {"buffer": 0, "byteOffset": 8, "byteLength": 16}]
     problems = validate(doc, mapping, blob)
     assert any("drive no geometry" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------- aim, under a trunk that has moved
+#
+# `aim` names a destination, and the claim that makes it worth having is that the same request means the
+# same thing on any rig. That was only ever true while the limb's ancestors sat at their bind pose —
+# which every pose in the library happened to keep. Fold the trunk and an arm asked to aim `down` came
+# out pointing UP on Saka (cos -0.71 against down) and BACK on Grace (cos 0.00). The frame is measured
+# once, in the parent's coordinates, and rotating the parent leaves its body directions naming something
+# else. Measured in docs/backlogs/figures.md; the fix is `compose_frame`.
+#
+# In this fixture the arms hang off the HIPS, so bending the hips is what carries them.
+
+
+def _after(pose):
+    """`(bone -> world direction, doc, mapping)` after `pose` lands on a fresh fixture."""
+    doc, mapping, _ = _posed()
+    apply_pose(doc, mapping, pose)
+    return bone_directions(doc, mapping), doc, mapping
+
+
+def test_an_aim_is_absolute_even_under_a_folded_trunk():
+    dirs, _, _ = _after({"hips": {"bend": 50}, "leftUpperArm": {"aim": "down"}})
+    assert dirs["leftUpperArm"] == pytest.approx([0, -1, 0], abs=1e-6)
+
+
+def test_the_fold_can_be_extreme_and_the_aim_still_holds():
+    # The point of the fix: `all-fours` and `downward-dog` fold the trunk right over, and it is the far
+    # end where the old behaviour INVERTED rather than merely drifted.
+    for deg in (20, 50, 80, 110):
+        dirs, _, _ = _after({"hips": {"bend": deg}, "leftUpperArm": {"aim": "down"}})
+        assert dirs["leftUpperArm"] == pytest.approx([0, -1, 0], abs=1e-6), f"hips bent {deg}"
+
+
+def test_nested_aims_resolve_root_first():
+    # Two aims on one limb, one carrying the other. Resolving them in dictionary order would leave the
+    # forearm composed against an upper arm that had not moved yet.
+    dirs, _, _ = _after({"leftLowerArm": {"aim": "down"}, "leftUpperArm": {"aim": "down"},
+                         "hips": {"bend": 60}})
+    assert dirs["leftUpperArm"] == pytest.approx([0, -1, 0], abs=1e-6)
+    assert dirs["leftLowerArm"] == pytest.approx([0, -1, 0], abs=1e-6)
+
+
+def test_a_relative_bend_still_rides_the_trunk():
+    """The other half of the design, and it must NOT change. `bend`, `spread` and `turn` are relative by
+    design: "bend her elbow 90 degrees" means the same whatever her trunk is doing. Only `aim` is
+    absolute, so only an aim is composed."""
+    _, flat, mapping = _after({"leftUpperArm": {"bend": 40}})
+    _, folded, _ = _after({"hips": {"bend": 50}, "leftUpperArm": {"bend": 40}})
+    i = {n.get("name"): k for k, n in enumerate(flat["nodes"])}[mapping["leftUpperArm"]]
+    assert folded["nodes"][i]["rotation"] == pytest.approx(flat["nodes"][i]["rotation"])
+
+
+def test_composition_is_skipped_entirely_when_no_ancestor_moved():
+    """So every pose authored before this existed behaves exactly as it did — not approximately."""
+    alone, _, _ = _after({"leftUpperArm": {"aim": "down"}})
+    beside, _, _ = _after({"leftUpperArm": {"aim": "down"}, "head": {"bend": 20}})
+    assert alone["leftUpperArm"] == pytest.approx(beside["leftUpperArm"])
+
+
+# Column-major, as glTF and three both store them. A parent that started square and has since been
+# rotated a quarter turn about X: its columns are the images of the basis vectors, so `y` now points
+# along world `z`.
+_SQUARE = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+_TIPPED = [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1]
+
+
+def test_compose_frame_moves_the_body_directions_and_nothing_else():
+    _, _, axes = _posed()
+    frame = axes["leftUpperArm"]
+    turned = compose_frame(frame, _SQUARE, _TIPPED)
+    # Read `up` back through the tipped parent and it has to name the same WORLD direction it always
+    # did. The parent turned +90 about X, so in the parent's own coordinates world up is now -z.
+    assert turned["up"] == pytest.approx([0, 0, -1], abs=1e-9)
+    assert turned["forward"] == pytest.approx([0, 1, 0], abs=1e-9)
+    for key in ("rest", "bend", "spread", "turn"):
+        # A bone's rest direction lives in its own local bind rotation and rides the parent unchanged;
+        # the three swing axes are relative on purpose.
+        assert turned[key] == pytest.approx(frame[key])
+
+
+def test_compose_frame_with_a_parent_that_has_not_moved_is_a_no_op():
+    doc, mapping, axes = _posed()
+    mats = node_world_matrices(doc)
+    by = {n.get("name"): i for i, n in enumerate(doc["nodes"])}
+    hips = mats[by[mapping["hips"]]]
+    same = compose_frame(axes["leftUpperArm"], hips, hips)
+    for key in ("up", "forward", "out", "rest"):
+        assert same[key] == pytest.approx(axes["leftUpperArm"][key], abs=1e-9)

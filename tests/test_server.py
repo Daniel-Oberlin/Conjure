@@ -4293,7 +4293,12 @@ def test_stand_still_puts_the_arms_down(srv, client, tmp_path):
     eid = _place_figure(srv, client, tmp_path)          # has a left arm
     client.post("/figure", json={"id": eid, "named": "stand"})
     stored = json.loads(_ent(client, eid)["components"]["figure"]["pose"])
-    assert stored["leftUpperArm"] == {"aim": "down"}
+    # An aim VECTOR, not the word "down": aimed along the body's own axis an arm ends up inside the
+    # torso, because a shoulder sits at the torso's edge and the arm has its own radius (measured
+    # 2026-09-10). Asserted by meaning — mostly down, and a real outward component — so tuning the
+    # angle does not break the test, but losing the clearance does.
+    aim = stored["leftUpperArm"]["aim"]
+    assert aim[1] < 0 and abs(aim[1]) > abs(aim[0]) > 0.05, aim
 
 
 def _place_legged_figure(client):
@@ -4599,10 +4604,10 @@ def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client
     the library was already stamped current, refresh-models found nothing to do, and the fix reached
     nobody — while the code, the tests and the renders all said it worked. If you change either of these
     literals, change the other: a new derived field is exactly the case the stamp exists for."""
-    assert srv.FRAME_REV == 9
+    assert srv.FRAME_REV == 14
     assert srv._DERIVED_MODEL_ATTRS == (
         "bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
-        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris")
+        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified")
 
 
 def test_a_bone_that_rides_its_limb_reaches_the_entity(srv, client, tmp_path):
@@ -4847,3 +4852,146 @@ def test_an_unknown_room_filter_matches_NOTHING_rather_than_everything(srv, clie
     assert out["ok"] is False, "refused, not applied space-wide"
     ents = {e["id"]: e for e in _entities(client)}
     assert ents["real_wall_2"]["components"]["material"].get("color") != "red"
+
+
+def test_admin_listing_filters_by_kind_and_by_relation(srv, tmp_path):
+    """A capture puts a figure, sixty clips and thirty audio files in one namespace location. Being
+    able to ask "her clips" and "what voices this" is how the linking gets checked at all — a flat
+    list is how a wrong link stays invisible."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane_export", scope=srv.active_scope, source="cache://")
+    lib.upsert("c1.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("c2.glb", kind="animation", label="2_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("v.mp3", kind="audio", label="1-2_idle", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "c1.glb", "shipped_with")
+    lib.add_relation("c1.glb", "v.mp3", "voiced_by")
+    lib.add_relation("c2.glb", "v.mp3", "voiced_by")
+
+    # Rows are built the way the namespace builds them, NOT hand-written. The first version of this
+    # test invented `{"type": ...}` and passed against a filter that read the same invented key — while
+    # `dir --kind animation` returned nothing at all, because a real row is
+    # `{label, kind: "asset", ref, cells: [asset_kind, vis]}` and `type` is a COLUMN HEADING.
+    from conjure import namespace
+    rows = srv._filter_rows(
+        [namespace.node("1_idle", "asset", "animation", "public", ref="c1.glb"),
+         namespace.node("jane_export", "asset", "model", "public", ref="fig.glb")],
+        srv.AdminPath(path="/", kind="animation"))
+    assert [r["ref"] for r in rows] == ["c1.glb"], "kind narrows to one asset type"
+    assert srv._row_asset_kind(rows[0]) == "animation"
+    assert "type" not in rows[0], "the guess that made this pass while the feature was broken"
+
+    # A relation reads from either end: the figure's authored clips, and the clips one file voices.
+    assert srv._related_ids("fig.glb", "shipped_with") == {"c1.glb"}
+    assert srv._related_ids("v.mp3", "voiced_by") == {"c1.glb", "c2.glb"}, \
+        "one audio file, two clips — inbound"
+    assert srv._related_ids("c1.glb", None) == {"fig.glb", "v.mp3"}, "every edge when no type is given"
+
+
+def test_relation_filter_refuses_an_ambiguous_or_absent_name(srv):
+    """`--with` takes a label because a person types labels. Labels are neither unique nor guaranteed,
+    so two matches is refused rather than picked between — the same rule the asset namespace uses."""
+    lib = srv.library
+    for i in (1, 2):
+        lib.upsert(f"dup{i}.glb", kind="model", label="twin", scope=srv.active_scope, source="cache://")
+    assert srv._related_ids("twin", None) == set(), "ambiguous → nothing, not a guess"
+    assert srv._related_ids("no-such-asset", None) == set()
+
+
+def test_a_with_name_that_is_ambiguous_SAYS_so_rather_than_listing_nothing(srv):
+    """An empty listing is the same shape whether a name is unknown, ambiguous, or simply unrelated —
+    and those want different responses. In a captured set `3_idle` is ambiguous by design: the clip and
+    the audio that voices it share a label."""
+    lib = srv.library
+    lib.upsert("clip.glb", kind="animation", label="3_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("voice.mp3", kind="audio", label="3_idle", scope=srv.active_scope, source="cache://")
+
+    note = srv._related_problem("3_idle")
+    assert note and "ambiguous" in note and "--kind" in note, note
+    assert srv._related_problem("no-such-thing").startswith("nothing here is called")
+
+    lib.upsert("solo.glb", kind="model", label="unique-one", scope=srv.active_scope, source="cache://")
+    assert srv._related_problem("unique-one") is None, "a name that resolves is not a problem"
+    assert srv._related_problem("clip.glb") is None, "and neither is an id"
+
+
+def _place_dressed_figure(srv, client, tmp_path):
+    """A rigged figure whose meshes have NAMES the parts vocabulary recognises — a body, a dress, hair,
+    shoes and a pair of eyelashes, which is the shape every captured figure has."""
+    meshes = ["Body", "clothes_maiddress", "model_britney_hair", "Canvas_shoes", "Eylashes"]
+    nodes = [{"name": "hip_node", "translation": [0, 1.0, 0], "children": [1, 2]},
+             {"name": "upper_arm.L", "translation": [0.2, 0.4, 0]},
+             {"name": "head_node", "translation": [0, 0.6, 0]}]
+    for i, name in enumerate(meshes):
+        nodes.append({"name": name, "mesh": 0, "skin": 0})
+    doc = {"scenes": [{"nodes": list(range(len(nodes)))}], "scene": 0, "nodes": nodes,
+           "skins": [{"joints": [0, 1, 2]}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+           "accessors": [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}],
+           "extensions": {"VRMC_vrm": {"humanoid": {"humanBones": {
+               "hips": {"node": 0}, "leftUpperArm": {"node": 1}, "head": {"node": 2}}}}}}
+    body = json.dumps(doc).encode()
+    body += b" " * (-len(body) % 4)
+    blob = (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body))
+            + struct.pack("<II", len(body), 0x4E4F534A) + body)
+    r = client.post("/library/import", json={"items": [
+        {"filename": "dressed.vrm", "data_b64": base64.b64encode(blob).decode(), "hints": {}}]}).json()
+    aid = r["results"][0]["id"]
+    return client.post("/place_cached_asset", json={"id": aid, "name": "dressed"}).json()["id"]
+
+
+def test_a_figure_carries_its_PARTS_and_can_be_undressed(srv, client, tmp_path):
+    """Classified once at import, carried on the entity, resolved to node names by the server — so the
+    client hides what it is handed and knows nothing about garments."""
+    eid = _place_dressed_figure(srv, client, tmp_path)
+    meta = _ent(client, eid)["meta"]
+    assert meta["parts"]["clothes_maiddress"] == "clothing"
+    assert meta["parts"]["model_britney_hair"] == "hair", "specific rules beat the body rule"
+    assert meta["parts"]["Body"] == "body"
+
+    r = client.post("/figure/parts", json={"id": eid, "hide": ["clothing"]}).json()
+    assert r["ok"] and r["hidden"] == ["clothes_maiddress"]
+    stored = _ent(client, eid)["components"]["figure-parts"]["hidden"]
+    assert json.loads(stored) == ["clothes_maiddress"], "the ENTITY holds the truth, as node names"
+
+    # Hiding accumulates, and showing is its exact inverse.
+    r = client.post("/figure/parts", json={"id": eid, "hide": ["shoes"]}).json()
+    assert r["hidden"] == ["Canvas_shoes", "clothes_maiddress"]
+    r = client.post("/figure/parts", json={"id": eid, "show": ["clothing"]}).json()
+    assert r["hidden"] == ["Canvas_shoes"]
+
+
+def test_only_body_strips_everything_removable_but_never_the_face(srv, client, tmp_path):
+    """`face` and `body` are not removable: taking the eyes out of a head is not undressing it. Hair is
+    removable and is not clothing — stripping a figure to check its integrity should not scalp it, so
+    it comes off only when asked for."""
+    eid = _place_dressed_figure(srv, client, tmp_path)
+    r = client.post("/figure/parts", json={"id": eid, "only_body": True}).json()
+    assert r["hidden"] == ["Canvas_shoes", "clothes_maiddress", "model_britney_hair"]
+    assert "Body" not in r["hidden"] and "Eylashes" not in r["hidden"]
+    assert r["removable"] == {"clothing": 1, "hair": 1, "shoes": 1}
+
+
+def test_naming_one_MESH_overrules_the_category_it_was_put_in(srv, client, tmp_path):
+    """The classifier proposes and the entity holds the truth, so a wrong grouping is corrected by
+    naming the node rather than argued with."""
+    eid = _place_dressed_figure(srv, client, tmp_path)
+    r = client.post("/figure/parts", json={"id": eid, "hide": ["Eylashes"]}).json()
+    assert r["hidden"] == ["Eylashes"], "a node name passes through even when its category cannot"
+
+
+def test_a_word_that_is_neither_a_category_nor_a_mesh_is_REPORTED(srv, client, tmp_path):
+    eid = _place_dressed_figure(srv, client, tmp_path)
+    r = client.post("/figure/parts", json={"id": eid, "hide": ["clothing", "sporran"]}).json()
+    assert r["ok"] and r["hidden"] == ["clothes_maiddress"]
+    assert r["unknown"] == ["sporran"], "silently ignoring it would read as a working command"
+
+
+def test_a_figure_with_no_parts_says_WHY_rather_than_doing_nothing(srv, client, tmp_path):
+    """Clothing is sometimes a separate container — a `hair.glb` beside the body — which is a different
+    mechanism with a different answer. "Nothing happened" is the one response that teaches nobody."""
+    eid = _place_figure(srv, client, tmp_path)          # the plain fixture: no named meshes
+    r = client.post("/figure/parts", json={"id": eid, "only_body": True}).json()
+    assert r["ok"] is False
+    assert "no classified parts" in r["error"]
+    assert "separate model" in r["error"], "it must point at the other mechanism"
+

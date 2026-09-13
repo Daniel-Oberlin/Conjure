@@ -190,6 +190,95 @@ test("a frame with no aiming vectors leaves the bone alone", () => {
   assert.ok(same(delta(frame, { aim: "up" }), new THREE.Quaternion()));
 });
 
+// ---------------------------------------------------------------- aim, under a trunk that has moved
+//
+// The claim `aim` exists to make is that a destination means the same thing on every rig. It was only
+// ever true while the limb's ancestors sat at their bind pose, which every pose in the library happened
+// to keep — fold the trunk and an arm asked to aim `down` came out pointing UP on Saka (cos -0.71) and
+// BACK on Grace (cos 0.00). Measured, in docs/backlogs/figures.md.
+//
+// A trunk-and-arm fixture, because that is what it takes to see this at all: chest -> shoulder -> elbow,
+// and the chest carries a rest LEAN so its bind frame is not the world frame either. A test where the
+// chest starts square would pass on an implementation that simply assumed bind == world.
+const CREST = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 9);
+const SREST = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 6);
+
+function trunkFigure(pose) {
+  const chest = new THREE.Bone(), shoulder = new THREE.Bone(), elbow = new THREE.Bone();
+  const root = new THREE.Object3D();
+  chest.name = "chest"; shoulder.name = "upper_arm.L"; elbow.name = "forearm.L";
+  chest.quaternion.copy(CREST);
+  shoulder.position.set(0.2, 0.3, 0);
+  shoulder.quaternion.copy(SREST);
+  elbow.position.set(1, 0, 0);
+  shoulder.add(elbow); chest.add(shoulder); root.add(chest);
+
+  // The arm's frame, in the frame its own local rotation lives in — the CHEST's, at bind. This is what
+  // the server ships and what goes stale the moment the chest rotates.
+  const toChest = CREST.clone().invert();
+  const axes = {
+    chest: { bend: [1, 0, 0], spread: [0, 0, 1], turn: [0, 1, 0] },
+    leftUpperArm: {
+      rest: new THREE.Vector3(1, 0, 0).applyQuaternion(SREST).toArray(),
+      up: new THREE.Vector3(0, 1, 0).applyQuaternion(toChest).toArray(),
+      forward: new THREE.Vector3(0, 0, 1).applyQuaternion(toChest).toArray(),
+      out: new THREE.Vector3(1, 0, 0).applyQuaternion(toChest).toArray(),
+      bend: [0, 0, 1], spread: [0, 1, 0], turn: [1, 0, 0],
+    },
+  };
+  const comp = Object.create(DEF);
+  comp.el = { id: "fig", getObject3D: () => root, addEventListener() {}, removeEventListener() {} };
+  comp.data = { humanoid: JSON.stringify({ chest: "chest", leftUpperArm: "upper_arm.L" }),
+                axes: JSON.stringify(axes), pose: JSON.stringify(pose) };
+  comp.init();
+  root.updateMatrixWorld(true);
+  const a = new THREE.Vector3().setFromMatrixPosition(shoulder.matrixWorld);
+  const b = new THREE.Vector3().setFromMatrixPosition(elbow.matrixWorld);
+  return { comp, root, chest, shoulder, elbow, arm: b.sub(a).normalize() };
+}
+
+test("an arm aimed down hangs PLUMB even though the chest it hangs from is folded", () => {
+  const { arm } = trunkFigure({ chest: { bend: 60 }, leftUpperArm: { aim: "down" } });
+  const cos = arm.dot(new THREE.Vector3(0, -1, 0));
+  assert.ok(cos > 1 - 1e-6, `arm should hang straight down, cos ${cos.toFixed(3)} off ${arm.toArray()}`);
+});
+
+test("the fold does not have to be small — 90 degrees of chest is still plumb", () => {
+  // The whole reason this matters: `all-fours` and `downward-dog` fold the trunk right over, and it is
+  // the extreme end where the old behaviour inverted rather than merely drifted.
+  [30, 60, 90, 120].forEach(function (deg) {
+    const { arm } = trunkFigure({ chest: { bend: deg }, leftUpperArm: { aim: "down" } });
+    assert.ok(arm.dot(new THREE.Vector3(0, -1, 0)) > 1 - 1e-6,
+              `chest bent ${deg} deg: arm went ${arm.toArray()}`);
+  });
+});
+
+test("an aim with the trunk at REST is untouched by composition", () => {
+  // Composition only runs when an ancestor actually moved, so every pose authored before this existed
+  // behaves exactly as it did — not approximately.
+  const still = trunkFigure({ leftUpperArm: { aim: "down" } });
+  const composed = trunkFigure({ chest: { bend: 0 }, leftUpperArm: { aim: "down" } });
+  assert.ok(same(still.shoulder.quaternion, composed.shoulder.quaternion));
+  assert.ok(still.arm.dot(new THREE.Vector3(0, -1, 0)) > 1 - 1e-6);
+});
+
+test("a relative bend under a folded trunk still swings WITH the trunk", () => {
+  // The other half of the design, and it must not change: `bend` is relative BY DESIGN, so "bend her
+  // elbow 90 degrees" means the same whatever her trunk is doing. Only `aim` is absolute.
+  const flat = trunkFigure({ leftUpperArm: { bend: 40 } });
+  const folded = trunkFigure({ chest: { bend: 50 }, leftUpperArm: { bend: 40 } });
+  assert.ok(same(flat.shoulder.quaternion, folded.shoulder.quaternion),
+            "the arm's LOCAL rotation should be identical; only the world direction differs");
+  // And in the world it rides the chest EXACTLY — the chest's bend axis is world +X here, so the arm
+  // should land on the flat arm turned by that same 50 degrees. Exact, rather than "it moved a bit":
+  // the arm lies near the X axis, so it only travels 23 degrees and a loose threshold would have been
+  // satisfied by drift as easily as by riding.
+  const carried = flat.arm.clone()
+    .applyQuaternion(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI * 50 / 180));
+  assert.ok(carried.angleTo(folded.arm) < 1e-6,
+            `expected ${carried.toArray()}, got ${folded.arm.toArray()}`);
+});
+
 test("a joint limit is applied on the client too, from the frame it was sent", () => {
   // The limits ride WITH the frame (conjure/figures.py holds the one table), so this file has the
   // arithmetic and no anatomy — nothing here can drift out of step with the server's idea of a knee.
