@@ -52,10 +52,21 @@ surfaces hidden, the space still in effect — intended for replacement geometry
 footprint. No tool builds that geometry yet, so today this matches `ar`."* A room model is that
 geometry.
 
-**The world already carries two rigid frames.** `skyYaw`/`skyScale` adjust the sky about its derived
-pose; `frameYaw`/`frameOffset` are a rigid horizontal transform (`p' = R(yaw)·p + offset`) over a void
-world's content. A room needs the **second**: the point of dragging it is to line its floor up with the
-real one so you can walk the space, which is translation and yaw, not scale about a centre.
+**The grounded skybox is the precedent, and it needs BOTH frames.** `frameYaw`/`frameOffset` are a
+rigid horizontal transform (`p' = R(yaw)·p + offset`); `skyYaw`/`skyScale` turn and size the panorama
+*relative to that*. The two are deliberately one frame — "if a world moves, the sky it sits under moves
+with it" — and `applyFrameDelta` is shared by `#world-root` and the sky for exactly that reason.
+
+A room model is the same shape of thing: content with a ground you stand on, which has to be put in
+the right place (offset), turned to line its walls up with the real ones (yaw), and sized to fit a
+physical room (scale). So it follows the **grounded skybox**, not the plain one and not void content
+alone — the grounded dome already demonstrates the full combination.
+
+**And the readout lesson comes with it.** `GROUNDED_M = [3, 300]` bounds the *effective radius*,
+"the number that describes what you see", because `height` is not a height in any sense a user means —
+it is where the horizon sits. Reporting "height 0.2 m" for a dome whose ceiling was 3.95 m up read as a
+broken scale gesture when it was only a broken label (2026-09-01). A room model needs its own bounds
+and its own honest readout — a floor span, not an internal parameter.
 
 ---
 
@@ -146,10 +157,15 @@ rig with the body moving correctly; its audio plays in sync; and a pose reassert
   — the room *is* the walls.
 - It is the content `authored` immersion was written for, which is why that mode currently falls back
   to `ar`.
-- **`grab` gets the frame gesture, not the sky gesture.** The reason is alignment for walking, not
-  looks: a room's floor has to line up with the real floor, which is `frameYaw`/`frameOffset`.
-- **Known obstacle:** void mode is gated on `WF.isVoid()`. Aligning a room *inside a real space* is
-  precisely the case that gate forbids, so the gate has to learn about an environment model.
+- **`grab` follows the GROUNDED SKYBOX**, which is the mode that already solves this: offset and yaw
+  to place and square the room against the real one, scale to fit it to the physical space. The reason
+  is alignment for walking, not looks.
+- **Known obstacle, and it is the central one.** The grab catalog says it plainly: *"Skybox scale and
+  void mode need a void/outdoor world; skybox yaw works anywhere."* Inside a real space you get yaw and
+  nothing else — and a room model inside a real space is precisely the case that needs offset and scale
+  most, because that is what lining a virtual room up with a physical one *is*. The gate
+  (`WF.isVoid()`) has to learn about an environment model, and this is the phase's real work rather
+  than a footnote to it.
 - **Open:** where the user stands in a room, and whether its floor snaps to the space's floor plane.
   `authored`'s "built to the real footprint" argues for snapping; `plane_anchor.py` already has the
   machinery.

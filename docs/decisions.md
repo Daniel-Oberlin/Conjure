@@ -552,6 +552,11 @@ renderer asks for.
 **Consequence to hold:** a skybox is world *state* while a room model is an *entity*, so "environment"
 spans two representations. That asymmetry is real and is deliberately left alone for now; see the plan.
 
+**The runtime precedent is the GROUNDED skybox, not the plain one.** Both are content you stand on and
+must square against a physical room, so both want offset + yaw + scale — and the grounded dome already
+carries that combination across `frameYaw`/`frameOffset` and `skyYaw`/`skyScale`, which are one frame
+by design. The plain sky has no ground and no position, so scaling it changes only occlusion.
+
 ### 23. Is a clip owned by a figure, or by a rig? — ✅ RESOLVED
 **Choice:** By the **rig**, keyed on a signature over the mapped humanoid bone names.
 
