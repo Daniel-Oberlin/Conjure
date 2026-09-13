@@ -23,6 +23,34 @@ are settled.
 
 ## Open — seen in the headset, not reproducible from files
 
+### Clip playback has not been run on a headset yet (2026-09-13)
+
+§8b landed with its endpoints smoke-tested against the real catalog — `jane_export`, `Teacher_v1` and
+`office-babe` each resolve `10_action` to their own clip, with the right voice, and the cross-rig
+refusal and its `force` override both behave. What that does NOT establish is the part only a headset
+can answer: whether the bodies move correctly.
+
+Specifically unverified:
+
+- **Does the skeleton actually move?** Binding is by node name and the name match is 222/222 on three
+  figures, but a match is not motion — a clip authored against a different bind pose can resolve every
+  channel and still fold a figure up.
+- **Root motion.** Clips animate hips translation. A figure placed on the floor may walk out of the
+  world, or float, and `figure._settle` has no opinion about a moving root.
+- **Does the voice actually start?** Autoplay is refused without a gesture and the fallback listens for
+  a `click`, which is not the event an immersive session produces. If the voice never arrives on a
+  Quest, the gesture hook is the first place to look.
+- **Two headsets on the same frame.** The shared-clock seek is the whole sync design and has been
+  exercised by exactly one client — none.
+
+### Nothing plays the teacher's `Blink.glb`, so her eyes are still shut
+
+Now a gap with a mechanism rather than one without. Her build ships a `Blink.glb` animating 189 targets
+including the eyelid bones and the site opens her eyes by playing it; `play_clip` can play it, but
+nothing does so at placement. The fix is a decision — which clip, if any, a figure should idle on when
+it arrives — not new machinery.
+
+
 ### A Character Creator figure does not kneel in the client, and does everywhere else
 
 Asked to kneel, Alice (Reallusion `CC_Base_*`) tilts forward a few degrees and stays standing. The
