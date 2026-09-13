@@ -23,6 +23,8 @@ before it is trusted on a rig where nothing does.
 
 from __future__ import annotations
 
+import hashlib
+
 import math
 from typing import Optional
 
@@ -1419,6 +1421,35 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
             framed["limits"] = {k: [float(lo), float(hi)] for k, (lo, hi) in limits.items()}
         out[bone] = framed
     return out
+
+
+#: Bump when the SIGNATURE's definition changes — which bones it covers, or how it is spelled. It is
+#: stamped beside every signature so a changed definition is detectable rather than silently splitting
+#: one rig into two. Distinct from FRAME_REV: a discovery fix can change a signature without changing
+#: what a signature MEANS, and the two need to be told apart when regrouping a catalog.
+RIG_SIG_REV = 1
+
+
+def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
+    """A stable fingerprint of a skeleton, over the MAPPED humanoid bones only.
+
+    This is what makes a clip and a figure comparable without either naming the other. Two skeletons
+    with the same signature spell their humanoid bones identically, so a clip authored on one binds to
+    the other by node name with nothing in between — which is measured, not assumed: sixteen of twenty
+    captured figures share one signature, and a clip from any of them plays on the rest.
+
+    Over the MAPPED bones and not every node, deliberately. Jane and Akari differ by 51 nodes — skirt
+    bones, breast secondaries, anatomy extras — while agreeing on all 37 core body bones, and a
+    fingerprint that split them would answer a question nobody asks.
+
+    `None` when no map can be recovered: a skeleton we cannot name is one we cannot promise anything
+    about, and a signature over an unmapped rig would be a fingerprint of our own failure.
+    """
+    mapping, _, _ = best_humanoid(doc, blob)
+    if not mapping:
+        return None
+    spelled = "|".join(f"{k}={mapping[k]}" for k in sorted(mapping))
+    return f"{hashlib.sha1(spelled.encode()).hexdigest()[:10]}"
 
 
 #: Bump when ANYTHING that changes a derived result changes: inference, the axes, `validate()`, the

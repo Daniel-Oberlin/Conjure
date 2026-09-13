@@ -444,6 +444,18 @@ class ModelImporter(AssetImporter):
                         except Exception:  # noqa: BLE001 — a nicety; never fail an import over it
                             pass
                     if attributes.get("humanoid"):
+                        # The signature that makes a figure and a CLIP comparable without either one
+                        # naming the other: the same fingerprint computed over a clip's skeleton-only
+                        # GLB matches, which is how "what can she play" becomes a lookup.
+                        try:
+                            from .figures import RIG_SIG_REV, rig_signature
+                            sig = rig_signature(doc, blob)
+                            if sig:
+                                attributes["rig_sig"] = sig
+                                attributes["rig_sig_rev"] = RIG_SIG_REV
+                        except Exception as exc:  # noqa: BLE001 — a map without a signature still poses
+                            print(f"[conjure] rig signature failed for {filename}: {exc}")
+                    if attributes.get("humanoid"):
                         # The anatomical frame: which way to rotate each bone so that "bend 45" means
                         # the same motion on every rig. Derived from the bind pose, so it is a property
                         # of the FILE and belongs here beside the map rather than being re-measured by
@@ -480,11 +492,221 @@ class ModelImporter(AssetImporter):
 
 
 # The registry. Add a handler here and it's importable everywhere — no other change.
+#: Bones whose travel says what a clip DOES, by canonical humanoid name. Six, not all twenty-two:
+#: the point is a descriptor a human or a director can read, and a vector over every bone is neither
+#: readable nor more discriminating — these six already separate "stands still, arms only" from
+#: "arm-driven, legs planted" on the corpus this was measured against.
+_ACTIVITY_BONES = ("leftUpperArm", "leftLowerArm", "leftHand",
+                   "leftUpperLeg", "spine", "head")
+
+
+def clip_activity(doc: dict, blob: bytes, humanoid: Optional[dict] = None) -> dict:
+    """How much a clip MOVES, per bone, in degrees of travel — the descriptor that lets a clip be
+    chosen before anyone has named it.
+
+    Summing the angle between successive keyframe quaternions gives total angular travel, which
+    separates clips objectively and cheaply (no rendering, no model, no captioning):
+
+        3_idle     38.6s    8 deg/s   thigh 4, spine 3        stands still, arms only
+        1_action   39.6s   66 deg/s   hand 1083               busy hands
+
+    `humanoid` maps canonical bone names to node names; without one the node names are used directly,
+    which is what a clip GLB alone can offer. Returns `{}` for a file with no rotation channels.
+    """
+    nodes = doc.get("nodes") or []
+    names = [n.get("name") for n in nodes]
+    want = {}
+    for bone in _ACTIVITY_BONES:
+        node = (humanoid or {}).get(bone, bone)
+        if node in names:
+            want[names.index(node)] = bone
+    travel: dict[str, float] = {}
+    duration = 0.0
+    for anim in doc.get("animations") or []:
+        for channel in anim.get("channels") or []:
+            target = channel.get("target") or {}
+            sampler = (anim.get("samplers") or [])[channel.get("sampler", 0)]
+            times = _read_floats_flat(doc, blob, sampler.get("input"), 1)
+            if times:
+                duration = max(duration, float(times[-1]))
+            if target.get("path") != "rotation" or target.get("node") not in want:
+                continue
+            quats = _read_floats_flat(doc, blob, sampler.get("output"), 4)
+            if not quats or len(quats) < 8:
+                continue
+            total = 0.0
+            for i in range(4, len(quats), 4):
+                dot = abs(sum(quats[i + k] * quats[i - 4 + k] for k in range(4)))
+                total += 2.0 * math.acos(min(1.0, max(-1.0, dot)))
+            travel[want[target["node"]]] = round(math.degrees(total))
+    if not travel and not duration:
+        return {}
+    out: dict = {"duration_s": round(duration, 2), "travel_deg": travel}
+    if duration > 0 and travel:
+        out["activity_deg_s"] = round(sum(travel.values()) / duration, 1)
+        out["dominant"] = max(travel, key=travel.get)
+    return out
+
+
+def _read_floats_flat(doc: dict, blob: bytes, accessor: Optional[int], per: int) -> list[float]:
+    """A whole float accessor as a flat list, honouring byteStride. Empty on anything unreadable —
+    a descriptor is a nicety and must never fail an import."""
+    try:
+        acc = (doc.get("accessors") or [])[accessor]
+        view = (doc.get("bufferViews") or [])[acc["bufferView"]]
+        if acc.get("componentType") != 5126:
+            return []
+        start = view.get("byteOffset", 0) + acc.get("byteOffset", 0)
+        stride = view.get("byteStride") or per * 4
+        out: list[float] = []
+        for i in range(acc["count"]):
+            out.extend(struct.unpack_from("<" + "f" * per, blob, start + i * stride))
+        return out
+    except Exception:                                   # noqa: BLE001 — never fail an import over this
+        return []
+
+
+def looks_like_clip(doc: dict) -> bool:
+    """A skeleton-only animation: channels and no geometry.
+
+    This is the dispatch fork. `.glb` reaches two handlers now and the extension cannot say which, so
+    the file is asked: an animation from this pipeline carries `meshes=0, skins=0` and one named clip
+    over a couple of hundred nodes, because the skeleton is there only to be addressed by name."""
+    return bool(doc.get("animations")) and not doc.get("meshes") and not doc.get("skins")
+
+
+class AnimationImporter(AssetImporter):
+    """A skeleton-only `.glb`: animation channels bound to bone NAMES, with no mesh of its own.
+
+    This is how a build ships motion separately from the figure it was authored on — 47.7 MB of clips
+    against a 5 MB character, loaded only when a clip is actually played. Binding is by node name, so a
+    clip plays on any skeleton that spells its bones the same way; `rig_sig` is what records that, and
+    it is the FIGURE's signature recomputed over the clip's own skeleton so the two can be compared
+    without either one naming the other."""
+    kind = "animation"
+    extensions = ()                                     # reached through `.glb`, by content — see plan_import
+
+    def sniff(self, filename: str, data: bytes) -> bool:
+        if data[:4] != b"glTF":
+            return False
+        doc = read_glb_json(data)
+        return bool(doc) and looks_like_clip(doc)
+
+    def extract(self, filename: str, data: bytes, hints: dict) -> ImportResult:
+        doc = read_glb_json(data) or {}
+        from .figures import best_humanoid, rig_signature, split_glb
+        blob = split_glb(data)[1]
+        # The clip's OWN skeleton resolves through the same discovery a figure does — it is a real
+        # skeleton, just an empty one — so the descriptor can be written in canonical bone names
+        # rather than whatever this rig happens to spell them.
+        mapping = best_humanoid(doc, blob)[0]
+        clips = [a.get("name") for a in doc.get("animations") or []]
+        targets = {c.get("target", {}).get("node")
+                   for a in doc.get("animations") or [] for c in a.get("channels") or []}
+        attributes: dict = {
+            "clips": clips,
+            "channels": sum(len(a.get("channels") or []) for a in doc.get("animations") or []),
+            "targets": len([t for t in targets if t is not None]),
+            "nodes": len(doc.get("nodes") or []),
+        }
+        attributes.update(clip_activity(doc, blob, mapping))
+        sig = rig_signature(doc, blob)
+        if sig:
+            from .figures import RIG_SIG_REV
+            attributes["rig_sig"] = sig
+            attributes["rig_sig_rev"] = RIG_SIG_REV
+        return ImportResult(kind=self.kind, ext=".glb",
+                            label=hints.get("label") or (clips[0] if clips else None),
+                            attributes=attributes, licence=hints.get("licence"),
+                            attribution=hints.get("attribution"), creator=hints.get("creator"))
+
+
+# ---------------------------------------------------------------------------- audio
+
+_MPEG_RATES = {                                         # kbps, by (version, layer) then bitrate index
+    (3, 1): [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
+    (3, 2): [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+    (3, 3): [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+    (2, 1): [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+    (2, 2): [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+}
+_MPEG_RATES[(2, 3)] = _MPEG_RATES[(2, 2)]
+_SAMPLE_RATES = {3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000]}
+
+
+def mp3_meta(data: bytes) -> Optional[dict]:
+    """`{duration_s, sample_rate, channels, bitrate_kbps}` from an MP3's own frame header, or None.
+
+    Stdlib only, because this module deliberately has none of the server's dependencies and an
+    importer that cannot run without ffmpeg is an importer that cannot run in a test. Duration comes
+    from a Xing/Info frame count where the encoder wrote one (VBR), and from size over bitrate where
+    it did not (CBR) — measured against four clips of known length, both paths landed within 0.1 s.
+    """
+    start = 0
+    if data[:3] == b"ID3" and len(data) > 10:           # skip the tag: its size is 7 bits per byte
+        size = 0
+        for byte in data[6:10]:
+            size = (size << 7) | (byte & 0x7f)
+        start = 10 + size
+    for i in range(start, min(len(data) - 4, start + 65536)):
+        if data[i] != 0xFF or (data[i + 1] & 0xE0) != 0xE0:
+            continue
+        version = (data[i + 1] >> 3) & 0x03             # 3 = MPEG1, 2 = MPEG2, 0 = MPEG2.5
+        layer = (data[i + 1] >> 1) & 0x03               # 1 = Layer III
+        bitrate_index = (data[i + 2] >> 4) & 0x0F
+        rate_index = (data[i + 2] >> 2) & 0x03
+        if version == 1 or layer == 0 or bitrate_index in (0, 15) or rate_index == 3:
+            continue                                    # reserved — not a frame header after all
+        table = _MPEG_RATES.get((3 if version == 3 else 2, 4 - layer))
+        if not table:
+            continue
+        kbps = table[bitrate_index]
+        sample_rate = _SAMPLE_RATES[version][rate_index]
+        channels = 1 if ((data[i + 3] >> 6) & 0x03) == 3 else 2
+        per_frame = 384 if layer == 3 else (1152 if version == 3 else 576)
+        frames = None
+        head = data[i:i + 200]
+        for tag in (b"Xing", b"Info"):                  # VBR headers carry the real frame count
+            at = head.find(tag)
+            if at >= 0 and len(head) >= at + 12 and (head[at + 7] & 1):
+                frames = struct.unpack_from(">I", head, at + 8)[0]
+                break
+        if frames:
+            duration = frames * per_frame / sample_rate
+        else:
+            duration = (len(data) - start) * 8 / (kbps * 1000)
+        return {"duration_s": round(duration, 2), "sample_rate": sample_rate,
+                "channels": channels, "bitrate_kbps": kbps}
+    return None
+
+
+class AudioImporter(AssetImporter):
+    """Sound files. kind='audio'; duration/rate/channels from the container's own header."""
+    kind = "audio"
+    extensions = (".mp3",)
+
+    def sniff(self, filename: str, data: bytes) -> bool:
+        return data[:3] == b"ID3" or (len(data) > 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0)
+
+    def extract(self, filename: str, data: bytes, hints: dict) -> ImportResult:
+        meta = mp3_meta(data) or {}
+        return ImportResult(kind=self.kind, ext=_ext(filename) or ".mp3",
+                            label=hints.get("label"), attributes=dict(meta),
+                            licence=hints.get("licence"), attribution=hints.get("attribution"),
+                            creator=hints.get("creator"))
+
+
 _IMAGE = ImageImporter()
 _STEREO = StereoImageImporter()
 _MODEL = ModelImporter()
-_HANDLERS: tuple[AssetImporter, ...] = (_IMAGE, _MODEL)
-_BY_KIND = {"image": _IMAGE, "stereo": _STEREO, "model": _MODEL}
+_ANIMATION = AnimationImporter()
+_AUDIO = AudioImporter()
+# `_ANIMATION` is deliberately absent from `_HANDLERS`: it claims no extension of its own, because the
+# one it would claim is `.glb` and the model handler already has it. It is reached by CONTENT, in
+# `plan_import`, or by an explicit `kind` hint.
+_HANDLERS: tuple[AssetImporter, ...] = (_IMAGE, _MODEL, _AUDIO)
+_BY_KIND = {"image": _IMAGE, "stereo": _STEREO, "model": _MODEL,
+            "animation": _ANIMATION, "audio": _AUDIO}
 _BY_EXT = {ext: h for h in _HANDLERS for ext in h.extensions}
 
 
@@ -501,6 +723,13 @@ def plan_import(filename: str, data: bytes, hints: dict) -> Optional[ImportResul
         handler: Optional[AssetImporter] = _STEREO
     elif forced in _BY_KIND:
         handler = _BY_KIND[forced]
+    elif _ext(filename) in (".glb", ".vrm") and data[:4] == b"glTF":
+        # THE DISPATCH FORK. `.glb` reaches two handlers now and the extension cannot say which, so
+        # the file is asked. A build ships motion as its own GLB — channels bound to bone names over a
+        # skeleton with no geometry at all — and routed to the model handler those import as rigless
+        # props and pollute every model search. Content decides; extension only narrows.
+        doc = read_glb_json(data)
+        handler = _ANIMATION if doc and looks_like_clip(doc) else _MODEL
     else:
         handler = _BY_EXT.get(_ext(filename))
     if handler is None or not handler.sniff(filename, data):
