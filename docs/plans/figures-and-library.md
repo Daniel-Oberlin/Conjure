@@ -1,7 +1,8 @@
 # Plan — figures, their animations, and environments
 
-**Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phases 2–5 open
-**Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13
+**Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phase 2 PARTIAL (works; open
+defects listed below) · phase 3 in progress · phases 4–5 open
+**Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13 · **Phase 2 landed partial:** 2026-09-13
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
@@ -232,7 +233,7 @@ the corpus and the largest is five); querying clips by `rig_sig` returns them fo
 without either figure being named; the shell can list a figure's clips and their audio; and the
 authored set and the compatible set are separately visible for a figure that has both.
 
-### Phase 2 — clothing on and off
+### Phase 2 — clothing on and off ⚠️ PARTIAL
 
 *Settles into `specs/figures.md` §runtime; the classifier's limits to `backlogs/figures.md`.*
 
@@ -257,7 +258,26 @@ authored set and the compatible set are separately visible for a figure that has
 stripped state survives a reload, and a model whose clothing is a separate container reports that
 rather than silently doing nothing.
 
-### Phase 3 — play a clip
+**Where it actually is (2026-09-13).** The classifier, the vocabulary file, `figure-parts`,
+`/figure/parts` and the `dress_figure` tool all work, and four figures were stripped and re-dressed on
+device. Held open rather than closed because headset testing found defects the mechanism itself does
+not explain, and closing the phase would file them as finished:
+
+- **The separate-container half is not built at all.** Jane's `hair.glb` and `underwear.glb` are still
+  place-it-or-do-not, which is the second of the two mechanisms this phase named.
+- **Clothing categories over-trigger.** Removing Barbie's clothes took her hair, with `hair` correctly
+  classified apart from two `clothing` meshes — the director reached for `only_body`. Steering and a
+  `hidden_by_category` report went in; whether that is enough is unmeasured.
+- **Alice keeps a headband** when stripped, and her scalp's white part does not render.
+- **Not every figure's parts are separable.** Oktoberfest's body is a genuinely different mesh in the
+  container the scene renders (50,012 vs 23,532 vertices), so `Oktoberfest-milf.glb` is the wrong file
+  to import as the figure and nothing about the classifier will fix that.
+
+Two black-figure defects found the same way turned out NOT to be this phase and are fixed: office-babe's
+body was bound by no entity (`adopt_unbound` could not see a mesh with no render asset), and metal had
+no environment to reflect. See `decisions.md` §28.
+
+### Phase 3 — play a clip 🔨 IN PROGRESS
 
 *Settles into `specs/figures.md` §runtime `figure-clip`; the precedence rule into the same section.*
 

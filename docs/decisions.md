@@ -629,3 +629,39 @@ something we are introducing, which is the strongest reason to keep the record o
 
 **Rejected:** one flat pool keyed on `rig_sig`. It answers "what will play" and destroys "what was
 intended", and the second is not recoverable from the bytes once lost.
+
+### 28. A figure renders black — whose fault, the capture's or ours? — ✅ RESOLVED
+**Choice:** Ours, both times, and they were two unrelated causes wearing one symptom. A mesh bound by
+no entity now looks for a donor in the container FILE and not only in the asset registry, and the scene
+carries a generated IBL environment so metal has something to reflect.
+
+**Why:** "Matte black" is not a shade of missing texture — it is a specific, diagnosable thing in two
+different ways, and both were reported as one regression.
+
+*The body.* glTF's default material is `metallic: 1, roughness: 1`, which renders black. Office-babe's
+body mesh fell through to it because the scene draws her body from `manager_fixing.glb`, leaving the
+copy in her own container bound by nobody. `adopt_unbound` already existed for exactly this — it is how
+Jane gets her hair back — but it iterated *render assets*, and the registry has none for that mesh: her
+eight render assets start at `renderIndex` 1. The mesh was invisible to the fix written for it. The
+container file still names the mesh `Body`, so that is where the candidate list now comes from too.
+
+*The split.* Two copies of one mesh need not be split into the same primitives, because a glTF
+primitive break IS a material break: the copy exported with materials splits where they change, the one
+exported without them does not. Hers is 5 primitives and the donor 6 — the mouth, one span here and two
+there, both wearing `Mouth`. So materials are carried across by matching vertex counts, and a span
+covering two materials refuses rather than guessing.
+
+*The metal.* A metallic material has no diffuse colour of its own; its appearance IS its reflection. In
+a scene whose `environment` is null a `metallicFactor: 1` material renders black regardless of lighting,
+because lights feed diffuse and specular-highlight terms and a pure metal has neither. We had ambient
+and directional and no IBL, so every chrome fitting in the library was black and read as a bad import.
+
+**Measured, worth keeping:** across 20 captures the new candidate rule adopts 2 meshes that were black
+and refuses 19 name matches. The refusals are the point: `computer_desk` and `cool_button` each export
+an `Object_4`, at 2,147 and 149 vertices, and adopting across that would paint a desk with a button's
+material — the same symptom, newly self-inflicted. A name match is evidence, not proof.
+
+**Rejected:** giving an unbound primitive a grey fallback material. It hides the bug at exactly the
+moment it is diagnosable, and grey is a thing the source never produces either — on Jane that grey was
+her hair. Also rejected: three's `RoomEnvironment`, which lives in `examples/` and is not in A-Frame's
+bundled build, in favour of a generated gradient that ships no asset and can fail no request.
