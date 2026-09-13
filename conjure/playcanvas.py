@@ -595,13 +595,22 @@ class _Textures:
         `glossInvert` decides whether the source is gloss or roughness, and it is not a guess: the
         engine's `glossPS` chunk multiplies the scalar by the map and THEN applies `1.0 - x` under
         `MAPINVERT`, so an inverted gloss map is a roughness map and goes straight through.
+
+        **The shininess scalar is BAKED IN when the map is a gloss map**, because the two models do not
+        factor the same way. PlayCanvas computes `roughness = 1 - s*g`; glTF can only offer
+        `roughnessFactor * roughnessTexture`, and `(1-s) * (1-g)` is a different surface — about 0.5
+        too smooth across the whole range, which on skin is the difference between matte and wet. The
+        product only agrees at `g = 1`. Baking `1 - s*g` per texel is exact, and the caller then sets
+        `roughnessFactor` to 1.
+
+        An INVERTED gloss map needs no baking: there `roughness = s*g`, which is a product already.
         """
         Image = _pil()
         gloss, metal = d.get("glossMap"), d.get("metalnessMap")
         if gloss is None and metal is None:
             return None
         key = ("mr", gloss, d.get("glossMapChannel"), metal, d.get("metalnessMapChannel"),
-               bool(d.get("glossInvert")))
+               bool(d.get("glossInvert")), round(float(d.get("shininess", 0) or 0), 3))
         if key in self._by_key:
             return self._by_key[key]
         size = None
@@ -614,6 +623,9 @@ class _Textures:
             rough = _channel(src, d.get("glossMapChannel"))
             if not d.get("glossInvert"):
                 from PIL import ImageOps                        # noqa: PLC0415
+                scalar = max(0.0, min(1.0, float(d.get("shininess", 0) or 0) / 100.0))
+                if scalar != 1.0:                               # fold the scalar in: 1 - s*g, exactly
+                    rough = rough.point(lambda v, k=scalar: int(round(v * k)))
                 rough = ImageOps.invert(rough)                  # a gloss map is roughness upside down
         if metal is not None and self.build.path(metal) and os.path.exists(self.build.path(metal)):
             src = self._open(self.build.path(metal), self.build.name(metal))
@@ -685,6 +697,10 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     mr = tex.metallic_roughness(d)
     if mr is not None:
         pbr["metallicRoughnessTexture"] = ref(mr, "gloss" if d.get("glossMap") else "metalness")
+        if d.get("glossMap") is not None and not d.get("glossInvert"):
+            # The scalar is already inside the texture (see `metallic_roughness`), so multiplying by it
+            # again would apply it twice. This factor exists for the NO-TEXTURE case.
+            pbr["roughnessFactor"] = 1.0
 
     out: dict = {"name": name, "pbrMetallicRoughness": pbr}
 

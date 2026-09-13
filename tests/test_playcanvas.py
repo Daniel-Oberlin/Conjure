@@ -706,3 +706,45 @@ def test_by_container_groups_what_rebuild_needs(tmp_path):
     build = read_build(_build(tmp_path))
     groups = by_container(build)
     assert set(groups) == {10} and len(groups[10]) == 2
+
+
+def test_the_shininess_scalar_is_BAKED_into_a_gloss_map_not_multiplied_beside_it(tmp_path):
+    """PlayCanvas computes `roughness = 1 - s*g`. glTF can only offer `roughnessFactor *
+    roughnessTexture`, and `(1-s) * (1-g)` is a DIFFERENT surface — about 0.5 too smooth across the
+    whole range, which on skin is the difference between matte and wet. The two agree only at g = 1.
+
+    Teacher's body is `shininess 60` over a roughness map, and she came out glossy.
+    """
+    build, ids = _tex(tmp_path, gloss=("RGB", False))
+    tex = _Textures(build, 1024, 90)
+    m = material_from({"glossMap": ids["gloss"], "glossMapChannel": "r", "shininess": 60,
+                       "glossInvert": False}, "skin", tex)
+    pbr = m["pbrMetallicRoughness"]
+    assert "metallicRoughnessTexture" in pbr
+    assert pbr["roughnessFactor"] == 1.0, \
+        "the scalar is inside the texture now — applying it again would apply it twice"
+
+    # And the scalar genuinely reaches the texture: a different shininess must produce a different
+    # image, or "baked in" would be a comment rather than a fact.
+    matte = material_from({"glossMap": ids["gloss"], "glossMapChannel": "r", "shininess": 5,
+                           "glossInvert": False}, "matte", tex)
+    assert (matte["pbrMetallicRoughness"]["metallicRoughnessTexture"]["index"]
+            != pbr["metallicRoughnessTexture"]["index"]), \
+        "shininess 5 and shininess 60 cannot share one roughness texture"
+
+
+def test_an_INVERTED_gloss_map_needs_no_baking(tmp_path):
+    """There `roughness = s*g`, which is already a product — so the factor carries the scalar and the
+    texture goes straight through, un-inverted."""
+    build, ids = _tex(tmp_path, gloss=("RGB", False))
+    tex = _Textures(build, 1024, 90)
+    m = material_from({"glossMap": ids["gloss"], "glossMapChannel": "r", "shininess": 60,
+                       "glossInvert": True}, "wet", tex)
+    assert m["pbrMetallicRoughness"]["roughnessFactor"] == pytest.approx(0.6)
+
+
+def test_with_no_gloss_MAP_the_factor_still_carries_the_scalar(tmp_path):
+    tex = _Textures(_tex(tmp_path)[0], 1024, 90)
+    m = material_from({"shininess": 60, "glossInvert": False}, "plain", tex)
+    assert m["pbrMetallicRoughness"]["roughnessFactor"] == pytest.approx(0.4)
+    assert "metallicRoughnessTexture" not in m["pbrMetallicRoughness"]
