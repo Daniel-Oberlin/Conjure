@@ -26,6 +26,8 @@ durable artifact; runtime is data lookup.** No LLM, no Blender and no geometry s
 
 `ModelImporter` (`conjure/importer.py`) claims `.glb` and `.vrm`, confirms both by the glTF magic bytes,
 and stores either as `.glb` — a `.vrm` *is* a GLB, so the client's `gltf-model` needs no special case.
+`.glb` is claimed by **two** handlers now, so the extension only narrows and the file decides: a GLB
+with animation channels and no mesh is an `animation`, not a model ([`library.md §2a`](./library.md)).
 A model is a **figure** when its glTF document contains a `skins` array; that single fact sets
 `attributes.rigged`, and everything else in this spec is gated on it.
 
@@ -70,12 +72,27 @@ Everything rides the catalog's per-kind JSON `attributes` bag — no schema chan
 | `humanoid_source` | figures with a map | `vrm` \| `convention:<name>` \| `inferred` |
 | `humanoid_axes` | figures with a map | the anatomical frame, per bone (§4) |
 | `humanoid_follows` | when needed | `{nodeName: nodeName it rides}` (§3) |
+| `rig_sig` | figures with a map | a fingerprint of the SKELETON — see below |
+| `rig_sig_rev` | figures with a map | which definition of a signature produced it (§7) |
 
 `frame_rev` is stamped on **every** model, not only figures: "we looked and it is a prop" is worth
 recording for exactly the same reason a bone map is.
 
-`clips`, `morph_targets` and `spring_bones` are **recorded and not yet read** by anything — no animation
-playback, no morph control and no spring-bone motion exists.
+**`rig_sig` makes a figure and an animation CLIP comparable without either naming the other.**
+`figures.rig_signature(doc, blob)` hashes the mapped humanoid bones as the file spells them, so the
+same value comes out of a character's GLB and of a skeleton-only clip authored on it — a clip binds by
+node name, so equal signatures mean it will drive that figure with nothing in between. Sixteen of
+twenty captured figures share one signature.
+
+Over the **mapped** bones and not every node, deliberately: two of those figures differ by 51 skirt and
+anatomy bones while agreeing on all 37 core ones, and a fingerprint that split them would answer a
+question nobody asks. `None` for a rig no map could be recovered from — a skeleton we cannot name is
+one we cannot promise anything about. What the catalog does with it is
+[`specs/library.md §2a`](./library.md).
+
+A figure's own `clips`, `morph_targets` and `spring_bones` are **recorded and not yet read** — no
+playback, no morph control and no spring-bone motion exists. (The `animation` KIND is a different
+record and its clip names are read; see library.md §2a.)
 
 ## 3. Discovery — recovering the bone map
 
@@ -86,7 +103,7 @@ silently.
 | Layer | Where | How it works | Cost |
 |---|---|---|---|
 | **stated** | `importer.vrm_humanoid` | VRM's `VRMC_vrm.humanoid.humanBones` (1.0 dict form) or `VRM.humanoid.humanBones` (0.x list form), stored as node **names** so a re-export that reorders nodes cannot break it | free, exact |
-| **names** | `figures.CONVENTIONS` | three verified tables — `mixamo`, `rigify-fk` (what `blend_to_glb.py` emits from Daz/Rigify ports, both `upper_arm.fk.L` and `upper_arm_fk.L` spellings), `dot-side` (a free-asset-pack scheme). Exporter prefixes (`mixamorig:`, `Armature|`) are stripped before matching | free, exact |
+| **names** | `figures.CONVENTIONS` | five verified tables — `mixamo`, `rigify-fk` (what `blend_to_glb.py` emits from Daz/Rigify ports, both `upper_arm.fk.L` and `upper_arm_fk.L` spellings), `rigify-def` (the deform chain, with no FK controls in the file — what a PlayCanvas export bakes down to), `dot-side` (a free-asset-pack scheme), `cc-base` (Reallusion Character Creator). Exporter prefixes (`mixamorig:`, `Armature|`) are stripped before matching, and a side letter in the wrong CASE still matches when unambiguous (`CC_Base_r_Hand` beside `CC_Base_L_Hand`) | free, exact |
 | **shape** | `figures.infer_humanoid` | pure topology and geometry: feet are the lowest joints, hands the widest (walked up to the first branch point, since the widest joint is a fingertip), the head is the common ancestor of the tallest trunk joints, hips is where the two leg chains meet. Joints along a limb are picked by **fraction of height or reach**, never by index, because chains vary from 4 to 12 joints | reads every vertex weight |
 
 A stated map is read by the importer before either. Names are tried before shape and shape is not run at
@@ -125,9 +142,10 @@ Pure Python over the glTF JSON, unit-testable with no headset. Empty list means 
 | # | Check | The failure it catches |
 |---|---|---|
 | 0 | distinctness, and every `REQUIRED_BONES` entry present | three leg bones mapped to one IK control — every ordering comparison equal-not-less, laundered as clean |
-| 1 | `left*` is at +X of `right*` for hands, feet, upper arms, upper legs | a side swap inverts every later pose |
+| 1 | `left*` is on the expected side of `right*` for hands, feet, upper arms, upper legs — **relative to the figure's FACING**, read off toes-vs-ankle | a side swap inverts every later pose. "+X is the left" is a property of how a model was authored, not of glTF: two captured figures are built facing −z, and the absolute rule rejected their correct name-based maps, so discovery fell through to inference and produced genuinely MIRRORED ones |
 | 2 | vertical order down head→neck→chest→spine→hips and along each leg, with 5 mm of slack | a knee above a hip |
 | 3 | `hips` is an ancestor of both feet | that is what makes a bone the root of a body |
+| 3a | `hips` carries the legs but not the spine, while its **own parent** carries both | a bone one step too far down a fork. Reallusion forks `CC_Base_Hip` into `CC_Base_Pelvis` (thighs only) and `CC_Base_Waist` (spine only) at the **same world height**, so every ordering check passes either way and inference took the Pelvis — bending those hips swings the legs and leaves the torso upright. Deliberately NOT "hips is an ancestor of the spine": on a full Rigify export the trunk hangs off a `torso` control four levels away and that map is correct |
 | 3b | each **limb** is a real parent-child chain | the zig-zag arm: a forearm parented to the armature root passed every positional check for a week. **Limbs only** — conversion legitimately re-parents the trunk onto a torso control |
 | 3c | mapped upper arms and legs **drive some geometry** (needs the BIN chunk) | a stock Rigify FK control sits exactly where an upper arm belongs, in a proper chain, and moves nothing |
 | 4 | limb segments within 0.4–2.5× of each other | a twist helper mistaken for a joint |
@@ -203,14 +221,19 @@ wrong.
 
 ### Named poses — tier 2
 
-`POST /figure {"named": "kneel"}`, and `conjure/poses.py` is the library. **13 poses**: `kneel`,
+`POST /figure {"named": "kneel"}`, and `conjure/poses.py` is the library. **17 poses**: `kneel`,
 `kneel-one`, `crouch`, `sit`, `t-pose`, `cheer`, `reach-out`, `hands-on-hips`, `arms-crossed`, `wave`,
-`point`, `bow`, `stand`.
+`point`, `bow`, `hug`, `all-fours`, `bend-over`, `bend-over-wide`, `stand`.
 
 A pose is a dict in the vocabulary above, so **one authored pose works on every figure** — that is what
 the rig-independent axes buy rather than merely protect, and `scripts/pose_library.py` measures it:
-every pose against every rig of the eval cast, 12 of 13 clean on all three (the exception is `crouch`'s
+every pose against every rig of the eval cast, 16 of 17 clean on all three (the exception is `crouch`'s
 torso lean on Trish, whose spine does not carry her head).
+
+The last four fold the trunk forward, and they only became possible once an aim resolved against the
+parent frame *as posed* — see § *What is not built* for what that replaced. They also carry the one
+naming rule this library has learned the hard way: `bend-over` is not called `touch-toes`, because
+measured on the cast the hands stop at about knee height.
 
 **Two verifiers, and they fail differently.**
 
@@ -229,6 +252,11 @@ that shape were found this way: leg poses left the arms at the rig's bind pose (
 knelt like a scarecrow), and one-armed poses never said what the other arm does. The fix for both is
 `aim`, which is absolute and so lands an arm at the side from a T-pose and an A-pose alike.
 
+A third defect of the same shape, found the same way: every pose that folds the trunk has to re-aim the
+LEGS, because `hips` is the root of the whole figure and bending it carries the legs along with the
+torso. Rendered, the figure was tipped over bodily and floating diagonally in the air, while its
+signature passed. `points leftUpperLeg down` now guards it.
+
 | | Behaviour |
 |---|---|
 | Expansion | server-side, so there is one definition of "kneel", in Python, beside its signature |
@@ -244,12 +272,45 @@ knelt like a scarecrow), and one-armed poses never said what the other arm does.
 Measured cost of its absence: `sit` leaves a figure floating above a real chair — about an inch on Grace,
 several on the shorter Saka — so the error is rig-dependent and not a constant to subtract.
 
+### Measuring the mesh
+
+Until 2026-09-10 nothing in the pipeline had looked at a vertex, so a pose could put every joint exactly
+where it belonged while the flesh around them was inside the chest. Three functions in `figures`:
+
+| | |
+|---|---|
+| `body_profile(doc, blob, mapping)` | the torso's half-width and depth per height band |
+| `limb_radius(doc, blob, mapping, bone)` | a limb's median thickness about its own axis |
+| `deform_subtree(doc, mapping, bones)` | whose vertices belong to a bone — the mapped node **plus its descendants** |
+
+Vertices are classified by the bone they are most heavily weighted to, because skin weights are what
+separate torso from limb; a bounding box or a name convention would be guesswork. `deform_subtree` is
+what makes it work on a rig whose mapped bones are controls: Trish's `spine` is a control whose only
+child is `spine.twk`, and matching the mapped node alone found zero torso and zero arm on her.
+
+**What it found.** A shoulder sits almost exactly at the torso's edge, so an arm hanging straight down
+overlaps by its own radius — the term joint positions structurally cannot see:
+
+| rig | torso half-width | shoulder out | arm radius | overlap |
+|---|---|---|---|---|
+| Saka | 6.5 cm | 8.0 cm | 2.2 cm | 0.6 cm |
+| Grace | 15.9 cm | 15.2 cm | 3.0 cm | 3.7 cm |
+| Trish | 15.9 cm | 14.8 cm | 2.9 cm | 4.0 cm |
+
+So `_ARMS_DOWN` aims 8° out rather than straight down, and the `clears` predicate asserts it — the only
+predicate that reads a vertex.
+
+**Three limits, recorded in the backlog rather than fixed:** the 8° is a hard-coded constant, so a figure
+outside the sample is under- or over-corrected (Eve already is); `clears` measures **lateral** clearance
+only, because the forward equivalent needs an origin at the centre of the torso's depth that nothing
+computes; and it sits downstream of the bone map, so a bad map gives a confident wrong answer — Eve's
+shifted map made her neck read as a 10 cm torso.
+
 **Known limits of posing by joint**, all measured on device 2026-09-09 and none catchable by a signature,
 which asserts where joints are and never whether flesh intersects flesh:
 
-- Arms aimed `down` **enter the body**; `arms-crossed` folds inside the chest; `hands-on-hips` does not
-  quite touch. A real arm hangs a few degrees out from the torso axis, and nothing has ever consulted the
-  mesh about a pose.
+- ~~Arms aimed `down` **enter the body**, `arms-crossed` folds inside the chest~~ — **fixed 2026-09-10**
+  by measuring the mesh (below). `hands-on-hips` still does not quite touch.
 - `point` and `wave` read as *reaching*, because there is **no finger vocabulary** — fingers are not
   recoverable from topology (§3), so no inferred map has them.
 
@@ -369,8 +430,13 @@ graph.**
 ## 7. `FRAME_REV` — a catalog row is a snapshot of what we understood
 
 A figure's map, frame and limits are **cached in the catalog**, and understanding keeps changing while
-rows do not. `figures.FRAME_REV` (**9** today) is bumped whenever anything that changes a derived result
-changes — inference, the axes, `validate()`, the convention table, which skin is chosen.
+rows do not. `figures.FRAME_REV` (**13** today) is bumped whenever anything that changes a derived
+result changes — inference, the axes, `validate()`, the convention table, which skin is chosen.
+
+`figures.RIG_SIG_REV` (**1**) is a **separate** stamp, and the separation is the point: a discovery fix
+can change a signature without changing what a signature *means*, and the two need telling apart when
+regrouping a catalog. Bump it only when the definition changes — which bones the fingerprint covers, or
+how it is spelled.
 
 - `_refresh_model_attrs` re-extracts any row whose `frame_rev` is stale, on **first placement**, and
   writes the result back. Extraction is authoritative for everything in `_DERIVED_MODEL_ATTRS`, including
@@ -429,6 +495,115 @@ The component re-applies on `model-loaded`, since `gltf-model` loads asynchronou
 arrives first would find no skeleton. Every `/static/*.js` reference is mtime-stamped by one regex in
 `server.py`; `figure.js` shipped without a stamp once and the headset served a stale copy through several
 reloads, so three fixes never ran.
+
+## 9a. Re-assembling a PlayCanvas build
+
+`conjure/playcanvas.py` + `scripts/playcanvas_rebuild.py`. A second out-of-band ingest path, and the
+only one that needs no Blender at all.
+
+PlayCanvas's converter splits an upload deliberately: geometry and skinning into the GLB, materials and
+textures into separate registry entries the engine rejoins at load time. A build downloaded from it
+therefore hands over a model that renders **flat white in any ordinary viewer**, with every texture
+sitting beside it and nothing in the file saying which goes where. Jane arrived exactly like that —
+4.5 MB of correct geometry, zero materials, 87 MB of orphaned 4K PNGs.
+
+The binding is stated outright, so this **transcribes rather than guesses**:
+
+```
+config.json   -> assets by id (containers, renders, materials, textures)
+<scene>.json  -> entities, each with a `render` component holding
+                   `asset`          -> a render asset -> (containerAsset, renderIndex)
+                   `materialAssets` -> ONE PER PRIMITIVE, in order
+```
+
+A glTF mesh is split into primitives precisely because each had its own material, so the ordering
+survived conversion and the list drops straight back on. **The materials are on the SCENE, not the
+container**: a container ships whatever its own import produced and the scene overrides it — Jane's hair
+container carries an untextured grey, and reading it instead of the scene gives grey hair with the real
+texture unused on disk.
+
+**`template` assets carry the same bindings and are read too**, after the scenes so a scene wins where
+both speak. Not a fallback bolted on: a template is a serialised entity hierarchy, which is how
+PlayCanvas packages a reusable thing, and a character is exactly that. The second capture had NO scene
+file on disk and sixteen templates — one per skin-tone variant, each binding its own container, so
+nothing to disambiguate — and reading them is what makes it convertible at all. It also retired
+`--adopt` for Jane, whose template binds the in-file hair copy to the textured hair material: the
+build's own answer in place of a name-match guess.
+
+The blend and cull constants and the `glossPS` shader chunk are read out of the `playcanvas-stable.min.js`
+shipped **in the build being converted**, not remembered. Each is a silent wrongness if guessed: a wrong
+blend mode is invisible until something stands behind the figure, and an inverted roughness map reads as
+a lighting problem.
+
+Four things it detects rather than assumes, all of which Jane exercises:
+
+| | |
+|---|---|
+| an `opacityMap` on a texture with **no alpha channel** | a no-op — five of her eight materials do this, and believing them emits `MASK` and punches holes through her |
+| an indexed PNG with a `tRNS` chunk | alpha that is not a channel; her eyelashes are one, and read as RGB become a rectangle across her face |
+| `glossInvert` | decides whether the source is gloss or roughness. One build uses it **both ways** — her lips (invert, shininess 0) and her mouth (no invert, shininess 90) are both wet, from opposite settings |
+| `alphaToCoverage` | a CUTOUT, so it becomes `MASK` whatever the blend mode says. One model shares a single atlas between shorts, shirt and hair with a separate mask selecting each garment's region; read as `BLEND`, the regions that should vanish came through as patches of the other garments' colours |
+| a mesh no entity binds | left untextured, and the note says so — the scene does not render such a mesh at all, so grey is the one outcome the source never produces. `--adopt` takes the material from an identically-named render asset elsewhere, reported as INFERRED. Reading templates removed the need for it on both models here |
+
+**Nothing in it is keyed to any particular model** — every string in the module is a PlayCanvas or glTF
+schema key, and the one heuristic (`--adopt`) matches on render-asset names read from the build. But the
+coverage was shaped by one character, so what it CANNOT carry is listed in `_UNCARRIED` and warned about
+per material rather than dropped quietly: the specular/gloss workflow, light and environment maps,
+height maps, clear coat, sheen, refraction, iridescence, and texture tiling/offset/rotation. Second UV
+sets, `emissiveIntensity` and `aoIntensity` are carried.
+
+Those tests gate on PlayCanvas's `use*` flags, never on a value, and that distinction is measured: it
+leaves `sheen` at a default WHITE with `useSheen: false`, so a check keyed on the colour fires for all
+208 materials across the three builds here — and a warning that always fires is one nobody reads.
+`useDynamicRefraction` is true exactly **once** in those 208, on Jane's eyes, which is the case the list
+earns its keep for and the one visible thing this does not reproduce.
+
+It is **additive**: images become buffer views on the end of the existing binary chunk and nothing that
+was in the file moves, so the geometry comes out bit-identical and a map derived from the original still
+applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17
+named poses — with 8 materials where there were none.
+
+**Basis textures are decoded by a pre-pass**, `scripts/basis_to_png.js`, which writes `Foo.png` beside
+`Foo.basis` — the exact name the registry already gives that texture, so the rebuild finds it knowing
+nothing about Basis at all. The transcoder is **found, not required**: `--transcoder` if given, else the one the build ships
+(`basis.wasm.js` + `basis.wasm.wasm`, two separate PlayCanvas assets in unrelated directories), else the
+upstream build committed in `vendor/basis`. The capture's own copy is preferred because a decoder
+shipped beside the data is the one certain to read it; the vendored one exists because a capture only
+contains one if the grabber happened to save it, and that is the file everything else depends on. Their
+output is byte-identical on the textures here. The PNG is written by hand over `zlib`, Node shipping no encoder
+and a truecolour-with-alpha PNG being cheaper to write than to justify a dependency for.
+
+**A normal map needs unpacking.** Basis stores one as X in RGB and Y in alpha, which transcodes to a
+greyscale image with an independent alpha — and handed to glTF's `normalTexture` that way, grey remaps
+to a ZERO-LENGTH normal and the lighting breaks out in dark blotches over every surface using it. Z is
+recomputed and the alpha dropped. Which textures to treat this way comes from the REGISTRY, not from the
+pixels: a genuine greyscale mask with an alpha channel is indistinguishable, and one build has both — a
+pixel heuristic alone wrecked its specular maps while fixing its normals.
+
+Measured on Akari: 42 files decoded, 0 failed, and she rebuilt at 9 materials over 3 meshes.
+
+**A texture may be on disk in a form nothing here can read.** PlayCanvas transcodes textures to Basis
+Universal and the engine asks for that in preference, so a capture made by BROWSING holds `.basis` and
+never the PNG beside it — 91 of Akari's 105 textures declare such a variant. Basis is GPU-compressed,
+Pillow cannot open it, and decoding wants a transcoder this does not carry. So `variant_only` reports
+those separately from absent ones, with the URL of the uncompressed original, and counting them as
+missing (which an earlier pass did) overstated one capture's gap by eight files.
+
+**What the capture does not hold is reported as a list, with URLs.** Akari's release references 105
+textures and holds none of them; reported per use that was 200-odd identical lines burying the two
+findings that mattered, so missing files are collected once and `--fetch-list` writes their addresses
+for `curl` or `wget`.
+
+**A capture without a registry is a different failure, and it is reported as one.** The second one to
+arrive had the right layout, valid GLBs, and no `config.json` anywhere — so there was nothing saying
+which material went where, and no texture files either. `find_orphans` reports that shape and derives
+the address to fetch from the directory path, because a capture mirrors the URL it came from: a path
+segment with a dot in it is the host, and everything between it and `files` is the build.
+
+**`--max-texture` defaults to 1024, and that is a budget rather than an optimisation.** Her textures are
+4096 square throughout: roughly 90 MB of VRAM each once mipmapped, nine of them for one character who
+already costs 111k triangles. At the default the whole capture — 9 containers across 3 nested builds —
+rebuilds in about four seconds and she lands at 6.8 MB.
 
 ## 9. Conversion — out of band, and Blender-only
 
@@ -564,7 +739,7 @@ It asks two questions:
 - **Could a body hold this** — asked of every cell.
 
 **Neither one gates a cell.** (Both are *judgement* framings. Asking the same models a **recognition**
-question — "which of these thirteen poses is this?" — works, and is used by the pose library; see
+question — "which of these poses is this?" — works, and is used by the pose library; see
 § *Named poses*. The failure below is of the question, not of vision models.) As of 2026-09-05 the judge layer is advisory (`--judge-gates` to make it
 count), because it does not reproduce: across four full runs its disagreements were 29, 8, 2 and 7 out
 of 60, with cells moving in and out of the failure column while nothing but the model changed. Before
@@ -609,7 +784,8 @@ pose), `list_poses` (the named library, read from the data rather than written i
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
-**CLI:** `conjure-import` (ingest), `conjure-ctl refresh-models [--force]`,
+**CLI:** `conjure-import` (ingest; `--label` names the asset, defaulting to the filename stem, and is
+distinct from `--creator`, which is whoever made it), `conjure-ctl refresh-models [--force]`,
 `python scripts/pose_eval.py` (the utterance-layer battery), `scripts/pose_test.py` (render one pose).
 
 **Deps:** none new. GLB reading is stdlib; `trimesh` was already there. Blender is a soft dependency of
@@ -627,7 +803,18 @@ Recorded here so the spec can be trusted about its own edges; the design work is
 - **No tier 3.** Nothing solves against the world: "sit on that chair" makes the shape of sitting and
   says so; "hand flat on the table" is not expressible at all.
 - **No discovery layers 3–6:** no LLM labelling, no multimodal verification, no human confirmation.
-- **No named-pose authoring loop.** The judge exists and the renderer exists, but nothing yet proposes
+- ~~**`aim` is not absolute once the trunk is posed.**~~ Built 2026-09-10 as `figures.compose_frame`
+  and its mirror in `figure.js`: an aim resolves against the parent frame *as posed*, so a limb aimed
+  `down` under a folded trunk hangs plumb on every rig in the cast. `bend`, `spread` and `turn` stay
+  relative, which is the point of having both.
+- **`downward-dog` is not expressible**, and it is the clearest measure of tier 3's absence in tier 1's
+  own terms: the pose needs hands and feet both on the floor, and at the fullest trunk fold the joint
+  limits allow, with the arms plumb, the hands are still 0.15–0.41h above it across the cast.
+- **Forward self-intersection is invisible.** `clears` reads lateral clearance only; a forearm inside the
+  chest is not detectable, and `arms-crossed` was fixed by rendering and looking.
+- ~~**No named-pose authoring loop.**~~ Built as `scripts/pose_library.py`: propose → check the signature
+  → have a model say which pose it sees → glance → freeze. The older text follows.
+- The judge exists and the renderer exists, but nothing yet proposes
   a pose, renders it, verifies it and freezes it into a library.
 - **No FBX front door**, so no Mixamo.
 - **No morph, spring-bone or MToon support.** VRM material data is in the file and A-Frame's plain glTF

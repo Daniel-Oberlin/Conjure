@@ -1180,3 +1180,31 @@ async def test_typing_the_reset_still_runs_it_immediately():
     sh, out, on_text, calls = _reset_shell()
     await sh.feed("reset agent builder", on_text=on_text)
     assert [c[1] for c in calls] == ["/agent/reset"] and sh._pending_reset is None
+
+
+# ---------------------------------------------------------------- listing filters
+
+
+def test_listing_filters_split_off_a_path_that_may_contain_anything():
+    """Parsed off the path rather than caught by the command regex: a path is free text — spaces and
+    glob metacharacters — and a regex holding both ends up matching a flag inside a filename.
+
+    A capture puts a figure, sixty clips and thirty audio files in one place, and a flat list of them
+    is how a wrong link stays invisible."""
+    from conjure.shell import Shell
+    split = Shell._listing_filters
+
+    assert split("assets/*idle* --kind animation --with jane_export") == \
+        ("assets/*idle*", {"kind": "animation", "related": "jane_export"})
+    assert split("my folder/with spaces --rel voiced_by --with 1-4-5-7-10_idle") == \
+        ("my folder/with spaces", {"related": "1-4-5-7-10_idle", "relation": "voiced_by"})
+    assert split("--kind model") == ("", {"kind": "model"})
+    assert split("plain/path") == ("plain/path", {})
+    assert split("") == ("", {})
+
+
+def test_a_flag_like_word_inside_a_filename_is_not_a_flag():
+    """`--kind` has to be its own argument. A file called `notes--kind.txt` is a file."""
+    from conjure.shell import Shell
+    path, filters = Shell._listing_filters("notes--kind.txt")
+    assert path == "notes--kind.txt" and filters == {}

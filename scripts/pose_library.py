@@ -34,7 +34,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from conjure.figures import (anatomical_axes, apply_pose, best_humanoid,   # noqa: E402
-                             body_frame, bone_directions, clean_pose,
+                             body_frame, body_profile, bone_directions, clean_pose, limb_radius,
                              node_world_positions, resolve_pose, split_glb)
 from conjure.importer import glb_bounds, vrm_humanoid                      # noqa: E402
 from conjure.judge import build_judge                                      # noqa: E402
@@ -56,8 +56,14 @@ def load(rig):
     if not mapping:
         return None
     bounds = glb_bounds(doc, blob)
+    # The mesh measurement, taken once per rig: how wide the torso is at each height, and how thick each
+    # limb that has to clear it. This is what the `clears` predicate consults, and the only thing in the
+    # pipeline that looks at a vertex.
+    mesh = {"profile": body_profile(doc, blob, mapping),
+            "radii": {b: limb_radius(doc, blob, mapping, b)
+                      for b in ("leftLowerArm", "rightLowerArm", "leftHand", "rightHand")}}
     return {"rig": rig, "doc": doc, "map": mapping, "axes": anatomical_axes(doc, mapping),
-            "frame": body_frame(doc, mapping),
+            "frame": body_frame(doc, mapping), "mesh": mesh,
             "height": (bounds[1][1] - bounds[0][1]) if bounds else 1.7}
 
 
@@ -110,7 +116,7 @@ async def identify(judge, shots, options) -> str:
 
     **Recognition, not judgement.** Asking a vision model whether a pose is anatomically possible does
     not work: it passes a figure with its head on backwards, and its verdicts move between identical
-    calls (docs/backlogs/figures.md). Asking it WHICH of thirteen named poses this is turns the same
+    calls (docs/backlogs/figures.md). Asking it WHICH of the named poses this is turns the same
     model into a reliable instrument, because recognition against a fixed list is what it is good at —
     which is the discipline the design stated all along and the plausibility question quietly broke.
     """
@@ -170,7 +176,7 @@ async def run(args) -> int:
             before, _ = joints(s)
             after, dirs = joints(s, clean)
             fails = check_predicates(pose.signature, before, after, s["frame"], s["height"], dirs,
-                                     f"pose {pose.name!r}")
+                                     f"pose {pose.name!r}", s["mesh"])
             lift = settle(s, before, after)
             if fails:
                 bad += 1

@@ -371,11 +371,14 @@ def test_every_pose_speaks_only_tier_one():
 
 
 def test_every_pose_that_changes_anything_says_how_to_check_it():
-    """A pose with no signature is a dict of numbers someone once liked the look of. `stand` and `bow`
-    are the exceptions and both are deliberate — `stand` asserts nothing because it IS nothing, and the
-    trunk carries different bones on different rigs."""
+    """A pose with no signature is a dict of numbers someone once liked the look of.
+
+    There used to be one exception. `bow` carried an empty signature because `aim` was resolved against
+    the BIND pose, so arms asked for `down` under a bowed spine came out 40 degrees off vertical and
+    there was nothing honest to assert about them. `figures.compose_frame` (2026-09-10) made an aim
+    absolute for real, and the exception went with it — so this now says what it always wanted to."""
     unchecked = {p.name for p in POSES if p.bones and not p.signature}
-    assert unchecked == {"bow"}, f"unchecked poses: {unchecked}"
+    assert not unchecked, f"unchecked poses: {unchecked}"
 
 
 def test_signatures_use_predicates_the_checker_understands():
@@ -419,3 +422,62 @@ def test_the_real_kneel_passes_it(rig):
     doc, mapping, at_rest, frame, height = rig
     after, dirs = _after(doc, mapping, resolve("kneel").bones)
     assert check_predicates(resolve("kneel").signature, at_rest, after, frame, height, dirs) == []
+
+
+# ---------------------------------------------------------------- the mesh, finally consulted
+#
+# `clears` is the one predicate that looks at vertices, and it is the only one that can see the defect
+# the device run found: a pose can put every joint exactly where it belongs while the flesh around them
+# is inside the chest. The mesh argument is plain data — a height profile and a radius per limb — so it
+# is testable here without a model file.
+
+#: A torso 16 cm half-width from hip to shoulder, which is Grace's measured shape to the centimetre.
+_PROFILE = [(0.9 + i * 0.1, 0.16, 0.20) for i in range(6)]
+_MESH = {"profile": _PROFILE, "radii": {"leftLowerArm": 0.03}}
+_CLEAR = (("clears", "leftHand", "leftLowerArm"),)
+
+
+def _at(x, y):
+    return {"hips": (0.0, 1.0, 0.0), "leftHand": (x, y, 0.0)}
+
+
+def test_a_hand_inside_the_torso_is_caught(rig):
+    """The measured failure: arms aimed straight down end up in the body, because a shoulder sits at the
+    torso's edge and the arm has its own radius. 15 cm out is *outside every joint* and still wrong."""
+    _, _, _, frame, height = rig
+    fails = check_predicates(_CLEAR, _at(0.15, 1.0), _at(0.15, 1.0), frame, height, {}, "t", _MESH)
+    assert fails and "inside the body" in fails[0]
+
+
+def test_a_hand_clear_of_the_torso_passes(rig):
+    """16 cm of torso plus 3 cm of forearm needs 19 cm; 20 cm clears."""
+    _, _, _, frame, height = rig
+    assert check_predicates(_CLEAR, _at(0.20, 1.0), _at(0.20, 1.0), frame, height, {}, "t", _MESH) == []
+
+
+def test_the_limbs_own_radius_is_what_makes_the_difference(rig):
+    """17 cm clears a 16 cm torso by a centimetre on joint positions alone, and is still wrong once the
+    forearm's 3 cm is counted. This is the term the whole finding turned on."""
+    _, _, _, frame, height = rig
+    assert check_predicates(_CLEAR, _at(0.17, 1.0), _at(0.17, 1.0), frame, height, {}, "t", _MESH)
+    thin = {"profile": _PROFILE, "radii": {}}          # no radius known → only the torso is required
+    assert check_predicates(_CLEAR, _at(0.17, 1.0), _at(0.17, 1.0), frame, height, {}, "t", thin) == []
+
+
+def test_a_file_that_cannot_be_measured_is_skipped_not_failed(rig):
+    """An unrigged or unweighted mesh has no profile. Inventing a body width would be worse than
+    declining, and failing every pose on a file we cannot measure would be worse still."""
+    _, _, _, frame, height = rig
+    inside = _at(0.0, 1.0)
+    assert check_predicates(_CLEAR, inside, inside, frame, height, {}, "t", None) == []
+    assert check_predicates(_CLEAR, inside, inside, frame, height, {}, "t", {"profile": []}) == []
+
+
+def test_every_pose_whose_arms_hang_asserts_that_they_clear():
+    """The regression guard. `_ARMS_DOWN` was `aim: "down"` and put the arms in the body on two of three
+    rigs; the fix is one vector, and this is what stops the next edit undoing it."""
+    for name in ("stand", "kneel"):
+        pose = resolve(name)
+        assert any(p[0] == "clears" for p in pose.signature), f"{name} has hanging arms and no clearance"
+    # ...and the aim carries a real outward component rather than being plumb.
+    assert resolve("stand").bones["leftUpperArm"]["aim"][0] > 0.05

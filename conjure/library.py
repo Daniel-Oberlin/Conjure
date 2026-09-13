@@ -40,7 +40,7 @@ except Exception:                     # noqa: BLE001
 # Bump when the schema changes, and add a branch to _migrate() to upgrade existing data in place
 # (ALTER, not DROP — captions/embeddings/curation aren't recoverable from the cache bytes). The
 # destructive rebuild is a last resort for a fresh or unrecognised DB only.
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 # faces/persons are reserved now (sub-image entities + named clusters) so the NAS seam is honest;
 # they stay empty until the NAS ingestion subsystem (Phase 5) populates them.
@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS assets (
   created_at REAL, last_used REAL, use_count INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS assets_kind ON assets(kind);
+-- OWNERSHIP, many-to-many. An asset id is a CONTENT ADDRESS, so the id is the bytes and two agents
+-- cannot hold the same asset under two rows. `assets.scope` stays the scope that created it — for
+-- display, and so every existing query keeps meaning what it meant — while visibility is decided here.
+-- One row per owner; transfer is an insert plus a delete (decisions.md §26). Curation is SHARED: notes,
+-- tags and rating live on the asset, so two owners cannot disagree about one. That is knowingly given
+-- up and a later migration to a composite key can take it back.
+-- Ownership ONLY: no `public` flag here. Visibility is a property of the asset, and a copy of the
+-- flag per owner drifts the moment one of them flips it — which the first update after adding it did.
+CREATE TABLE IF NOT EXISTS asset_scopes (asset_id TEXT, scope TEXT, UNIQUE(asset_id, scope));
+CREATE INDEX IF NOT EXISTS asset_scopes_scope ON asset_scopes(scope);
 CREATE TABLE IF NOT EXISTS aliases (alias TEXT PRIMARY KEY, asset_id TEXT);   -- "dog" → id (override)
 CREATE TABLE IF NOT EXISTS relations (
   from_id TEXT, to_id TEXT, type TEXT,    -- derived_from, co_occurs, depicts_person, at_event, …
@@ -82,7 +92,8 @@ CREATE TABLE IF NOT EXISTS vec_meta (dim INTEGER);   -- dim of the live assets_v
 """
 
 # assets_vec is created lazily (its dim depends on the embedder, and it needs the sqlite-vec extension).
-_TABLES = ("assets_fts", "assets_vec", "assets", "aliases", "relations", "faces", "persons", "vec_meta")
+_TABLES = ("assets_fts", "assets_vec", "assets", "asset_scopes", "aliases", "relations",
+           "faces", "persons", "vec_meta")
 
 # Columns a caller may set via upsert kwargs (everything except id, attributes, and the lifecycle
 # bookkeeping). `attributes` is handled separately so it can be *merged* rather than replaced.
@@ -102,6 +113,28 @@ def _fts_query(text: str) -> Optional[str]:
     """Turn free text into a safe FTS5 MATCH expression (OR of word tokens); None if empty."""
     tokens = re.findall(r"\w+", (text or "").lower())
     return " OR ".join(tokens) if tokens else None
+
+
+def _scope_sql(prefix: str, scope: Optional[str]) -> str:
+    """The visibility predicate, in one place because it is the security boundary.
+
+    Two halves. The asset's CREATING scope, which is what every version before many-to-many ownership
+    used and is kept so a single-owner asset behaves identically; and any ADDITIONAL owner recorded in
+    `asset_scopes`. The agent wall applies to both — `*/agents/<agent>` keeps a public asset from
+    crossing agents however it came to be owned (decisions.md §26).
+    """
+    if not scope:
+        return ""
+    own = f"{prefix}scope=? OR ({prefix}public=1 AND {prefix}scope GLOB ?)"
+    granted = f"EXISTS (SELECT 1 FROM asset_scopes s WHERE s.asset_id = {prefix}id AND s.scope = ?)"
+    return f" AND ({own} OR {granted})"
+
+
+def _scope_params(scope: Optional[str]) -> list[Any]:
+    """Params for `_scope_sql`: the pair is consumed twice, once per half."""
+    if not scope:
+        return []
+    return [scope, "*/agents/" + agent_of(scope), scope]
 
 
 class AssetLibrary:
@@ -151,6 +184,16 @@ class AssetLibrary:
             # `private/<agent>` → `<DEFAULT_USER>/agents/<agent>` (substr(.,9) drops "private/")
             self._db.execute("UPDATE assets SET scope = ? || substr(scope, 9) WHERE scope LIKE 'private/%'",
                              (f"{DEFAULT_USER}/agents/",))
+        if ver <= 6:                                     # v6 → v7: ownership becomes many-to-many
+            self._db.executescript(
+                "CREATE TABLE IF NOT EXISTS asset_scopes ("
+                "  asset_id TEXT, scope TEXT, UNIQUE(asset_id, scope));"
+                "CREATE INDEX IF NOT EXISTS asset_scopes_scope ON asset_scopes(scope);")
+            # Backfill: today's single owner becomes the first row, so nothing changes for anyone
+            # until a second owner is granted.
+            self._db.execute(
+                "INSERT OR IGNORE INTO asset_scopes (asset_id, scope) "
+                "SELECT id, scope FROM assets WHERE scope IS NOT NULL")
         return True                                      # migrated in place (cumulative)
 
     # ---- writes -------------------------------------------------------------------------------
@@ -183,6 +226,13 @@ class AssetLibrary:
                     (id, now, now, 0, *cols.values()),
                 )
             self._sync_fts(id)
+            # The creating scope is also its first OWNER. Recorded here rather than derived on read so
+            # `owners()` is the whole answer and a revoke can take the original owner off an asset it
+            # has been transferred away from.
+            row = self._db.execute("SELECT scope FROM assets WHERE id=?", (id,)).fetchone()
+            if row and row["scope"]:
+                self._db.execute("INSERT OR IGNORE INTO asset_scopes (asset_id, scope) VALUES (?,?)",
+                                 (id, row["scope"]))
             self._db.commit()
 
     def _merge_attributes(self, id: str, new: dict) -> str:
@@ -249,6 +299,76 @@ class AssetLibrary:
             self._db.execute("UPDATE assets SET last_used=?, use_count=use_count+1 WHERE id=?",
                              (time.time(), id))
             self._db.commit()
+
+    # ---- ownership (decisions.md §26) ----------------------------------------------------------
+    #
+    # `assets.scope` remains the scope that CREATED an asset — every existing query keeps meaning what
+    # it meant — while `asset_scopes` decides who can see it. An asset with one owner behaves exactly
+    # as before; a second owner is additive.
+
+    def grant(self, id: str, scope: str) -> bool:
+        """Give `scope` ownership of an asset it does not already own. Idempotent.
+
+        A grant is EXACT: it names one scope, and it does not widen anything. That is what keeps it
+        from being a way around the per-agent wall — a public asset still cannot be seen from another
+        agent, and a granted one is visible only to the scope actually named."""
+        with self._lock:
+            if self._db.execute("SELECT 1 FROM assets WHERE id=?", (id,)).fetchone() is None:
+                return False
+            self._db.execute("INSERT OR IGNORE INTO asset_scopes (asset_id, scope) VALUES (?,?)",
+                             (id, scope))
+            self._db.commit()
+            return True
+
+    def revoke(self, id: str, scope: str) -> bool:
+        """Remove one owner. The BYTES are untouched and so is any other owner — this is half of a
+        transfer, and calling it on the last owner leaves an asset nobody can see rather than deleting
+        it, which is the safer failure of the two."""
+        with self._lock:
+            cur = self._db.execute("DELETE FROM asset_scopes WHERE asset_id=? AND scope=?", (id, scope))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def transfer(self, id: str, from_scope: str, to_scope: str) -> bool:
+        """Move ownership: grant then revoke, in that order so a failure leaves two owners rather than
+        none."""
+        if not self.grant(id, to_scope):
+            return False
+        self.revoke(id, from_scope)
+        return True
+
+    def owners(self, id: str) -> list[str]:
+        with self._lock:
+            return [r["scope"] for r in self._db.execute(
+                "SELECT scope FROM asset_scopes WHERE asset_id=? ORDER BY scope", (id,)).fetchall()]
+
+    # ---- relations ------------------------------------------------------------------------------
+
+    def related(self, id: str, type: Optional[str] = None, *, reverse: bool = False) -> list[dict]:
+        """Assets on the other end of a relation, as full rows.
+
+        `reverse` follows the edge backwards — `related(clip, "voiced_by")` gives the audio a clip is
+        voiced by, `related(audio, "voiced_by", reverse=True)` gives every clip that uses it. Both
+        directions matter: the audio-to-clip link is many-to-many, one file serving four clips."""
+        side, other = ("to_id", "from_id") if reverse else ("from_id", "to_id")
+        sql = (f"SELECT a.* FROM relations r JOIN assets a ON a.id = r.{other} "
+               f"WHERE r.{side} = ?")
+        args: list[Any] = [id]
+        if type:
+            sql += " AND r.type = ?"
+            args.append(type)
+        with self._lock:
+            return [dict(r) for r in self._db.execute(sql + " ORDER BY a.label, a.id", args).fetchall()]
+
+    def relations_of(self, id: str) -> list[dict]:
+        """Every edge touching `id`, either direction — `{type, other_id, direction}`."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT type, to_id AS other, 'out' AS direction FROM relations WHERE from_id=? "
+                "UNION ALL "
+                "SELECT type, from_id AS other, 'in' AS direction FROM relations WHERE to_id=? "
+                "ORDER BY type, other", (id, id)).fetchall()
+            return [dict(r) for r in rows]
 
     def add_relation(self, from_id: str, to_id: str, type: str) -> None:
         with self._lock:
@@ -502,8 +622,13 @@ class AssetLibrary:
         try:
             # Hard agent wall: own scope ∪ public, but public only within the SAME agent segment
             # (scope + agent are sanitized to [\w/.-]+ above → safe to inline; no GLOB metachars).
+            # The EXISTS half is many-to-many ownership: an asset granted to this scope is visible
+            # here too, and the same agent wall applies to the grant (decisions.md §26).
+            agent = agent_of(scope)
             ro.execute(f"CREATE TEMP VIEW assets AS SELECT * FROM main.assets "
-                       f"WHERE scope = '{scope}' OR (public = 1 AND scope GLOB '*/agents/{agent_of(scope)}')")
+                       f"WHERE scope = '{scope}' OR (public = 1 AND scope GLOB '*/agents/{agent}') "
+                       f"OR EXISTS (SELECT 1 FROM main.asset_scopes s "
+                       f"WHERE s.asset_id = main.assets.id AND s.scope = '{scope}')")
             return [dict(r) for r in ro.execute(s).fetchmany(limit)]
         finally:
             ro.close()
@@ -530,10 +655,10 @@ class AssetLibrary:
         seen: set[str] = set()
         # Hard agent wall: only assets whose scope has the SAME agent segment, and within that, own
         # scope ∪ public (cross-user). `*/agents/<agent>` GLOB keeps public from crossing agents. The
-        # `a.`-prefixed variant is for the join queries. Both consume [scope, agent-glob] from scv.
-        sc = " AND (scope=? OR (public=1 AND scope GLOB ?))" if scope else ""
-        sca = " AND (a.scope=? OR (a.public=1 AND a.scope GLOB ?))" if scope else ""
-        scv: list[Any] = [scope, "*/agents/" + agent_of(scope)] if scope else []
+        # `a.`-prefixed variant is for the join queries. Both consume the params `_scope_params` builds.
+        sc = _scope_sql("", scope)
+        sca = _scope_sql("a.", scope)
+        scv: list[Any] = _scope_params(scope)
 
         def add(rows, how: str) -> None:
             for r in rows:

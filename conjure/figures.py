@@ -23,6 +23,8 @@ before it is trusted on a rig where nothing does.
 
 from __future__ import annotations
 
+import hashlib
+
 import math
 from typing import Optional
 
@@ -185,6 +187,24 @@ def split_glb(data: bytes):
     return doc, b""
 
 
+def write_glb(doc: dict, blob: bytes = b"") -> bytes:
+    """The inverse of `split_glb` — a container-relocatable GLB, chunks padded as the spec requires.
+
+    Here rather than in a script because three callers now write GLBs (`scripts/glb_strip.py`,
+    `conjure.playcanvas`, and the tests that check both), and a second copy of a binary format is a
+    second place for the padding rules to be got subtly wrong.
+    """
+    import json as _json
+    import struct
+    body = _json.dumps(doc, separators=(",", ":")).encode()
+    body += b" " * (-len(body) % 4)                      # JSON pads with SPACES, BIN with zeros
+    out = struct.pack("<II", len(body), 0x4E4F534A) + body
+    if blob:
+        pad = blob + b"\x00" * (-len(blob) % 4)
+        out += struct.pack("<II", len(pad), 0x004E4942) + pad
+    return b"glTF" + struct.pack("<II", 2, 12 + len(out)) + out
+
+
 # ---------------------------------------------------------------- layer 1: known conventions
 #
 # Names are free and exact where they hit, and they work on a rig whose BIND POSE defeats geometry —
@@ -228,6 +248,56 @@ CONVENTIONS: dict[str, dict[str, str]] = {
         "{s}Foot": "foot.fk.{X}|foot_fk.{X}",
         "{s}Toes": "toe.fk.{X}|toe_fk.{X}|toe.{X}",
     },
+    # Rigify's DEFORM chain, with no FK controls in the file at all — what you get when the export
+    # bakes the rig down (`temp/vrh/jane` came through PlayCanvas that way). Its own scheme rather than
+    # extra alternates on `rigify-fk`, because a rig carrying BOTH chains should keep preferring the FK
+    # controls, and equal scores keep the earlier scheme.
+    #
+    # The spine is addressed by INDEX, which is the one soft spot: Rigify numbers the deform chain from
+    # the pelvis up, so a rig with a different number of spine or neck segments spells its head
+    # differently. `neck` is stable at `.004` across the lengths seen so far, and `head` is listed
+    # deepest-first so the longest chain present wins. A chain shorter than five leaves `head` unmatched
+    # and drops the whole row on the floor — which is the safe failure, since it falls through to
+    # inference rather than mapping a neck as a head.
+    "rigify-def": {
+        "hips": "DEF-spine", "spine": "DEF-spine.001", "chest": "DEF-spine.002",
+        "upperChest": "DEF-spine.003", "neck": "DEF-spine.004",
+        "head": "DEF-spine.007|DEF-spine.006|DEF-spine.005",
+        "{s}Shoulder": "DEF-shoulder.{X}",
+        "{s}UpperArm": "DEF-upper_arm.{X}",
+        "{s}LowerArm": "DEF-forearm.{X}",
+        "{s}Hand": "DEF-hand.{X}",
+        "{s}UpperLeg": "DEF-thigh.{X}",
+        "{s}LowerLeg": "DEF-shin.{X}",
+        "{s}Foot": "DEF-foot.{X}",
+        "{s}Toes": "DEF-toe.{X}",
+    },
+    # Reallusion Character Creator, which exports every bone under a `CC_Base_` prefix. Verified
+    # against `Alice.glb` — a 78-joint body skin among fifteen skins in one 57 MB file.
+    #
+    # The row exists mainly for the HIPS. CC forks the body immediately below `CC_Base_Hip` into two
+    # siblings: `CC_Base_Pelvis` carries the thighs and nothing else, `CC_Base_Waist` carries the
+    # spine and nothing else. They sit at the SAME world height, so every ordering check in
+    # `validate()` passes whichever one is chosen — inference picked `Pelvis`, and bending those
+    # "hips" would have swung her legs while her torso stayed upright. Naming them outright removes
+    # the choice.
+    #
+    # `head` and `toes` were wrong the same quiet way: inference stopped at `NeckTwist02` (3.4 cm
+    # below the real head) and at `BigToe1` (a child of the toe base rather than the base itself).
+    "cc-base": {
+        "hips": "CC_Base_Hip", "spine": "CC_Base_Waist",
+        "chest": "CC_Base_Spine01", "upperChest": "CC_Base_Spine02",
+        # Two neck segments, named as twists; the FIRST parents the chain, as `rigify-fk` reads it.
+        "neck": "CC_Base_NeckTwist01", "head": "CC_Base_Head",
+        "{s}Shoulder": "CC_Base_{X}_Clavicle",
+        "{s}UpperArm": "CC_Base_{X}_Upperarm",
+        "{s}LowerArm": "CC_Base_{X}_Forearm",
+        "{s}Hand": "CC_Base_{X}_Hand",
+        "{s}UpperLeg": "CC_Base_{X}_Thigh",
+        "{s}LowerLeg": "CC_Base_{X}_Calf",
+        "{s}Foot": "CC_Base_{X}_Foot",
+        "{s}Toes": "CC_Base_{X}_ToeBase",
+    },
     # The Blender-side-suffix scheme used across several free asset packs (both `Animated Woman` models
     # and `Steve` in the dev library). Torso/Abdomen rather than Spine1/Spine2, and the side is a suffix.
     "dot-side": {
@@ -257,11 +327,30 @@ def convention_humanoid(doc: dict) -> tuple[Optional[dict[str, str]], Optional[s
     """
     lookup: dict[str, str] = {}
     by_index: dict[str, int] = {}
+    # A second index that ignores CASE, consulted only when the exact spelling misses and only when it
+    # is unambiguous. One base rig in the capture set spells nineteen of its right-side bones with a
+    # LOWERCASE side letter — `CC_Base_r_Hand` beside `CC_Base_L_Hand`, and `R_Forearm` uppercase two
+    # bones above it — so a strict match lost the right hand, foot, clavicle, toes and every finger,
+    # on two different characters built from it. The rig is complete and symmetric; only the spelling
+    # is not, and `validate()` said nothing because hands and feet are not REQUIRED_BONES.
+    folded: dict[str, set[str]] = {}
     for i, node in enumerate(doc.get("nodes") or []):
         name = node.get("name")
         if name:
             lookup.setdefault(_bare(name), name)      # first spelling wins; ties are vanishingly rare
+            folded.setdefault(_bare(name).lower(), set()).add(name)
             by_index.setdefault(name, i)
+
+    def resolve(node: str) -> Optional[str]:
+        """The file's own spelling of `node`, exact first then case-insensitively.
+
+        Ambiguity is refused rather than guessed: if two nodes differ only by case, neither is worth
+        more than the other and a wrong bone is worse than a missing one.
+        """
+        if node in lookup:
+            return lookup[node]
+        same = folded.get(node.lower())
+        return next(iter(same)) if same and len(same) == 1 else None
     best: tuple[int, Optional[dict], Optional[str]] = (0, None, None)
     for scheme, table in CONVENTIONS.items():
         found: dict[str, str] = {}
@@ -271,21 +360,30 @@ def convention_humanoid(doc: dict) -> tuple[Optional[dict[str, str]], Optional[s
                 key = slot.format(s=side) if side else slot
                 for candidate in candidates.split("|"):
                     node = candidate.format(S=S, X=X) if side else candidate
-                    if node in lookup:
-                        found[key] = lookup[node]
+                    spelled = resolve(node)
+                    if spelled is not None:
+                        found[key] = spelled
                         break
         # The hips slot is chosen by ANATOMY where the names are ambiguous: a rig may carry `pelvis`,
-        # `hip`, `hips` and `torso`, and only one of them is the root of the legs. Tamaki's `pelvis` is
-        # a tweak bone off to one side; her `hips` is what the thighs actually hang from. This is the
-        # same definition `validate` uses — ancestry of the FEET is what makes a bone the hips.
-        feet = [by_index.get(found.get(b)) for b in ("leftFoot", "rightFoot")]
-        feet = [f for f in feet if f is not None]
-        if feet and "hips" in table:
+        # `hip`, `hips` and `torso`, and only one of them is the root of the body. Tamaki's `pelvis` is
+        # a tweak bone off to one side; her `hips` is what the thighs actually hang from.
+        #
+        # The legs are not enough to say which, and getting this wrong is expensive rather than
+        # cosmetic. On both Daz ports `pelvis` and `hip` are BOTH above the feet, `pelvis` is listed
+        # first, and it is a SIBLING of the spine — so `hips` landed on a bone that carries the legs and
+        # nothing else, and `{"hips": {"bend": 45}}` moved Grace's trunk by exactly zero degrees while
+        # moving Saka's by 122. Every fold-forward pose inherited that as "the trunk is rig-dependent".
+        # The hips are what the legs AND the spine hang from; requiring both picks `hip` on those two
+        # rigs and changes nothing on any other, because a rig that names its hips sensibly has the
+        # spine under them already.
+        below = [by_index.get(found.get(b)) for b in ("leftFoot", "rightFoot", "spine")]
+        below = [x for x in below if x is not None]
+        if below and "hips" in table:
             parent = parent_map(doc)
             for candidate in table["hips"].split("|"):
                 node = lookup.get(candidate)
                 i = by_index.get(node)
-                if i is not None and all(i in _ancestors(f, parent) for f in feet):
+                if i is not None and all(i in _ancestors(f, parent) for f in below):
                     found["hips"] = node
                     break
         score = sum(1 for b in REQUIRED_BONES if b in found)
@@ -893,6 +991,30 @@ def validate(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> list[str]
         i = idx(bone)
         return pos[i][0] if i is not None and i in pos else None
 
+    def z(bone: str) -> Optional[float]:
+        i = idx(bone)
+        return pos[i][2] if i is not None and i in pos else None
+
+    # WHICH WAY THE FIGURE FACES, because "+X is the model's left" is only true of one facing and is
+    # not a property of glTF — it is a property of how the model happened to be authored. Two figures
+    # in the corpus are built facing -Z, a clean 180 degrees from the rest, and for them the left hand
+    # is correctly at NEGATIVE x. The absolute rule rejected their name-based maps on four counts at
+    # once ("sides look swapped"), so `best_humanoid` discarded a correct map and fell through to
+    # inference — which then honoured +X and produced a genuinely MIRRORED one. Asking either of them
+    # for a left hand returned the right.
+    #
+    # Read off the FEET: toes are forward of the ankle on any figure, whichever way it faces, and that
+    # holds under a side swap because each toe is compared against its own foot. Measured across every
+    # rigged model in the corpus the two sides agree unanimously, with a margin of 2.2 cm at worst and
+    # 9 cm typically — so it is read as a sign, not trusted as a magnitude. With no toes mapped it
+    # falls back to +Z, which is what the rule assumed all along.
+    forward = 0.0
+    for side in ("left", "right"):
+        toe, ankle = z(f"{side}Toes"), z(f"{side}Foot")
+        if toe is not None and ankle is not None:
+            forward += toe - ankle
+    facing = -1.0 if forward < 0 else 1.0
+
     # 0. Distinctness and completeness. These fire FIRST because they are what let a hopeless map pass
     #    as clean: Grace's inference mapped leftUpperLeg, leftLowerLeg and leftFoot all to the same IK
     #    control, so every ordering comparison was equal-not-less and every segment length was zero —
@@ -912,12 +1034,14 @@ def validate(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> list[str]
         problems.append(f"{len(missing)} required bone(s) unmapped: {', '.join(missing[:6])}"
                         + (" …" if len(missing) > 6 else ""))
 
-    # 1. Sides. +X is the model's left in every sample; a swap here inverts every later pose.
+    # 1. Sides, RELATIVE TO THE FACING computed above. A swap here inverts every later pose.
     for l, r in (("leftHand", "rightHand"), ("leftFoot", "rightFoot"),
                  ("leftUpperArm", "rightUpperArm"), ("leftUpperLeg", "rightUpperLeg")):
         xl, xr = x(l), x(r)
-        if xl is not None and xr is not None and xl <= xr:
-            problems.append(f"{l} is not left of {r} ({xl:+.3f} vs {xr:+.3f}) — sides look swapped")
+        if xl is not None and xr is not None and (xl - xr) * facing <= 0:
+            which = "+x" if facing > 0 else "-x (this figure faces -z)"
+            problems.append(f"{l} is not on the {which} side of {r} ({xl:+.3f} vs {xr:+.3f}) — "
+                            f"sides look swapped")
 
     # 2. Vertical order along the body.
     for upper, lower in (("head", "neck"), ("neck", "chest"), ("chest", "spine"), ("spine", "hips"),
@@ -939,6 +1063,30 @@ def validate(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> list[str]
             i = idx(bone)
             if i is not None and hips_i not in _ancestors(i, parent):
                 problems.append(f"hips is not an ancestor of {bone}")
+
+    # 3a. Hips ONE LEVEL TOO LOW. Not "hips must be an ancestor of the spine" — that is the check this
+    #     deliberately is not, because conversion re-parents the trunk onto a torso control and the two
+    #     legitimately sit on separate branches (Eve Maccaro: `ORG-spine` carries the legs while `chest`
+    #     hangs off `torso`, four levels away, and the map is fine).
+    #
+    #     The failure this DOES catch is narrower and has a signature: the chosen hips carries the legs
+    #     and not the spine, while its OWN PARENT carries both. That is a bone one step too far down a
+    #     fork, and it is what Reallusion's rig invites — `CC_Base_Hip` forks into `CC_Base_Pelvis`
+    #     (thighs only) and `CC_Base_Waist` (spine only), the two sit at the SAME world height so every
+    #     ordering check passes, and inference took the Pelvis. Bending those hips swings the legs and
+    #     leaves the torso upright, which is the 0°-versus-122° trunk bug wearing different names.
+    #
+    #     Measured across all eleven rigged models in the dev library plus the four captured figures:
+    #     it fires on the bad map and on nothing else.
+    if hips_i is not None:
+        spine_i = idx("spine")
+        above = parent.get(hips_i)
+        if (spine_i is not None and above is not None
+                and hips_i not in _ancestors(spine_i, parent)
+                and above in _ancestors(spine_i, parent)):
+            problems.append(f"hips {mapping.get('hips')!r} carries the legs but not the spine, while its "
+                            f"parent {(nodes[above] or {}).get('name')!r} carries both — hips is one "
+                            f"level too low, and bending it would leave the torso behind")
 
     # 3b. A limb must be a CHAIN — the forearm's node has to sit UNDER the upper arm's, or rotating the
     #     upper arm leaves the forearm behind. That is not a hypothetical: it is the zig-zag arm reported
@@ -1275,6 +1423,35 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
     return out
 
 
+#: Bump when the SIGNATURE's definition changes — which bones it covers, or how it is spelled. It is
+#: stamped beside every signature so a changed definition is detectable rather than silently splitting
+#: one rig into two. Distinct from FRAME_REV: a discovery fix can change a signature without changing
+#: what a signature MEANS, and the two need to be told apart when regrouping a catalog.
+RIG_SIG_REV = 1
+
+
+def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
+    """A stable fingerprint of a skeleton, over the MAPPED humanoid bones only.
+
+    This is what makes a clip and a figure comparable without either naming the other. Two skeletons
+    with the same signature spell their humanoid bones identically, so a clip authored on one binds to
+    the other by node name with nothing in between — which is measured, not assumed: sixteen of twenty
+    captured figures share one signature, and a clip from any of them plays on the rest.
+
+    Over the MAPPED bones and not every node, deliberately. Jane and Akari differ by 51 nodes — skirt
+    bones, breast secondaries, anatomy extras — while agreeing on all 37 core body bones, and a
+    fingerprint that split them would answer a question nobody asks.
+
+    `None` when no map can be recovered: a skeleton we cannot name is one we cannot promise anything
+    about, and a signature over an unmapped rig would be a fingerprint of our own failure.
+    """
+    mapping, _, _ = best_humanoid(doc, blob)
+    if not mapping:
+        return None
+    spelled = "|".join(f"{k}={mapping[k]}" for k in sorted(mapping))
+    return f"{hashlib.sha1(spelled.encode()).hexdigest()[:10]}"
+
+
 #: Bump when ANYTHING that changes a derived result changes: inference, the axes, `validate()`, the
 #: convention table, which skin is chosen. Forgotten once already — `humanoid_follows` shipped without a
 #: bump, every row was stamped current, and the fix reached no model at all while the tests stayed green.
@@ -1282,7 +1459,10 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 9
+FRAME_REV = 13          # 13: a side letter in the wrong case still matches
+                        # 12: the side rule is read off the figure's FACING, not absolute +X
+                        # 11: the `cc-base` convention, and hips rejected one level below a fork
+                        # 10: the hips must be above the SPINE as well as the feet
 
 #: The relative rotations, in the order they compose (see `resolve_pose`).
 POSE_AXES = ("turn", "bend", "spread")
@@ -1599,6 +1779,46 @@ def figure_description(*, label: str, height_m: Optional[float] = None, tris=Non
     return "\n".join(lines)
 
 
+def _basis(m) -> Optional[list]:
+    """A world matrix's three axis directions, as unit vectors in world space.
+
+    Normalized rather than inverted for the same reason `anatomical_axes.to_parent` does it: a rig can
+    carry scale on a parent node, and a direction has to stay a direction through it.
+    """
+    cols = [_unit((m[0], m[1], m[2])), _unit((m[4], m[5], m[6])), _unit((m[8], m[9], m[10]))]
+    return cols if all(cols) else None
+
+
+def compose_frame(frame: dict, rest, now) -> dict:
+    """`frame` with its BODY DIRECTIONS re-expressed for a parent that has since rotated.
+
+    A frame is measured once, at bind time, and every vector in it is written in the coordinates of the
+    bone's parent. Three of them — `up`, `forward`, `out` — describe where the BODY faces, and those are
+    the ones that go stale: rotate the chest and the arm's parent frame turns with it, so the numbers
+    that meant "world up" now mean something else entirely. An arm asked to aim `down` under a folded
+    trunk came out pointing UP on Saka, which is how this was found.
+
+    So: read each of those three through the parent's REST basis to recover the world direction it was
+    always meant to name, then write it back through the parent's CURRENT basis.
+
+    `rest` is deliberately NOT corrected, and neither are `bend`, `spread` and `turn`. A bone's rest
+    direction is a property of its own local bind rotation and does not change when its parent moves —
+    the bone rides along. And the three swing axes are relative BY DESIGN: "bend her elbow 90 degrees"
+    should mean the same thing whatever her trunk is doing, and it does.
+    """
+    rest_cols, now_cols = _basis(rest), _basis(now)
+    if not rest_cols or not now_cols:
+        return frame
+    out = dict(frame)
+    for key in ("up", "forward", "out"):
+        v = frame.get(key)
+        if not v:
+            continue
+        world = [sum(v[k] * rest_cols[k][c] for k in range(3)) for c in range(3)]
+        out[key] = [_dot(world, now_cols[c]) for c in range(3)]
+    return out
+
+
 def apply_pose(doc: dict, mapping: dict[str, str], pose: dict,
                notes: Optional[list] = None) -> dict[str, int]:
     """Write `pose` into `doc`'s node rotations IN PLACE. Returns `{bone: node index}` for what moved.
@@ -1606,17 +1826,50 @@ def apply_pose(doc: dict, mapping: dict[str, str], pose: dict,
     A pose is a delta on a node's local rotation, which is exactly what the client applies — so a doc
     mutated here is the posed figure, and `node_world_positions` on it gives the joint positions the
     headset would show. Bones the file does not have are skipped; the caller reports them.
+
+    `doc` must arrive at its BIND pose, because the frame is measured from it.
+
+    **Aims are resolved LAST and root-first**, against the parent frame as posed rather than as bound —
+    see `compose_frame`. Relative requests are order-free (each writes one node's local rotation and
+    reads nothing), so they go first in a single pass; an aim has to see what its ancestors did, so the
+    world matrices are recomputed as the trunk lands. A frame is only composed when an ancestor of that
+    bone actually moved, which keeps every pose that leaves the trunk alone bit-identical to before.
     """
     by_name = {n.get("name"): i for i, n in enumerate(doc.get("nodes") or []) if n.get("name")}
     axes = anatomical_axes(doc, mapping)                  # PARENT space: where a node's rotation lives
+    parent = parent_map(doc)
+    rest_mats = node_world_matrices(doc)
     moved: dict[str, int] = {}
-    for bone, delta in resolve_pose(axes, pose, notes).items():
+
+    def write(bone: str, request: dict, frame: dict) -> None:
         i = by_name.get(mapping.get(bone, ""))
         if i is None:
-            continue
+            return
+        delta = resolve_pose({bone: frame}, {bone: request}, notes).get(bone)
+        if delta is None:
+            return
         node = doc["nodes"][i]
         node["rotation"] = _quat_mul(delta, node.get("rotation", [0.0, 0.0, 0.0, 1.0]))
         moved[bone] = i
+
+    aiming = []
+    for bone, request in (pose or {}).items():
+        frame = axes.get(bone)
+        if not frame or not isinstance(request, dict):
+            continue
+        if request.get("aim") is not None:
+            aiming.append((bone, request, frame))
+        else:
+            write(bone, request, frame)
+
+    depth = {i: len(_ancestors(i, parent)) for i in range(len(doc.get("nodes") or []))}
+    aiming.sort(key=lambda t: depth.get(by_name.get(mapping.get(t[0], ""), -1), 0))
+    for bone, request, frame in aiming:
+        i = by_name.get(mapping.get(bone, ""))
+        p = parent.get(i) if i is not None else None
+        if p is not None and any(j in set(moved.values()) for j in _ancestors(i, parent)):
+            frame = compose_frame(frame, rest_mats.get(p), node_world_matrices(doc).get(p))
+        write(bone, request, frame)
     return moved
 
 
@@ -1701,3 +1954,196 @@ def clean_pose(pose: dict, axes: dict) -> tuple[dict, Optional[str]]:
             vals[k] = angle
         clean[bone] = vals                      # an empty {} is legal: it returns that bone to rest
     return clean, None
+
+
+# ---------------------------------------------------------------- consulting the MESH
+#
+# Everything above reasons about joints. A pose authored and checked that way can be geometrically
+# perfect and still look wrong, because flesh intersects flesh: measured on device 2026-09-09, arms
+# aimed `down` enter the body, `arms-crossed` folds inside the chest, `hands-on-hips` does not touch.
+# No signature catches any of it — a signature asserts where a joint IS, never what is already there.
+#
+# So: read the skinned vertices and ask how wide the body is. Cheap, because the question is narrow —
+# not "do these two meshes intersect" but "how far from the body's axis is its surface, at this height".
+
+
+def _read_vec3(doc: dict, blob: bytes, accessor_index: int, limit: int = 400000):
+    """Yield up to `limit` VEC3 float triples from an accessor — the vertex-position counterpart to
+    `_read_vec4`. Skinned positions are stored in BIND space, which is exactly the frame the bone map
+    and `anatomical_axes` are measured in, so no transform is needed to compare them."""
+    import struct
+    acc = (doc.get("accessors") or [])[accessor_index]
+    fmt, size = _COMPONENT.get(acc.get("componentType"), (None, 0))
+    if not fmt or acc.get("type") != "VEC3" or "bufferView" not in acc:
+        return
+    bv = (doc.get("bufferViews") or [])[acc["bufferView"]]
+    base = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+    stride = bv.get("byteStride") or (size * 3)
+    for i in range(min(acc.get("count", 0), limit)):
+        off = base + i * stride
+        if off + size * 3 > len(blob):
+            return
+        yield struct.unpack_from("<" + fmt * 3, blob, off)
+
+
+#: The bones whose vertices are the TORSO — what a hanging arm has to clear. Deliberately not the whole
+#: body: including arm vertices would inflate the profile with the very limb being tested, and a T-posed
+#: rig would report a body two metres wide.
+TORSO_BONES = ("hips", "spine", "chest", "upperChest", "neck")
+
+
+def deform_subtree(doc: dict, mapping: dict[str, str], bones) -> set[int]:
+    """The node indices whose vertices belong to `bones` — the mapped nodes plus their descendants.
+
+    **A mapped bone is not necessarily a DEFORM bone.** Trish's `spine` is a control whose only child is
+    `spine.twk`, and every torso vertex is weighted to the twk, so matching the mapped node alone found
+    zero torso on her rig — and zero arm, for the same reason. The subtree fixes both.
+
+    It stops at any node belonging to a DIFFERENT mapped bone, or the arms (which descend from the chest)
+    would count as torso and report a T-posed figure two metres wide.
+    """
+    nodes = doc.get("nodes") or []
+    by_name = {n.get("name"): i for i, n in enumerate(nodes) if n.get("name")}
+    stop = {by_name.get(n) for b, n in mapping.items() if b not in bones} - {None}
+    out: set[int] = set()
+    for bone in bones:
+        root = by_name.get(mapping.get(bone, ""))
+        if root is None:
+            continue
+        stack = [root]
+        while stack:
+            i = stack.pop()
+            if i in out:
+                continue
+            out.add(i)
+            for c in nodes[i].get("children") or []:
+                if c not in stop:
+                    stack.append(c)
+    return out
+
+
+def body_profile(doc: dict, blob: bytes, mapping: dict[str, str], bands: int = 24,
+                 bones=TORSO_BONES) -> list[tuple[float, float, float]]:
+    """`[(height, half_width, depth)]` per height band through the torso, in the model's own units.
+
+    Each vertex is assigned to the bone it is most heavily weighted to, and only vertices belonging to
+    `bones` are counted — skin weights are what separate torso from limb, and they are exact where a
+    name convention or a bounding box would be guesswork. Within a band, `half_width` is the larger of
+    the two sides' extents from the body's midline and `depth` the front-to-back extent.
+
+    Empty when the file has no skin or no weights, which is the honest answer for an unrigged mesh; the
+    caller then has nothing to clear and should not invent a number.
+    """
+    skins = doc.get("skins") or []
+    if not skins:
+        return []
+    wanted = deform_subtree(doc, mapping, bones)
+    if not wanted:
+        return []
+    frame = body_frame(doc, mapping)
+    up, left, forward = frame["up"], frame["left"], frame["forward"]
+    dot = lambda a, b: sum(x * y for x, y in zip(a, b))              # noqa: E731
+
+    mesh_skin: dict[int, int] = {}
+    for n in doc.get("nodes") or []:
+        if "mesh" in n and "skin" in n:
+            mesh_skin.setdefault(n["mesh"], n["skin"])
+
+    pts: list[tuple[float, float, float]] = []                       # (height, lateral, depth)
+    for mi, mesh in enumerate(doc.get("meshes") or []):
+        si = mesh_skin.get(mi)
+        if si is None or si >= len(skins):
+            continue
+        joints = skins[si].get("joints") or []
+        for prim in mesh.get("primitives") or []:
+            attrs = prim.get("attributes") or {}
+            if not {"POSITION", "JOINTS_0", "WEIGHTS_0"} <= set(attrs):
+                continue
+            positions = _read_vec3(doc, blob, attrs["POSITION"])
+            js = _read_vec4(doc, blob, attrs["JOINTS_0"])
+            ws = _read_vec4(doc, blob, attrs["WEIGHTS_0"])
+            for pos, j4, w4 in zip(positions, js, ws):
+                k = max(range(4), key=lambda n: w4[n])               # the dominant bone
+                if w4[k] <= 0:
+                    continue
+                ji = int(j4[k])
+                if ji >= len(joints) or joints[ji] not in wanted:
+                    continue
+                pts.append((dot(pos, up), dot(pos, left), dot(pos, forward)))
+    if not pts:
+        return []
+
+    lo = min(p[0] for p in pts)
+    hi = max(p[0] for p in pts)
+    span = (hi - lo) or 1.0
+    buckets: dict[int, list] = {}
+    for h, lat, dep in pts:
+        buckets.setdefault(min(bands - 1, int((h - lo) / span * bands)), []).append((h, lat, dep))
+    out = []
+    for b in sorted(buckets):
+        rows = buckets[b]
+        out.append((sum(r[0] for r in rows) / len(rows),
+                    max(abs(r[1]) for r in rows),
+                    max(r[2] for r in rows) - min(r[2] for r in rows)))
+    return out
+
+
+def limb_radius(doc: dict, blob: bytes, mapping: dict[str, str], bone: str) -> float:
+    """How thick a limb is — the median perpendicular distance from its own axis to its surface.
+
+    **The term that was missing.** A shoulder sits almost exactly at the torso's edge, so an arm hanging
+    straight down from it looks clear on joint positions alone and still overlaps, by its own radius.
+    Median rather than max: a max picks up the shoulder cap where the arm meets the torso, which is the
+    one place the limb is legitimately as wide as the body.
+    """
+    skins = doc.get("skins") or []
+    by_name = {n.get("name"): i for i, n in enumerate(doc.get("nodes") or []) if n.get("name")}
+    node = by_name.get(mapping.get(bone, ""))
+    if not skins or node is None:
+        return 0.0
+    own = deform_subtree(doc, mapping, (bone,))
+    directions = bone_directions(doc, mapping)
+    axis = directions.get(bone)
+    origin = node_world_positions(doc).get(node)
+    if not axis or not origin:
+        return 0.0
+
+    mesh_skin: dict[int, int] = {}
+    for n in doc.get("nodes") or []:
+        if "mesh" in n and "skin" in n:
+            mesh_skin.setdefault(n["mesh"], n["skin"])
+    radii: list[float] = []
+    for mi, mesh in enumerate(doc.get("meshes") or []):
+        si = mesh_skin.get(mi)
+        if si is None or si >= len(skins):
+            continue
+        joints = skins[si].get("joints") or []
+        for prim in mesh.get("primitives") or []:
+            attrs = prim.get("attributes") or {}
+            if not {"POSITION", "JOINTS_0", "WEIGHTS_0"} <= set(attrs):
+                continue
+            for pos, j4, w4 in zip(_read_vec3(doc, blob, attrs["POSITION"]),
+                                   _read_vec4(doc, blob, attrs["JOINTS_0"]),
+                                   _read_vec4(doc, blob, attrs["WEIGHTS_0"])):
+                k = max(range(4), key=lambda n: w4[n])
+                if w4[k] <= 0:
+                    continue
+                ji = int(j4[k])
+                if ji >= len(joints) or joints[ji] not in own:
+                    continue
+                v = _sub(pos, origin)
+                along = _dot(v, axis)
+                perp = _sub(v, _scaled(axis, along))
+                radii.append(math.sqrt(_dot(perp, perp)))
+    if not radii:
+        return 0.0
+    radii.sort()
+    return radii[len(radii) // 2]
+
+
+def torso_half_width(profile, height: float) -> float:
+    """The torso's half-width at `height`, from the nearest band. 0.0 for an empty profile — a caller
+    with no measurement should do nothing rather than apply a default."""
+    if not profile:
+        return 0.0
+    return min(profile, key=lambda row: abs(row[0] - height))[1]

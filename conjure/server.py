@@ -2557,6 +2557,12 @@ async def space_visibility(req: SpaceVisibilityRequest) -> dict:
 
 class AdminPath(BaseModel):
     path: str = "/"
+    # Listing filters. A capture puts a figure, sixty clips and thirty audio files in one place, and
+    # a flat list of them is how a wrong link stays invisible — being able to ask "her clips" and
+    # "what voices this" is how the linking gets checked at all.
+    kind: Optional[str] = None          # asset kind: model | animation | audio | image | set | …
+    related: Optional[str] = None       # only assets related to this one (id or label)
+    relation: Optional[str] = None      # ...by this relation type; any type when omitted
 
 
 def _active_sid_for(scope: str) -> str:
@@ -2570,6 +2576,84 @@ def _active_sid_for(scope: str) -> str:
 def _session_worlds(scope: str, sid: str):
     """The WorldDir for one specific session — `worlds.<op>` only ever reaches the ACTIVE one."""
     return sessions.worlds(scope, sid)
+
+
+def _row_asset_kind(row: dict) -> str:
+    """The ASSET kind of a listing row — `animation`, `model`, `audio`.
+
+    Not `row["type"]`, which does not exist. A row is `{label, kind, ref, cells}` where `kind` is the
+    NAMESPACE kind (always `asset` here) and the asset's own kind is `cells[0]`; `type` is a column
+    HEADING out of `COLUMNS["assets"]`, which is what made the wrong guess look right.
+    """
+    cells = row.get("cells") or []
+    return cells[0] if row.get("kind") == "asset" and cells else ""
+
+
+def _filter_rows(rows: list[dict], req: AdminPath) -> list[dict]:
+    """Narrow a listing by asset kind and by relation.
+
+    Applied to the ROWS rather than pushed into the namespace walk because a namespace location is not
+    always an asset — the same `dir` lists sessions and worlds — and a filter that only some entries can
+    answer should drop the ones it cannot judge rather than error on them.
+    """
+    if req.kind:
+        rows = [r for r in rows if _row_asset_kind(r) == req.kind]
+    if req.related:
+        ids = _related_ids(req.related, req.relation)
+        rows = [r for r in rows if (r.get("ref") or "") in ids]
+    return rows
+
+
+def _related_problem(other: str) -> Optional[str]:
+    """Why a `--with` name found nothing, when the reason is the NAME rather than the relation.
+
+    An empty listing is the same shape whether a name is unknown, ambiguous, or simply has no
+    relations — and those want different responses from a person. `3_idle` is ambiguous in a captured
+    set, because the clip and the audio that voices it share a label by design.
+    """
+    if library is None or library.get(other) is not None:
+        return None
+    if not _safe_label(other):
+        return f"{other!r} is not a usable name"
+    hits = library.query(f"SELECT id, kind FROM assets WHERE label = '{other}'",
+                         scope=active_scope, limit=5)
+    if not hits:
+        return f"nothing here is called {other!r}"
+    if len(hits) > 1:
+        kinds = ", ".join(sorted({h["kind"] for h in hits}))
+        return (f"{other!r} is ambiguous — {len(hits)} assets share that label ({kinds}). "
+                f"Use an id, or add --kind to say which you mean.")
+    return None
+
+
+def _safe_label(text: str) -> bool:
+    """A label safe to inline into the read-only view's SQL. Refused rather than escaped: the query
+    path is a temp VIEW over the catalog and a quote in a label has no business reaching it."""
+    return bool(re.fullmatch(r"[\w .:/-]{1,120}", text or ""))
+
+
+def _related_ids(other: str, relation: Optional[str]) -> set[str]:
+    """Asset ids on the far side of a relation from `other`, in EITHER direction.
+
+    Both directions because the useful questions point opposite ways: a figure's clips
+    (`shipped_with`, outbound) and the clips one audio file voices (`voiced_by`, inbound) are the same
+    query from different ends. `other` resolves as an id first, then as an exact label, because a
+    person types the label and a script has the id.
+    """
+    if library is None:
+        return set()
+    if library.get(other) is None:
+        hit = library.query(f"SELECT id FROM assets WHERE label = '{other}'",
+                            scope=active_scope, limit=2) if _safe_label(other) else []
+        if len(hit) != 1:                               # absent, or ambiguous — refuse rather than pick
+            return set()
+        other = hit[0]["id"]
+    out = set()
+    for edge in library.relations_of(other):
+        if relation and edge["type"] != relation:
+            continue
+        out.add(edge["other"])
+    return out
 
 
 @app.post("/admin/tree")
@@ -2588,9 +2672,15 @@ async def admin_tree(req: AdminPath) -> dict:
     # `self` is the row for the node ITSELF when it has one (a session's own summary, say). A session's
     # children are just `worlds/` and `state/`, so without this a delete confirmation for one could only
     # say "nothing" — see Shell._summarize.
-    return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
-            "kind": loc.kind, "self": namespace.leaf_row(loc), "children": namespace.children(loc),
-            "columns": namespace.columns_for(loc.kind)}
+    out = {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
+           "kind": loc.kind, "self": namespace.leaf_row(loc),
+           "children": _filter_rows(namespace.children(loc), req),
+           "columns": namespace.columns_for(loc.kind)}
+    if req.related:
+        problem = _related_problem(req.related)
+        if problem:
+            out["note"] = problem
+    return out
 
 
 @app.post("/admin/show")
@@ -2686,10 +2776,13 @@ async def admin_match(req: AdminPath) -> dict:
     if isinstance(found, str):
         return {"ok": False, "error": found}
     kind = found[0].kind if found else ""
+    matches = [{"path": namespace.loc_path(l), "display": namespace.display_path(l),
+                "kind": l.kind, "row": namespace.leaf_row(l)} for l in found]
+    if req.kind or req.related:
+        keep = {id(r) for r in _filter_rows([m["row"] for m in matches if m.get("row")], req)}
+        matches = [m for m in matches if m.get("row") is not None and id(m["row"]) in keep]
     return {"ok": True, "glob": namespace.is_glob(req.path.rstrip("/").rsplit("/", 1)[-1]),
-            "columns": namespace.columns_for(kind + "s"),
-            "matches": [{"path": namespace.loc_path(l), "display": namespace.display_path(l),
-                         "kind": l.kind, "row": namespace.leaf_row(l)} for l in found]}
+            "columns": namespace.columns_for(kind + "s"), "matches": matches}
 
 
 @app.post("/admin/file")

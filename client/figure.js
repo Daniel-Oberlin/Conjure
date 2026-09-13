@@ -112,6 +112,44 @@
     return new THREE.Quaternion(c.x, c.y, c.z, 1 + d).normalize();
   }
 
+  // ...and the correction that makes "absolute" actually true. A frame is measured ONCE, at bind time,
+  // and written in the coordinates of the bone's parent. Three of its vectors — `out`, `up`, `forward`
+  // — name where the BODY faces, so they go stale the moment an ancestor rotates: fold the chest and
+  // the arm's parent frame folds with it, leaving numbers that used to mean "world up" meaning
+  // something else. An arm asked to aim `down` under a folded trunk came out pointing UP.
+  //
+  // So read those three through the parent's REST basis to recover the world direction each was always
+  // meant to name, and write it back through the parent's CURRENT one. `rest` is deliberately left
+  // alone — a bone's rest direction lives in its own local bind rotation and rides the parent
+  // unchanged — and so are `bend`, `spread` and `turn`, which are relative BY DESIGN: "bend her elbow
+  // 90 degrees" means the same whatever her trunk is doing.
+  //
+  // Mirrors `compose_frame` in conjure/figures.py, which the golden fixture holds the two of us to.
+  function composeFrame(frame, restWorld, nowWorld) {
+    if (!restWorld || !nowWorld) return frame;
+    var p = new THREE.Vector3(), s = new THREE.Vector3();
+    var qRest = new THREE.Quaternion(), qNow = new THREE.Quaternion();
+    restWorld.decompose(p, qRest, s);                 // decompose, not setFromRotationMatrix: a rig can
+    nowWorld.decompose(p, qNow, s);                   // carry scale, and a direction must survive it
+    var fix = qNow.invert().multiply(qRest);
+    var out = {};
+    Object.keys(frame).forEach(function (k) { out[k] = frame[k]; });
+    ["up", "forward", "out"].forEach(function (k) {
+      var v = vec(frame[k]);
+      if (!v) return;
+      v.applyQuaternion(fix);
+      out[k] = [v.x, v.y, v.z];
+    });
+    return out;
+  }
+
+  // How deep a bone sits, for ordering aims root-first.
+  function depth(b) {
+    var n = 0;
+    for (var p = b.parent; p; p = p.parent) n++;
+    return n;
+  }
+
   // A joint's limits arrive WITH its frame (the server measures them; conjure/figures.py holds the one
   // table), so this is arithmetic only — no anatomy table on the client to drift out of step.
   //
@@ -267,6 +305,7 @@
       var pose = parse(this.data.pose) || {};
       var bones = this._collect();
       if (!bones) return;                              // model not loaded yet; model-loaded retries
+      var obj = this.el.getObject3D("mesh");           // needed live: an aim reads its parent as POSED
 
       // Reset anything previously posed but absent now, so clearing a pose really restores the figure
       // rather than leaving the last rotation stuck. Restoring means the REST quaternion, not identity.
@@ -277,21 +316,47 @@
         if (b && rest.has(b)) b.quaternion.copy(rest.get(b));
       });
 
-      var applied = {}, missing = [];
-      Object.keys(pose).forEach(function (bone) {
-        var node = map[bone], b = node && lookup(bones, node), frame = axes[bone];
-        if (!b || !frame || !rest.has(b)) { missing.push(bone); return; }
-        // Rest first, then the delta — so a request that works out to no rotation at all lands the bone
-        // back on its rest pose rather than leaving the last one stuck there.
-        //
-        // delta * rest: the axes are in the bone's PARENT frame, which is the frame its own local
-        // quaternion lives in, so the delta pre-multiplies. Doing it the other way round would apply
-        // the rotation in the bone's own twisted space and put us back where we started.
-        var q = rotation(frame, pose[bone]);
+      var applied = {}, missing = [], aiming = [], touched = [], self = this;
+
+      // Rest first, then the delta — so a request that works out to no rotation at all lands the bone
+      // back on its rest pose rather than leaving the last one stuck there.
+      //
+      // delta * rest: the axes are in the bone's PARENT frame, which is the frame its own local
+      // quaternion lives in, so the delta pre-multiplies. Doing it the other way round would apply
+      // the rotation in the bone's own twisted space and put us back where we started.
+      var place = function (bone, frame) {
+        var q = rotation(frame, pose[bone]), b = lookup(bones, map[bone]);
         b.quaternion.copy(rest.get(b));
         if (!q) return;
         b.quaternion.premultiply(q);
         applied[bone] = true;
+        touched.push(b);
+      };
+
+      // Relative requests are order-free: each writes one bone's local rotation and reads nothing. An
+      // AIM has to see what its ancestors did, so it waits — see `composeFrame`.
+      Object.keys(pose).forEach(function (bone) {
+        var node = map[bone], b = node && lookup(bones, node), frame = axes[bone];
+        if (!b || !frame || !rest.has(b)) { missing.push(bone); return; }
+        var request = pose[bone];
+        if (request && request.aim !== undefined && request.aim !== null) aiming.push(bone);
+        else place(bone, frame);
+      });
+
+      aiming.sort(function (x, y) {
+        return depth(lookup(bones, map[x])) - depth(lookup(bones, map[y]));
+      });
+      aiming.forEach(function (bone) {
+        var b = lookup(bones, map[bone]), frame = axes[bone], p = b.parent;
+        // Only compose when an ancestor of THIS bone actually moved, so every pose that leaves the
+        // trunk at rest behaves exactly as it did before this existed.
+        var moved = false;
+        for (var a = p; a && !moved; a = a.parent) moved = touched.indexOf(a) >= 0;
+        if (moved && self._restWorld.has(p)) {
+          obj.updateMatrixWorld(true);
+          frame = composeFrame(frame, self._restWorld.get(p), p.matrixWorld);
+        }
+        place(bone, frame);
       });
       this._ride(bones, parse(this.data.follows) || {});
       this._settle(bones, map);

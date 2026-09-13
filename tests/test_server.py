@@ -4293,7 +4293,12 @@ def test_stand_still_puts_the_arms_down(srv, client, tmp_path):
     eid = _place_figure(srv, client, tmp_path)          # has a left arm
     client.post("/figure", json={"id": eid, "named": "stand"})
     stored = json.loads(_ent(client, eid)["components"]["figure"]["pose"])
-    assert stored["leftUpperArm"] == {"aim": "down"}
+    # An aim VECTOR, not the word "down": aimed along the body's own axis an arm ends up inside the
+    # torso, because a shoulder sits at the torso's edge and the arm has its own radius (measured
+    # 2026-09-10). Asserted by meaning — mostly down, and a real outward component — so tuning the
+    # angle does not break the test, but losing the clearance does.
+    aim = stored["leftUpperArm"]["aim"]
+    assert aim[1] < 0 and abs(aim[1]) > abs(aim[0]) > 0.05, aim
 
 
 def _place_legged_figure(client):
@@ -4599,7 +4604,7 @@ def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client
     the library was already stamped current, refresh-models found nothing to do, and the fix reached
     nobody — while the code, the tests and the renders all said it worked. If you change either of these
     literals, change the other: a new derived field is exactly the case the stamp exists for."""
-    assert srv.FRAME_REV == 9
+    assert srv.FRAME_REV == 13
     assert srv._DERIVED_MODEL_ATTRS == (
         "bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
         "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris")
@@ -4664,3 +4669,63 @@ def test_figure_is_owner_gated(srv, client, tmp_path):
     r = client.post("/figure", json={"id": eid, "pose": {"head": {"bend": 10}}},
                     headers={"X-Conjure-User": "someone-else"})
     assert r.status_code == 403
+
+
+def test_admin_listing_filters_by_kind_and_by_relation(srv, tmp_path):
+    """A capture puts a figure, sixty clips and thirty audio files in one namespace location. Being
+    able to ask "her clips" and "what voices this" is how the linking gets checked at all — a flat
+    list is how a wrong link stays invisible."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane_export", scope=srv.active_scope, source="cache://")
+    lib.upsert("c1.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("c2.glb", kind="animation", label="2_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("v.mp3", kind="audio", label="1-2_idle", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "c1.glb", "shipped_with")
+    lib.add_relation("c1.glb", "v.mp3", "voiced_by")
+    lib.add_relation("c2.glb", "v.mp3", "voiced_by")
+
+    # Rows are built the way the namespace builds them, NOT hand-written. The first version of this
+    # test invented `{"type": ...}` and passed against a filter that read the same invented key — while
+    # `dir --kind animation` returned nothing at all, because a real row is
+    # `{label, kind: "asset", ref, cells: [asset_kind, vis]}` and `type` is a COLUMN HEADING.
+    from conjure import namespace
+    rows = srv._filter_rows(
+        [namespace.node("1_idle", "asset", "animation", "public", ref="c1.glb"),
+         namespace.node("jane_export", "asset", "model", "public", ref="fig.glb")],
+        srv.AdminPath(path="/", kind="animation"))
+    assert [r["ref"] for r in rows] == ["c1.glb"], "kind narrows to one asset type"
+    assert srv._row_asset_kind(rows[0]) == "animation"
+    assert "type" not in rows[0], "the guess that made this pass while the feature was broken"
+
+    # A relation reads from either end: the figure's authored clips, and the clips one file voices.
+    assert srv._related_ids("fig.glb", "shipped_with") == {"c1.glb"}
+    assert srv._related_ids("v.mp3", "voiced_by") == {"c1.glb", "c2.glb"}, \
+        "one audio file, two clips — inbound"
+    assert srv._related_ids("c1.glb", None) == {"fig.glb", "v.mp3"}, "every edge when no type is given"
+
+
+def test_relation_filter_refuses_an_ambiguous_or_absent_name(srv):
+    """`--with` takes a label because a person types labels. Labels are neither unique nor guaranteed,
+    so two matches is refused rather than picked between — the same rule the asset namespace uses."""
+    lib = srv.library
+    for i in (1, 2):
+        lib.upsert(f"dup{i}.glb", kind="model", label="twin", scope=srv.active_scope, source="cache://")
+    assert srv._related_ids("twin", None) == set(), "ambiguous → nothing, not a guess"
+    assert srv._related_ids("no-such-asset", None) == set()
+
+
+def test_a_with_name_that_is_ambiguous_SAYS_so_rather_than_listing_nothing(srv):
+    """An empty listing is the same shape whether a name is unknown, ambiguous, or simply unrelated —
+    and those want different responses. In a captured set `3_idle` is ambiguous by design: the clip and
+    the audio that voices it share a label."""
+    lib = srv.library
+    lib.upsert("clip.glb", kind="animation", label="3_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("voice.mp3", kind="audio", label="3_idle", scope=srv.active_scope, source="cache://")
+
+    note = srv._related_problem("3_idle")
+    assert note and "ambiguous" in note and "--kind" in note, note
+    assert srv._related_problem("no-such-thing").startswith("nothing here is called")
+
+    lib.upsert("solo.glb", kind="model", label="unique-one", scope=srv.active_scope, source="cache://")
+    assert srv._related_problem("unique-one") is None, "a name that resolves is not a problem"
+    assert srv._related_problem("clip.glb") is None, "and neither is an id"

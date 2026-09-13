@@ -543,7 +543,7 @@ back and fire it. The first `yes` consumes it, so an echo is inert.
 
 | Path command | Effect | Voice |
 |---|---|:--:|
-| `dir [-l] [path]` (`ls`) | list **one level** of the namespace; `-l` also shows ids | — |
+| `dir [-l] [path] [--kind K] [--with NAME [--rel TYPE]]` (`ls`) | list **one level** of the namespace; `-l` also shows ids. `--kind` narrows to one asset type (`model`, `animation`, `audio`, `set`); `--with` to assets related to NAME, by one `--rel` type when given (`shipped_with`, `voiced_by`, `ambience`, `part_of`). Both compose with globbing | — |
 | `show [path]` (`info`) | one entry in detail | — |
 | `disk [path]` (`file`) | where it lives on disk — real files, sizes, an asset's catalog row | — |
 | `cd [path]` | change the working directory (bare: back to your agent) | — |

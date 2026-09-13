@@ -31,8 +31,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import struct
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from conjure.figures import write_glb                                          # noqa: E402
 
 
 def read(path: str):
@@ -52,13 +57,7 @@ def read(path: str):
 
 
 def write(path: str, doc: dict, blob: bytes) -> None:
-    body = json.dumps(doc).encode()
-    body += b" " * (-len(body) % 4)
-    out = struct.pack("<II", len(body), 0x4E4F534A) + body
-    if blob:
-        pad = blob + b"\x00" * (-len(blob) % 4)
-        out += struct.pack("<II", len(pad), 0x004E4942) + pad
-    open(path, "wb").write(b"glTF" + struct.pack("<II", 2, 12 + len(out)) + out)
+    open(path, "wb").write(write_glb(doc, blob))
 
 
 def tri_count(doc: dict, mesh_index: int) -> int:
