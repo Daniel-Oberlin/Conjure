@@ -861,7 +861,10 @@ class Shell:
             data = await self._recover(on_text, m, data)
             if data is None:
                 return
-        await self._say(on_text, self._render_listing(data, long=bool(m.groupdict().get("long"))))
+        text = self._render_listing(data, long=bool(m.groupdict().get("long")))
+        if data.get("note"):                    # why a filter found nothing, when the NAME is the reason
+            text += f"\n  ({data['note']})"
+        await self._say(on_text, text)
 
     async def _dir_glob(self, on_text, path: str, *, long: bool = False, **filters) -> None:
         found = await self._admin("match", path, **filters)
@@ -870,7 +873,17 @@ class Shell:
             return
         rows = [mm["row"] for mm in (found.get("matches") or []) if mm.get("row")]
         if not rows:
-            await self._say(on_text, f"Nothing matches {loc_name(path)!r}.")
+            extra = ""
+            if filters:
+                shown = " ".join(f"--{k.replace('related', 'with').replace('relation', 'rel')} {v}"
+                                 for k, v in filters.items())
+                extra = f" with {shown}"
+            # The PATH, not just the pattern: a glob expands against the parent of its last segment,
+            # so `dir *idle*` searches the working directory — and "Nothing matches '*idle*'" reads
+            # like the pattern is wrong when the answer is that you are standing somewhere else.
+            where = "/".join(path.rstrip("/").split("/")[:-1]) or "/"
+            await self._say(on_text,
+                            f"Nothing matches {loc_name(path)!r}{extra} in {where}.")
             return
         head = f"{len(rows)} match {loc_name(path)!r}"
         await self._say(on_text, head + "\n" + "\n".join(columns(rows, found.get("columns") or [],

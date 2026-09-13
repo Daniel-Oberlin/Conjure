@@ -2578,6 +2578,17 @@ def _session_worlds(scope: str, sid: str):
     return sessions.worlds(scope, sid)
 
 
+def _row_asset_kind(row: dict) -> str:
+    """The ASSET kind of a listing row — `animation`, `model`, `audio`.
+
+    Not `row["type"]`, which does not exist. A row is `{label, kind, ref, cells}` where `kind` is the
+    NAMESPACE kind (always `asset` here) and the asset's own kind is `cells[0]`; `type` is a column
+    HEADING out of `COLUMNS["assets"]`, which is what made the wrong guess look right.
+    """
+    cells = row.get("cells") or []
+    return cells[0] if row.get("kind") == "asset" and cells else ""
+
+
 def _filter_rows(rows: list[dict], req: AdminPath) -> list[dict]:
     """Narrow a listing by asset kind and by relation.
 
@@ -2586,11 +2597,33 @@ def _filter_rows(rows: list[dict], req: AdminPath) -> list[dict]:
     answer should drop the ones it cannot judge rather than error on them.
     """
     if req.kind:
-        rows = [r for r in rows if (r.get("type") or "") == req.kind]
+        rows = [r for r in rows if _row_asset_kind(r) == req.kind]
     if req.related:
         ids = _related_ids(req.related, req.relation)
         rows = [r for r in rows if (r.get("ref") or "") in ids]
     return rows
+
+
+def _related_problem(other: str) -> Optional[str]:
+    """Why a `--with` name found nothing, when the reason is the NAME rather than the relation.
+
+    An empty listing is the same shape whether a name is unknown, ambiguous, or simply has no
+    relations — and those want different responses from a person. `3_idle` is ambiguous in a captured
+    set, because the clip and the audio that voices it share a label by design.
+    """
+    if library is None or library.get(other) is not None:
+        return None
+    if not _safe_label(other):
+        return f"{other!r} is not a usable name"
+    hits = library.query(f"SELECT id, kind FROM assets WHERE label = '{other}'",
+                         scope=active_scope, limit=5)
+    if not hits:
+        return f"nothing here is called {other!r}"
+    if len(hits) > 1:
+        kinds = ", ".join(sorted({h["kind"] for h in hits}))
+        return (f"{other!r} is ambiguous — {len(hits)} assets share that label ({kinds}). "
+                f"Use an id, or add --kind to say which you mean.")
+    return None
 
 
 def _safe_label(text: str) -> bool:
@@ -2639,10 +2672,15 @@ async def admin_tree(req: AdminPath) -> dict:
     # `self` is the row for the node ITSELF when it has one (a session's own summary, say). A session's
     # children are just `worlds/` and `state/`, so without this a delete confirmation for one could only
     # say "nothing" — see Shell._summarize.
-    return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
-            "kind": loc.kind, "self": namespace.leaf_row(loc),
-            "children": _filter_rows(namespace.children(loc), req),
-            "columns": namespace.columns_for(loc.kind)}
+    out = {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
+           "kind": loc.kind, "self": namespace.leaf_row(loc),
+           "children": _filter_rows(namespace.children(loc), req),
+           "columns": namespace.columns_for(loc.kind)}
+    if req.related:
+        problem = _related_problem(req.related)
+        if problem:
+            out["note"] = problem
+    return out
 
 
 @app.post("/admin/show")
