@@ -27,6 +27,8 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 23 | Is an animation clip owned by a figure, or by a rig? | ✅ RESOLVED | By the **rig signature** — ownership by figure would block reuse the data already supports |
 | 24 | Clip playback: a dynamic module, or an entity component? | ✅ RESOLVED | A component beside `figure`; modules are conjurable shared effects, a clip is per-figure state |
 | 25 | Do multi-area plans need a durable doc tier? | ✅ RESOLVED | No — `docs/plans/` holds them while live and they dissolve into specs/backlogs |
+| 26 | An asset owned by more than one agent | ✅ RESOLVED | `asset_scopes` join table — many owners, one row, curation shared |
+| 27 | Is a clip selected by compatibility, or by what shipped with the model? | ✅ RESOLVED | Both, kept separate: `rig_sig` is mechanical, `shipped_with` is authorial intent |
 
 > Numbering note: §15 appears twice (an older "Users, spaces, and a user-first namespace" section
 > predates the table row for world/space identity), and §16 has a section but no table row. External
@@ -594,3 +596,36 @@ dissolution target on the way in, and outliving its phases is the signal to diss
 **Rejected:** a durable fifth tier (a plan that never ends is a backlog with worse organisation), and
 no plan file at all (a sequence spanning two backlogs has nowhere to live, which is what produced the
 ten predecessors).
+
+
+### 26. An asset owned by more than one agent — ✅ RESOLVED
+**Choice:** An `asset_scopes(asset_id, scope, public)` join table. One catalog row per asset, many
+owners. Transfer is an insert plus a delete.
+
+**Why:** An asset id is a content address (`sha256(data)[:16] + ext`), so the id *is* the bytes and two
+agents cannot hold the same bytes under two rows without changing the primary key. The join table
+leaves every `WHERE id=?` in the catalog meaning what it means today, and the scope predicate that
+walls agents off from each other (specs/library.md) becomes a join rather than a column test.
+
+**Rejected:** a composite `(id, scope)` key, which would give each agent its OWN notes, tags and
+rating for the same bytes. That is a real capability and it is being given up knowingly — curation is
+shared under this choice. It is a later migration if two agents ever need to disagree about one asset,
+and nothing here forecloses it.
+
+### 27. Is a clip selected by compatibility, or by what shipped with the model? — ✅ RESOLVED
+**Choice:** Both, recorded separately. `rig_sig` says what a clip *can* drive; a `shipped_with`
+relation says what the original scene *gave* a figure. The authored set is the default view and
+reaching past it is deliberate.
+
+**Why:** Compatibility is not sufficiency, and the corpus says so twice. **93 of 206 clip names call
+out a fixture** — bed 30, sink 18, toilet 12, floor 12 — so `pc_leanOnSink_headLeft` will play on any
+figure of the right rig and be wrong on one standing in a field. And the authors did not reuse clips
+across characters: byte-identical sharing peaks at three captures, which are the same character in
+three scenarios, and **400 of 524 clips appear in exactly one capture**. Cross-character reuse is
+something we are introducing, which is the strongest reason to keep the record of what we were given.
+
+**Measured, worth keeping:** action clips are shared across captures twice as often as idle ones
+(25% vs 12%). Idles are personal to a figure; actions travel.
+
+**Rejected:** one flat pool keyed on `rig_sig`. It answers "what will play" and destroys "what was
+intended", and the second is not recoverable from the bytes once lost.

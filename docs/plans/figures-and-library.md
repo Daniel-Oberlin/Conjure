@@ -41,11 +41,23 @@ twenty captures only **200 of 898** audio files pair with a clip by stem. The re
 So `voiced_by` is many-to-many, an environment needs its own `ambience` relation, and the importer
 needs a skip rule or every capture drags in the same two dozen promo clips.
 
-**Clip names are per-figure SLOT LABELS, not motion identities.** `1_idle.glb` exists in 16 captures
-in **14 distinct versions**, and they are different motions rather than re-exports — duration 10.0 s to
-43.4 s, 432 to 676 channels, 145 to 273 nodes. So a name is stable within a set and meaningless across
-one, it carries no sense beyond `idle`/`action`/`rough`, and a clip library keyed on name would
+**A slot-numbered name is a per-figure label, not a motion identity.** `1_idle.glb` exists in 16
+captures in **14 distinct versions**, and they are different motions rather than re-exports — duration
+10.0 s to 43.4 s, 432 to 676 channels, 145 to 273 nodes. A clip library keyed on that name would
 collide catastrophically.
+
+**But most clips are named properly, and the split is per-capture.** Of 206 distinct names, **155 are
+semantic** — `pc_leanOnSink_headLeft`, `LayTableIdle`, `KneelAwait`, `TableHangIdle`, `Blink`. By file
+it is 322 of 524 slot-numbered, 61%, and it is bimodal rather than mixed: `ebony`, `ebony2`, `nancy`
+and `susan` have **no** slot-numbered clips at all, while `jane`, `barbie`, `bride`, `goddess`,
+`kawaii`, `manager`, `oktoberfest` and `stewardess` are 21 of 21. So naming is a per-set job that some
+sets do not need, not a blanket pass.
+
+**Nearly half the named clips depend on a PROP, which is why rig compatibility is not sufficiency.**
+93 of the 206 names call out a fixture: bed 30, sink 18, toilet 12, floor 12, door 6, wall 6, chair 6,
+table 3. `pc_leanOnSink_headLeft` will play on any `85e41f9b8e` figure and be *wrong* on one standing
+in a field. Whether a clip can drive a skeleton and whether it belongs in a scene are different
+questions, and only the first is mechanical.
 
 **Byte duplication is real but already solved.** 124 animation files are byte-identical across more
 than one capture, 14% of 387 MB. The catalog is content-addressed (`sha256(data)[:16] + ext`), so
@@ -127,6 +139,8 @@ independently.
 - `rig_sig` and `rig` on every rigged model's `attributes` — the fingerprint over the mapped humanoid
   bone names, versioned alongside `frame_rev` so a discovery change is detectable rather than silent.
 - Relations, using the table that already exists and is unused:
+  - `figure --shipped_with--> clip`, the **authored** set: what the original scene gave this model.
+    Distinct from compatibility on purpose — see below.
   - `clip --voiced_by--> audio`, **many-to-many**; the `1-5-8-9_idle` form names its own clips and
     parses, the `HotelAction0` form does not and is left unlinked rather than guessed
   - `environment --ambience--> audio`, for the room soundtracks
@@ -144,16 +158,32 @@ independently.
   - a composite key `(id, scope)` — a row per owner, so **each agent curates its own copy**, at the
     cost of every `WHERE id=?` in the catalog becoming ambiguous.
 
-  Transfer is add-then-remove either way, which is the operation asked for. **Unresolved — it depends
-  on whether two agents should be able to disagree about the same asset**, and that is a product
-  question rather than a schema one. The join table is much the smaller change.
+  Transfer is add-then-remove either way, which is the operation asked for. **Chosen: the join table**
+  (decisions.md §26) — the smaller change, with curation shared. If two agents ever need to disagree
+  about one asset, that is a later migration and the join table does not block it.
+- **Three axes, and they must stay separate.** A clip is selectable on:
+  1. **can it drive this skeleton** — `rig_sig` equality, mechanical and total;
+  2. **was it authored for this figure** — `shipped_with`, which is the original authors' intent and
+     is not recoverable from the bytes once lost;
+  3. **does it need something in the room** — a hint parsed from the name, since 93 of 206 name a
+     fixture. A hint, never a gate: the name is evidence, not a manifest.
+
+  The measurement says these genuinely differ. Clips shared byte-identically across captures peak at
+  **three**, and those three are the same character in three scenarios (`akari`/`arabic`/`geeky`) — so
+  cross-*character* reuse is something we would be introducing, not something the authors did.
+  **400 of 524 clips appear in exactly one capture.** Action clips are shared twice as often as idle
+  ones (25% vs 12%), which is the intuition confirmed: idles are personal, actions travel.
+
+  So the default view is the authored set, and reaching past it is deliberate and visible — "17 more
+  clips are rig-compatible, 6 of them want a bed" rather than one undifferentiated list.
 - **Shell listing.** The namespace already globs (`namespace.is_glob`/`match`); add filtering by
   `kind` and by relation so `ls .../assets/*idle* --kind animation --for <figure>` is expressible.
   Being able to see what goes with what is how we will check the linking is right at all.
 
 **Done when:** Jane's 21 clips and 20 audio files import; her 20 `voiced_by` relations exist and
 Bianca's `2-10_action` links to two clips; querying clips by `rig_sig` returns them for Akari and Nancy
-without either figure being named; and the shell can list a figure's clips and their audio.
+without either figure being named; the shell can list a figure's clips and their audio; and the
+authored set and the compatible set are separately visible for a figure that has both.
 
 ### Phase 2 — clothing on and off
 
