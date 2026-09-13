@@ -288,6 +288,21 @@ index specifically, so that swap is the one anticipated.
 | `POST /library/caption` | backfill labels for label-less visual assets |
 | `POST /library/retag-skyboxes` | re-tag wide images as skyboxes |
 
+**Admin (shell `dir`):** `POST /admin/tree` and `/admin/match` take optional `kind`, `related` and
+`relation` — listing filters, so a capture's figure, sixty clips and thirty audio files can be asked
+apart. `related` resolves an id or an exact label, and refuses an ambiguous one rather than picking.
+
+**Ownership:** `library.grant(id, scope)` / `revoke` / `transfer(id, from, to)` / `owners(id)` (§5a).
+**Relations:** `add_relation(from, to, type)`, `related(id, type, reverse=)`, `relations_of(id)`.
+
+**Importers** (`conjure/importer.py`): one handler per asset family, claiming extensions and confirming
+by content — `image`, `model`, `animation`, `audio`, plus the stereo variant. `.glb` is claimed by two
+of them, so `plan_import` asks the FILE: channels and no mesh is an `animation`.
+
+**Capture ingest:** `scripts/import_capture.py <capture> [--commit]` — dry by default, because the bytes
+are content-addressed and shared, so deleting a row is not the inverse of an import that went wrong.
+Its linking rules are `conjure/capture_set.py`.
+
 **MCP tools:** `search_library`, `place_cached_asset`, `query_assets`, `update_asset`, `delete_asset`.
 `search_library` and `query_assets` are in `_READONLY_TOOLS`, so a `access: "read"` agent gets them and
 none of the mutators ([`specs/agents.md §4`](./agents.md)).

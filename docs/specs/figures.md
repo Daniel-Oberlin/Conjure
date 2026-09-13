@@ -26,6 +26,8 @@ durable artifact; runtime is data lookup.** No LLM, no Blender and no geometry s
 
 `ModelImporter` (`conjure/importer.py`) claims `.glb` and `.vrm`, confirms both by the glTF magic bytes,
 and stores either as `.glb` — a `.vrm` *is* a GLB, so the client's `gltf-model` needs no special case.
+`.glb` is claimed by **two** handlers now, so the extension only narrows and the file decides: a GLB
+with animation channels and no mesh is an `animation`, not a model ([`library.md §2a`](./library.md)).
 A model is a **figure** when its glTF document contains a `skins` array; that single fact sets
 `attributes.rigged`, and everything else in this spec is gated on it.
 
@@ -70,12 +72,27 @@ Everything rides the catalog's per-kind JSON `attributes` bag — no schema chan
 | `humanoid_source` | figures with a map | `vrm` \| `convention:<name>` \| `inferred` |
 | `humanoid_axes` | figures with a map | the anatomical frame, per bone (§4) |
 | `humanoid_follows` | when needed | `{nodeName: nodeName it rides}` (§3) |
+| `rig_sig` | figures with a map | a fingerprint of the SKELETON — see below |
+| `rig_sig_rev` | figures with a map | which definition of a signature produced it (§7) |
 
 `frame_rev` is stamped on **every** model, not only figures: "we looked and it is a prop" is worth
 recording for exactly the same reason a bone map is.
 
-`clips`, `morph_targets` and `spring_bones` are **recorded and not yet read** by anything — no animation
-playback, no morph control and no spring-bone motion exists.
+**`rig_sig` makes a figure and an animation CLIP comparable without either naming the other.**
+`figures.rig_signature(doc, blob)` hashes the mapped humanoid bones as the file spells them, so the
+same value comes out of a character's GLB and of a skeleton-only clip authored on it — a clip binds by
+node name, so equal signatures mean it will drive that figure with nothing in between. Sixteen of
+twenty captured figures share one signature.
+
+Over the **mapped** bones and not every node, deliberately: two of those figures differ by 51 skirt and
+anatomy bones while agreeing on all 37 core ones, and a fingerprint that split them would answer a
+question nobody asks. `None` for a rig no map could be recovered from — a skeleton we cannot name is
+one we cannot promise anything about. What the catalog does with it is
+[`specs/library.md §2a`](./library.md).
+
+A figure's own `clips`, `morph_targets` and `spring_bones` are **recorded and not yet read** — no
+playback, no morph control and no spring-bone motion exists. (The `animation` KIND is a different
+record and its clip names are read; see library.md §2a.)
 
 ## 3. Discovery — recovering the bone map
 
@@ -413,8 +430,13 @@ graph.**
 ## 7. `FRAME_REV` — a catalog row is a snapshot of what we understood
 
 A figure's map, frame and limits are **cached in the catalog**, and understanding keeps changing while
-rows do not. `figures.FRAME_REV` (**9** today) is bumped whenever anything that changes a derived result
-changes — inference, the axes, `validate()`, the convention table, which skin is chosen.
+rows do not. `figures.FRAME_REV` (**13** today) is bumped whenever anything that changes a derived
+result changes — inference, the axes, `validate()`, the convention table, which skin is chosen.
+
+`figures.RIG_SIG_REV` (**1**) is a **separate** stamp, and the separation is the point: a discovery fix
+can change a signature without changing what a signature *means*, and the two need telling apart when
+regrouping a catalog. Bump it only when the definition changes — which bones the fingerprint covers, or
+how it is spelled.
 
 - `_refresh_model_attrs` re-extracts any row whose `frame_rev` is stale, on **first placement**, and
   writes the result back. Extraction is authoritative for everything in `_DERIVED_MODEL_ATTRS`, including
