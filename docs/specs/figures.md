@@ -856,8 +856,11 @@ the conversion scripts only, never of the world server.
 Recorded here so the spec can be trusted about its own edges; the design work is in
 [`backlogs/figures.md`](../backlogs/figures.md).
 
-- **No animation.** `clips` is recorded and never read. There is no mixer component, no `animate_model`,
-  no retargeting, and no decision yet on how a pose and a clip compose.
+- **No animation.** `clips` is recorded and never read. There is no mixer component, no
+  `animate_model`, and a visible consequence: the teacher's bind pose has her eyes SHUT. Her build
+  ships a `Blink.glb` animating 189 targets including the eyelid bones, and the site opens her eyes
+  by playing it — converted and placed, she stays asleep. Mistaken for a material bug twice.
+  No retargeting either, and no decision yet on how a pose and a clip compose.
 - ~~**No outfits.**~~ Built 2026-09-13 as §8a: a parts vocabulary classifies each mesh at import, and
   `dress_figure` / `POST /figure/parts` turn categories off and on at runtime. What is still absent is
   the other mechanism — clothing that arrived as a SEPARATE CONTAINER (Jane's `hair.glb`) is a separate

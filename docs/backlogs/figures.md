@@ -21,6 +21,36 @@ are settled.
 
 ---
 
+## Open — seen in the headset, not reproducible from files
+
+### A Character Creator figure does not kneel in the client, and does everywhere else
+
+Asked to kneel, Alice (Reallusion `CC_Base_*`) tilts forward a few degrees and stays standing. The
+teacher (Rigify `DEF-*`) kneels correctly from the same tool, in the same world, on the same day.
+
+**Everything checkable from the files is identical or correct:**
+
+- the pose applies server-side to the same eleven bones on both
+- her rebuilt GLB with the pose baked in and rendered in BLENDER kneels perfectly — thighs vertical,
+  shins folded back, foot behind
+- re-grounding computes a 0.409 m drop for her against 0.483 m for the teacher
+- both carry 22 mapped bones, 22 anatomical frames, and the same joint limits
+- no duplicate node names, no follow-bone constraints, and the client's name-variant lookup is a no-op
+  on `CC_Base_*` names
+
+**One real difference, disproved as the cause.** Her `CC_Base_L_Thigh` and `CC_Base_L_Calf` deform no
+vertices directly — all the weight is on twist children. But those children are children, and they
+move: `CC_Base_L_CalfTwist02` travels 0.314 m when she kneels.
+
+**What that leaves:** the client. She has FIFTEEN skinned meshes with fifteen skeletons where the
+teacher has seven meshes; it is the only structural difference left. The symptom — five degrees of
+spine and nothing from the legs — says the spine bone resolved and the leg bones did not, or their
+skeletons did not update.
+
+**The diagnostic that would settle it,** which needs a headset or browser session: place her, kneel
+her, then read the entity's `figure` component and whether her hips visibly drop. Hips dropping with
+straight legs is skinning; nothing moving but the feet is the bone lookup.
+
 ## Why this is not just "place a model"
 
 `.glb` import already works end to end. `ModelImporter` (`conjure/importer.py:120`) sniffs the glTF magic
