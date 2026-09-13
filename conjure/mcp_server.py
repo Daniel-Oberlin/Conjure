@@ -619,6 +619,78 @@ async def dress_figure(id: str, hide: Optional[list[str]] = None, show: Optional
 
 
 @mcp.tool()
+async def play_clip(id: str, clip: str, loop: bool = True, speed: float = 1.0,
+                    force: bool = False) -> str:
+    """Play a captured animation on a figure — a dance, an idle, a gesture.
+
+    Ask `list_clips` first unless the user named a clip you already know exists. A clip is identified by
+    its label ("3_idle") or its asset id; if a label belongs to more than one clip this refuses and
+    lists them, because the same clip name turns up on different figures and picking one at random plays
+    the wrong body.
+
+    A clip plays on any figure with the same rig, not only the one it shipped with, so the answer to
+    "can she do what the other one was doing" is usually yes. Across rigs it is no — that gets refused
+    with both signatures named, and `force` is only for looking at the wreck deliberately.
+
+    While a clip plays it drives the whole skeleton and any pose is overridden; stopping puts the figure
+    back and the pose returns. Use `stop_clip` to stop.
+    """
+    out = await _post("/figure/clip", _body(id=id, clip=clip, loop=loop, speed=speed, force=force))
+    if not out.get("ok"):
+        line = f"Couldn't play that: {_reason(out)}"
+        if out.get("candidates"):
+            line += "\n" + "\n".join(f"  {c['id']} ({c.get('tags') or 'untagged'})"
+                                      for c in out["candidates"])
+        return line
+    secs = out.get("duration_s")
+    length = f", {secs:.0f}s" if isinstance(secs, (int, float)) else ""
+    tail = " (looping)" if out.get("loop") else ""
+    warn = f"\nWarning: {out['warning']}" if out.get("warning") else ""
+    return f"Playing {out.get('label') or out['clip']} on {id}{length}{tail}.{warn}"
+
+
+@mcp.tool()
+async def stop_clip(id: str) -> str:
+    """Stop the animation playing on a figure. It returns to its pose, or to standing if it has none."""
+    out = await _post("/figure/clip", _body(id=id, stop=True))
+    return f"Stopped the animation on {id}." if out.get("ok") else f"Couldn't stop it: {_reason(out)}"
+
+
+@mcp.tool()
+async def list_clips(id: str, all: bool = False, kind: str = "") -> str:
+    """What a figure can be animated with.
+
+    Two lists, and the difference matters. **Shipped** is what this figure's own scene gave it — the
+    safe default. **Compatible** is every clip its skeleton can receive, which is a much larger set and
+    is only listed when you pass `all`. A compatible clip is not automatically a sensible one: many are
+    authored around furniture that is not there, so a figure standing in an empty room will lean on a
+    sink that does not exist. Prefer the shipped list unless the user is exploring.
+
+    `kind` narrows to "idle" or "action". Idles are quiet and personal to a figure; actions travel.
+    """
+    q = f"/figure/clips?id={id}" + ("&all=true" if all else "") + (f"&kind={kind}" if kind else "")
+    out = await _get(q)
+    if not out.get("ok"):
+        return f"Couldn't list clips: {_reason(out)}"
+
+    def show(rows: list) -> list[str]:
+        return [f"  {r['label'] or r['id']} — {r.get('kind') or 'clip'}"
+                + (f", {r['duration_s']:.0f}s" if isinstance(r.get("duration_s"), (int, float)) else "")
+                + f"  [{r['id']}]" for r in rows]
+
+    shipped = out.get("shipped") or []
+    lines = [f"{id} — rig {out.get('rig_sig') or 'unknown'}",
+             f"Shipped with her ({len(shipped)}):"] + (show(shipped) or ["  none"])
+    if all:
+        other = out.get("compatible") or []
+        lines.append(f"Also compatible ({len(other)}) — authored for other figures:")
+        lines += show(other) or ["  none"]
+    elif out.get("compatible_count"):
+        lines.append(f"{out['compatible_count']} more clips fit this rig — pass all to see them.")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 async def list_poses() -> str:
     """The named poses a figure can be put into, and what each one is.
 

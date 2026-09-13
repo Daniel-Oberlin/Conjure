@@ -261,6 +261,20 @@
 
     update: function () { this.apply(); },
 
+    // Put EVERY bone back on its bind pose, then re-apply the pose. `apply()` alone cannot do this: it
+    // only resets bones IT posed, which is right when a pose changes and wrong after something else has
+    // written the skeleton. A clip writes 222 of Jane's bones and a pose names six, so stopping one
+    // without this leaves her in the clip's last frame with six bones argued back — worse than either.
+    restore: function () {
+      var bones = this._collect();
+      if (!bones) return;
+      var rest = this._rest, pos = this._restPos;
+      rest.forEach(function (q, bone) { bone.quaternion.copy(q); });
+      if (pos) pos.forEach(function (p, bone) { bone.position.copy(p); });
+      this._applied = {};
+      this.apply();
+    },
+
     // Bone objects by name, collected once per loaded model. three names bones after the glTF nodes,
     // which is exactly what the humanoid map stores — that is why the map holds NAMES not indices.
     //
@@ -278,9 +292,13 @@
       // so where the entity happens to stand — and at what scale — cancels out of the arithmetic.
       this._restRootInv = new THREE.Matrix4().copy(obj.matrixWorld).invert();
       var bones = {}, rest = this._rest = new Map(), restWorld = this._restWorld = new Map();
+      // POSITION too, not just rotation. A pose only ever rotates, so this is dead weight for `figure`
+      // alone — but a CLIP translates (hips, root motion), and `restore()` has to be able to undo one.
+      var restPos = this._restPos = new Map();
       var put = function (n) {
         if (!n || !n.name) return;
         if (!rest.has(n)) rest.set(n, n.quaternion.clone());
+        if (!restPos.has(n)) restPos.set(n, n.position.clone());
         if (!restWorld.has(n)) restWorld.set(n, n.matrixWorld.clone());
         bones[n.name] = n;
         variants(n.name).forEach(function (k) {   // raw name wins; the rest are fallback spellings

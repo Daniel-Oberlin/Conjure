@@ -4,6 +4,7 @@ with external services faked. No network, no keys, no LLM."""
 import base64
 import json
 import struct
+import time
 
 import pytest
 
@@ -4754,6 +4755,201 @@ def _place_dressed_figure(srv, client, tmp_path):
         {"filename": "dressed.vrm", "data_b64": base64.b64encode(blob).decode(), "hints": {}}]}).json()
     aid = r["results"][0]["id"]
     return client.post("/place_cached_asset", json={"id": aid, "name": "dressed"}).json()["id"]
+
+
+# A humanoid skeleton in MIXAMO naming, as a real parent/child tree with plausible translations.
+# Both halves are load-bearing: the names are what `convention_humanoid` matches, and the geometry is
+# what `validate` checks — a flat node list with the same names maps 22 bones and then loses every limb,
+# because `prune_map` drops a distal bone whose parent is not actually its ancestor. This layout is the
+# same signature (`cf605bb3ac`) the library's real mixamo-rigged figure carries.
+_SKELETON = ("{hips}", (0, 1.0, 0), [
+    ("{spine}", (0, .15, 0), [("{chest}", (0, .15, 0), [("{upper_chest}", (0, .15, 0), [
+        ("{neck}", (0, .10, 0), [("{head}", (0, .10, 0), [])]),
+        ("{l_clav}", (.05, .05, 0), [("{l_arm}", (.13, 0, 0), [
+            ("{l_fore}", (.27, 0, 0), [("{l_hand}", (.25, 0, 0), [])])])]),
+        ("{r_clav}", (-.05, .05, 0), [("{r_arm}", (-.13, 0, 0), [
+            ("{r_fore}", (-.27, 0, 0), [("{r_hand}", (-.25, 0, 0), [])])])]),
+    ])])]),
+    ("{l_thigh}", (.10, -.05, 0), [("{l_shin}", (0, -.40, 0), [
+        ("{l_foot}", (0, -.47, 0), [("{l_toe}", (0, -.04, .15), [])])])]),
+    ("{r_thigh}", (-.10, -.05, 0), [("{r_shin}", (0, -.40, 0), [
+        ("{r_foot}", (0, -.47, 0), [("{r_toe}", (0, -.04, .15), [])])])]),
+])
+
+_MIXAMO = {"hips": "Hips", "spine": "Spine", "chest": "Spine1", "upper_chest": "Spine2",
+           "neck": "Neck", "head": "Head",
+           "l_clav": "LeftShoulder", "l_arm": "LeftArm", "l_fore": "LeftForeArm", "l_hand": "LeftHand",
+           "r_clav": "RightShoulder", "r_arm": "RightArm", "r_fore": "RightForeArm", "r_hand": "RightHand",
+           "l_thigh": "LeftUpLeg", "l_shin": "LeftLeg", "l_foot": "LeftFoot", "l_toe": "LeftToeBase",
+           "r_thigh": "RightUpLeg", "r_shin": "RightLeg", "r_foot": "RightFoot", "r_toe": "RightToeBase"}
+
+# The same skeleton in Rigify FK naming — a DIFFERENT rig signature over identical geometry, which is
+# what makes it the right fixture for "binding by name cannot cross rigs".
+_RIGIFY = {"hips": "hips", "spine": "spine", "chest": "chest", "upper_chest": "chest-1",
+           "neck": "neck", "head": "head",
+           "l_clav": "clavicle.L", "l_arm": "upper_arm.fk.L", "l_fore": "forearm.fk.L", "l_hand": "hand.fk.L",
+           "r_clav": "clavicle.R", "r_arm": "upper_arm.fk.R", "r_fore": "forearm.fk.R", "r_hand": "hand.fk.R",
+           "l_thigh": "thigh.fk.L", "l_shin": "shin.fk.L", "l_foot": "foot.fk.L", "l_toe": "toe.fk.L",
+           "r_thigh": "thigh.fk.R", "r_shin": "shin.fk.R", "r_foot": "foot.fk.R", "r_toe": "toe.fk.R"}
+
+
+def _skeleton_nodes(naming):
+    """`(nodes, names)` for the skeleton above, spelled in `naming`."""
+    nodes, names = [], []
+
+    def walk(spec):
+        slot, translation, kids = spec
+        i = len(nodes)
+        nodes.append({"name": naming[slot.strip("{}")], "translation": list(translation)})
+        names.append(nodes[i]["name"])
+        children = [walk(k) for k in kids]
+        if children:
+            nodes[i]["children"] = children
+        return i
+
+    walk(_SKELETON)
+    return nodes, names
+
+
+def _glb_bytes(doc: dict, blob: bytes = b"") -> bytes:
+    body = json.dumps(doc).encode()
+    body += b" " * (-len(body) % 4)
+    pad = blob + b"\x00" * (-len(blob) % 4)
+    out = (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body) + (8 + len(pad) if pad else 0))
+           + struct.pack("<II", len(body), 0x4E4F534A) + body)
+    if pad:
+        out += struct.pack("<II", len(pad), 0x004E4942) + pad
+    return out
+
+
+def _figure_glb(naming=None) -> bytes:
+    """A rigged figure on a CONVENTION-named skeleton, so its rig signature is recoverable from the
+    names alone — which is the only way a clip and a figure can be compared without either naming the
+    other."""
+    nodes, names = _skeleton_nodes(naming or _MIXAMO)
+    nodes.append({"name": "Body", "mesh": 0, "skin": 0})
+    doc = {"scenes": [{"nodes": [0, len(nodes) - 1]}], "scene": 0, "nodes": nodes,
+           "skins": [{"joints": list(range(len(names)))}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+           "accessors": [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}]}
+    return _glb_bytes(doc)
+
+
+def _clip_glb(name="1_idle", naming=None, extra_bones=()) -> bytes:
+    """A skeleton-only GLB: animation channels on bone names and no mesh at all, which is exactly how
+    these builds ship motion — 47.7 MB of clips against a 5 MB character."""
+    nodes, names = _skeleton_nodes(naming or _MIXAMO)
+    for bone in extra_bones:
+        nodes.append({"name": bone, "translation": [0, 0, 0]})
+        names.append(bone)
+    # Two keyframes of time and two identity quaternions, little-endian floats, in one buffer.
+    blob = struct.pack("<2f", 0.0, 1.0) + struct.pack("<8f", 0, 0, 0, 1, 0, 0, 0, 1)
+    doc = {"scenes": [{"nodes": [0]}], "scene": 0, "nodes": nodes,
+           "buffers": [{"byteLength": len(blob)}],
+           "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 8},
+                           {"buffer": 0, "byteOffset": 8, "byteLength": 32}],
+           "accessors": [{"bufferView": 0, "componentType": 5126, "count": 2, "type": "SCALAR",
+                          "min": [0.0], "max": [1.0]},
+                         {"bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC4"}],
+           "animations": [{"name": name,
+                           "samplers": [{"input": 0, "output": 1, "interpolation": "LINEAR"}],
+                           "channels": [{"sampler": 0, "target": {"node": i, "path": "rotation"}}
+                                        for i in range(len(nodes))]}]}
+    return _glb_bytes(doc, blob)
+
+
+def _import_id(client, filename, blob) -> str:
+    """Import one file and hand back its asset id — the whole of what the clip tests need."""
+    return _import(client, filename, blob)["results"][0]["id"]
+
+
+def test_a_clip_plays_on_the_figure_it_was_authored_for(srv, client, tmp_path):
+    """A clip is a GLB of channels and no mesh. The entity records WHAT to play and the shared-clock
+    instant it started — never a frame number — so every client computes the same frame from its own
+    offset and a headset that joins late lands in the right place with nothing to resynchronise."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    before = time.time() * 1000.0
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["ok"], r
+    assert r["clip"] == clip and before <= r["started_at"] <= time.time() * 1000.0
+    comp = _ent(client, eid)["components"]["figure-clip"]
+    assert comp["clip"] == f"/assets/{clip}" and comp["playing"] is True
+    assert comp["startedAt"] == r["started_at"], "the START INSTANT, not a frame"
+
+
+def test_stopping_a_clip_leaves_nothing_for_the_client_to_keep_playing(srv, client, tmp_path):
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+    client.post("/figure/clip", json={"id": eid, "clip": clip})
+    r = client.post("/figure/clip", json={"id": eid, "stop": True}).json()
+    assert r["ok"] and r["playing"] is None
+    assert _ent(client, eid)["components"]["figure-clip"] == {"clip": "", "playing": False}
+
+
+def test_a_clip_from_a_DIFFERENT_rig_is_refused_until_it_is_forced(srv, client, tmp_path):
+    """Binding is by node name, so a clip whose rig is spelled differently does not fail loudly — it
+    resolves the handful of names that happen to match and drives the figure by those, which looks like
+    a bug in the figure. Refuse it, say both signatures, and leave `force` for looking anyway."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    alien = _import_id(client, "weird.glb", _clip_glb(naming=_RIGIFY))
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert not r["ok"] and "retargeting is not built yet" in r["error"]
+    assert "figure-clip" not in (_ent(client, eid).get("components") or {})
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": alien, "force": True}).json()
+    assert r["ok"] and "forced" in r["warning"], "asked for twice is a different request"
+
+
+def test_the_clips_a_figure_SHIPPED_with_are_listed_apart_from_the_ones_that_merely_fit(srv, client,
+                                                                                        tmp_path):
+    """Compatibility is not sufficiency (decisions.md §27): 93 of 206 clip names call out a fixture, so
+    a clip that binds perfectly can still be wrong for a figure standing in a field. The authored set is
+    the default view and reaching past it has to be deliberate."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    mine = _import_id(client, "1_idle.glb", _clip_glb("1_idle"))
+    hers = _import_id(client, "2_action.glb", _clip_glb("2_action"))
+    srv.library.add_relation(fig, mine, "shipped_with")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.get(f"/figure/clips?id={eid}").json()
+    assert r["ok"] and [c["label"] for c in r["shipped"]] == ["1_idle"]
+    assert r["compatible_count"] == 1, "the other one fits, and is not what she was given"
+    assert r["rig_sig"]
+
+    r = client.get(f"/figure/clips?id={eid}&all=true").json()
+    assert [c["id"] for c in r["compatible"]] == [hers], "reaching past the authored set, on request"
+
+
+def test_a_clip_asked_for_by_a_label_two_assets_share_is_refused_not_guessed(srv, client, tmp_path):
+    """`3_idle` is ambiguous in a captured set by design, and 400 of 524 clips appear in exactly one
+    capture — so a duplicated label means the same clip name on a different figure. Naming the
+    candidates is the answer; picking one is not."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    _import_id(client, "3_idle.glb", _clip_glb("3_idle"))
+    second = _clip_glb("3_idle", extra_bones=["Tail"])                  # different bytes, same label
+    _import_id(client, "3_idle.glb", second)
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": "3_idle"}).json()
+    assert not r["ok"] and "ask by id" in r["error"] and len(r["candidates"]) == 2
+
+
+def test_only_a_RIGGED_entity_can_be_animated(srv, client, tmp_path):
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={
+        "id": _import_id(client, "prop.glb", _glb_bytes(
+            {"scenes": [{"nodes": [0]}], "scene": 0, "nodes": [{"name": "Cube", "mesh": 0}],
+             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+             "accessors": [{"min": [0, 0, 0], "max": [1, 1, 1]}]})),
+        "name": "prop"}).json()["id"]
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert not r["ok"] and "not a rigged figure" in r["error"]
 
 
 def test_a_figure_carries_its_PARTS_and_can_be_undressed(srv, client, tmp_path):

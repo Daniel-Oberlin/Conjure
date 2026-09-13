@@ -31,7 +31,12 @@ AFRAME.registerComponent('scene-environment', {
     this.apply();
   },
 
-  update: function () {
+  update: function (old) {
+    // The gradient is baked, so any of the three inputs to it means a new one.
+    if (old && (old.sky !== this.data.sky || old.floor !== this.data.floor
+                || old.intensity !== this.data.intensity)) {
+      this.dispose();
+    }
     this.apply();
   },
 
@@ -49,15 +54,22 @@ AFRAME.registerComponent('scene-environment', {
     }
     if (!this.generated) { this.generated = this.build(renderer); }
     scene.environment = this.generated;
-    if ('environmentIntensity' in scene) { scene.environmentIntensity = this.data.intensity; }
+    // `scene.environmentIntensity` is the obvious knob and it does not exist here: A-Frame 1.5.0 bundles
+    // three r158 and it landed in r163. Setting it would be a control that silently does nothing, so
+    // intensity is baked into the gradient instead (see `build`) and this only rides along if a later
+    // three turns up underneath us.
+    if ('environmentIntensity' in scene) { scene.environmentIntensity = 1; }
   },
 
   // A 16x32 equirect is plenty: PMREM blurs it into the mip chain anyway, and the point is a smooth
   // sky-to-floor falloff, not detail. Detail in a reflection would be WRONG here — we are inventing it.
   build: function (renderer) {
     var W = 32, H = 16;
-    var sky = new THREE.Color(this.data.sky);
-    var floor = new THREE.Color(this.data.floor);
+    // Intensity scales the COLOURS, which is equivalent to scaling the reflection and works on every
+    // three — see `apply` for why the property that would do it directly is not available.
+    var k = Math.max(0, this.data.intensity);
+    var sky = new THREE.Color(this.data.sky).multiplyScalar(k);
+    var floor = new THREE.Color(this.data.floor).multiplyScalar(k);
     var data = new Float32Array(W * H * 4);
     var c = new THREE.Color();
     for (var y = 0; y < H; y++) {

@@ -1549,6 +1549,13 @@ async def grounded_skybox_js() -> FileResponse:
     return FileResponse(CLIENT_DIR / "grounded-skybox.js", media_type="application/javascript", headers=_NO_STORE)
 
 
+@app.get("/static/figure-clip.js")
+async def figure_clip_js() -> FileResponse:
+    # Explicit no-store route for the clip-playback component (loaded beside figure.js).
+    return FileResponse(CLIENT_DIR / "figure-clip.js", media_type="application/javascript",
+                        headers=_NO_STORE)
+
+
 @app.get("/static/scene-environment.js")
 async def scene_environment_js() -> FileResponse:
     # Explicit no-store route for the IBL environment module (loaded before conjure-client.js).
@@ -4684,6 +4691,158 @@ async def figure_parts(req: FigurePartsRequest) -> dict:
            "removable": {k: len(v) for k, v in groups.items()}}
     if unknown:
         out["unknown"] = unknown
+    return out
+
+
+def _entity_model_id(ent: dict) -> str:
+    """The library asset an entity was placed from, recovered from its `gltf-model` component.
+
+    Read back rather than stored in `meta`: figures are already placed in live worlds, and putting the id
+    in `meta` would only answer for the ones placed after the change. The component has always carried
+    it — `/assets/<id>` — which is why it is the thing to parse.
+    """
+    src = (ent.get("components") or {}).get("gltf-model") or ""
+    return src.rsplit("/", 1)[-1] if src.startswith("/assets/") else ""
+
+
+def _clip_rows_for(model_id: str) -> tuple[list[dict], list[dict], str]:
+    """`(shipped, compatible, rig_sig)` for a figure's model — what it was GIVEN, and what will play.
+
+    Two lists because they answer different questions and the second is much the larger (decisions.md
+    §27): `shipped_with` is what the original scene gave this figure, `rig_sig` is every clip whose
+    channels its bones can receive. The authored set is the default view and reaching past it is
+    deliberate, so they are never merged into one pool.
+    """
+    if library is None or not model_id:
+        return [], [], ""
+    rec = library.get(model_id) or {}
+    try:
+        attrs = json.loads(rec.get("attributes") or "{}")
+    except (TypeError, ValueError):
+        attrs = {}
+    sig = attrs.get("rig_sig") or ""
+    shipped = [r for r in library.related(model_id, "shipped_with") if r.get("kind") == "animation"]
+    compatible = []
+    if sig:
+        compatible = library.query(
+            "SELECT * FROM assets WHERE kind = 'animation' "
+            f"AND json_extract(attributes, '$.rig_sig') = '{sig}'", scope=active_scope, limit=2000) or []
+    return shipped, compatible, sig
+
+
+class FigureClipRequest(BaseModel):
+    id: str
+    clip: str = ""                       # asset id or exact label
+    stop: bool = False
+    loop: bool = True
+    speed: float = 1.0
+    # A clip whose rig signature differs needs its channels REWRITTEN, not just bound by name (phase 5).
+    # Playing one anyway is a legitimate thing to ask for once — it is how you find out what it looks
+    # like — but it must be asked for, because the failure mode is a figure folded into a knot.
+    force: bool = False
+
+
+@app.post("/figure/clip")
+async def figure_clip(req: FigureClipRequest) -> dict:
+    """Play a captured animation on a figure, or stop the one that is playing.
+
+    A clip binds BY NODE NAME, so it plays on more than the figure it shipped with: every figure sharing
+    a rig signature can receive it, which across this library is groups of sixteen rather than one. What
+    it cannot do is cross signatures — those channels name bones the target does not have, and binding by
+    name would drop most of them and leave a figure driven by the handful that happened to match.
+
+    The clip's START INSTANT is stamped here, on the shared clock, and every client computes its own
+    offset into it. That is what keeps two headsets on the same frame without a per-frame message, and
+    what lets a client that joins late land in the right place.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+    if req.stop or not req.clip:
+        patch = [{"op": "update", "id": req.id,
+                  "set": {"components.figure-clip": {"clip": "", "playing": False}}}]
+        await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-clip")})
+        return {"ok": True, "id": req.id, "playing": None}
+    if not (ent.get("meta") or {}).get("rigged"):
+        return {"ok": False, "error": f"{req.id!r} is not a rigged figure, so there is nothing to animate"}
+    if library is None:
+        return {"ok": False, "error": "no asset library"}
+
+    rec = library.get(req.clip)
+    if rec is None and _safe_label(req.clip):
+        hits = library.query(f"SELECT * FROM assets WHERE kind = 'animation' AND label = '{req.clip}'",
+                             scope=active_scope, limit=50) or []
+        if len(hits) > 1:
+            # Ambiguous is not absent, and the difference matters: 400 of 524 clips appear in exactly one
+            # capture, so a duplicated label means the same clip name across figures. Name the tags.
+            return {"ok": False, "error": f"{req.clip!r} matches {len(hits)} clips — ask by id",
+                    "candidates": [{"id": h["id"], "tags": h.get("tags")} for h in hits[:10]]}
+        rec = hits[0] if hits else None
+    if rec is None:
+        return {"ok": False, "error": f"no clip {req.clip!r} in the library"}
+    if rec.get("kind") != "animation":
+        return {"ok": False, "error": f"{req.clip!r} is a {rec.get('kind')}, not an animation"}
+    if not _asset_in_agent_scope(rec):
+        return {"ok": False, "error": f"no clip {req.clip!r} in the library"}
+
+    try:
+        clip_attrs = json.loads(rec.get("attributes") or "{}")
+    except (TypeError, ValueError):
+        clip_attrs = {}
+    _shipped, _compatible, sig = _clip_rows_for(_entity_model_id(ent))
+    clip_sig = clip_attrs.get("rig_sig") or ""
+    mismatch = bool(sig and clip_sig and sig != clip_sig)
+    if mismatch and not req.force:
+        return {"ok": False, "error":
+                f"{rec.get('label')!r} is rigged {clip_sig} and {req.id!r} is {sig}. Binding by name "
+                f"across that drops most channels and drives the figure by the few that match — "
+                f"retargeting is not built yet. Pass force to see it anyway."}
+
+    started = time.time() * 1000.0
+    patch = [{"op": "update", "id": req.id, "set": {"components.figure-clip": {
+        "clip": f"/assets/{rec['id']}", "name": "", "playing": True,
+        "loop": bool(req.loop), "speed": float(req.speed), "startedAt": started}}}]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-clip")})
+    out = {"ok": True, "id": req.id, "clip": rec["id"], "label": rec.get("label"),
+           "duration_s": clip_attrs.get("duration_s"), "kind": clip_attrs.get("clip_kind"),
+           "loop": bool(req.loop), "started_at": started}
+    if mismatch:
+        out["warning"] = f"rig {clip_sig} on a {sig} figure — forced"
+    return out
+
+
+@app.get("/figure/clips")
+async def figure_clips(id: str, all: bool = False, kind: str = "") -> dict:
+    """What this figure can dance to: what SHIPPED with it, and what merely fits.
+
+    Separate lists on purpose. Compatibility is not sufficiency — 93 of 206 clip names call out a
+    fixture (bed 30, sink 18, toilet 12), so a clip that binds perfectly can still be wrong for a figure
+    standing in a field. `all` includes the compatible-but-not-shipped set, which is the much larger one.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {id!r}"}
+    model_id = _entity_model_id(ent)
+    shipped, compatible, sig = _clip_rows_for(model_id)
+
+    def row(r: dict) -> dict:
+        try:
+            a = json.loads(r.get("attributes") or "{}")
+        except (TypeError, ValueError):
+            a = {}
+        return {"id": r["id"], "label": r.get("label"), "kind": a.get("clip_kind"),
+                "duration_s": a.get("duration_s"), "tags": r.get("tags")}
+
+    def keep(rows: list[dict]) -> list[dict]:
+        out = [row(r) for r in rows]
+        return [r for r in out if r["kind"] == kind] if kind else out
+
+    shipped_ids = {r["id"] for r in shipped}
+    out = {"ok": True, "id": id, "model": model_id, "rig_sig": sig, "shipped": keep(shipped)}
+    if all:
+        out["compatible"] = keep([r for r in compatible if r["id"] not in shipped_ids])
+    else:
+        out["compatible_count"] = len([r for r in compatible if r["id"] not in shipped_ids])
     return out
 
 
