@@ -335,7 +335,11 @@ class Shell:
 
             # -- paths: act on anything addressable
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<long>-l))?(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
-             "dir [-l] [path] — list one level of the namespace (-l also shows ids)", False),
+             "dir [-l] [path] [--kind K] [--with NAME [--rel TYPE]] — list one level of the namespace "
+             "(-l also shows ids). --kind narrows to one asset type (model, animation, audio, set); "
+             "--with narrows to assets related to NAME, by one --rel type when given (shipped_with, "
+             "voiced_by, ambience, part_of). Combines with globbing: "
+             "`dir *idle* --kind animation --with jane_export`", False),
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
             (re.compile(r"^gc(?P<force>\s+!)?$", re.I), self._gc,
@@ -847,19 +851,20 @@ class Shell:
         return resolve_path(self._cwd, unquote_arg(raw) or default, self._acting)
 
     async def _dir(self, on_text, m):
-        path = self._path(m)
+        raw, filters = self._listing_filters((m.groupdict().get("path") or ""))
+        path = resolve_path(self._cwd, unquote_arg(raw), self._acting)
         if is_glob(path):
-            await self._dir_glob(on_text, path, long=bool(m.groupdict().get("long")))
+            await self._dir_glob(on_text, path, long=bool(m.groupdict().get("long")), **filters)
             return
-        data = await self._admin("tree", path)
+        data = await self._admin("tree", path, **filters)
         if not data.get("ok"):
             data = await self._recover(on_text, m, data)
             if data is None:
                 return
         await self._say(on_text, self._render_listing(data, long=bool(m.groupdict().get("long"))))
 
-    async def _dir_glob(self, on_text, path: str, *, long: bool = False) -> None:
-        found = await self._admin("match", path)
+    async def _dir_glob(self, on_text, path: str, *, long: bool = False, **filters) -> None:
+        found = await self._admin("match", path, **filters)
         if not found.get("ok"):
             await self._say(on_text, found.get("error", "error"))
             return
@@ -1317,7 +1322,22 @@ class Shell:
     def _agent_name(self) -> str:
         return self._director.agent.name if self._director.agent else "agent"
 
-    async def _admin(self, action: str, path: str) -> dict:
+    @staticmethod
+    def _listing_filters(path: str) -> tuple[str, dict]:
+        """Split `--kind`/`--with`/`--rel` off a path, and return the path plus the filter body.
+
+        Parsed here rather than in the command regex because a path is free text — it can hold spaces
+        and glob metacharacters — and a regex that tries to hold both ends up matching a flag inside a
+        filename."""
+        filters: dict = {}
+        for flag, field in (("--kind", "kind"), ("--with", "related"), ("--rel", "relation")):
+            hit = re.search(rf"(?:^|\s){flag}\s+(?P<v>\S+)", path or "", re.I)
+            if hit:
+                filters[field] = hit.group("v")
+                path = (path[:hit.start()] + " " + path[hit.end():]).strip()
+        return path, filters
+
+    async def _admin(self, action: str, path: str, **filters) -> dict:
         """POST to the world server's /admin/{tree,delete}. Returns the JSON, or an error dict."""
         url = getattr(self._settings, "world_url", None) if self._settings else None
         if not url:
@@ -1325,7 +1345,8 @@ class Shell:
         try:
             import httpx
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(f"{url}/admin/{action}", json={"path": path},
+                body = {"path": path, **{k: v for k, v in filters.items() if v}}
+                resp = await client.post(f"{url}/admin/{action}", json=body,
                                          headers={"X-Conjure-User": self._acting})   # WHO is browsing/deleting
                 return resp.json()
         except Exception as exc:                              # network / server down / bad JSON
