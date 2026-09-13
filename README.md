@@ -289,6 +289,8 @@ docs/       vision · spec · architecture · decisions · providers · roadmap 
             spaces, spaces-geometry, worlds-surfaces, library, figures, occlusion, voice, config)
   backlogs/ the matching per-area backlogs — unfinished work, future directions, known problems
   investigations/  debugging campaigns: what was measured, and what was tried and REJECTED
+  plans/    TEMPORARY — one sequence held across areas the specs and backlogs keep apart;
+            each phase names where it lands, and the file is deleted when the last one settles
 ```
 
 **Where your data lives.** Runtime state is stored in your user home, not the repo (docs/specs/config.md):

@@ -481,7 +481,7 @@ loose into **wrong**, so it was cleared first — otherwise the word means both 
 confusion being removed.
 
 **The inventory, the classification rule, the do-not-rename list and the commit-by-commit progress live in
-[`investigations/room-rename-2026-09.md`](../investigations/room-rename-2026-09.md)** — kept in one place
+[`plans/room-rename.md`](../plans/room-rename.md)** — kept in one place
 rather than duplicated here, because a rename map that exists twice is a rename map that goes stale once.
 
 Two things worth keeping at this level:

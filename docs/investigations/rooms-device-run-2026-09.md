@@ -1,6 +1,8 @@
 # Rooms — device run
 
-**Status:** plan, written before the run. Branch `feat/rooms`. Nothing here has been executed.
+**Status:** checklist, written before the run. Branch `feat/rooms`. Nothing here has been executed.
+
+A **consumable**, in the sense [`investigations/README.md`](./README.md) sets out: it lives here until the run, then either grows into a real investigation — symptom, experiments, what was ruled out — or is deleted with its findings promoted to the backlog.
 
 > ## ⚠️ This must be run in the three-room space
 >

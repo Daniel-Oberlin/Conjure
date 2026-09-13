@@ -1,6 +1,28 @@
-# The "room" rename — inventory
+# Plan — the "room" rename
 
-**Status:** inventory taken 2026-09-07, **nothing renamed yet.** Branch `feat/rooms`.
+**Status:** identifiers DONE · model-facing prose DONE · docs prose DONE · **code-comment and test prose
+open** (~460 occurrences) · `EMPTY-ROOM` undecided
+**Opened:** 2026-09-07 · **Landed on `main`:** 2026-09-09 (`70a28d6`)
+
+**This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart — this
+one ran across code, MCP tools, agent prompts, tests and docs at once — so it exists to hold that one
+sequence while it is executed, and is deleted when the last phase settles.
+
+It is **not** an investigation, despite where it started life: it has no symptom, no experiment table and
+no remaining theories. What it does have is a *tried-and-rejected* list worth reading before anyone
+proposes a sweep again, and that is the part with somewhere durable to go.
+
+**Dissolves to:**
+
+| Part | Goes to | When |
+|---|---|---|
+| *"docs cite code by value"* — the ten stale citations and what to grep next time | [`docs/README.md`](../README.md), as docs discipline | now-ish; it is not rename-specific |
+| The sweep-corrupted-15-phrases record and its two lessons | same | same |
+| `EMPTY-ROOM` (`scripts/c4_frame_cost.py`) | [`backlogs/figures.md`](../backlogs/figures.md) | when decided |
+| The remaining ~460 comment/test occurrences | done, or a one-line backlog entry | when the prose pass finishes |
+| Everything else — the inventory tables, the tier scopes, the progress log | **deleted** | it is spent the moment the prose residue lands |
+
+If it outlives those, it has become a backlog by another name and should be dissolved on the spot.
 
 `room` is used throughout the code, tools and prompts to mean *the whole space*, which
 [`specs/spaces.md` §1](../specs/spaces.md) explicitly disclaims: *"Nothing in the record models a 'room' as

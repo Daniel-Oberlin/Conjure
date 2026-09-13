@@ -14,6 +14,17 @@ A doc earns a place here when it has produced **negative knowledge** worth keepi
 eliminated by measurement, a fix tried and rejected, a platform limit confirmed. A bug that was simply
 found and fixed does not need an investigation; the fix and its test are the record.
 
+### One legitimate guest: a device-run checklist
+
+A doc that plans a run — *what to do on the headset, what to look at, what a failure would mean* — has
+none of the required sections below, because nothing has happened yet. It still belongs here rather than
+in [`plans/`](../plans/), which means something narrower: a cross-area sequence that dissolves into the
+specs. A run checklist is single-area and its output is measurements, not spec content.
+
+So it lives here as a **consumable**. When the run is done it either grows into a real investigation —
+symptom, experiments, what was ruled out — or it is deleted and its findings go to the backlog, as
+`figures-device-run-2026-09.md` was. A checklist that is still here months after its run is neither.
+
 ## Required sections
 
 Every investigation carries these, whatever else it has:
