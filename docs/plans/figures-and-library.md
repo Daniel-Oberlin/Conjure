@@ -1,6 +1,7 @@
 # Plan — figures, their animations, and environments
 
-**Status:** proposed, not started · **Opened:** 2026-09-12
+**Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phases 2–5 open
+**Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
@@ -120,9 +121,23 @@ Ordering is deliberate: phases 1 and 2 change nothing that renders, so neither c
 phase 2 is pure visibility with no timing. **Phase 4 shares no code with 1–3** and can be scheduled
 independently.
 
-### Phase 1 — import the new kinds, and link them
+### Phase 1 — import the new kinds, and link them ✅ DONE
 
-*Settles into `specs/library.md` §record + a new §linking; leftovers to `backlogs/library.md`.*
+*Settled into [`specs/library.md` §2a](../specs/library.md) (clips, audio, sets, the three axes) and
+§5a (ownership). Delete the rest of this section when phases 2–5 are done and the file goes.*
+
+**Verified end to end**, against four captures in a scratch catalog:
+
+    figure jane_export   rig 85e41f9b8e
+    AUTHORED   21 clips — what her own build gave her
+    COMPATIBLE 187 more clips carry the same rig, and 72 of those name a fixture
+               (sink 24, toilet 16, bed 10, wall 8, door 8, floor 4, chair 2)
+    AUDIO      3_idle <- 3_idle (48.31s, 48000Hz)
+
+which is the "17 more are rig-compatible, 6 of them want a bed" the plan asked for, at the corpus's
+real scale. One acceptance criterion was wrong and is corrected below.
+
+*What follows is the original scope, kept until the file is deleted.*
 
 - `AnimationImporter` — a `.glb` with animations and no mesh. Records clip names, duration, target
   count, and the **rig signature** of the skeleton it animates.
