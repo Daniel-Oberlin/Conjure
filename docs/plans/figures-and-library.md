@@ -128,11 +128,41 @@ independently.
   count, and the **rig signature** of the skeleton it animates.
 - `AudioImporter` — `.mp3` first. Duration, channels, sample rate. **With a skip rule**: 24 promo
   lines and a UI click are identical in all twenty captures and are not content.
-- **A naming pass.** The importer can only record the slot label it is given. Turning `1_idle` into
-  something a director can choose between ("leans on the wall, arms folded") is a separate step —
-  cheap by hand for a set of 20, and a candidate for an LLM pass over rendered thumbnails later. The
-  plan assumes hand-naming for the first set and treats automation as a backlog item, because a wrong
-  name is worse than a slot number: a director will act on it.
+- **Naming clips — four stages, and the manual part is the last and smallest.** Prototyped, not
+  assumed; each stage below was run.
+
+  **0. Skip the sets that do not need it.** `ebony`, `ebony2`, `nancy` and `susan` carry no
+  slot-numbered clips at all. A third of the corpus is already named.
+
+  **1. A descriptor from the sampler data alone — no rendering, no model, no naming.** Summing
+  successive quaternion angles per bone gives angular travel, and it separates clips objectively:
+
+      3_idle     38.6s    8 deg/s   thigh 4°, spine 3°     — stands still, arms only
+      1_idle     43.0s   44 deg/s   thigh 158°             — shifts weight
+      6_action   38.3s   41 deg/s   upper_arm 686°, thigh 8°  — arm-driven, legs planted
+      1_action   39.6s   66 deg/s   hand 1083°             — busy hands
+
+  Duration, activity in deg/s, and which bones dominate are enough for a director to choose between
+  clips **before any of them has a name**. They are also catalog attributes worth having regardless.
+
+  **2. A filmstrip, for the ones a human or an LLM should name.** A clip binds to its figure by node
+  name, so merging the two is mechanical — done here for Jane's `1_idle`: **666 channels bound, 0
+  dropped**, rendered in Blender, action `1_idle` frames 0–1031. Frames are chosen where the
+  *dominant* bone from stage 1 moves most, because evenly-spaced stills of a 43-second idle come out
+  nearly identical — which the first strip demonstrated.
+
+  **3. Caption, then confirm.** `conjure/captioner.py` already exists for precisely this — "backfill
+  labels for assets that lack one" — and takes image bytes. It needs a clip mode beside its `skybox`
+  flag. Its output is a **proposal**: a wrong name is worse than a slot number, because a director
+  will act on it.
+
+  The merge in stage 2 is the same name-binding phase 3 needs to play a clip at all, so building it
+  here de-risks playback rather than being a detour.
+
+  **What does NOT work: transcribing the audio.** It was the obvious idea — the promo files on this
+  origin are literally named after their own transcripts. But the clip audio is non-verbal, and
+  Whisper on non-speech invents text: `2_idle` transcribed to nothing, `3_idle` to "Hmm...", and
+  `7_action` to `'Nous. AL Yue. AU Yue. AU! AU! AU!'`. Tested and rejected.
 - **Dispatch fork:** `_BY_EXT` is one handler per extension, and `.glb` must now reach either the model
   or the animation handler. Selection has to consult content (`meshes == 0 and animations > 0`), not
   just the extension.
