@@ -12,6 +12,7 @@ import math
 import struct
 
 from conjure.figures import (CONVENTIONS, CORE_BONES, FRAME_VECTORS, POSE_AXES, REQUIRED_BONES,
+                             figure_description,
                              TRUNK_BONES, best_humanoid, convention_humanoid, follow_bones,
                              joint_limits,
                              prune_map,
@@ -1054,3 +1055,30 @@ def test_compose_frame_with_a_parent_that_has_not_moved_is_a_no_op():
     same = compose_frame(axes["leftUpperArm"], hips, hips)
     for key in ("up", "forward", "out", "rest"):
         assert same[key] == pytest.approx(axes["leftUpperArm"][key], abs=1e-9)
+
+
+def test_inspect_reports_what_comes_OFF_not_only_what_bends():
+    """Asked what a figure was wearing, the director called `inspect_figure`, got a list of bones, and
+    told the user she was "a unified mesh with no detachable parts" — about a figure carrying seven
+    classified ones. The tool's silence was quoted back as fact. A tool that describes a figure has to
+    describe the whole figure."""
+    text = figure_description(label="Teacher_v1", height_m=1.82, tris=50000,
+                              bones={"hips": 1, "head": 1}, has_map=True,
+                              removable={"clothing": ["shirt", "skirt"], "shoes": ["shoes"]},
+                              hidden=["shirt"])
+    assert "Removable: clothing (2), shoes (1)" in text
+    assert "by CATEGORY, or name one mesh" in text
+    assert "Currently hidden (1): shirt" in text
+
+
+def test_a_figure_with_nothing_removable_says_WHY_and_points_elsewhere():
+    """`removable={}` is a different answer from `removable=None`: one figure has been classified and
+    wears nothing removable, the other was never classified. Both need to mention the OTHER mechanism —
+    clothing that arrived as a separate model is its own entity."""
+    text = figure_description(label="Plain", bones={"hips": 1}, has_map=True, removable={})
+    assert "Nothing on this figure is removable" in text
+    assert "SEPARATE model is its own entity" in text
+
+    # No parts information at all — say nothing rather than claim there is nothing.
+    quiet = figure_description(label="Plain", bones={"hips": 1}, has_map=True)
+    assert "removable" not in quiet.lower()

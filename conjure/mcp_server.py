@@ -552,11 +552,25 @@ async def inspect_figure(id: str) -> str:
             pass
     # The wording lives in `figures` so the eval harness can ask the director the same question this
     # tool does, against a file instead of a live world (docs/backlogs/figures.md, slice 2).
+    # What can be taken OFF, beside what can be posed. `inspect_figure` is the tool a director reaches
+    # for when asked "what is she wearing" — leaving parts out of it meant the answer was "nothing".
+    from .parts import load_vocabulary, removable as removable_parts
+    parts = meta.get("parts") or {}
+    groups = removable_parts(parts, load_vocabulary()) if parts else ({} if parts else None)
+    if parts and not groups:
+        groups = {}
+    hidden_raw = ((ent.get("components") or {}).get("figure-parts") or {}).get("hidden") or "[]"
+    try:
+        import json as _j
+        hidden = _j.loads(hidden_raw) if isinstance(hidden_raw, str) else list(hidden_raw)
+    except ValueError:
+        hidden = []
     return figure_description(
         label=meta.get("title") or id,
         height_m=(bbox[1][1] - bbox[0][1]) if bbox else None,
         tris=meta.get("tris"), bones=(meta.get("humanoid_axes") or {}),
-        has_map=bool(meta.get("humanoid")), posed=already)
+        has_map=bool(meta.get("humanoid")), posed=already,
+        removable=groups if parts else {}, hidden=hidden)
 
 
 @mcp.tool()

@@ -1748,7 +1748,8 @@ def _quat_mul(a: list[float], b: list[float]) -> list[float]:
 
 
 def figure_description(*, label: str, height_m: Optional[float] = None, tris=None,
-                       bones=(), has_map: bool = False, posed=()) -> str:
+                       bones=(), has_map: bool = False, posed=(), removable=None,
+                       hidden=()) -> str:
     """What `inspect_figure` says about a figure — the bones it has and how they can be asked to move.
 
     Kept here rather than in the MCP tool because this text is part of the tool SURFACE under test: the
@@ -1771,6 +1772,19 @@ def figure_description(*, label: str, height_m: Optional[float] = None, tris=Non
                      "measure one, then it can be posed.")
     else:
         lines.append("No humanoid bone map, so it cannot be posed.")
+    # WHAT COMES OFF. Absent from this text until 2026-09-13, and the omission read as an answer: asked
+    # what a figure was wearing, the director called this tool, got bones, and told the user she was a
+    # unified mesh with no detachable parts — about a figure carrying seven classified ones. A tool that
+    # describes a figure has to describe the whole figure, or its silence gets quoted as fact.
+    if removable:
+        summary = ", ".join(f"{c} ({len(n)})" for c, n in sorted(removable.items()))
+        lines.append(f"Removable: {summary}. Take them off by CATEGORY, or name one mesh.")
+        if hidden:
+            lines.append(f"Currently hidden ({len(hidden)}): {', '.join(sorted(hidden))}")
+    elif removable is not None:
+        lines.append("Nothing on this figure is removable — its meshes are all body or face, or it was "
+                     "placed before parts were classified. Clothing that arrived as a SEPARATE model is "
+                     "its own entity: remove that instead.")
     if bones:
         lines.append("Every bone also takes bend (forward +/back -), spread (out from the body +) and "
                      "turn (inward +), in degrees, as a rotation from where it rests. out/in and spread "

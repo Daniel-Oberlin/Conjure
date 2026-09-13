@@ -120,7 +120,18 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
         if commit:
             if data is not None and _store(cache, asset_id, data):
                 stats["bytes_written"] += 1
-            library.upsert(asset_id, scope=scope, **fields)
+            # TAG EVERY ASSET WITH ITS CAPTURE. A set is called `susan` and her figure is called
+            # `Alice`, so searching the name a person actually uses found the set and no model —
+            # `place_cached_asset` needs a model, and the director reported her missing from a catalog
+            # she was in. Tags are FTS-indexed, so this is the one field that fixes it.
+            #
+            # MERGED, not replaced: the shared props arrive in every capture and a second import must
+            # not take the first one's tag off them.
+            existing = (library.get(asset_id) or {}).get("tags") or ""
+            words = [w for w in (t.strip() for t in existing.split(",")) if w]
+            if name not in words:
+                words.append(name)
+            library.upsert(asset_id, scope=scope, tags=", ".join(words), **fields)
 
     def link(a, b, kind):
         stats[f"rel:{kind}"] += 1

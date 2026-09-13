@@ -497,6 +497,11 @@ A sibling to `figure`, and deliberately **generic**: it hides the glTF nodes it 
 nothing about garments. One field, `hidden` — a JSON array of node names — because what counts as
 clothing was decided at import where the answer is recorded and correctable.
 
+`inspect_figure` reports what comes **off** beside what bends, and that is not decoration: it is the
+tool a director reaches for when asked "what is she wearing", and while it listed only bones the
+director answered *"a unified mesh with no detachable parts"* about a figure carrying seven. A tool's
+silence gets quoted back as fact.
+
 `POST /figure/parts` (`dress_figure`) resolves the semantics: it takes **categories** or node names,
 expands categories against the entity's `meta.parts`, and writes node names to the component. So the
 classifier proposes and **the entity holds the truth** — a wrong grouping is corrected by naming the
