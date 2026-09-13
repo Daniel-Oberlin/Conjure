@@ -549,6 +549,12 @@ reads as a broken figure rather than a mismatched clip. `POST /figure/clip` name
 refuses; `force` exists for looking at it deliberately. Rewriting the channels is retargeting, and it is
 not built.
 
+**A label resolves to HER clip first.** `10_action` is eleven different clips across the library, but
+asked of a particular figure the question is not ambiguous: it means the one that shipped with her. Only
+when no shipped clip matches does the endpoint fall back to refusing and listing candidates — refusing
+outright made the label path useless for the only caller that has one, since an asset id is not
+something a person says out loud.
+
 **The voice travels with the clip.** 20 of Jane's 21 clips have one, and the link is many-to-many — one
 file serves four clips — so it is a `voiced_by` relation rather than a column. It is sent in the same
 patch, off the same stamped instant, because two arrivals would mean two start times and a body out of

@@ -4970,6 +4970,20 @@ def test_a_clip_asked_for_by_a_label_two_assets_share_is_refused_not_guessed(srv
     assert not r["ok"] and "ask by id" in r["error"] and len(r["candidates"]) == 2
 
 
+def test_an_ambiguous_label_resolves_to_the_clip_that_shipped_with_THIS_figure(srv, client, tmp_path):
+    """`10_action` is eleven different clips across the library. Asked of a particular figure it is not
+    ambiguous at all — it means hers — and refusing made the label path useless for the only caller that
+    has one, since an asset id is not something a person says out loud."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    hers = _import_id(client, "10_action.glb", _clip_glb("10_action"))
+    _import_id(client, "10_action.glb", _clip_glb("10_action", extra_bones=["Tail"]))   # somebody else's
+    srv.library.add_relation(fig, hers, "shipped_with")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": "10_action"}).json()
+    assert r["ok"] and r["clip"] == hers, "hers, not a coin toss between two"
+
+
 def test_only_a_RIGGED_entity_can_be_animated(srv, client, tmp_path):
     clip = _import_id(client, "1_idle.glb", _clip_glb())
     eid = client.post("/place_cached_asset", json={

@@ -4768,14 +4768,23 @@ async def figure_clip(req: FigureClipRequest) -> dict:
     if library is None:
         return {"ok": False, "error": "no asset library"}
 
+    shipped_rows, _compat_rows, sig = _clip_rows_for(_entity_model_id(ent))
     rec = library.get(req.clip)
     if rec is None and _safe_label(req.clip):
         hits = library.query(f"SELECT * FROM assets WHERE kind = 'animation' AND label = '{req.clip}'",
                              scope=active_scope, limit=50) or []
+        # HER clip first. Labels repeat across captures — `10_action` is eleven different clips — but
+        # asked of a particular figure the question is not ambiguous at all: it means the one that
+        # shipped with her. Falling straight to "ask by id" made the label path useless for the only
+        # caller that has one, and the id is not something a person says out loud.
+        mine = [h for h in hits if h["id"] in {r["id"] for r in shipped_rows}]
+        if len(mine) == 1:
+            hits = mine
         if len(hits) > 1:
-            # Ambiguous is not absent, and the difference matters: 400 of 524 clips appear in exactly one
-            # capture, so a duplicated label means the same clip name across figures. Name the tags.
-            return {"ok": False, "error": f"{req.clip!r} matches {len(hits)} clips — ask by id",
+            # Still ambiguous, and that is not the same as absent: 400 of 524 clips appear in exactly
+            # one capture, so a duplicated label means the same clip name on a different figure.
+            return {"ok": False, "error": f"{req.clip!r} matches {len(hits)} clips, none of them hers "
+                                          f"— ask by id",
                     "candidates": [{"id": h["id"], "tags": h.get("tags")} for h in hits[:10]]}
         rec = hits[0] if hits else None
     if rec is None:
@@ -4789,7 +4798,6 @@ async def figure_clip(req: FigureClipRequest) -> dict:
         clip_attrs = json.loads(rec.get("attributes") or "{}")
     except (TypeError, ValueError):
         clip_attrs = {}
-    _shipped, _compatible, sig = _clip_rows_for(_entity_model_id(ent))
     clip_sig = clip_attrs.get("rig_sig") or ""
     mismatch = bool(sig and clip_sig and sig != clip_sig)
     if mismatch and not req.force:
