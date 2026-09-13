@@ -517,6 +517,44 @@ does nothing and looks like a broken tool.
 separate container — Jane's `hair.glb` and `underwear.glb` are their own assets — which is a different
 mechanism: remove that entity. The endpoint says so rather than returning success and doing nothing.
 
+### 8b. The `figure-clip` component — playing a captured animation
+
+A clip is a GLB containing **animation channels and no mesh at all** — which is how these builds ship
+motion: 47.7 MB of clips against a 5 MB character, loaded only when one is played. It binds to a figure
+**by node name**, and that is the whole reason it is reusable.
+
+The numbers are measured, not assumed. Jane's `1_idle` names 222 target nodes; on three other figures
+sharing her rig signature it resolves **222 of 222**, and on the rest of the `85e41f9b8e` cast 171–187.
+Her model has **21 clips that shipped with it and 314 that merely fit**. Channels naming a bone the
+target does not have are dropped before the mixer is built, because three's alternative is one console
+warning per unresolved binding and no way to tell whether the clip half-played or not at all.
+
+**Time comes from the shared clock, never from frame deltas.** The entity stores the instant the clip
+STARTED and each client computes its own offset into it. Two headsets are then on the same frame with no
+per-frame message, and a client that joins late, stalls, or backgrounds for a minute lands on the right
+frame the next time it draws. Accumulating `delta` per client guarantees the opposite: they start at
+different moments, drop different frames, and nothing ever pulls them back. So `tick` SEEKS —
+`action.time = f(sharedClock)` then `mixer.update(0)` — rather than advancing.
+
+**Precedence, stated rather than discovered: a playing clip wins, a pose applies when idle.** Both write
+the same bones, so without a rule the mixer wins every frame simply by running later and the pose looks
+broken rather than overridden. Stopping calls `figure.restore()`, which puts EVERY bone back on its bind
+pose — rotation and position, since a clip translates and a pose never does — and re-applies the pose.
+`figure.apply()` could not do this job: it only resets bones it posed, and a clip writes 222 of Jane's
+while a pose names six.
+
+**Across rig signatures, binding by name is refused.** It is the failure that does not announce itself:
+the clip resolves whichever handful of names happen to coincide and drives the figure by those, which
+reads as a broken figure rather than a mismatched clip. `POST /figure/clip` names both signatures and
+refuses; `force` exists for looking at it deliberately. Rewriting the channels is retargeting, and it is
+not built.
+
+`GET /figure/clips` answers with **two lists that are never merged**: what `shipped_with` this figure,
+and what its `rig_sig` says can play. Compatibility is not sufficiency — 93 of 206 clip names call out a
+fixture (bed 30, sink 18, toilet 12) — so a clip that binds perfectly still puts a figure leaning on a
+sink that is not there. The authored set is the default and reaching past it takes `all=true`. See
+[`decisions.md`](../decisions.md) §27.
+
 ## 8. The runtime — the `figure` component
 
 `client/figure.js` is an ordinary A-Frame component on the placed model entity, **not** a dynamic module
@@ -835,12 +873,15 @@ tool-description edit can actually break, needs no Blender and no judge, and tak
 | Endpoint | Purpose |
 |---|---|
 | `POST /figure` | pose a placed figure by bone or by `named` pose, or `clear=true` to return it to rest. Owner-gated (`_OWNER_ONLY_PATHS`) |
+| `POST /figure/parts` | hide/show parts of a figure by category or mesh name (§8a) |
+| `POST /figure/clip` | play a clip on a figure, or `stop=true`. Refuses a clip from another rig unless `force` (§8b) |
+| `GET /figure/clips` | what shipped with a figure, and — with `all=true` — what merely fits |
 | `POST /library/import` | ingest a `.glb`/`.vrm` — the figure attributes come out of this path |
 | `POST /library/refresh-models` | re-derive every model row's attributes |
 
 **MCP tools:** `inspect_figure` (height, triangle count, the bones this figure actually has, current
-pose), `list_poses` (the named library, read from the data rather than written into a prompt) and
-`pose_figure`. Neither is in `_READONLY_TOOLS`, so a `access: "read"` agent gets neither.
+pose), `list_poses` (the named library, read from the data rather than written into a prompt),
+`pose_figure`, `dress_figure` (§8a), and `list_clips` / `play_clip` / `stop_clip` (§8b). Neither is in `_READONLY_TOOLS`, so a `access: "read"` agent gets neither.
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
@@ -856,11 +897,12 @@ the conversion scripts only, never of the world server.
 Recorded here so the spec can be trusted about its own edges; the design work is in
 [`backlogs/figures.md`](../backlogs/figures.md).
 
-- **No animation.** `clips` is recorded and never read. There is no mixer component, no
-  `animate_model`, and a visible consequence: the teacher's bind pose has her eyes SHUT. Her build
-  ships a `Blink.glb` animating 189 targets including the eyelid bones, and the site opens her eyes
-  by playing it — converted and placed, she stays asleep. Mistaken for a material bug twice.
-  No retargeting either, and no decision yet on how a pose and a clip compose.
+- ~~**No animation.**~~ Built 2026-09-13 as §8b: `figure-clip`, `POST /figure/clip`, and
+  `play_clip` / `list_clips` for the director. A pose and a clip compose by the rule in §8b — the clip
+  wins, the pose returns on stop. What is still absent is **retargeting**: a clip only plays on a figure
+  sharing its rig signature, which is groups of sixteen rather than one but is not everything. The
+  teacher's shut eyes are now a thing that can be fixed by playing her `Blink.glb` rather than a thing
+  with no mechanism, though nothing plays it automatically at placement.
 - ~~**No outfits.**~~ Built 2026-09-13 as §8a: a parts vocabulary classifies each mesh at import, and
   `dress_figure` / `POST /figure/parts` turn categories off and on at runtime. What is still absent is
   the other mechanism — clothing that arrived as a SEPARATE CONTAINER (Jane's `hair.glb`) is a separate

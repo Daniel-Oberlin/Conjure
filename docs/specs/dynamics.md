@@ -234,6 +234,11 @@ Four globals, loaded before any module (`client/index.html`).
 This is the **only** time input for deterministic state. Derive per-instance variation from a seeded PRNG
 (e.g. mulberry32) so every client agrees; `fireflies` is the canonical example.
 
+Not only modules use it. `figure-clip` ([`specs/figures.md`](./figures.md) §8b) is an ordinary component
+and plays a captured animation off this clock for the same reason: the entity stores the instant the clip
+started, each client computes its own offset into it, and a headset that joins late lands on the right
+frame with nothing to resynchronise.
+
 ### `ConjureBus` — cross-client events
 
 For interactive modules where each headset runs its **own** simulation but must react to everyone's input.
