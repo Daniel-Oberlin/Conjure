@@ -549,6 +549,15 @@ reads as a broken figure rather than a mismatched clip. `POST /figure/clip` name
 refuses; `force` exists for looking at it deliberately. Rewriting the channels is retargeting, and it is
 not built.
 
+**The voice travels with the clip.** 20 of Jane's 21 clips have one, and the link is many-to-many — one
+file serves four clips — so it is a `voiced_by` relation rather than a column. It is sent in the same
+patch, off the same stamped instant, because two arrivals would mean two start times and a body out of
+sync with its own speech is the one thing an audience notices immediately. Played through a media
+element rather than a decoded buffer for one reason: `currentTime` is writable, so a client joining
+mid-clip starts the voice where the body already is. A browser may refuse to start audio without a
+gesture; that is a refusal and not an error — the clip keeps playing and the voice joins on the next
+one, which in an immersive session has already happened.
+
 `GET /figure/clips` answers with **two lists that are never merged**: what `shipped_with` this figure,
 and what its `rig_sig` says can play. Compatibility is not sufficiency — 93 of 206 clip names call out a
 fixture (bed 30, sink 18, toilet 12) — so a clip that binds perfectly still puts a figure leaning on a

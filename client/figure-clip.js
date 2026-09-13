@@ -75,7 +75,10 @@
       speed: { type: "number", default: 1 },
       // Shared-clock milliseconds. 0 means "whenever this arrived", which is right for a clip started
       // by one client and wrong for one replayed from a snapshot — the server stamps it either way.
-      startedAt: { type: "number", default: 0 }
+      startedAt: { type: "number", default: 0 },
+      // The voice recorded against this clip, if any — 20 of Jane's 21 have one. Spatial, so it comes
+      // from the figure rather than from the middle of your head.
+      audio: { type: "string", default: "" }
     },
 
     init: function () {
@@ -89,12 +92,16 @@
       // silently does nothing.
       this._onLoad = function () { self._teardown(); self.apply(); };
       this.el.addEventListener("model-loaded", this._onLoad);
+      this._sound = null;
+      this._media = null;
+      this._audioUrl = "";
       this.apply();
     },
 
     update: function (old) {
       if (old && old.clip !== this.data.clip) this._teardown();
       this.apply();
+      this._audio();
     },
 
     apply: function () {
@@ -124,6 +131,7 @@
         self._action.play();
         self._loaded = url + "|" + want;
         self._started = self.data.startedAt || now();
+        self._audio();
         log("playing " + picked.name + " on " + (self.el.id || "?") + ": kept "
             + bound.clip.tracks.length + " track(s), dropped " + bound.dropped.length);
         self.el.emit("figure-clip-started", {
@@ -150,9 +158,70 @@
       this._mixer.update(0);
     },
 
+    // The voice track, seeked to the same shared-clock offset as the skeleton. A media element is used
+    // rather than a decoded buffer for exactly one reason: `currentTime` is writable, so a client that
+    // joins mid-clip starts the voice where the body already is instead of from the top.
+    //
+    // Autoplay can be refused — a browser will not start audio without a gesture, and a page that has
+    // not been touched yet has had none. That is a REFUSAL, not an error: the clip keeps playing, the
+    // voice joins on the next gesture, and saying so is better than a silent catch. In an immersive
+    // session the gesture that entered it already counts.
+    _audio: function () {
+      var url = this.data.playing ? this.data.audio : "";
+      if (url !== this._audioUrl) this._silence();
+      if (!url) return;
+      var scene = this.el.sceneEl;
+      var listener = scene.audioListener || new THREE.AudioListener();
+      if (!scene.audioListener) {
+        scene.audioListener = listener;
+        if (scene.camera) scene.camera.add(listener);
+        scene.addEventListener("camera-set-active", function (e) {
+          e.detail.cameraEl.getObject3D("camera").add(listener);
+        });
+      }
+      var media = new Audio();
+      media.crossOrigin = "anonymous";
+      media.loop = !!this.data.loop;
+      media.src = url;
+      var sound = new THREE.PositionalAudio(listener);
+      sound.setMediaElementSource(media);
+      this.el.object3D.add(sound);
+      this._sound = sound;
+      this._media = media;
+      this._audioUrl = url;
+      var offset = (now() - this._started) / 1000;
+      var self = this;
+      var begin = function () {
+        if (media.duration && isFinite(media.duration)) {
+          media.currentTime = self.data.loop ? ((offset % media.duration) + media.duration) % media.duration
+                                             : Math.min(Math.max(offset, 0), media.duration);
+        }
+        media.play().catch(function (err) {
+          log("voice refused until a gesture: " + (err && err.name));
+          var once = function () {
+            window.removeEventListener("click", once);
+            if (self._media === media) media.play().catch(function () {});
+          };
+          window.addEventListener("click", once);
+        });
+      };
+      if (media.readyState >= 1) begin();
+      else media.addEventListener("loadedmetadata", begin, { once: true });
+    },
+
+    _silence: function () {
+      if (this._sound) {
+        if (this._sound.parent) this._sound.parent.remove(this._sound);
+        this._sound = null;
+      }
+      if (this._media) { this._media.pause(); this._media.src = ""; this._media = null; }
+      this._audioUrl = "";
+    },
+
     // Unbind AND put the skeleton back. An AnimationMixer leaves every bone it touched wherever the last
     // frame left it, so simply stopping is how a figure ends up frozen mid-stride.
     _teardown: function () {
+      this._silence();
       if (this._mixer) {
         this._mixer.stopAllAction();
         this._mixer.uncacheRoot(this._mixer.getRoot());

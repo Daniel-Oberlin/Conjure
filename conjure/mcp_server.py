@@ -645,8 +645,9 @@ async def play_clip(id: str, clip: str, loop: bool = True, speed: float = 1.0,
     secs = out.get("duration_s")
     length = f", {secs:.0f}s" if isinstance(secs, (int, float)) else ""
     tail = " (looping)" if out.get("loop") else ""
+    voice = " With her voice." if out.get("voiced") else ""
     warn = f"\nWarning: {out['warning']}" if out.get("warning") else ""
-    return f"Playing {out.get('label') or out['clip']} on {id}{length}{tail}.{warn}"
+    return f"Playing {out.get('label') or out['clip']} on {id}{length}{tail}.{voice}{warn}"
 
 
 @mcp.tool()
@@ -676,6 +677,7 @@ async def list_clips(id: str, all: bool = False, kind: str = "") -> str:
     def show(rows: list) -> list[str]:
         return [f"  {r['label'] or r['id']} — {r.get('kind') or 'clip'}"
                 + (f", {r['duration_s']:.0f}s" if isinstance(r.get("duration_s"), (int, float)) else "")
+                + (", voiced" if r.get("voiced") else "")
                 + f"  [{r['id']}]" for r in rows]
 
     shipped = out.get("shipped") or []

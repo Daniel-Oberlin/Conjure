@@ -4880,6 +4880,36 @@ def test_a_clip_plays_on_the_figure_it_was_authored_for(srv, client, tmp_path):
     assert comp["startedAt"] == r["started_at"], "the START INSTANT, not a frame"
 
 
+def test_a_clip_carries_the_voice_recorded_against_it(srv, client, tmp_path):
+    """20 of Jane's 21 clips are voiced, and the link is many-to-many — one file serves four clips — so
+    it is a relation, not a column. The voice is sent WITH the clip and off the same stamped instant:
+    two arrivals would be two start times, and a body out of sync with its own speech is the one thing
+    an audience notices immediately."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    srv.library.upsert("voice.mp3", kind="audio", label="1_idle", scope=srv.active_scope,
+                       source="cache://")
+    srv.library.add_relation(clip, "voice.mp3", "voiced_by")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["ok"] and r["voiced"] == "voice.mp3"
+    comp = _ent(client, eid)["components"]["figure-clip"]
+    assert comp["audio"] == "/assets/voice.mp3"
+    assert comp["startedAt"] == r["started_at"], "one instant for the body and the voice both"
+
+    assert client.get(f"/figure/clips?id={eid}&all=true").json()["compatible"][0]["voiced"] is True
+
+
+def test_a_clip_with_no_voice_says_so_rather_than_sending_an_empty_url(srv, client, tmp_path):
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["voiced"] is None
+    assert _ent(client, eid)["components"]["figure-clip"]["audio"] == ""
+
+
 def test_stopping_a_clip_leaves_nothing_for_the_client_to_keep_playing(srv, client, tmp_path):
     fig = _import_id(client, "girl.glb", _figure_glb())
     clip = _import_id(client, "1_idle.glb", _clip_glb())

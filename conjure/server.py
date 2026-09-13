@@ -4798,14 +4798,20 @@ async def figure_clip(req: FigureClipRequest) -> dict:
                 f"across that drops most channels and drives the figure by the few that match — "
                 f"retargeting is not built yet. Pass force to see it anyway."}
 
+    # The voice recorded against this clip, if there is one — 20 of Jane's 21 have one, and the link is
+    # many-to-many (one file serves four clips), so it is a relation and not a column. Sent WITH the
+    # clip so both start from the same stamped instant rather than from two arrivals.
+    voice = [v for v in library.related(rec["id"], "voiced_by") if v.get("kind") == "audio"]
     started = time.time() * 1000.0
     patch = [{"op": "update", "id": req.id, "set": {"components.figure-clip": {
         "clip": f"/assets/{rec['id']}", "name": "", "playing": True,
-        "loop": bool(req.loop), "speed": float(req.speed), "startedAt": started}}}]
+        "loop": bool(req.loop), "speed": float(req.speed), "startedAt": started,
+        "audio": f"/assets/{voice[0]['id']}" if voice else ""}}}]
     await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-clip")})
     out = {"ok": True, "id": req.id, "clip": rec["id"], "label": rec.get("label"),
            "duration_s": clip_attrs.get("duration_s"), "kind": clip_attrs.get("clip_kind"),
-           "loop": bool(req.loop), "started_at": started}
+           "loop": bool(req.loop), "started_at": started,
+           "voiced": voice[0]["id"] if voice else None}
     if mismatch:
         out["warning"] = f"rig {clip_sig} on a {sig} figure — forced"
     return out
@@ -4830,8 +4836,9 @@ async def figure_clips(id: str, all: bool = False, kind: str = "") -> dict:
             a = json.loads(r.get("attributes") or "{}")
         except (TypeError, ValueError):
             a = {}
+        voiced = [v for v in library.related(r["id"], "voiced_by") if v.get("kind") == "audio"]
         return {"id": r["id"], "label": r.get("label"), "kind": a.get("clip_kind"),
-                "duration_s": a.get("duration_s"), "tags": r.get("tags")}
+                "duration_s": a.get("duration_s"), "tags": r.get("tags"), "voiced": bool(voiced)}
 
     def keep(rows: list[dict]) -> list[dict]:
         out = [row(r) for r in rows]

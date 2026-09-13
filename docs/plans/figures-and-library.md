@@ -1,8 +1,8 @@
 # Plan — figures, their animations, and environments
 
 **Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phase 2 PARTIAL (works; open
-defects listed below) · phase 3 in progress · phases 4–5 open
-**Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13 · **Phase 2 landed partial:** 2026-09-13
+defects listed below) · phase 3 DONE (untested on device) · phases 4–5 open
+**Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13 · **Phase 3 landed:** 2026-09-13 · **Phase 2 landed partial:** 2026-09-13
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
@@ -277,7 +277,7 @@ Two black-figure defects found the same way turned out NOT to be this phase and 
 body was bound by no entity (`adopt_unbound` could not see a mesh with no render asset), and metal had
 no environment to reflect. See `decisions.md` §28.
 
-### Phase 3 — play a clip 🔨 IN PROGRESS
+### Phase 3 — play a clip ✅ DONE
 
 *Settles into `specs/figures.md` §runtime `figure-clip`; the precedence rule into the same section.*
 
@@ -293,6 +293,12 @@ no environment to reflect. See `decisions.md` §28.
 
 **Done when:** a clip plays on its own figure; the same clip plays on a different figure of the same
 rig with the body moving correctly; its audio plays in sync; and a pose reasserts itself on stop.
+
+**Landed 2026-09-13**, settled into `specs/figures.md` §8b. `figure-clip`, `POST /figure/clip`,
+`GET /figure/clips`, and `play_clip` / `stop_clip` / `list_clips`. Tier-1 reuse arrived with it as the
+plan said it would: Jane's model has 21 clips that shipped with it and 314 that merely fit, and the two
+are listed apart. Not yet confirmed on device — the headset pass is what will say whether the bodies
+actually move correctly.
 
 ### Phase 4 — a room model as the environment *(independent of 1–3)*
 
