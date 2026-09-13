@@ -23,6 +23,10 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 17 | Per-module SERVER logic — does `grab` motivate a "server module"? | ✅ RESOLVED | No. grab's server side is generic → a plain endpoint; server modules wait for an emitting module |
 | 18 | World server: stay Python, or port to Node for one runtime? | 🔶 DIRECTION | Endorsed but incremental — extract shared JS math first; never a big-bang port |
 | 19 | `full` environment-depth occlusion | ✅ RESOLVED | Shelved — three won't consume the Quest's depth format, and `hands` already covers the sharp case |
+| 22 | Environments: a class hierarchy, or a facet on the kinds we have? | ✅ RESOLVED | A `projection` facet in `attributes`; `kind` stays what the bytes are |
+| 23 | Is an animation clip owned by a figure, or by a rig? | ✅ RESOLVED | By the **rig signature** — ownership by figure would block reuse the data already supports |
+| 24 | Clip playback: a dynamic module, or an entity component? | ✅ RESOLVED | A component beside `figure`; modules are conjurable shared effects, a clip is per-figure state |
+| 25 | Do multi-area plans need a durable doc tier? | ✅ RESOLVED | No — `docs/plans/` holds them while live and they dissolve into specs/backlogs |
 
 > Numbering note: §15 appears twice (an older "Users, spaces, and a user-first namespace" section
 > predates the table row for world/space identity), and §16 has a section but no table row. External
@@ -527,3 +531,61 @@ with dotfiles, so the change is a **split** rather than a move, and orthogonal t
 therefore started as locations only. (It has since taken the wake-word lists, which are preferences, not
 locations — the boundary that actually holds is *secret vs. not*, not *location vs. preference*.) See
 [`docs/backlogs/config.md`](./backlogs/config.md).
+
+
+---
+
+### 22. Environments — a class hierarchy, or a facet? — ✅ RESOLVED
+**Choice:** A **facet** in the attributes bag —
+`attributes.environment = {projection: "equirect" | "grounded" | "mesh" | "cylinder"}` — with `kind`
+continuing to say what the bytes are (`image`, `model`).
+
+**Why:** The catalog's own rule is core columns plus a JSON `attributes` bag precisely so a new kind
+costs no migration and no null sprawl (specs/library.md §record). `projection` is the only axis the
+renderer actually branches on, and a facet defers forever the question a hierarchy forces you to
+answer up front — whether a panoramic cylinder *is-a* skybox.
+
+**Rejected:** a `kind='environment'` with subtypes, and an inheritance hierarchy over the existing
+kinds. Both buy a taxonomy argument and a schema migration per new shape, in exchange for nothing the
+renderer asks for.
+
+**Consequence to hold:** a skybox is world *state* while a room model is an *entity*, so "environment"
+spans two representations. That asymmetry is real and is deliberately left alone for now; see the plan.
+
+### 23. Is a clip owned by a figure, or by a rig? — ✅ RESOLVED
+**Choice:** By the **rig**, keyed on a signature over the mapped humanoid bone names.
+
+**Why:** Measured, not assumed. Animation GLBs carry no mesh and bind by node name; four distinct rig
+signatures cover 72 rigged models, and one of them covers fourteen of twenty captures. Jane's clips
+already play on Akari and Nancy. Filing a clip under the figure that happened to ship it would invent
+an ownership the data does not have, and would put a retargeting problem in front of reuse that needs
+none.
+
+**Kept anyway:** a `set` row per capture, with `part_of` relations, for provenance — "these arrived
+together" is worth recording, but it is never the compatibility test.
+
+### 24. Clip playback — dynamic module or entity component? — ✅ RESOLVED
+**Choice:** A `figure-clip` **component**, beside `figure`.
+
+**Why:** A dynamic module is a conjurable, shared, largely ambient effect (specs/dynamics.md §1). A
+clip is per-figure state that has to persist and patch exactly like a pose — which is why `figure` is
+already a component rather than a module. Same reasoning, same seam, no bespoke loader.
+
+**Borrowed from modules:** the shared clock, so every headset renders the same frame.
+
+**Follows:** a playing clip and a pose drive the same bones, so precedence is stated rather than
+discovered — clip wins, pose applies when idle.
+
+### 25. Do multi-area plans need a durable doc tier? — ✅ RESOLVED
+**Choice:** No. `docs/plans/` holds a plan **while it is being executed**, and it dissolves into
+`specs/` and `backlogs/` as phases land or are abandoned.
+
+**Why:** The four-tier split (vision · architecture · specs · backlogs) already places "what is not
+built" in a backlog, and a plan is that. But ten `*-plan.md` files existed in this repo and were
+consolidated away in August 2026 — they clearly earned their keep while live, and the thing that went
+wrong was only that they had no stated end. So the tier is real but **transient**: a plan names its
+dissolution target on the way in, and outliving its phases is the signal to dissolve it.
+
+**Rejected:** a durable fifth tier (a plan that never ends is a backlog with worse organisation), and
+no plan file at all (a sequence spanning two backlogs has nowhere to live, which is what produced the
+ten predecessors).
