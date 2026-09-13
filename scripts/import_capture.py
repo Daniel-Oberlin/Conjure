@@ -44,6 +44,23 @@ def _asset_id(data: bytes, ext: str) -> str:
     return f"{hashlib.sha256(data).hexdigest()[:16]}{ext}"
 
 
+def _store(cache: str, asset_id: str, data: bytes) -> bool:
+    """Put the BYTES where a catalog row promises they are.
+
+    A row says `cache://<id>` and `/assets/<id>` is how every consumer fetches it — the client's
+    `gltf-model`, `place_cached_asset`, the frame-rev refresh. Cataloguing without writing them leaves
+    a row that looks complete and resolves to nothing, and `gc` would then offer to tidy up the
+    opposite end. Content-addressed, so writing twice is writing once.
+    """
+    path = os.path.join(cache, asset_id)
+    if os.path.exists(path) and os.path.getsize(path) == len(data):
+        return False
+    os.makedirs(cache, exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return True
+
+
 def _containers_by_build(capture: str) -> dict[str, str]:
     """Container filename -> the build directory it belongs to.
 
@@ -87,15 +104,17 @@ def _source_assets(capture: str, kinds=("animation", "audio")) -> list[dict]:
     return out
 
 
-def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, commit: bool,
+def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache: str, commit: bool,
         report=print) -> dict:
     name = os.path.basename(capture.rstrip("/"))
     stats: dict = defaultdict(int)
     set_id = f"set:{name}"
 
-    def put(asset_id, **fields):
+    def put(asset_id, data=None, **fields):
         stats[fields.get("kind", "?")] += 1
         if commit:
+            if data is not None and _store(cache, asset_id, data):
+                stats["bytes_written"] += 1
             library.upsert(asset_id, scope=scope, **fields)
 
     def link(a, b, kind):
@@ -117,7 +136,7 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, commit
             report(f"    ? {file}: nothing recognised it")
             continue
         asset_id = _asset_id(data, result.ext)
-        put(asset_id, kind=result.kind, label=os.path.splitext(file)[0],
+        put(asset_id, data, kind=result.kind, label=os.path.splitext(file)[0],
             source=f"cache://{asset_id}", filename=asset_id, attributes=result.attributes)
         link(asset_id, set_id, "part_of")
         # A FIGURE, not merely something with a skin: `rig_sig` is only set when a humanoid map was
@@ -146,7 +165,7 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, commit
         if capture_set.wants_props(asset["name"]):
             extra["wants_props"] = capture_set.wants_props(asset["name"])
         extra["slot_named"] = capture_set.is_slot_named(asset["name"])
-        put(asset_id, kind="animation", label=capture_set.stem(asset["name"]),
+        put(asset_id, data, kind="animation", label=capture_set.stem(asset["name"]),
             source=f"cache://{asset_id}", filename=asset_id, attributes=extra)
         link(asset_id, set_id, "part_of")
         clips[asset["name"]] = asset_id
@@ -162,7 +181,7 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, commit
         data = open(asset["path"], "rb").read()
         result = plan_import(asset["name"], data, {"kind": "audio"})
         asset_id = _asset_id(data, ".mp3")
-        put(asset_id, kind="audio", label=capture_set.stem(asset["name"]),
+        put(asset_id, data, kind="audio", label=capture_set.stem(asset["name"]),
             source=f"cache://{asset_id}", filename=asset_id,
             attributes={**result.attributes, "role": role})
         link(asset_id, set_id, "part_of")
@@ -193,6 +212,7 @@ def main() -> int:
     ap.add_argument("--rebuilt", default="", help="the reconstructed GLBs (default temp/rebuilt/<name>)")
     ap.add_argument("--scope", default="daniel/agents/builder")
     ap.add_argument("--library", default="", help="catalog path (default: the real one)")
+    ap.add_argument("--cache", default="", help="asset bytes dir (default: beside the catalog)")
     ap.add_argument("--commit", action="store_true", help="actually write — otherwise this is a dry run")
     args = ap.parse_args()
 
@@ -201,11 +221,13 @@ def main() -> int:
     if not os.path.isdir(args.capture):
         print(f"{args.capture} is not a directory")
         return 2
-    path = args.library or os.path.join(
-        os.path.expanduser("~/.local/share/conjure"), "library.db")
+    from conjure.config import DATA_DIR
+    path = args.library or os.path.join(str(DATA_DIR), "library.db")
+    cache = args.cache or os.path.join(os.path.dirname(path), "assets")
     library = AssetLibrary(path)
-    print(f"catalog: {path}{'' if args.commit else '   (DRY RUN — nothing will be written)'}")
-    run(args.capture, rebuilt, scope=args.scope, library=library, commit=args.commit)
+    print(f"catalog: {path}\nbytes:   {cache}"
+          f"{'' if args.commit else '   (DRY RUN — nothing will be written)'}")
+    run(args.capture, rebuilt, scope=args.scope, library=library, cache=cache, commit=args.commit)
     return 0
 
 
