@@ -314,6 +314,59 @@ def cmd_caption(s: Settings, a) -> None:
           "(runs in the background on the server)")
 
 
+def cmd_clips(s: Settings, a) -> None:
+    """What a figure can dance to. Two lists, never merged: what SHIPPED with her, and what merely fits
+    her rig — `--all` for the second, which is much the larger and much the less trustworthy (many clips
+    are authored around furniture that is not in the room)."""
+    q = f"/figure/clips?id={a.id}" + ("&all=true" if a.all else "") + (f"&kind={a.kind}" if a.kind else "")
+    out = _get(s, q)
+    if out.get("ok") is False:
+        _say(out, a.verbose, "")
+        return
+
+    def show(rows):
+        for r in rows:
+            secs = f"{r['duration_s']:.0f}s" if isinstance(r.get("duration_s"), (int, float)) else "?"
+            print(f"  {(r['label'] or ''):16} {(r.get('kind') or 'clip'):7} {secs:>6}"
+                  f"{'  voiced' if r.get('voiced') else '        '}  {r['id']}")
+
+    shipped = out.get("shipped") or []
+    print(f"{a.id} — rig {out.get('rig_sig') or 'unknown'}")
+    print(f"shipped with her ({len(shipped)}):")
+    show(shipped) if shipped else print("  none")
+    if a.all:
+        other = out.get("compatible") or []
+        print(f"also fits this rig ({len(other)}) — authored for other figures:")
+        show(other) if other else print("  none")
+    elif out.get("compatible_count"):
+        print(f"{out['compatible_count']} more fit this rig — pass --all to list them.")
+
+
+def cmd_clip(s: Settings, a) -> None:
+    """Play a clip on a figure, or `--stop`. The clip is a label or an asset id; a label resolves to the
+    one that shipped with THIS figure, since `10_action` is eleven different clips library-wide."""
+    if a.stop or not a.clip:
+        # No clip named is the same request as `--stop`, and it has to be routed here: the endpoint
+        # answers an empty clip with the STOP shape, which has no `clip` key to print.
+        _say(_post(s, "/figure/clip", {"id": a.id, "stop": True}), a.verbose,
+             f"stopped the animation on {a.id}")
+        return
+    out = _post(s, "/figure/clip", {"id": a.id, "clip": a.clip, "loop": not a.once,
+                                    "speed": a.speed, "force": a.force})
+    if out.get("ok") is False:
+        _say(out, a.verbose, "")
+        for c in out.get("candidates") or []:
+            print(f"  {c['id']}  {c.get('tags') or 'untagged'}")
+        return
+    secs = out.get("duration_s")
+    length = f", {secs:.0f}s" if isinstance(secs, (int, float)) else ""
+    _say(out, a.verbose,
+         f"playing {out.get('label') or out['clip']} on {a.id}{length}"
+         f"{' (looping)' if out.get('loop') else ''}"
+         f"{' with her voice' if out.get('voiced') else ''}"
+         + (f"\nwarning: {out['warning']}" if out.get("warning") else ""))
+
+
 def cmd_refresh_models(s: Settings, a) -> None:
     """Re-derive every model's catalog attributes from its bytes — bone map, frame, joint limits, and
     whether it is a figure at all. Placement does this one model at a time; this is the batch form, for
@@ -431,6 +484,21 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("refresh-models", help="re-derive model attributes (figures, bone maps, limits)")
     a.set_defaults(fn=cmd_refresh_models)
     a.add_argument("--force", action="store_true", help="re-extract even rows already up to date")
+
+    a = sub.add_parser("clips", help="list the animations a placed figure can play")
+    a.set_defaults(fn=cmd_clips)
+    a.add_argument("id", help="the ENTITY id of a placed figure (see `conjure-ctl` with no args)")
+    a.add_argument("--all", action="store_true", help="also list clips that merely fit her rig")
+    a.add_argument("--kind", help="idle | action")
+
+    a = sub.add_parser("clip", help="play an animation on a placed figure"); a.set_defaults(fn=cmd_clip)
+    a.add_argument("id", help="the ENTITY id of a placed figure")
+    a.add_argument("clip", nargs="?", default="", help="clip label or asset id")
+    a.add_argument("--stop", action="store_true", help="stop whatever is playing")
+    a.add_argument("--once", action="store_true", help="play through once instead of looping")
+    a.add_argument("--speed", type=float, default=1.0)
+    a.add_argument("--force", action="store_true",
+                   help="play a clip from a DIFFERENT rig — it will look wrong; that is the point")
 
     a = sub.add_parser("retag-skyboxes", help="re-tag wide backfilled images as skyboxes")
     a.set_defaults(fn=cmd_retag_skyboxes)

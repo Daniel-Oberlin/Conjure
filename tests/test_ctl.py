@@ -23,6 +23,7 @@ def test_every_subcommand_binds_a_handler():
             "grounded-skybox": ["grounded-skybox", "a meadow"], "texture": ["texture", "floor", "wood"],
             "style": ["style", "wall"], "edit": ["edit", "e1", "brighter"], "outpaint": ["outpaint", "e1"],
             "skybox-from": ["skybox-from", "e1"], "grab-mode": ["grab-mode", "skybox"],
+            "clips": ["clips", "jane"], "clip": ["clip", "jane", "1_idle"],
         }.get(name, [name])
         assert callable(getattr(p.parse_args(args), "fn", None)), name
 
@@ -34,6 +35,11 @@ def test_parses_the_shapes_the_commands_rely_on():
     assert p.parse_args(["image", "a dragon", "--transparent"]).transparent is True
     assert p.parse_args(["retag-skyboxes", "--min-aspect", "1.9"]).min_aspect == 1.9
     assert p.parse_args(["annotate"]).state == "on"                    # optional positional defaults on
+    # `clip <id>` with no clip named is the same request as `--stop`, so the positional is optional and
+    # the handler routes an empty one to the stop path — the endpoint answers it with the STOP shape,
+    # which has no `clip` key to print.
+    assert p.parse_args(["clip", "jane"]).clip == ""
+    assert p.parse_args(["clip", "jane", "3_action", "--once"]).once is True
     assert p.parse_args(["edges", "off"]).state == "off"
     assert p.parse_args(["world"]).fn is cmd_world
 

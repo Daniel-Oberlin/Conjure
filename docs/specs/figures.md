@@ -900,8 +900,10 @@ pose), `list_poses` (the named library, read from the data rather than written i
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
-**CLI:** `conjure-import` (ingest; `--label` names the asset, defaulting to the filename stem, and is
-distinct from `--creator`, which is whoever made it), `conjure-ctl refresh-models [--force]`,
+**CLI:** `conjure-ctl clips <entity>` (what she can play; `--all` reaches past the authored set) and
+`conjure-ctl clip <entity> <label|id>` (`--stop`, `--once`, `--speed`, `--force`) — the deterministic
+path, no LLM. `conjure-import` (ingest; `--label` names the asset, defaulting to the filename stem, and
+is distinct from `--creator`, which is whoever made it), `conjure-ctl refresh-models [--force]`,
 `python scripts/pose_eval.py` (the utterance-layer battery), `scripts/pose_test.py` (render one pose).
 
 **Deps:** none new. GLB reading is stdlib; `trimesh` was already there. Blender is a soft dependency of
