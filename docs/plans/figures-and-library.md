@@ -1,7 +1,8 @@
 # Plan — figures, their animations, and environments
 
 **Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phase 2 PARTIAL (works; open
-defects listed below) · phase 3 DONE (untested on device) · phases 2b, 4–5 open
+defects listed below) · phase 3 DONE (untested on device) · phase 2b steps 0–4 DONE (composing works;
+the import switch and the split remain) · phases 4–5 open
 **Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13 · **Phase 3 landed:** 2026-09-13 · **Phase 2 landed partial:** 2026-09-13
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
@@ -455,7 +456,28 @@ worth a look next to her long-standing eye trouble.
 0. ✅ **Name the real things** — BUILT 2026-09-14. `captures/things.json`: nine site-wide exclusions
    plus one capture override (susan). 509 candidates → 369.
 
-**What remains is 4 — COMPOSE — and its inverse. Agreed approach, 2026-09-14:**
+4. ✅ **COMPOSE** — BUILT 2026-09-14, settled into [`specs/captures.md`](../specs/captures.md) § 3
+   *Composing*. `conjure/compose.py`: `compose_thing` writes one GLB per thing and `verify_thing` judges
+   it against the `Thing` and the source containers. **263 things over the twenty captures, 516 MB, and
+   the verifier reports two problems — both on bride, both facts about the source rather than the
+   compose.** `scripts/glb_check.mjs` is the second gate: all 263 load in the client's own three.js
+   `GLTFLoader`, and the six acceptance cases measure the sizes they should.
+
+   The verifier went first, as agreed, and earned it three times over. It caught a **100× bride**
+   (the composer copied the container's root transform AND the entity that reproduces it), then
+   **175 false alarms on Oktoberfest** (a world-space rest-pose comparison cannot survive the scene
+   scaling a figure 1.25), then **2 real ones on Alice** — her eye bones are 90° out in the scene and
+   nowhere else, which is very likely her long-standing eye trouble.
+
+   **Three things the plan had wrong, all found by building it.** The skeleton merge was named the
+   hard part and it does not exist: the scene expands every bone into an entity (181/181, 222/222,
+   175/175, 85/85), so composing from the SCENE rather than merging containers means there is one
+   skeleton because there is one scene. Weldability is not IBM equality — bride's two containers
+   differ on all 222 because one is in centimetres, and they still share a rig. And `Piece.position`
+   / `scale` is not enough to place anything: 538 of 948 pieces have a rotation in their chain, so
+   `Thing.tree` and `Piece.chain` carry the subtree and the composer rebuilds it.
+
+**What remains is 4's inverse. The agreed approach for 4, 2026-09-14, was:**
 
 **Plan A — compose alongside, do not replace.** `--things` writes one GLB per thing into its own
 directory; `temp/rebuilt/` and its 416 per-container files stay exactly as they are, and the importer

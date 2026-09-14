@@ -278,7 +278,9 @@ scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
             pose_eval.py (does the pose tool description still steer the director?),
             pose_library.py (check every named pose against every rig),
             playcanvas_rebuild.py (re-join a downloaded PlayCanvas build's geometry
-            with its textures — they ship as separate assets, so the GLB alone is white),
+            with its textures — they ship as separate assets, so the GLB alone is white;
+            --compose writes one GLB per THING the scene places instead of one per file),
+            glb_check.mjs (load a GLB in the client's own three.js and print its size),
             basis_to_png.js (decode a capture's Basis-compressed textures first,
             using the transcoder the site itself ships),
             c4_frame_cost.py (hands-free A/B of frame cost while posing)

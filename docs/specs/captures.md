@@ -185,8 +185,11 @@ placed in this scene*, which is the entire props library: all 15 tools and all 1
 are disabled Root children. Composing the thing's own flag into its pieces would mark every prop
 optional and import none of them — a test caught exactly that.
 
-A non-zero **rotation** anywhere in a chain sets `Piece.rotated` rather than being folded in, because
-euler order is a decision this does not get to guess at.
+A non-zero **rotation** anywhere in a chain sets `Piece.rotated` rather than being folded into
+`position`/`scale`, because euler order is a decision the summary does not get to guess at. `Piece.chain`
+carries every link's own transform instead, and `Thing.tree` carries the whole subtree — which is what
+the composer builds from, since **538 of 948 pieces across the twenty captures are rotated** and a
+summary is wrong for the majority of them.
 
 **A build with no scene falls back to its templates**, and the nesting differs: a scene wraps its
 things in a `Root`, so the things are Root's CHILDREN, while a template IS one thing already —
@@ -235,6 +238,61 @@ It is **additive**: images become buffer views on the end of the existing binary
 was in the file moves, so the geometry comes out bit-identical and a map derived from the original still
 applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17
 named poses — with 8 materials where there were none.
+
+### Composing — one GLB per thing
+
+`compose_thing(build, thing)` writes the subtree out as a single self-contained GLB;
+`scripts/playcanvas_rebuild.py --compose` runs it over a capture. It emits **alongside** the
+per-container output rather than instead of it, so nothing downstream changes until the comparison is
+done. Measured over the twenty captures: **263 things, 516 MB**, against 416 per-container files.
+
+**The node tree IS the scene's entity subtree, one for one.** Not a merge of the containers'
+hierarchies, which is where the first version went wrong: a container's own root transform is
+*reproduced* by the entity that instantiates it — bride's `RootNode` is scale 0.01 and so is the entity
+`bride_ready` — so copying both applied it twice and she came out 100× small. Building from the scene
+also removes the skeleton merge entirely, because the scene expands every bone into an entity:
+**181/181 for office-babe across three containers, 222/222 bride, 175/175 Oktoberfest, 85/85 Alice**.
+There is one skeleton because there is one scene. A container whose bones the scene does NOT expand
+falls back to carrying its own, and says so loudly; it has never happened here.
+
+**The thing's own scale travels with it and its position does not.** `Banana` is a 0.5 wrapper around a
+0.9166 mesh and a banana that skips it is twice life size; where the scene happens to stand the vase is
+not a property of the vase.
+
+**Weldability is a question about the BONES, and it took two wrong shapes to find that.** Comparing two
+containers' inverse bind matrices was the wrong question — an IBM maps a *mesh's* own space into bone
+space, so `bride_ready.glb` (centimetres) and `model_britney_bride.glb` (metres) legitimately differ on
+all 222 and can still share a skeleton. Comparing WORLD matrices was the wrong frame — it fails whenever
+the scene scales the thing, and Oktoberfest is 1.25, so all 175 of her bones read as broken while nothing
+was wrong. What has to agree is each bone's **own** transform relative to its parent, which is what
+`joints_agree` compares.
+
+**Where every container disagrees with the scene in the same way, the scene is holding a POSE.** A scene
+entity's transform is usually the bind pose and is sometimes a saved pose, and only the containers can
+tell the two apart. Alice's `CC_Base_L_Eye` and `CC_Base_R_Eye` are 90° out in the scene and nowhere
+else — a composed asset takes the container's value there and records it in `extras.conjure.rebound`.
+Where the containers disagree with EACH OTHER the scene keeps its value and the odd one out is reported:
+letting bride's half-body donor rewrite the skeleton would break the eleven pieces bound to it to fix one.
+
+**Every composed file carries provenance in `extras.conjure`** — the thing, the scene, the containers,
+the `hidden` list, and per mesh node the piece index, its `(container, mesh)` and whether the scene had
+it switched off. `hidden` is glTF node names, which is exactly what the runtime `figure-parts` component
+already consumes (`specs/figures.md` § 8a).
+
+**`verify_thing` judges the file against the `Thing` and the source containers**, and silence is the pass:
+one node per piece and nothing else drawing, per-primitive vertex counts equal to the source mesh,
+materials matching the registry BY NAME, the world transform equal to the entity chain with its
+rotations, an instanced mesh still two nodes on one mesh, a bone-parented piece still on its bone,
+optional pieces present and flagged, and every bone standing where the container was bound against it.
+Across all twenty captures it reports **two problems, both on bride**: `underwear.glb` never downloaded
+(a gap in the capture, and it says so), and `model_britney_bride.glb` is a different rig wearing the
+same 222 bone names — the half-body the director was picking as "another bride".
+
+`scripts/glb_check.mjs` is the second, independent gate: it loads a GLB with the same three.js
+`GLTFLoader` the client uses and prints the bounding box. A file can satisfy every structural check and
+still throw in the loader, and it can load perfectly while being a hundred times the wrong size. All 263
+load; the six acceptance cases measure 0.07 m (Banana), 1.73 m (Alice), 1.83 m (office-babe), 1.87 m
+(bride), 2.04 m (Oktoberfest at her 1.25 scale) and 10.9 × 3.6 × 13.7 m (the Japanese room).
 
 **Basis textures are decoded by a pre-pass**, `scripts/basis_to_png.js`, which writes `Foo.png` beside
 `Foo.basis` — the exact name the registry already gives that texture, so the rebuild finds it knowing

@@ -163,6 +163,25 @@ If `--list` reports **"NO config.json"**, the capture is geometry only — the l
 registry is what is missing, and it prints the URL to fetch plus a reminder that `config.json` names the
 scene file and the textures you also need.
 
+### Converting whole THINGS instead of whole files
+
+A container is a FILE, one artist's export; a *thing* is what the scene places. They disagree in both
+directions — `office-babe` draws from three containers, and `TOOLS LIBRARYblend5.glb` is fifteen separate
+props — so the per-container output above emits meshes the scene never renders and drops ones it does.
+`--compose` writes one GLB per thing instead, and checks each against the scene that described it:
+
+```bash
+python scripts/playcanvas_rebuild.py temp/vrh/akari --things            # what the scenes place
+python scripts/playcanvas_rebuild.py temp/vrh/akari --out temp/things/akari --compose
+node scripts/glb_check.mjs temp/things/akari/*.glb                      # will three.js load it, and how big
+```
+
+It writes **alongside** `temp/rebuilt/` rather than replacing it, and nothing imports from it yet — so
+the way to look at one is to drop the file into a web glb viewer. `--compose` prints `WRONG:` for
+anything the composed file gets wrong against the scene, and says "the verifier is silent" when there is
+nothing; `glb_check.mjs` is the independent second opinion, and its bounding box is where a 100× error
+shows up instantly.
+
 `--adopt` gives a mesh no entity binds the material from an identically-named one elsewhere in the
 build, reported as INFERRED. It is rarely needed: `template` assets are read as well as scenes, and
 between them they usually bind everything — both models here come out fully bound with the flag off.

@@ -531,6 +531,26 @@ def regroup_materials(donor: tuple[int, ...], mats: tuple, counts: tuple[int, ..
 
 
 @dataclass
+class Node:
+    """One entity of a thing's subtree, exactly as the scene states it.
+
+    The subtree is kept whole rather than flattened into per-piece transforms because it IS the
+    skeleton: measured across every case in this corpus, 100% of a container's joints appear here as
+    entities (181/181 office-babe across three containers, 222/222 bride, 85/85 Alice). Composing from
+    the scene therefore needs no skeleton merge at all — there is one skeleton because the scene has
+    one — and it sidesteps the trap that a container's own root transform is reproduced by the entity
+    that instantiates it, so copying both applies it twice (bride, 100× out).
+    """
+
+    name: str
+    parent: int                                 # index in `Thing.tree`; -1 for the thing's own root
+    position: tuple
+    rotation: tuple                             # euler DEGREES in PlayCanvas order — `compose.quat_from_euler`
+    scale: tuple
+    enabled: bool                               # this entity's OWN flag, uncomposed
+
+
+@dataclass
 class Piece:
     """One mesh a THING draws, plus everything about it the container file does not hold.
 
@@ -548,6 +568,12 @@ class Piece:
     position: tuple = (0.0, 0.0, 0.0)           # composed down `path`, in the thing's own frame
     scale: tuple = (1.0, 1.0, 1.0)
     rotated: bool = False                       # a non-zero rotation appears in the chain — see `things`
+    # Every LINK of that chain, `(name, position, rotation, scale)` from the thing's root down to this
+    # entity inclusive, each transform the entity's OWN. `position`/`scale` above are a summary and are
+    # exact only while the chain is unrotated; 538 of 948 pieces across the twenty captures are not, so
+    # anything that has to place geometry rebuilds the chain from here instead of reading the summary.
+    chain: tuple = ()
+    node: int = -1                              # the entity that draws it, as an index into `Thing.tree`
 
 
 @dataclass
@@ -565,6 +591,13 @@ class Thing:
     enabled: bool                               # placed in this scene, or sitting in its catalogue
     entities: int                               # subtree size, for reporting
     pieces: list[Piece] = field(default_factory=list)
+    tree: list = field(default_factory=list)    # the whole entity subtree, parents before children
+    # The thing entity's OWN transform. Its scale belongs to the thing — `Banana` is a 0.5 wrapper around
+    # a 0.9166 mesh and a banana that skips it comes out twice life size — but its POSITION is where this
+    # scene put it, which is not a property of the thing and does not travel with it.
+    position: tuple = (0.0, 0.0, 0.0)
+    rotation: tuple = (0.0, 0.0, 0.0)
+    scale: tuple = (1.0, 1.0, 1.0)
 
     @property
     def containers(self) -> dict[int, int]:
@@ -715,13 +748,19 @@ def things(build: Build, *, roots: Optional[dict] = None, capture: str = "",
 
 
 def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
-    """Collect one thing's subtree: its pieces, each with the chain that puts it where it is."""
+    """Collect one thing's subtree: the entity TREE, and the pieces hanging off it.
+
+    The tree is kept whole (see `Node`) because it is what the composer builds nodes from. The per-piece
+    `chain`, `position` and `scale` are the same information summarised for reading and for reports.
+    """
     top = entities[guid]
     thing = Thing(name=top.get("name") or "?", scene=scene,
                   enabled=top.get("enabled") is not False, entities=0)
-    stack = [(guid, (), True, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), False, "")]
+    # Depth-first, and a parent is always appended before its children — so `Node.parent` always points
+    # at an index that already exists and anything downstream can build the tree in one pass.
+    stack = [(guid, (), (), True, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), False, "", -1)]
     while stack:
-        g, path, on, pos, scl, rot, parent = stack.pop()
+        g, path, chain, on, pos, scl, rot, parent, up = stack.pop()
         if g not in entities:
             continue
         entity = entities[g]
@@ -737,6 +776,12 @@ def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
         pos = tuple(pos[i] + p[i] * scl[i] for i in range(3))
         scl = tuple(scl[i] * s[i] for i in range(3))
         rot = rot or any(abs(v) > 1e-6 for v in r)
+        links = chain + ((label, p, r, s),)
+        if not path:
+            thing.position, thing.rotation, thing.scale = p, r, s
+        thing.tree.append(Node(name=label, parent=up, position=p, rotation=r, scale=s,
+                               enabled=entity.get("enabled") is not False))
+        mine = len(thing.tree) - 1
         # The THING's own flag is consumed by `Thing.enabled` and must NOT propagate: at that level it
         # means "in the catalogue, not placed in this scene", which is the entire props library — all
         # 15 tools and all 13 skin-tone variants are disabled Root children. Composing it would mark
@@ -755,9 +800,9 @@ def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
                                     for m in (render.get("materialAssets") or [])),
                     entity=label, parent=parent, path=here,
                     enabled=on and render.get("enabled") is not False,
-                    position=pos, scale=scl, rotated=rot))
+                    position=pos, scale=scl, rotated=rot, chain=links, node=mine))
         for child in entity.get("children") or []:
-            stack.append((child, here, on, pos, scl, rot, label))
+            stack.append((child, here, links, on, pos, scl, rot, label, mine))
     thing.pieces.sort(key=lambda x: (x.container, x.mesh, x.entity))
     return thing
 
