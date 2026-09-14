@@ -434,6 +434,19 @@ two flavours: template-only (the deck, Alice's scalp) and bound-by-nobody (the t
 sixth turned up while testing — `aula_Aliceglb` mesh 5 `CC_Base_Eye` is template-only too, which is
 worth a look next to her long-standing eye trouble.
 
+3. ✅ **Walk the things** — BUILT 2026-09-14, settled into [`specs/captures.md`](../specs/captures.md)
+   § 3. `things(build)` → `Thing` / `Piece`, each piece carrying the entity that draws it, the parent it
+   hangs off, the path from the thing's root and the transform composed down it. Verified against all
+   five cases: office-babe reads 3 containers / 9 live / 1 optional, the beer sits on `DEF-hand.R`,
+   bride's two heels stay two pieces of one mesh, the deck composes to `y = -0.1`, and every dead twin
+   is simply absent with no rule needed for it. `thing_notes` reports the convention and `roots=`
+   overrides it; `playcanvas_rebuild.py --things` is the view.
+
+   A test caught the bug this plan predicted: composing the THING's own `enabled` into its pieces marks
+   every prop optional and imports none of them.
+
+**What remains is 4 — COMPOSE — and its inverse.**
+
 **Splitting is the other half of the job, and it is not the same code.** Composition merges several
 containers into one file; the props need the inverse — one mesh, its materials and its node chain
 extracted into a standalone asset. The props scene shows exactly what that has to carry:
