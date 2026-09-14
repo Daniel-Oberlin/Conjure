@@ -193,6 +193,24 @@ things in a `Root`, so the things are Root's CHILDREN, while a template IS one t
 `VR_hand_R` is 53 entities under a single root — so there the root is the thing. Treating them alike
 returned a hand's fingers as three separate props.
 
+**`captures/things.json` holds the corrections**, on the same search path as `parts.json` — a user file
+shadows the bundled one, env `CONJURE_*` aside — and for the same reason: the answer is the captured
+site's convention, so the next capture can arrive shaped a third way and fixing it should be an edit.
+
+Two kinds of entry, and they are very different in size:
+
+- **`exclude`** is SITE-WIDE and written once. Every capture ships the app's own scene identically —
+  `2049393.json`, 1,016 entities whose Root children are `LeftController`, `Gestures`, `ToolModeStore`,
+  `TRASH` and four more. They render meshes and nobody would place them. Nine names, all captures.
+- **`captures`** is per capture, keyed by scene file, and **one of twenty needs it**. susan's Root child
+  `aula` is a classroom with Alice standing in it; `ModelParent` (the figure) and `EnvironmentVR` (the
+  room) sit two levels down and are separately useful. Nothing in the graph says to split there. A LIST
+  names the things at any depth; a MAP also renames, because `ModelParent` is no use as an asset label.
+
+That ratio is the answer to "will this need manual guidance for every import": one file written once,
+plus roughly one capture in twenty. It is a floor rather than a ceiling — twenty captures from one
+origin is a narrow sample — which is why detection reports rather than decides.
+
 **Which entity is a thing is CONVENTION, not format.** The rule — a direct child of a scene's Root
 whose subtree renders something — holds in the content scenes and is **false in the app's own**:
 `2049393.json` offers `Gestures` (380 entities, 1 piece), `ToolModeStore` and `TRASH`, which are

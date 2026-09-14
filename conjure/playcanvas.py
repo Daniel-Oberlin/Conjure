@@ -587,7 +587,7 @@ class Thing:
         return [p for p in self.pieces if not p.enabled]
 
 
-def thing_notes(build: Build, ts: Optional[list] = None) -> list[str]:
+def thing_notes(build: Build, ts: Optional[list] = None, **kw) -> list[str]:
     """What the thing rule PROPOSED, per scene, so a person can see it and disagree.
 
     The rule is convention (see `things`), so this is the whole of its accountability: it prints the
@@ -595,7 +595,9 @@ def thing_notes(build: Build, ts: Optional[list] = None) -> list[str]:
     enough — a prop is 2 entities and 1 piece, while the app shell's `Gestures` is 380 entities and 1
     piece and is obviously not a thing anybody wants to place.
     """
-    ts = things(build) if ts is None else ts
+    # `**kw` reaches `things` so a report describes what was actually CHOSEN — capture overrides and
+    # exclusions included — rather than what the bare convention would have proposed.
+    ts = things(build, **kw) if ts is None else ts
     if not ts:
         return []
     out = []
@@ -619,7 +621,33 @@ def _vec(entity: dict, key: str, default: tuple) -> tuple:
         return default
 
 
-def things(build: Build, *, roots: Optional[dict] = None) -> list[Thing]:
+THINGS_FILE = "things.json"
+
+
+def load_thing_rules(paths: Optional[list] = None) -> dict:
+    """`things.json` — which entity in a captured scene counts as a THING.
+
+    DATA rather than code for the same reason `parts.json` is: the answer is a CONVENTION of the site
+    being captured, not a property of glTF or PlayCanvas, so the next capture can arrive shaped a third
+    way and correcting it should be an edit. A user file shadows the bundled one entirely — merging two
+    would make the result depend on rule order across files nobody can see at once.
+    """
+    from . import config                                  # noqa: PLC0415  (config imports late)
+    from pathlib import Path
+    search = paths if paths is not None else [config.CONFIG_DIR / "captures",
+                                              config.BUNDLED_CAPTURES_DIR]
+    for base in search:
+        candidate = Path(base) / THINGS_FILE
+        if candidate.exists():
+            try:
+                return json.loads(candidate.read_text())
+            except Exception:                             # noqa: BLE001 — a broken edit must not stop a build
+                print(f"[conjure] thing rules at {candidate} are not readable JSON — ignoring them")
+    return {"revision": 0, "exclude": [], "captures": {}}
+
+
+def things(build: Build, *, roots: Optional[dict] = None, capture: str = "",
+           rules: Optional[dict] = None) -> list[Thing]:
     """Every thing each of this build's scenes places, with the pieces it draws and from where.
 
     **Which entity is a thing is CONVENTION, not format.** A render component naming
@@ -642,6 +670,11 @@ def things(build: Build, *, roots: Optional[dict] = None) -> list[Thing]:
     # Scenes when there are any, TEMPLATES when there are not. Two of 58 builds declare a scene that is
     # not on disk, and a template IS a serialised entity hierarchy — same shape, same walk — so falling
     # back is what makes those builds readable at all rather than a special case for them.
+    rules = load_thing_rules() if rules is None else rules
+    # `roots=` is the explicit override a caller passes; the FILE is the durable one, keyed by capture
+    # then scene. The file's entry wins where both speak, because it is the reviewed answer.
+    per_capture = (rules.get("captures") or {}).get(capture or os.path.basename(build.root.rstrip("/")))
+    excluded = set(rules.get("exclude") or ())
     out: list[Thing] = []
     # A scene wraps its things in a `Root`, so the THINGS are Root's children. A template IS one thing
     # already — `VR_hand_R` is 53 entities under a single root — so there the root is the thing itself.
@@ -652,16 +685,30 @@ def things(build: Build, *, roots: Optional[dict] = None) -> list[Thing]:
             continue
         claimed = {c for e in entities.values() for c in (e.get("children") or [])}
         tops = [g for g in entities if g not in claimed]
-        override = (roots or {}).get(name)
-        candidates = [g for top in tops for g in (entities[top].get("children") or [])] if nested \
-            else tops
+        override = (per_capture or {}).get(name, (roots or {}).get(name))
+        if override is not None:
+            # An override NAMES the things, wherever they sit. susan's are `ModelParent` and
+            # `EnvironmentVR`, two levels down inside `aula` — a filter over Root's children could only
+            # ever have dropped her, which is what it did.
+            # A list names them; a MAP also renames them, because the entity name is often the app's
+            # internal one — susan's figure is `ModelParent`, which is no use as an asset label.
+            wanted = dict(override) if isinstance(override, dict) else {n: n for n in override}
+            candidates = [g for g, e in entities.items() if (e.get("name") or "?") in wanted]
+        else:
+            candidates = [g for top in tops for g in (entities[top].get("children") or [])] if nested \
+                else tops
         for guid in candidates:
             if guid not in entities:
                 continue
+            # A template's root entity is called `RootNode` in six builds — the ASSET's name is the one
+            # that means anything (`VR_hand_R`, `Dilda`), and it is what a label has to come from.
             label = entities[guid].get("name") or "?"
-            if override is not None and label not in override:
-                continue
+            if not nested and label in ("RootNode", "?"):
+                label = name
+            if override is None and label in excluded:
+                continue                                  # the app's own machinery, site-wide
             thing = _walk(build, entities, guid, name)
+            thing.name = wanted.get(label, label) if override is not None else label
             if thing.pieces or override is not None:
                 out.append(thing)
     return out

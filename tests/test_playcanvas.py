@@ -21,7 +21,7 @@ import pytest
 from conjure.figures import split_glb, write_glb
 from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, BLEND_PREMULTIPLIED, Build, adopt_unbound, build_origin,
                                 by_container, container_meshes, dangling, dead_meshes, find_builds,
-                                thing_notes, things,
+                                load_thing_rules, thing_notes, things,
                                 find_orphans, has_alpha, load_image, material_from, missing_files,
                                 read_build, rebuild, regroup_materials, report_orphans, variant_only,
                                 _Textures)
@@ -461,6 +461,64 @@ def test_a_thing_is_enabled_or_CATALOGUED_and_that_is_not_a_reason_to_skip_it(tm
     assert len(thing.live) == 1, "...and still entirely importable"
 
 
+def test_the_app_shell_is_excluded_SITE_WIDE_not_per_capture(tmp_path):
+    """The eight false positives are the same eight names in every capture: `2049393.json` is the app's
+    own scene and every capture ships it identically. `LeftController`, `Gestures`, `TRASH` and the rest
+    render meshes and are not things anybody places. One list, written once, applies everywhere — which
+    is the difference between "manual guidance per import" and "a file you write once"."""
+    rules = {"exclude": ["Gestures"], "captures": {}}
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("Gestures", {}, [("hand", _render(10, 0, [30]), [])]), templates=[])
+    build = read_build(root)
+    assert [t.name for t in things(build, rules={"exclude": [], "captures": {}})] == ["Gestures"]
+    assert things(build, rules=rules) == [], "excluded by name, in any scene"
+
+
+def test_a_capture_override_NAMES_things_at_any_depth_and_can_rename_them(tmp_path):
+    """susan is the one measured capture the convention bundles: her Root child `aula` is a classroom
+    with Alice standing in it, and the two useful things — `ModelParent` (the figure) and
+    `EnvironmentVR` (the room) — sit two levels down. A filter over Root's CHILDREN could only ever
+    have dropped her, which is exactly what it did until this.
+
+    A list names them; a map also renames, because `ModelParent` is the app's internal name and no use
+    as an asset label."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                  scene_tree=("aula", {}, [
+                      ("ModelParent", {}, [("figure", _render(10, 0, [30]), [])]),
+                      ("EnvironmentVR", {}, [("room", _render(10, 1, [31]), [])])]),
+                  templates=[])
+    build = read_build(root)
+    plain = {"exclude": [], "captures": {}}
+    assert [t.name for t in things(build, rules=plain)] == ["aula"], "the convention bundles them"
+
+    picked = {"exclude": [], "captures": {"cap": {"scene.json": ["ModelParent", "EnvironmentVR"]}}}
+    assert sorted(t.name for t in things(build, capture="cap", rules=picked)) == \
+        ["EnvironmentVR", "ModelParent"], "named at depth"
+
+    named = {"exclude": [], "captures": {"cap": {"scene.json": {"ModelParent": "Alice"}}}}
+    got = things(build, capture="cap", rules=named)
+    assert [t.name for t in got] == ["Alice"] and len(got[0].live) == 1
+
+
+def test_a_template_derived_thing_is_named_after_the_TEMPLATE(tmp_path):
+    """A template's root entity is called `RootNode` in six builds, which is no use as a label. The
+    ASSET's name is the one that means something — `VR_hand_R`, `Dilda`, `watchesbuttons`."""
+    root = _build(tmp_path, scene=False, entities=[],
+                  templates=[(40, "VR_hand_R", [("RootNode", 20, [30])])])
+    build = read_build(root)
+    assert [t.name for t in things(build)] == ["VR_hand_R"]
+
+
+def test_the_thing_rules_are_DATA_and_a_broken_edit_does_not_stop_a_build(tmp_path):
+    """Same discipline as `parts.json`: a user file shadows the bundled one entirely, and unreadable
+    JSON is reported and ignored rather than raised — a conversion must not die on a typo."""
+    (tmp_path / "things.json").write_text('{"revision": 9, "exclude": ["X"], "captures": {}}')
+    assert load_thing_rules([tmp_path])["revision"] == 9
+    (tmp_path / "things.json").write_text("{not json")
+    assert load_thing_rules([tmp_path])["exclude"] == [], "ignored, not raised"
+    assert load_thing_rules([tmp_path / "nowhere"])["captures"] == {}
+
+
 def test_which_entity_is_a_thing_is_CORRECTABLE(tmp_path):
     """The rule is this app's convention, not the format: "a direct child of Root whose subtree
     renders" holds in the content scenes and is FALSE in the app's own, where Root's children are
@@ -470,9 +528,12 @@ def test_which_entity_is_a_thing_is_CORRECTABLE(tmp_path):
                   scene_tree=("Gestures", {}, [("hand", _render(10, 0, [30]), [])]),
                   templates=[])
     build = read_build(root)
-    assert [t.name for t in things(build)] == ["Gestures"], "the convention, proposing"
-    assert things(build, roots={"scene.json": {"nothing-here"}}) == [], "and overruled"
-    assert any("convention and not the format" in n for n in thing_notes(build))
+    # Explicit rules, because the SHIPPED `things.json` excludes `Gestures` by name — a test that
+    # depends on the data file is testing the data file.
+    plain = {"exclude": [], "captures": {}}
+    assert [t.name for t in things(build, rules=plain)] == ["Gestures"], "the convention, proposing"
+    assert things(build, roots={"scene.json": {"nothing-here"}}, rules=plain) == [], "and overruled"
+    assert any("convention and not the format" in n for n in thing_notes(build, rules=plain))
 
 
 def test_a_mesh_only_a_TEMPLATE_claims_is_flagged_as_probably_dead(tmp_path):

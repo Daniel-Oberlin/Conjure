@@ -45,6 +45,7 @@ DEFAULT_USER = "daniel"
 BUNDLED_AGENTS_DIR = ROOT / "agents"    # example/bundled agent defs shipped with the repo (never moved)
 BUNDLED_DYNAMICS_DIR = ROOT / "dynamics"  # bundled dynamic-module defs, sibling to agents/ (never moved)
 BUNDLED_PARTS_DIR = ROOT / "parts"      # bundled figure-parts vocabulary (which mesh is clothing)
+BUNDLED_CAPTURES_DIR = ROOT / "captures"   # which entity in a captured scene is a THING worth having
 
 
 def _home(env: Mapping[str, str]) -> Path | None:

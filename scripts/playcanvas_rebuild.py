@@ -33,7 +33,8 @@ def survey_things(root: str) -> int:
     """What each SCENE places, rather than what each FILE holds — the § 2b view."""
     for build_root in find_builds(root):
         build = read_build(build_root)
-        found = things(build)
+        capture = os.path.basename(root.rstrip("/"))
+        found = things(build, capture=capture)
         if not found:
             continue
         print(f"\n{os.path.relpath(build_root, root) or '.'}")
