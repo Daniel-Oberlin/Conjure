@@ -314,69 +314,80 @@ plan said it would: Jane's model has 21 clips that shipped with it and 314 that 
 are listed apart. Not yet confirmed on device — the headset pass is what will say whether the bodies
 actually move correctly.
 
-### Phase 2b — one thing, several files *(blocks parts of 2 and 4)*
+### Phase 2b — convert SCENES, not containers *(blocks parts of 2 and 4)*
 
-*Settles into `specs/figures.md` §8a and `specs/library.md`; the conversion half into
-`specs/figures.md` §9a.*
+*Settles into `specs/figures.md` §9a (the conversion model) and §8a; `specs/library.md` for what an
+imported thing is.*
 
-**This keeps arriving as three different bugs and it is one.** The site routinely builds ONE thing out
-of SEVERAL containers, so no single converted file is the thing. Three confirmed cases, each adding a
-requirement the previous one did not:
+**We are converting the wrong unit, and every symptom below is downstream of that.** A container is a
+FILE — one artist's export. A *thing* is a scene entity subtree. We walk containers, so we emit meshes
+the scene never renders, drop meshes it does, and lose everything that lives on the entity rather than
+in the file: position, parent, instancing.
 
-| | live pieces | the trap |
+The app's own data model already states all of it, so this is not a heuristic we have to invent.
+**Verified across the four captures that exposed it:**
+
+```
+a build has several SCENE files, and each Root's direct children are the THINGS
+  2049393.json   LeftController, Camera Offset, Gestures, DemoVRHoles …   the VR shell
+  2249318.json   Fastfood Blondie (19 meshes), office-babe (10)           the characters
+  2041460.json   VASEonly (1), JAPANESEROOM BAKED (35)                    the rooms
+  2192829.json   13 × MainModelToilet*VER2, all disabled                  skin-tone variants
+  2167323.json   19 props — Stick, Carrot, BOTTLEBEER … all disabled      the props library
+```
+
+A thing's subtree spans containers, which is the whole point:
+
+| thing | subtree | containers it draws from |
 |---|---|---|
-| **office-babe** | `office-babe.glb` (8) + `manager_fixing.glb` (body) | her own file holds a dead twin of the body; same mesh, so materials transfer — **solved**, §28 |
-| **Oktoberfest** | `-fixing.glb` (dress, brows, hair, body) + `-milf.glb` (eyelashes, **beer**) | twins at two densities, so materials CANNOT transfer; the beer is bone-parented |
-| **bride** | `bride_ready.glb` (11) + `model_britney_bride.glb` (body) | same, plus DEAD UNDERWEAR that undressing would reveal, and shoes instanced onto two bones |
-| **JAPANESEROOM** | `JAPANESEROOM BAKED.glb` (33 meshes) + `WOODout.glb` (the deck) | the house's own deck is bound by a TEMPLATE and no scene; the replacement carries a scene TRANSFORM |
+| `office-babe` | 192 entities | `office-babe.glb` 8 · `manager_fixing.glb` 1 · `underwear.glb` 1 |
+| `Oktoberfest-milf` | 183 | `-fixing.glb` 4 · `-milf.glb` 2 (eyelashes, **beer**) · `underwear.glb` 1 |
+| `bride_ready` | 237 | `bride_ready.glb` 11 · `model_britney_bride.glb` 1 · `underwear.glb` 1 |
+| `JAPANESEROOM BAKED` | 39 | `JAPANESEROOM BAKED.glb` 34 · `WOODout.glb` 1 (the deck) |
 
-**Four of twenty captures, so this is the norm and not an oddity** — and it is a figure problem AND an
-environment problem, which is why it sits between phases 2 and 4 rather than inside either.
+**Three states, read off the graph rather than guessed:**
 
-Bride is the one that shows how phase 2 walks into this. Her own container holds three dead meshes: a
-body twin (five primitives of 40,267 against the live body's `[28040, 5631, 308, 2925, 4108]`, so
-materials cannot transfer) and **`clothes_sexyunderwear_top` and `_bottom`, which are bound by nothing
-and therefore black**. The classifier reads them as clothing, correctly, so they are in the wardrobe —
-and taking her dress off is how you would find out. A dead mesh is not a neutral passenger once
-something can make it visible.
+- an entity renders it and is **enabled** → LIVE. Emit it.
+- an entity renders it and is **`enabled: false`** → OPTIONAL. Emit it hidden. *This is the site's own
+  wardrobe switch* — `underwear` is exactly this in all three figures — and it is what phase 2's
+  classifier has been reconstructing from mesh names. The source states it outright.
+- **no entity renders it** → DEAD. Drop it. Every mystery in this file is one of these: office-babe's
+  body twin, Oktoberfest's and bride's denser twins, bride's black `clothes_sexyunderwear_*`, and the
+  Japanese house's grey deck.
 
-Her heels are one mesh instanced by two nodes, on `DEF-foot.L` and `DEF-foot.R`. A merge that flattens
-nodes loses a shoe.
+**The merge is cheap, which was the thing worth checking.** The skeletons are identical BY NAME across
+containers — 181/181 for office-babe, 175/175 Oktoberfest, 222/222 bride, with zero bones on either
+side that the other lacks. So joining two containers is a name-keyed skeleton join, the same operation
+`figure-clip` already does to bind a clip. What the merge must preserve is stated by the cases: a node's
+PARENT (the beer hangs off `DEF-hand.R` in its own GLB already), its TRANSFORM (`WOODout.glb` is
+meaningless at the origin — the scene puts it at `[0, -10, 0]` scale 100), and its INSTANCING (bride's
+heels are one mesh on two nodes, `DEF-foot.L` and `DEF-foot.R`).
 
-The Japanese room is the clearest statement of the shape. `JAPANESEROOM BAKED.glb` mesh 32 is a deck
-and railing, and **no scene entity binds it** — only the container's own template does, which is the
-default binding and not what runs. Its material `WOODout` points at texture `194421251`, an id that is
-**not in the registry at all**, so it converts flat. What the scene actually renders is `WOODout.glb`:
-a different mesh (820 vertices against 1,084), a different material (`WOOD`, textured), placed as its
-own entity at `[0, -10, 0]` scale 100. On the site you see house-minus-deck plus a textured deck laid
-into place. Converted one file at a time you get the house WITH its dead grey deck, and the good one
-sitting unplaced beside it.
+**What this says about `adopt_unbound` (§28).** It is a patch, and the right model makes it
+unnecessary: office-babe's body copy is DEAD, and a subtree conversion never emits it, so there is
+nothing to adopt a material for. It was the right fix for the bug in hand and it should not be
+load-bearing here.
 
-What this phase has to do, in the order the three cases force:
+Two diagnostics we do not have, both cheap, both worth landing first because they turn a mystery into a
+line of output:
 
-1. **Know which meshes are DEAD.** A mesh bound only by a template while the build has scenes is the
-   signal, and all three cases have it. Today `read_build` reads templates as a fallback — necessary,
-   since one capture had sixteen templates and no scene — and does not distinguish a template-only
-   binding once a scene exists. Report it; a dead mesh is a candidate to drop, not to paint.
-2. **Report a DANGLING asset id.** `WOODout`'s missing texture is invisible to every check we have:
-   `missing_files` walks the registry and the id is not in it, so it says nothing is absent. This is the
-   difference between "re-download this capture" and "the site ships it this way", and it is exactly the
-   question that cost a session — *"no texture on the railing of the house"* — answered in one line.
-3. **Compose.** Merge the live meshes of several containers into one file, baking in each donor's scene
-   transform. The beer says the merge must carry a node's PARENT — it hangs off `DEF-hand.R` inside its
-   own GLB already, so a merge that preserves hierarchy gets it for free and it rides her arm through a
-   clip. The deck says the merge must carry a POSITION, since `WOODout.glb` is meaningless at the origin.
-4. **Then** phase 2's separate-container clothing is the same operation with a switch on it: Jane's
-   `hair.glb` and `underwear.glb` are live pieces in their own containers, and "off" is composing
-   without them.
+1. **A mesh bound only by a TEMPLATE while the build has scenes** is the dead-mesh signal, and all four
+   cases carry it. `read_build` reads templates as a fallback — necessary, one capture had sixteen
+   templates and no scene at all — and does not distinguish a template-only binding once a scene exists.
+2. **A DANGLING asset id.** `WOODout`'s material points at texture `194421251`, which is not in
+   `config.json` at all, so `missing_files` walks the registry and reports nothing absent. This is the
+   difference between "re-download this capture" and "the site ships it this way", and it is the question
+   that cost a session: *"no texture on the railing of the house."*
 
-**Done when:** office-babe, Oktoberfest and the Japanese room each import as ONE asset that matches what
-the site renders — her beer in her hand, the deck textured and in place — and the dead twins are
-reported rather than silently carried.
+**Done when:** the four cases each import as ONE asset matching what the site renders — her beer in her
+hand, the deck textured and in place, no black underwear under the dress — dead meshes are reported
+rather than carried, and `enabled: false` pieces arrive as hidden parts instead of being re-derived from
+their names.
 
-**Not this phase:** deciding that a composed figure is the only form. `WOODout.glb` is also a legitimate
-standalone prop, and the capture set is the place that knows which containers are pieces of something
-larger.
+**Still open.** A thing that is *also* a standalone container (`WOODout.glb` is a legitimate prop on its
+own) may want both representations; the capture set is where that belongs. And the no-scene capture —
+sixteen templates, no scene file — needs confirming under this rule: a template IS a serialised entity
+hierarchy, so it should work unchanged, but that is reasoned, not measured.
 
 ### Phase 4 — a room model as the environment *(independent of 1–3)*
 
