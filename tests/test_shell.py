@@ -1212,6 +1212,20 @@ def test_listing_filters_split_off_a_path_that_may_contain_anything():
     assert split("*idle* --all --kind animation") == ("*idle*", {"kind": "animation", "limit": 0})
 
 
+def test_a_filter_worth_ZERO_still_reaches_the_server():
+    """`--all` is `limit: 0`, and the body was built with `if v` — so the flag was dropped before it
+    was sent and did nothing, while the `… (more than 200)` marker kept appearing. A feature whose own
+    success value is falsy. Only ABSENT is absent."""
+    from conjure.shell import Shell
+    assert Shell._admin_body("/p", {"limit": 0}) == {"path": "/p", "limit": 0}
+    assert Shell._admin_body("/p", {"kind": "animation", "limit": 0}) == \
+        {"path": "/p", "kind": "animation", "limit": 0}
+    assert Shell._admin_body("/p", {"limit": 500}) == {"path": "/p", "limit": 500}
+    # ...and genuinely empty filters still go nowhere, which is what `if v` was there for.
+    assert Shell._admin_body("/p", {"kind": None, "related": "", "direction": "out"}) == \
+        {"path": "/p", "direction": "out"}
+
+
 def test_a_flag_like_word_inside_a_filename_is_not_a_flag():
     """`--kind` has to be its own argument. A file called `notes--kind.txt` is a file."""
     from conjure.shell import Shell

@@ -1369,6 +1369,17 @@ class Shell:
             path = (path[:hit.start()] + " " + path[hit.end():]).strip()
         return path, filters
 
+    @staticmethod
+    def _admin_body(path: str, filters: dict) -> dict:
+        """The request body for an `/admin/*` call — a path plus whatever filters were given.
+
+        **Only ABSENT is absent.** This was `if v`, which drops `limit: 0` — and `0` is precisely what
+        `--all` means, so the flag did nothing at all while the `… (more than 200)` marker went on
+        appearing. Its own success condition was falsy. The same trap ate `metalness: 0` during the
+        material pass, and it is worth a named function so it has somewhere to be tested.
+        """
+        return {"path": path, **{k: v for k, v in filters.items() if v is not None and v != ""}}
+
     async def _admin(self, action: str, path: str, **filters) -> dict:
         """POST to the world server's /admin/{tree,delete}. Returns the JSON, or an error dict."""
         url = getattr(self._settings, "world_url", None) if self._settings else None
@@ -1377,7 +1388,7 @@ class Shell:
         try:
             import httpx
             async with httpx.AsyncClient(timeout=30.0) as client:
-                body = {"path": path, **{k: v for k, v in filters.items() if v}}
+                body = self._admin_body(path, filters)
                 resp = await client.post(f"{url}/admin/{action}", json=body,
                                          headers={"X-Conjure-User": self._acting})   # WHO is browsing/deleting
                 return resp.json()
