@@ -3,6 +3,7 @@
 
     python scripts/transcript.py --list                       # what sessions exist
     python scripts/transcript.py b9914db3                     # one session -> temp/transcripts/
+                                                              #   named 2026-09-05-b9914db3.md
     python scripts/transcript.py --all                        # every session for this project
     python scripts/transcript.py b9914db3 --tools             # ...with the tool CALLS too
     python scripts/transcript.py b9914db3 --full              # ...and their results (large)
@@ -36,12 +37,57 @@ def slug_for(cwd: Path) -> str:
     return str(cwd).replace("/", "-")
 
 
+def span(path: Path) -> tuple[str, str]:
+    """`(first, last)` timestamp in a log, as `YYYY-MM-DD`, without parsing the whole file.
+
+    The head is read line by line because the opening records carry no timestamp, and the tail is
+    taken from the last 64 KB — a 50 MB log is not worth reading twice to answer "when".
+    """
+    first = last = ""
+    with path.open("rb") as fh:
+        for _ in range(200):
+            line = fh.readline()
+            if not line:
+                break
+            try:
+                stamp = json.loads(line).get("timestamp") or ""
+            except ValueError:
+                continue
+            if stamp:
+                first = stamp[:10]
+                break
+        size = path.stat().st_size
+        fh.seek(max(0, size - 65536))
+        for line in fh.read().split(b"\n"):
+            try:
+                stamp = json.loads(line).get("timestamp") or ""
+            except ValueError:
+                continue
+            if stamp:
+                last = stamp[:10]
+    return first or last, last or first
+
+
+def out_name(path: Path, start: str, short: bool = True) -> str:
+    """`2026-09-05-b9914db3.md` — the START date, so the name is STABLE.
+
+    Deliberately not the modification time: a session that continues would be renamed on every render
+    and the directory would fill with stale duplicates of the same conversation.
+    """
+    stem = path.stem[:8] if short else path.stem
+    return f"{start or '0000-00-00'}-{stem}.md"
+
+
 def sessions(root: Path) -> list[Path]:
-    return sorted(root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    """Oldest first, by when the session STARTED — which is the order the filenames sort in."""
+    found = list(root.glob("*.jsonl"))
+    return sorted(found, key=lambda p: (span(p)[0], p.stat().st_mtime))
 
 
 def render(path: Path, *, tools: bool = False, results: bool = False, cap: int = 2000) -> str:
-    out: list[str] = [f"# {path.stem}\n",
+    start, end = span(path)
+    when = start if start == end else f"{start} … {end}"
+    out: list[str] = [f"# {when} · {path.stem}\n",
                       f"Source: `{path}`  \n"
                       f"Line number in that file == record number below.\n"]
     for n, line in enumerate(path.open(), 1):
@@ -96,14 +142,20 @@ def main() -> int:
         print(f"no logs for {root.name} — is this the project directory?")
         return 2
     found = sessions(root)
+    # An 8-character prefix is unique across every session here and far easier to read in a listing;
+    # fall back to the whole id the moment two would collide.
+    heads = [p.stem[:8] for p in found]
+    short = len(set(heads)) == len(heads)
     if args.list or not (args.session or args.all):
         total = 0
+        print(f"  {'started':11} {'last active':13} {'size':>9}   {'id':10} -> file")
         for p in found:
             size = p.stat().st_size
             total += size
-            when = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-            print(f"  {p.stem}  {size / 1e6:7.1f} MB  {when}")
-        print(f"  {'TOTAL':36} {total / 1e6:7.1f} MB   ({len(found)} sessions)")
+            start, end = span(p)
+            print(f"  {start:11} {end:13} {size / 1e6:6.1f} MB   {p.stem[:8]:10} -> "
+                  f"{out_name(p, start, short)}")
+        print(f"  {'TOTAL':37} {total / 1e6:6.1f} MB   ({len(found)} sessions)")
         return 0
 
     picked = found if args.all else [p for p in found if p.stem.startswith(args.session)]
@@ -113,11 +165,19 @@ def main() -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     for p in picked:
+        start, end = span(p)
         text = render(p, tools=args.tools or args.full, results=args.full, cap=args.cap)
-        dest = out_dir / f"{p.stem}.md"
+        dest = out_dir / out_name(p, start, short)
         dest.write_text(text)
-        print(f"  {p.stem}  {p.stat().st_size / 1e6:6.1f} MB -> {dest}  "
+        print(f"  {start} … {end}  {p.stat().st_size / 1e6:6.1f} MB -> {dest}  "
               f"({dest.stat().st_size / 1e6:.2f} MB)")
+    # A rename left the old scheme's files behind, which is how a directory ends up with two copies of
+    # one conversation and no way to tell which is current.
+    stale = [q for q in out_dir.glob("*.md")
+             if any(q.name == f"{p.stem}.md" for p in picked)]
+    for q in stale:
+        q.unlink()
+        print(f"  removed {q.name} (previous naming)")
     return 0
 
 

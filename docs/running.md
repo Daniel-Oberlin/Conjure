@@ -267,12 +267,18 @@ Next session: server → `adb reverse` → browser. 3A is permanent.
 already, so it is local, instant and free.
 
 ```
-python scripts/transcript.py --list      # the sessions, newest last, with sizes
-python scripts/transcript.py b9914db3    # one of them -> temp/transcripts/<id>.md
+python scripts/transcript.py --list      # sessions oldest first: started, last active, size
+python scripts/transcript.py b9914db3    # one of them -> temp/transcripts/2026-09-05-b9914db3.md
 python scripts/transcript.py --all       # every session this project has had
 python scripts/transcript.py b9914db3 --tools    # ...including the tool CALLS
 python scripts/transcript.py b9914db3 --full     # ...and their results (much larger)
 ```
+
+Files are named `<start-date>-<short-id>.md`, so the directory sorts chronologically. The date is when
+the session STARTED, not when it was last written: a session that continues would otherwise be renamed
+on every render, leaving the directory holding two copies of one conversation with nothing to say which
+is current. The full span is in each file's first line, since a single session can run for days —
+`b9914db3` covers 2026-09-05 to 09-14.
 
 **Prose-only is the default because of the ratio.** In a 50 MB session the conversation is 0.7 MB —
 1.4%. The rest is tool inputs, tool results and per-record metadata. The whole of this project's
