@@ -184,7 +184,7 @@ node scripts/basis_to_png.js <capture-dir>
 If the report says **N referenced file(s) are not in this capture**, add `--fetch-list urls.txt` and
 feed it to `xargs -n1 curl -O` or `wget -i`; the addresses are derived from the capture's own path. Textures are downscaled to 1024
 by default because these builds routinely use 4096-square maps, which is about 90 MB of VRAM each. See
-§ 9a of [`specs/figures.md`](./specs/figures.md).
+§ 3 of [`specs/captures.md`](./specs/captures.md).
 
 ---
 

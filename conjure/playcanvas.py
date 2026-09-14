@@ -1,5 +1,7 @@
 """Re-assemble a PlayCanvas published build into self-contained, textured GLBs.
 
+Spec: docs/specs/captures.md.
+
 PlayCanvas's converter splits an upload deliberately: geometry and skinning go into the GLB, while
 materials and textures become separate entries in the project's asset registry. The GLB is never
 self-contained *by design* — the engine reattaches materials at load time. So a build downloaded from

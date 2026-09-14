@@ -62,8 +62,13 @@ split exists so a spec can be trusted: nothing in it is a plan, an intention, or
 - **[specs/figures.md](./specs/figures.md)** — **figures**: rigged humanoids, and the per-model
   vocabulary that makes them posable — what import extracts from a GLB, the discovery layers that
   recover a semantic bone map and the validator that gates them, the anatomical frame and joint limits,
-  life-size placement, the catalog revision stamp, the runtime `figure` component, and the headless
-  Blender conversion that feeds it. ([backlog](./backlogs/figures.md))
+  life-size placement, the catalog revision stamp, and the runtime `figure`, `figure-parts` and
+  `figure-clip` components. ([backlog](./backlogs/figures.md))
+- **[specs/captures.md](./specs/captures.md)** — **captures**: the pipeline from someone else's 3D web
+  app to a row in the catalog — the browser extension that pulls a published build, the reconstruction
+  that rejoins materials a PlayCanvas export split apart, the import that files the result with its
+  relations, and the headless Blender path beside it. Each stage fails in ways the next cannot detect,
+  which is why they are specified together. ([backlog](./backlogs/captures.md))
 - **[specs/occlusion.md](./specs/occlusion.md)** — real-world depth occlusion: the global depth pre-pass
   and the `off`/`hands`/`hands-solid` modes. ([backlog](./backlogs/occlusion.md))
 - **[specs/voice.md](./specs/voice.md)** — the **ears-and-mouth front-end**: the thin-client contract

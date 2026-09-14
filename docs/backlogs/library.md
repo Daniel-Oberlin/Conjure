@@ -140,52 +140,15 @@ the wrong home — maintenance verbs live in `ctl.py`. `search_library` through 
 
 ## Unsettled — asked for, not yet designed
 
-### Interactive exclusion at capture import
+### Interactive exclusion at capture import — see `backlogs/captures.md`
 
-`scripts/import_capture.py` takes everything a capture holds. A capture also holds the shared furniture
-— controllers, a desk, a magnet, a button, the tools library — and there is no way to leave it out
-short of deleting rows afterwards. Asked for as an **opt-in** mode that walks the items and takes
-Enter to include, `n` to exclude, with a **separate flag per asset type** so the models can be
-confirmed without being asked about clips.
+Moved 2026-09-13 with the capture pipeline; it is a question about what a capture yields, not about
+what the catalog does with a row.
 
-**Unsettled, and the measurements are why.**
+### Re-importing a capture leaves the previous rows behind — see `backlogs/captures.md`
 
-*It repeats.* Nine names account for nearly all the noise and each recurs in 15–20 of the twenty
-captures, while **43 of 53 distinct models appear in exactly one**. So the real cost is not 208
-decisions, it is about nine real ones and 199 repetitions — an interactive pass with no memory becomes
-unusable around the third capture. That argues for persisted decisions, which is a file, a format and a
-"forget my answers" escape hatch: more scope than the feature looks like.
-
-*Per-type is the whole point, not a nicety.* Confirming everything across twenty captures is
-
-    models 208 · animations 710 · audio 1,956 · TOTAL 2,874 prompts
-
-Audio already has an automatic skip rule for the promo lines, and no case has come up for excluding a
-clip. Models may be the only type that needs this at all.
-
-*Name or content as the key?* Content-addressing is exact, but `VR_hand_L.glb` has two distinct hashes
-across captures and `underwear.glb` has eight, so a hash-keyed skip re-asks on every variant.
-Name-keyed matches the intent and could catch something wanted.
-
-**And the prior question, unanswered:** whether exclusion is the right shape at all. Content-addressing
-means the desk in twenty captures is ONE row, so a wrong include costs almost no storage. If the
-problem is that props clutter a listing, `--kind` or a `prop` tag solves it without a decision per
-item; if the problem is that they should not be catalogued, exclusion is right. Nobody has said which.
-
-### Re-importing a capture leaves the previous rows behind
-
-An asset id is a content address, so reconverting a capture with a fixed converter produces DIFFERENT
-bytes and therefore a different id. The importer creates the new row and knows nothing about the old
-one, so a search returns both and the director may place either.
-
-Seen live: fixing the roughness and mirror translations changed `Teacher_v1` and `bride_ready`, and the
-catalog then held two of each. The stale rows were identified by hashing the current rebuilt files and
-removing set members that matched none of them — which works, and is a script nobody has written.
-
-**Unresolved:** whether the importer should retire a superseded row automatically. It would need a
-notion of identity above the bytes — same label, same set, newer — and getting that wrong deletes an
-asset somebody placed. Content addressing is what makes the problem, and it is also what makes a wrong
-answer cheap to recover from, since the bytes are still there.
+Moved with the above. It is listed there as a **blocker** on the composition work, because merging
+several containers into one asset is by definition a re-import that supersedes.
 
 ## Future directions
 

@@ -13,6 +13,8 @@ name and should be dissolved on the spot.
 
 **Dissolves to:** `specs/library.md` + `backlogs/library.md` (phases 1, 4) ·
 `specs/figures.md` + `backlogs/figures.md` (phases 2, 3, 5) ·
+**`specs/captures.md` + `backlogs/captures.md` (phase 2b)** — a new area opened 2026-09-13, because the
+conversion model this plan needs is not about figures and had been living in `specs/figures.md` §9a ·
 `specs/worlds-surfaces.md` (phase 4) · `specs/dynamics.md` (phase 4, the `grab` mode)
 
 ---
@@ -316,8 +318,10 @@ actually move correctly.
 
 ### Phase 2b — convert SCENES, not containers *(blocks parts of 2 and 4)*
 
-*Settles into `specs/figures.md` §9a (the conversion model) and §8a; `specs/library.md` for what an
-imported thing is.*
+*Settles into [`specs/captures.md`](../specs/captures.md) — the whole thing model, merge and split —
+with `specs/figures.md` §8a picking up whatever the `enabled: false` parts mean for a wardrobe, and
+`specs/library.md` for what an imported thing is. The known problems it starts from are already in
+[`backlogs/captures.md`](../backlogs/captures.md).*
 
 **We are converting the wrong unit, and every symptom below is downstream of that.** A container is a
 FILE — one artist's export. A *thing* is a scene entity subtree. We walk containers, so we emit meshes
