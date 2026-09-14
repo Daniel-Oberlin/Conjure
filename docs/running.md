@@ -261,6 +261,30 @@ cable, or Developer Mode / the reboot didn't take.
 
 Next session: server → `adb reverse` → browser. 3A is permanent.
 
+## Reading back a session
+
+`python scripts/transcript.py` renders a Claude Code session log to Markdown. Everything is on disk
+already, so it is local, instant and free.
+
+```
+python scripts/transcript.py --list      # the sessions, newest last, with sizes
+python scripts/transcript.py b9914db3    # one of them -> temp/transcripts/<id>.md
+python scripts/transcript.py --all       # every session this project has had
+python scripts/transcript.py b9914db3 --tools    # ...including the tool CALLS
+python scripts/transcript.py b9914db3 --full     # ...and their results (much larger)
+```
+
+**Prose-only is the default because of the ratio.** In a 50 MB session the conversation is 0.7 MB —
+1.4%. The rest is tool inputs, tool results and per-record metadata. The whole of this project's
+history, fifteen sessions and 175 MB of logs, renders to 4.7 MB you can grep.
+
+The logs live in `~/.claude/projects/<slugified-cwd>/`, one JSON object per line, and **the line
+number is the record number** — so once the Markdown points you at `line 6954`, `sed -n '6954p'` on
+the `.jsonl` gets you that turn's raw JSON, tool calls and all.
+
+Worth knowing after a context compaction: the summary is what the *model* keeps, and the log is what
+*happened*. They are not the same, and the log is complete.
+
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
