@@ -455,11 +455,12 @@ framing — walk the things, and where a thing happens to be alone in its file t
 merged file is a NEW id and this is a re-import that supersedes, not an edit. Two things must be solved
 first or the library grows instead of shrinking:
 
-- **Superseded rows are left behind** (already in `backlogs/library.md`). Re-importing office-babe today
-  left both the old black-bodied row and the new one, and the stale one was deleted by hand. Do that
-  across every capture and the catalog doubles.
-- **Relations are keyed to the old model id.** `shipped_with` binds 21 clips to a figure by id; a merge
-  changes the id, so the edges have to be rebuilt at import rather than inherited.
+- ✅ **Superseded rows are left behind** — BUILT 2026-09-14. `library.supersede` leaves a tombstone
+  reachable only by id; `import_capture.same_thing` decides identity as `(kind, label)` within one
+  capture, so a re-import cannot retire another capture's props.
+- ✅ **Relations are keyed to the old model id** — same change. They MOVE to the new row rather than
+  being inherited or copied, so a figure's 21 `shipped_with` edges follow it and `dir --with` does not
+  answer twice.
 
 `rig_sig` should survive the merge, which is what keeps the clips working: it fingerprints humanoid bone
 NAMES and the donors' skeletons are identical by name. Verify it, do not assume it.

@@ -98,3 +98,52 @@ def test_stem_drops_an_extension_and_a_path_but_not_a_dotted_name():
     assert stem("files/assets/1/1/3_idle.mp3") == "3_idle"
     assert stem("aula_Std_Eye_R") == "aula_Std_Eye_R"
     assert stem("Plant_Dracaena-trifasciata_A.png") == "Plant_Dracaena-trifasciata_A"
+
+
+def test_identity_above_the_bytes_is_per_CAPTURE(tmp_path):
+    """A content-addressed catalog has no other way to say "the same logical asset": re-converting gives
+    it a new id every time the converter improves. So identity is `(kind, label)` **within one
+    capture** — and the capture tag is the whole safety argument.
+
+    Two captures can ship different `computer_desk` bytes and each keeps its own row, because a row
+    tagged only `jane` is never a candidate while importing `akari`. Without that, re-importing one
+    capture would retire another's props."""
+    import runpy
+
+    from conjure.library import AssetLibrary
+    mod = runpy.run_path("scripts/import_capture.py", run_name="not_main")
+    same_thing = mod["same_thing"]
+    S = "daniel/agents/builder"
+    lib = AssetLibrary(tmp_path / "library.db")
+    lib.upsert("desk-akari.glb", kind="model", label="computer_desk", scope=S,
+               source="cache://a", tags="akari")
+    lib.upsert("desk-jane.glb", kind="model", label="computer_desk", scope=S,
+               source="cache://b", tags="jane")
+    lib.upsert("shared.glb", kind="model", label="magnet", scope=S, source="cache://c",
+               tags="akari, jane")
+    lib.upsert("clip.glb", kind="animation", label="computer_desk", scope=S, source="cache://d",
+               tags="akari")
+
+    assert [r["id"] for r in same_thing(lib, S, "akari", "model", "computer_desk")] \
+        == ["desk-akari.glb"], "jane's desk is not akari's to retire"
+    assert [r["id"] for r in same_thing(lib, S, "jane", "model", "computer_desk")] \
+        == ["desk-jane.glb"]
+    assert [r["id"] for r in same_thing(lib, S, "akari", "model", "magnet")] == ["shared.glb"], \
+        "a prop shared by both IS akari's to replace when akari is re-imported"
+    assert same_thing(lib, S, "akari", "model", "nothing-called-this") == []
+    assert same_thing(lib, S, "akari", None, "computer_desk") == [], "no kind, no claim"
+
+
+def test_a_tombstone_is_never_a_candidate_a_second_time(tmp_path):
+    """Retiring a tombstone means nothing, and `by_user` already hides them — so the rule inherits that
+    for free rather than restating it."""
+    import runpy
+
+    from conjure.library import AssetLibrary
+    mod = runpy.run_path("scripts/import_capture.py", run_name="not_main")
+    S = "daniel/agents/builder"
+    lib = AssetLibrary(tmp_path / "library.db")
+    for i in ("old.glb", "new.glb"):
+        lib.upsert(i, kind="model", label="jane", scope=S, source=f"cache://{i}", tags="jane")
+    lib.supersede("old.glb", "new.glb")
+    assert [r["id"] for r in mod["same_thing"](lib, S, "jane", "model", "jane")] == ["new.glb"]

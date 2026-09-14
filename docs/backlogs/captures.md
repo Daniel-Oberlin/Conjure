@@ -71,26 +71,16 @@ means the desk in twenty captures is ONE row, so a wrong include costs almost no
 problem is that props clutter a listing, `--kind` or a `prop` tag solves it without a decision per
 item; if the problem is that they should not be catalogued, exclusion is right. Nobody has said which.
 
-### Re-importing a capture leaves the previous rows behind
+### ~~Re-importing a capture leaves the previous rows behind~~ — BUILT 2026-09-14
 
-An asset id is a content address, so reconverting a capture with a fixed converter produces DIFFERENT
-bytes and therefore a different id. The importer creates the new row and knows nothing about the old
-one, so a search returns both and the director may place either.
+`library.supersede` + `import_capture.same_thing`, specified in
+[`specs/library.md`](../specs/library.md) § 3. Relations move to the new row, the old one becomes a
+tombstone reachable only by id, and identity is `(kind, label)` within one capture so a re-import
+cannot retire another capture's props.
 
-Seen live: fixing the roughness and mirror translations changed `Teacher_v1` and `bride_ready`, and the
-catalog then held two of each. The stale rows were identified by hashing the current rebuilt files and
-removing set members that matched none of them — which works, and is a script nobody has written.
-
-**Unresolved:** whether the importer should retire a superseded row automatically. It would need a
-notion of identity above the bytes — same label, same set, newer — and getting that wrong deletes an
-asset somebody placed. Content addressing is what makes the problem, and it is also what makes a wrong
-answer cheap to recover from, since the bytes are still there.
-
-**Now a blocker, not just an annoyance.** The composition work (plan § Phase 2b) merges several
-containers into one asset, which is by definition a re-import that supersedes: new bytes, new content
-address, new row. Landing it without this fixed does not halve the catalog, it doubles it. The
-`shipped_with` edges have the same problem — they are keyed to the old model id, so 21 clips per figure
-need re-pointing rather than inheriting.
+The open question in this entry — *whether the importer should retire automatically, since getting it
+wrong deletes an asset somebody placed* — is answered by not deleting. A tombstone keeps the bytes, the
+row and the id, so a wrong inference costs a column.
 
 ---
 

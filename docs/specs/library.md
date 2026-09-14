@@ -193,6 +193,39 @@ unit-testable alone and reusable by any future scanner.
 **Visibility is inherited, not chosen.** A new asset takes the live session's `public` flag
 (`_inherit_visibility`, `server.py:872`) and never overwrites a visibility the owner set later.
 
+### Supersession — what happens when the same thing arrives with new bytes
+
+An id is a content address, so improving the converter and re-importing a capture writes **different
+bytes and therefore a new row**, while the old one stays. Seen live: the roughness and mirror fixes
+changed `Teacher_v1` and `bride_ready`, and the catalog then held two of each with a search returning
+both and nothing to choose between them.
+
+`library.supersede(old, new)` retires the previous row:
+
+- **relations MOVE**, not copy. A figure carries 21 `shipped_with` edges keyed to its model id, and
+  leaving them behind would make `dir --with` answer twice for one figure. Ownership and aliases move
+  with them; an edge that would point at itself is dropped.
+- **the row becomes a TOMBSTONE** — `superseded_by` set, FTS entry removed — and is **never deleted**.
+  Three reasons, all pointing one way. The bytes are still on disk and a world that placed them still
+  renders, so dropping the row would leave a live entity with geometry and no title, licence or
+  attributes. `delete()` removes relations, which is precisely what this exists to carry forward. And
+  identity above the bytes is an inference, so it has to be cheap to be wrong about.
+- **a tombstone is reachable by id and by nothing else.** The predicate sits in `_scope_sql` and in
+  `query()`'s scoped view rather than in each caller's SQL, because every read goes through one of
+  those two — `dir`, the clip lists, `search`, `by_user` — and a tombstone surfacing in any of them is
+  the bug the column exists to end.
+
+**What counts as "the same thing" is `(kind, label)` within ONE capture** — `import_capture.same_thing`.
+The capture tag is the whole safety argument: two captures can ship different `computer_desk` bytes and
+each keeps its row, because a row tagged only `jane` is never a candidate while importing `akari`.
+Blocks the composition work in [`plans/figures-and-library.md`](../plans/figures-and-library.md) § 2b,
+which merges several containers into one asset and is therefore a re-import by definition.
+
+**Copying the catalog needs the WAL.** It runs in `journal_mode=wal`, so `cp library.db` reads a stale
+snapshot — a 4.1 MB `-wal` sat beside it during this work, and a probe built with `cp` was testing the
+previous day's state. Use `sqlite3 src ".backup dst"` or `Connection.backup`, which is how the
+supersession behaviour was finally verified against real data.
+
 ## 4. Search — four stages and a tier
 
 `find()` is the director-facing query. It runs `search()`'s staged lookup, appends vector hits, drops

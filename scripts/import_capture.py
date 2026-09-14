@@ -109,6 +109,30 @@ def _source_assets(capture: str, kinds=("animation", "audio")) -> list[dict]:
     return out
 
 
+def same_thing(library, scope: str, capture: str, kind, label) -> list[dict]:
+    """The LIVE rows this import is about to replace: same kind, same label, already tagged `capture`.
+
+    Identity above the bytes, which a content-addressed catalog has no other way to express — the whole
+    problem is that the same logical asset gets a new id whenever the converter improves.
+
+    **The capture tag is what makes it safe.** Two captures can ship different `computer_desk` bytes and
+    each keeps its own row, because a row tagged only `jane` is never a candidate while importing
+    `akari`. Without that, re-importing one capture would retire another's props.
+
+    `by_user` rather than `query()`: the latter's scoped view now hides superseded rows, and this wants
+    only what is currently live — retiring a tombstone twice means nothing.
+    """
+    if not (kind and label):
+        return []
+    out = []
+    for row in library.by_user(scope.split("/", 1)[0], limit=100_000):
+        if row.get("kind") != kind or (row.get("label") or "") != label:
+            continue
+        if capture in [t.strip() for t in (row.get("tags") or "").split(",")]:
+            out.append(row)
+    return out
+
+
 def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache: str, commit: bool,
         report=print) -> dict:
     name = os.path.basename(capture.rstrip("/"))
@@ -132,6 +156,32 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
             if name not in words:
                 words.append(name)
             library.upsert(asset_id, scope=scope, tags=", ".join(words), **fields)
+        _supersede_prior(asset_id, fields.get("kind"), fields.get("label"))
+
+    def _supersede_prior(asset_id: str, kind, label) -> None:
+        """Retire the row this import replaces.
+
+        An id is a content address, so re-converting a capture with a fixed converter writes DIFFERENT
+        bytes and therefore a NEW row, while the old one stays — seen live when the roughness fix
+        changed `Teacher_v1` and `bride_ready` and the catalog then held two of each, with a search
+        returning both and nothing to choose between them.
+
+        **Identity above the bytes is `(kind, label)` within THIS capture.** The capture tag is what
+        makes it safe: two captures can ship different `computer_desk` bytes and each keeps its own row,
+        because only rows already tagged with the capture being imported are considered. It is still an
+        inference — which is why `supersede` marks rather than deletes, so being wrong costs a column
+        and not an asset.
+        """
+        if not (commit and kind and label):
+            return
+        for row in same_thing(library, scope, name, kind, label):
+            if row["id"] == asset_id:
+                continue
+            ok, _err = library.supersede(row["id"], asset_id)
+            if ok:
+                stats["superseded"] += 1
+                report(f"    retired {row['id']} — replaced by {asset_id} ({label})")
+
 
     def link(a, b, kind):
         stats[f"rel:{kind}"] += 1

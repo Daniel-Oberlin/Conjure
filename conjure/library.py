@@ -40,7 +40,7 @@ except Exception:                     # noqa: BLE001
 # Bump when the schema changes, and add a branch to _migrate() to upgrade existing data in place
 # (ALTER, not DROP — captions/embeddings/curation aren't recoverable from the cache bytes). The
 # destructive rebuild is a last resort for a fresh or unrecognised DB only.
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 
 # faces/persons are reserved now (sub-image entities + named clusters) so the NAS seam is honest;
 # they stay empty until the NAS ingestion subsystem (Phase 5) populates them.
@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS assets (
   notes TEXT, tags TEXT,           -- USER CURATION (FTS-indexed): "my favorite city skybox", keywords
   rating INTEGER, favorite INTEGER,-- ⭐ 0–5 / boolean — filter & rank
   embed_model TEXT, embed_dim INTEGER,   -- which model/space this asset's vector is in (Phase 1)
+  -- The id of the asset that REPLACED this one. An id is a content address, so re-converting a capture
+  -- with a fixed converter yields different bytes and therefore a different row; this is how the old
+  -- one steps aside. A TOMBSTONE, never a deletion: the bytes are still on disk and a world that placed
+  -- them still renders, so removing the row would strip a live entity of its title, licence and
+  -- attributes while leaving the geometry — and `delete()` drops the relations this exists to preserve.
+  superseded_by TEXT,
   created_at REAL, last_used REAL, use_count INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS assets_kind ON assets(kind);
@@ -122,12 +128,17 @@ def _scope_sql(prefix: str, scope: Optional[str]) -> str:
     used and is kept so a single-owner asset behaves identically; and any ADDITIONAL owner recorded in
     `asset_scopes`. The agent wall applies to both — `*/agents/<agent>` keeps a public asset from
     crossing agents however it came to be owned (decisions.md §26).
+
+    A **superseded** row is excluded here too, and unconditionally — it is not a visibility question,
+    but it is the same kind of thing: a predicate every read must share or the exception becomes the
+    bug. A tombstone is reachable by id and by nothing else.
     """
+    alive = f" AND {prefix}superseded_by IS NULL"
     if not scope:
-        return ""
+        return alive
     own = f"{prefix}scope=? OR ({prefix}public=1 AND {prefix}scope GLOB ?)"
     granted = f"EXISTS (SELECT 1 FROM asset_scopes s WHERE s.asset_id = {prefix}id AND s.scope = ?)"
-    return f" AND ({own} OR {granted})"
+    return f"{alive} AND ({own} OR {granted})"
 
 
 def _scope_params(scope: Optional[str]) -> list[Any]:
@@ -184,6 +195,8 @@ class AssetLibrary:
             # `private/<agent>` → `<DEFAULT_USER>/agents/<agent>` (substr(.,9) drops "private/")
             self._db.execute("UPDATE assets SET scope = ? || substr(scope, 9) WHERE scope LIKE 'private/%'",
                              (f"{DEFAULT_USER}/agents/",))
+        if ver <= 7 and "superseded_by" not in cols:     # v7 → v8: re-import leaves a tombstone
+            self._db.execute("ALTER TABLE assets ADD COLUMN superseded_by TEXT")
         if ver <= 6:                                     # v6 → v7: ownership becomes many-to-many
             self._db.executescript(
                 "CREATE TABLE IF NOT EXISTS asset_scopes ("
@@ -475,13 +488,14 @@ class AssetLibrary:
         """Assets owned by `user` (scope == user or `user/…`), most-recently-used first."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM assets WHERE scope = ? OR scope LIKE ? "
+                "SELECT * FROM assets WHERE superseded_by IS NULL AND (scope = ? OR scope LIKE ?) "
                 "ORDER BY last_used DESC LIMIT ?", (user, f"{user}/%", limit)).fetchall()
         return [dict(r) for r in rows]
 
     def count_by_user(self, user: str) -> int:
         with self._lock:
-            return self._db.execute("SELECT COUNT(*) FROM assets WHERE scope = ? OR scope LIKE ?",
+            return self._db.execute("SELECT COUNT(*) FROM assets WHERE superseded_by IS NULL "
+                                    "AND (scope = ? OR scope LIKE ?)",
                                     (user, f"{user}/%")).fetchone()[0]
 
     def delete_by_user(self, user: str) -> int:
@@ -580,6 +594,50 @@ class AssetLibrary:
             self.reject(id, reject_for)
         return True, None
 
+    def supersede(self, old: str, new: str) -> tuple[bool, Optional[str]]:
+        """`old` has been replaced by `new`: move its links across and leave a tombstone.
+
+        An asset id is a content address, so re-converting a capture produces different bytes and a
+        different row. The importer used to create the new one and know nothing about the old, so the
+        catalog held both — seen live when the roughness fix changed `Teacher_v1` and `bride_ready` —
+        and a search returned two of each with nothing to choose between them.
+
+        **Marked, not deleted**, for three reasons that all point the same way. The bytes are still on
+        disk and a world that placed them still renders, so dropping the row would leave a live entity
+        with geometry and no title, licence or attributes. `delete()` removes relations, which is
+        precisely what this exists to carry forward. And identity above the bytes is an inference, so
+        it has to be cheap to be wrong about.
+
+        Relations MOVE rather than copy: 21 `shipped_with` edges per figure are keyed to the model id,
+        and leaving them on the tombstone would make `dir --with` answer twice for one figure.
+        Ownership moves with them. `INSERT OR IGNORE` throughout, because the new row may already share
+        an edge or an owner with the old.
+        """
+        if old == new:
+            return False, "an asset cannot supersede itself"
+        if self.get(old) is None:
+            return False, f"no asset {old!r}"
+        if self.get(new) is None:
+            return False, f"no asset {new!r}"
+        with self._lock:
+            for table, column in (("relations", "from_id"), ("relations", "to_id"),
+                                  ("asset_scopes", "asset_id"), ("aliases", "asset_id")):
+                self._db.execute(f"UPDATE OR IGNORE {table} SET {column}=? WHERE {column}=?",
+                                 (new, old))
+                self._db.execute(f"DELETE FROM {table} WHERE {column}=?", (old,))
+            # A relation from a thing to itself is what re-pointing both ends of one edge produces.
+            self._db.execute("DELETE FROM relations WHERE from_id = to_id")
+            self._db.execute("UPDATE assets SET superseded_by=? WHERE id=?", (new, old))
+            self._db.execute("DELETE FROM assets_fts WHERE id=?", (old,))     # out of search
+            self._db.commit()
+        return True, None
+
+    def superseded(self, of: str) -> list[dict]:
+        """Rows that stepped aside for `of` — the tombstones pointing here."""
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                "SELECT * FROM assets WHERE superseded_by=? ORDER BY created_at", (of,)).fetchall()]
+
     def delete(self, id: str, *, scope: Optional[str] = None) -> tuple[bool, Optional[str]]:
         """Remove an asset from the catalog: its row, FTS entry, aliases, relations, and vector. (Bytes
         in the cache are left — regenerable, and may still be referenced by a placed entity.) Scope-
@@ -625,10 +683,14 @@ class AssetLibrary:
             # The EXISTS half is many-to-many ownership: an asset granted to this scope is visible
             # here too, and the same agent wall applies to the grant (decisions.md §26).
             agent = agent_of(scope)
+            # `superseded_by IS NULL` sits in the view rather than in each caller's SQL because this
+            # is the one place every scoped read goes through — `dir`, the clip lists, the shell's
+            # queries — and a tombstone showing up in any of them is the bug this column exists to end.
             ro.execute(f"CREATE TEMP VIEW assets AS SELECT * FROM main.assets "
-                       f"WHERE scope = '{scope}' OR (public = 1 AND scope GLOB '*/agents/{agent}') "
+                       f"WHERE superseded_by IS NULL AND ("
+                       f"scope = '{scope}' OR (public = 1 AND scope GLOB '*/agents/{agent}') "
                        f"OR EXISTS (SELECT 1 FROM main.asset_scopes s "
-                       f"WHERE s.asset_id = main.assets.id AND s.scope = '{scope}')")
+                       f"WHERE s.asset_id = main.assets.id AND s.scope = '{scope}'))")
             return [dict(r) for r in ro.execute(s).fetchmany(limit)]
         finally:
             ro.close()

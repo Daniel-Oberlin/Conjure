@@ -320,9 +320,74 @@ def test_transparent_column_roundtrips(tmp_path):
     assert lib.get("un.png")["transparent"] is None
 
 
-def test_migration_v4_to_v7_preserves_data_reworks_scope_and_adds_public(tmp_path):
-    """A schema bump must ALTER, never DROP — and v4→v7 cumulatively adds transparent (v5), the public
-    flag and user-first scope (v6), and many-to-many ownership (v7)."""
+def test_a_superseded_asset_hands_its_LINKS_to_the_one_that_replaced_it(tmp_path):
+    """An id is a content address, so re-converting a capture writes different bytes and a NEW row while
+    the old one stays. Seen live: the roughness fix changed `Teacher_v1` and `bride_ready`, and the
+    catalog held two of each with a search returning both.
+
+    Relations MOVE rather than copy. A figure carries 21 `shipped_with` edges keyed to its model id, and
+    leaving them on the tombstone would make `dir --with` answer twice for one figure."""
+    lib = AssetLibrary(tmp_path / "library.db")
+    S = "daniel/agents/builder"
+    lib.upsert("old.glb", kind="model", label="jane", scope=S, source="cache://old.glb")
+    lib.upsert("new.glb", kind="model", label="jane", scope=S, source="cache://new.glb")
+    lib.upsert("clip.glb", kind="animation", label="1_idle", scope=S, source="cache://clip.glb")
+    lib.upsert("set:j", kind="set", label="jane-set", scope=S, source="capture://jane")
+    lib.add_relation("old.glb", "clip.glb", "shipped_with")
+    lib.add_relation("old.glb", "set:j", "part_of")
+
+    ok, err = lib.supersede("old.glb", "new.glb")
+    assert ok and err is None
+    assert [r["id"] for r in lib.related("new.glb", "shipped_with")] == ["clip.glb"]
+    assert lib.related("old.glb", "shipped_with") == [], "moved, not copied"
+    assert [r["id"] for r in lib.related("new.glb", "part_of")] == ["set:j"]
+
+
+def test_a_superseded_row_is_a_TOMBSTONE_not_a_deletion(tmp_path):
+    """Three reasons, all pointing one way. The bytes are still on disk and a world that placed them
+    still renders, so dropping the row leaves a live entity with geometry and no title, licence or
+    attributes. `delete()` removes relations, which is exactly what supersession carries forward. And
+    identity above the bytes is an inference, so being wrong has to be cheap."""
+    lib = AssetLibrary(tmp_path / "library.db")
+    S = "daniel/agents/builder"
+    for i in ("old.glb", "new.glb"):
+        lib.upsert(i, kind="model", label="jane", scope=S, source=f"cache://{i}")
+    lib.supersede("old.glb", "new.glb")
+
+    assert lib.get("old.glb") is not None, "still addressable BY ID — a placed world points at it"
+    assert lib.get("old.glb")["superseded_by"] == "new.glb"
+    assert [r["id"] for r in lib.superseded("new.glb")] == ["old.glb"]
+
+
+def test_a_tombstone_is_reachable_by_id_and_by_NOTHING_else(tmp_path):
+    """The predicate lives in `_scope_sql` and the scoped view, not in each caller's SQL, because every
+    read goes through one of those two — `dir`, the clip lists, search — and a tombstone surfacing in
+    any of them is the bug the column exists to end."""
+    lib = AssetLibrary(tmp_path / "library.db")
+    S = "daniel/agents/builder"
+    for i in ("old.glb", "new.glb"):
+        lib.upsert(i, kind="model", label="jane", scope=S, source=f"cache://{i}")
+    lib.supersede("old.glb", "new.glb")
+
+    assert [r["id"] for r in lib.query("SELECT id FROM assets WHERE label='jane'",
+                                       scope=S, limit=10)] == ["new.glb"]
+    assert [r["id"] for r in lib.search("jane", scope=S)] == ["new.glb"]
+    assert [r["id"] for r in lib.by_user("daniel")] == ["new.glb"]
+    assert lib.count_by_user("daniel") == 1
+
+
+def test_supersession_refuses_the_two_cases_that_would_lose_data(tmp_path):
+    lib = AssetLibrary(tmp_path / "library.db")
+    lib.upsert("a.glb", kind="model", label="a", scope="daniel/agents/builder", source="cache://a.glb")
+    assert lib.supersede("a.glb", "a.glb")[0] is False, "an asset cannot supersede itself"
+    assert lib.supersede("a.glb", "nope.glb")[0] is False, "nor step aside for something absent"
+    assert lib.supersede("nope.glb", "a.glb")[0] is False
+    assert lib.get("a.glb")["superseded_by"] is None
+
+
+def test_migration_v4_to_v8_preserves_data_reworks_scope_and_adds_public(tmp_path):
+    """A schema bump must ALTER, never DROP — and v4→v8 cumulatively adds transparent (v5), the public
+    flag and user-first scope (v6), many-to-many ownership (v7), and the supersession tombstone (v8)."""
     import sqlite3
     path = tmp_path / "library.db"
     raw = sqlite3.connect(str(path))
@@ -340,7 +405,8 @@ def test_migration_v4_to_v7_preserves_data_reworks_scope_and_adds_public(tmp_pat
     assert "transparent" in rec and rec["transparent"] is None     # v4→v5 column
     assert rec["public"] == 1                                      # v5→v6 flag, default public
     assert rec["scope"] == "daniel/agents/builder"                 # v5→v6 user-first scope rewrite
-    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert rec["superseded_by"] is None                             # v7→v8 tombstone column
+    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 8
     # v6→v7: the single owner is backfilled as the first row, so nothing changes for anyone until a
     # second owner is granted.
     owners = lib._db.execute("SELECT scope FROM asset_scopes WHERE asset_id='keep.png'").fetchall()
