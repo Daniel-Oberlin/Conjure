@@ -384,10 +384,25 @@ hand, the deck textured and in place, no black underwear under the dress — dea
 rather than carried, and `enabled: false` pieces arrive as hidden parts instead of being re-derived from
 their names.
 
-**Still open.** A thing that is *also* a standalone container (`WOODout.glb` is a legitimate prop on its
-own) may want both representations; the capture set is where that belongs. And the no-scene capture —
-sixteen templates, no scene file — needs confirming under this rule: a template IS a serialised entity
-hierarchy, so it should work unchanged, but that is reasoned, not measured.
+**It is wrong in the OTHER direction too, and that case is bigger.** One container can hold many
+things: `TOOLS LIBRARYblend5.glb` is a single 7.5 MB file that the props scene splits into **15 separate
+Root-level things** — Banana, Carrot, Sausage, BOTTLEBEER, CAN, Toothbrush, ClockRemesh, DILDOX and the
+rest — each one entity drawing one mesh from it. `TOOLS%2520UPGRADE2.glb` is another three (Fork,
+Lollipop, Vibrator1). Today we import that file as ONE asset, so there is no banana in the library,
+only a cutlery drawer. Same error as the figure case, less visible because nothing renders black.
+
+Sharing is normal rather than exceptional: `watchesbuttonsglb` serves 4 things, `VR_hand_R.glb` 3,
+`cool_button.glb` 3. **So the container is not the unit in either direction** — a thing can span files
+and a file can hold many things — which is the strongest form of the argument for reading scenes.
+
+(`WOODout.glb` needs no standalone representation; it is a piece of the room and nothing else. Settled
+2026-09-13 with Daniel — the props library, not the deck, is where one-container-many-things bites.)
+
+**The no-scene case is confirmed, not assumed.** 2 of 58 builds are missing a declared scene file
+(`nancy` and `susan` share the build). A PlayCanvas TEMPLATE is a saved entity hierarchy — the same
+structure as a scene, stored as an asset — and the templates in that build carry `enabled` on every
+entity, children, render components and a single root, exactly like a scene's. So the rule reads them
+unchanged, and a template is simply one saved thing.
 
 ### Phase 4 — a room model as the environment *(independent of 1–3)*
 
