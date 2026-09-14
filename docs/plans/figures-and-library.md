@@ -425,6 +425,25 @@ TRANSFORM is the product of the chain — two levels of scale here, and a banana
 `TOOLS LIBRARYblend5.glb`, `Gothic` has a container to itself, so "split the props file" is the wrong
 framing — walk the things, and where a thing happens to be alone in its file the split is a no-op.
 
+**Prerequisite, and it is a blocker rather than a footnote.** An asset id is `sha256(bytes)`, so a
+merged file is a NEW id and this is a re-import that supersedes, not an edit. Two things must be solved
+first or the library grows instead of shrinking:
+
+- **Superseded rows are left behind** (already in `backlogs/library.md`). Re-importing office-babe today
+  left both the old black-bodied row and the new one, and the stale one was deleted by hand. Do that
+  across every capture and the catalog doubles.
+- **Relations are keyed to the old model id.** `shipped_with` binds 21 clips to a figure by id; a merge
+  changes the id, so the edges have to be rebuilt at import rather than inherited.
+
+`rig_sig` should survive the merge, which is what keeps the clips working: it fingerprints humanoid bone
+NAMES and the donors' skeletons are identical by name. Verify it, do not assume it.
+
+The half-models go: `manager_fixing`, `Oktoberfest-milf-fixing`, `model_britney_bride` are bare bodies
+and `WOODout` is a deck, none of them useful alone (confirmed with Daniel 2026-09-13). `underwear.glb`
+is shared by several figures, so merging copies it into each — more bytes, and it turns the underwear
+from a separate entity nothing can control into a hideable PART of the figure, which is what phase 2
+wants anyway.
+
 **Done when:** the four composition cases each import as ONE asset matching what the site renders — her
 beer in her hand, the deck textured and in place, no black underwear under the dress; the props scene
 imports as **15 separately placeable tools with their own names**, not one cutlery drawer; dead meshes
