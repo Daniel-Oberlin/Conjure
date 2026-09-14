@@ -136,6 +136,13 @@ class Build:
     # not just the bindings it flattens to — which is the whole of § 2b: a container is a file and a
     # thing is a subtree, and flattening to (container, mesh) throws the subtree away.
     scenes: list = field(default_factory=list)
+    templates: list = field(default_factory=list)   # `(name, entities)` per template — see `things`
+    prefer: str = "scene"          # which claim wins where a scene and a template disagree
+    # Every `(container, mesh)` a SCENE entity claims, regardless of whose MATERIALS won. Kept apart
+    # from `Binding.source` because those answer different questions, and conflating them made
+    # `dead_meshes` call Alice's `CC_Base_Eye` dead: the scene draws it, and the template's richer
+    # materials merely won the tie-break.
+    scene_claims: set = field(default_factory=set)
 
     def asset(self, aid) -> dict:
         return self.assets.get(int(aid)) if aid is not None else None
@@ -313,8 +320,29 @@ def variant_only(build: Build) -> list[tuple[str, str, str]]:
     return out
 
 
-def read_build(root: str) -> Build:
-    """Load a build and resolve every entity → container → mesh → per-primitive material binding."""
+def read_build(root: str, *, prefer: str = "scene") -> Build:
+    """Load a build and resolve every entity → container → mesh → per-primitive material binding.
+
+    **`prefer` is the one real judgment in this module, and it decides which of two twins survives.**
+
+    A mesh can be claimed twice: by a SCENE entity and by the container's own TEMPLATE. Scenes are read
+    first and `setdefault` keeps the first claim, so **the scene wins** — defensible, because a template
+    is the default a container shipped with and a scene is what actually runs. It is still a choice, and
+    it is the choice that makes the Japanese house's deck and Alice's `Scalp_Female` disappear rather
+    than be painted.
+
+    **`prefer` outranks richness, and only for a scene-vs-template disagreement.** Where two claims
+    share a source — three scene entities binding Jane's right hand, one of them a placeholder with a
+    single sphere map — the best-dressed still wins, which is what that tie-break was written for.
+    Across a scene/template split it does not: of 1,340 meshes both claim, 952 are equally dressed and
+    384 favour the scene either way, but 4 have a better-dressed TEMPLATE, and there "what actually
+    runs" has to outrank "what has more maps" or this knob means nothing.
+
+    `prefer="template"` reverses it, for looking at what a container shipped with — a bad default and a
+    useful question. Note what it does NOT change: a mesh claimed by nobody at all stays unclaimed
+    either way, which is the three body twins, so this knob cannot bring those back (see
+    `adopt_unbound` for that, and `things` for why neither is needed once conversion walks scenes).
+    """
     cfg = json.load(open(os.path.join(root, "config.json")))
     assets = {int(k): v for k, v in (cfg.get("assets") or {}).items()}
     build = Build(root=root, assets=assets)
@@ -359,7 +387,18 @@ def read_build(root: str) -> Build:
             mats = tuple(int(m) if m is not None else None
                          for m in (render.get("materialAssets") or []))
             key = (int(container), int(index))
+            if source == "scene":
+                build.scene_claims.add(key)
             bound = Binding(entity.get("name") or "?", key[0], key[1], mats, source=source)
+            if key in seen and seen[key].source != source:
+                # A scene-vs-TEMPLATE disagreement is settled by `prefer`, not by richness. Measured
+                # over the captures: of 1,340 meshes both claim, 952 are equally dressed (order decides)
+                # and 384 favour the scene either way — but 4 have a better-dressed TEMPLATE, and for
+                # those "what actually runs" has to beat "what has more maps" or the knob means nothing.
+                if source == prefer and seen[key].source != prefer:
+                    clashes.setdefault(key, set()).add(seen[key].entity)
+                    seen[key] = bound
+                continue
             if key in seen and seen[key].materials != mats:
                 # Two entities dressing the same mesh differently is a legitimate thing to do — a props
                 # library reuses one button mesh in a dozen colours — and it has no single answer in a
@@ -374,23 +413,33 @@ def read_build(root: str) -> Build:
                 continue
             seen.setdefault(key, bound)
 
-    read_a_scene = False
-    for scene in cfg.get("scenes") or []:
-        url = scene.get("url")
-        if not url or not os.path.exists(os.path.join(root, url)):
-            build.notes.append(f"scene {scene.get('name')!r} is referenced but not on disk ({url}) — "
-                               f"falling back to the templates, which carry the CONTAINER's own "
-                               f"bindings and not the scene's. Materials may be silently wrong: one "
-                               f"room came out with flat grey cushions and panelling this way, while "
-                               f"the textures for both sat decoded on disk. Capture the scene.")
-            continue
-        loaded = json.load(open(os.path.join(root, url))).get("entities") or {}
-        take(loaded)
-        build.scenes.append((os.path.basename(url), loaded))
-        read_a_scene = True
+    def read_scenes() -> bool:
+        got = False
+        for scene in cfg.get("scenes") or []:
+            url = scene.get("url")
+            if not url or not os.path.exists(os.path.join(root, url)):
+                build.notes.append(
+                    f"scene {scene.get('name')!r} is referenced but not on disk ({url}) — "
+                    f"falling back to the templates, which carry the CONTAINER's own bindings and not "
+                    f"the scene's. Materials may be silently wrong: one room came out with flat grey "
+                    f"cushions and panelling this way, while the textures for both sat decoded on "
+                    f"disk. Capture the scene.")
+                continue
+            loaded = json.load(open(os.path.join(root, url))).get("entities") or {}
+            take(loaded)
+            build.scenes.append((os.path.basename(url), loaded))
+            got = True
+        return got
 
-    # TEMPLATES are the same structure and a second place the binding lives. Read AFTER the scenes, so
-    # a scene wins where both speak — it is what actually runs.
+    def read_templates() -> None:
+        for asset in build.assets.values():
+            if asset.get("type") == "template":
+                entities = (asset.get("data") or {}).get("entities") or {}
+                take(entities, source="template")
+                build.templates.append((asset.get("name") or str(asset.get("id")), entities))
+
+    # TEMPLATES are the same structure and a second place the binding lives. Read AFTER the scenes by
+    # default, so a scene wins where both speak — it is what actually runs. See `prefer`.
     #
     # Not a fallback bolted on. A PlayCanvas template is a serialised entity hierarchy, which is how a
     # reusable thing is packaged, and a character is exactly that: the second capture to arrive had NO
@@ -398,9 +447,13 @@ def read_build(root: str) -> Build:
     # binding its OWN container. So there is no ambiguity to resolve — reading them is what makes that
     # capture convertible at all, and it costs nothing where a scene is present because identical
     # bindings are deduplicated rather than reported as a clash.
-    for asset in build.assets.values():
-        if asset.get("type") == "template":
-            take((asset.get("data") or {}).get("entities"), source="template")
+    if prefer == "template":
+        read_templates()
+        read_a_scene = read_scenes()
+    else:
+        read_a_scene = read_scenes()
+        read_templates()
+    build.prefer = prefer
     for (container, index), others in sorted(clashes.items()):
         build.notes.append(
             f"{build.name(container)} mesh {index}: {len(others)} other entity binding(s) disagree "
@@ -586,23 +639,31 @@ def things(build: Build, *, roots: Optional[dict] = None) -> list[Thing]:
     At THING level the flag means something else again — in the catalogue, not placed in this scene —
     which is the entire props library, so it is recorded on the `Thing` and never used to skip it.
     """
+    # Scenes when there are any, TEMPLATES when there are not. Two of 58 builds declare a scene that is
+    # not on disk, and a template IS a serialised entity hierarchy — same shape, same walk — so falling
+    # back is what makes those builds readable at all rather than a special case for them.
     out: list[Thing] = []
-    for name, entities in build.scenes:
+    # A scene wraps its things in a `Root`, so the THINGS are Root's children. A template IS one thing
+    # already — `VR_hand_R` is 53 entities under a single root — so there the root is the thing itself.
+    # Treating them alike returned a hand's fingers as three separate things.
+    for name, entities, nested in ([(n, e, True) for n, e in build.scenes] or
+                                   [(n, e, False) for n, e in build.templates]):
         if not entities:
             continue
         claimed = {c for e in entities.values() for c in (e.get("children") or [])}
         tops = [g for g in entities if g not in claimed]
         override = (roots or {}).get(name)
-        for top in tops:
-            for guid in entities[top].get("children") or []:
-                if guid not in entities:
-                    continue
-                label = entities[guid].get("name") or "?"
-                if override is not None and label not in override:
-                    continue
-                thing = _walk(build, entities, guid, name)
-                if thing.pieces or override is not None:
-                    out.append(thing)
+        candidates = [g for top in tops for g in (entities[top].get("children") or [])] if nested \
+            else tops
+        for guid in candidates:
+            if guid not in entities:
+                continue
+            label = entities[guid].get("name") or "?"
+            if override is not None and label not in override:
+                continue
+            thing = _walk(build, entities, guid, name)
+            if thing.pieces or override is not None:
+                out.append(thing)
     return out
 
 
@@ -681,8 +742,9 @@ def dead_meshes(build: Build) -> list[Binding]:
     """
     if not build.scened:
         return []
-    live = {b.container for b in build.bindings if b.source == "scene"}
-    return [b for b in build.bindings if b.source == "template" and b.container in live]
+    live = {c for c, _m in build.scene_claims}
+    return [b for b in build.bindings
+            if (b.container, b.mesh) not in build.scene_claims and b.container in live]
 
 
 def dead_mesh_notes(build: Build) -> list[str]:

@@ -445,6 +445,13 @@ worth a look next to her long-standing eye trouble.
    A test caught the bug this plan predicted: composing the THING's own `enabled` into its pieces marks
    every prop optional and imports none of them.
 
+   **Two corrections that came out of asking how a twin gets chosen.** The scene-over-template
+   precedence is now an explicit switch (`read_build(prefer=…)`, default `"scene"`) that outranks the
+   best-dressed tie-break, which it did not before — and the "bonus finding" above about
+   `CC_Base_Eye` was a FALSE POSITIVE of my own diagnostic: a scene draws it, and it only looked dead
+   because the template's richer materials won. `dead_meshes` now asks whether a scene claims the mesh
+   rather than which claim won its materials. 47 distinct dead meshes → 45.
+
 **What remains is 4 — COMPOSE — and its inverse.**
 
 **Splitting is the other half of the job, and it is not the same code.** Composition merges several

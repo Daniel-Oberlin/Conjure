@@ -80,6 +80,26 @@ container**: a container ships whatever its own import produced and the scene ov
 container carries an untextured grey, and reading it instead of the scene gives grey hair with the real
 texture unused on disk.
 
+**Which claim wins where a scene and a template disagree is a CHOICE**, and the only real judgment in
+this module: `read_build(root, prefer=...)`, defaulting to `"scene"`.
+
+A template is the default a container shipped with; a scene is what actually runs. So the scene wins —
+defensible, and still a decision, and it is the decision that makes the Japanese house's deck and
+Alice's `Scalp_Female` disappear rather than be painted. `prefer="template"` reverses it, which answers
+a different and occasionally useful question: what did this container ship with?
+
+**`prefer` outranks richness, and only across a scene/template split.** Where two claims share a
+source — three scene entities bind Jane's right hand and the first-listed wears a placeholder with one
+sphere map — the best-dressed still wins, which is what that tie-break exists for. Across the split it
+does not: of **1,340** meshes both claim, 952 are equally dressed and 384 favour the scene either way,
+but **4 have a better-dressed template**, and there "what runs" has to beat "what has more maps" or the
+knob means nothing.
+
+**Which claim won the MATERIALS is a different question from whether a scene claims the MESH**, and
+conflating them produced a false positive on real data: `dead_meshes` called Alice's `CC_Base_Eye` dead
+for half a day because the template's richer materials had won the tie-break, while a scene entity was
+drawing it all along. `Build.scene_claims` records the second question directly.
+
 **`template` assets carry the same bindings and are read too**, after the scenes so a scene wins where
 both speak. Not a fallback bolted on: a template is a serialised entity hierarchy, which is how
 PlayCanvas packages a reusable thing, and a character is exactly that. The second capture had NO scene
@@ -167,6 +187,11 @@ optional and import none of them — a test caught exactly that.
 
 A non-zero **rotation** anywhere in a chain sets `Piece.rotated` rather than being folded in, because
 euler order is a decision this does not get to guess at.
+
+**A build with no scene falls back to its templates**, and the nesting differs: a scene wraps its
+things in a `Root`, so the things are Root's CHILDREN, while a template IS one thing already —
+`VR_hand_R` is 53 entities under a single root — so there the root is the thing. Treating them alike
+returned a hand's fingers as three separate props.
 
 **Which entity is a thing is CONVENTION, not format.** The rule — a direct child of a scene's Root
 whose subtree renders something — holds in the content scenes and is **false in the app's own**:

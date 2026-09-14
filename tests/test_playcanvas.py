@@ -490,6 +490,60 @@ def test_a_mesh_only_a_TEMPLATE_claims_is_flagged_as_probably_dead(tmp_path):
     assert any("bound ONLY by a template" in n for n in build.notes)
 
 
+def test_a_mesh_the_scene_DOES_claim_is_not_dead_even_if_a_template_dressed_it(tmp_path):
+    """Two different questions, and conflating them produced a false positive on real data. `dead_meshes`
+    used to ask *which claim won the material tie-break*; the question is *does any scene claim it at
+    all*. Alice's `CC_Base_Eye` is drawn by a scene entity, and only looked dead because the template's
+    richer materials won — she was reported as having a dead eye mesh for half a day."""
+    root = _build(tmp_path,
+                  materials=[(30, "plain", {}), (31, "rich", {"diffuseMap": 40, "normalMap": 40})],
+                  textures=[(40, "t.png", "files/t.png")],
+                  entities=[("eye", 20, [30])],                       # the SCENE dresses it plainly
+                  templates=[(50, "T", [("eye", 20, [31])])])         # the TEMPLATE dresses it richly
+    build = read_build(root)
+    assert (10, 0) in build.scene_claims, "the scene claimed the MESH"
+    assert dead_meshes(build) == [], "so it is not dead, whoever's materials won"
+
+
+def test_which_claim_wins_a_scene_vs_template_disagreement_is_SWITCHABLE(tmp_path):
+    """The one real judgment in the module. A template is the default a container shipped with and a
+    scene is what actually runs, so the scene wins — defensible, and still a choice: it is what makes
+    the Japanese deck and Alice's scalp disappear rather than be painted.
+
+    `prefer` beats richness, which is what makes it mean anything. Measured over the captures: of 1,340
+    meshes both claim, 952 are equally dressed and 384 favour the scene either way — but 4 have a
+    better-dressed TEMPLATE, and there "what runs" has to outrank "what has more maps"."""
+    kw = dict(materials=[(30, "plain", {}), (31, "rich", {"diffuseMap": 40, "normalMap": 40})],
+              textures=[(40, "t.png", "files/t.png")],
+              entities=[("a", 20, [30])], templates=[(50, "T", [("a", 20, [31])])])
+    # The scene's material is the POORER one here, and it still wins — that is the whole point.
+    assert next(b for b in read_build(_build(tmp_path / "s", **kw)).bindings
+                if b.mesh == 0).materials == (30,), "what runs beats what has more maps"
+    assert next(b for b in read_build(_build(tmp_path / "t", **kw), prefer="template").bindings
+                if b.mesh == 0).materials == (31,), "...and reversing it asks the other question"
+
+    # Where two claims SHARE a source, richness still settles it — Jane's right hand is bound by three
+    # scene entities and the one listed first wears a placeholder.
+    kw3 = dict(materials=[(30, "placeholder", {}), (31, "real", {"diffuseMap": 40})],
+               textures=[(40, "t.png", "files/t.png")],
+               entities=[("tutorial", 20, [30]), ("real", 20, [31])], templates=[])
+    assert next(b for b in read_build(_build(tmp_path / "w", **kw3)).bindings
+                if b.mesh == 0).materials == (31,), "best-dressed, within one source"
+
+
+def test_a_build_with_no_scene_falls_back_to_its_TEMPLATES_for_things(tmp_path):
+    """Two of 58 builds declare a scene that is not on disk. A template IS a serialised entity
+    hierarchy — the same shape and the same walk — so falling back is what makes them readable at all
+    rather than a special case bolted on for them."""
+    root = _build(tmp_path, scene=False, entities=[],
+                  templates=[(40, "T", [("body", 20, [30])])])
+    build = read_build(root)
+    assert not build.scened and build.templates
+    # A template IS one thing, so its ROOT is the thing — not its children, which would return a
+    # hand's fingers as three separate props.
+    assert [t.name for t in things(build)] == ["body"]
+
+
 def test_a_container_the_scene_never_touches_is_NOT_a_pile_of_dead_meshes(tmp_path):
     """The rule that turns 725 rows of noise into 47 of signal. A container no scene mentions is not
     full of dead meshes — it is a container this scene does not use, which is ordinary: the VR shell's
