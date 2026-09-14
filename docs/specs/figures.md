@@ -571,7 +571,15 @@ sync with its own speech is the one thing an audience notices immediately. Playe
 element rather than a decoded buffer for one reason: `currentTime` is writable, so a client joining
 mid-clip starts the voice where the body already is. A browser may refuse to start audio without a
 gesture; that is a refusal and not an error — the clip keeps playing and the voice joins on the next
-one, which in an immersive session has already happened.
+one.
+
+**A resolved `play()` is not a sound, and that is the trap.** An `AudioContext` created outside a user
+gesture starts SUSPENDED, and routing a media element through it means the element plays, the promise
+resolves, nothing throws — and the output goes into a stopped graph. Silence that reports success. It
+shipped that way and the director duly announced *"her voice is playing along with it"* to a browser
+making no noise. So the context state is re-checked AFTER the promise resolves, not only in the catch,
+and the gesture hook resumes the context as well as replaying the element — and re-seeks, because the
+body has moved on while the voice was waiting.
 
 `GET /figure/clips` answers with **two lists that are never merged**: what `shipped_with` this figure,
 and what its `rig_sig` says can play. Compatibility is not sufficiency — 93 of 206 clip names call out a

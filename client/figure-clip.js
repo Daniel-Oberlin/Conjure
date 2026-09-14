@@ -173,12 +173,18 @@
       var scene = this.el.sceneEl;
       var listener = scene.audioListener || new THREE.AudioListener();
       if (!scene.audioListener) {
+        // A-Frame creates this lazily inside its own `sound` component, which this scene never uses —
+        // so we create it and adopt its convention, or two components would each make one and the
+        // second would be deaf.
         scene.audioListener = listener;
         if (scene.camera) scene.camera.add(listener);
         scene.addEventListener("camera-set-active", function (e) {
           e.detail.cameraEl.getObject3D("camera").add(listener);
         });
       }
+      // A listener parented to nothing sits at the origin while the camera walks away, so a positional
+      // sound is attenuated by a distance that has no relation to where you are standing.
+      if (!listener.parent) log("audio listener is NOT attached to the camera — distance will be wrong");
       var media = new Audio();
       media.crossOrigin = "anonymous";
       media.loop = !!this.data.loop;
@@ -191,20 +197,55 @@
       this._audioUrl = url;
       var offset = (now() - this._started) / 1000;
       var self = this;
-      var begin = function () {
+      var ctx = listener.context;
+
+      var seek = function () {
         if (media.duration && isFinite(media.duration)) {
-          media.currentTime = self.data.loop ? ((offset % media.duration) + media.duration) % media.duration
-                                             : Math.min(Math.max(offset, 0), media.duration);
+          var t = (now() - self._started) / 1000;
+          media.currentTime = self.data.loop ? ((t % media.duration) + media.duration) % media.duration
+                                             : Math.min(Math.max(t, 0), media.duration);
         }
-        media.play().catch(function (err) {
-          log("voice refused until a gesture: " + (err && err.name));
-          var once = function () {
-            window.removeEventListener("click", once);
-            if (self._media === media) media.play().catch(function () {});
-          };
-          window.addEventListener("click", once);
+      };
+
+      // **A resolved `play()` is not a sound.** An AudioContext created outside a user gesture starts
+      // SUSPENDED, and `setMediaElementSource` routes the element through it — so the element plays,
+      // the promise resolves, no error is thrown anywhere, and the output goes into a stopped graph.
+      // That is silence that reports success, and it is what shipped: the director announced "her voice
+      // is playing along with it" to a browser making no noise at all.
+      var armed = false;
+      var arm = function (why) {
+        if (armed) return;
+        armed = true;
+        log("voice waiting for a gesture (" + why + ")");
+        var once = function () {
+          ["pointerdown", "keydown", "touchstart"].forEach(function (ev) {
+            window.removeEventListener(ev, once, true);
+          });
+          armed = false;
+          if (self._media !== media) return;          // the clip changed while we waited
+          if (ctx && ctx.state === "suspended") ctx.resume().catch(function () {});
+          seek();                                     // land where the BODY is, not where we left off
+          media.play().catch(function () {});
+        };
+        // Capture phase: A-Frame's canvas and the look-controls swallow pointer events on the way down.
+        ["pointerdown", "keydown", "touchstart"].forEach(function (ev) {
+          window.addEventListener(ev, once, true);
         });
       };
+
+      var begin = function () {
+        seek();
+        if (ctx && ctx.state === "suspended") ctx.resume().catch(function () {});
+        media.play().then(function () {
+          // Resolved is not enough — re-check the graph. This is the branch the original code had no
+          // concept of, and the only one that actually fired.
+          if (ctx && ctx.state !== "running") arm("context " + ctx.state);
+          else log("voice playing (context " + (ctx ? ctx.state : "none") + ")");
+        }).catch(function (err) {
+          arm(String(err && err.name));
+        });
+      };
+
       if (media.readyState >= 1) begin();
       else media.addEventListener("loadedmetadata", begin, { once: true });
     },
