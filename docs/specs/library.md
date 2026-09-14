@@ -146,6 +146,14 @@ dir --with jane_export --rel shipped_with       her 21 clips
 dir --kind set --rel part_of --in               each set, with what belongs to it
 ```
 
+**A `--with` name is disambiguated by the RELATION.** Labels collide constantly here by design: every
+capture names its set after its figure, so `barbie` is both `set:barbie` and her model, and a flat
+refusal made `--with barbie` useless for the most ordinary question there is. When exactly one
+candidate has edges of the type asked for — only the model ships clips, only the set holds parts — that
+is the one meant. Genuine ambiguity is still refused, and `3_idle` is the case that stays genuinely
+ambiguous: the clip and the audio that voices it both touch a `voiced_by` edge, so only `--out`/`--in`
+can separate them.
+
 **The arrow is load-bearing.** Both directions is the default, because a figure's clips and the clips
 one audio voices are the same question from opposite ends — but `part_of` fans IN 107 where it fans
 OUT 15, so "the set this belongs to" and "the parts of this set" are very different lists.

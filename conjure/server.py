@@ -2651,26 +2651,22 @@ def _filter_rows(rows: list[dict], req: AdminPath) -> list[dict]:
     return rows
 
 
-def _related_problem(other: str) -> Optional[str]:
+def _related_problem(req: AdminPath) -> Optional[str]:
     """Why a `--with` name found nothing, when the reason is the NAME rather than the relation.
 
     An empty listing is the same shape whether a name is unknown, ambiguous, or simply has no
     relations — and those want different responses from a person. `3_idle` is ambiguous in a captured
     set, because the clip and the audio that voices it share a label by design.
+
+    Delegates to the same resolver the LOOKUP uses. It did not, once: the note went on saying a name
+    was ambiguous after the resolver had learned to disambiguate it, and the advice it gave —
+    *"add --kind to say which you mean"* — was wrong, because `--kind` filters the result rows and not
+    the `--with` target. Following it changed nothing and looked like the filter being broken.
     """
-    if library is None or library.get(other) is not None:
+    if library is None:
         return None
-    if not _safe_label(other):
-        return f"{other!r} is not a usable name"
-    hits = library.query(f"SELECT id, kind FROM assets WHERE label = '{other}'",
-                         scope=active_scope, limit=5)
-    if not hits:
-        return f"nothing here is called {other!r}"
-    if len(hits) > 1:
-        kinds = ", ".join(sorted({h["kind"] for h in hits}))
-        return (f"{other!r} is ambiguous — {len(hits)} assets share that label ({kinds}). "
-                f"Use an id, or add --kind to say which you mean.")
-    return None
+    _id, problem = _resolve_related(req.related or "", req.relation, req.direction)
+    return problem
 
 
 def _safe_label(text: str) -> bool:
@@ -2679,16 +2675,47 @@ def _safe_label(text: str) -> bool:
     return bool(re.fullmatch(r"[\w .:/-]{1,120}", text or ""))
 
 
-def _resolve_asset(other: str) -> Optional[str]:
-    """An id or an exact label → an id, or None when absent or ambiguous. A person types the label and a
-    script has the id; an ambiguous label is refused rather than picked."""
+def _label_candidates(other: str) -> list[dict]:
+    """Every asset an id-or-label could mean. One row when it is an id."""
     if library is None or not other:
-        return None
-    if library.get(other) is not None:
-        return other
-    hit = library.query(f"SELECT id FROM assets WHERE label = '{other}'",
-                        scope=active_scope, limit=2) if _safe_label(other) else []
-    return hit[0]["id"] if len(hit) == 1 else None
+        return []
+    rec = library.get(other)
+    if rec is not None:
+        return [rec]
+    if not _safe_label(other):
+        return []
+    return library.query(f"SELECT * FROM assets WHERE label = '{other}'",
+                         scope=active_scope, limit=10) or []
+
+
+def _resolve_related(other: str, relation: Optional[str],
+                     direction: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """`(id, problem)` for a `--with` name, disambiguated BY THE RELATION where it can be.
+
+    A label is ambiguous far more often than it looks: every capture names its set after its figure, so
+    `barbie` is both `set:barbie` and her model, and refusing outright made `--with barbie` useless for
+    the most ordinary question there is. But the relation usually settles it — only the model has
+    `shipped_with` edges and only the set has `part_of` inbound — so when exactly one candidate can
+    answer the relation asked for, that is the one meant. Genuine ambiguity is still refused.
+    """
+    hits = _label_candidates(other)
+    if not hits:
+        return None, (f"{other!r} is not a usable name" if not _safe_label(other)
+                      else f"nothing here is called {other!r}")
+    if len(hits) == 1:
+        return hits[0]["id"], None
+    if relation:
+        able = [h for h in hits
+                if any(e["type"] == relation and (not direction or e["direction"] == direction)
+                       for e in library.relations_of(h["id"]))]
+        if len(able) == 1:
+            return able[0]["id"], None
+        hits = able or hits
+        if len(hits) == 1:
+            return hits[0]["id"], None
+    kinds = ", ".join(sorted({h.get("kind") or "?" for h in hits}))
+    return None, (f"{other!r} is ambiguous — {len(hits)} assets share that label ({kinds}). "
+                  f"Name one by id; --kind filters the RESULTS, not this.")
 
 
 def _related_ids(other: str, relation: Optional[str], direction: Optional[str] = None) -> set[str]:
@@ -2699,7 +2726,7 @@ def _related_ids(other: str, relation: Optional[str], direction: Optional[str] =
     query from different ends. `direction` pins it when that matters — `part_of` fans IN 107 where it
     fans out 15, so "the parts of this set" and "the set this belongs to" are very different lists.
     """
-    resolved = _resolve_asset(other)
+    resolved, _problem = _resolve_related(other, relation, direction)
     if resolved is None:
         return set()
     out = set()
@@ -2775,7 +2802,7 @@ async def admin_tree(req: AdminPath) -> dict:
     out = {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
            "kind": loc.kind, "self": namespace.leaf_row(loc), "children": kids, "columns": cols}
     if req.related:
-        problem = _related_problem(req.related)
+        problem = _related_problem(req)
         if problem:
             out["note"] = problem
     return out

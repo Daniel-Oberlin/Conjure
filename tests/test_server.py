@@ -4897,13 +4897,36 @@ def test_a_with_name_that_is_ambiguous_SAYS_so_rather_than_listing_nothing(srv):
     lib.upsert("clip.glb", kind="animation", label="3_idle", scope=srv.active_scope, source="cache://")
     lib.upsert("voice.mp3", kind="audio", label="3_idle", scope=srv.active_scope, source="cache://")
 
-    note = srv._related_problem("3_idle")
-    assert note and "ambiguous" in note and "--kind" in note, note
-    assert srv._related_problem("no-such-thing").startswith("nothing here is called")
+    def problem(name, **kw):
+        return srv._related_problem(srv.AdminPath(path="/", related=name, **kw))
+
+    note = problem("3_idle")
+    assert note and "ambiguous" in note, note
+    assert "--kind filters the RESULTS" in note, "the old advice was to add --kind, which cannot help"
+    assert problem("no-such-thing").startswith("nothing here is called")
 
     lib.upsert("solo.glb", kind="model", label="unique-one", scope=srv.active_scope, source="cache://")
-    assert srv._related_problem("unique-one") is None, "a name that resolves is not a problem"
-    assert srv._related_problem("clip.glb") is None, "and neither is an id"
+    assert problem("unique-one") is None, "a name that resolves is not a problem"
+    assert problem("clip.glb") is None, "and neither is an id"
+
+    # ...and the RELATION disambiguates where it can: only the clip is voiced_by anything, so asking
+    # for that relation names which `3_idle` was meant. Every capture names its set after its figure,
+    # so this collision is the norm — `barbie` is both `set:barbie` and her model.
+    lib.add_relation("clip.glb", "voice.mp3", "voiced_by")
+    assert problem("3_idle", relation="voiced_by") is not None, \
+        "both ends touch a voiced_by edge, so the TYPE alone cannot separate them"
+    assert problem("3_idle", relation="voiced_by", direction="out") is None, "but the direction can"
+    assert srv._related_ids("3_idle", "voiced_by", "out") == {"voice.mp3"}
+
+    # The common case needs no direction: every capture names its set after its figure, so `barbie`
+    # is both `set:barbie` and her model — and only the model has `shipped_with` edges at all.
+    lib.upsert("set:b", kind="set", label="barbie", scope=srv.active_scope, source="cache://")
+    lib.upsert("b.glb", kind="model", label="barbie", scope=srv.active_scope, source="cache://")
+    lib.upsert("bc.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.add_relation("b.glb", "bc.glb", "shipped_with")
+    assert problem("barbie") is not None, "ambiguous with no relation to go on"
+    assert problem("barbie", relation="shipped_with") is None, "only the model ships clips"
+    assert srv._related_ids("barbie", "shipped_with") == {"bc.glb"}
 
 
 def _place_dressed_figure(srv, client, tmp_path):
