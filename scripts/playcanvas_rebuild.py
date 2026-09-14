@@ -24,9 +24,41 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from conjure.playcanvas import (adopt_unbound, build_origin, by_container,     # noqa: E402
+from conjure.playcanvas import (adopt_unbound, build_origin, by_container,                       # noqa: E402
                                 find_builds, missing_files, read_build, rebuild_build,
-                                report_orphans, variant_only)
+                                report_orphans, thing_notes, things, variant_only)
+
+
+def survey_things(root: str) -> int:
+    """What each SCENE places, rather than what each FILE holds — the § 2b view."""
+    for build_root in find_builds(root):
+        build = read_build(build_root)
+        found = things(build)
+        if not found:
+            continue
+        print(f"\n{os.path.relpath(build_root, root) or '.'}")
+        for note in thing_notes(build, found):
+            print(f"    ! {note}")
+        for thing in found:
+            drawn = ", ".join(f"{build.name(c)}×{n}" for c, n in thing.containers.items())
+            print(f"    {thing.name[:28]:30} {'' if thing.enabled else '(catalogued)':14} "
+                  f"{thing.entities:5}e  {len(thing.live):3} live  {len(thing.optional):2} optional"
+                  f"  <- {drawn}")
+            if thing.optional:
+                names = ", ".join(sorted({p.entity for p in thing.optional})[:4])
+                print(f"        optional: {names} — the site's own switch, emit them HIDDEN")
+            hung = [p for p in thing.live
+                    if p.parent and p.parent != thing.name and p.parent not in {q.entity for q in thing.live}]
+            for piece in hung[:4]:
+                print(f"        {piece.entity} hangs off {piece.parent!r} — a merge must keep that")
+            twice = {}
+            for piece in thing.pieces:
+                twice[(piece.container, piece.mesh)] = twice.get((piece.container, piece.mesh), 0) + 1
+            for (cont, mesh), n in twice.items():
+                if n > 1:
+                    print(f"        {build.name(cont)} mesh {mesh} is drawn {n}× — instancing, "
+                          f"and a merge that flattens nodes loses all but one")
+    return 0
 
 
 def survey(root: str) -> int:
@@ -76,6 +108,8 @@ def main() -> int:
     ap.add_argument("build", help="a downloaded build, or a directory holding several")
     ap.add_argument("--out", default="", help="where to write the rebuilt GLBs")
     ap.add_argument("--list", action="store_true", help="report the bindings and write nothing")
+    ap.add_argument("--things", action="store_true",
+                    help="report what each SCENE places — the unit a container is not (plan § 2b)")
     ap.add_argument("--only", default="", help="only containers whose name contains this")
     ap.add_argument("--max-texture", type=int, default=1024,
                     help="longest texture side, in pixels (default 1024 — read the docstring)")
@@ -93,6 +127,8 @@ def main() -> int:
     if not os.path.isdir(args.build):
         print(f"{args.build} is not a directory")
         return 2
+    if args.things:
+        return survey_things(args.build)
     if args.list:
         return survey(args.build)
     if not args.out:

@@ -137,6 +137,44 @@ nothing we produced could tell those apart.
 Only what a BINDING depends on. Scanning the whole registry finds 1,011, almost all in props materials
 nothing binds; reachable from an emitted mesh it is **42**.
 
+### Things — the unit a container is not
+
+`things(build)` reads what each SCENE places, rather than what each FILE holds. A container is one
+artist's export; a **thing** is a scene entity subtree, and the two disagree in both directions:
+`office-babe` draws from three containers while `TOOLS LIBRARYblend5.glb` is split into **fifteen
+separate props**. Measured on the captures:
+
+```
+office-babe          192 entities   9 live  1 optional   office-babe.glb×8 · manager_fixing.glb×1 · underwear.glb×1
+Oktoberfest-milf     183            6      1            -milf.glb×2 (eyelashes, BEER) · -fixing.glb×4 · underwear.glb×1
+bride_ready          237           12      1            model_britney_bride.glb×1 · bride_ready.glb×11 · underwear.glb×1
+JAPANESEROOM BAKED    39           34      1            JAPANESEROOM BAKED.glb×34 · WOODout.glb×1 (the deck)
+Banana                 2            1      0            TOOLS LIBRARYblend5.glb×1  (catalogued)
+```
+
+Each `Piece` carries what the container file cannot hold: the entity that draws it, the **parent** it
+hangs off (`DEF-hand.R` for the beer, `DEF-foot.L`/`.R` for bride's two heels), the **path** from the
+thing's root, and the **transform composed down that path** — a banana reads `scale 0.458` because its
+catalogue wrapper's 0.5 multiplies the inner 0.9166, and `WOODout` reads `y = -0.1` because the scene's
+`-10` passes through a house scaled 0.01. Every dead twin is simply absent, with no rule needed for it.
+
+**Three states, and `enabled: false` means two different things by LEVEL.** On a piece it is *optional*
+— the site's own wardrobe switch, which is what `underwear` is in all three figures and what the parts
+classifier has been reconstructing from mesh names. On a **thing** it means *in the catalogue, not
+placed in this scene*, which is the entire props library: all 15 tools and all 13 skin-tone variants
+are disabled Root children. Composing the thing's own flag into its pieces would mark every prop
+optional and import none of them — a test caught exactly that.
+
+A non-zero **rotation** anywhere in a chain sets `Piece.rotated` rather than being folded in, because
+euler order is a decision this does not get to guess at.
+
+**Which entity is a thing is CONVENTION, not format.** The rule — a direct child of a scene's Root
+whose subtree renders something — holds in the content scenes and is **false in the app's own**:
+`2049393.json` offers `Gestures` (380 entities, 1 piece), `ToolModeStore` and `TRASH`, which are
+machinery groupings nobody places. So `things()` PROPOSES, `thing_notes()` reports what it proposed
+with the counts that give it away, and `roots=` overrides it per scene. The same discipline
+`parts/parts.json` uses for garment words. `scripts/playcanvas_rebuild.py --things` is the view.
+
 **Nothing in it is keyed to any particular model** — every string in the module is a PlayCanvas or glTF
 schema key, and the one heuristic (`--adopt`) matches on render-asset names read from the build. But the
 coverage was shaped by one character, so what it CANNOT carry is listed in `_UNCARRIED` and warned about

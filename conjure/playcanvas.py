@@ -132,6 +132,10 @@ class Build:
     notes: list[str] = field(default_factory=list)
     origin: str = ""               # the URL it was captured from, when the path says (see `build_origin`)
     scened: bool = False           # at least one scene file was READ — see `dead_mesh_notes`
+    # `(file name, entities)` per scene actually read. Kept because `things` needs the entity TREE and
+    # not just the bindings it flattens to — which is the whole of § 2b: a container is a file and a
+    # thing is a subtree, and flattening to (container, mesh) throws the subtree away.
+    scenes: list = field(default_factory=list)
 
     def asset(self, aid) -> dict:
         return self.assets.get(int(aid)) if aid is not None else None
@@ -380,7 +384,9 @@ def read_build(root: str) -> Build:
                                f"room came out with flat grey cushions and panelling this way, while "
                                f"the textures for both sat decoded on disk. Capture the scene.")
             continue
-        take(json.load(open(os.path.join(root, url))).get("entities"))
+        loaded = json.load(open(os.path.join(root, url))).get("entities") or {}
+        take(loaded)
+        build.scenes.append((os.path.basename(url), loaded))
         read_a_scene = True
 
     # TEMPLATES are the same structure and a second place the binding lives. Read AFTER the scenes, so
@@ -469,6 +475,183 @@ def regroup_materials(donor: tuple[int, ...], mats: tuple, counts: tuple[int, ..
             return None
         out.append(span[0])
     return tuple(out) if i == len(donor) else None
+
+
+@dataclass
+class Piece:
+    """One mesh a THING draws, plus everything about it the container file does not hold.
+
+    A container is a file and a piece is a use of it: the same mesh appears twice in bride's heels, once
+    per foot, and the difference between them lives entirely here.
+    """
+
+    container: int
+    mesh: int                                   # `renderIndex` inside that container
+    materials: tuple[Optional[int], ...]
+    entity: str                                 # the scene entity that draws it
+    parent: str                                 # what it hangs off — `DEF-hand.R` for Oktoberfest's beer
+    path: tuple[str, ...]                       # entity names from the thing's root down to here
+    enabled: bool                               # this entity AND every ancestor up to the thing root
+    position: tuple = (0.0, 0.0, 0.0)           # composed down `path`, in the thing's own frame
+    scale: tuple = (1.0, 1.0, 1.0)
+    rotated: bool = False                       # a non-zero rotation appears in the chain — see `things`
+
+
+@dataclass
+class Thing:
+    """One addressable thing in a scene: a character, a room, a prop. The unit a container is NOT.
+
+    A container is one artist's export; a thing is what the app places. The two disagree in both
+    directions — office-babe draws from three containers, and `TOOLS LIBRARYblend5.glb` is split into
+    fifteen separate props — which is the whole argument for reading scenes
+    (`docs/plans/figures-and-library.md` § 2b).
+    """
+
+    name: str                                   # the entity name; becomes the asset label
+    scene: str                                  # which scene file said so
+    enabled: bool                               # placed in this scene, or sitting in its catalogue
+    entities: int                               # subtree size, for reporting
+    pieces: list[Piece] = field(default_factory=list)
+
+    @property
+    def containers(self) -> dict[int, int]:
+        out: dict[int, int] = {}
+        for p in self.pieces:
+            out[p.container] = out.get(p.container, 0) + 1
+        return out
+
+    @property
+    def live(self) -> list[Piece]:
+        return [p for p in self.pieces if p.enabled]
+
+    @property
+    def optional(self) -> list[Piece]:
+        """Drawn by an entity the scene has switched OFF — the site's own wardrobe switch.
+
+        `underwear` is exactly this in office-babe, Oktoberfest and bride, and it is what the parts
+        classifier has been reconstructing from mesh names. Emit it hidden rather than dropping it.
+        """
+        return [p for p in self.pieces if not p.enabled]
+
+
+def thing_notes(build: Build, ts: Optional[list] = None) -> list[str]:
+    """What the thing rule PROPOSED, per scene, so a person can see it and disagree.
+
+    The rule is convention (see `things`), so this is the whole of its accountability: it prints the
+    candidates with their subtree size and piece count and names no winner. The numbers are usually
+    enough — a prop is 2 entities and 1 piece, while the app shell's `Gestures` is 380 entities and 1
+    piece and is obviously not a thing anybody wants to place.
+    """
+    ts = things(build) if ts is None else ts
+    if not ts:
+        return []
+    out = []
+    for scene in sorted({t.scene for t in ts}):
+        group = [t for t in ts if t.scene == scene]
+        on = sum(1 for t in group if t.enabled)
+        shown = ", ".join(f"{t.name}({t.entities}e/{len(t.pieces)}p)" for t in group[:6])
+        out.append(f"{scene}: {len(group)} candidate thing(s), {on} enabled — {shown}"
+                   f"{', …' if len(group) > 6 else ''}. Which entity is a THING is this app's "
+                   f"convention and not the format; correct it per capture rather than trusting it")
+    return out
+
+
+def _vec(entity: dict, key: str, default: tuple) -> tuple:
+    value = entity.get(key)
+    if not isinstance(value, list) or len(value) != 3:
+        return default
+    try:
+        return tuple(float(v) for v in value)
+    except (TypeError, ValueError):
+        return default
+
+
+def things(build: Build, *, roots: Optional[dict] = None) -> list[Thing]:
+    """Every thing each of this build's scenes places, with the pieces it draws and from where.
+
+    **Which entity is a thing is CONVENTION, not format.** A render component naming
+    `(container, renderIndex, materialAssets)`, an entity carrying `enabled` / a parent / a transform,
+    and therefore "a mesh no entity binds is not rendered" — all of that is the PlayCanvas data model
+    and holds anywhere. This does not: the default rule here is *a direct child of a scene's Root whose
+    subtree renders something*, which is true of the content scenes and **false of the app's own**.
+    `2049393.json` has 1,016 entities whose Root children are `ToolModeStore`, `TRASH`, `DemoVRHoloes`
+    and `SampleStore` — machinery groupings nested several levels deep, not things.
+
+    So the rule PROPOSES and the caller can correct it: `roots` maps a scene's file name to the entity
+    names to treat as things, and whatever is used is reported. The same discipline `parts/parts.json`
+    uses for garment words and `adopt_unbound` uses when it prints INFERRED — a heuristic that fires
+    where it can be inspected, rather than one buried in a conversion.
+
+    `enabled` is composed down the chain, because an ancestor switched off takes its children with it.
+    At THING level the flag means something else again — in the catalogue, not placed in this scene —
+    which is the entire props library, so it is recorded on the `Thing` and never used to skip it.
+    """
+    out: list[Thing] = []
+    for name, entities in build.scenes:
+        if not entities:
+            continue
+        claimed = {c for e in entities.values() for c in (e.get("children") or [])}
+        tops = [g for g in entities if g not in claimed]
+        override = (roots or {}).get(name)
+        for top in tops:
+            for guid in entities[top].get("children") or []:
+                if guid not in entities:
+                    continue
+                label = entities[guid].get("name") or "?"
+                if override is not None and label not in override:
+                    continue
+                thing = _walk(build, entities, guid, name)
+                if thing.pieces or override is not None:
+                    out.append(thing)
+    return out
+
+
+def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
+    """Collect one thing's subtree: its pieces, each with the chain that puts it where it is."""
+    top = entities[guid]
+    thing = Thing(name=top.get("name") or "?", scene=scene,
+                  enabled=top.get("enabled") is not False, entities=0)
+    stack = [(guid, (), True, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), False, "")]
+    while stack:
+        g, path, on, pos, scl, rot, parent = stack.pop()
+        if g not in entities:
+            continue
+        entity = entities[g]
+        thing.entities += 1
+        label = entity.get("name") or "?"
+        here = path + (label,)
+        # Compose down the chain. Scale multiplies and position accumulates through the parent's scale,
+        # which is exact while every rotation is zero — and a non-zero one is FLAGGED rather than
+        # silently mis-composed, because euler order is a decision this does not get to guess at.
+        p = _vec(entity, "position", (0.0, 0.0, 0.0))
+        s = _vec(entity, "scale", (1.0, 1.0, 1.0))
+        r = _vec(entity, "rotation", (0.0, 0.0, 0.0))
+        pos = tuple(pos[i] + p[i] * scl[i] for i in range(3))
+        scl = tuple(scl[i] * s[i] for i in range(3))
+        rot = rot or any(abs(v) > 1e-6 for v in r)
+        # The THING's own flag is consumed by `Thing.enabled` and must NOT propagate: at that level it
+        # means "in the catalogue, not placed in this scene", which is the entire props library — all
+        # 15 tools and all 13 skin-tone variants are disabled Root children. Composing it would mark
+        # every piece of every prop optional and import none of them. Below the root it means what it
+        # says, and an ancestor switched off does take its children with it.
+        if path:
+            on = on and entity.get("enabled") is not False
+        render = (entity.get("components") or {}).get("render")
+        if render and render.get("type") == "asset" and render.get("asset") is not None:
+            data = (build.asset(render["asset"]) or {}).get("data") or {}
+            container, index = data.get("containerAsset"), data.get("renderIndex")
+            if container is not None and index is not None:
+                thing.pieces.append(Piece(
+                    container=int(container), mesh=int(index),
+                    materials=tuple(int(m) if m is not None else None
+                                    for m in (render.get("materialAssets") or [])),
+                    entity=label, parent=parent, path=here,
+                    enabled=on and render.get("enabled") is not False,
+                    position=pos, scale=scl, rotated=rot))
+        for child in entity.get("children") or []:
+            stack.append((child, here, on, pos, scl, rot, label))
+    thing.pieces.sort(key=lambda x: (x.container, x.mesh, x.entity))
+    return thing
 
 
 def dead_meshes(build: Build) -> list[Binding]:

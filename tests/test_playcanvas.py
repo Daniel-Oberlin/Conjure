@@ -21,6 +21,7 @@ import pytest
 from conjure.figures import split_glb, write_glb
 from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, BLEND_PREMULTIPLIED, Build, adopt_unbound, build_origin,
                                 by_container, container_meshes, dangling, dead_meshes, find_builds,
+                                thing_notes, things,
                                 find_orphans, has_alpha, load_image, material_from, missing_files,
                                 read_build, rebuild, regroup_materials, report_orphans, variant_only,
                                 _Textures)
@@ -96,8 +97,38 @@ def _png(path, mode, *, transparent=False, size=(8, 8)):
     return str(path)
 
 
+def _scene(spec) -> dict:
+    """`{entities: …}` for a scene whose `Root` holds `spec`, from nested
+    `(name, {fields}, [children])`.
+
+    A TREE and not a flat list, because that is the thing under test: a container is a file and a thing
+    is a SUBTREE, so a fixture that flattens has nothing to say about any of it.
+    """
+    out: dict = {}
+    counter = [0]
+
+    def add(node) -> str:
+        name, fields, kids = node
+        counter[0] += 1
+        guid = f"g{counter[0]}"
+        out[guid] = {"name": name, "children": [], **fields}
+        out[guid]["children"] = [add(k) for k in kids]
+        return guid
+
+    add(("Root", {}, [spec]))
+    return {"entities": out}
+
+
+def _render(container, index, materials):
+    """The `components.render` an entity needs to draw one mesh. The render ASSET id is derived so a
+    fixture only has to say `(container, index)` once — `_build`'s `renders` must match."""
+    return {"components": {"render": {"enabled": True, "type": "asset",
+                                      "asset": container * 1000 + index,
+                                      "materialAssets": materials}}}
+
+
 def _build(tmp_path, *, materials=None, entities=None, renders=None, containers=None, textures=(),
-           templates=(), scene=True, glbs=()):
+           templates=(), scene=True, glbs=(), scene_tree=None):
     """Write a minimal published build to disk and return its directory.
 
     `templates` is `[(id, name, [(entity, render, [materials])])]`; `scene=False` leaves the scene
@@ -133,7 +164,8 @@ def _build(tmp_path, *, materials=None, entities=None, renders=None, containers=
     (tmp_path / "config.json").write_text(json.dumps(
         {"assets": assets, "scenes": [{"name": "main", "url": "scene.json"}]}))
     if scene:
-        (tmp_path / "scene.json").write_text(json.dumps({"entities": ents}))
+        (tmp_path / "scene.json").write_text(
+            json.dumps(_scene(scene_tree) if scene_tree else {"entities": ents}))
     return str(tmp_path)
 
 
@@ -312,6 +344,135 @@ def test_container_meshes_reports_unknown_counts_rather_than_guessing(tmp_path):
     assert container_meshes(build, 10) == [("Body", (7, 2))]
     build.assets[10]["file"]["url"] = "files/body.glb"          # the fixture GLB: no accessors at all
     assert container_meshes(build, 10) == [("root", ()), ("", ())], "unknown, not zero"
+
+
+def test_a_THING_spans_containers_and_leaves_the_dead_twin_behind(tmp_path):
+    """The unit a container is not. office-babe draws from three files — her clothes from her own, her
+    BODY from `manager_fixing.glb`, her underwear from a third — while the copy of the body inside her
+    own container is drawn by nobody. Walking containers emits that twin and misses the real body;
+    walking the subtree does the opposite, with no special case for either."""
+    root = _build(
+        tmp_path,
+        containers=[(10, "her.glb", "files/body.glb"), (11, "fixing.glb", "files/body.glb"),
+                    (12, "underwear.glb", "files/body.glb")],
+        renders=[(10000, "Jacket", 10, 0), (10001, "DeadBody", 10, 1),
+                 (11000, "Body", 11, 0), (12000, "underwear", 12, 0)],
+        scene_tree=("office-babe", {}, [
+            ("Jacket", _render(10, 0, [30]), []),
+            ("Body", _render(11, 0, [31]), []),
+            ("underwear", {"enabled": False, **_render(12, 0, [31])}, []),
+        ]),
+        templates=[])
+    build = read_build(root)
+    thing = next(t for t in things(build) if t.name == "office-babe")
+    assert thing.containers == {10: 1, 11: 1, 12: 1}, "three files, one thing"
+    assert {(p.container, p.mesh) for p in thing.live} == {(10, 0), (11, 0)}
+    assert (10, 1) not in {(p.container, p.mesh) for p in thing.pieces}, "the dead twin is not drawn"
+
+
+def test_a_piece_the_scene_switched_OFF_is_optional_not_dead(tmp_path):
+    """`enabled: false` on a piece is the site's own wardrobe switch — `underwear` is exactly this in
+    office-babe, Oktoberfest and bride — and it is what the parts classifier has been reconstructing
+    from mesh names. Emit it HIDDEN; dropping it loses a garment the source offers."""
+    root = _build(tmp_path,
+                  renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                  scene_tree=("figure", {}, [
+                      ("skin", _render(10, 0, [30]), []),
+                      ("underwear", {"enabled": False, **_render(10, 1, [31])}, [])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    assert [p.entity for p in thing.live] == ["skin"]
+    assert [p.entity for p in thing.optional] == ["underwear"]
+
+
+def test_enabled_composes_DOWN_the_chain(tmp_path):
+    """An ancestor switched off takes its children with it, however enabled they say they are."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("figure", {}, [
+                      ("outfit", {"enabled": False}, [("shirt", _render(10, 0, [30]), [])])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    assert thing.live == [] and [p.entity for p in thing.optional] == ["shirt"]
+
+
+def test_a_piece_remembers_the_BONE_it_hangs_off(tmp_path):
+    """Oktoberfest's beer is parented to `DEF-hand.R` and bride's heels to `DEF-foot.L`/`.R`. That
+    relationship lives on the ENTITY, not in the container, so a merge that flattens nodes drops the
+    beer on the floor and loses a shoe."""
+    root = _build(tmp_path, containers=[(10, "her.glb", "files/body.glb")],
+                  renders=[(10000, "beer", 10, 0)],
+                  scene_tree=("figure", {}, [
+                      ("DEF-spine", {}, [("DEF-hand.R", {}, [("Beer", _render(10, 0, [30]), [])])])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    piece = thing.pieces[0]
+    assert piece.parent == "DEF-hand.R"
+    assert piece.path == ("figure", "DEF-spine", "DEF-hand.R", "Beer")
+
+
+def test_one_mesh_drawn_by_two_nodes_stays_two_pieces(tmp_path):
+    """Bride's heels are ONE mesh instanced by two entities, one per foot. A reader that keys on
+    (container, mesh) collapses them and she loses a shoe."""
+    root = _build(tmp_path, renders=[(10000, "heel", 10, 0)],
+                  scene_tree=("bride", {}, [
+                      ("DEF-foot.L", {}, [("heel_L", _render(10, 0, [30]), [])]),
+                      ("DEF-foot.R", {}, [("heel_R", _render(10, 0, [30]), [])])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    assert len(thing.pieces) == 2
+    assert {p.parent for p in thing.pieces} == {"DEF-foot.L", "DEF-foot.R"}
+    assert {(p.container, p.mesh) for p in thing.pieces} == {(10, 0)}, "the same mesh, twice"
+
+
+def test_a_transform_is_the_PRODUCT_of_the_chain(tmp_path):
+    """A banana that skips its catalogue wrapper's 0.5 arrives twice life size, and `WOODout.glb` is
+    meaningless at the origin — the scene puts it at -10 under a house scaled 0.01, which is -0.1."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("Banana", {"scale": [0.5, 0.5, 0.5]}, [
+                      ("BANANA", {"position": [0, -10, 0], "scale": [0.9, 1.0, 2.0],
+                                  **_render(10, 0, [30])}, [])]),
+                  templates=[])
+    piece = things(read_build(root))[0].pieces[0]
+    assert piece.scale == (0.45, 0.5, 1.0), "0.5 × the inner scale"
+    assert piece.position == (0.0, -5.0, 0.0), "-10 through the parent's 0.5"
+    assert piece.rotated is False
+
+
+def test_a_ROTATION_in_the_chain_is_flagged_rather_than_mis_composed(tmp_path):
+    """Euler order is a decision this does not get to guess at, so a non-zero rotation is reported and
+    the merge deals with it properly rather than inheriting a plausible wrong matrix."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("thing", {"rotation": [0, 90, 0]}, [
+                      ("mesh", _render(10, 0, [30]), [])]),
+                  templates=[])
+    assert things(read_build(root))[0].pieces[0].rotated is True
+
+
+def test_a_thing_is_enabled_or_CATALOGUED_and_that_is_not_a_reason_to_skip_it(tmp_path):
+    """`enabled: false` means two different things and the LEVEL decides which. On a piece it is
+    optional. On a thing it is *in the catalogue, not placed in this scene* — which is the entire props
+    library: all 15 tools and all 13 skin-tone variants are disabled Root children. Reading the flag
+    uniformly would import none of them."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("Banana", {"enabled": False}, [("BANANA", _render(10, 0, [30]), [])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    assert thing.enabled is False, "not placed here"
+    assert len(thing.live) == 1, "...and still entirely importable"
+
+
+def test_which_entity_is_a_thing_is_CORRECTABLE(tmp_path):
+    """The rule is this app's convention, not the format: "a direct child of Root whose subtree
+    renders" holds in the content scenes and is FALSE in the app's own, where Root's children are
+    `ToolModeStore`, `TRASH` and `Gestures` — machinery nested several levels deep. So it proposes,
+    reports, and takes an override."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                  scene_tree=("Gestures", {}, [("hand", _render(10, 0, [30]), [])]),
+                  templates=[])
+    build = read_build(root)
+    assert [t.name for t in things(build)] == ["Gestures"], "the convention, proposing"
+    assert things(build, roots={"scene.json": {"nothing-here"}}) == [], "and overruled"
+    assert any("convention and not the format" in n for n in thing_notes(build))
 
 
 def test_a_mesh_only_a_TEMPLATE_claims_is_flagged_as_probably_dead(tmp_path):
