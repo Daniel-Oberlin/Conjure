@@ -452,7 +452,51 @@ worth a look next to her long-standing eye trouble.
    because the template's richer materials won. `dead_meshes` now asks whether a scene claims the mesh
    rather than which claim won its materials. 47 distinct dead meshes → 45.
 
-**What remains is 4 — COMPOSE — and its inverse.**
+0. ✅ **Name the real things** — BUILT 2026-09-14. `captures/things.json`: nine site-wide exclusions
+   plus one capture override (susan). 509 candidates → 369.
+
+**What remains is 4 — COMPOSE — and its inverse. Agreed approach, 2026-09-14:**
+
+**Plan A — compose alongside, do not replace.** `--things` writes one GLB per thing into its own
+directory; `temp/rebuilt/` and its 416 per-container files stay exactly as they are, and the importer
+keeps pointing at them. Composed files are just FILES: Daniel reads them in a web glb viewer by
+dropping them in, so comparing old against new needs no import, no catalog and no headset. The
+comparison is not a state to live in — it exists so the single import at the end happens once instead
+of being discovered piecemeal. When the verifier is silent and the six cases look right, this becomes
+the only output.
+
+*(Note: `--out` is already required and has no default, so no path is hard-coded there. `import_capture`
+DOES default `--rebuilt` to `temp/rebuilt/<name>`, at `scripts/import_capture.py:286` — the one baked-in
+path, and the place to change when the switch happens.)*
+
+**Write the VERIFIER first.** A composed GLB is directly comparable to the `Thing` that described it:
+mesh count equals live + optional, every optional piece is present and flagged hidden, no
+`(container, mesh)` outside the piece list appears, a bone-parented node still has that parent, an
+instanced mesh still has two nodes, transforms match the composed values. That is a script, not a
+person — and it is what makes the loop fast, because it catches most of a regression in seconds and
+defines the contract before any geometry is written.
+
+**The six cases are the acceptance test**, each chosen because it exercises a different requirement:
+
+| case | proves |
+|---|---|
+| `office-babe` | pieces merge across 3 containers; the dead twin stays out |
+| `Oktoberfest-milf` | a piece keeps the BONE it hangs off (`DEF-hand.R`) |
+| `bride_ready` | one mesh INSTANCED twice survives as two |
+| `JAPANESEROOM BAKED` | a piece keeps its TRANSFORM (`y = -0.1`) |
+| `Banana` | the SCALE chain (0.5 × 0.9166 = 0.458), and one file → many things |
+| `Alice` | thing detection was WRONG here, not merely noisy; the white `Scalp_Female` must be absent and her real scalp (a primitive of hair mesh 13) present |
+
+**The loop:** compose one capture → verify by machine → open the six in a viewer → fix → repeat.
+Steps 2 and 4 are where nearly all the iterations happen and neither needs a person. Then compose
+everything, spot-check, import ONCE — where step 2's supersession makes it reversible.
+
+**The hard part, and it is real.** A figure's pieces come from several containers and must end up
+skinned to ONE skeleton. Measured: the donor skeletons are identical BY NAME (181/181 office-babe,
+175/175 Oktoberfest, 222/222 bride), so the join is name-keyed — the same operation `figure-clip`
+already does to bind a clip. It must VERIFY that and refuse rather than weld silently; a donor spelled
+differently needs retargeting, which is phase 5.
+
 
 **Splitting is the other half of the job, and it is not the same code.** Composition merges several
 containers into one file; the props need the inverse — one mesh, its materials and its node chain
