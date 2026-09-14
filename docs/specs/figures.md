@@ -900,9 +900,23 @@ pose), `list_poses` (the named library, read from the data rather than written i
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
-**CLI:** `conjure-ctl clips <entity>` (what she can play; `--all` reaches past the authored set) and
-`conjure-ctl clip <entity> <label|id>` (`--stop`, `--once`, `--speed`, `--force`) — the deterministic
-path, no LLM. `conjure-import` (ingest; `--label` names the asset, defaulting to the filename stem, and
+**CLI — the deterministic figure surface, no LLM.** One verb per director tool, so anything the
+director can do to a figure can be reproduced without one; this is the path for debugging a figure when
+the answer is "it looked wrong in the headset".
+
+| Command | |
+|---|---|
+| `conjure-ctl pose <entity> [named] [--bone N:AXIS=V] [--clear]` | `--bone` repeats and composes onto a named pose; it reports joints that clamped |
+| `conjure-ctl dress <entity> [--hide C] [--show C] [--only-body]` | categories or mesh names; reports what is still ON, not what the figure owns |
+| `conjure-ctl clips <entity> [--all] [--kind K]` | what shipped with her, apart from what merely fits |
+| `conjure-ctl clip <entity> <label\|id> [--stop] [--once] [--speed] [--force]` | naming no clip is the same request as `--stop` |
+
+These live in `ctl` and not in the shell because the shell proxies only the world server's CONTROL
+surface — `/admin/{tree,show,match,file,delete}`, `/admin/gc`, `/admin/settings`, `/agent/last`,
+`/scope/activate` — and every one of those calls carries a namespace PATH. A figure verb carries an
+entity id, hits a content route, and authenticates with `x-conjure-scope` rather than `X-Conjure-User`.
+
+`conjure-import` (ingest; `--label` names the asset, defaulting to the filename stem, and
 is distinct from `--creator`, which is whoever made it), `conjure-ctl refresh-models [--force]`,
 `python scripts/pose_eval.py` (the utterance-layer battery), `scripts/pose_test.py` (render one pose).
 

@@ -611,8 +611,13 @@ async def dress_figure(id: str, hide: Optional[list[str]] = None, show: Optional
     lines = [f"{id}: hidden — {summary}."]
     if hidden:
         lines.append(f"Meshes: {', '.join(hidden)}")
-    lines.append("Still removable: "
-                 + (", ".join(f"{k} ({n})" for k, n in groups.items()) or "nothing"))
+    # What is STILL ON — `removable` is the TOTAL per category, and reported as a remainder beside a list
+    # of what just came off it reads as "there is more clothing left" when there is none. Same class of
+    # misreport as answering "clothing's all off" after a call that also took the hair.
+    left = {k: n - len(by_cat.get(k) or []) for k, n in groups.items()}
+    lines.append("Still on: "
+                 + (", ".join(f"{k} ({n})" for k, n in sorted(left.items()) if n > 0)
+                    or "nothing removable"))
     if out.get("unknown"):
         lines.append(f"Not a category or a mesh on this figure: {', '.join(out['unknown'])}")
     return "\n".join(lines)

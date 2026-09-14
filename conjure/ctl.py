@@ -314,6 +314,111 @@ def cmd_caption(s: Settings, a) -> None:
           "(runs in the background on the server)")
 
 
+def parse_bones(specs) -> tuple[dict, str]:
+    """`--bone NAME:AXIS=VALUE` into the `pose` dict the endpoint takes. `(pose, error)`.
+
+    The one thing that needs care: `aim` takes a DIRECTION — a word (`up`) or a three-vector
+    (`0,1,1`) — while `bend`/`spread`/`turn` take degrees. Sending a string where the server wants a
+    number surfaces as a validation error three layers down that names neither the bone nor the flag,
+    so the split happens here where the input is still in front of you.
+    """
+    pose: dict = {}
+    for spec in specs:
+        bone, _, rest = spec.partition(":")
+        axis, _, value = rest.partition("=")
+        if not bone or not axis or value == "":
+            return {}, f"--bone wants NAME:AXIS=VALUE, got {spec!r}"
+        if axis == "aim":
+            parts = value.replace(",", " ").split()
+            if len(parts) == 3:
+                try:
+                    pose.setdefault(bone, {})[axis] = [float(x) for x in parts]
+                except ValueError:
+                    return {}, f"{value!r} is not a direction or a three-vector (in {spec!r})"
+            else:
+                pose.setdefault(bone, {})[axis] = value
+        else:
+            try:
+                pose.setdefault(bone, {})[axis] = float(value)
+            except ValueError:
+                return {}, f"{value!r} is not a number of degrees (in {spec!r})"
+    return pose, ""
+
+
+def cmd_pose(s: Settings, a) -> None:
+    """Put a placed figure into a named pose, adjust one bone, or clear it.
+
+    `--bone` is `NAME:AXIS=DEGREES` (`leftUpperArm:bend=45`) or `NAME:aim=DIRECTION`
+    (`rightUpperArm:aim=up`). Repeatable, and it composes onto a named pose — the endpoint merges per
+    BONE onto whatever is already there, so adjusting an arm does not reset the legs.
+    """
+    if a.clear:
+        _say(_post(s, "/figure", {"id": a.id, "clear": True}), a.verbose,
+             f"cleared the pose on {a.id}")
+        return
+    pose, bad = parse_bones(a.bone or [])
+    if bad:
+        print(f"error: {bad}")
+        return
+    if not pose and not a.named:
+        print("error: name a pose, or give at least one --bone (or --clear)")
+        return
+    body: dict = {"id": a.id}
+    if a.named:
+        body["named"] = a.named
+    if pose:
+        body["pose"] = pose
+    out = _post(s, "/figure", body)
+    if out.get("ok") is False:
+        _say(out, a.verbose, "")
+        return
+    # Both halves when there are two. `posed` comes back holding the NAMED pose's whole expansion —
+    # eleven bones for `kneel` — so printing it swallows the adjustment that was the point of the call,
+    # and printing only the name hides it completely. The bones asked for by hand are known here.
+    what = out.get("named") or ", ".join(out.get("posed") or []) or "nothing"
+    if out.get("named") and pose:
+        what += ", adjusted: " + ", ".join(sorted(pose))
+    lines = [f"{a.id}: {what} ({out.get('bones', 0)} bone(s) held)"]
+    # The refusals are the point of reporting at all. A joint limit silently clamping looked like the
+    # tool ignoring the request — the director asked for 90 degrees of hip extension twice in one
+    # session with nothing telling it otherwise.
+    if out.get("limited"):
+        lines.append("clamped by joint limits: " + ", ".join(str(x) for x in out["limited"]))
+    if out.get("skipped"):
+        lines.append("bones this figure does not have: " + ", ".join(out["skipped"]))
+    if out.get("needs"):
+        lines.append(f"needs something to rest on: {out['needs']} — nothing is put there for you")
+    _say(out, a.verbose, "\n".join(lines))
+
+
+def cmd_dress(s: Settings, a) -> None:
+    """Turn parts of a figure off and on — clothing, hair, shoes, accessories.
+
+    `--hide`/`--show` take a CATEGORY or a single mesh name; `--only-body` strips everything removable,
+    hair included, which is almost never what "take her dress off" means."""
+    body = {"id": a.id, "hide": a.hide or [], "show": a.show or [], "only_body": bool(a.only_body)}
+    out = _post(s, "/figure/parts", body)
+    if out.get("ok") is False:
+        _say(out, a.verbose, "")
+        return
+    by_cat = out.get("hidden_by_category") or {}
+    # By CATEGORY as well as by mesh: a list of mesh names is not something anyone reads back.
+    summary = ", ".join(f"{c} ({len(n)})" for c, n in sorted(by_cat.items())) if by_cat else "nothing"
+    lines = [f"{a.id}: hidden — {summary}"]
+    if out.get("hidden"):
+        lines.append("  meshes: " + ", ".join(out["hidden"]))
+    # What is STILL ON, not what the figure owns. `removable` is the total per category and reads as a
+    # remainder next to a list of what just came off — it said `clothing (2)` with both already hidden.
+    groups = out.get("removable") or {}
+    left = {k: n - len(by_cat.get(k) or []) for k, n in groups.items()}
+    left = {k: n for k, n in left.items() if n > 0}
+    lines.append("  still on: "
+                 + (", ".join(f"{k} ({n})" for k, n in sorted(left.items())) or "nothing removable"))
+    if out.get("unknown"):
+        lines.append("  neither a category nor a mesh here: " + ", ".join(out["unknown"]))
+    _say(out, a.verbose, "\n".join(lines))
+
+
 def cmd_clips(s: Settings, a) -> None:
     """What a figure can dance to. Two lists, never merged: what SHIPPED with her, and what merely fits
     her rig — `--all` for the second, which is much the larger and much the less trustworthy (many clips
@@ -484,6 +589,23 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("refresh-models", help="re-derive model attributes (figures, bone maps, limits)")
     a.set_defaults(fn=cmd_refresh_models)
     a.add_argument("--force", action="store_true", help="re-extract even rows already up to date")
+
+    a = sub.add_parser("pose", help="pose a placed figure (named pose, or bone by bone)")
+    a.set_defaults(fn=cmd_pose)
+    a.add_argument("id", help="the ENTITY id of a placed figure")
+    a.add_argument("named", nargs="?", default="", help="a pose from the library: kneel, sit, wave, …")
+    a.add_argument("--bone", action="append", metavar="NAME:AXIS=VAL",
+                   help="leftUpperArm:bend=45 · rightUpperArm:aim=up — repeatable, composes onto `named`")
+    a.add_argument("--clear", action="store_true", help="drop the pose, back to the bind pose")
+
+    a = sub.add_parser("dress", help="hide/show a figure's clothing, hair, shoes, accessories")
+    a.set_defaults(fn=cmd_dress)
+    a.add_argument("id", help="the ENTITY id of a placed figure")
+    a.add_argument("--hide", action="append", metavar="CATEGORY|MESH",
+                   help="clothing · shoes · hair · accessory — or one mesh name. Repeatable")
+    a.add_argument("--show", action="append", metavar="CATEGORY|MESH", help="…and to bring back")
+    a.add_argument("--only-body", dest="only_body", action="store_true",
+                   help="strip everything removable, HAIR INCLUDED")
 
     a = sub.add_parser("clips", help="list the animations a placed figure can play")
     a.set_defaults(fn=cmd_clips)
