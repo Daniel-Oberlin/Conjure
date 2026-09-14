@@ -355,6 +355,12 @@ A thing's subtree spans containers, which is the whole point:
   body twin, Oktoberfest's and bride's denser twins, bride's black `clothes_sexyunderwear_*`, and the
   Japanese house's grey deck.
 
+**`enabled: false` means two different things and the level decides which.** On a PIECE inside a thing
+it means optional — off now, switchable. On a THING itself (a direct child of Root) it means *in the
+catalog, not placed in this scene*, and that is not a reason to skip it — it is the entire props
+library. Every one of the 15 tools is a disabled Root child. Reading the flag uniformly would import
+none of them.
+
 **The merge is cheap, which was the thing worth checking.** The skeletons are identical BY NAME across
 containers — 181/181 for office-babe, 175/175 Oktoberfest, 222/222 bride, with zero bones on either
 side that the other lacks. So joining two containers is a name-keyed skeleton join, the same operation
@@ -379,10 +385,28 @@ line of output:
    difference between "re-download this capture" and "the site ships it this way", and it is the question
    that cost a session: *"no texture on the railing of the house."*
 
-**Done when:** the four cases each import as ONE asset matching what the site renders — her beer in her
-hand, the deck textured and in place, no black underwear under the dress — dead meshes are reported
-rather than carried, and `enabled: false` pieces arrive as hidden parts instead of being re-derived from
-their names.
+**Splitting is the other half of the job, and it is not the same code.** Composition merges several
+containers into one file; the props need the inverse — one mesh, its materials and its node chain
+extracted into a standalone asset. The props scene shows exactly what that has to carry:
+
+```
+'Banana'      enabled=False  scale [0.5, 0.5, 0.5]          <- the catalog wrapper
+  'BANANA'    enabled=True   scale [0.917, 0.939, 1.289]    <- RENDER: TOOLS LIBRARYblend5.glb mesh 2, material BANANA
+'Gothic'      enabled=False  scale [0.5, 0.5, 0.5]
+  'gothic_steel_dildo'       scale [0.920, 1.048, 0.934]    <- RENDER: gothic_steel_dildo.glb mesh 0
+```
+
+So: the LABEL is the thing's entity name (`Banana`), not the container's and not a mesh index. The
+TRANSFORM is the product of the chain — two levels of scale here, and a banana that skips the wrapper's
+0.5 comes out twice life size. And the props scene mixes sources: most draw from the shared
+`TOOLS LIBRARYblend5.glb`, `Gothic` has a container to itself, so "split the props file" is the wrong
+framing — walk the things, and where a thing happens to be alone in its file the split is a no-op.
+
+**Done when:** the four composition cases each import as ONE asset matching what the site renders — her
+beer in her hand, the deck textured and in place, no black underwear under the dress; the props scene
+imports as **15 separately placeable tools with their own names**, not one cutlery drawer; dead meshes
+are reported rather than carried; and `enabled: false` pieces arrive as hidden parts instead of being
+re-derived from their names.
 
 **It is wrong in the OTHER direction too, and that case is bigger.** One container can hold many
 things: `TOOLS LIBRARYblend5.glb` is a single 7.5 MB file that the props scene splits into **15 separate
