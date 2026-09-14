@@ -227,12 +227,18 @@ def _glob_key(s: str) -> str:
     return re.sub(r"[^a-z0-9 *?\[\]!^-]", "", s).strip()
 
 
-def match(path: str):
+def match(path: str, *, limit: int = 200):
     """Every location `path` names — a list of `Loc`, or an error string.
 
     A pattern is allowed in the LAST segment only, and expands against that container's DISPLAY names
     through the same folded key everything else matches on. Anything without a pattern is one `resolve`,
-    so callers can use this everywhere and only the plural cases differ."""
+    so callers can use this everywhere and only the plural cases differ.
+
+    `limit` is how many CANDIDATES to expand against, and it has to be passed through: with the default
+    200 against 775 assets, `dir *idle*` searched a first page and matched whatever happened to be on
+    it. Worse than the truncated listing it mirrors, because the `… (more than 200)` marker is a `note`
+    row and the loop below skips notes — so the glob was silently narrow with nothing on screen saying
+    so."""
     segs = _split(path)
     if not segs or not is_glob(segs[-1]):
         loc = resolve(path)
@@ -242,7 +248,7 @@ def match(path: str):
         return parent
     want = _glob_key(segs[-1])
     out = []
-    for row in children(parent):
+    for row in children(parent, limit=limit):
         if row.get("kind") in ("category", "note", "shortcut"):
             continue
         if not fnmatch.fnmatchcase(_glob_key(row["label"]), want):

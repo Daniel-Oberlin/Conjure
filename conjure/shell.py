@@ -335,11 +335,12 @@ class Shell:
 
             # -- paths: act on anything addressable
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<long>-l))?(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
-             "dir [-l] [path] [--kind K] [--rel TYPE] [--with NAME] [--out|--in] — list one level of "
-             "the namespace (-l also shows ids). --kind narrows to one asset type (model, animation, "
-             "audio, set). --rel adds a COLUMN showing each row's links of that type (shipped_with, "
-             "voiced_by, part_of); --with narrows to assets linked to NAME; --out/--in pin which way "
-             "the edge points, both by default. Combines with globbing: "
+             "dir [-l] [path] [--all|--limit N] [--kind K] [--rel TYPE] [--with NAME] [--out|--in] "
+             "— list one level of the namespace (-l also shows ids). Listings stop at 200 rows and "
+             "say so; --all lifts the cap, --limit N sets it. --kind narrows to one asset type "
+             "(model, animation, audio, set). --rel adds a COLUMN showing each row's links of that "
+             "type (shipped_with, voiced_by, part_of); --with narrows to assets linked to NAME; "
+             "--out/--in pin which way the edge points, both by default. Combines with globbing: "
              "`dir *idle* --kind animation --rel voiced_by --with jane_export`", False),
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
@@ -887,8 +888,10 @@ class Shell:
                             f"Nothing matches {loc_name(path)!r}{extra} in {where}.")
             return
         head = f"{len(rows)} match {loc_name(path)!r}"
-        await self._say(on_text, head + "\n" + "\n".join(columns(rows, found.get("columns") or [],
-                                                                  long=long)))
+        text = head + "\n" + "\n".join(columns(rows, found.get("columns") or [], long=long))
+        if found.get("note"):          # a glob truncates as visibly as a listing does
+            text += f"\n  ({found['note']})"
+        await self._say(on_text, text)
 
     async def _recover(self, on_text, m, failed: dict) -> Optional[dict]:
         """A path command failed. If the CWD is what went stale, move up to the nearest place that still
@@ -1349,6 +1352,10 @@ class Shell:
             if hit:
                 filters[field] = hit.group("v")
                 path = (path[:hit.start()] + " " + path[hit.end():]).strip()
+        hit = re.search(r"(?:^|\s)--limit\s+(?P<v>\d+)", path or "", re.I)
+        if hit:
+            filters["limit"] = int(hit.group("v"))
+            path = (path[:hit.start()] + " " + path[hit.end():]).strip()
         # Valueless, and mutually exclusive by construction: the last one wins rather than erroring,
         # because `--out --in` means "both", which is already the default.
         for flag, value in (("--out", "out"), ("--in", "in")):
@@ -1356,6 +1363,10 @@ class Shell:
             if hit:
                 filters["direction"] = value
                 path = (path[:hit.start()] + " " + path[hit.end():]).strip()
+        hit = re.search(r"(?:^|\s)--all(?=\s|$)", path or "", re.I)
+        if hit:
+            filters["limit"] = 0                  # 0 = no cap; an explicit --limit N still wins if later
+            path = (path[:hit.start()] + " " + path[hit.end():]).strip()
         return path, filters
 
     async def _admin(self, action: str, path: str, **filters) -> dict:

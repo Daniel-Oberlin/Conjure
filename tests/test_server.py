@@ -4813,6 +4813,48 @@ def test_a_relation_cell_counts_rather_than_listing_a_long_fan_out(srv):
     assert cell.endswith("+3") and cell.count("→") == 2, f"two names then a count, got {cell!r}"
 
 
+def test_a_listing_can_lift_its_own_cap(srv):
+    """200 rows is a page size, not a limit on what exists — and before `--all` there was no way past
+    it at all. 0 means every row; the marker only appears when something was actually cut."""
+    lib = srv.library
+    for i in range(260):
+        lib.upsert(f"a{i}.png", kind="image", label=f"a{i}", scope=srv.active_scope, source="cache://")
+    from conjure import namespace
+    P = f"/{srv.DEFAULT_USER}/agents/builder/assets"
+
+    def rows(**kw):
+        req = srv.AdminPath(path=P, **kw)
+        got = namespace.children(namespace.resolve(P), limit=srv._fetch_width(req))
+        cap = srv._row_cap(req)
+        return namespace.cap_rows(got, cap) if cap else got
+
+    assert len(rows()) == 201, "200 plus the marker that says there are more"
+    assert rows()[-1]["kind"] == "note"
+    assert len(rows(limit=0)) == 260, "--all is every row"
+    assert rows(limit=0)[-1]["kind"] == "asset", "and no marker, because nothing was cut"
+    assert len(rows(limit=50)) == 51
+
+
+def test_a_GLOB_searches_everything_even_when_the_listing_is_capped(srv):
+    """`dir *idle*` matched 32 of the 183 it should have, on the live catalog, and said nothing —
+    the truncation happened in the CANDIDATE set, so no "more than 200" marker could ever appear and
+    the answer looked complete. A glob is a search; a search that reads the first page is not one."""
+    lib = srv.library
+    for i in range(260):
+        lib.upsert(f"pad{i}.png", kind="image", label=f"pad{i}", scope=srv.active_scope,
+                   source="cache://")
+    for i in range(5):
+        lib.upsert(f"zzz{i}.glb", kind="animation", label=f"zzz{i}_idle", scope=srv.active_scope,
+                   source="cache://")
+    from conjure import namespace
+    P = f"/{srv.DEFAULT_USER}/agents/builder/assets"
+    # A narrow candidate window misses matches, whatever the row order happens to be — which is the
+    # bug, kept as the contrast. `admin_match` now always passes a wide one.
+    assert len(namespace.match(f"{P}/*_idle", limit=2)) < 5
+    assert len(namespace.match(f"{P}/*_idle", limit=10_000)) == 5
+    assert srv._fetch_width(srv.AdminPath(path=P)) == 200, "a plain listing still pages"
+
+
 def test_a_filter_runs_over_EVERY_asset_not_the_first_page(srv):
     """The 200-row cap used to be applied inside the row builder, so a filter narrowed an arbitrary
     first page: measured on the live catalog, `--kind animation` showed 98 of 364 and

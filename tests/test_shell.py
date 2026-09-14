@@ -1207,6 +1207,9 @@ def test_listing_filters_split_off_a_path_that_may_contain_anything():
     assert split("--with jane --rel shipped_with --out --kind animation") == \
         ("", {"related": "jane", "relation": "shipped_with", "direction": "out", "kind": "animation"})
     assert split("assets --out") == ("assets", {"direction": "out"})
+    assert split("--all") == ("", {"limit": 0}), "0 means no cap"
+    assert split("assets --limit 500") == ("assets", {"limit": 500})
+    assert split("*idle* --all --kind animation") == ("*idle*", {"kind": "animation", "limit": 0})
 
 
 def test_a_flag_like_word_inside_a_filename_is_not_a_flag():

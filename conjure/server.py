@@ -2594,6 +2594,9 @@ class AdminPath(BaseModel):
     # are the same question from opposite ends — but direction is the difference between "the clips that
     # shipped with jane" and "the set jane belongs to", and `part_of` fans in 107 where it fans out 15.
     direction: Optional[str] = None
+    # How many rows to return. None is the default page of 200; 0 means ALL. The cap exists so a
+    # namespace holding 775 assets does not answer `dir` with 775 lines, not because more is unsafe.
+    limit: Optional[int] = None
 
 
 def _active_sid_for(scope: str) -> str:
@@ -2618,6 +2621,19 @@ def _row_asset_kind(row: dict) -> str:
     """
     cells = row.get("cells") or []
     return cells[0] if row.get("kind") == "asset" and cells else ""
+
+
+def _row_cap(req: AdminPath) -> int:
+    """How many rows to SHOW. 0 means all — `dir --all`, for when 200 is the wrong page size."""
+    return 200 if req.limit is None else max(0, int(req.limit))
+
+
+def _fetch_width(req: AdminPath) -> int:
+    """How many rows to BUILD before filtering. Always wide enough that the filter, the glob and the
+    cap all see the same population: narrowing the input first is what made `--kind animation` show 98
+    of 364, and it is the same mistake whether the narrowing is a filter or a page size."""
+    cap = _row_cap(req)
+    return 10_000 if (cap == 0 or cap > 200 or req.kind or req.related) else 200
 
 
 def _filter_rows(rows: list[dict], req: AdminPath) -> list[dict]:
@@ -2747,11 +2763,11 @@ async def admin_tree(req: AdminPath) -> dict:
     # Fetch WIDE when filtering, then cap. The cap used to sit inside the row builder, so a filter ran
     # against an arbitrary first-200 slice of 775 assets — `--kind animation` showed 98 of 364 and
     # `--with jane_export` found none of her 21 clips.
-    filtering = bool(req.kind or req.related)
-    kids = namespace.children(loc, limit=10_000 if filtering else 200)
+    cap = _row_cap(req)
+    kids = namespace.children(loc, limit=_fetch_width(req))
     kids = _filter_rows(kids, req)
-    if filtering:
-        kids = namespace.cap_rows(kids, 200)
+    if cap:
+        kids = namespace.cap_rows(kids, cap)
     cols = namespace.columns_for(loc.kind)
     if req.relation:
         _relation_cells(kids, req.relation, req.direction)
@@ -2854,7 +2870,11 @@ async def admin_settings(req: SettingChange) -> dict:
 @app.post("/admin/match")
 async def admin_match(req: AdminPath) -> dict:
     """Every location `path` names — one, or many when its last segment is a pattern (shell globbing)."""
-    found = namespace.match(req.path)
+    # A glob always expands against EVERYTHING, whatever the page size: it is a search, and a search
+    # that only looks at the first page is not one. `dir *idle*` matched 32 of the 183 it should have
+    # and said nothing, because the truncation happened in the candidate set rather than in the result,
+    # so no "… (more than 200)" marker could ever appear. The cap below still limits what is SHOWN.
+    found = namespace.match(req.path, limit=10_000)
     if isinstance(found, str):
         return {"ok": False, "error": found}
     kind = found[0].kind if found else ""
@@ -2864,11 +2884,22 @@ async def admin_match(req: AdminPath) -> dict:
         keep = {id(r) for r in _filter_rows([m["row"] for m in matches if m.get("row")], req)}
         matches = [m for m in matches if m.get("row") is not None and id(m["row"]) in keep]
     cols = namespace.columns_for(kind + "s")
+    cap = _row_cap(req)
+    if cap and len(matches) > cap:
+        # A glob truncates as visibly as a listing does. It used to drop the marker entirely, because
+        # `match` skips `note` rows and the note was the only thing saying the answer was partial.
+        out_note = f"… (more than {cap}) — --all for every match"
+        matches = matches[:cap]
+    else:
+        out_note = ""
     if req.relation:
         _relation_cells([m["row"] for m in matches if m.get("row")], req.relation, req.direction)
         cols = cols + [req.relation]
-    return {"ok": True, "glob": namespace.is_glob(req.path.rstrip("/").rsplit("/", 1)[-1]),
-            "columns": cols, "matches": matches}
+    result = {"ok": True, "glob": namespace.is_glob(req.path.rstrip("/").rsplit("/", 1)[-1]),
+              "columns": cols, "matches": matches}
+    if out_note:
+        result["note"] = out_note
+    return result
 
 
 @app.post("/admin/file")

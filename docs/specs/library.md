@@ -150,6 +150,12 @@ dir --kind set --rel part_of --in               each set, with what belongs to i
 one audio voices are the same question from opposite ends — but `part_of` fans IN 107 where it fans
 OUT 15, so "the set this belongs to" and "the parts of this set" are very different lists.
 
+**Listings page at 200 rows and say so** — `… (more than 200)`. `--all` lifts the cap, `--limit N`
+sets it. A **glob always searches everything** regardless of the page size, because a search that
+reads the first page is not a search: on the live catalog `dir *idle*` matched 32 of 183 and reported
+no truncation at all, since the cut happened in the candidate set rather than the result and the
+marker is itself a row the glob skips.
+
 **A filter runs over every asset, then the listing is capped** — not the reverse. The 200-row cap used
 to be applied while building rows, so a filter narrowed an arbitrary first page: measured on the live
 catalog, `--kind animation` returned 98 of 364 and `--with jane_export` found **none** of her 21 clips
@@ -327,7 +333,8 @@ index specifically, so that swap is the one anticipated.
 **Admin (shell `dir`, `show`):** `POST /admin/tree` and `/admin/match` take optional `kind`, `related`,
 `relation` and `direction` — so a capture's figure, sixty clips and thirty audio files can be asked
 apart. `related` resolves an id or an exact label and refuses an ambiguous one rather than picking;
-`relation` alone adds a column instead of filtering; `direction` is `out` | `in` | omitted for both.
+`relation` alone adds a column instead of filtering; `direction` is `out` | `in` | omitted for both;
+`limit` is the page size, `0` for all.
 `POST /admin/show` returns the attributes and the links (§2a).
 
 **Ownership:** `library.grant(id, scope)` / `revoke` / `transfer(id, from, to)` / `owners(id)` (§5a).
