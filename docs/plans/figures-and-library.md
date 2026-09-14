@@ -368,6 +368,7 @@ A thing's subtree spans containers, which is the whole point:
 | `Oktoberfest-milf` | 183 | `-fixing.glb` 4 · `-milf.glb` 2 (eyelashes, **beer**) · `underwear.glb` 1 |
 | `bride_ready` | 237 | `bride_ready.glb` 11 · `model_britney_bride.glb` 1 · `underwear.glb` 1 |
 | `JAPANESEROOM BAKED` | 39 | `JAPANESEROOM BAKED.glb` 34 · `WOODout.glb` 1 (the deck) |
+| `Alice` | — | `aula_Aliceglb` only — no composition at all, and still wrong (below) |
 
 **Three states, read off the graph rather than guessed:**
 
@@ -376,8 +377,22 @@ A thing's subtree spans containers, which is the whole point:
   wardrobe switch* — `underwear` is exactly this in all three figures — and it is what phase 2's
   classifier has been reconstructing from mesh names. The source states it outright.
 - **no entity renders it** → DEAD. Drop it. Every mystery in this file is one of these: office-babe's
-  body twin, Oktoberfest's and bride's denser twins, bride's black `clothes_sexyunderwear_*`, and the
-  Japanese house's grey deck.
+  body twin, Oktoberfest's and bride's denser twins, bride's black `clothes_sexyunderwear_*`, the
+  Japanese house's grey deck, and Alice's white scalp.
+
+**Alice is the case with NO composition in it**, which is why she is in the table with a dash. One
+container, one figure, one dead mesh. Her hair is `Side_Swept2` (mesh 13) and her real scalp is that
+mesh's THIRD primitive, wearing `aula_Scalp_Transparency_Transparency2` — textured, alpha-masked,
+cutoff 0.505. Mesh 14 `Scalp_Female` is in no scene entity at all; only the container's own template
+binds it, to one of the FOUR scalp materials the registry holds and one of the two carrying **no maps
+whatsoever**. No texture and no `baseColorFactor` is glTF's default: opaque WHITE.
+
+She matters because nothing else would have caught her. The mesh is BOUND, so `adopt_unbound` never
+looks at it; the symptom is white rather than black, so it resembles none of the others; and the only
+thing that identifies it is **template-only binding while a scene exists** — diagnostic 1, now five
+for five. Reported from the headset as *"the white part of her scalp is not visible in the web app"*,
+and placed only when Daniel noticed that removing her hair removes the white patch too (the classifier
+files `Scalp_Female` under `hair`, correctly).
 
 **`enabled: false` means two different things and the level decides which.** On a PIECE inside a thing
 it means optional — off now, switchable. On a THING itself (a direct child of Root) it means *in the

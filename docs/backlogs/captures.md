@@ -36,9 +36,15 @@ capture has sixteen templates and no scene at all — but once a scene IS presen
 template binds is almost certainly **dead**: the template carries the container's own default binding,
 and the scene is what runs.
 
-All four known composition cases carry this signal, and the Japanese house is the clearest: the deck
-`PLANE.002` is bound by the template `JAPANESEROOM BAKED` and by no scene entity, while the scene
-renders `WOODout.glb` in its place.
+All five known cases carry this signal. The Japanese house is the clearest of the composition ones:
+the deck `PLANE.002` is bound by the template `JAPANESEROOM BAKED` and by no scene entity, while the
+scene renders `WOODout.glb` in its place.
+
+**Alice proves the signal earns its place on its own.** Her `Scalp_Female` (mesh 14) IS bound — by the
+template, to a scalp material with no maps — so it is not unbound and `adopt_unbound` never considers
+it, and the symptom is WHITE rather than black, so it resembles none of the others. The scene draws her
+scalp as the third primitive of her hair mesh instead. Template-only binding is the only thing that
+identifies it.
 
 ### `adopt_unbound` is a patch, and the right model removes the need for it
 
