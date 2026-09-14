@@ -83,7 +83,12 @@ DEFAULT_SCOPE = scope_for(DEFAULT_USER, "builder")
 # in-project .cache and NOT the precious DATA tree (docs/specs/config.md §7). The script resolves the
 # same CACHE_ROOT from config, so both ends agree on one location.
 TUNNEL_FILE = CACHE_ROOT / "tunnel_url"
-MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+# An audio element is far stricter about Content-Type than an <img> is, and the fallback below is
+# `application/octet-stream` — which Chromium will refuse to decode in some paths and always refuses
+# on a media element it cannot sniff. 226 of the cache's files are `.mp3`, so the omission silently
+# muted every clip's voice.
+MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg",
+               ".webp": "image/webp", ".mp3": "audio/mpeg", ".json": "application/json"}
 
 def _has_alpha(im) -> bool:
     """True if an opened PIL image carries real (non-opaque) transparency."""

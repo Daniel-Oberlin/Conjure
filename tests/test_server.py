@@ -4705,6 +4705,22 @@ def test_admin_listing_filters_by_kind_and_by_relation(srv, tmp_path):
     assert srv._related_ids("c1.glb", None) == {"fig.glb", "v.mp3"}, "every edge when no type is given"
 
 
+def test_an_mp3_is_served_as_AUDIO_not_as_octet_stream(srv, client, tmp_path):
+    """A media element is far stricter about Content-Type than an <img>, and the fallback is
+    `application/octet-stream`, which Chromium refuses to decode on an <audio>. 226 of the live
+    cache's files are `.mp3`, so the missing table entry silently muted every clip's voice — and it
+    would have looked like the playback component being broken.
+
+    Range matters as much as the type: seeking the voice to the shared-clock offset is what keeps it
+    with the body, and `currentTime` on a source with no range support does nothing."""
+    (tmp_path / "v.mp3").write_bytes(b"\xff\xfb" + b"\x00" * 4096)
+    r = client.get("/assets/v.mp3")
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/mpeg"
+    assert r.headers.get("accept-ranges") == "bytes"
+    part = client.get("/assets/v.mp3", headers={"Range": "bytes=100-199"})
+    assert part.status_code == 206 and len(part.content) == 100, "seekable, or the sync is decorative"
+
+
 def test_show_reports_an_assets_ATTRIBUTES_and_LINKS(srv):
     """`show` returned nine columns and neither. `rig_sig`, `duration_s`, `clip_kind` and `parts` —
     the facts that decide which of six near-identical assets you want — were reachable only by
