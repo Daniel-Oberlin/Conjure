@@ -269,9 +269,23 @@ not explain, and closing the phase would file them as finished:
   classified apart from two `clothing` meshes — the director reached for `only_body`. Steering and a
   `hidden_by_category` report went in; whether that is enough is unmeasured.
 - **Alice keeps a headband** when stripped, and her scalp's white part does not render.
-- **Not every figure's parts are separable.** Oktoberfest's body is a genuinely different mesh in the
-  container the scene renders (50,012 vs 23,532 vertices), so `Oktoberfest-milf.glb` is the wrong file
-  to import as the figure and nothing about the classifier will fix that.
+- **Oktoberfest is neither file, and this is the sharpest case for the separate-container work.** The
+  scene composes her from BOTH: dress, eyebrows, hair and body from `Oktoberfest-milf-fixing.glb`,
+  eyelashes and **a beer** from `Oktoberfest-milf.glb`. So `-fixing` is a woman with no eyelashes and
+  empty hands, and the plain file is a woman holding a beer with a black dress and black skin. Both are
+  in the catalog and neither is her.
+
+  Her two bodies are the same character at two mesh densities — `[50012, 316, 2649, 5737, 3472]` against
+  `[23532, 316, 2649, 5737, 3472]`, four primitives matching vertex-for-vertex and only the skin
+  differing — so `adopt_unbound` refuses, correctly: it cannot tell a decimated twin from a different
+  mesh, and the rule that stops it here is the rule that stops `computer_desk` taking `cool_button`'s
+  material.
+
+  **The beer is already bone-parented inside the GLB** — node 160 sits under `DEF-hand.R`, unskinned,
+  with its own translation — so a merge across containers would carry it correctly and it would ride her
+  arm through a clip. It is the only mesh in the corpus attached to a *character's* skeleton this way
+  (Jane's bone-parented meshes are the VR rig's own hands). Composition, not attachment, is the missing
+  piece.
 
 Two black-figure defects found the same way turned out NOT to be this phase and are fixed: office-babe's
 body was bound by no entity (`adopt_unbound` could not see a mesh with no render asset), and metal had
