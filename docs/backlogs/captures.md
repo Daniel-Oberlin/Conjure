@@ -46,6 +46,31 @@ it, and the symptom is WHITE rather than black, so it resembles none of the othe
 scalp as the third primitive of her hair mesh instead. Template-only binding is the only thing that
 identifies it.
 
+### Two materials can share a NAME, and the template picks the empty one
+
+`akari` holds two materials called exactly `WOOD`:
+
+```
+194421181  WOOD   diffuseMap + emissiveMap -> WOODBOARDStexture.png   the real one
+194422950  WOOD   no maps at all                                     flat grey
+```
+
+`WOODout.glb` — the deck and railing — is bound both ways, and they disagree:
+
+```
+SCENE     entity 'PLANE.001'  -> 194421181   textured
+TEMPLATE  'WOODout'           -> 194422950   empty
+```
+
+So the deck converts correctly ONLY because the scene file is present. Captured without it — which is
+how `akari` and `nancy` first arrived — the template wins and the railing comes out flat grey, which is
+exactly the symptom that was chased for a session. This is the concrete case for why a template binding
+is not a scene binding, and it is a second, independent reason to distinguish them.
+
+It also makes a name a poor key here. `adopt_unbound` copies material IDS rather than names, so it is
+not affected — but anything that ever resolves a material BY name on this corpus will pick between two
+`WOOD`s with nothing to separate them.
+
 ### `adopt_unbound` is a patch, and the right model removes the need for it
 
 It gives an unbound mesh the material of an identically-named mesh elsewhere
