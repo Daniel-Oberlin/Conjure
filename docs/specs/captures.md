@@ -103,6 +103,40 @@ Four things it detects rather than assumes, all of which Jane exercises:
 | `alphaToCoverage` | a CUTOUT, so it becomes `MASK` whatever the blend mode says. One model shares a single atlas between shorts, shirt and hair with a separate mask selecting each garment's region; read as `BLEND`, the regions that should vanish came through as patches of the other garments' colours |
 | a mesh no entity binds | left untextured, and the note says so — the scene does not render such a mesh at all, so grey is the one outcome the source never produces. `--adopt` takes the material from an identically-named render asset elsewhere, reported as INFERRED. Reading templates removed the need for it on both models here |
 
+### Two things the conversion REPORTS rather than fixes
+
+Both are the conversion telling you where a symptom came from, because both produce output that looks
+like our bug and is not.
+
+**A mesh bound only by a TEMPLATE, once a scene has been read, is probably not drawn at all.**
+`dead_meshes(build)`. A template carries the container's own default binding and a scene is what runs,
+so a surviving template binding is a mesh no scene entity asked for. That is the only signal for a
+whole family of symptoms: the Japanese house's deck (`PLANE.002`, replaced in the scene by
+`WOODout.glb`) and Alice's `Scalp_Female`, which is bound — to one of four scalp materials, the one
+with no maps — so it converts opaque WHITE while the site never shows it. Her real scalp is a primitive
+of her hair mesh.
+
+Scoped to containers the scene DOES use, which is the difference between a signal and 725 rows of
+noise: a container no scene mentions is not full of dead meshes, it is a container this scene does not
+use, and the VR shell and the props library are template-bound in every capture. Across twenty captures
+the rule reports **47** meshes. It says nothing at all where no scene was read, since the comparison it
+rests on does not exist.
+
+The other flavour of dead is a mesh bound by **nobody**, which `rebuild` already reports per container —
+office-babe's body twin, bride's, Oktoberfest's. Between them the two notes cover every case found so
+far.
+
+**An asset id the registry NEVER HAD is reported apart from a file that is merely absent.**
+`dangling(build)`. `missing_files` walks the registry looking for files not on disk; an id the registry
+never defined is not walked, so it reports nothing absent and whatever points at it converts flat. The
+deck's material `WOODout` points at texture `194421251`, which is in no `config.json` — and *"no
+texture on the railing of the house"* cost a session and several re-downloads that could never have
+helped. **This is the difference between "re-capture this" and "the site ships it this way",** and
+nothing we produced could tell those apart.
+
+Only what a BINDING depends on. Scanning the whole registry finds 1,011, almost all in props materials
+nothing binds; reachable from an emitted mesh it is **42**.
+
 **Nothing in it is keyed to any particular model** — every string in the module is a PlayCanvas or glTF
 schema key, and the one heuristic (`--adopt`) matches on render-asset names read from the build. But the
 coverage was shaped by one character, so what it CANNOT carry is listed in `_UNCARRIED` and warned about

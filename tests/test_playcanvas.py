@@ -20,9 +20,10 @@ import pytest
 
 from conjure.figures import split_glb, write_glb
 from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, BLEND_PREMULTIPLIED, Build, adopt_unbound, build_origin,
-                                by_container, container_meshes, find_builds, find_orphans, has_alpha,
-                                load_image, material_from, missing_files, read_build, rebuild,
-                                regroup_materials, report_orphans, variant_only, _Textures)
+                                by_container, container_meshes, dangling, dead_meshes, find_builds,
+                                find_orphans, has_alpha, load_image, material_from, missing_files,
+                                read_build, rebuild, regroup_materials, report_orphans, variant_only,
+                                _Textures)
 
 PIL = pytest.importorskip("PIL.Image")
 
@@ -311,6 +312,82 @@ def test_container_meshes_reports_unknown_counts_rather_than_guessing(tmp_path):
     assert container_meshes(build, 10) == [("Body", (7, 2))]
     build.assets[10]["file"]["url"] = "files/body.glb"          # the fixture GLB: no accessors at all
     assert container_meshes(build, 10) == [("root", ()), ("", ())], "unknown, not zero"
+
+
+def test_a_mesh_only_a_TEMPLATE_claims_is_flagged_as_probably_dead(tmp_path):
+    """A template is the container's own default binding; a scene is what runs. `read_build` reads
+    scenes first so a scene wins, which makes a surviving template binding a mesh no scene asked for —
+    and that is the only signal for the whole dead-mesh family. Alice's `Scalp_Female` is bound, to a
+    scalp material with no maps, so it renders opaque WHITE while the site never draws it; the Japanese
+    house's deck is the same shape, replaced in the scene by `WOODout.glb`."""
+    root = _build(tmp_path,
+                  entities=[("body", 20, [30])],                        # the SCENE dresses mesh 0
+                  templates=[(40, "T", [("hair", 21, [31])])])          # a TEMPLATE dresses mesh 1
+    build = read_build(root)
+    assert {b.mesh: b.source for b in build.bindings} == {0: "scene", 1: "template"}
+    assert [b.mesh for b in dead_meshes(build)] == [1]
+    assert any("bound ONLY by a template" in n for n in build.notes)
+
+
+def test_a_container_the_scene_never_touches_is_NOT_a_pile_of_dead_meshes(tmp_path):
+    """The rule that turns 725 rows of noise into 47 of signal. A container no scene mentions is not
+    full of dead meshes — it is a container this scene does not use, which is ordinary: the VR shell's
+    controllers and the props library are template-bound in every capture. What is suspicious is a mesh
+    whose SIBLINGS the scene dressed and which it left alone."""
+    root = _build(tmp_path,
+                  containers=[(10, "used.glb", "files/body.glb"), (11, "unused.glb", "files/body.glb")],
+                  renders=[(20, "a", 10, 0), (21, "b", 11, 0), (22, "c", 11, 1)],
+                  entities=[("a", 20, [30])],
+                  templates=[(40, "T", [("b", 21, [31]), ("c", 22, [31])])])
+    build = read_build(root)
+    assert [b.mesh for b in build.bindings if b.container == 11] == [0, 1], "still converted"
+    assert dead_meshes(build) == [], "the scene simply does not use that container"
+
+
+def test_nothing_is_dead_when_no_scene_was_read_at_all(tmp_path):
+    """Two of 58 builds have no scene file on disk. There every binding is template-only and none of
+    them is dead — the comparison the signal rests on does not exist."""
+    root = _build(tmp_path, scene=False, entities=[],
+                  templates=[(40, "T", [("body", 20, [30]), ("hair", 21, [31])])])
+    build = read_build(root)
+    assert len(build.bindings) == 2 and not build.scened
+    assert dead_meshes(build) == []
+
+
+def test_an_id_the_REGISTRY_NEVER_HAD_is_reported_apart_from_a_missing_file(tmp_path):
+    """`missing_files` walks the registry looking for files that are not on disk. An id the registry
+    never defined is not walked, so it reports nothing absent and the material converts flat. The
+    Japanese house's deck material points at texture `194421251`, which is in no `config.json` — and
+    *"no texture on the railing of the house"* cost a session and several re-downloads that could
+    never have helped. This is the difference between re-capturing and accepting the source."""
+    root = _build(tmp_path, materials=[(30, "WOODout", {"diffuseMap": 194421251}), (31, "hair", {})],
+                  entities=[("body", 20, [30])], templates=[])
+    build = read_build(root)
+    assert missing_files(build) == [], "nothing is referenced-and-absent — that is the trap"
+    assert 194421251 in dangling(build)
+    assert "WOODout" in dangling(build)[194421251][0]
+    assert any("NOT IN THE REGISTRY" in n for n in build.notes)
+
+
+def test_a_dangling_id_nothing_BINDS_is_not_worth_reporting(tmp_path):
+    """Scanning the whole registry finds 1,011 of these, almost all in the props library's own
+    materials — `SAUSAGE.diffuseMap`, `STICK.normalMap` — which nothing in the converted output binds,
+    so they cost nobody anything. A reference matters when it is reachable from a mesh we emit."""
+    root = _build(tmp_path,
+                  materials=[(30, "skin", {}), (31, "hair", {}),
+                             (32, "SAUSAGE", {"diffuseMap": 999999})],   # in the registry, bound by nobody
+                  entities=[("body", 20, [30])], templates=[])
+    build = read_build(root)
+    assert 999999 not in dangling(build)
+    assert not any("NOT IN THE REGISTRY" in n for n in build.notes)
+
+
+def test_a_BOUND_material_that_is_not_in_the_registry_is_dangling_too(tmp_path):
+    """The other half: the binding names a material id the registry never defined. A primitive wearing
+    one converts with no material at all, which glTF renders as polished metal — black."""
+    root = _build(tmp_path, entities=[("body", 20, [30]), ("ghost", 21, [777])], templates=[])
+    build = read_build(root)
+    assert 777 in dangling(build) and "mesh 1" in dangling(build)[777][0]
 
 
 def test_a_template_supplies_the_binding_when_the_scene_is_absent(tmp_path):

@@ -11,65 +11,15 @@ The active sequence for the composition work is
 
 ## Known problems — verified against the code
 
-### A DANGLING asset id is invisible to every check we have
+### ~~A dangling asset id is invisible to every check we have~~ — BUILT 2026-09-14
 
-A material may reference a texture id that is **not in `config.json` at all**, and nothing reports it.
-`missing_files` walks the registry looking for referenced files that are not on disk; an id that is not
-in the registry is not walked, so it says nothing is absent and the material converts flat.
+`dangling(build)`, now in [`specs/captures.md`](../specs/captures.md) § 3. Reports 42 across twenty
+captures, including the deck texture `194421251` that made the railing grey.
 
-Measured: the Japanese house's deck material `WOODout` points at texture `194421251`, which the captured
-registry does not contain. The deck renders untextured, `missing_files` reports 0 absent, and the honest
-diagnosis — *the site ships it this way, re-downloading will not help* — is not reachable from any
-output we produce. This is the exact question that cost a session: *"no texture on the railing of the
-house."*
+### ~~A mesh bound only by a TEMPLATE is not distinguished~~ — BUILT 2026-09-14
 
-The same shape hides a second class: office-babe's body has no render asset because id `231874829` is
-absent from the registry, which is why `adopt_unbound` could not see the mesh.
-
-**Fix:** walk every id a material or render asset references and report the ones the registry does not
-define, separately from files that are referenced and missing.
-
-### A mesh bound only by a TEMPLATE is not distinguished from one the scene binds
-
-`read_build` reads scenes first and templates after, so a scene wins where both speak. Necessary — one
-capture has sixteen templates and no scene at all — but once a scene IS present, a mesh that only a
-template binds is almost certainly **dead**: the template carries the container's own default binding,
-and the scene is what runs.
-
-All five known cases carry this signal. The Japanese house is the clearest of the composition ones:
-the deck `PLANE.002` is bound by the template `JAPANESEROOM BAKED` and by no scene entity, while the
-scene renders `WOODout.glb` in its place.
-
-**Alice proves the signal earns its place on its own.** Her `Scalp_Female` (mesh 14) IS bound — by the
-template, to a scalp material with no maps — so it is not unbound and `adopt_unbound` never considers
-it, and the symptom is WHITE rather than black, so it resembles none of the others. The scene draws her
-scalp as the third primitive of her hair mesh instead. Template-only binding is the only thing that
-identifies it.
-
-### Two materials can share a NAME, and the template picks the empty one
-
-`akari` holds two materials called exactly `WOOD`:
-
-```
-194421181  WOOD   diffuseMap + emissiveMap -> WOODBOARDStexture.png   the real one
-194422950  WOOD   no maps at all                                     flat grey
-```
-
-`WOODout.glb` — the deck and railing — is bound both ways, and they disagree:
-
-```
-SCENE     entity 'PLANE.001'  -> 194421181   textured
-TEMPLATE  'WOODout'           -> 194422950   empty
-```
-
-So the deck converts correctly ONLY because the scene file is present. Captured without it — which is
-how `akari` and `nancy` first arrived — the template wins and the railing comes out flat grey, which is
-exactly the symptom that was chased for a session. This is the concrete case for why a template binding
-is not a scene binding, and it is a second, independent reason to distinguish them.
-
-It also makes a name a poor key here. `adopt_unbound` copies material IDS rather than names, so it is
-not affected — but anything that ever resolves a material BY name on this corpus will pick between two
-`WOOD`s with nothing to separate them.
+`dead_meshes(build)` and `Binding.source`, same section. 47 across twenty captures, which is where the
+Japanese deck and Alice's white scalp both come from.
 
 ### `adopt_unbound` is a patch, and the right model removes the need for it
 

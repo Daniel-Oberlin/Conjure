@@ -416,16 +416,23 @@ unnecessary: office-babe's body copy is DEAD, and a subtree conversion never emi
 nothing to adopt a material for. It was the right fix for the bug in hand and it should not be
 load-bearing here.
 
-Two diagnostics we do not have, both cheap, both worth landing first because they turn a mystery into a
-line of output:
+Two diagnostics, **both built 2026-09-14** and settled into
+[`specs/captures.md`](../specs/captures.md) § 3. They came first because they turn a mystery into a line
+of output, and because everything after them is verifiable only if they exist:
 
-1. **A mesh bound only by a TEMPLATE while the build has scenes** is the dead-mesh signal, and all four
-   cases carry it. `read_build` reads templates as a fallback — necessary, one capture had sixteen
-   templates and no scene at all — and does not distinguish a template-only binding once a scene exists.
-2. **A DANGLING asset id.** `WOODout`'s material points at texture `194421251`, which is not in
-   `config.json` at all, so `missing_files` walks the registry and reports nothing absent. This is the
-   difference between "re-download this capture" and "the site ships it this way", and it is the question
-   that cost a session: *"no texture on the railing of the house."*
+1. ✅ **A mesh bound only by a TEMPLATE while the build has scenes** — `Binding.source` + `dead_meshes`.
+   Scoped to containers the scene DOES use, which took it from 725 rows of noise to **47** of signal: a
+   container no scene mentions is not full of dead meshes, it is one this scene does not use. Finds the
+   Japanese deck and Alice's white scalp. Says nothing where no scene was read, since the comparison it
+   rests on does not exist.
+2. ✅ **A DANGLING asset id** — `dangling`. Only what a binding depends on, which took 1,011 down to
+   **42**; the rest are props materials nothing binds. Finds `194421251`, the deck texture that made the
+   railing grey and could never have been re-downloaded.
+
+**Between them and the existing "bound by no entity" note, all five known cases are now reported**, in
+two flavours: template-only (the deck, Alice's scalp) and bound-by-nobody (the three body twins). A
+sixth turned up while testing — `aula_Aliceglb` mesh 5 `CC_Base_Eye` is template-only too, which is
+worth a look next to her long-standing eye trouble.
 
 **Splitting is the other half of the job, and it is not the same code.** Composition merges several
 containers into one file; the props need the inverse — one mesh, its materials and its node chain

@@ -116,6 +116,10 @@ class Binding:
     mesh: int                      # `renderIndex` — the glTF mesh index inside the container
     materials: tuple[Optional[int], ...]
     adopted: bool = False          # inferred by name rather than stated by a scene — see `adopt_unbound`
+    # WHERE the claim came from: a scene is what runs, a template is the container's own default. Once a
+    # build has scenes, a template-only binding is the signal for a mesh the site never draws — see
+    # `dead_meshes`.
+    source: str = "scene"
 
 
 @dataclass
@@ -127,6 +131,7 @@ class Build:
     bindings: list[Binding] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     origin: str = ""               # the URL it was captured from, when the path says (see `build_origin`)
+    scened: bool = False           # at least one scene file was READ — see `dead_mesh_notes`
 
     def asset(self, aid) -> dict:
         return self.assets.get(int(aid)) if aid is not None else None
@@ -338,7 +343,7 @@ def read_build(root: str) -> Build:
             slots += sum(1 for key, value in data.items() if key.endswith("Map") and value)
         return slots
 
-    def take(entities: dict) -> None:
+    def take(entities: dict, source: str = "scene") -> None:
         for entity in (entities or {}).values():
             render = (entity.get("components") or {}).get("render")
             if not render or render.get("type") != "asset" or render.get("asset") is None:
@@ -350,7 +355,7 @@ def read_build(root: str) -> Build:
             mats = tuple(int(m) if m is not None else None
                          for m in (render.get("materialAssets") or []))
             key = (int(container), int(index))
-            bound = Binding(entity.get("name") or "?", key[0], key[1], mats)
+            bound = Binding(entity.get("name") or "?", key[0], key[1], mats, source=source)
             if key in seen and seen[key].materials != mats:
                 # Two entities dressing the same mesh differently is a legitimate thing to do — a props
                 # library reuses one button mesh in a dozen colours — and it has no single answer in a
@@ -365,6 +370,7 @@ def read_build(root: str) -> Build:
                 continue
             seen.setdefault(key, bound)
 
+    read_a_scene = False
     for scene in cfg.get("scenes") or []:
         url = scene.get("url")
         if not url or not os.path.exists(os.path.join(root, url)):
@@ -375,6 +381,7 @@ def read_build(root: str) -> Build:
                                f"the textures for both sat decoded on disk. Capture the scene.")
             continue
         take(json.load(open(os.path.join(root, url))).get("entities"))
+        read_a_scene = True
 
     # TEMPLATES are the same structure and a second place the binding lives. Read AFTER the scenes, so
     # a scene wins where both speak — it is what actually runs.
@@ -387,7 +394,7 @@ def read_build(root: str) -> Build:
     # bindings are deduplicated rather than reported as a clash.
     for asset in build.assets.values():
         if asset.get("type") == "template":
-            take((asset.get("data") or {}).get("entities"))
+            take((asset.get("data") or {}).get("entities"), source="template")
     for (container, index), others in sorted(clashes.items()):
         build.notes.append(
             f"{build.name(container)} mesh {index}: {len(others)} other entity binding(s) disagree "
@@ -396,6 +403,11 @@ def read_build(root: str) -> Build:
             f"{build.name(container)} mesh {index}: {', '.join(sorted(others))} bind different "
             f"materials — keeping {seen[(container, index)].entity!r}")
     build.bindings = sorted(seen.values(), key=lambda b: (b.container, b.mesh))
+    build.scened = read_a_scene
+    for note in dead_mesh_notes(build):
+        build.notes.append(note)
+    for note in dangling_notes(build):
+        build.notes.append(note)
     return build
 
 
@@ -457,6 +469,103 @@ def regroup_materials(donor: tuple[int, ...], mats: tuple, counts: tuple[int, ..
             return None
         out.append(span[0])
     return tuple(out) if i == len(donor) else None
+
+
+def dead_meshes(build: Build) -> list[Binding]:
+    """Bindings that only a TEMPLATE claims, in a build whose scenes were read — probably not rendered.
+
+    A template is the container's own default binding; a scene is what runs. `read_build` reads scenes
+    first and templates after precisely so a scene wins, which means a surviving template binding is a
+    mesh no scene entity asked for. **That is the signal for a mesh the site never draws**, and it is
+    the only thing that identifies the whole family:
+
+      · `JAPANESEROOM BAKED.glb` mesh 32 — a deck and railing, replaced in the scene by `WOODout.glb`
+      · `aula_Aliceglb` mesh 14 `Scalp_Female` — wearing one of four scalp materials, the one with no
+        maps, so it renders opaque WHITE. Her real scalp is a primitive of her hair mesh
+      · office-babe's body twin, Oktoberfest's and bride's denser twins, bride's `clothes_sexyunderwear_*`
+
+    **Scoped to containers the scene DOES use**, which is the difference between a signal and 725 rows
+    of noise. A container no scene mentions at all is not full of dead meshes — it is a container this
+    scene does not use, which is ordinary: the VR shell's controllers and the props library are bound
+    only by templates in every capture. What is suspicious is a mesh whose SIBLINGS are scene-bound and
+    which is not: the scene reached into that container, dressed the meshes it wanted, and left this one.
+
+    Only meaningful once a scene has actually been read. Two of 58 builds have no scene file on disk,
+    and there every binding is template-only and none of them is dead.
+
+    Reported, never dropped. A dead mesh is a candidate for removal and the composition work is where
+    that decision belongs (`docs/plans/figures-and-library.md` § 2b) — this tells you where to look.
+    """
+    if not build.scened:
+        return []
+    live = {b.container for b in build.bindings if b.source == "scene"}
+    return [b for b in build.bindings if b.source == "template" and b.container in live]
+
+
+def dead_mesh_notes(build: Build) -> list[str]:
+    out = []
+    for container, group in sorted(by_container(Build(root=build.root, assets=build.assets,
+                                                     bindings=dead_meshes(build))).items()):
+        names = ", ".join(f"{b.mesh} [{b.entity}]" for b in group[:4])
+        out.append(f"{build.name(container)}: {len(group)} mesh(es) bound ONLY by a template while this "
+                   f"build's scenes were read — {names}{', …' if len(group) > 4 else ''}. A scene is "
+                   f"what runs, so these are probably not drawn at all; converting them is how a dead "
+                   f"twin or an empty material reaches the library looking like a bug")
+    return out
+
+
+def dangling(build: Build) -> dict[int, list[str]]:
+    """Asset ids that something REFERENCES and the registry does not define — `{id: [who wants it]}`.
+
+    Invisible to every other check, which is the point. `missing_files` walks the registry looking for
+    files that are not on disk; an id the registry never had is not walked, so it reports nothing
+    absent and the material converts flat. The Japanese house's deck material `WOODout` points at
+    texture `194421251`, which is in no `config.json` — and *"no texture on the railing of the house"*
+    cost a session and several re-downloads that could never have helped.
+
+    This is the difference between **re-download this capture** and **the site ships it this way**, and
+    nothing we produced could tell those apart.
+
+    **Only what a BINDING depends on.** Scanning the whole registry finds 1,011 of these, almost all in
+    the props library's materials — `SAUSAGE.diffuseMap`, `STICK.normalMap` — which nothing in the
+    converted output binds, so they cost nobody anything. A reference is worth reporting when it is
+    reachable from a mesh we actually emit.
+    """
+    want: dict[int, list[str]] = {}
+    def need(aid, who: str) -> None:
+        if aid is None:
+            return
+        try:
+            key = int(aid)
+        except (TypeError, ValueError):
+            return
+        if key not in build.assets:
+            want.setdefault(key, []).append(who)
+
+    for bind in build.bindings:
+        where = f"{build.name(bind.container)} mesh {bind.mesh}"
+        for mat in bind.materials:
+            if mat is None:
+                continue
+            need(mat, f"{where} material")
+            asset = build.asset(mat)
+            if asset is None:
+                continue
+            for field_, value in (asset.get("data") or {}).items():
+                if field_.endswith("Map"):
+                    need(value, f"{where} material {asset.get('name') or mat!r}.{field_}")
+    return want
+
+
+def dangling_notes(build: Build) -> list[str]:
+    want = dangling(build)
+    if not want:
+        return []
+    shown = ", ".join(f"{k} ({want[k][0]})" for k in sorted(want)[:3])
+    return [f"{len(want)} referenced asset id(s) are NOT IN THE REGISTRY at all — {shown}"
+            f"{', …' if len(want) > 3 else ''}. Not a missing FILE: the id was never in config.json, so "
+            f"re-capturing cannot help and `missing_files` reports nothing absent. Whatever points at "
+            f"one converts flat"]
 
 
 def adopt_unbound(build: Build) -> int:
