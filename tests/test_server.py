@@ -5033,6 +5033,44 @@ def test_a_clip_carries_the_voice_recorded_against_it(srv, client, tmp_path):
     assert client.get(f"/figure/clips?id={eid}&all=true").json()["compatible"][0]["voiced"] is True
 
 
+def test_a_silent_clip_names_the_voiced_ones_instead_of_denying_audio(srv, client, tmp_path):
+    """On device the director answered *"I don't have a way to add audio — the animations themselves
+    are silent"* while Barbie's voice was already playing. The capability existed and nothing in the
+    tool surface said so. A silent clip is "not this one", never "no audio"."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    loud = _import_id(client, "1_idle.glb", _clip_glb("1_idle"))
+    quiet = _import_id(client, "2_idle.glb", _clip_glb("2_idle"))
+    srv.library.upsert("v.mp3", kind="audio", label="1_idle", scope=srv.active_scope,
+                       source="cache://")
+    srv.library.add_relation(loud, "v.mp3", "voiced_by")
+    for c in (loud, quiet):
+        srv.library.add_relation(fig, c, "shipped_with")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": quiet}).json()
+    assert r["voiced"] is None and r["voiced_alternatives"] == 1, "one of hers does have a voice"
+    r = client.post("/figure/clip", json={"id": eid, "clip": loud}).json()
+    assert r["voiced"] == "v.mp3" and "voiced_alternatives" not in r
+
+
+def test_listing_clips_can_keep_only_the_ones_that_TALK(srv, client, tmp_path):
+    """"animate her with sound" is not a missing feature, it is a filter: the voice is part of the
+    clip. 20 of Barbie's 21 carry one."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    loud = _import_id(client, "1_idle.glb", _clip_glb("1_idle"))
+    quiet = _import_id(client, "2_idle.glb", _clip_glb("2_idle"))
+    srv.library.upsert("v.mp3", kind="audio", label="1_idle", scope=srv.active_scope,
+                       source="cache://")
+    srv.library.add_relation(loud, "v.mp3", "voiced_by")
+    for c in (loud, quiet):
+        srv.library.add_relation(fig, c, "shipped_with")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    assert len(client.get(f"/figure/clips?id={eid}").json()["shipped"]) == 2
+    only = client.get(f"/figure/clips?id={eid}&voiced=true").json()["shipped"]
+    assert [c["id"] for c in only] == [loud]
+
+
 def test_a_clip_with_no_voice_says_so_rather_than_sending_an_empty_url(srv, client, tmp_path):
     fig = _import_id(client, "girl.glb", _figure_glb())
     clip = _import_id(client, "1_idle.glb", _clip_glb())

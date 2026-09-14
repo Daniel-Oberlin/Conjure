@@ -637,6 +637,12 @@ async def play_clip(id: str, clip: str, loop: bool = True, speed: float = 1.0,
     "can she do what the other one was doing" is usually yes. Across rigs it is no — that gets refused
     with both signatures named, and `force` is only for looking at the wreck deliberately.
 
+    **A clip brings its own SOUND.** Most of these were captured with a voice track recorded against
+    them — 20 of Barbie's 21 — and it plays automatically, in sync, positioned on the figure. There is
+    no separate audio tool and none is needed: "animate her with sound", "make her talk", "with audio"
+    all mean *play a clip that has a voice*. Call `list_clips` and pick one marked `voiced`. Saying you
+    cannot do audio is wrong, and it was said on device while the voice was already playing.
+
     While a clip plays it drives the whole skeleton and any pose is overridden; stopping puts the figure
     back and the pose returns. Use `stop_clip` to stop.
     """
@@ -650,7 +656,13 @@ async def play_clip(id: str, clip: str, loop: bool = True, speed: float = 1.0,
     secs = out.get("duration_s")
     length = f", {secs:.0f}s" if isinstance(secs, (int, float)) else ""
     tail = " (looping)" if out.get("loop") else ""
-    voice = " With her voice." if out.get("voiced") else ""
+    if out.get("voiced"):
+        voice = " Her voice plays with it."
+    elif out.get("voiced_alternatives"):
+        voice = (f" This one is silent — {out['voiced_alternatives']} of her clips have a voice; "
+                 f"`list_clips(voiced=True)` lists them.")
+    else:
+        voice = " This one is silent."
     warn = f"\nWarning: {out['warning']}" if out.get("warning") else ""
     return f"Playing {out.get('label') or out['clip']} on {id}{length}{tail}.{voice}{warn}"
 
@@ -663,7 +675,7 @@ async def stop_clip(id: str) -> str:
 
 
 @mcp.tool()
-async def list_clips(id: str, all: bool = False, kind: str = "") -> str:
+async def list_clips(id: str, all: bool = False, kind: str = "", voiced: bool = False) -> str:
     """What a figure can be animated with.
 
     Two lists, and the difference matters. **Shipped** is what this figure's own scene gave it — the
@@ -673,8 +685,13 @@ async def list_clips(id: str, all: bool = False, kind: str = "") -> str:
     sink that does not exist. Prefer the shipped list unless the user is exploring.
 
     `kind` narrows to "idle" or "action". Idles are quiet and personal to a figure; actions travel.
+
+    `voiced` keeps only the clips that carry a VOICE TRACK, which plays automatically with the
+    animation. That is the whole answer to "animate her with sound" — there is no separate audio tool,
+    the sound is part of the clip. Most clips are voiced; a few are not.
     """
-    q = f"/figure/clips?id={id}" + ("&all=true" if all else "") + (f"&kind={kind}" if kind else "")
+    q = (f"/figure/clips?id={id}" + ("&all=true" if all else "") + (f"&kind={kind}" if kind else "")
+         + ("&voiced=true" if voiced else ""))
     out = await _get(q)
     if not out.get("ok"):
         return f"Couldn't list clips: {_reason(out)}"

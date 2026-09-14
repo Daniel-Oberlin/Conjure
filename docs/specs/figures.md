@@ -555,6 +555,15 @@ when no shipped clip matches does the endpoint fall back to refusing and listing
 outright made the label path useless for the only caller that has one, since an asset id is not
 something a person says out loud.
 
+**The voice is part of the clip, and the tool surface has to SAY so.** On device the director
+answered *"I don't have a way to add audio/sound to the scene — there's no audio tool available to me"*
+while Barbie's voice was already playing: the capability existed, and nothing a director reads
+mentioned it. So `play_clip`'s description states it outright, a silent clip reports how many of hers
+are voiced rather than reporting no audio, and `list_clips(voiced=True)` exists because "animate her
+with sound" is a FILTER, not a missing feature. A tool's silence gets quoted back to the user as a
+limitation — the same failure as `inspect_figure` omitting parts and the director then calling a figure
+with seven of them "a unified mesh".
+
 **The voice travels with the clip.** 20 of Jane's 21 clips have one, and the link is many-to-many — one
 file serves four clips — so it is a `voiced_by` relation rather than a column. It is sent in the same
 patch, off the same stamped instant, because two arrivals would mean two start times and a body out of
@@ -727,7 +736,7 @@ tool-description edit can actually break, needs no Blender and no judge, and tak
 | `POST /figure` | pose a placed figure by bone or by `named` pose, or `clear=true` to return it to rest. Owner-gated (`_OWNER_ONLY_PATHS`) |
 | `POST /figure/parts` | hide/show parts of a figure by category or mesh name (§8a) |
 | `POST /figure/clip` | play a clip on a figure, or `stop=true`. Refuses a clip from another rig unless `force` (§8b) |
-| `GET /figure/clips` | what shipped with a figure, and — with `all=true` — what merely fits |
+| `GET /figure/clips` | what shipped with a figure; `all=true` reaches past it, `voiced=true` keeps only clips with a voice |
 | `POST /library/import` | ingest a `.glb`/`.vrm` — the figure attributes come out of this path |
 | `POST /library/refresh-models` | re-derive every model row's attributes |
 

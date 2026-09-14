@@ -4885,13 +4885,21 @@ async def figure_clip(req: FigureClipRequest) -> dict:
            "duration_s": clip_attrs.get("duration_s"), "kind": clip_attrs.get("clip_kind"),
            "loop": bool(req.loop), "started_at": started,
            "voiced": voice[0]["id"] if voice else None}
+    if not voice:
+        # "Play something with sound" lands on a silent clip roughly one time in twenty, and the honest
+        # answer is not "no audio" — it is "not this one". Count hers so the caller can offer a swap
+        # instead of reporting a missing capability, which is exactly what happened on device.
+        others = sum(1 for r in shipped_rows
+                     if any(v.get("kind") == "audio" for v in library.related(r["id"], "voiced_by")))
+        if others:
+            out["voiced_alternatives"] = others
     if mismatch:
         out["warning"] = f"rig {clip_sig} on a {sig} figure — forced"
     return out
 
 
 @app.get("/figure/clips")
-async def figure_clips(id: str, all: bool = False, kind: str = "") -> dict:
+async def figure_clips(id: str, all: bool = False, kind: str = "", voiced: bool = False) -> dict:
     """What this figure can dance to: what SHIPPED with it, and what merely fits.
 
     Separate lists on purpose. Compatibility is not sufficiency — 93 of 206 clip names call out a
@@ -4915,7 +4923,11 @@ async def figure_clips(id: str, all: bool = False, kind: str = "") -> dict:
 
     def keep(rows: list[dict]) -> list[dict]:
         out = [row(r) for r in rows]
-        return [r for r in out if r["kind"] == kind] if kind else out
+        if kind:
+            out = [r for r in out if r["kind"] == kind]
+        if voiced:
+            out = [r for r in out if r["voiced"]]
+        return out
 
     shipped_ids = {r["id"] for r in shipped}
     out = {"ok": True, "id": id, "model": model_id, "rig_sig": sig, "shipped": keep(shipped)}

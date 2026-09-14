@@ -423,7 +423,8 @@ def cmd_clips(s: Settings, a) -> None:
     """What a figure can dance to. Two lists, never merged: what SHIPPED with her, and what merely fits
     her rig — `--all` for the second, which is much the larger and much the less trustworthy (many clips
     are authored around furniture that is not in the room)."""
-    q = f"/figure/clips?id={a.id}" + ("&all=true" if a.all else "") + (f"&kind={a.kind}" if a.kind else "")
+    q = (f"/figure/clips?id={a.id}" + ("&all=true" if a.all else "")
+         + (f"&kind={a.kind}" if a.kind else "") + ("&voiced=true" if a.voiced else ""))
     out = _get(s, q)
     if out.get("ok") is False:
         _say(out, a.verbose, "")
@@ -465,10 +466,15 @@ def cmd_clip(s: Settings, a) -> None:
         return
     secs = out.get("duration_s")
     length = f", {secs:.0f}s" if isinstance(secs, (int, float)) else ""
+    if out.get("voiced"):
+        voice = ", with her voice"
+    elif out.get("voiced_alternatives"):
+        voice = f" — silent; {out['voiced_alternatives']} of her clips are voiced (--voiced lists them)"
+    else:
+        voice = " — silent"
     _say(out, a.verbose,
          f"playing {out.get('label') or out['clip']} on {a.id}{length}"
-         f"{' (looping)' if out.get('loop') else ''}"
-         f"{' with her voice' if out.get('voiced') else ''}"
+         f"{' (looping)' if out.get('loop') else ''}{voice}"
          + (f"\nwarning: {out['warning']}" if out.get("warning") else ""))
 
 
@@ -612,6 +618,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("id", help="the ENTITY id of a placed figure (see `conjure-ctl` with no args)")
     a.add_argument("--all", action="store_true", help="also list clips that merely fit her rig")
     a.add_argument("--kind", help="idle | action")
+    a.add_argument("--voiced", action="store_true",
+                   help="only clips carrying a voice track — it plays automatically with the animation")
 
     a = sub.add_parser("clip", help="play an animation on a placed figure"); a.set_defaults(fn=cmd_clip)
     a.add_argument("id", help="the ENTITY id of a placed figure")
