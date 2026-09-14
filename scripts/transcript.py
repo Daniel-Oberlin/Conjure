@@ -84,12 +84,30 @@ def sessions(root: Path) -> list[Path]:
     return sorted(found, key=lambda p: (span(p)[0], p.stat().st_mtime))
 
 
-def render(path: Path, *, tools: bool = False, results: bool = False, cap: int = 2000) -> str:
+def typed(rec: dict) -> bool:
+    """A turn the human actually typed.
+
+    `role == "user"` is not that question: 2,353 of one session's 2,575 user records are TOOL RESULTS
+    being fed back in, and a handful more are `<command-name>` wrappers from slash commands. Only 213
+    were a person at a keyboard. The log marks them — `origin.kind == "human"`, `promptSource ==
+    "typed"` — and without leaning on that, what you said is 8% of the headings in a wall of my own
+    "Let me check X." interstitials, which is exactly how a transcript can contain your words and still
+    seem not to.
+    """
+    if (rec.get("message") or {}).get("role") != "user":
+        return False
+    return ((rec.get("origin") or {}).get("kind") == "human"
+            or rec.get("promptSource") == "typed")
+
+
+def render(path: Path, *, tools: bool = False, results: bool = False, cap: int = 2000,
+           me: bool = False) -> str:
     start, end = span(path)
     when = start if start == end else f"{start} … {end}"
     out: list[str] = [f"# {when} · {path.stem}\n",
                       f"Source: `{path}`  \n"
                       f"Line number in that file == record number below.\n"]
+    index: list[str] = []
     for n, line in enumerate(path.open(), 1):
         try:
             rec = json.loads(line)
@@ -98,6 +116,9 @@ def render(path: Path, *, tools: bool = False, results: bool = False, cap: int =
         msg = rec.get("message") or {}
         role = msg.get("role") or rec.get("type") or ""
         if role in SKIP_ROLES:
+            continue
+        mine = typed(rec)
+        if me and not mine:
             continue
         stamp = (rec.get("timestamp") or "")[:16].replace("T", " ")
         body = msg.get("content")
@@ -121,7 +142,17 @@ def render(path: Path, *, tools: bool = False, results: bool = False, cap: int =
         text = "\n\n".join(c for c in chunks if c and c.strip())
         if not text.strip():
             continue
-        out.append(f"\n---\n\n### line {n} · {role}{' · ' + stamp if stamp else ''}\n\n{text}\n")
+        if mine:
+            # Your turns get the bigger heading and a marker, because they are the spine of the thing
+            # and they are outnumbered ten to one.
+            out.append(f"\n---\n\n## ▶ line {n} · YOU{' · ' + stamp if stamp else ''}\n\n{text}\n")
+            flat = " ".join(text.split())
+            index.append(f"- **{n}** · {flat[:110]}{'…' if len(flat) > 110 else ''}")
+        else:
+            out.append(f"\n---\n\n### line {n} · {role}{' · ' + stamp if stamp else ''}\n\n{text}\n")
+    if index and not me:
+        out.insert(1, "\n## What you asked (" + str(len(index)) + " turns)\n\n"
+                      + "\n".join(index) + "\n")
     return "\n".join(out)
 
 
@@ -132,6 +163,7 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="list the sessions and their sizes")
     ap.add_argument("--tools", action="store_true", help="include tool CALLS")
     ap.add_argument("--full", action="store_true", help="include tool calls AND their results")
+    ap.add_argument("--me", action="store_true", help="ONLY the turns you typed — a digest of the asks")
     ap.add_argument("--cap", type=int, default=2000, help="truncate each tool blob (default 2000 chars)")
     ap.add_argument("--project", default="", help="project directory (default: the current one)")
     ap.add_argument("--out", default="temp/transcripts", help="where to write")
@@ -166,8 +198,8 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     for p in picked:
         start, end = span(p)
-        text = render(p, tools=args.tools or args.full, results=args.full, cap=args.cap)
-        dest = out_dir / out_name(p, start, short)
+        text = render(p, tools=args.tools or args.full, results=args.full, cap=args.cap, me=args.me)
+        dest = out_dir / out_name(p, start, short).replace(".md", "-me.md" if args.me else ".md")
         dest.write_text(text)
         print(f"  {start} … {end}  {p.stat().st_size / 1e6:6.1f} MB -> {dest}  "
               f"({dest.stat().st_size / 1e6:.2f} MB)")

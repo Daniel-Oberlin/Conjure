@@ -272,7 +272,18 @@ python scripts/transcript.py b9914db3    # one of them -> temp/transcripts/2026-
 python scripts/transcript.py --all       # every session this project has had
 python scripts/transcript.py b9914db3 --tools    # ...including the tool CALLS
 python scripts/transcript.py b9914db3 --full     # ...and their results (much larger)
+python scripts/transcript.py b9914db3 --me       # ONLY what you typed -> …-me.md
 ```
+
+**Your turns are marked and indexed**, because they are outnumbered about ten to one and are easy to
+lose in the assistant's running commentary. Every file opens with a *What you asked* index — one line
+per turn with its line number — and each of your turns gets a `## ▶ … YOU` heading while the
+assistant's get a plain `###`. `--me` writes the index's full text on its own: one session's 191
+prompts come to 0.08 MB.
+
+The marker is not `role == "user"`. Most `user` records are TOOL RESULTS being fed back in — 2,353 of
+2,575 in one session — so the render keys on `origin.kind == "human"` instead, which is what the log
+records for a person at a keyboard.
 
 Files are named `<start-date>-<short-id>.md`, so the directory sorts chronologically. The date is when
 the session STARTED, not when it was last written: a session that continues would otherwise be renamed
