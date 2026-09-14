@@ -324,8 +324,28 @@ FILE — one artist's export. A *thing* is a scene entity subtree. We walk conta
 the scene never renders, drop meshes it does, and lose everything that lives on the entity rather than
 in the file: position, parent, instancing.
 
-The app's own data model already states all of it, so this is not a heuristic we have to invent.
-**Verified across the four captures that exposed it:**
+**What is FORMAT and what is CONVENTION — because the difference decides how much of this survives the
+next site.** Two layers, and only one of them is a law:
+
+*Format, and therefore a rule.* A PlayCanvas render component names `(container, renderIndex,
+materialAssets)`; an entity carries `enabled`, a parent and a transform; glTF nodes carry hierarchy and
+instancing. That a mesh no entity binds is not rendered is a consequence, not a guess. All of §Three
+states rests here, and it holds for any PlayCanvas build.
+
+*Convention, and therefore an assumption to be stated and checked.* **Which entity is a "thing"** is
+not in the format. "A direct child of Root" holds in the content scenes and is **false in the app's own
+scene**: `2049393.json` has 1,016 entities whose Root children are `ToolModeStore`, `TRASH`,
+`DemoVRHoles`, `SampleStore` — machinery groupings nested several levels deep, not things. So thing
+detection must PROPOSE and REPORT rather than decide silently, and a capture must be able to correct it
+— the same discipline `parts/parts.json` already uses (vocabulary is data, not code) and the same one
+`adopt_unbound` uses when it says INFERRED, look at it. `conjure/capture_set.py` is where per-capture
+knowledge already lives.
+
+That split is the honest answer to "is this a rational model or a pile of special cases": the reading
+rules are the app's data model, and the one place we are pattern-matching on *this* site is named above
+rather than buried.
+
+**Verified across the captures that exposed it:**
 
 ```
 a build has several SCENE files, and each Root's direct children are the THINGS
@@ -361,10 +381,13 @@ catalog, not placed in this scene*, and that is not a reason to skip it — it i
 library. Every one of the 15 tools is a disabled Root child. Reading the flag uniformly would import
 none of them.
 
-**The merge is cheap, which was the thing worth checking.** The skeletons are identical BY NAME across
+**The merge is cheap here, and the plan must not ASSUME it.** The skeletons are identical BY NAME across
 containers — 181/181 for office-babe, 175/175 Oktoberfest, 222/222 bride, with zero bones on either
 side that the other lacks. So joining two containers is a name-keyed skeleton join, the same operation
-`figure-clip` already does to bind a clip. What the merge must preserve is stated by the cases: a node's
+`figure-clip` already does to bind a clip — but that is a MEASUREMENT of this corpus, not a property of
+the format, and the merge must verify it and refuse rather than take it on faith. A donor whose bones
+are spelled differently needs retargeting (phase 5), and silently welding it would produce a figure that
+is wrong in a way nothing reports. What the merge must preserve is stated by the cases: a node's
 PARENT (the beer hangs off `DEF-hand.R` in its own GLB already), its TRANSFORM (`WOODout.glb` is
 meaningless at the origin — the scene puts it at `[0, -10, 0]` scale 100), and its INSTANCING (bride's
 heels are one mesh on two nodes, `DEF-foot.L` and `DEF-foot.R`).
