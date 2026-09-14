@@ -35,8 +35,10 @@ Specifically unverified:
 - **Does the skeleton actually move?** Binding is by node name and the name match is 222/222 on three
   figures, but a match is not motion — a clip authored against a different bind pose can resolve every
   channel and still fold a figure up.
-- **Root motion.** Clips animate hips translation. A figure placed on the floor may walk out of the
-  world, or float, and `figure._settle` has no opinion about a moving root.
+- ~~**Root motion.**~~ Found on device 2026-09-14 and fixed: an animating position track is re-based
+  onto the model's rest, so a clip keeps its movement and loses the address it was captured at. What
+  is still untested is whether a clip with GENUINE locomotion — walking, not swaying — now walks in
+  place, which is the correct behaviour for a placed figure but has not been seen.
 - **Does the voice actually start?** Autoplay is refused without a gesture and the fallback listens for
   a `click`, which is not the event an immersive session produces. If the voice never arrives on a
   Quest, the gesture hook is the first place to look.

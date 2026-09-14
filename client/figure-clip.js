@@ -50,20 +50,76 @@
     return CACHE[url];
   }
 
-  // Keep only the tracks whose target node exists on THIS figure. three would otherwise warn once per
-  // unresolved binding — 51 lines for one clip on one figure — and, worse, the warning is all you get:
-  // nothing tells you whether the clip half-played or not at all.
-  function bindable(clip, root) {
+  function isConstant(track) {
+    var n = track.getValueSize(), v = track.values;
+    for (var i = n; i < v.length; i++) {
+      if (Math.abs(v[i] - v[i % n]) > 1e-5) return false;
+    }
+    return true;
+  }
+
+  // Decide what of a clip may touch THIS model. Three rules, each one a bug that was seen.
+  //
+  // 1. **A track whose node the model does not have is dropped.** three would otherwise warn once per
+  //    unresolved binding — 51 lines for one clip — and the warning is all you get: nothing says
+  //    whether the clip half-played or not at all.
+  //
+  // 2. **Nothing may write the transform of the node the mixer is rooted at.** That node carries
+  //    PLACEMENT and UNIT CONVERSION, not animation. Alice's `RootNode` has `scale 0.01` baked in —
+  //    centimetres to metres — and `WhiteboardIdleFIXFIXU` carries a `RootNode` scale track of
+  //    `[1, 1, 1]`. Playing it multiplied her by a hundred: she filled the room, her clothes turned
+  //    inside out around the camera, and because a hundred-metre figure has no parallax she appeared
+  //    pinned to the viewer while the world slid past.
+  //
+  // 3. **A CONSTANT scale track is dropped** wherever it sits. Measured across 120 clips: 22,714 of
+  //    22,718 scale tracks never change value. They animate nothing and exist only because the
+  //    exporter wrote a channel per bone per property — so every one is a latent version of rule 2,
+  //    waiting for a model whose rest scale is not 1.
+  //
+  // 4. **An animating POSITION track is re-based onto the target's rest.** The clip states where the
+  //    figure stood in the scene it was captured from: `CC_Base_BoneRoot` sweeps 294→316 units where
+  //    Alice rests at 0, which is three metres of displacement before she has moved at all. Motion is
+  //    the clip's business and location is the entity's, so the first frame is pinned to the model's
+  //    own rest and the rest of the curve rides on top — every bit of movement kept, the authored
+  //    address discarded. A constant position track is just a rest offset restated, and goes.
+  function retarget(clip, root) {
     var have = Object.create(null);
-    root.traverse(function (o) { if (o.name) have[THREE.PropertyBinding.sanitizeNodeName(o.name)] = true; });
-    var kept = [], dropped = [];
+    root.traverse(function (o) {
+      if (o.name) have[THREE.PropertyBinding.sanitizeNodeName(o.name)] = o;
+    });
+    var rootName = root.name ? THREE.PropertyBinding.sanitizeNodeName(root.name) : null;
+    var kept = [];
+    var why = { missing: 0, rootTransform: 0, flatScale: 0, restPosition: 0, rebased: 0 };
+
     clip.tracks.forEach(function (track) {
       var parsed = THREE.PropertyBinding.parseTrackName(track.name);
-      if (parsed && parsed.nodeName && !have[parsed.nodeName]) { dropped.push(parsed.nodeName); return; }
+      var nodeName = parsed && parsed.nodeName;
+      var prop = parsed && parsed.propertyName;
+      var node = nodeName ? have[nodeName] : root;
+      if (!node) { why.missing++; return; }
+      if (nodeName && nodeName === rootName &&
+          (prop === "scale" || prop === "position" || prop === "quaternion")) {
+        why.rootTransform++;
+        return;
+      }
+      if (prop === "scale") {
+        if (isConstant(track)) { why.flatScale++; return; }
+        kept.push(track);
+        return;
+      }
+      if (prop === "position") {
+        if (isConstant(track)) { why.restPosition++; return; }
+        var v = Float32Array.from(track.values);
+        var dx = node.position.x - v[0], dy = node.position.y - v[1], dz = node.position.z - v[2];
+        for (var i = 0; i < v.length; i += 3) { v[i] += dx; v[i + 1] += dy; v[i + 2] += dz; }
+        kept.push(new THREE.VectorKeyframeTrack(track.name, Array.from(track.times), Array.from(v),
+                                                track.getInterpolation()));
+        why.rebased++;
+        return;
+      }
       kept.push(track);
     });
-    return { clip: new THREE.AnimationClip(clip.name, clip.duration, kept, clip.blendMode),
-             dropped: dropped };
+    return { clip: new THREE.AnimationClip(clip.name, clip.duration, kept, clip.blendMode), why: why };
   }
 
   AFRAME.registerComponent("figure-clip", {
@@ -122,8 +178,11 @@
         }
         var live = self.el.getObject3D("mesh");
         if (!live) return;
-        var bound = bindable(picked, live);
+        // Teardown FIRST: it calls `figure.restore()`, so the skeleton is on its bind pose when the
+        // rest positions are read out for re-basing. Retargeting against a half-animated model would
+        // pin the clip to wherever the previous one left off.
         self._teardown();
+        var bound = retarget(picked, live);
         self._mixer = new THREE.AnimationMixer(live);
         self._action = self._mixer.clipAction(bound.clip);
         self._action.loop = self.data.loop ? THREE.LoopRepeat : THREE.LoopOnce;
@@ -132,11 +191,15 @@
         self._loaded = url + "|" + want;
         self._started = self.data.startedAt || now();
         self._audio();
+        var w = bound.why;
         log("playing " + picked.name + " on " + (self.el.id || "?") + ": kept "
-            + bound.clip.tracks.length + " track(s), dropped " + bound.dropped.length);
+            + bound.clip.tracks.length + " of " + picked.tracks.length + " track(s) — dropped "
+            + w.missing + " for missing nodes, " + w.rootTransform + " on the model root, "
+            + w.flatScale + " flat scale, " + w.restPosition + " rest position; re-based "
+            + w.rebased + " moving position track(s)");
         self.el.emit("figure-clip-started", {
           clip: url, name: picked.name, duration: picked.duration,
-          tracks: bound.clip.tracks.length, dropped: bound.dropped.length
+          tracks: bound.clip.tracks.length, dropped: w
         }, false);
       }).catch(function (err) {
         log("failed to load " + url + ": " + (err && err.message));
@@ -281,4 +344,10 @@
       this._teardown();
     }
   });
+  // Exported for `node --test` only; in the browser this file is a plain <script> and `module` is
+  // undefined. The retargeting rules are arithmetic on keyframes and deserve tests that do not need
+  // a headset — every one of them is a bug that was found by wearing one.
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { retarget: retarget, isConstant: isConstant };
+  }
 })();

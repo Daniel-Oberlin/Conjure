@@ -529,6 +529,24 @@ Her model has **21 clips that shipped with it and 314 that merely fit**. Channel
 target does not have are dropped before the mixer is built, because three's alternative is one console
 warning per unresolved binding and no way to tell whether the clip half-played or not at all.
 
+**What a clip is allowed to write, and it is less than it contains.** A captured clip states far more
+than motion — the exporter writes a channel per bone per property — and the surplus is actively
+dangerous. Four rules, and all four came from one playback: Alice animated with
+`WhiteboardIdleFIXFIXU` grew a hundredfold, left the room through the ceiling, lost her clothes, and
+appeared pinned to the viewer, because a figure that large has no parallax.
+
+| dropped | why |
+|---|---|
+| any track on the node the mixer is ROOTED at | that node is placement and unit conversion. Alice's `RootNode` carries `scale 0.01`, cm→m, and the clip carries a `RootNode` scale track of `[1,1,1]`. Writing 1 over 0.01 is the whole bug |
+| a CONSTANT scale track, anywhere | measured over 120 clips, **22,714 of 22,718 scale tracks never change value**. They animate nothing and each is the same trap waiting for a model whose rest scale is not 1. The 4 that move are kept |
+| a CONSTANT position track | a rest offset restated. Dropping it leaves the TARGET's own proportions in place, which is what retargeting wants |
+| a track whose node the model lacks | three warns once per unresolved binding — 51 lines for one clip — and the warning is all you get |
+
+An **animating** position track is not dropped but **re-based**: frame 0 is pinned to the model's own
+rest and the curve rides on top. `CC_Base_BoneRoot` sweeps 294→316 units where Alice rests at 0, which
+is three metres of displacement before she has moved — the clip is stating where the figure stood in
+the scene it was captured from. **Motion is the clip's business and location is the entity's.**
+
 **Time comes from the shared clock, never from frame deltas.** The entity stores the instant the clip
 STARTED and each client computes its own offset into it. Two headsets are then on the same frame with no
 per-frame message, and a client that joins late, stalls, or backgrounds for a minute lands on the right
