@@ -335,11 +335,12 @@ class Shell:
 
             # -- paths: act on anything addressable
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<long>-l))?(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
-             "dir [-l] [path] [--kind K] [--with NAME [--rel TYPE]] — list one level of the namespace "
-             "(-l also shows ids). --kind narrows to one asset type (model, animation, audio, set); "
-             "--with narrows to assets related to NAME, by one --rel type when given (shipped_with, "
-             "voiced_by, ambience, part_of). Combines with globbing: "
-             "`dir *idle* --kind animation --with jane_export`", False),
+             "dir [-l] [path] [--kind K] [--rel TYPE] [--with NAME] [--out|--in] — list one level of "
+             "the namespace (-l also shows ids). --kind narrows to one asset type (model, animation, "
+             "audio, set). --rel adds a COLUMN showing each row's links of that type (shipped_with, "
+             "voiced_by, part_of); --with narrows to assets linked to NAME; --out/--in pin which way "
+             "the edge points, both by default. Combines with globbing: "
+             "`dir *idle* --kind animation --rel voiced_by --with jane_export`", False),
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
             (re.compile(r"^gc(?P<force>\s+!)?$", re.I), self._gc,
@@ -1347,6 +1348,13 @@ class Shell:
             hit = re.search(rf"(?:^|\s){flag}\s+(?P<v>\S+)", path or "", re.I)
             if hit:
                 filters[field] = hit.group("v")
+                path = (path[:hit.start()] + " " + path[hit.end():]).strip()
+        # Valueless, and mutually exclusive by construction: the last one wins rather than erroring,
+        # because `--out --in` means "both", which is already the default.
+        for flag, value in (("--out", "out"), ("--in", "in")):
+            hit = re.search(rf"(?:^|\s){flag}(?=\s|$)", path or "", re.I)
+            if hit:
+                filters["direction"] = value
                 path = (path[:hit.start()] + " " + path[hit.end():]).strip()
         return path, filters
 

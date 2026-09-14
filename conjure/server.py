@@ -2584,6 +2584,11 @@ class AdminPath(BaseModel):
     kind: Optional[str] = None          # asset kind: model | animation | audio | image | set | …
     related: Optional[str] = None       # only assets related to this one (id or label)
     relation: Optional[str] = None      # ...by this relation type; any type when omitted
+    # Which WAY the edge points, from `related`'s end: "out" (related -> row), "in" (row -> related),
+    # or both when omitted. Both is the right default — a figure's clips and the clips one audio voices
+    # are the same question from opposite ends — but direction is the difference between "the clips that
+    # shipped with jane" and "the set jane belongs to", and `part_of` fans in 107 where it fans out 15.
+    direction: Optional[str] = None
 
 
 def _active_sid_for(scope: str) -> str:
@@ -2620,7 +2625,7 @@ def _filter_rows(rows: list[dict], req: AdminPath) -> list[dict]:
     if req.kind:
         rows = [r for r in rows if _row_asset_kind(r) == req.kind]
     if req.related:
-        ids = _related_ids(req.related, req.relation)
+        ids = _related_ids(req.related, req.relation, req.direction)
         rows = [r for r in rows if (r.get("ref") or "") in ids]
     return rows
 
@@ -2653,28 +2658,66 @@ def _safe_label(text: str) -> bool:
     return bool(re.fullmatch(r"[\w .:/-]{1,120}", text or ""))
 
 
-def _related_ids(other: str, relation: Optional[str]) -> set[str]:
-    """Asset ids on the far side of a relation from `other`, in EITHER direction.
+def _resolve_asset(other: str) -> Optional[str]:
+    """An id or an exact label → an id, or None when absent or ambiguous. A person types the label and a
+    script has the id; an ambiguous label is refused rather than picked."""
+    if library is None or not other:
+        return None
+    if library.get(other) is not None:
+        return other
+    hit = library.query(f"SELECT id FROM assets WHERE label = '{other}'",
+                        scope=active_scope, limit=2) if _safe_label(other) else []
+    return hit[0]["id"] if len(hit) == 1 else None
 
-    Both directions because the useful questions point opposite ways: a figure's clips
+
+def _related_ids(other: str, relation: Optional[str], direction: Optional[str] = None) -> set[str]:
+    """Asset ids on the far side of a relation from `other`.
+
+    Both directions by default, because the useful questions point opposite ways: a figure's clips
     (`shipped_with`, outbound) and the clips one audio file voices (`voiced_by`, inbound) are the same
-    query from different ends. `other` resolves as an id first, then as an exact label, because a
-    person types the label and a script has the id.
+    query from different ends. `direction` pins it when that matters — `part_of` fans IN 107 where it
+    fans out 15, so "the parts of this set" and "the set this belongs to" are very different lists.
     """
-    if library is None:
+    resolved = _resolve_asset(other)
+    if resolved is None:
         return set()
-    if library.get(other) is None:
-        hit = library.query(f"SELECT id FROM assets WHERE label = '{other}'",
-                            scope=active_scope, limit=2) if _safe_label(other) else []
-        if len(hit) != 1:                               # absent, or ambiguous — refuse rather than pick
-            return set()
-        other = hit[0]["id"]
     out = set()
-    for edge in library.relations_of(other):
+    for edge in library.relations_of(resolved):
         if relation and edge["type"] != relation:
+            continue
+        if direction and edge["direction"] != direction:
             continue
         out.add(edge["other"])
     return out
+
+
+def _relation_cells(rows: list[dict], relation: str, direction: Optional[str]) -> None:
+    """Append each row's links of one type as a CELL, in place — the join made visible.
+
+    `--rel` without `--with` used to be a no-op: you could FILTER a listing by a relation and never see
+    it, so checking a link meant `show`-ing one asset at a time. A column answers "which of these clips
+    has a voice" in one line per row, which is the question the linking actually raises.
+    """
+    if library is None:
+        return
+    for row in rows:
+        aid = row.get("ref") or ""
+        if row.get("kind") != "asset" or not aid:
+            row.setdefault("cells", []).append("")
+            continue
+        near: list[str] = []
+        if direction != "in":
+            near += [f"→ {r.get('label') or r['id']}" for r in library.related(aid, relation)]
+        if direction != "out":
+            near += [f"← {r.get('label') or r['id']}"
+                     for r in library.related(aid, relation, reverse=True)]
+        # Two names then a count. A figure has 21 clips and a set has 107 parts, and a cell that lists
+        # them is a cell that destroys the alignment the columns exist for.
+        if len(near) > 2:
+            cell = ", ".join(near[:2]) + f", +{len(near) - 2}"
+        else:
+            cell = ", ".join(near) or "—"
+        row.setdefault("cells", []).append(cell)
 
 
 @app.post("/admin/tree")
@@ -2687,16 +2730,29 @@ async def admin_tree(req: AdminPath) -> dict:
         row = namespace.leaf_row(loc)
         if row is None:
             return {"ok": False, "error": f"no {loc.kind} {loc.name!r}"}
+        cols = namespace.columns_for(loc.kind + "s")
+        if req.relation:
+            _relation_cells([row], req.relation, req.direction)
+            cols = cols + [req.relation]
         return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
-                "kind": loc.kind, "self": row, "children": [row],
-                "columns": namespace.columns_for(loc.kind + "s")}
+                "kind": loc.kind, "self": row, "children": [row], "columns": cols}
     # `self` is the row for the node ITSELF when it has one (a session's own summary, say). A session's
     # children are just `worlds/` and `state/`, so without this a delete confirmation for one could only
     # say "nothing" — see Shell._summarize.
+    # Fetch WIDE when filtering, then cap. The cap used to sit inside the row builder, so a filter ran
+    # against an arbitrary first-200 slice of 775 assets — `--kind animation` showed 98 of 364 and
+    # `--with jane_export` found none of her 21 clips.
+    filtering = bool(req.kind or req.related)
+    kids = namespace.children(loc, limit=10_000 if filtering else 200)
+    kids = _filter_rows(kids, req)
+    if filtering:
+        kids = namespace.cap_rows(kids, 200)
+    cols = namespace.columns_for(loc.kind)
+    if req.relation:
+        _relation_cells(kids, req.relation, req.direction)
+        cols = cols + [req.relation]
     out = {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
-           "kind": loc.kind, "self": namespace.leaf_row(loc),
-           "children": _filter_rows(namespace.children(loc), req),
-           "columns": namespace.columns_for(loc.kind)}
+           "kind": loc.kind, "self": namespace.leaf_row(loc), "children": kids, "columns": cols}
     if req.related:
         problem = _related_problem(req.related)
         if problem:
@@ -2802,8 +2858,12 @@ async def admin_match(req: AdminPath) -> dict:
     if req.kind or req.related:
         keep = {id(r) for r in _filter_rows([m["row"] for m in matches if m.get("row")], req)}
         matches = [m for m in matches if m.get("row") is not None and id(m["row"]) in keep]
+    cols = namespace.columns_for(kind + "s")
+    if req.relation:
+        _relation_cells([m["row"] for m in matches if m.get("row")], req.relation, req.direction)
+        cols = cols + [req.relation]
     return {"ok": True, "glob": namespace.is_glob(req.path.rstrip("/").rsplit("/", 1)[-1]),
-            "columns": namespace.columns_for(kind + "s"), "matches": matches}
+            "columns": cols, "matches": matches}
 
 
 @app.post("/admin/file")

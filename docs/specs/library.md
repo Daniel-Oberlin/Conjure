@@ -119,6 +119,42 @@ env     --ambience------>  audio     room soundtracks
 asset   --part_of------->  set       provenance only, never the compatibility test
 ```
 
+### Seeing them — `show` and `dir`
+
+Relations are only worth recording if they can be READ. Two surfaces, and no SQL:
+
+**`show <asset>`** prints the `attributes` bag one scalar per row (a nested value is summarised, never
+dumped — a clip's `travel_deg` is six joints) and then the links, grouped by type and direction:
+
+```
+  attributes        17 keys
+  rig_sig           85e41f9b8e
+  rigged            yes
+  parts             {4 keys}: clothes_maiddress, model_britney, …
+  links             22 edges
+    → part_of         1  set        jane
+    → shipped_with   21  animation  10_action, 10_idle, 1_action, 1_idle, +17
+```
+
+**`dir --rel TYPE`** adds a COLUMN, so a listing answers "which of these has a voice" in one pass
+rather than one `show` per row. `--with NAME` narrows to assets linked to NAME; `--out` / `--in` pin
+which way the edge points.
+
+```
+dir --kind animation --rel voiced_by            every clip, with its audio or a dash
+dir --with jane_export --rel shipped_with       her 21 clips
+dir --kind set --rel part_of --in               each set, with what belongs to it
+```
+
+**The arrow is load-bearing.** Both directions is the default, because a figure's clips and the clips
+one audio voices are the same question from opposite ends — but `part_of` fans IN 107 where it fans
+OUT 15, so "the set this belongs to" and "the parts of this set" are very different lists.
+
+**A filter runs over every asset, then the listing is capped** — not the reverse. The 200-row cap used
+to be applied while building rows, so a filter narrowed an arbitrary first page: measured on the live
+catalog, `--kind animation` returned 98 of 364 and `--with jane_export` found **none** of her 21 clips
+because they sat past the cut. A filter that silently narrows its own input is worse than no filter.
+
 `conjure/capture_set.py` holds the rules, and the point of it is where they **stop**. A name that does
 not parse is left unlinked rather than guessed — `HotelAction0`'s number indexes a script we do not
 have, and 698 of 898 audio files across twenty captures attach to nothing by name. They are still
@@ -288,9 +324,11 @@ index specifically, so that swap is the one anticipated.
 | `POST /library/caption` | backfill labels for label-less visual assets |
 | `POST /library/retag-skyboxes` | re-tag wide images as skyboxes |
 
-**Admin (shell `dir`):** `POST /admin/tree` and `/admin/match` take optional `kind`, `related` and
-`relation` — listing filters, so a capture's figure, sixty clips and thirty audio files can be asked
-apart. `related` resolves an id or an exact label, and refuses an ambiguous one rather than picking.
+**Admin (shell `dir`, `show`):** `POST /admin/tree` and `/admin/match` take optional `kind`, `related`,
+`relation` and `direction` — so a capture's figure, sixty clips and thirty audio files can be asked
+apart. `related` resolves an id or an exact label and refuses an ambiguous one rather than picking;
+`relation` alone adds a column instead of filtering; `direction` is `out` | `in` | omitted for both.
+`POST /admin/show` returns the attributes and the links (§2a).
 
 **Ownership:** `library.grant(id, scope)` / `revoke` / `transfer(id, from, to)` / `owners(id)` (§5a).
 **Relations:** `add_relation(from, to, type)`, `related(id, type, reverse=)`, `relations_of(id)`.

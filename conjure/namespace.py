@@ -504,7 +504,20 @@ def asset_rows(user: str, agent: str, limit: int = 200) -> list[dict]:
             break
     return out
 
-def children(loc: Loc) -> list[dict]:
+def cap_rows(rows: list[dict], limit: int) -> list[dict]:
+    """Truncate a listing and say so, in the same shape `asset_rows` uses.
+
+    Exists so the cap can be applied AFTER filtering. It used to be applied inside `asset_rows`, which
+    meant `dir --kind animation` filtered an arbitrary first-200 slice of 775 assets and showed 98 of
+    364 — and `--with jane_export` found none of her 21 clips, because they were past the cut. A filter
+    that silently narrows its own input is worse than no filter.
+    """
+    if len(rows) <= limit:
+        return rows
+    return rows[:limit] + [node(f"… (more than {limit})", "note")]
+
+
+def children(loc: Loc, *, limit: int = 200) -> list[dict]:
     """One level below `loc` — never recursive."""
     if loc.kind == "root":
         return [node(u, "user", active=(u == active_user())) for u in all_users()]
@@ -529,8 +542,74 @@ def children(loc: Loc) -> list[dict]:
     if loc.kind == "spaces":
         return [space_row(loc.user, n) for n in _h().spaces.list(loc.user)]
     if loc.kind == "assets":
-        return asset_rows(loc.user, loc.agent)
+        return asset_rows(loc.user, loc.agent, limit=limit)
     return []                                                  # a leaf: world/space/asset/user item
+
+def _attribute_rows(rec: dict) -> list[list]:
+    """The `attributes` bag, one row per SCALAR. `show` reported nine columns and none of them, so
+    `rig_sig`, `duration_s`, `clip_kind` and `parts` — the facts that decide which of six near-identical
+    assets you want — were only reachable by querying SQL by hand.
+
+    Scalars get a row each; a nested value is summarised rather than dumped, because a clip's
+    `travel_deg` is six joints and `parts` is fifteen meshes and neither reads as a field."""
+    import json as _json
+    try:
+        attrs = _json.loads(rec.get("attributes") or "{}")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(attrs, dict) or not attrs:
+        return []
+    rows: list[list] = []
+    for key in sorted(attrs):
+        value = attrs[key]
+        if isinstance(value, bool):
+            text = "yes" if value else "no"
+        elif isinstance(value, (int, float, str)) or value is None:
+            text = "—" if value is None or value == "" else str(value)
+        elif isinstance(value, dict):
+            text = f"{{{_plural(len(value), 'key')}}}: " + ", ".join(list(value)[:6])
+            if len(value) > 6:
+                text += ", …"
+        elif isinstance(value, list):
+            text = ", ".join(str(v) for v in value[:6]) + (", …" if len(value) > 6 else "") or "—"
+        else:
+            text = str(value)
+        rows.append([key, text])
+    return [["attributes", _plural(len(attrs), "key")]] + rows
+
+
+def _link_rows(asset_id: str) -> list[list]:
+    """One row per relation type and direction — the asset's neighbourhood.
+
+    Grouped by type rather than listed per edge: a figure has 21 `shipped_with` clips and a set has 107
+    parts, so an edge list is a wall. The arrow is the DIRECTION, which is the thing that separates "the
+    clips that shipped with her" from "the set she belongs to"."""
+    lib = _h().library
+    if lib is None:
+        return []
+    try:
+        edges = lib.relations_of(asset_id)
+    except Exception:                                   # noqa: BLE001 — show must not fail on a link
+        return []
+    if not edges:
+        return [["links", "none"]]
+    groups: dict = {}
+    for e in edges:
+        groups.setdefault((e["type"], e["direction"]), []).append(e["other"])
+    rows: list[list] = [["links", _plural(len(edges), "edge")]]
+    for (rel, direction), others in sorted(groups.items()):
+        kinds: dict = {}
+        names: list[str] = []
+        for oid in others:
+            rec = lib.get(oid) or {}
+            kinds[rec.get("kind") or "?"] = kinds.get(rec.get("kind") or "?", 0) + 1
+            names.append(rec.get("label") or oid)
+        arrow = "→" if direction == "out" else "←"
+        shown = ", ".join(sorted(names)[:4]) + (f", +{len(names) - 4}" if len(names) > 4 else "")
+        rows.append([f"  {arrow} {rel}",
+                     f"{len(others):>3}  {'/'.join(sorted(kinds))}  {shown}"])
+    return rows
+
 
 def leaf_row(loc: Loc) -> Optional[dict]:
     """The one-line row for a leaf, so `dir <leaf>` shows the item rather than nothing."""
@@ -756,11 +835,12 @@ def fields(loc: Loc) -> list[list]:
         r = _h().library.get(loc.name)
         if not r:
             return [["error", f"no asset {loc.name!r}"]]
-        return [["asset", r["id"]], ["kind", r.get("kind") or "?"], ["label", r.get("label") or "—"],
+        rows = [["asset", r["id"]], ["kind", r.get("kind") or "?"], ["label", r.get("label") or "—"],
                 ["query", r.get("query") or "—"], ["scope", r.get("scope") or "—"],
                 ["visibility", "public" if r.get("public", 1) else "private"],
                 ["tags", r.get("tags") or "—"], ["file", r.get("filename") or "—"],
                 ["last used", str(r.get("last_used") or "—")]]
+        return rows + _attribute_rows(r) + _link_rows(r["id"])
     if loc.kind == "statedoc":
         store = _h().sessions.state(loc.scope, loc.sid)
         try:

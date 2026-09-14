@@ -4705,6 +4705,122 @@ def test_admin_listing_filters_by_kind_and_by_relation(srv, tmp_path):
     assert srv._related_ids("c1.glb", None) == {"fig.glb", "v.mp3"}, "every edge when no type is given"
 
 
+def test_show_reports_an_assets_ATTRIBUTES_and_LINKS(srv):
+    """`show` returned nine columns and neither. `rig_sig`, `duration_s`, `clip_kind` and `parts` —
+    the facts that decide which of six near-identical assets you want — were reachable only by
+    querying SQL by hand, and an asset's links were not reachable at all."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://",
+               attributes={"rig_sig": "85e41f9b8e", "rigged": True, "tris": 110870,
+                           "parts": {"a": "body", "b": "hair"}, "clips": []})
+    lib.upsert("c1.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("set:j", kind="set", label="jane-set", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "c1.glb", "shipped_with")
+    lib.add_relation("fig.glb", "set:j", "part_of")
+
+    from conjure import namespace
+    fields = dict((k.strip(), v) for k, v in
+                  namespace.fields(namespace.resolve(
+                      f"/{srv.DEFAULT_USER}/agents/builder/assets/fig.glb")))
+    assert fields["rig_sig"] == "85e41f9b8e"
+    assert fields["rigged"] == "yes", "a bool reads as a word, not as True"
+    assert fields["parts"].startswith("{2 keys}"), "a nested value is summarised, never dumped"
+    assert fields["clips"] == "—", "an empty list is a dash, not a blank"
+    assert fields["links"] == "2 edges"
+    assert "1_idle" in fields["→ shipped_with"] and "animation" in fields["→ shipped_with"]
+    assert "jane-set" in fields["→ part_of"]
+
+
+def test_show_marks_which_WAY_each_link_points(srv):
+    """The arrow is the whole point: `← part_of` on a set means things belong to it, `→ part_of` on a
+    figure means it belongs to something."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://")
+    lib.upsert("set:j", kind="set", label="jane-set", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "set:j", "part_of")
+    from conjure import namespace
+    base = f"/{srv.DEFAULT_USER}/agents/builder/assets"
+    fig = dict((k.strip(), v) for k, v in namespace.fields(namespace.resolve(f"{base}/fig.glb")))
+    st = dict((k.strip(), v) for k, v in namespace.fields(namespace.resolve(f"{base}/set:j")))
+    assert "→ part_of" in fig and "← part_of" not in fig, "she belongs to it"
+    assert "← part_of" in st and "→ part_of" not in st, "it holds her"
+
+
+def test_a_relation_can_be_pinned_to_ONE_direction(srv):
+    """Both directions is the right default — a figure's clips and the clips one audio voices are the
+    same question from opposite ends — but it cannot answer "the set this belongs to" separately from
+    "the parts of this set", and `part_of` fans IN 107 where it fans out 15."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://")
+    lib.upsert("c1.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("set:j", kind="set", label="jane-set", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "c1.glb", "shipped_with")     # jane -> her clip   (out, from jane)
+    lib.add_relation("fig.glb", "set:j", "part_of")           # jane -> her set    (out, from jane)
+
+    assert srv._related_ids("fig.glb", None) == {"c1.glb", "set:j"}, "both edges, either direction"
+    assert srv._related_ids("fig.glb", None, "out") == {"c1.glb", "set:j"}
+    assert srv._related_ids("fig.glb", None, "in") == set(), "nothing points AT her"
+    assert srv._related_ids("set:j", "part_of", "in") == {"fig.glb"}, "what belongs to the set"
+    assert srv._related_ids("set:j", "part_of", "out") == set(), "the set belongs to nothing"
+
+
+def test_rel_without_with_adds_a_COLUMN_instead_of_filtering(srv):
+    """`--rel` used to be meaningless without `--with`: you could filter a listing by a relation and
+    never see one, so checking a link meant `show`-ing assets one at a time."""
+    lib = srv.library
+    lib.upsert("c1.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("c2.glb", kind="animation", label="2_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("v.mp3", kind="audio", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.add_relation("c1.glb", "v.mp3", "voiced_by")
+
+    from conjure import namespace
+    rows = [namespace.node("1_idle", "asset", "animation", "public", ref="c1.glb"),
+            namespace.node("2_idle", "asset", "animation", "public", ref="c2.glb")]
+    srv._relation_cells(rows, "voiced_by", None)
+    assert rows[0]["cells"][-1] == "→ 1_idle", "the link, not just a filter that hid the others"
+    assert rows[1]["cells"][-1] == "—", "no link is a dash, not a blank"
+
+
+def test_a_relation_cell_counts_rather_than_listing_a_long_fan_out(srv):
+    """A figure has 21 clips and a set has 107 parts. A cell that lists them destroys the alignment
+    the columns exist for."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://")
+    for i in range(5):
+        lib.upsert(f"c{i}.glb", kind="animation", label=f"{i}_idle", scope=srv.active_scope,
+                   source="cache://")
+        lib.add_relation("fig.glb", f"c{i}.glb", "shipped_with")
+    from conjure import namespace
+    rows = [namespace.node("jane", "asset", "model", "public", ref="fig.glb")]
+    srv._relation_cells(rows, "shipped_with", "out")
+    cell = rows[0]["cells"][-1]
+    assert cell.endswith("+3") and cell.count("→") == 2, f"two names then a count, got {cell!r}"
+
+
+def test_a_filter_runs_over_EVERY_asset_not_the_first_page(srv):
+    """The 200-row cap used to be applied inside the row builder, so a filter narrowed an arbitrary
+    first page: measured on the live catalog, `--kind animation` showed 98 of 364 and
+    `--with jane_export` found NONE of her 21 clips because they sat past the cut. A filter that
+    silently narrows its own input is worse than no filter."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://")
+    for i in range(260):                                   # more than the 200-row listing cap
+        lib.upsert(f"pad{i}.png", kind="image", label=f"pad{i}", scope=srv.active_scope,
+                   source="cache://")
+    lib.upsert("late.glb", kind="animation", label="9_idle", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "late.glb", "shipped_with")
+
+    from conjure import namespace
+    rows = namespace.children(namespace.resolve(f"/{srv.DEFAULT_USER}/agents/builder/assets"),
+                              limit=10_000)
+    assert len(rows) > 200, "the wide fetch really is wide"
+    got = srv._filter_rows(rows, srv.AdminPath(path="/", kind="animation"))
+    assert [r["ref"] for r in got] == ["late.glb"], "found past where the cap used to be"
+    got = srv._filter_rows(rows, srv.AdminPath(path="/", related="jane", relation="shipped_with"))
+    assert [r["ref"] for r in got] == ["late.glb"]
+    assert namespace.cap_rows(rows, 200)[-1]["label"].startswith("… (more than 200)")
+
+
 def test_relation_filter_refuses_an_ambiguous_or_absent_name(srv):
     """`--with` takes a label because a person types labels. Labels are neither unique nor guaranteed,
     so two matches is refused rather than picked between — the same rule the asset namespace uses."""
