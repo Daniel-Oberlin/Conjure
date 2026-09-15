@@ -1,8 +1,8 @@
 # Plan — figures, their animations, and environments
 
 **Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phase 2 PARTIAL (works; open
-defects listed below) · phase 3 DONE (untested on device) · phase 2b steps 0–4 DONE (composing works;
-the import switch and the split remain) · phases 4–5 open
+defects listed below) · phase 3 DONE (untested on device) · phase 2b steps 0–5 DONE (composed AND
+imported; rehearsed, not yet run on the real catalog) · phases 4–5 open
 **Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13 · **Phase 3 landed:** 2026-09-13 · **Phase 2 landed partial:** 2026-09-13
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
@@ -505,6 +505,35 @@ worth a look next to her long-standing eye trouble.
    that contain it, because browsing only fetches what the page draws and nobody took those tools out
    of the drawer. Bride's `underwear.glb` is likewise three fetchable URLs, and cannot be borrowed from
    another capture: eight captures ship that name and all eight are byte-different, one per rig.
+
+5. ✅ **SWITCH THE IMPORT OVER** — BUILT 2026-09-14, settled into
+   [`specs/captures.md`](../specs/captures.md) § 4. `import_capture.py` reads `temp/things/<name>` by
+   default and identifies a composed file by its PROVENANCE rather than its name, because it is named
+   after the thing and there is no container stem to match — keying `shipped_with` on the file name
+   silently lost every authored set. Rehearsed against a real snapshot of the catalog (`Connection.backup`,
+   not `cp`): **98 live models where the old unit gave 90 containers, 43 rows retired, 20 figures each
+   holding its own clips, and zero relations left on a tombstone.**
+
+   Two bugs found by rehearsing rather than by reasoning:
+
+   - **the capture name was in the composed bytes**, which defeated content addressing. The props build
+     is the same release in 15 captures, so `Banana` should be one row tagged fifteen times; it was
+     **fifteen rows with fifteen ids** and fifteen copies of the geometry. 311 live models against 98.
+   - **teacher would have lost her figure entirely.** `SchoolCorridor` is 394 entities holding both the
+     corridor and the teacher, so the switch retired `Teacher_v1` into a room and she stopped being
+     placeable — clips, rig and all. Same shape as susan, found weeks apart and both by hand, so
+     `thing_notes` now REPORTS it: a thing drawing skinned and rigid pieces together is very likely a
+     figure welded to its environment. One case in the corpus, and it fires on teacher with the
+     override removed. `captures/things.json` revision 2 splits her (`Teacher`, `school-corridor`).
+
+   The half-models go, as agreed 2026-09-13: `manager_fixing`, `Oktoberfest-milf-fixing`,
+   `model_britney_bride`, eight `underwear`s and `WOODout` are retired into the things that now hold
+   them. That is the director's "there's another bride — `model_britney_bride`" answer fixed at the
+   source. Also new: `parts_hidden` comes from the scene instead of from mesh names.
+
+   Still open here: the labels for eight captures are the app's internal entity names
+   (`MainModelToiletAgnes`, `MainModelHotelBlack`), which `things.json` can rename the way susan's
+   `ModelParent` became `Alice` — worth doing before anyone has to read a catalog listing.
 
 **What remains is 4's inverse. The agreed approach for 4, 2026-09-14, was:**
 

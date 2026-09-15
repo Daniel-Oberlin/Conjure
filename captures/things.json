@@ -1,5 +1,5 @@
 {
-  "revision": 1,
+  "revision": 2,
   "_comment": [
     "Which entity in a captured scene is a THING — something worth having as one asset.",
     "",
@@ -9,8 +9,8 @@
     "content scenes and wrong for the app's own — and a new capture can always arrive shaped a third",
     "way. Correcting one should be an edit, not a release.",
     "",
-    "Measured over twenty captures: 19 need nothing here beyond `exclude`, and one (susan) bundles a",
-    "figure with the room she stands in. Expect roughly that ratio.",
+    "Measured over twenty captures: 18 need nothing here beyond `exclude`, and two (susan, teacher)",
+    "bundle a figure with the room she stands in. Expect roughly that ratio.",
     "",
     "Bump `revision` when you change anything — an import records which revision decided, so a change",
     "says which captures are worth redoing rather than silently disagreeing with what is already in",
@@ -40,9 +40,16 @@
     "Per-capture corrections, keyed by capture directory name then by scene file. The value REPLACES",
     "the proposal for that scene: name every thing you want from it.",
     "",
-    "susan is the one measured case where the convention bundles. Her Root child `aula` is a classroom",
-    "with Alice standing in it — `ModelParent` is the figure (15 pieces) and `EnvironmentVR` is the room",
-    "(14), and both are separately useful. Nothing in the graph says to split there; only a person does.",
+    "susan and teacher are the two measured cases where the convention bundles. susan's Root child",
+    "`aula` is a classroom with Alice standing in it — `ModelParent` is the figure (15 pieces) and",
+    "`EnvironmentVR` is the room (14), and both are separately useful. teacher's `SchoolCorridor` is the",
+    "same shape: 394 entities holding `EnvironmentVR` (the corridor, 27 rigid pieces) and",
+    "`MainModelTeacher` (the figure, 7 skinned). Nothing in the graph says to split there; only a person",
+    "does — but the SHAPE is reportable, and `thing_notes` now says so when a thing welds a rigged",
+    "figure to a rigid environment, which is how teacher was found at all.",
+    "",
+    "Getting this wrong costs a figure: left bundled, the switch to per-thing assets retires",
+    "`Teacher_v1` into a corridor and she stops being placeable at all, clips and rig and everything.",
     "",
     "A LIST names the things; a MAP also renames them. susan's figure entity is called `ModelParent`, which is the app's internal name and no use as an asset label.",
     "Naming a scene here is also how you drop one entirely: give it an empty list. nancy looks like susan's sibling and is NOT — her scene is 1947006.json with 46 clean skin-tone variants as Root children, and needs nothing. Guessed wrong once; check before adding an entry."
@@ -52,6 +59,12 @@
       "1980290.json": {
         "ModelParent": "Alice",
         "EnvironmentVR": "aula-classroom"
+      }
+    },
+    "teacher": {
+      "2165352.json": {
+        "MainModelTeacher": "Teacher",
+        "EnvironmentVR": "school-corridor"
       }
     }
   }

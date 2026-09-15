@@ -693,6 +693,18 @@ def thing_notes(build: Build, ts: Optional[list] = None, **kw) -> list[str]:
     if not ts:
         return []
     out = []
+    # A FIGURE WELDED TO ITS ROOM, which is the one shape the convention gets wrong in a way that costs
+    # something. teacher's `SchoolCorridor` is 394 entities holding both the corridor and the teacher,
+    # so converting it as one thing means she is not placeable at all — no clips, no rig, no figure.
+    # susan is the same shape and was found by hand; this is so the next one is not.
+    for thing in ts:
+        skinned = [p for p in thing.pieces if _rigged(build, p.container)]
+        rigid = [p for p in thing.pieces if p not in skinned]
+        if skinned and len(rigid) >= 3:
+            out.append(f"{thing.name!r} draws {len(skinned)} SKINNED piece(s) and {len(rigid)} rigid "
+                       f"one(s) — very likely a figure welded to its environment, which are two things "
+                       f"and separately useful. Split it in captures/things.json; left as one, the "
+                       f"figure stops being placeable")
     for scene in sorted({t.scene for t in ts}):
         group = [t for t in ts if t.scene == scene]
         on = sum(1 for t in group if t.enabled)
@@ -701,6 +713,25 @@ def thing_notes(build: Build, ts: Optional[list] = None, **kw) -> list[str]:
                    f"{', …' if len(group) > 6 else ''}. Which entity is a THING is this app's "
                    f"convention and not the format; correct it per capture rather than trusting it")
     return out
+
+
+_RIGGED: dict[int, bool] = {}
+
+
+def _rigged(build: Build, container: int) -> bool:
+    """Does this container hold a skin? Cached, because a report asks per piece and a figure has many."""
+    key = id(build), int(container)
+    if key not in _RIGGED:
+        path = build.path(container)
+        ok = False
+        if path and os.path.exists(path):
+            try:
+                doc, _bin = split_glb(open(path, "rb").read())
+                ok = bool(doc and doc.get("skins"))
+            except Exception:                            # noqa: BLE001 — a bad file is not rigged
+                ok = False
+        _RIGGED[key] = ok
+    return _RIGGED[key]
 
 
 def _vec(entity: dict, key: str, default: tuple) -> tuple:

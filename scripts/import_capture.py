@@ -34,7 +34,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from conjure import capture_set                                          # noqa: E402
-from conjure.importer import plan_import                                 # noqa: E402
+from conjure.importer import plan_import, read_glb_json                  # noqa: E402
 from conjure.library import AssetLibrary                                 # noqa: E402
 from conjure.playcanvas import find_builds, read_build                               # noqa: E402
 
@@ -61,20 +61,21 @@ def _store(cache: str, asset_id: str, data: bytes) -> bool:
     return True
 
 
-def _containers_by_build(capture: str) -> dict[str, str]:
-    """Rebuilt-GLB stem -> the build directory it came from.
+def container_files(capture: str) -> dict[int, tuple[str, str]]:
+    """Container asset id -> `(file stem, the build directory that registers it)`.
 
-    This is what makes `shipped_with` mean what it says. A capture holds several builds — a character
-    in one, the shared hands and props in another — and the authored set is the clips that shipped in
-    the FIGURE's OWN build. Without it, every rigged thing in the capture claims every clip and the VR
-    hands end up owning Jane's twenty-one animations.
+    Both views of the same fact, because two callers need different halves of it. Keying on IDENTITY is
+    what makes the composed path work at all: a composed GLB is named after the THING it holds
+    (`office-babe.glb`, `Banana.glb`) and not after any container, so there is no stem to match. It
+    carries the container ids it drew from in `extras.conjure` instead — which is the fact rather than a
+    coincidence of naming, since `underwear.glb` appears in eight captures under eight different ids and
+    `office-babe` draws from three files at once.
 
-    Keyed on the container's FILE name, because that is what the rebuild names its output after
-    (`playcanvas.rebuild_build`: `stem = basename(path)`). The registry's asset NAME is a different
-    string and keying on it silently loses the match: Susan's container is filed as `Alice.glb` and
-    called `aula_Aliceglb`, so her figure claimed none of her eight clips.
+    The STEM half is still needed, for two things: the older one-per-container output is named after it,
+    and the rows a previous per-container import left in the catalog are LABELLED with it, which is how
+    `_retire_containers` recognises them.
     """
-    out: dict[str, str] = {}
+    out: dict[int, tuple[str, str]] = {}
     for build in find_builds(capture):
         try:
             read = read_build(build)
@@ -85,8 +86,22 @@ def _containers_by_build(capture: str) -> dict[str, str]:
                 continue
             path = read.path(aid)
             if path:
-                out.setdefault(os.path.splitext(os.path.basename(path))[0], build)
+                out.setdefault(int(aid), (os.path.splitext(os.path.basename(path))[0], build))
     return out
+
+
+def provenance(data: bytes) -> dict:
+    """`extras.conjure` from a composed GLB, or `{}` for anything else.
+
+    The composer writes it (`conjure/compose.py`) so that everything downstream can ask what a file IS
+    rather than infer it from a name: which thing, which scene, which containers it merged, and which
+    of its nodes the scene had switched off.
+    """
+    try:
+        doc = read_glb_json(data)
+    except Exception:                                                    # noqa: BLE001
+        return {}
+    return ((doc or {}).get("extras") or {}).get("conjure") or {}
 
 
 def _source_assets(capture: str, kinds=("animation", "audio")) -> list[dict]:
@@ -183,6 +198,53 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
                 report(f"    retired {row['id']} — replaced by {asset_id} ({label})")
 
 
+    def _retire_containers() -> None:
+        """Retire the rows a PER-CONTAINER import of this capture left behind.
+
+        The switch from one asset per file to one per thing is not a re-import of the same rows: the
+        labels change, so the ordinary `(kind, label)` supersession catches only the handful that happen
+        to share a name (`office-babe` does, since her thing is named after her file). Everything else
+        would sit in the catalog forever, and those leftovers are the ones that cause harm — asked to
+        "switch to a different bride" the director offered `model_britney_bride`, a bare body with no
+        clothes or hair, because nothing distinguished a figure from a piece of one.
+
+        Recognised by LABEL matching a container file stem of this capture, which is what the old path
+        named its rows after, and retired only into a thing that actually contains that container. A
+        container no thing draws is left alone and reported: `computer_desk`, `magnet` and the Quest
+        controller are bound only inside the app's own excluded machinery, so whether they are worth
+        rescuing is a `captures/things.json` decision and not this script's to take.
+
+        `TOOLS LIBRARYblend5` is the fan-out case — one file, fifteen things — and a tombstone points at
+        one row. Where several things share a container it points at the SET, because that is what
+        actually replaced it: the file's contents are now spread across the capture, and following the
+        tombstone to the set finds all fifteen. Pointing at one of them would be picking arbitrarily
+        between equals, and the first version of this announced that the cutlery drawer had become a
+        cucumber.
+        """
+        if not commit:
+            return
+        stems = {stem: cid for cid, (stem, _build) in files.items()}
+        orphans = []
+        for stem, cid in sorted(stems.items()):
+            if stem in labels_written:
+                continue                          # a thing is named after this file; normal supersession has it
+            heirs = sorted(things_seen.get(cid) or [], reverse=True)
+            for row in same_thing(library, scope, name, "model", stem):
+                if not heirs:
+                    orphans.append(stem)
+                    continue
+                heir = heirs[0][1] if len(heirs) == 1 else set_id
+                ok, _err = library.supersede(row["id"], heir)
+                if ok:
+                    stats["superseded:container"] += 1
+                    became = (f"inside {library.get(heir).get('label')}" if len(heirs) == 1 else
+                              f"spread across {len(heirs)} things in this set")
+                    report(f"    retired {stem} — its geometry is now {became}")
+        if orphans:
+            report(f"    {len(orphans)} container row(s) left alone — no thing draws them, so they are "
+                   f"the app's own machinery rather than props ({', '.join(orphans[:5])}"
+                   f"{', …' if len(orphans) > 5 else ''})")
+
     def link(a, b, kind):
         stats[f"rel:{kind}"] += 1
         if commit:
@@ -191,9 +253,13 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
     put(set_id, kind="set", label=name, source=f"capture://{name}",
         attributes={"capture": name, "origin": "playcanvas"})
 
-    # ---- the rebuilt models, which are what a world actually places -----------------------------
-    by_build = _containers_by_build(capture)
+    # ---- the models, which are what a world actually places --------------------------------------
+    files = container_files(capture)
+    by_stem = {stem: build for stem, build in files.values()}
+    by_container = {cid: build for cid, (_stem, build) in files.items()}
     figures: dict[str, list[str]] = defaultdict(list)    # build dir -> [asset id]
+    things_seen: dict[int, list[tuple[int, str]]] = defaultdict(list)   # container -> [(pieces, asset)]
+    labels_written: set[str] = set()
     for file in sorted(f for f in os.listdir(rebuilt) if f.endswith(".glb")) if os.path.isdir(rebuilt) else []:
         path = os.path.join(rebuilt, file)
         data = open(path, "rb").read()
@@ -202,13 +268,33 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
             report(f"    ? {file}: nothing recognised it")
             continue
         asset_id = _asset_id(data, result.ext)
-        put(asset_id, data, kind=result.kind, label=os.path.splitext(file)[0],
-            source=f"cache://{asset_id}", filename=asset_id, attributes=result.attributes)
+        mark = provenance(data)
+        # The THING's own name, not the file's. `_safe` had to make the file name safe for a
+        # filesystem and the label should not inherit that, and a per-container import labelled
+        # `TOOLS LIBRARYblend5` where the catalog now holds fifteen separately placeable tools.
+        label = mark.get("thing") or os.path.splitext(file)[0]
+        attributes = {**result.attributes}
+        if mark:
+            # The capture comes from the IMPORT, not from the file — see `compose_thing`, which keeps
+            # it out of the bytes so a prop shared by fifteen captures is one row and not fifteen.
+            attributes["thing"] = {"scene": mark.get("scene"), "capture": name,
+                                   "containers": sorted(mark.get("containers") or {})}
+            # WHICH PARTS THE SOURCE HAS SWITCHED OFF, stated rather than classified. A different fact
+            # from `parts` (which garment a mesh IS) and the runtime needs both: `figure-parts` hides
+            # by node name, and until now the only answer came from reading mesh names.
+            if mark.get("hidden"):
+                attributes["parts_hidden"] = list(mark["hidden"])
+        put(asset_id, data, kind=result.kind, label=label,
+            source=f"cache://{asset_id}", filename=asset_id, attributes=attributes)
+        labels_written.add(label)
         link(asset_id, set_id, "part_of")
+        for cid in (mark.get("containers") or {}):
+            things_seen[int(cid)].append(((mark.get("containers") or {}).get(cid, 0), asset_id))
         # A FIGURE, not merely something with a skin: `rig_sig` is only set when a humanoid map was
         # recovered, which is the difference between a character and a pair of disembodied hands.
         if result.attributes.get("rig_sig"):
-            build = by_build.get(os.path.splitext(file)[0])
+            build = next((by_container[int(c)] for c in (mark.get("containers") or {})
+                          if int(c) in by_container), None) or by_stem.get(os.path.splitext(file)[0])
             if build:
                 figures[build].append(asset_id)
             else:
@@ -268,6 +354,7 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
             for clip_id in clips_by_build.get(build, []):
                 link(asset_id, clip_id, "shipped_with")
 
+    _retire_containers()
     report(f"\n  {name}: " + ", ".join(f"{k} {v}" for k, v in sorted(stats.items())))
     return dict(stats)
 
@@ -275,7 +362,9 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("capture")
-    ap.add_argument("--rebuilt", default="", help="the reconstructed GLBs (default temp/rebuilt/<name>)")
+    ap.add_argument("--models", "--rebuilt", dest="models", default="",
+                    help="the converted GLBs (default temp/things/<name>, one per THING — pass "
+                         "temp/rebuilt/<name> for the older one-per-container output)")
     ap.add_argument("--scope", default="daniel/agents/builder")
     ap.add_argument("--library", default="", help="catalog path (default: the real one)")
     ap.add_argument("--cache", default="", help="asset bytes dir (default: beside the catalog)")
@@ -283,7 +372,7 @@ def main() -> int:
     args = ap.parse_args()
 
     name = os.path.basename(args.capture.rstrip("/"))
-    rebuilt = args.rebuilt or os.path.join("temp/rebuilt", name)
+    models = args.models or os.path.join("temp/things", name)
     if not os.path.isdir(args.capture):
         print(f"{args.capture} is not a directory")
         return 2
@@ -293,7 +382,11 @@ def main() -> int:
     library = AssetLibrary(path)
     print(f"catalog: {path}\nbytes:   {cache}"
           f"{'' if args.commit else '   (DRY RUN — nothing will be written)'}")
-    run(args.capture, rebuilt, scope=args.scope, library=library, cache=cache, commit=args.commit)
+    if not os.path.isdir(models):
+        print(f"{models} is not a directory — compose it first with "
+              f"`playcanvas_rebuild.py {args.capture} --out {models} --compose`")
+        return 2
+    run(args.capture, models, scope=args.scope, library=library, cache=cache, commit=args.commit)
     return 0
 
 

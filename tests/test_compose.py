@@ -593,3 +593,51 @@ def test_a_file_name_is_made_safe_without_colliding(tmp_path):
     assert _safe("JAPANESEROOM BAKED") == "JAPANESEROOM BAKED"
     assert _safe("a/b:c") == "a_b_c"
     assert _safe("...") == "thing"
+
+
+def test_a_figure_welded_to_its_room_is_reported(tmp_path):
+    """teacher's `SchoolCorridor` is 394 entities holding BOTH the corridor and the teacher, so
+    converting it as one thing means she is not placeable at all — no clips, no rig, no figure.
+
+    susan is the same shape and was found by hand, weeks apart. The convention cannot decide this, but
+    it can SEE it, and one line of output is the difference between a person finding it and a figure
+    quietly disappearing at the next import.
+    """
+    from conjure.playcanvas import thing_notes
+    room = _glb([(f"wall{i}", [6]) for i in range(4)])
+    figure = _glb([("Body", [30])], bones=BONES, skinned=[0])
+    tree = ("SchoolCorridor", {}, [
+        ("EnvironmentVR", {}, [(f"wall{i}", _render(10, i, [30]), []) for i in range(4)]),
+        ("MainModelTeacher", {}, [("Body", _render(11, 0, [30]), [])]),
+    ])
+    root = _build(tmp_path,
+                  containers=[(10, "room.glb", "files/room.glb"), (11, "teacher.glb", "files/teacher.glb")],
+                  renders=[(10000 + i, f"wall{i}", 10, i) for i in range(4)] + [(11000, "Body", 11, 0)],
+                  glbs=[("files/room.glb", room), ("files/teacher.glb", figure)], scene_tree=tree)
+    build = read_build(root)
+    bare = {"exclude": [], "captures": {}}
+    assert any("welded to its environment" in n for n in thing_notes(build, rules=bare))
+    # Split, and the note goes away — the report is about the CHOICE, not about the geometry.
+    split = {"exclude": [], "captures": {"cap": {"scene.json": {"MainModelTeacher": "Teacher",
+                                                                "EnvironmentVR": "corridor"}}}}
+    notes = thing_notes(build, capture="cap", rules=split)
+    assert not any("welded" in n for n in notes), notes
+    assert sorted(t.name for t in things(build, capture="cap", rules=split)) == ["Teacher", "corridor"]
+
+
+def test_the_capture_name_is_not_in_the_bytes(tmp_path):
+    """A composed file is CONTENT; which capture it was pulled from is catalog metadata.
+
+    Putting it in `extras` defeated the content addressing the whole catalog rests on: the props build
+    is the same PlayCanvas release in fifteen captures, so `Banana` should be one row tagged with all
+    fifteen — and instead it was fifteen rows with fifteen ids, fifteen copies of the bytes, and a
+    director with fifteen bananas to choose between. Everything else in the mark is stable across
+    captures (the scene file id, the container asset ids), which is why only this one had to go.
+    """
+    build, thing = _figure_build(tmp_path)
+    first, _n = compose_thing(build, thing)
+    second, _n = compose_thing(build, thing)
+    assert first == second, "composing is deterministic"
+    mark = _parse(first)["extras"]["conjure"]
+    assert "capture" not in mark
+    assert set(mark) == {"thing", "scene", "pieces", "hidden", "rebound", "containers", "shown"}

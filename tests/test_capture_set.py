@@ -147,3 +147,80 @@ def test_a_tombstone_is_never_a_candidate_a_second_time(tmp_path):
         lib.upsert(i, kind="model", label="jane", scope=S, source=f"cache://{i}", tags="jane")
     lib.supersede("old.glb", "new.glb")
     assert [r["id"] for r in mod["same_thing"](lib, S, "jane", "model", "jane")] == ["new.glb"]
+
+
+def _script():
+    import runpy
+    return runpy.run_path("scripts/import_capture.py", run_name="not_main")
+
+
+def test_a_composed_files_provenance_names_the_thing_not_the_file():
+    """A composed GLB is named after the THING it holds, so there is no container stem to match on.
+
+    It carries what it drew from in `extras.conjure` instead, which is the fact rather than a
+    coincidence of naming — `underwear.glb` appears in eight captures under eight different ids, and
+    `office-babe` merges three files at once. Keying `shipped_with` on the file name silently lost every
+    authored set the moment the output stopped being one-file-per-asset.
+    """
+    from conjure.figures import write_glb
+    provenance = _script()["provenance"]
+    glb = write_glb({"asset": {"version": "2.0"},
+                     "extras": {"conjure": {"thing": "office-babe", "scene": "2249318.json",
+                                            "containers": {"10": 8, "11": 1},
+                                            "hidden": ["underwear"]}}})
+    mark = provenance(glb)
+    assert mark["thing"] == "office-babe"
+    assert sorted(mark["containers"]) == ["10", "11"]
+    assert mark["hidden"] == ["underwear"]
+    assert provenance(write_glb({"asset": {"version": "2.0"}})) == {}, "an ordinary GLB claims nothing"
+    assert provenance(b"not a glb") == {}
+
+
+def test_switching_from_per_container_to_per_thing_retires_the_leftovers(tmp_path):
+    """The switch is not a re-import of the same rows: the LABELS change, so ordinary `(kind, label)`
+    supersession catches only the few that happen to share a name.
+
+    Everything else would sit in the catalog forever, and the leftovers are the ones that do harm —
+    asked to "switch to a different bride" the director offered `model_britney_bride`, a bare body with
+    no clothes or hair, because nothing distinguished a figure from a piece of one.
+    """
+    from conjure.library import AssetLibrary
+    same_thing = _script()["same_thing"]
+    S = "daniel/agents/builder"
+    lib = AssetLibrary(tmp_path / "library.db")
+    for label in ("office-babe", "manager_fixing", "underwear", "TOOLS LIBRARYblend5"):
+        lib.upsert(f"old-{label}.glb", kind="model", label=label, scope=S,
+                   source="cache://x", tags="manager")
+    lib.upsert("new-babe.glb", kind="model", label="office-babe", scope=S, source="cache://y",
+              tags="manager")
+    lib.upsert("set:manager", kind="set", label="manager", scope=S, source="capture://manager",
+               tags="manager")
+
+    # `office-babe` shares its name with its container, so the ordinary rule already has it.
+    assert sorted(r["id"] for r in same_thing(lib, S, "manager", "model", "office-babe")) \
+        == ["new-babe.glb", "old-office-babe.glb"]
+    # The others do not, and are recognised by their label being a container stem of this capture.
+    assert [r["id"] for r in same_thing(lib, S, "manager", "model", "manager_fixing")] \
+        == ["old-manager_fixing.glb"]
+    lib.supersede("old-manager_fixing.glb", "new-babe.glb")
+    assert same_thing(lib, S, "manager", "model", "manager_fixing") == [], "a tombstone is not a candidate"
+    # One file that became FIFTEEN things points at the SET, not at an arbitrary one of them.
+    lib.supersede("old-TOOLS LIBRARYblend5.glb", "set:manager")
+    assert (lib.get("old-TOOLS LIBRARYblend5.glb") or {}).get("superseded_by") == "set:manager"
+
+
+def test_container_files_keys_a_container_both_ways(tmp_path):
+    """Id -> `(stem, build)`: identity for the composed path, the stem for the older output and for
+    recognising the rows a previous per-container import labelled."""
+    import json
+    container_files = _script()["container_files"]
+    from conjure.figures import write_glb
+    root = tmp_path / "cap" / "build"
+    (root / "files").mkdir(parents=True)
+    (root / "files" / "office-babe.glb").write_bytes(write_glb({"asset": {"version": "2.0"}}))
+    (root / "config.json").write_text(json.dumps({"assets": {
+        "77": {"id": "77", "type": "container", "name": "office-babe.glb",
+               "file": {"filename": "office-babe.glb", "url": "files/office-babe.glb"}},
+        "78": {"id": "78", "type": "material", "name": "skin", "data": {}}}, "scenes": []}))
+    found = container_files(str(tmp_path / "cap"))
+    assert found == {77: ("office-babe", str(root))}, "materials are not containers"

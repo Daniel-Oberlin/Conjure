@@ -388,11 +388,45 @@ rebuilds in about four seconds and she lands at 6.8 MB.
 kinds are decided by content rather than by extension: a `.glb` holding animation channels and no mesh
 is an `animation`, not a `model` (see [`specs/library.md`](./library.md) §2a).
 
-**Containers are keyed by FILE name, not registry name.** They disagree — Susan's registry calls a
-container `aula_Aliceglb` while the file is `Alice.glb` — and keying on the registry name silently
-produced an empty authored set for a whole capture. The importer prints a warning when a container
-cannot be matched to a file; that warning was printed and read past once, which is why it is now
-counted in the summary line rather than only logged.
+**One asset per THING, and the default input is `temp/things/<name>`.** `--models` points it elsewhere
+(`--rebuilt` still works, for the older one-per-container output). What changes is not the count but the
+unit: `TOOLS LIBRARYblend5` stops being one cutlery drawer and becomes fifteen separately placeable
+tools with their own names, and `office-babe` arrives whole instead of as a body, a fixing pass and a
+pair of underwear that nothing distinguished from a figure.
+
+**A composed file is identified by its PROVENANCE, not by its name.** It is named after the thing, so
+there is no container stem to match — it carries the container ids it drew from in `extras.conjure`
+instead, which is the fact rather than a coincidence of naming. Keying `shipped_with` on the file name
+silently lost every authored set the moment the output stopped being one file per asset. (The stem is
+still read for the older path, and for recognising the rows a previous per-container import labelled.)
+Containers are keyed by FILE name there rather than registry name because those disagree — Susan's
+registry calls a container `aula_Aliceglb` while the file is `Alice.glb`.
+
+**The capture name is deliberately NOT in the composed bytes.** A composed file is content and the
+capture it came from is catalog metadata; putting it in `extras` defeated the content addressing the
+whole catalog rests on. The props build is the same PlayCanvas release in 15 captures, so `Banana` is
+one row tagged with all fifteen — and with the capture in the bytes it was fifteen rows with fifteen
+ids and fifteen copies of the geometry. 311 live models against 98.
+
+**`parts_hidden` is stated by the source rather than classified.** The scene says which of a figure's
+parts it has switched off, and the composer records those node names — a different fact from `parts`
+(which garment a mesh *is*) and the one the runtime `figure-parts` component actually consumes. Until
+now the only answer came from reading mesh names.
+
+**Switching the unit RETIRES the old rows, and that is a separate operation from re-importing.** The
+labels change, so ordinary `(kind, label)` supersession catches only the few that happen to share a name
+(`office-babe` does; her thing is named after her file). `_retire_containers` recognises the rest by
+their label being a container file stem of the capture, and retires each into the thing that now holds
+its geometry: 43 rows over the twenty captures. `manager_fixing`, `Oktoberfest-milf-fixing`,
+`model_britney_bride`, eight `underwear`s and `WOODout` all go — the half-models that were selectable
+and shouldn't have been, which is why asked for "a different bride" the director offered a bare body.
+Where one container became several things the tombstone points at the SET, because that is what
+replaced it; pointing at one of fifteen would be picking arbitrarily between equals.
+
+**A container no thing draws is left alone and reported.** `computer_desk`, `magnet`, `cool_button`,
+the Quest controller model and the VR hands are bound only inside the app's own excluded machinery, so
+the old path was cataloguing a toolbar as placeable props. Whether any is worth rescuing is a
+`captures/things.json` decision and not the importer's to take.
 
 **Relations are the point of importing a capture as a SET** rather than as loose files
 (`conjure/capture_set.py`): `shipped_with` records which clips a figure was given, `voiced_by` links a

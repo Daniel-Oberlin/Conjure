@@ -159,6 +159,15 @@ python scripts/playcanvas_rebuild.py <build-dir> --out temp/rebuilt --adopt
 conjure-import temp/rebuilt/jane_export.glb --label "Jane"
 ```
 
+For a whole capture, compose it into THINGS and import that instead — one asset per thing the scene
+places rather than one per file (see below):
+
+```bash
+python scripts/playcanvas_rebuild.py temp/vrh/jane --out temp/things/jane --compose
+python scripts/import_capture.py temp/vrh/jane                      # dry run; reads temp/things/jane
+python scripts/import_capture.py temp/vrh/jane --commit
+```
+
 If `--list` reports **"NO config.json"**, the capture is geometry only — the layout is fine, the
 registry is what is missing, and it prints the URL to fetch plus a reminder that `config.json` names the
 scene file and the textures you also need.

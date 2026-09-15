@@ -586,7 +586,7 @@ def joints_agree(src: _Src, rest: dict[str, list[float]]) -> list[str]:
                   if name in rest and not _close(m, rest[name], 1e-4))
 
 
-def compose_thing(build: Build, thing: Thing, *, capture: str = "", shown: bool = False,
+def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
                   max_texture: int = 1024, quality: int = 90) -> tuple[Optional[bytes], list[str]]:
     """`(glb, notes)` for one thing — or `(None, notes)` if nothing of it could be read.
 
@@ -746,7 +746,12 @@ def compose_thing(build: Build, thing: Thing, *, capture: str = "", shown: bool 
         "accessors": work.accessors,
         "bufferViews": work.views,
         "materials": work.materials,
-        "extras": {MARK: {"thing": thing.name, "scene": thing.scene, "capture": capture,
+        # NO capture name in here. A composed file is CONTENT and the capture it was pulled from is
+        # catalog metadata, and putting it in the bytes defeated the content addressing: the props build
+        # is the same release in 15 captures, so `Banana` should be one row tagged with all fifteen and
+        # instead it was fifteen rows with fifteen ids. Everything else here is stable across captures —
+        # the scene file id, the container asset ids — which is why only this one had to go.
+        "extras": {MARK: {"thing": thing.name, "scene": thing.scene,
                           "pieces": len(thing.pieces),
                           # A viewing copy, missing everything the scene does not draw. Recorded so the
                           # verifier judges it by what it claims to be rather than failing every
@@ -808,7 +813,7 @@ def compose_build(root: str, out_dir: str, *, only: str = "", shown: bool = Fals
             continue
         say(f"\n{os.path.relpath(build_root, root) or '.'} — {len(found)} thing(s)")
         for thing in found:
-            data, notes = compose_thing(build, thing, capture=capture, shown=shown,
+            data, notes = compose_thing(build, thing, shown=shown,
                                         max_texture=max_texture, quality=quality)
             if data is None:
                 say(f"    {thing.name[:30]:32} SKIPPED")
