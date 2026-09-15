@@ -1159,7 +1159,7 @@ def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dic
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
                      bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
                      humanoid=None, humanoid_axes=None, humanoid_follows=None,
-                     parts=None) -> dict:
+                     parts=None, parts_hidden=None) -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
@@ -1203,6 +1203,17 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
             # same motion on a VRM and on a re-parented Daz rig. Measured from the bind pose at import
             # (figures.anatomical_axes) — a property of the file, so it travels with the entity too.
             meta["humanoid_axes"] = dict(humanoid_axes)
+    components: dict = {"gltf-model": f"/assets/{model_id}"}
+    if parts_hidden:
+        # WHAT THE SOURCE HAD SWITCHED OFF, applied from the first frame. A composed capture carries its
+        # own wardrobe — the scene states which pieces are off, and the asset keeps them so they can be
+        # switched back on (docs/specs/captures.md § 3) — so placing one without this draws every variant
+        # at once: Alice arrived with two heads of hair superimposed and a spare pair of underwear.
+        #
+        # A JSON STRING because A-Frame schema types are strings, and the same field `dress_figure`
+        # writes, so the two compose: this is the opening state and that edits it.
+        components["figure-parts"] = {"hidden": json.dumps(sorted(set(parts_hidden)))}
+
     # Step 7c: author + persist the plane-relative anchor now (server-side, once) so the client can SOLVE it
     # rather than re-author from the F_ref pose against its docSurfaces copy every capture. Client ignores it
     # until step 7b/c flips it to consume it; None (too few seed walls) leaves the entity on its F_ref pose.
@@ -1213,8 +1224,7 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
                         f"floor={'y' if anchor['floor'] else 'n'} walls={len(anchor['walls'])} "
                         f"[{', '.join(w['id'].split('_')[-1] for w in anchor['walls'])}]")
     return {"op": "add", "entity": {
-        "id": eid, "transform": transform,
-        "components": {"gltf-model": f"/assets/{model_id}"}, "meta": meta,
+        "id": eid, "transform": transform, "components": components, "meta": meta,
     }}
 
 
@@ -3727,7 +3737,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           placement=req.placement, rigged=bool(attrs.get("rigged")),
                           humanoid=attrs.get("humanoid"), humanoid_axes=attrs.get("humanoid_axes"),
                           humanoid_follows=attrs.get("humanoid_follows"),
-                          parts=attrs.get("parts"))
+                          parts=attrs.get("parts"), parts_hidden=attrs.get("parts_hidden"))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},

@@ -535,6 +535,21 @@ worth a look next to her long-standing eye trouble.
    (`MainModelToiletAgnes`, `MainModelHotelBlack`), which `things.json` can rename the way susan's
    `ModelParent` became `Alice` — worth doing before anyone has to read a catalog listing.
 
+**Open, from device testing 2026-09-15:**
+
+- **Bride's left lower eyelid does not show while she animates** — and the obvious fix made her much
+  worse. Full record, including what was tried and why it failed, in
+  [`investigations/bride-eyelid.md`](../investigations/bride-eyelid.md). Do not re-propose per-mesh IBM
+  correction for a welded donor without reading it.
+- **A placed composed figure drew its whole wardrobe at once** — two heads of hair and a spare pair of
+  underwear on Alice. The import recorded `parts_hidden` and NOTHING read it; placement now sets the
+  `figure-parts` component from it. Fixed.
+- **Alice reads as taller and larger than expected.** Measured: her file is 1.73 m, within
+  `HUMAN_HEIGHT_M`, so she is placed at native scale and is the SHORTEST of the three figures with a
+  device sighting (Teacher 1.81, Jane 1.82). The per-container Alice is the same 1.73 m, so nothing
+  changed at the switchover. Unresolved — needs a comparison against something of known size in the
+  room rather than another measurement of the file.
+
 **What remains is 4's inverse. The agreed approach for 4, 2026-09-14, was:**
 
 **Plan A — compose alongside, do not replace.** `--things` writes one GLB per thing into its own

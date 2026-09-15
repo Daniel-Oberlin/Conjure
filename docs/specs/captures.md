@@ -413,6 +413,13 @@ parts it has switched off, and the composer records those node names — a diffe
 (which garment a mesh *is*) and the one the runtime `figure-parts` component actually consumes. Until
 now the only answer came from reading mesh names.
 
+**And PLACEMENT applies it, which is a separate step that was missing.** Recording the wardrobe is not
+showing the right half of it: `_model_entity_op` now sets the `figure-parts` component from
+`parts_hidden`, so a composed figure is dressed correctly from the first frame. Without that a placed
+Alice drew every variant at once — two heads of hair superimposed and a spare pair of underwear — which
+is not a defect in the asset but the asset being complete with nobody choosing. It is the same field
+`dress_figure` writes, so the two compose: this is the opening state and that edits it.
+
 **Switching the unit RETIRES the old rows, and that is a separate operation from re-importing.** The
 labels change, so ordinary `(kind, label)` supersession catches only the few that happen to share a name
 (`office-babe` does; her thing is named after her file). `_retire_containers` recognises the rest by

@@ -552,6 +552,32 @@ def test_a_rigged_model_keeps_its_authored_life_size(srv, client, tmp_path):
     assert ent["meta"]["rigged"] is True
 
 
+def test_a_composed_capture_arrives_with_its_wardrobe_already_switched_off(srv, client, tmp_path):
+    """A composed capture carries the parts the SOURCE had switched off, so they can be switched back on.
+
+    Placing one without applying that draws every variant at once: Alice arrived in the headset with two
+    heads of hair superimposed and a spare pair of underwear, which is not a defect in the asset — it is
+    the asset being complete and nobody telling the client which half to show. The import already
+    recorded `parts_hidden`; nothing read it.
+    """
+    aid = _catalog_figure(srv, client, tmp_path)
+    srv.library.upsert(aid, attributes={"parts_hidden": ["Side_Swept", "Underwear_Bottoms"]})
+    r = client.post("/place_cached_asset", json={"id": aid}).json()
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert json.loads(ent["components"]["figure-parts"]["hidden"]) == \
+        ["Side_Swept", "Underwear_Bottoms"], "hidden from the first frame, not after a dress call"
+    assert ent["components"]["gltf-model"].endswith(aid), "and the model is still there"
+
+
+def test_a_figure_with_nothing_switched_off_gets_no_parts_component(srv, client, tmp_path):
+    """Most figures have no wardrobe state to carry, and an empty component is noise the client would
+    still have to parse — `dress_figure` creates it when there is something to say."""
+    aid = _catalog_figure(srv, client, tmp_path)
+    r = client.post("/place_cached_asset", json={"id": aid}).json()
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert "figure-parts" not in ent["components"]
+
+
 def test_an_explicit_size_on_a_figure_means_HEIGHT_not_largest_extent(srv, client, tmp_path):
     """A T-posed figure's arm span rivals its height and a seated one's exceeds it, so max(size) sizes
     by the wrong axis. Asking for 3.5 m means 3.5 m TALL."""
