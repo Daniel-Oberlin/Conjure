@@ -1,5 +1,5 @@
 {
-  "revision": 2,
+  "revision": 3,
   "_comment": [
     "Which entity in a captured scene is a THING — something worth having as one asset.",
     "",
@@ -52,9 +52,111 @@
     "`Teacher_v1` into a corridor and she stops being placeable at all, clips and rig and everything.",
     "",
     "A LIST names the things; a MAP also renames them. susan's figure entity is called `ModelParent`, which is the app's internal name and no use as an asset label.",
-    "Naming a scene here is also how you drop one entirely: give it an empty list. nancy looks like susan's sibling and is NOT — her scene is 1947006.json with 46 clean skin-tone variants as Root children, and needs nothing. Guessed wrong once; check before adding an entry."
+    "Naming a scene here is also how you drop one entirely: give it an empty list. nancy looks like susan's sibling and is NOT — her scene is 1947006.json with 46 clean skin-tone variants as Root children, and needs nothing. Guessed wrong once; check before adding an entry.",
+    "",
+    "RENAMES, added at revision 3, are the other half of what this file is for. The site's own entity",
+    "names are its internal ones and eight captures label their figure `MainModelToiletAgnes`,",
+    "`MainModelHotelBlack` or `MainModel` — no use to a person or to a director reading a catalog. A",
+    "map renames them to the handle the capture is already known by (`Nancy`, `Ebony`, `Blondie`).",
+    "",
+    "Five ENVIRONMENTS are renamed for a sharper reason: they are named after the character who stands",
+    "in them. `Greek Goddess` is a temple, `Steward Pussy` a private jet, `CheatingBride` a church,",
+    "`Fastfood Blondie` an office, `OktoberfestMilf` a tavern — each sitting in the catalog beside the",
+    "figure of nearly the same name, which is how a director ends up placing a room when it was asked",
+    "for a person. `JAPANESEROOM BAKED`, `MOONLANDBASElastVER` and `TENTarabic2 good` are ugly and",
+    "unambiguous, so they are left alone.",
+    "",
+    "An override REPLACES the proposal for its scene, so every entry lists every thing that composes",
+    "from that scene, renamed or not — which is why `office-babe` and `Oktoberfest-milf` appear",
+    "unchanged beside their rooms. Things whose container never downloaded are deliberately absent:",
+    "akari's scene offers 13 skin-tone variants and 12 of them are SKIPPED for want of a file."
   ],
   "captures": {
+    "akari": {
+      "2192829.json": {
+        "MainModelToiletJapaneseVER2": "Akari"
+      }
+    },
+    "arabic": {
+      "2192829.json": {
+        "MainModelToiletArabVER2": "Arabic"
+      }
+    },
+    "bianca": {
+      "2165219.json": {
+        "model_bianca_minia_wip": "Bianca"
+      }
+    },
+    "blondie": {
+      "2287676.json": {
+        "MainModel": "Blondie"
+      }
+    },
+    "bride": {
+      "2269415.json": {
+        "CheatingBride": "church",
+        "bride_ready": "Bride"
+      }
+    },
+    "ebony": {
+      "1947006.json": {
+        "MainModelHotelBlack": "Ebony"
+      }
+    },
+    "ebony2": {
+      "1947006.json": {
+        "MainModelToiletBlackish": "Ebony 2"
+      }
+    },
+    "geeky": {
+      "2192829.json": {
+        "MainModelToiletAlabasterVER2": "Geeky"
+      }
+    },
+    "goddess": {
+      "2290730.json": {
+        "Greek Goddess": "greek-temple",
+        "GODDESS-final": "Goddess"
+      }
+    },
+    "granny": {
+      "2215636.json": {
+        "JuicyGrannyBoobs": "Granny"
+      }
+    },
+    "kawaii": {
+      "2277096.json": {
+        "Kawaii-READY": "Kawaii"
+      }
+    },
+    "manager": {
+      "2249318.json": {
+        "Fastfood Blondie": "office",
+        "office-babe": "office-babe"
+      }
+    },
+    "moon-girl": {
+      "2190095.json": {
+        "MainModelHotelAlbinoVER2": "Moon Girl"
+      }
+    },
+    "nancy": {
+      "1947006.json": {
+        "MainModelToiletAgnes": "Nancy"
+      }
+    },
+    "oktoberfest": {
+      "2243419.json": {
+        "OktoberfestMilf": "tavern",
+        "Oktoberfest-milf": "Oktoberfest-milf"
+      }
+    },
+    "stewardess": {
+      "2231813.json": {
+        "Steward Pussy": "private-jet",
+        "model_stewardspussy": "Stewardess"
+      }
+    },
     "susan": {
       "1980290.json": {
         "ModelParent": "Alice",
