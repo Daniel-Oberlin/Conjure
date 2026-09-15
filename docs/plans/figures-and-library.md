@@ -477,6 +477,35 @@ worth a look next to her long-standing eye trouble.
    / `scale` is not enough to place anything: 538 of 948 pieces have a rotation in their chain, so
    `Thing.tree` and `Piece.chain` carry the subtree and the composer rebuilds it.
 
+   **The viewer pass ran 2026-09-14 and found four things, which is what it was for.** Daniel opened
+   the six in a web glb viewer: Banana, office-babe, Oktoberfest (beer in hand) and the Japanese room
+   were right first time. The rest:
+
+   - **bride's irises washed out** — `Reflections-eyes` is a refractive lens with no maps, and a flat
+     48% white is not an approximation of one. Made invisible; four more materials in the corpus are
+     the same shape and all four are eyes. (Her veil is real and does lighten her — that one is the
+     site, not us.)
+   - **Alice's pale locks** — `Side_Swept` and `Side_Swept2` draw one mesh at one transform with two
+     material sets, a colour switch the site flips with a script the capture lacks. Same mesh in the
+     same PLACE is a variant; in two places it is an instance. Deciding which wins needed
+     `how_dressed` sharpened so a base colour outranks a slot count, which also fixed the chrome-hand
+     bug in ebony that `dressed()` was written for one capture earlier.
+   - **Alice's eyes lost their blood vessels** — and the tell was that `temp/rebuilt/` looked BETTER
+     than the composed thing. Her scene claim binds `Eye_R, Cornea_R, Eye_R, Cornea_R` where the
+     container's template binds four distinct materials, and reaches for one of three same-named
+     `Cornea_R` assets that has no maps. `prefer="scene"` was letting that win; now a claim that
+     REPEATS a material where another names two loses (`filled_in`), which is narrow enough to leave
+     ebony's VR-over-AR and barbie's alone. `things()` was also bypassing the resolution entirely.
+   - **the file looks wrong in a viewer even when it is right** — `hidden` lives in `extras`, so a
+     viewer draws the whole wardrobe at once. `--as-shown` writes a copy without it. Two of the four
+     findings above took an extra round trip because of this, which is the cost of not having it.
+
+   Also confirmed from the same pass: BOTTLEBEER, CAN and the other white props are a CAPTURE gap, not
+   a conversion one. 51 files of the shared props build were never downloaded by any of the 15 captures
+   that contain it, because browsing only fetches what the page draws and nobody took those tools out
+   of the drawer. Bride's `underwear.glb` is likewise three fetchable URLs, and cannot be borrowed from
+   another capture: eight captures ship that name and all eight are byte-different, one per rig.
+
 **What remains is 4's inverse. The agreed approach for 4, 2026-09-14, was:**
 
 **Plan A — compose alongside, do not replace.** `--things` writes one GLB per thing into its own
