@@ -1483,7 +1483,8 @@ def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 15          # 15: the side rule follows the figure's facing round a YAW, not just a 180
+FRAME_REV = 16          # 16: rig_sig is a DERIVED attribute, so refresh backfills and clears it
+                        # 15: the side rule follows the figure's facing round a YAW, not just a 180
                         # 14: extraction classifies a figure's PARTS (which mesh is clothing)
                         # 13: a side letter in the wrong case still matches
                         # 12: the side rule is read off the figure's FACING, not absolute +X

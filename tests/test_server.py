@@ -4624,6 +4624,59 @@ def test_a_map_that_cannot_be_repaired_is_cleared_rather_than_kept(srv, client, 
     assert r["ok"] is False and "humanoid" in r["error"]
 
 
+def _strip_attr(srv, asset_id: str, *keys: str) -> None:
+    """Remove attribute keys from a row directly, to stage a catalog written by an older build."""
+    row = srv.library.get(asset_id)
+    attrs = json.loads(row["attributes"] or "{}")
+    for k in keys:
+        attrs.pop(k, None)
+    attrs["frame_rev"] = 1
+    with srv.library._lock:
+        srv.library._db.execute("UPDATE assets SET attributes = ? WHERE id = ?",
+                                (json.dumps(attrs), asset_id))
+        srv.library._db.commit()
+
+
+def test_a_refresh_BACKFILLS_a_rig_signature_the_import_path_never_wrote(srv, client, tmp_path):
+    """`rig_sig` is what makes a figure and a clip comparable without either naming the other, and it
+    used to be written only by the import path. A model catalogued by any other route — or before the
+    signature existed — kept `None` forever, and `_clip_rows_for` gates the compatible-clip query on it,
+    so those figures could be offered no clip at all.
+
+    Nine dev-library figures were in exactly that state, including the three phase 5 is meant to be
+    tested on. Their signatures computed fine from the bytes; nothing ever put one in a row."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    sig = json.loads(srv.library.get(fig)["attributes"])["rig_sig"]
+    assert sig, "the import path writes it"
+
+    # A row that predates the signature: the map is there, the fingerprint is not. Written straight to
+    # the column, because `upsert` MERGES and skips None — which is the very reason a missing signature
+    # could never be repaired by any normal write, and is half of the bug.
+    _strip_attr(srv, fig, "rig_sig", "rig_sig_rev")
+    assert not (json.loads(srv.library.get(fig)["attributes"]).get("rig_sig") or "")
+
+    r = client.post("/library/refresh-models", json={}).json()
+    assert r["ok"]
+    assert json.loads(srv.library.get(fig)["attributes"])["rig_sig"] == sig
+
+
+def test_a_signature_extraction_can_no_longer_justify_is_CLEARED(srv, client, tmp_path):
+    """The other half, and the reason it is `""` rather than absent: the catalog MERGES attributes, so
+    leaving the key off keeps whatever was there. A figure whose map is withdrawn but whose signature
+    stands would be offered every clip on a rig she does not have."""
+    # A MODEL with no skeleton — a prop. Extraction finds no map, so it can justify no signature.
+    fig = _import_id(client, "prop.glb", _glb_bytes({
+        "asset": {"version": "2.0"}, "scenes": [{"nodes": [0]}], "scene": 0,
+        "nodes": [{"name": "Crate", "mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+        "accessors": [{"componentType": 5126, "count": 3, "type": "VEC3",
+                       "min": [0, 0, 0], "max": [1, 1, 1]}]}))
+    srv.library.upsert(fig, attributes={"rig_sig": "deadbeef01"})
+    assert json.loads(srv.library.get(fig)["attributes"])["rig_sig"] == "deadbeef01"
+    client.post("/library/refresh-models", json={"force": True})
+    assert (json.loads(srv.library.get(fig)["attributes"]).get("rig_sig") or "") == ""
+
+
 def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client, tmp_path):
     """A tripwire, and it has already caught one live miss.
 
@@ -4631,10 +4684,10 @@ def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client
     the library was already stamped current, refresh-models found nothing to do, and the fix reached
     nobody — while the code, the tests and the renders all said it worked. If you change either of these
     literals, change the other: a new derived field is exactly the case the stamp exists for."""
-    assert srv.FRAME_REV == 15
+    assert srv.FRAME_REV == 16
     assert srv._DERIVED_MODEL_ATTRS == (
         "bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
-        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified")
+        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified", "rig_sig", "rig_sig_rev")
 
 
 def test_a_bone_that_rides_its_limb_reaches_the_entity(srv, client, tmp_path):

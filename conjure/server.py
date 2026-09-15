@@ -1104,7 +1104,14 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
 #: is not worth keeping, since it was computed from the same file by older code.
 _DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
                         "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows",
-                        "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified")
+                        "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified",
+                        # `rig_sig` was written ONLY by the import path and never backfilled here, so a
+                        # model catalogued before the signature existed kept `None` forever — and
+                        # `_clip_rows_for` needs it to offer a clip at all. Nine dev-library figures
+                        # were in that state, including the three phase 5 exists to be tested on: their
+                        # signatures compute fine from the bytes (Grace and Trish c6e3c61972, Saka
+                        # 9b9a660f1d, Eve fe4965ce0f, Steve c773b69506) and simply never reached a row.
+                        "rig_sig", "rig_sig_rev")
 
 
 def _extracted_model_attrs(asset_id: str) -> dict:
@@ -1148,6 +1155,11 @@ def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dic
     write = {k: fresh.get(k) for k in _DERIVED_MODEL_ATTRS if fresh.get(k) is not None}
     for k in ("humanoid", "humanoid_axes", "humanoid_follows"):
         write[k] = fresh.get(k) or {}
+    # Same reason, one type down: `""` rather than absent, so a signature extraction can no longer
+    # justify is CLEARED rather than left standing. Tamaki is the case — no map, so no signature — and a
+    # stale one would offer her every clip on a rig she does not have. Every reader already treats the
+    # empty string as "no signature"; `_clip_rows_for` gates the compatible-clip query on it.
+    write["rig_sig"] = fresh.get("rig_sig") or ""
     write["frame_rev"] = FRAME_REV
     library.upsert(asset_id, attributes=write)
     if bool(attrs.get("rigged")) != bool(fresh.get("rigged")) or attrs.get("humanoid") != fresh.get("humanoid"):

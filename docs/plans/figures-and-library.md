@@ -792,6 +792,64 @@ between two rigs from one vendor has proved nothing. Trish, Saka and Eve are thr
 discovery layers and a VRM, and they are already in the catalog — so they are the cheapest honest test
 of whether the transform generalises.
 
+### What the measurement says, 2026-09-15 — and it is not what this phase assumed
+
+`scripts/retarget_probe.py` plays one of Jane's clips onto every rigged figure in the catalog and
+measures two things. Written before any correction, because a correction is only worth building if the
+number is large, and the same number is the only thing that can say whether one worked.
+
+**Two costs, and the first is not retargeting's to fix.** The clip drives 222 bones; the humanoid names
+22. The other **200 channels — skirt, breast and secondary chains — have no bone on any other rig to
+receive them**, whatever the method. That is a ceiling on tier 2 and it should be stated to a caller
+rather than discovered on device.
+
+**Bone ROTATION is the wrong thing to measure.** The first version compared each bone's world
+orientation, and by that measure Alice is 103° from Jane — which sounds fatal and is not, because most
+of it is ROLL about the bone's own length, which does not move the limb. What judges a retarget is
+where each limb POINTS, taken in the figure's own body frame so that proportions and heading do not
+count as error. Both numbers are below; only the second one means anything.
+
+| target | rig | binds by name | rest gap | naive dir | corrected dir |
+|---|---|---|---|---|---|
+| Jane (rest rolled 90°) — **control** | — | 222 | 90.0° | 47.9° | **0.0°** |
+| Jane | `85e41f9b8e` | 222 | 0.0° | 0.0° | 0.0° |
+| Akari | `85e41f9b8e` | 171 | 15.6° | **8.8°** | 9.5° |
+| office-babe | `8ef7eb494a` | 173 | 14.9° | 7.5° | **6.0°** |
+| Blondie | `790c5edf3b` | 0 | 90.2° | **9.7°** | 18.6° |
+| Alice | `156ac3838f` | 0 | 103.3° | **6.3°** | 16.5° |
+| Grace | `c6e3c61972` | 1 | 17.3° | 18.6° | **11.2°** |
+| Trish | `c6e3c61972` | 0 | 101.3° | **39.1°** | 53.1° |
+| Saka | `9b9a660f1d` | 0 | 138.2° | 88.3° | **15.2°** |
+| Eve Maccaro | `fe4965ce0f` | 160 | 28.1° | 38.5° | 38.6° |
+| Steve | `c773b69506` | 0 | 41.3° | **22.7°** | 39.5° |
+| Animated Woman | `cf605bb3ac` | 0 | 120.5° | **9.4°** | 22.9° |
+| Tamaki | — | — | — | refused, no map | refused |
+
+**The correction is CORRECT and it is not the answer.** The control settles the first half: roll every
+bone's rest by 90° while leaving the geometry identical, and the naive copy is wrong by 47.9° while the
+correction recovers **0.0°**. It does exactly what it claims. But across real rigs it wins five times
+and loses six, and on Alice and Blondie it is nearly three times worse than doing nothing.
+
+**Why, and this is the fork phase 5 actually turns on.** Two rigs can differ in two unrelated ways:
+
+  · **bone AXIS convention** — the same rest pose, different local frames. This is what the control
+    isolates, it is what Saka has (VRM spells its axes its own way), and the rest correction is exactly
+    right for it: 88.3° → 15.2°.
+  · **rest POSE** — one rig rests in an A-pose and another nearer a T-pose. Preserving each bone's
+    delta-from-rest then faithfully reproduces *the wrong pose*, because the thing being preserved is
+    measured from two different starting points. Alice is this case, and the correction makes her
+    worse.
+
+A single closed form cannot serve both, which is why the plan's one-line statement of the method —
+"map both skeletons through the canonical humanoid, rewrite each channel's target, then correct for the
+difference in bind pose" — is not implementable as written. **The next question is not how to correct
+but how to tell the two differences apart**, and the probe already has the material: the rest gap and
+the naive direction error disagree exactly where the difference is pose rather than axis.
+
+**Do not ship the correction inside a rig signature.** Naive copy on Akari is 8.8° and that is the path
+that already runs on device and looks right, so 8.8° is roughly what "correct" costs in this metric.
+The correction there is 9.5° — no better, and it would rewrite 16 working figures.
+
 **Done when:** a `85e41f9b8e` clip plays recognisably on Susan, on Trish and on Saka; a measured
 comparison says how far each drifts from the same clip on its own rig; and a rig that should fail
 (Tamaki, no map) fails cleanly rather than producing a mangled pose.
