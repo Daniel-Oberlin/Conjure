@@ -2,7 +2,7 @@
 
 **Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phase 2 PARTIAL (works; open
 defects listed below) · phase 3 DONE (untested on device) · phase 2b steps 0–5 DONE and imported ·
-the capture side settled 2026-09-15 (see NEXT below) · phases 4–5 open
+the capture side settled and the corpus recomposed + re-imported 2026-09-15 (see NEXT below) · phases 4–5 open
 **Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13 · **Phase 3 landed:** 2026-09-13 · **Phase 2 landed partial:** 2026-09-13
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
@@ -550,30 +550,49 @@ worth a look next to her long-standing eye trouble.
   changed at the switchover. Unresolved — needs a comparison against something of known size in the
   room rather than another measurement of the file.
 
-### NEXT, agreed 2026-09-15 — do these in order
+### NEXT, agreed 2026-09-15 — steps 1 and 2 DONE, 3 remains
 
-The capture side is settled; what remains is mechanical. Written down because a compaction lands here.
+1. ~~**Recompose the whole corpus WITH the Basis decode, and re-import once.**~~ **Done.** 20 captures
+   recomposed (258 things) and re-imported. What it actually found is worth keeping, because most of
+   the stated premise was wrong:
 
-1. **Recompose the whole corpus WITH the Basis decode, and re-import once.** Every compose run so far
-   used `--no-decode` or hit the bug where `compose_build` never decoded at all (fixed, `1a56e53`), so
-   the composed things — and therefore the catalog — are undertextured wherever a capture holds only
-   `.basis`. That is 21 textures now: moon-girl 17, susan 4. The same pass picks up the 216 new
-   `voiced_by` edges and the authored `speed`, so it is one loop:
+   - **The decode premise was stale.** Every composed thing came out BYTE-IDENTICAL to the previous
+     run — the decode had already been applied by whatever ran last, so the corpus was not
+     undertextured. Confirmed rather than assumed: with the decoded PNGs stashed away, `Sausage` composes
+     with 0 of 1 materials mapped and with them 1 of 1, so the pre-pass does carry the textures and had
+     simply already run. Every figure now reads MAPPED in `glb_check.mjs`; nancy, the one the bug was
+     found on, is 4 of 6 with the remaining two authored as flat colour.
+   - **Compose into a CLEAN directory.** The composer refuses to overwrite (a thing name repeats across
+     scenes, and a silent loss is worse), so composing over a previous run writes every thing a second
+     time as `Name-2.glb` beside its stale twin, and the importer would then see both. `rm -rf` the
+     output first.
+   - **moon-girl's re-download had dropped a whole BUILD** — the moon-base release, 62 assets, and with
+     it `MOONLANDBASElastVER` and `MOONLANDBASEventsmove`, two things that silently stopped composing.
+     `capture_audit --against` could not see it, because builds are matched by asset-id set and a build
+     that is simply absent has no fingerprint to compare; fixed (`af80d48`), and it now says `BUILD GONE`.
+     Restored by copying that one directory across, which beats either copy: 340 of 718 present against
+     the backup's 328, since the re-download had also GAINED 12 files elsewhere. Those two things are
+     the only ones in the corpus whose bytes changed.
+   - **Stewardess had no rig signature at all** and was only working on stale `shipped_with` edges from
+     an import predating composed things — a clean import would not have recreated them. Her thing is
+     yawed 90°, and the side rule could only tell +z from -z (`b8b6d4a`). She now reads `85e41f9b8e`.
 
-   ```
-   for cap in $(ls temp/vrh); do playcanvas_rebuild.py temp/vrh/$cap --out temp/things/$cap --compose; done
-   for cap in $(ls temp/vrh); do import_capture.py temp/vrh/$cap --commit; done
-   ```
+   Catalog after: 98 models, 524 animations, 279 audio, 20 sets, **`voiced_by` 252 → 468** (+216, exactly
+   the stated edges), `part_of` 1594 → 1600, `shipped_with` 707, no relation pointing at a dead asset,
+   and **21 of 21 figures carry a rig signature** where it was 20.
 
-   Skip `arabic.partial` if it is still there. Verify after: `glb_check.mjs` on the figures, and every
-   figure should show its materials MAPPED rather than merely counted.
+   `FRAME_REV` went 14 → 15 for the side rule, so catalogued maps re-derive on first placement. Run
+   `conjure-ctl refresh-models` to do the whole library at once instead.
 
-2. **Nothing consumes `attributes.speed` yet.** `positions.py` records it (0.5, 0.6, 1.2 are authored,
-   so every clip has been playing wrong) and `/figure/clip` → `figure-clip` ignores it. Small, and it is
-   the defect Daniel reported as "the playback speed seemed wrong for susan/Alice".
+2. ~~**Nothing consumes `attributes.speed`.**~~ **Done** (`bf2733f`). The source plays every clip through
+   `assignAnimation(name, resource, "Base", animSpeed, true)` with the rate straight out of the position
+   config, so the rate belongs to the clip; `FigureClipRequest.speed` is `None` rather than `1.0` by
+   default, through `ctl` and `play_clip` as well, because a well-meant 1.0 would override the author.
+   The voice is deliberately not rate-shifted: the source plays it on its own slot with `loop`/`overlap`
+   and never seeks or re-rates it.
 
-3. **Push.** Both repos, ~15 commits in Conjure and 3 in `browser-extension-glb-download` (0.19.0
-   popup/job ownership, 0.20.0 declared audio, 0.20.1 the 401 retry).
+3. **Push.** Both repos — Conjure, and `browser-extension-glb-download` (0.19.0 popup/job ownership,
+   0.20.0 declared audio, 0.20.1 the 401 retry).
 
 **Not next, and recorded elsewhere:** blink and the layered idles (`positions.Layer` holds the data,
 the runtime is unbuilt — `specs/captures.md` § 3 *Positions*), bride's eyelid
@@ -585,7 +604,8 @@ renderer ([`backlogs/captures.md`](../backlogs/captures.md)).
 browsing session actually LOADED, because the server answers 401 to a re-fetch of anything the session
 is not entitled to (576 assets in one report — other characters' content in a shared build). A declared
 `variants` file satisfies an asset, so a `.basis` with no `.png` is not a gap. And a re-download
-REPLACES, so audit before discarding the previous copy: `scripts/capture_audit.py --against`.
+REPLACES, so audit before discarding the previous copy: `scripts/capture_audit.py --against`, which
+reports both the files a matched build lost and a build that has gone entirely.
 
 **What remains is 4's inverse. The agreed approach for 4, 2026-09-14, was:**
 

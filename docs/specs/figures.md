@@ -463,7 +463,7 @@ graph.**
 ## 7. `FRAME_REV` — a catalog row is a snapshot of what we understood
 
 A figure's map, frame and limits are **cached in the catalog**, and understanding keeps changing while
-rows do not. `figures.FRAME_REV` (**14** today) is bumped whenever anything that changes a derived
+rows do not. `figures.FRAME_REV` (**15** today) is bumped whenever anything that changes a derived
 result changes — inference, the axes, `validate()`, the convention table, which skin is chosen, the
 parts vocabulary.
 
