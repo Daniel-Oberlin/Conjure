@@ -305,6 +305,31 @@ the scene scales the thing, and Oktoberfest is 1.25, so all 175 of her bones rea
 was wrong. What has to agree is each bone's **own** transform relative to its parent, which is what
 `joints_agree` compares.
 
+**A donor bound against a different rest pose is REBOUND, not welded and hoped over.** A vertex lands
+at `jointGlobal · IBM · v`, so a mesh bound against a skeleton that stands elsewhere is displaced by the
+difference — and the difference is not small. bride's donor body is 165 bones out and her eyelid
+vertices landed **23–31 mm** from where her own container puts them, which on a 10 mm eyelid is clean
+off her face; reported from the headset as a missing left lower eyelid. The correction is exact:
+`IBM' = jointGlobalHere⁻¹ · jointGlobalThere · IBM`, because then `jointGlobalHere · IBM'` equals
+`jointGlobalThere · IBM` by construction. Measured after: all 222 joints within 8e-8, the lids at
+0.0000 mm.
+
+It is driven by the GLOBAL difference and not by `joints_agree`. That test answers *weldability* and is
+measured on local matrices so it survives the scene scaling the figure — but what displaces a vertex is
+where the bone ENDS UP, and a bone with an identical local transform under a parent that moved has
+moved. bride's `DEF-eye_iris.L` is exactly that, and a first version correcting only the
+locally-disagreeing bones left it 0.54 out.
+
+**It does not make two rigs one.** The pose is still applied in this skeleton's frame, so animation
+stays approximate where the rests differ — that is phase 5. What the rebind removes is the constant
+error, which was the whole of the visible defect. There is no node to move instead: one mesh is bound to
+many bones, and the other meshes bound to those same bones are correct where they are.
+
+`verify_thing` then checks the product rather than the bone positions — `{bone: jointGlobal · IBM}` for
+the composed skin against the same dictionary read from the source file. That is what a renderer
+multiplies, so the check cannot pass while the geometry is somewhere else. **Across the twenty captures
+the verifier now reports ONE problem**: bride's `underwear.glb`, which never downloaded.
+
 **Where every container disagrees with the scene in the same way, the scene is holding a POSE.** A scene
 entity's transform is usually the bind pose and is sometimes a saved pose, and only the containers can
 tell the two apart. Alice's `CC_Base_L_Eye` and `CC_Base_R_Eye` are 90° out in the scene and nowhere
@@ -322,9 +347,9 @@ one node per piece and nothing else drawing, per-primitive vertex counts equal t
 materials matching the registry BY NAME, the world transform equal to the entity chain with its
 rotations, an instanced mesh still two nodes on one mesh, a bone-parented piece still on its bone,
 optional pieces present and flagged, and every bone standing where the container was bound against it.
-Across all twenty captures it reports **two problems, both on bride**: `underwear.glb` never downloaded
-(a gap in the capture, and it says so), and `model_britney_bride.glb` is a different rig wearing the
-same 222 bone names — the half-body the director was picking as "another bride".
+Across all twenty captures it reports **one problem**: bride's `underwear.glb`, which never downloaded
+(a gap in the capture, and it says so). `model_britney_bride.glb` is still a different rig wearing the
+same 222 bone names, but it is now rebound rather than reported — see above.
 
 **A glb viewer draws every node it is given**, and `hidden` lives in `extras`, so the asset looks wrong
 in one: Alice's hidden pale hair and bride's switched-off underwear are both plainly visible and read as
@@ -422,6 +447,13 @@ its geometry: 43 rows over the twenty captures. `manager_fixing`, `Oktoberfest-m
 and shouldn't have been, which is why asked for "a different bride" the director offered a bare body.
 Where one container became several things the tombstone points at the SET, because that is what
 replaced it; pointing at one of fifteen would be picking arbitrarily between equals.
+
+**A change to the composed FORMAT means re-importing every capture, not the one you were looking at.**
+The asset id is `sha256(bytes)`, so adding a field to `extras` gives all 264 files new ids — and the
+shared props are one row tagged with fifteen captures, so re-importing bride alone retires the `Banana`
+every other capture points at and re-creates it tagged `bride`. Seen live: one capture's re-import
+retired 17 rows that 14 other captures still referenced. Re-import the lot; it takes a minute and the
+supersession is what makes it safe.
 
 **A container no thing draws is left alone and reported.** `computer_desk`, `magnet`, `cool_button`,
 the Quest controller model and the VR hands are bound only inside the app's own excluded machinery, so
