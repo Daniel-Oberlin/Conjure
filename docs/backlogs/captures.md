@@ -61,17 +61,25 @@ file-for-file. Worth a small tool; nothing in the pipeline does it today.
 bride 3, ebony and ebony2 one container each, and nancy 12 — and susan reached **zero** after being
 re-downloaded with everything selected (2026-09-15).
 
-### Why a re-download will not fix the props library, and what would
+### Why files were missing, corrected 2026-09-15
 
-The props textures are missing in **all fifteen copies, identically**: 43 textures, 2 cubemaps,
-3 containers, including every face of two cubemaps (`px/nx/py/ny/pz/nz`, `sky_*`). Every one of the
-fifteen props is `enabled: false` — a CATALOGUE the page never renders — so the page never requests
-their textures and a downloader that mirrors network traffic can never see them. Same shape as the
-audio: 276 of one shared scene's files absent because the page plays a handful of the banks it declares.
+**A first reading of this was wrong and is worth recording as such.** I concluded from "48 props files
+missing in all fifteen copies" that the grabber mirrors network traffic and therefore could never see a
+file the page does not request. It does not merely mirror traffic: it already reads `config.json` and
+offers **every** asset the registry declares, as URL-only entries fetched at save time. That is how
+susan's re-download reached seven `position_*_config.json` files the page never asked for.
 
-So the recommendation is a change of mechanism rather than more clicking: **drive the download from
-`config.json`'s asset registry instead of from observed network traffic.** The registry is already a
-complete, verifiable manifest — every downloadable asset carries exactly what a fetcher needs:
+So the gaps had two different causes, and only one was a bug:
+
+- **Not ticked.** The props textures, the 43-file cubemap faces and most of the missing textures were
+  *offered* and not selected — the older captures predate the everything-selected habit. A re-download
+  with everything ticked reaches them, which is the opposite of what I first said.
+- **Not offered.** `MANIFEST_SKIP` excluded `audio` from registry enumeration, so only the banks a page
+  happened to play were ever available. That is the 276 and 289 missing audio files, and the four
+  captures with no `voiced_by` edges at all. **Fixed in the grabber at 0.20.0**, along with `text`, and
+  the per-tab entry ceiling raised from 2000 to 4000 because one capture holds several builds.
+
+The registry is a complete manifest and worth knowing the shape of:
 
 ```json
 "file": { "filename": "Agnes2_alpha.png", "size": 9403854,
@@ -80,26 +88,15 @@ complete, verifiable manifest — every downloadable asset carries exactly what 
           "variants": { "basis": { "url": "…/Agnes2_alpha.basis", "size": 1323790, "hash": "…" } } }
 ```
 
-In susan's build, 109 of 221 assets declare a `file`; the other 112 are inline (materials, render
-assets, the state graphs) and need no request at all. So the whole job is: walk `assets`, fetch
-`file.url` and every `file.variants.*.url`, and write each to its `url` path so the relative references
-keep resolving.
+In susan's build 109 of 221 assets declare a `file`; the other 112 are inline (materials, render
+assets, the state graphs) and need no request. Two things still unused:
 
-Three things that shape makes possible, and each one is a bug this pipeline has already hit:
-
-- **`size` and `hash` verify a download** rather than trusting it. The extension's own history is a list
-  of failures that reported success — a zero-byte file counted as saved. MD5 against `hash` ends that
-  class.
-- **`variants` is why a browsed capture holds `.basis` and never the `.png`.** The engine asks for the
-  compressed variant, so traffic-mirroring saves only that: 91 of one build's textures. Fetching both
-  URLs makes `variant_only` and the Basis pre-pass unnecessary for new captures.
-- **A per-asset outcome is reportable**, which is the difference between "the server no longer has this"
-  (13 marketing lines, three `.mp4`s) and "nobody asked for it" (48 props files). Today both look the
-  same: a file that is not on disk.
-
-Suggestive but not conclusive: susan's fresh everything-selected capture is missing 14 real files from
-the shared app shell that ebony's older capture HAS. Either the selection is not registry-complete or
-the server stopped serving them; a per-asset 404 log would say which.
+- **`hash` would verify a download** rather than trusting its size. Not free: it is MD5, and
+  `crypto.subtle` does not implement MD5, so this needs a small hash routine in the extension.
+- **`variants` is why a browsed capture holds the `.basis` and never the `.png`.** `parse()` already
+  takes the uncompressed original's URL, so the `.png` is *offered*; whether it then 404s on the server
+  or was simply never ticked is untested. The next re-download answers it, since a failure is now
+  reported per asset with a reason.
 
 **Some of it is genuinely gone.** Of the 23 always-missing app-shell files, 13 are marketing lines
 ("Bang me in any sex position in the full version", `VRHolescom.mp3`) and three are `.mp4`s — content
