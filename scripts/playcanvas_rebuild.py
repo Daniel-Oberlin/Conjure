@@ -115,6 +115,10 @@ def main() -> int:
     ap.add_argument("--compose", action="store_true",
                     help="write one GLB per THING to --out, ALONGSIDE the per-container files rather "
                          "than instead of them, and check each one against the scene that described it")
+    ap.add_argument("--as-shown", action="store_true",
+                    help="with --compose, leave OUT what the scene does not draw — the wardrobe it has "
+                         "switched off and the losing half of a variant. A viewing copy, not the asset: "
+                         "a glb viewer draws every node it is given and ignores the hidden flag")
     ap.add_argument("--no-verify", action="store_true",
                     help="with --compose, write the files without checking them (you will not want this)")
     ap.add_argument("--only", default="", help="only containers whose name contains this")
@@ -142,7 +146,7 @@ def main() -> int:
         print("--out is required (or use --list to look first)")
         return 2
     if args.compose:
-        made, problems = compose_build(args.build, args.out, only=args.only,
+        made, problems = compose_build(args.build, args.out, only=args.only, shown=args.as_shown,
                                        max_texture=args.max_texture, quality=args.quality,
                                        verify=not args.no_verify, report=print)
         print(f"\n{len(made)} thing(s) written to {args.out}"

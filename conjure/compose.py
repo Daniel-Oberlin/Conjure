@@ -176,8 +176,11 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
                        f"geometry the thing did not ask for")
             continue
         by_piece.setdefault(int(tag["piece"]), []).append(i)
+    only_shown = bool(head.get("shown"))
     for idx, piece in enumerate(thing.pieces):
         if idx not in by_piece:
+            if only_shown and (not piece.enabled or piece.shadowed):
+                continue                        # a viewing copy leaves these out on purpose
             path = build.path(piece.container)
             why = ("" if path and os.path.exists(path) else
                    " — its container never downloaded, so this is a gap in the CAPTURE and not in "
@@ -265,7 +268,8 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
     for idx, piece in enumerate(thing.pieces):
         uses.setdefault((piece.container, piece.mesh, piece.materials), []).append(idx)
     for (cid, mesh, _m), idxs in uses.items():
-        if len(idxs) < 2 or any(thing.pieces[i].shadowed for i in idxs):
+        if len(idxs) < 2 or any(thing.pieces[i].shadowed or
+                                (only_shown and not thing.pieces[i].enabled) for i in idxs):
             continue                            # a variant pair is not an instance — see `_shadow_variants`
         got = [n for i in idxs for n in by_piece.get(i, [])]
         if len(got) != len(idxs):
@@ -292,7 +296,7 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
                        f"otherwise")
         # A piece is hidden when the scene switched it off OR when it is the losing half of a variant.
         # Both are switchable and both are wrong to draw on load.
-        want_hidden = (not piece.enabled) or piece.shadowed
+        want_hidden = ((not piece.enabled) or piece.shadowed) and not only_shown
         if (node.get("name") in hidden) != want_hidden:
             bad.append(f"piece {idx} ({piece.entity!r}) is "
                        f"{'absent from' if want_hidden else 'in'} the hidden list, wrongly")
@@ -582,9 +586,17 @@ def joints_agree(src: _Src, rest: dict[str, list[float]]) -> list[str]:
                   if name in rest and not _close(m, rest[name], 1e-4))
 
 
-def compose_thing(build: Build, thing: Thing, *, capture: str = "",
+def compose_thing(build: Build, thing: Thing, *, capture: str = "", shown: bool = False,
                   max_texture: int = 1024, quality: int = 90) -> tuple[Optional[bytes], list[str]]:
-    """`(glb, notes)` for one thing — or `(None, notes)` if nothing of it could be read."""
+    """`(glb, notes)` for one thing — or `(None, notes)` if nothing of it could be read.
+
+    `shown=True` leaves OUT everything the scene does not draw: the wardrobe it has switched off, and
+    the losing half of a variant. That is not the asset — the asset keeps them, because a part the
+    runtime can show again has to be in the file to be shown — it is a copy for LOOKING at. A glb
+    viewer draws every node it is given and knows nothing about `extras`, so in the real asset Alice's
+    hidden pale hair and bride's underwear are both plainly visible and read as bugs that were
+    already fixed.
+    """
     work = _Compose(build, thing, max_texture, quality)
     srcs: dict[int, _Src] = {}
     for cid in sorted(thing.containers):
@@ -695,6 +707,8 @@ def compose_thing(build: Build, thing: Thing, *, capture: str = "",
     for index, piece in enumerate(thing.pieces):
         if piece not in usable:
             continue
+        if shown and (not piece.enabled or piece.shadowed):
+            continue
         src = srcs[piece.container]
         skin = src.skin_of.get(piece.mesh)
         node = node_of[piece.node]
@@ -728,6 +742,10 @@ def compose_thing(build: Build, thing: Thing, *, capture: str = "",
         "materials": work.materials,
         "extras": {MARK: {"thing": thing.name, "scene": thing.scene, "capture": capture,
                           "pieces": len(thing.pieces),
+                          # A viewing copy, missing everything the scene does not draw. Recorded so the
+                          # verifier judges it by what it claims to be rather than failing every
+                          # wardrobe piece, and so a file like this is never mistaken for the asset.
+                          "shown": shown,
                           # What the importer reads to make these parts hideable, and what the runtime
                           # `figure-parts` component already consumes: glTF node names, not mesh names.
                           "hidden": hidden,
@@ -763,8 +781,8 @@ def _safe(name: str) -> str:
     return out or "thing"
 
 
-def compose_build(root: str, out_dir: str, *, only: str = "", max_texture: int = 1024,
-                  quality: int = 90, verify: bool = True,
+def compose_build(root: str, out_dir: str, *, only: str = "", shown: bool = False,
+                  max_texture: int = 1024, quality: int = 90, verify: bool = True,
                   report: Optional[Callable[[str], None]] = None) -> tuple[list[str], int]:
     """Compose every thing in every build under `root`. Returns `(files written, problems found)`.
 
@@ -784,7 +802,7 @@ def compose_build(root: str, out_dir: str, *, only: str = "", max_texture: int =
             continue
         say(f"\n{os.path.relpath(build_root, root) or '.'} — {len(found)} thing(s)")
         for thing in found:
-            data, notes = compose_thing(build, thing, capture=capture,
+            data, notes = compose_thing(build, thing, capture=capture, shown=shown,
                                         max_texture=max_texture, quality=quality)
             if data is None:
                 say(f"    {thing.name[:30]:32} SKIPPED")

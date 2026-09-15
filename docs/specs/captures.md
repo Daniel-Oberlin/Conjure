@@ -313,6 +313,13 @@ Across all twenty captures it reports **two problems, both on bride**: `underwea
 (a gap in the capture, and it says so), and `model_britney_bride.glb` is a different rig wearing the
 same 222 bone names — the half-body the director was picking as "another bride".
 
+**A glb viewer draws every node it is given**, and `hidden` lives in `extras`, so the asset looks wrong
+in one: Alice's hidden pale hair and bride's switched-off underwear are both plainly visible and read as
+bugs that were already fixed. `--as-shown` writes a copy with those left out — for LOOKING at, never for
+importing, and recorded in `extras.conjure.shown` so the verifier judges it by what it claims to be and
+so it can never be mistaken for the asset. The asset keeps them, because a part the runtime can show
+again has to be in the file to be shown.
+
 `scripts/glb_check.mjs` is the second, independent gate: it loads a GLB with the same three.js
 `GLTFLoader` the client uses and prints the bounding box. A file can satisfy every structural check and
 still throw in the loader, and it can load perfectly while being a hundred times the wrong size. All 263

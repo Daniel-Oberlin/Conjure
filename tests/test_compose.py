@@ -366,6 +366,36 @@ def test_a_refraction_that_CARRIES_a_texture_is_left_alone(tmp_path):
     assert not any("refractive lens" in w for w in tex.warnings)
 
 
+def test_a_viewing_copy_leaves_out_what_the_scene_does_not_draw(tmp_path):
+    """A glb viewer draws every node it is given and ignores `extras`, so the asset looks wrong in one.
+
+    Alice's hidden pale hair and bride's switched-off underwear are both plainly visible in a viewer
+    and read as bugs that were already fixed. `shown=True` writes a copy for LOOKING at; the asset
+    keeps them, because a part the runtime can show again has to be in the file to be shown.
+    """
+    build, thing = _figure_build(tmp_path)
+    full, _n = compose_thing(build, thing)
+    view, _n = compose_thing(build, thing, shown=True)
+    assert {n["name"] for n in _parse(full)["nodes"] if n.get("mesh") is not None} == \
+        {"Body", "Dress", "Slip"}
+    assert {n["name"] for n in _parse(view)["nodes"] if n.get("mesh") is not None} == {"Body", "Dress"}
+    assert _parse(view)["extras"]["conjure"]["shown"] is True
+    assert verify_thing(build, thing, view) == [], "and it is judged by what it claims to be"
+    assert verify_thing(build, thing, full) == []
+
+
+def test_a_viewing_copy_is_still_held_to_everything_else(tmp_path):
+    """`shown` excuses an absent wardrobe piece and nothing else — a LIVE piece missing is still wrong."""
+    build, thing = _figure_build(tmp_path)
+    view, _n = compose_thing(build, thing, shown=True)
+
+    def drop(doc):
+        i = _named(doc)["Dress"]
+        doc["nodes"][i].pop("mesh")
+        doc["nodes"][i].pop("extras")
+    assert any("is not in the file" in p for p in verify_thing(build, thing, _tamper(view, drop)))
+
+
 # ---------------------------------------------------------------- the verifier earns its keep
 
 

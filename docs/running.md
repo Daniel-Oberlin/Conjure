@@ -177,7 +177,11 @@ node scripts/glb_check.mjs temp/things/akari/*.glb                      # will t
 ```
 
 It writes **alongside** `temp/rebuilt/` rather than replacing it, and nothing imports from it yet — so
-the way to look at one is to drop the file into a web glb viewer. `--compose` prints `WRONG:` for
+the way to look at one is to drop the file into a web glb viewer. Add `--as-shown` when you do: a viewer
+draws every node it is given and knows nothing about the hidden flag, so the asset shows you its whole
+wardrobe at once — Alice's switched-off pale hair, bride's underwear — which reads as a bug and is not
+one. `--as-shown` leaves those out. It is a copy for looking at; the asset keeps them, because a part
+the runtime can show again has to be in the file to be shown. `--compose` prints `WRONG:` for
 anything the composed file gets wrong against the scene, and says "the verifier is silent" when there is
 nothing; `glb_check.mjs` is the independent second opinion, and its bounding box is where a 100× error
 shows up instantly.
