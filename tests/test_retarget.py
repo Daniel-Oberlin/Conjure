@@ -19,9 +19,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from retarget_probe import (ATTACHMENT, Figure, absolute_locals, angle_between,   # noqa: E402
-                            canonical_rest, corrected_locals, dir_error, limb_dirs,
-                            posed_matrices, qmul, quat_of, rolled_copy)
+from retarget_probe import (ATTACHMENT, Figure, _frame_q, absolute_locals,   # noqa: E402
+                            angle_between, canonical_rest, chain_breaks, corrected_locals,
+                            dir_error, limb_dirs, posed_matrices, qmul, quat_of, rolled_copy)
 
 from conjure.figures import node_world_matrices, parent_map   # noqa: E402
 
@@ -222,3 +222,65 @@ def _worst(want: dict, got: dict) -> float:
             d = max(-1.0, min(1.0, sum(want[k][i] * got[k][i] for i in range(3))))
             out = max(out, math.degrees(math.acos(d)))
     return out
+
+
+# ---- the two things the limb metric could not see -------------------------------------------------
+
+def test_a_limb_metric_alone_CANNOT_see_a_figure_turned_bodily_the_wrong_way():
+    """Why `absolute` looked worse than `naive` on two figures, and why it is not.
+
+    `limb_dirs` works in each figure's own body frame so that proportions and heading are not counted
+    as retargeting error. That is right, and it means a figure rotated BODILY scores perfectly on
+    limbs — every limb is where it should be relative to a body that is facing the wrong way. On the
+    real corpus the naive copy leaves Alice's and Blondie's whole bodies 79° from Jane's while scoring
+    5.5° on limbs, and the table said it was the better law.
+
+    So the body frame is reported beside the limbs, and a retarget is only as good as the worse of the
+    two.
+    """
+    # Only the HIPS' own rest is turned, so this is a rest-pose difference at the root rather than a
+    # change of axis convention throughout — the shape Alice and Blondie actually have.
+    src = _rig()
+    dst = rolled_copy(src, 35.0, only={"hips"})
+    carried = _pose(45)
+    s_mats = posed_matrices(src, carried)
+    naive = posed_matrices(dst, carried)
+
+    # The fixture shows the EFFECT; the corpus shows how big it gets. A real clip drives twenty bones
+    # where this drives two, so Alice's body turns 79° while her limbs still score 5.5°. What is pinned
+    # here is that a body turn happens, that the limb number does not have to grow with it, and that
+    # the absolute law removes it entirely.
+    body = angle_between(_frame_q(s_mats), _frame_q(naive))
+    assert body > 10.0, f"the naive copy turns the whole body ({body:.1f}°)"
+
+    fixed = posed_matrices(dst, absolute_locals(src, dst, carried))
+    assert angle_between(_frame_q(s_mats), _frame_q(fixed)) < 0.01
+
+
+def test_a_map_can_pass_every_GEOMETRIC_check_and_still_not_be_a_CHAIN():
+    """The other outlier, and it is a map defect rather than a retargeting one.
+
+    `validate()` asks where bones are — in the right places, sides not swapped, limbs ordered. It never
+    asks whether a bone is actually UNDER its humanoid parent. Eve's inferred map puts `hips` on
+    `ORG-spine` and `spine` on `chest`, which sit in different branches of a rigify control rig, so
+    rotating her hips cannot move her spine: the torso stays behind while the pelvis turns.
+
+    It costs nothing when posing one bone at a time, which is why it went unnoticed, and it breaks
+    retargeting, where a chain's motion has to compose. 6 of 28 mapped figures have at least one break
+    and all of them are outliers in the measurement.
+    """
+    good = _rig()
+    assert chain_breaks(good) == []
+
+    # Re-parent the chest onto the root, leaving it exactly where it was. Every geometric check still
+    # passes — nothing has moved — and the spine can no longer carry it.
+    detached = _rig()
+    nodes = detached.doc["nodes"]
+    idx = {n["name"]: i for i, n in enumerate(nodes)}
+    nodes[idx["spine"]]["children"].remove(idx["chest"])
+    world_y = sum(nodes[idx[b]]["translation"][1] for b in ("hips", "spine", "chest"))
+    nodes[idx["chest"]]["translation"] = [0.0, world_y, 0.0]
+    nodes[idx["hips"]]["children"].append(idx["chest"])
+    detached = Figure(detached.label, detached.doc, detached.mapping, detached.source,
+                      detached.by_name, parent_map(detached.doc), node_world_matrices(detached.doc))
+    assert chain_breaks(detached) == ["spine->chest"]

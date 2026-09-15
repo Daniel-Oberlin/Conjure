@@ -316,6 +316,53 @@ PARENT_OF = {c: p for p, c in LIMBS}
 REF_AGAINST_UP = {"leftFoot", "rightFoot", "leftToes", "rightToes"}
 
 
+def chain_breaks(fig: Figure) -> list[str]:
+    """Humanoid links whose child is NOT actually under its parent in the skeleton.
+
+    A map can pass every geometric check `validate()` makes — bones in the right places, sides not
+    swapped, limbs ordered — and still name bones from different BRANCHES of a control rig. Eve's
+    inferred map puts `hips` on `ORG-spine` (under `MCH-spine`) and `spine` on `chest` (under `torso`),
+    so rotating her hips cannot move her spine: her torso stays behind while her pelvis turns.
+
+    It matters for retargeting in a way it does not for posing one bone at a time, which is why it has
+    gone unnoticed. 6 of 28 mapped figures have at least one break, and all of them are the outliers:
+    Eve 3, Steve and Shaun 2 each (`hips → upperLeg`), Trish and Yuffie 1 (`spine → chest`).
+    """
+    out = []
+    for parent, child in LIMBS:
+        pn, cn = fig.mapping.get(parent), fig.mapping.get(child)
+        if not pn or not cn:
+            continue
+        pi, ci = fig.by_name.get(pn), fig.by_name.get(cn)
+        if pi is None or ci is None:
+            continue
+        j, ok = fig.parent.get(ci), False
+        while j is not None:
+            if j == pi:
+                ok = True
+                break
+            j = fig.parent.get(j)
+        if not ok:
+            out.append(f"{parent}->{child}")
+    return out
+
+
+def _frame_q(mats: dict):
+    """The body frame of a posed skeleton, as a quaternion. `None` if the bones it needs are absent."""
+    axes = body_axes(mats)
+    if not axes:
+        return None
+    side, up, fwd = axes
+    return quat_of([side[0], side[1], side[2], 0, up[0], up[1], up[2], 0,
+                    fwd[0], fwd[1], fwd[2], 0, 0, 0, 0, 1])
+
+
+def rest_body_frame(fig: Figure) -> tuple:
+    """The figure's own orientation at rest, as a quaternion — up the spine, across the hips."""
+    q = _frame_q({b: fig.bind[fig.by_name[n]] for b, n in fig.mapping.items() if n in fig.by_name})
+    return q or (0.0, 0.0, 0.0, 1.0)
+
+
 def canonical_rest(fig: Figure, notes: Optional[list] = None) -> dict[str, tuple]:
     """A convention-free rest orientation per bone: where its limb POINTS, not how its frame is spelled.
 
@@ -385,6 +432,12 @@ def _world_rotations(src: Figure, dst: Figure, carried: dict, absolute: bool) ->
     """
     s_world = posed_world(src, {src.mapping[b]: q for b, q in carried.items()})
     cs, ct = (canonical_rest(src), canonical_rest(dst)) if absolute else ({}, {})
+    # INTO THE TARGET'S OWN FRAME. Matching world orientations is not the same as matching poses: a
+    # figure whose armature rests with a slight lean should perform the clip in ITS frame rather than
+    # inherit the source's. The naive copy gets this for free by working in each rig's own local terms;
+    # an absolute law has to be told. `Bt · Bs⁻¹` is the whole of it, and it is identity whenever the
+    # two rest the same way — so the control and the identity case are untouched.
+    swing = qmul(rest_body_frame(dst), qconj(rest_body_frame(src))) if absolute else (0, 0, 0, 1)
     want = {}
     for bone in carried:
         if bone not in s_world:
@@ -394,7 +447,8 @@ def _world_rotations(src: Figure, dst: Figure, carried: dict, absolute: bool) ->
                 continue
             k_s = qmul(qconj(cs[bone]), src.rest(bone))    # source convention: canonical -> authored
             k_t = qmul(qconj(ct[bone]), dst.rest(bone))
-            want[dst.mapping[bone]] = qmul(qmul(s_world[bone], qconj(k_s)), k_t)
+            here = qmul(swing, s_world[bone])          # the source's orientation, in the target's frame
+            want[dst.mapping[bone]] = qmul(qmul(here, qconj(k_s)), k_t)
         else:
             motion = qmul(s_world[bone], qconj(src.rest(bone)))
             want[dst.mapping[bone]] = qmul(motion, dst.rest(bone))
@@ -488,7 +542,7 @@ def corrected_locals(src: Figure, dst: Figure, carried: dict) -> dict:
     return out
 
 
-def rolled_copy(fig: Figure, degrees: float) -> Figure:
+def rolled_copy(fig: Figure, degrees: float, only: Optional[set] = None) -> Figure:
     """The same skeleton with every bone's REST ROLLED, and its geometry untouched. A control.
 
     The identity case (`Jane → Jane`) only tests the correction where the two rests are equal, which is
@@ -499,6 +553,10 @@ def rolled_copy(fig: Figure, degrees: float) -> Figure:
     A clip's local rotations are then wrong on this rig by a conjugation — `X⁻¹ · L · X` is what they
     should be — so the naive copy must fail and a correct rest correction must recover it EXACTLY.
     Anything above about a degree here is a bug in the correction and not a fact about rigs.
+
+    `only` rolls just those bones' own rest and leaves the subtree below them alone, which is the
+    shape of a REST POSE difference at the root: the naive copy then turns the whole body while every
+    limb stays internally consistent, exactly as Alice and Blondie do.
     """
     import copy as _copy
     doc = _copy.deepcopy(fig.doc)
@@ -506,7 +564,8 @@ def rolled_copy(fig: Figure, degrees: float) -> Figure:
     x = (math.sin(a) * 0.5773, math.sin(a) * 0.5773, math.sin(a) * 0.5773, math.cos(a))  # about 1,1,1
     xi = qconj(x)
     nodes = doc["nodes"]
-    bones = {fig.by_name[n] for n in fig.mapping.values() if n in fig.by_name}
+    bones = {fig.by_name[n] for b, n in fig.mapping.items()
+             if n in fig.by_name and (only is None or b in only)}
     # Every node under the armature, not only the mapped ones — a partial roll would leave the
     # intermediates inconsistent with their parents and change the geometry.
     touch = set()
@@ -516,7 +575,8 @@ def rolled_copy(fig: Figure, degrees: float) -> Figure:
         if i in touch:
             continue
         touch.add(i)
-        stack += [int(c) for c in (nodes[i].get("children") or [])]
+        if only is None:                       # `only` rolls just those bones' OWN rest, not the
+            stack += [int(c) for c in (nodes[i].get("children") or [])]   # subtree below them
     for i in touch:
         nd = nodes[i]
         r = tuple(nd.get("rotation") or (0.0, 0.0, 0.0, 1.0))
@@ -545,6 +605,9 @@ def probe(clip_doc, clip_blob, clip_name, src: Figure, dst: Figure, frames: int)
     naive_dirs: list[float] = []
     fixed_dirs: list[float] = []
     abs_dirs: list[float] = []
+    naive_body: list[float] = []
+    fixed_body: list[float] = []
+    abs_body: list[float] = []
     for k in range(frames):
         rots = rotations_at(clip_doc, clip_blob, clip_name, k / max(1, frames - 1))
         if not rots:
@@ -567,7 +630,16 @@ def probe(clip_doc, clip_blob, clip_name, src: Figure, dst: Figure, frames: int)
         naive_dirs += dir_error(want, limb_dirs(t_naive))
         fixed_dirs += dir_error(want, limb_dirs(t_fixed))
         abs_dirs += dir_error(want, limb_dirs(t_abs))
-    return per_bone, naive_dirs, fixed_dirs, abs_dirs, shared
+        # WHERE THE WHOLE BODY ENDED UP, which the limb numbers cannot see. `limb_dirs` works in each
+        # figure's own body frame so that proportions and heading do not count as error — and that
+        # factors out a figure turned bodily the wrong way, which is the largest error there is. Naive
+        # copy leaves Alice's body 79° from Jane's and still scores well on limbs; reporting only the
+        # limbs said it was the better law, and it is not.
+        for bucket, mats in ((naive_body, t_naive), (fixed_body, t_fixed), (abs_body, t_abs)):
+            a, b = _frame_q(s_mats), _frame_q(mats)
+            if a and b:
+                bucket.append(angle_between(a, b))
+    return per_bone, naive_dirs, fixed_dirs, abs_dirs, naive_body, abs_body, shared
 
 
 def main() -> int:
@@ -619,8 +691,9 @@ def main() -> int:
     print("  LIMB DIRECTION is what judges a retarget: where each limb POINTS, in the figure's own body")
     print("  frame, so proportions and heading do not count as error. `naive` copies the source's local")
     print("  rotations; `corrected` takes each through both rigs' rest poses.\n")
-    print(f"{'target':17} {'rig':12} {'by name':>7} {'rest gap':>9} "
-          f"{'naive':>10} {'delta':>9} {'absolute':>11} {'abs worst':>8}  best")
+    print(f"{'':17} {'':12} {'---- naive ----':>18}  | {'delta':>9} {'--- absolute ----':>19}")
+    print(f"{'target':17} {'rig':12} {'limbs':>8} {'body':>9}  | {'limbs':>9} "
+          f"{'limbs':>9} {'body':>8} {'worst':>9}")
     targets = [(lbl, None) for lbl in
                ("Jane", "Akari", "office-babe", "Blondie", "Alice", "Grace", "Trish", "Saka",
                 "Eve Maccaro", "Steve", "Animated Woman", "Tamaki")]
@@ -632,8 +705,8 @@ def main() -> int:
         if not dst.mapping:
             print(f"{label[:16]:17} {sig:12} {'—':>5}  no humanoid map — refused, which is correct")
             continue
-        per_bone, naive_dirs, fixed_dirs, abs_dirs, shared = probe(clip_doc, clip_blob, clip_name,
-                                                                   src, dst, args.frames)
+        (per_bone, naive_dirs, fixed_dirs, abs_dirs,
+         naive_body, abs_body, shared) = probe(clip_doc, clip_blob, clip_name, src, dst, args.frames)
         vals = sorted(v for b in per_bone for v in per_bone[b])
         if not vals:
             print(f"{label[:16]:17} {sig:12} no shared bones")
@@ -641,10 +714,11 @@ def main() -> int:
         by_name_hits = sum(1 for n in rots0 if n in dst.by_name)
         nd, fd, ad = sorted(naive_dirs), sorted(fixed_dirs), sorted(abs_dirs)
         med = lambda xs: xs[len(xs) // 2] if xs else float("nan")     # noqa: E731
-        best = min(("naive", med(nd)), ("delta", med(fd)), ("absolute", med(ad)), key=lambda kv: kv[1])
-        print(f"{label[:16]:17} {sig:12} {by_name_hits:7} {vals[len(vals) // 2]:8.1f}°"
-              f" {med(nd):9.1f}° {med(fd):8.1f}° {med(ad):10.1f}° {max(ad) if ad else 0:7.1f}°"
-              f"  {best[0]}")
+        nb, ab_ = sorted(naive_body), sorted(abs_body)
+        breaks = chain_breaks(dst)
+        print(f"{label[:16]:17} {sig:12} {med(nd):8.1f}° {med(nb):8.1f}°  |"
+              f" {med(fd):8.1f}° {med(ad):9.1f}° {med(ab_):8.1f}° {max(ad) if ad else 0:8.1f}°"
+              + (f"   MAP BREAKS: {', '.join(breaks[:2])}" if breaks else ""))
         if args.per_bone:
             for b in sorted(per_bone, key=lambda b: -max(per_bone[b] or [0])):
                 if per_bone[b]:

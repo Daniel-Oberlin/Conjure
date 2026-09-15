@@ -913,9 +913,51 @@ width and leg splay. At rest with no clip at all, Trish's `chest → leftShoulde
 Jane's and every rig's `hips → upperLeg` is 8–67° out. No retarget can change that and none should try;
 counting it made four rigs look broken while their articulated limbs were within a few degrees.
 
-**Open.** Eve's `hips → spine` is 58.5° while every other limb of hers is 1.2° — she is the only figure
-in the set whose map is `inferred` rather than read from a convention, which is the first thing to
-check. And Alice and Blondie preferring the naive copy needs explaining before this ships.
+**Both open questions closed, 2026-09-15, and the second one reverses the verdict.**
+
+*Alice and Blondie did not prefer the naive copy.* The limb metric could not see the error that matters
+most. `limb_dirs` works in each figure's own body frame so that proportions and heading do not count —
+correct, and it means **a figure turned BODILY the wrong way scores perfectly on limbs**, because every
+limb is right relative to a body facing the wrong direction. Measured: the naive copy leaves Alice's
+and Blondie's whole bodies **79°** from Jane's, and Animated Woman's **84°**, while scoring 5.5–9.3° on
+limbs. The absolute law holds every body within 11°. So the body frame is now reported beside the limbs
+and a retarget is only as good as the worse of the two:
+
+| target | naive limbs | naive BODY | absolute limbs | absolute BODY |
+|---|---|---|---|---|
+| Akari | 9.2° | 5.4° | **0.5°** | **0.5°** |
+| office-babe | 7.3° | 3.0° | **0.3°** | 3.1° |
+| Alice | 5.5° | **79.2°** | 8.4° | **4.6°** |
+| Blondie | 6.5° | **78.8°** | 8.4° | **5.0°** |
+| Animated Woman | 9.3° | **83.9°** | 1.4° | **4.1°** |
+| Grace | 14.4° | 3.3° | **0.2°** | 6.5° |
+| Trish | 38.2° | 46.3° | **3.9°** | **10.9°** |
+| Saka | 89.5° | 11.1° | **3.2°** | 8.6° |
+| Steve | 19.5° | 6.2° | **8.7°** | **1.5°** |
+| Eve Maccaro | 37.1° | 37.3° | **0.6°** | **3.4°** |
+
+**The absolute law wins on every rig once the body is counted.** There is no remaining case for the
+naive copy.
+
+*Eve's outlier is a MAP defect, not a retargeting one — and it is not only hers.* `validate()` asks
+where bones ARE: in the right places, sides not swapped, limbs ordered. It never asks whether a bone is
+actually **under** its humanoid parent. Eve's inferred map puts `hips` on `ORG-spine` (beneath
+`MCH-spine`) and `spine` on `chest` (beneath `torso`) — different branches of a rigify control rig — so
+rotating her hips cannot move her spine. Her torso stays behind while her pelvis turns.
+
+It costs nothing when posing one bone at a time, which is why it has gone unnoticed, and it breaks
+retargeting, where a chain's motion has to compose. **6 of 28 mapped figures have at least one break,
+and every one of them is an outlier in the table above:**
+
+| figure | map source | broken links |
+|---|---|---|
+| Eve Maccaro | `inferred` | `hips→spine`, `chest→leftShoulder`, `chest→rightShoulder` |
+| Steve, Characters Shaun | `convention:dot-side` | `hips→leftUpperLeg`, `hips→rightUpperLeg` |
+| Trish, Yuffie | `convention:rigify-fk` | `spine→chest` |
+
+`chain_breaks()` reports it and the probe prints it per figure. Whether it belongs in `validate()` is a
+separate decision: it would reject six maps that pose perfectly well today, so the honest first step is
+to report it rather than to fail on it.
 
 **Do not ship the correction inside a rig signature.** Naive copy on Akari is 8.8° and that is the path
 that already runs on device and looks right, so 8.8° is roughly what "correct" costs in this metric.
