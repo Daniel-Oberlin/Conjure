@@ -406,6 +406,17 @@ its own speed is played wrong. Stored as `attributes.speed` on the animation, an
 from 1.0 — recording the default would make "nobody said" indistinguishable from "they said one". A
 clip two positions disagree about is reported rather than resolved; there is no basis for choosing.
 
+`/figure/clip` applies it. The source's own code is
+`assignAnimation(name, resource, "Base", animSpeed, true)` with `animSpeed` read straight from
+`idle.speed` / `action.speedAction` / `action.speedRough`, so the rate belongs to the clip and not to
+the request. `FigureClipRequest.speed` is therefore `None` rather than `1.0` by default, all the way
+out through `conjure.ctl` and the `play_clip` tool: a caller sending a well-meant 1.0 would override
+the author, and "nobody said" has to stay distinguishable from "play it at normal speed regardless".
+
+The voice is deliberately NOT rate-shifted with it. The source plays the sound on its own slot with
+`loop = true, overlap = true` and never seeks or re-rates it — the voice runs under the clip rather
+than in lock-step with it — so slowing the body does not slow the speech.
+
 **A blink is a LAYER STATE, not a clip you play.** That is the answer to the long-open *"Teacher's
 `Blink.glb` is never played at placement"*: it is a bone-masked state that fires on its own timer —
 every 5–8 seconds, at a weight, over whatever the position is running — with the mask coming from

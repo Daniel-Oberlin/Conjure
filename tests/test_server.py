@@ -5103,6 +5103,40 @@ def test_a_clip_plays_on_the_figure_it_was_authored_for(srv, client, tmp_path):
     assert comp["startedAt"] == r["started_at"], "the START INSTANT, not a frame"
 
 
+def test_a_clip_plays_at_the_rate_ITS_CAPTURE_AUTHORED_unless_asked_otherwise(srv, client, tmp_path):
+    """The source plays every clip through `assignAnimation(name, resource, "Base", animSpeed, true)`,
+    and `animSpeed` is `idle.speed` / `action.speedAction` / `action.speedRough` read straight out of
+    the position config — 0.5, 0.6 and 1.2 are all authored in this corpus. So a rate is part of the
+    clip, and defaulting the request to 1.0 overrode it for every caller that did not think to ask.
+    That is what "the playback speed seemed wrong for susan/Alice" was.
+
+    `None` and `1.0` therefore have to be different requests: `positions.clip_speed` records only a
+    rate that differs from 1.0, so nothing recorded means the author said nothing, and a caller sending
+    1.0 means "play it at normal speed regardless of what the author wanted"."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "pc_leanOnBed_idle.glb", _clip_glb())
+    srv.library.upsert(clip, attributes={"speed": 0.5})
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["ok"] and r["speed"] == 0.5 and r["authored_speed"] == 0.5
+    assert _ent(client, eid)["components"]["figure-clip"]["speed"] == 0.5
+
+    # Asked for, it wins — including when what is asked for happens to be 1.0.
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip, "speed": 1.0}).json()
+    assert r["speed"] == 1.0 and r["authored_speed"] == 0.5
+    assert _ent(client, eid)["components"]["figure-clip"]["speed"] == 1.0
+
+
+def test_a_clip_nobody_stated_a_rate_for_plays_at_one(srv, client, tmp_path):
+    """Most of the corpus: 16 of 20 captures ship no position config at all."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["ok"] and r["speed"] == 1.0 and r["authored_speed"] is None
+
+
 def test_a_clip_carries_the_voice_recorded_against_it(srv, client, tmp_path):
     """20 of Jane's 21 clips are voiced, and the link is many-to-many — one file serves four clips — so
     it is a relation, not a column. The voice is sent WITH the clip and off the same stamped instant:

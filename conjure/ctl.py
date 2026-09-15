@@ -457,8 +457,10 @@ def cmd_clip(s: Settings, a) -> None:
         _say(_post(s, "/figure/clip", {"id": a.id, "stop": True}), a.verbose,
              f"stopped the animation on {a.id}")
         return
-    out = _post(s, "/figure/clip", {"id": a.id, "clip": a.clip, "loop": not a.once,
-                                    "speed": a.speed, "force": a.force})
+    body = {"id": a.id, "clip": a.clip, "loop": not a.once, "force": a.force}
+    if a.speed is not None:                    # absent means "use the rate the capture authored"
+        body["speed"] = a.speed
+    out = _post(s, "/figure/clip", body)
     if out.get("ok") is False:
         _say(out, a.verbose, "")
         for c in out.get("candidates") or []:
@@ -626,7 +628,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("clip", nargs="?", default="", help="clip label or asset id")
     a.add_argument("--stop", action="store_true", help="stop whatever is playing")
     a.add_argument("--once", action="store_true", help="play through once instead of looping")
-    a.add_argument("--speed", type=float, default=1.0)
+    a.add_argument("--speed", type=float, default=None,
+                   help="override the rate the capture authored for this clip")
     a.add_argument("--force", action="store_true",
                    help="play a clip from a DIFFERENT rig — it will look wrong; that is the point")
 

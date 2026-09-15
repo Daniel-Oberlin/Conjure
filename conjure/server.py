@@ -4868,7 +4868,9 @@ class FigureClipRequest(BaseModel):
     clip: str = ""                       # asset id or exact label
     stop: bool = False
     loop: bool = True
-    speed: float = 1.0
+    # None means NOBODY SAID, which is not the same as 1.0 — the capture authors a rate per clip (0.5,
+    # 0.6 and 1.2 are all in this corpus) and a default of 1.0 here would silently override it.
+    speed: Optional[float] = None
     # A clip whose rig signature differs needs its channels REWRITTEN, not just bound by name (phase 5).
     # Playing one anyway is a legitimate thing to ask for once — it is how you find out what it looks
     # like — but it must be asked for, because the failure mode is a figure folded into a knot.
@@ -4943,15 +4945,24 @@ async def figure_clip(req: FigureClipRequest) -> dict:
     # many-to-many (one file serves four clips), so it is a relation and not a column. Sent WITH the
     # clip so both start from the same stamped instant rather than from two arrivals.
     voice = [v for v in library.related(rec["id"], "voiced_by") if v.get("kind") == "audio"]
+
+    # THE RATE THE CAPTURE AUTHORED, unless the caller asked for one. The source plays a clip with
+    # `assignAnimation(name, resource, "Base", animSpeed, true)` where `animSpeed` comes straight from
+    # the position config's `idle.speed` / `action.speedAction` / `action.speedRough` — so a clip run at
+    # 1.0 because nobody thought to ask is run wrong, which is what "the playback speed seemed wrong for
+    # susan/Alice" was. `positions.py` records only a rate that differs from 1.0, so its absence here
+    # genuinely means the author said nothing.
+    speed = float(req.speed) if req.speed is not None else float(clip_attrs.get("speed") or 1.0)
     started = time.time() * 1000.0
     patch = [{"op": "update", "id": req.id, "set": {"components.figure-clip": {
         "clip": f"/assets/{rec['id']}", "name": "", "playing": True,
-        "loop": bool(req.loop), "speed": float(req.speed), "startedAt": started,
+        "loop": bool(req.loop), "speed": speed, "startedAt": started,
         "audio": f"/assets/{voice[0]['id']}" if voice else ""}}}]
     await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-clip")})
     out = {"ok": True, "id": req.id, "clip": rec["id"], "label": rec.get("label"),
            "duration_s": clip_attrs.get("duration_s"), "kind": clip_attrs.get("clip_kind"),
-           "loop": bool(req.loop), "started_at": started,
+           "loop": bool(req.loop), "started_at": started, "speed": speed,
+           "authored_speed": clip_attrs.get("speed"),
            "voiced": voice[0]["id"] if voice else None}
     if not voice:
         # "Play something with sound" lands on a silent clip roughly one time in twenty, and the honest

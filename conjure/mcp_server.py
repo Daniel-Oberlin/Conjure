@@ -624,7 +624,7 @@ async def dress_figure(id: str, hide: Optional[list[str]] = None, show: Optional
 
 
 @mcp.tool()
-async def play_clip(id: str, clip: str, loop: bool = True, speed: float = 1.0,
+async def play_clip(id: str, clip: str, loop: bool = True, speed: Optional[float] = None,
                     force: bool = False) -> str:
     """Play a captured animation on a figure — a dance, an idle, a gesture.
 
@@ -642,6 +642,10 @@ async def play_clip(id: str, clip: str, loop: bool = True, speed: float = 1.0,
     no separate audio tool and none is needed: "animate her with sound", "make her talk", "with audio"
     all mean *play a clip that has a voice*. Call `list_clips` and pick one marked `voiced`. Saying you
     cannot do audio is wrong, and it was said on device while the voice was already playing.
+
+    **Leave `speed` alone unless the user asks for fast or slow.** Each clip carries the playback rate
+    its capture authored — some are meant to run at 0.5 and some at 1.2 — and passing a rate overrides
+    that, so a well-meant `speed=1.0` plays the clip wrong.
 
     While a clip plays it drives the whole skeleton and any pose is overridden; stopping puts the figure
     back and the pose returns. Use `stop_clip` to stop.
