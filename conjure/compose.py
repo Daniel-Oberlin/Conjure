@@ -38,7 +38,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import struct
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -108,28 +107,6 @@ def mat_mul(a: list[float], b: list[float]) -> list[float]:
 IDENTITY = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
 
 
-def mat_inverse(m: list[float]) -> Optional[list[float]]:
-    """A row-major 4×4 inverted by Gauss-Jordan, or None if it is singular.
-
-    General rather than affine-only: a bind matrix can carry scale and shear, and an inverse that
-    assumed a rigid transform would be quietly wrong on exactly the files that need this most.
-    """
-    a = [list(m[r * 4:r * 4 + 4]) + [1.0 if c == r else 0.0 for c in range(4)] for r in range(4)]
-    for col in range(4):
-        pivot = max(range(col, 4), key=lambda r: abs(a[r][col]))
-        if abs(a[pivot][col]) < 1e-12:
-            return None
-        a[col], a[pivot] = a[pivot], a[col]
-        scale = a[col][col]
-        a[col] = [v / scale for v in a[col]]
-        for row in range(4):
-            if row == col or not a[row][col]:
-                continue
-            factor = a[row][col]
-            a[row] = [v - factor * w for v, w in zip(a[row], a[col])]
-    return [v for row in a for v in row[4:]]
-
-
 def node_matrix(node: dict) -> list[float]:
     """A glTF node's local matrix, from `matrix` (COLUMN-major, per the spec) or from its TRS."""
     if node.get("matrix"):
@@ -154,16 +131,6 @@ def chain_matrix(chain: tuple, *, skip_root_position: bool = True) -> list[float
             p = (0.0, 0.0, 0.0)
         out = mat_mul(out, mat_trs(p, quat_from_euler(r), s))
     return out
-
-
-def _rows(col) -> list[float]:
-    """glTF stores a matrix COLUMN-major; everything here works row-major."""
-    return [col[0], col[4], col[8], col[12], col[1], col[5], col[9], col[13],
-            col[2], col[6], col[10], col[14], col[3], col[7], col[11], col[15]]
-
-
-def _cols(rows) -> list[float]:
-    return _rows(rows)                       # the transpose is its own inverse
 
 
 def _close(a, b, tol: float = TOL) -> bool:
@@ -343,17 +310,9 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
         if ibm is not None and len(skin.get("joints") or []) != (doc["accessors"][ibm].get("count")):
             bad.append(f"skin {si} has {len(skin['joints'])} joints and "
                        f"{doc['accessors'][ibm]['count']} inverse bind matrices")
-    # Every container's geometry lands where its OWN file puts it. Two ways for that to be true and the
-    # file says which: either the bones stand where the container was bound against them, or its
-    # inverse bind matrices were corrected for the difference (`rebound_skins`). The corrected case gets
-    # the stronger check, because `jointGlobal · IBM` is the product that actually places a vertex and
-    # it is comparable directly against the source.
-    corrected = {int(c) for c in (head.get("rebound_skins") or {})}
-    skin_of_container: dict[int, int] = {}
-    for i, node in enumerate(nodes):
-        tag = _tag(node)
-        if node.get("skin") is not None and "container" in tag:
-            skin_of_container.setdefault(int(tag["container"]), int(node["skin"]))
+    # Every bone stands where the container that supplied the geometry was bound against it. This is
+    # the check that a name-keyed skeleton join actually joined, rather than pointing a donor's weights
+    # at a same-named bone in a different place.
     for cid in sorted({p.container for p in thing.pieces}):
         path = build.path(cid)
         if not path or not os.path.exists(path):
@@ -361,21 +320,10 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
         sdoc, sblob = split_glb(open(path, "rb").read())
         if not sdoc or not (sdoc.get("skins") or []):
             continue
-        if cid in corrected:
-            mine = _bind_targets(doc, blob, skin_of_container.get(cid), world)
-            theirs = _bind_targets(sdoc, sblob, 0, None)
-            off = sorted(n for n, m in theirs.items()
-                         if n in mine and not _close(m, mine[n], 1e-4))
-            missing = sorted(n for n in theirs if n not in mine)
-            if off or missing:
-                bad.append(f"{build.name(cid)} was rebound and {len(off) + len(missing)} bone(s) still "
-                           f"do not place its geometry where its own file does "
-                           f"({', '.join((off + missing)[:4])})")
-            continue
-        rest_here: dict = {}
+        here: dict = {}
         for i in range(len(nodes)):
-            rest_here.setdefault(nodes[i].get("name"), node_matrix(nodes[i]))
-        off = joints_agree(_Src(sdoc, sblob), rest_here)
+            here.setdefault(nodes[i].get("name"), node_matrix(nodes[i]))
+        off = joints_agree(_Src(sdoc, sblob), here)
         if off:
             bad.append(f"{len(off)} bone(s) are not where {build.name(cid)} was bound against them "
                        f"({', '.join(off[:4])}) — its meshes are posed against the wrong rest position")
@@ -396,42 +344,6 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
         if view["byteOffset"] + view["byteLength"] > len(blob):
             bad.append(f"accessor {ai} reads past the end of the binary chunk")
     return bad
-
-
-def _bind_targets(doc: dict, blob: bytes, skin: Optional[int],
-                  world: Optional[Callable[[int], list[float]]]) -> dict[str, list[float]]:
-    """`{bone: jointGlobal · IBM}` for one skin — the product that actually places a skinned vertex.
-
-    `world=None` means use the document's own node hierarchy, which is what the SOURCE container is
-    judged by. Comparing these two dictionaries is the whole of "did the rebind land": it is measured
-    on the matrices a renderer multiplies rather than on the bone positions, so it cannot pass while
-    the geometry is somewhere else.
-    """
-    if skin is None or skin >= len(doc.get("skins") or []):
-        return {}
-    joints = (doc["skins"][skin].get("joints") or [])
-    accessor = doc["skins"][skin].get("inverseBindMatrices")
-    if accessor is None:
-        return {}
-    a = doc["accessors"][accessor]
-    view = doc["bufferViews"][a["bufferView"]]
-    off = view.get("byteOffset", 0) + a.get("byteOffset", 0)
-    values = struct.unpack_from(f"<{a['count'] * 16}f", blob, off)
-    if world is None:
-        up = {c: i for i, n in enumerate(doc.get("nodes") or []) for c in (n.get("children") or [])}
-
-        def world(j: int) -> list[float]:                         # noqa: F811 — the local default
-            m, k = IDENTITY, j
-            while k is not None:
-                m = mat_mul(node_matrix(doc["nodes"][k]), m)
-                k = up.get(k)
-            return m
-    out: dict[str, list[float]] = {}
-    for k, j in enumerate(joints):
-        name = doc["nodes"][j].get("name")
-        if name and name not in out:
-            out[name] = mat_mul(world(j), _rows(values[k * 16:(k + 1) * 16]))
-    return out
 
 
 def _vertices(doc: dict, prim: dict) -> int:
@@ -619,43 +531,7 @@ class _Compose:
                   f"skeleton and one clip cannot drive both")
         return by_name
 
-    def raw(self, data: bytes, count: int, kind: str, comp: int) -> int:
-        """Append float data as a new bufferView + accessor. For matrices this rewrites rather than copies."""
-        self.blob += b"\x00" * (-len(self.blob) % 4)
-        self.views.append({"buffer": 0, "byteOffset": len(self.blob), "byteLength": len(data)})
-        self.blob += data
-        self.accessors.append({"bufferView": len(self.views) - 1, "componentType": comp,
-                               "count": count, "type": kind})
-        return len(self.accessors) - 1
-
-    def rebind(self, src: _Src, cid: int, index: int, joints: dict[str, int],
-               correction: dict[str, list[float]]) -> int:
-        """A new inverse-bind-matrix accessor, each joint's premultiplied by its correction.
-
-        **Why an IBM and not a node.** A vertex lands at `jointGlobal · IBM · v`. When the skeleton the
-        mesh is bound to stands somewhere else, the fix that reproduces the donor's own rest exactly is
-        `IBM' = jointGlobalHere⁻¹ · jointGlobalThere · IBM`, because then `jointGlobalHere · IBM'`
-        equals `jointGlobalThere · IBM` by construction. There is no node to move — one mesh is bound to
-        many bones, and the other meshes bound to those same bones are correct where they are.
-        """
-        source = src.doc["skins"][index]
-        a = src.doc["accessors"][source["inverseBindMatrices"]]
-        view = src.doc["bufferViews"][a["bufferView"]]
-        off = view.get("byteOffset", 0) + a.get("byteOffset", 0)
-        values = struct.unpack_from(f"<{a['count'] * 16}f", src.blob, off)
-        out = bytearray()
-        for k, j in enumerate(source.get("joints") or []):
-            name = src.doc["nodes"][j].get("name")
-            col = values[k * 16:(k + 1) * 16]
-            fix = correction.get(name)
-            if fix is not None:
-                rows = _rows(col)
-                col = _cols(mat_mul(fix, rows))
-            out += struct.pack("<16f", *col)
-        return self.raw(bytes(out), a["count"], "MAT4", 5126)
-
-    def skin(self, src: _Src, cid: int, index: int, joints: dict[str, int],
-             correction: Optional[dict] = None) -> int:
+    def skin(self, src: _Src, cid: int, index: int, joints: dict[str, int]) -> int:
         """One container skin, its joints re-pointed at the scene's bones by NAME.
 
         The inverse bind matrices are copied unchanged and that is correct even where two containers
@@ -671,9 +547,7 @@ class _Compose:
             out: dict = {"joints": [joints[src.doc["nodes"][j].get("name")]
                                     for j in source.get("joints") or []]}
             if "inverseBindMatrices" in source:
-                out["inverseBindMatrices"] = (
-                    self.rebind(src, cid, index, joints, correction) if correction else
-                    self.accessor(src, cid, source["inverseBindMatrices"]))
+                out["inverseBindMatrices"] = self.accessor(src, cid, source["inverseBindMatrices"])
             if "skeleton" in source:
                 root = src.doc["nodes"][source["skeleton"]].get("name")
                 if root in joints:
@@ -681,31 +555,6 @@ class _Compose:
             self.skins.append(out)
             self._skin[key] = len(self.skins) - 1
         return self._skin[key]
-
-
-def joint_globals(src: _Src) -> dict[str, list[float]]:
-    """Each joint's world matrix INSIDE its own container — the rest pose the mesh was bound against.
-
-    Used only to build a correction (`compose_thing`). Weldability is judged on LOCAL matrices, because
-    a world comparison cannot survive the scene scaling the figure — see `joints_agree`.
-    """
-    doc = src.doc
-    up: dict[int, int] = {}
-    for i, node in enumerate(doc.get("nodes") or []):
-        for c in node.get("children") or []:
-            up[c] = i
-    out: dict[str, list[float]] = {}
-    for skin in doc.get("skins") or []:
-        for j in skin.get("joints") or []:
-            name = doc["nodes"][j].get("name")
-            if not name or name in out:
-                continue
-            m, k = IDENTITY, j
-            while k is not None:
-                m = mat_mul(node_matrix(doc["nodes"][k]), m)
-                k = up.get(k)
-            out[name] = m
-    return out
 
 
 def joint_locals(src: _Src) -> dict[str, list[float]]:
@@ -838,16 +687,7 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
                   f"scene saves them ({', '.join(sorted(rebound)[:4])}) — the scene is holding a POSE "
                   f"there, and a composed asset carries the rest pose")
 
-    # World matrices for the scene's bones, which a correction is measured against.
-    here: dict[str, list[float]] = {}
-    world_of: list[list[float]] = [IDENTITY] * len(thing.tree)
-    for i, entity in enumerate(thing.tree):
-        local = node_matrix(work.nodes[node_of[i]])
-        world_of[i] = mat_mul(world_of[entity.parent], local) if entity.parent >= 0 else local
-        here.setdefault(entity.name, world_of[i])
-
     joints_for: dict[int, dict[str, int]] = {}
-    corrections: dict[int, dict[str, list[float]]] = {}
     for cid in sorted(srcs):
         if not (srcs[cid].doc.get("skins") or []):
             continue
@@ -857,33 +697,9 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
             work.note(f"{build.name(cid)} names {len(absent)} bone(s) that are not entities in this "
                       f"scene ({', '.join(absent[:4])})")
         elif off:
-            # REBIND rather than weld and hope. A vertex lands at `jointGlobal · IBM · v`, so a mesh
-            # bound against a skeleton that stands somewhere else is displaced by the difference — and
-            # the difference is not small: bride's donor body is 165 bones out, and her eyelid vertices
-            # land 23–31 mm from where her own container puts them, which on a 10 mm eyelid is clean off
-            # her face. Correcting the IBM reproduces the donor's own rest EXACTLY.
-            #
-            # It does not make the two rigs one. The pose is still applied in this skeleton's frame, so
-            # animation stays approximate where the rests differ — that is phase 5. What this removes is
-            # the constant error, which was the whole of the visible defect.
-            # Driven by the GLOBAL difference, not by `off`. `off` answers weldability and is measured
-            # on LOCAL matrices so it survives the scene scaling the figure — but what displaces a
-            # vertex is where the bone ends up, and a bone with an identical local transform under a
-            # parent that differs has moved. bride's `DEF-eye_iris.L` is exactly that: it agrees
-            # locally, hangs off a `DEF-eye.L` that does not, and was left 0.54 out by a first version
-            # of this that corrected only the bones in `off`.
-            fix = {}
-            for name, there in joint_globals(srcs[cid]).items():
-                if name not in here or _close(here[name], there, 1e-6):
-                    continue
-                inv = mat_inverse(here[name])
-                if inv is not None:
-                    fix[name] = mat_mul(inv, there)
-            corrections[cid] = fix
             work.note(f"{build.name(cid)} was bound against a DIFFERENT rest pose for {len(off)} "
-                      f"bone(s) ({', '.join(off[:4])}) — REBOUND: {len(fix)} inverse bind matrix "
-                      f"(matrices) corrected so its geometry sits where its own container puts it. "
-                      f"Animation stays approximate where the rests differ (plan phase 5)")
+                      f"bone(s) ({', '.join(off[:4])}) — its meshes will be posed wrongly, and making "
+                      f"it share this skeleton is retargeting (plan phase 5)")
         joints_for[cid] = (work.joints if not absent
                            else work.copy_skeleton(srcs[cid], cid, root))
 
@@ -898,9 +714,7 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
         node = node_of[piece.node]
         work.nodes[node]["mesh"] = work.mesh(src, piece.container, piece.mesh, piece.materials)
         if skin is not None:
-            work.nodes[node]["skin"] = work.skin(src, piece.container, skin,
-                                                 joints_for[piece.container],
-                                                 corrections.get(piece.container))
+            work.nodes[node]["skin"] = work.skin(src, piece.container, skin, joints_for[piece.container])
         work.nodes[node]["extras"] = {MARK: {"piece": index, "container": piece.container,
                                              "mesh": piece.mesh, "path": list(piece.path),
                                              "optional": not piece.enabled,
@@ -949,11 +763,6 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
                           # Bones taken from the container instead of the scene. The verifier needs to
                           # know: a piece hanging off one is no longer where the scene chain says.
                           "rebound": sorted(rebound),
-                          # Containers whose inverse bind matrices were CORRECTED for a rest-pose
-                          # difference, and how many bones each. The verifier needs it: those bones
-                          # legitimately stand elsewhere now, and the check becomes whether the
-                          # correction actually lands the geometry where the donor intended.
-                          "rebound_skins": {str(c): len(f) for c, f in sorted(corrections.items()) if f},
                           "containers": {str(c): n for c, n in sorted(thing.containers.items())}}},
     }
     if work.skins:

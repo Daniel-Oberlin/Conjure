@@ -535,31 +535,6 @@ worth a look next to her long-standing eye trouble.
    (`MainModelToiletAgnes`, `MainModelHotelBlack`), which `things.json` can rename the way susan's
    `ModelParent` became `Alice` — worth doing before anyone has to read a catalog listing.
 
-6. ✅ **REBIND A DONOR BOUND ELSEWHERE** — BUILT 2026-09-15, settled into
-   [`specs/captures.md`](../specs/captures.md) § 3. Reported from the headset as *"many (or all) of the
-   bride animations are animating with her left lower eyelid not showing"*, which is the rest-pose
-   disagreement the verifier had been printing since step 4 — surfacing exactly where step 4 predicted
-   ("the place it would show is under animation, not at rest").
-
-   Measured rather than reasoned about: her four lid ROOT bones are ~7 mm out, and her lid VERTICES
-   land **23–31 mm** from where her own container puts them. An eyelid is about 10 mm tall, so all four
-   lids are displaced clean off her face; she only notices the one that leaves a visible gap.
-
-   A vertex lands at `jointGlobal · IBM · v`, so the exact correction is
-   `IBM' = jointGlobalHere⁻¹ · jointGlobalThere · IBM`. After it: all 222 joints within 8e-8, lids at
-   0.0000 mm. **Across the twenty captures the verifier now reports ONE problem** — bride's
-   `underwear.glb`, which never downloaded.
-
-   Two things it is not. It does not make two rigs one: the pose is still applied in this skeleton's
-   frame, so animation stays approximate where the rests differ, which is phase 5. And it is not driven
-   by `joints_agree` — that answers weldability on LOCAL matrices so it survives the scene scaling a
-   figure, while what displaces a vertex is where the bone ENDS UP. `DEF-eye_iris.L` agrees locally,
-   hangs off a `DEF-eye.L` that does not, and a first version left it 0.54 out.
-
-   `verify_thing` now checks the PRODUCT — `{bone: jointGlobal · IBM}` for the composed skin against
-   the same dictionary read from the source — which is what a renderer multiplies, so it cannot pass
-   while the geometry is elsewhere.
-
 **What remains is 4's inverse. The agreed approach for 4, 2026-09-14, was:**
 
 **Plan A — compose alongside, do not replace.** `--things` writes one GLB per thing into its own

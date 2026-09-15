@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from conjure.compose import (_close, chain_matrix, compose_thing, joints_agree, mat_trs,
+from conjure.compose import (chain_matrix, compose_thing, joints_agree, mat_trs,
                              quat_from_euler, verify_thing)
 from conjure.figures import split_glb, write_glb
 from conjure.playcanvas import read_build, things
@@ -241,16 +241,12 @@ def test_the_thing_root_carries_its_scale_and_not_its_position(tmp_path):
 
 
 def test_a_donor_bound_against_a_different_rest_pose_is_reported(tmp_path):
-    """Bride's `model_britney_bride.glb` is a different rig wearing the same bone names.
-
-    Reported AND corrected — see the rebind tests below. What the note has to keep saying is that the
-    two rigs are not one: the rest is exact after the correction, the animated pose is not.
-    """
+    """Bride's `model_britney_bride.glb` is a different rig wearing the same bone names."""
     moved = [("hips", None, (0.0, 1.0, 0.0), None), ("hand.R", 0, (0.3, 9.9, 0.0), None)]
     build, thing = _figure_build(tmp_path, donor_bones=moved)
     data, notes = compose_thing(build, thing)
-    assert any("DIFFERENT rest pose" in n and "REBOUND" in n for n in notes), notes
-    assert any("phase 5" in n for n in notes), "the limit is stated, not glossed"
+    assert any("DIFFERENT rest pose" in n and "hand.R" in n for n in notes), notes
+    assert any("not where" in problem for problem in verify_thing(build, thing, data))
 
 
 def test_bones_the_containers_agree_on_are_taken_from_them_not_from_a_saved_pose(tmp_path):
@@ -644,83 +640,4 @@ def test_the_capture_name_is_not_in_the_bytes(tmp_path):
     assert first == second, "composing is deterministic"
     mark = _parse(first)["extras"]["conjure"]
     assert "capture" not in mark
-    assert set(mark) == {"thing", "scene", "pieces", "hidden", "rebound", "rebound_skins",
-                        "containers", "shown"}
-
-
-def test_a_matrix_inverse_is_general_not_rigid():
-    """A bind matrix can carry scale and shear, and an inverse that assumed a rigid transform would be
-    quietly wrong on exactly the files that need it."""
-    from conjure.compose import IDENTITY, mat_inverse, mat_mul
-
-    m = mat_trs((1.5, -2.0, 0.25), quat_from_euler((30.0, -40.0, 15.0)), (0.5, 2.0, 1.25))
-    assert _close(mat_mul(m, mat_inverse(m)), IDENTITY, 1e-9)
-    assert mat_inverse([0.0] * 16) is None, "a singular matrix has no inverse and must say so"
-
-
-def _donor_at(tmp_path, bones):
-    """A figure whose DRESS container is bound against `bones` while the scene says `BONES`."""
-    body = _glb([("Body", [30])], bones=BONES, skinned=[0])
-    dress = _glb([("Dress", [20])], bones=bones, skinned=[0])
-    tree = ("Girl", {}, [("hips", {"position": [0.0, 1.0, 0.0]},
-                          [("hand.R", {"position": [0.3, 0.4, 0.0]}, [])]),
-                         ("Body", _render(10, 0, [30]), []),
-                         ("Dress", _render(11, 0, [31]), [])])
-    root = _build(tmp_path,
-                  containers=[(10, "body.glb", "files/body.glb"), (11, "dress.glb", "files/dress.glb")],
-                  renders=[(10000, "Body", 10, 0), (11000, "Dress", 11, 0)],
-                  glbs=[("files/body.glb", body), ("files/dress.glb", dress)], scene_tree=tree)
-    build = read_build(root)
-    return build, things(build, rules={"exclude": [], "captures": {}})[0]
-
-
-def test_a_donor_bound_elsewhere_is_REBOUND_so_its_geometry_lands_where_its_own_file_puts_it(tmp_path):
-    """bride's donor body is 165 bones out and her eyelid vertices landed 23-31 mm off her face — on a
-    10 mm eyelid, clean off it, which is the missing left lower lid reported from the headset.
-
-    A vertex lands at `jointGlobal · IBM · v`, so the fix that reproduces the donor's own rest EXACTLY
-    is `IBM' = jointGlobalHere⁻¹ · jointGlobalThere · IBM`. There is no node to move: one mesh is bound
-    to many bones, and the other meshes bound to those same bones are correct where they are.
-    """
-    moved = [("hips", None, (0.0, 1.0, 0.0), None), ("hand.R", 0, (0.3, 0.9, 0.0), None)]
-    build, thing = _donor_at(tmp_path, moved)
-    data, notes = compose_thing(build, thing)
-    assert any("REBOUND" in n for n in notes), notes
-    doc = _parse(data)
-    cid = next(int(c) for c in doc["extras"]["conjure"]["rebound_skins"])
-    assert cid == 11, "only the donor is corrected; the container the scene agrees with is untouched"
-    assert verify_thing(build, thing, data) == [], "and the verifier PROVES the correction landed"
-
-
-def test_the_correction_covers_a_bone_that_only_its_PARENT_moved(tmp_path):
-    """bride's `DEF-eye_iris.L` has an identical local transform under a `DEF-eye.L` that does not, so a
-    first version of this — which corrected only the locally-disagreeing bones — left it 0.54 out.
-
-    What displaces a vertex is where the bone ENDS UP, so the correction is driven by the global.
-    """
-    moved = [("hips", None, (0.0, 1.9, 0.0), None), ("hand.R", 0, (0.3, 0.4, 0.0), None)]
-    build, thing = _donor_at(tmp_path, moved)
-    data, notes = compose_thing(build, thing)
-    doc = _parse(data)
-    # `hand.R` agrees LOCALLY and still needs correcting, because `hips` moved underneath it.
-    assert doc["extras"]["conjure"]["rebound_skins"]["11"] == 2
-    assert verify_thing(build, thing, data) == []
-
-
-def test_the_verifier_catches_a_rebind_that_did_not_land(tmp_path):
-    """The check is on `jointGlobal · IBM`, the product a renderer multiplies — so it cannot pass while
-    the geometry is somewhere else."""
-    import struct
-    moved = [("hips", None, (0.0, 1.0, 0.0), None), ("hand.R", 0, (0.3, 0.9, 0.0), None)]
-    build, thing = _donor_at(tmp_path, moved)
-    data, _n = compose_thing(build, thing)
-    doc, blob = split_glb(data)
-    cid = next(int(c) for c in doc["extras"]["conjure"]["rebound_skins"])
-    skin = next(n["skin"] for n in doc["nodes"]
-                if (n.get("extras") or {}).get("conjure", {}).get("container") == cid)
-    a = doc["accessors"][doc["skins"][skin]["inverseBindMatrices"]]
-    off = doc["bufferViews"][a["bufferView"]].get("byteOffset", 0) + a.get("byteOffset", 0)
-    wrecked = bytearray(blob)
-    struct.pack_into("<f", wrecked, off + 12 * 4, 99.0)          # nudge one translation
-    problems = verify_thing(build, thing, write_glb(doc, bytes(wrecked)))
-    assert any("still do not place its geometry" in p for p in problems), problems
+    assert set(mark) == {"thing", "scene", "pieces", "hidden", "rebound", "containers", "shown"}
