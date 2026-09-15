@@ -159,6 +159,20 @@ python scripts/playcanvas_rebuild.py <build-dir> --out temp/rebuilt --adopt
 conjure-import temp/rebuilt/jane_export.glb --label "Jane"
 ```
 
+**Check a download before you throw the old one away.** The grabber writes a fresh tree, so a
+re-download REPLACES rather than tops up — a run that captures less than the last one loses files
+silently, and one did: arabic's own character build went from 35 of 35 to 9 of 35.
+
+```bash
+python scripts/capture_audit.py temp/vrh/arabic                      # is it complete?
+python scripts/capture_audit.py temp/vrh/arabic --against temp/vrh.old  # did it LOSE anything?
+python scripts/capture_audit.py temp/vrh --each                      # every capture at once
+```
+
+A build's `config.json` is a complete manifest, so "is this capture complete" has an exact answer.
+Builds are matched by their asset-id SET rather than by path, because the same build appears under many
+captures and the useful comparison is between two copies of one build wherever they sit.
+
 For a whole capture, compose it into THINGS and import that instead — one asset per thing the scene
 places rather than one per file (see below):
 

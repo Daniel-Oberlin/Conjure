@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Is a downloaded capture COMPLETE? Per build, what is missing, and did a re-download lose anything?
+
+    python scripts/capture_audit.py temp/vrh --each             # every capture
+    python scripts/capture_audit.py temp/vrh/arabic             # one
+    python scripts/capture_audit.py temp/vrh/arabic --against temp/vrh.old
+    python scripts/capture_audit.py temp/vrh --files            # name the missing files
+
+A capture is a mirror of a published build, and the build's `config.json` is a complete manifest: every
+asset that has bytes declares a `file.url`, a size and a hash. So "is this capture complete" is a
+question with an exact answer, and this asks it — which is worth having because the alternative is
+discovering a gap much later, as a figure with no clip sound or a prop that renders white.
+
+**`--against` is the one that matters after a re-download.** The grabber writes a fresh tree, so a
+re-download REPLACES rather than tops up: a run that captures less than the last one silently loses
+files. Measured on one: arabic's own character build went from 35 of 35 to 9 of 35. Point this at the
+previous copy before you throw it away.
+
+Builds are matched by their ASSET-ID SET rather than by directory name, because the same build appears
+under many captures — the shared props library is in fifteen of them — and the useful comparison is
+between two copies of one build, wherever they sit.
+
+Only assets that a converter actually consumes are counted; see `USED`. Scripts, fonts and stylesheets
+are page furniture, and an asset with no `file` at all (a material, a render asset, an animation state
+graph) is inline in the registry and has nothing to download.
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from conjure.playcanvas import find_builds, read_build                            # noqa: E402
+
+#: Asset types the pipeline reads. `animation` and `audio` are in because a figure's clips and their
+#: voices are the whole point of a capture; `json` is in because the newer builds state their
+#: clip-to-sound pairing, playback speeds and bone layers in `position_N_config.json`.
+USED = ("container", "texture", "audio", "animation", "json", "cubemap", "template")
+
+
+def survey(root: str) -> dict:
+    """`{build fingerprint: (label, {asset id: (name, type, present)})}` for one capture."""
+    out = {}
+    for build_root in find_builds(root):
+        try:
+            build = read_build(build_root)
+        except Exception as exc:                                    # noqa: BLE001
+            print(f"    ! {build_root}: {exc}")
+            continue
+        assets = {}
+        for aid, asset in build.assets.items():
+            if asset.get("type") not in USED:
+                continue
+            if not ((asset.get("file") or {}).get("url") or ""):
+                continue                                            # inline in the registry
+            path = build.path(aid)
+            here = bool(path and os.path.exists(path) and os.path.getsize(path) > 0)
+            assets[int(aid)] = (asset.get("name") or str(aid), asset.get("type"), here)
+        if assets:
+            label = os.path.basename(build_root.rstrip("/")) or os.path.basename(root.rstrip("/"))
+            out[frozenset(assets)] = (label, assets)
+    return out
+
+
+def captures_under(path: str, each: bool) -> list[str]:
+    """One capture, or each child treated as one. Told rather than guessed.
+
+    Guessing got it wrong: a capture's builds may sit at the root (`arabic/config.json` plus three
+    nested releases) or only in subdirectories (`nancy/scenes/…` and `nancy/start/…`), and no rule
+    distinguishes the second from a directory OF captures without also splitting nancy in two.
+    """
+    if not each:
+        return [path]
+    return [os.path.join(path, name) for name in sorted(os.listdir(path))
+            if os.path.isdir(os.path.join(path, name)) and find_builds(os.path.join(path, name))]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("path", help="a capture, or a directory of them")
+    ap.add_argument("--against", default="",
+                    help="a directory of EARLIER copies — reports what this download LOST")
+    ap.add_argument("--files", action="store_true", help="name every missing file, not just count it")
+    ap.add_argument("--each", action="store_true",
+                    help="treat each child directory as its own capture (use for temp/vrh)")
+    args = ap.parse_args()
+
+    if not os.path.isdir(args.path):
+        print(f"{args.path} is not a directory")
+        return 2
+    theirs = {}
+    if args.against:
+        for other in captures_under(args.against, True):
+            theirs.update(survey(other))
+
+    worst = 0
+    for capture in captures_under(args.path, args.each):
+        name = os.path.basename(capture.rstrip("/"))
+        builds = survey(capture)
+        if not builds:
+            print(f"\n{name}: no published build here")
+            continue
+        missing = sum(1 for _fp, (_l, a) in builds.items() for _n, _t, ok in a.values() if not ok)
+        total = sum(len(a) for _fp, (_l, a) in builds.items())
+        print(f"\n{name}: {total - missing} of {total} present"
+              + (f", {missing} MISSING" if missing else " — complete"))
+        for fp, (label, assets) in sorted(builds.items(), key=lambda kv: -len(kv[1][1])):
+            gaps = collections.Counter(t for _n, t, ok in assets.values() if not ok)
+            lost = []
+            if fp in theirs:
+                _l, before = theirs[fp]
+                lost = [assets[aid][0] for aid in assets
+                        if not assets[aid][2] and before.get(aid, ("", "", False))[2]]
+            flag = f"   LOST {len(lost)}" if lost else ""
+            print(f"   {label[:24]:26} {len(assets) - sum(gaps.values()):4}/{len(assets):4}"
+                  f"  {dict(gaps) or '-'}{flag}")
+            worst += len(lost)
+            if args.files and gaps:
+                for aid, (nm, kind, ok) in sorted(assets.items(), key=lambda kv: kv[1][1]):
+                    if not ok:
+                        print(f"        missing {kind:10} {nm}")
+            for nm in lost[:8]:
+                print(f"        lost    {nm}")
+            if len(lost) > 8:
+                print(f"        … and {len(lost) - 8} more")
+    if theirs:
+        print(f"\n{worst} file(s) the earlier copy had and this one does not"
+              if worst else "\nnothing was lost against the earlier copy")
+    return 1 if worst else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
