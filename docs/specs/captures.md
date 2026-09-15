@@ -382,6 +382,40 @@ already costs 111k triangles. At the default the whole capture — 9 containers 
 rebuilds in about four seconds and she lands at 6.8 MB.
 
 
+### Positions — what the site states about its own animation
+
+`conjure/positions.py`. Four of the twenty captures ship a per-position config, and it is not
+decoration: it declares what the rest of this pipeline infers. `position_N_config.json` gives the clip
+each position plays, the sound that goes with it, the RATE to play it at, and the secondary layers that
+run on top; `main_config.json` gives `mainModelName`, `dressObjects` and a bone mask per layer.
+
+**Where it speaks it beats the filename rule.** `capture_set.audio_role` pairs a clip with its voice by
+stem, which is all the older builds give you — jane is 20 of 20 — and the four captures it links NOTHING
+for (`susan` 0/8, `nancy` 0/62, `ebony` 0/140, `ebony2` 0/62) are exactly the four that ship configs.
+The config is how the newer builds say what the older ones said by filename. Both mechanisms run; the
+stated pairing is added after the stem match and never duplicates it.
+
+**Verified per capture rather than trusted**, because a config that stops resolving is saying it
+describes a version of the build no longer on disk: `resolves()` reports clips and sounds found against
+named, and it is **98/98 and 30/30** on nancy, **100/100 and 30/30** on ebony, 98/98 on ebony2 and 6/6
+on susan. A name matching no asset — or an asset of the wrong type — is counted, never guessed at.
+Result: **216 new `voiced_by` edges** across those four, where the stem rule produced none.
+
+**The rate is authored and it is not 1.0.** 0.5, 0.6 and 1.2 appear in this corpus, so a clip played at
+its own speed is played wrong. Stored as `attributes.speed` on the animation, and only when it differs
+from 1.0 — recording the default would make "nobody said" indistinguishable from "they said one". A
+clip two positions disagree about is reported rather than resolved; there is no basis for choosing.
+
+**A blink is a LAYER STATE, not a clip you play.** That is the answer to the long-open *"Teacher's
+`Blink.glb` is never played at placement"*: it is a bone-masked state that fires on its own timer —
+every 5–8 seconds, at a weight, over whatever the position is running — with the mask coming from
+`main_config.boneLayers[].enabledBones`. `Layer` carries all of it and nothing consumes it yet; the
+runtime side is layered additive animation and has not been built.
+
+**A registry `audio` asset is not always audio.** Three are `.mp4` promo videos, and they only started
+arriving once the grabber stopped skipping declared audio — the first import after that fix crashed on
+them. Content decides, as everywhere else here, and the mismatch is counted as `audio:not-audio`.
+
 ## 4. Import — what a capture becomes
 
 `scripts/import_capture.py`. Dry by default; `--commit` writes. One capture becomes many rows, and the

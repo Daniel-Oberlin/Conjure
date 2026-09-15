@@ -37,6 +37,8 @@ from conjure import capture_set                                          # noqa:
 from conjure.importer import plan_import, read_glb_json                  # noqa: E402
 from conjure.library import AssetLibrary                                 # noqa: E402
 from conjure.playcanvas import find_builds, read_build                               # noqa: E402
+from conjure.positions import (clip_audio, clip_speed, read_main, read_positions,    # noqa: E402
+                               resolves)
 
 
 def _asset_id(data: bytes, ext: str) -> str:
@@ -102,6 +104,34 @@ def provenance(data: bytes) -> dict:
     except Exception:                                                    # noqa: BLE001
         return {}
     return ((doc or {}).get("extras") or {}).get("conjure") or {}
+
+
+def authored(capture: str, report=print) -> tuple[dict, dict]:
+    """`({clip name: [sound name, …]}, {clip name: rate})` from the build's own position configs.
+
+    The site STATES which sound goes with which clip and how fast to play it, and where it does that
+    beats `capture_set.audio_role`'s filename match — which is exactly the four captures that the stem
+    rule links nothing for. Reported per capture, because a config that stops resolving is saying it
+    describes a version of the build no longer on disk (`positions.resolves`).
+    """
+    pairs: dict[str, list[str]] = {}
+    speeds: dict[str, float] = {}
+    for build_root in find_builds(capture):
+        try:
+            build = read_build(build_root)
+        except Exception:                                                # noqa: BLE001
+            continue
+        positions = read_positions(build, (read_main(build).get("bone_masks") or {}))
+        if not positions:
+            continue
+        ok_c, n_c, ok_s, n_s = resolves(build, positions)
+        rates, clash = clip_speed(positions)
+        report(f"    {len(positions)} authored position(s): clips {ok_c}/{n_c}, sounds {ok_s}/{n_s}"
+               + (f", {len(clash)} clip(s) the configs disagree about the speed of" if clash else ""))
+        for clip, sounds in clip_audio(positions).items():
+            pairs.setdefault(clip, []).extend(s for s in sounds if s not in pairs.get(clip, []))
+        speeds.update(rates)
+    return pairs, speeds
 
 
 def _source_assets(capture: str, kinds=("animation", "audio")) -> list[dict]:
@@ -308,6 +338,7 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
                 report(f"    ? {file}: rigged, but no build claims it — no authored set recorded")
 
     # ---- clips and audio, which live only in the source build -----------------------------------
+    stated_pairs, stated_speeds = authored(capture, report)
     source = _source_assets(capture)
     clip_names = [a["name"] for a in source if a["type"] == "animation"]
     clips: dict[str, str] = {}                           # registry name -> asset id
@@ -324,12 +355,18 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
         if capture_set.wants_props(asset["name"]):
             extra["wants_props"] = capture_set.wants_props(asset["name"])
         extra["slot_named"] = capture_set.is_slot_named(asset["name"])
+        # THE RATE THE SITE PLAYS IT AT. 0.5, 0.6 and 1.2 are authored in this corpus, so a clip
+        # played at its own speed is played wrong; absent here means nobody said, which means 1.0.
+        if asset["name"] in stated_speeds:
+            extra["speed"] = stated_speeds[asset["name"]]
         put(asset_id, data, kind="animation", label=capture_set.stem(asset["name"]),
             source=f"cache://{asset_id}", filename=asset_id, attributes=extra)
         link(asset_id, set_id, "part_of")
         clips[asset["name"]] = asset_id
         clips_by_build[asset["build"]].append(asset_id)
 
+    sounds: dict[str, str] = {}                          # registry name -> asset id
+    paired: set = set()                                  # (clip id, audio id) already linked
     for asset in source:
         if asset["type"] != "audio":
             continue
@@ -339,17 +376,49 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
             continue
         data = open(asset["path"], "rb").read()
         result = plan_import(asset["name"], data, {"kind": "audio"})
+        if result is None:
+            # A registry `audio` asset that is not audio. Three of them are `.mp4` promo videos, and
+            # they only started arriving once the grabber stopped skipping declared audio — so this is
+            # not a hypothetical: the first import after that fix crashed here. The type comes from the
+            # site and the CONTENT decides, as everywhere else in this pipeline.
+            stats["audio:not-audio"] += 1
+            report(f"    ? {asset['name']}: the registry calls it audio and it is not — skipped")
+            continue
         asset_id = _asset_id(data, ".mp3")
         put(asset_id, data, kind="audio", label=capture_set.stem(asset["name"]),
             source=f"cache://{asset_id}", filename=asset_id,
             attributes={**result.attributes, "role": role})
         link(asset_id, set_id, "part_of")
+        sounds[asset["name"]] = asset_id
         for clip_name in voiced:
             link(clips[clip_name], asset_id, "voiced_by")
+            paired.add((clips[clip_name], asset_id))
         if role == "ambience":
             stats["audio:ambience"] += 1
         elif role == "unlinked":
             stats["audio:unlinked"] += 1
+
+    # ---- what the site STATES, which outranks the filename match --------------------------------
+    #
+    # `audio_role` pairs by filename stem and that is all the older builds give you. The newer ones
+    # declare it outright, and they are exactly the builds the stem rule fails on: susan 0 of 8,
+    # nancy 0 of 62, ebony 0 of 140, ebony2 0 of 62 clips voiced before this.
+    stated = missed = 0
+    for clip_name, sound_names in sorted(stated_pairs.items()):
+        for sound_name in sound_names:
+            if clip_name not in clips or sound_name not in sounds:
+                missed += 1                              # named but not imported — reported, not guessed
+                continue
+            edge = (clips[clip_name], sounds[sound_name])
+            if edge in paired:
+                continue
+            link(edge[0], edge[1], "voiced_by")
+            paired.add(edge)
+            stated += 1
+    if stated or missed:
+        report(f"    {stated} voiced_by edge(s) from the site's own configs"
+               + (f"; {missed} pairing(s) name a file this capture does not have" if missed else ""))
+        stats["rel:voiced_by:stated"] = stated
 
     # ---- the AUTHORED set: a figure and the clips that shipped in its own build ------------------
     #
