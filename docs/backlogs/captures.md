@@ -37,6 +37,52 @@ does here.
 
 ---
 
+## What the capture is missing, measured — and what the downloader should do differently
+
+**Audited 2026-09-15** over the twenty captures, counting only assets the pipeline consumes
+(container, texture, audio, animation, json, cubemap, template) that declare a `file.url`. Builds are
+keyed by their asset-id set, so the same build under twenty capture roots counts once.
+
+| build | copies | recoverable by MERGING copies | in no copy at all |
+|---|---|---|---|
+| `i6yg4l9h6n5u02e` — the scene akari/arabic/geeky share | 3 | 105 | 316 (276 audio) |
+| `29rpyemwum5rgc3` — moon-girl's own scene | 1 | 0 | 325 (230 audio) |
+| `r5ibnnavi5zfoja` — app shell (ebony, ebony2, nancy, susan) | 4 | 70 | 23 |
+| `2049393.json` — the app's own scene | 16 | 66 | 17 |
+| `1qrfsvzaf4wkg24` — the props library | 15 | 0 | **48** |
+| `q0ocbff6aiicpki` — nancy's own | 1 | 0 | 12 (her 11 position configs) |
+| `1dwq8nxgw51ms34` — bride's own | 1 | 0 | 3 (`underwear.glb` + 2 textures) |
+
+**241 files are recoverable with no download at all**, by filling one copy of a shared build from
+another. A capture is a mirror of a build, so two copies of the same build are interchangeable
+file-for-file. Worth a small tool; nothing in the pipeline does it today.
+
+**The character builds are in good shape.** Fifteen of twenty are complete; teacher is 2 textures short,
+bride 3, ebony and ebony2 one container each, and nancy 12 — and susan reached **zero** after being
+re-downloaded with everything selected (2026-09-15).
+
+### Why a re-download will not fix the props library, and what would
+
+The props textures are missing in **all fifteen copies, identically**: 43 textures, 2 cubemaps,
+3 containers, including every face of two cubemaps (`px/nx/py/ny/pz/nz`, `sky_*`). Every one of the
+fifteen props is `enabled: false` — a CATALOGUE the page never renders — so the page never requests
+their textures and a downloader that mirrors network traffic can never see them. Same shape as the
+audio: 276 of one shared scene's files absent because the page plays a handful of the banks it declares.
+
+So the recommendation is a change of mechanism rather than more clicking: **enumerate `config.json` and
+fetch every asset's `file.url` plus every `variants` url**, instead of recording what the page asked
+for. Two things make that cheap — the registry is already the thing this pipeline reads, and a failure
+per asset is then reportable, which is what separates "the server no longer has this" from "nobody
+asked for it".
+
+Suggestive but not conclusive: susan's fresh everything-selected capture is missing 14 real files from
+the shared app shell that ebony's older capture HAS. Either the selection is not registry-complete or
+the server stopped serving them; a per-asset 404 log would say which.
+
+**Some of it is genuinely gone.** Of the 23 always-missing app-shell files, 13 are marketing lines
+("Bang me in any sex position in the full version", `VRHolescom.mp3`) and three are `.mp4`s — content
+the importer already skips. Those are not worth a request.
+
 ## The site states what this pipeline infers — `main_config` and `position_N_config`
 
 **Found 2026-09-15, chasing "Alice doesn't have any sounds with her animations, but you can hear her on
