@@ -792,6 +792,25 @@ between two rigs from one vendor has proved nothing. Trish, Saka and Eve are thr
 discovery layers and a VRM, and they are already in the catalog — so they are the cheapest honest test
 of whether the transform generalises.
 
+**What it is worth, now that every figure's signature is actually in a row.** 30 mapped figures, 524
+clips, eleven rig signatures:
+
+| rig | figures | clips |
+|---|---|---|
+| `85e41f9b8e` | 16 | 455 |
+| `c6e3c61972` (Grace, Yuffie, Trish) | 3 | 0 |
+| `8fa3fa4c17` (Animated Woman ×2) | 2 | 0 |
+| `790c5edf3b` (Bianca, Blondie) | 2 | 16 |
+| `156ac3838f` (Alice) | 1 | 8 |
+| `8ef7eb494a` (office-babe) | 1 | 21 |
+| `c773b69506` · `fe4965ce0f` · `9b9a660f1d` · `7a839313d9` · `cf605bb3ac` | 1 each | 0 |
+
+**Today 20 figures can be offered a clip and 10 can be offered none at all** — every dev-library model
+except Alice's family, because no clip in the catalog shares their signature and tier 1 cannot cross
+one. Tier 2 is what takes all 30 to all 524. That is the phase's value stated in rows rather than in
+principle, and it was invisible until `rig_sig` became a derived attribute: those ten figures read as
+having no signature rather than as having no clips, which are different problems.
+
 ### What the measurement says, 2026-09-15 — and it is not what this phase assumed
 
 `scripts/retarget_probe.py` plays one of Jane's clips onto every rigged figure in the catalog and
