@@ -1,0 +1,288 @@
+# Plan — hands: models you wear, and hands as input
+
+**Status:** all phases open · **Opened:** 2026-09-14
+
+**This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
+it exists to hold one sequence across them while it is being executed. Each phase names where its
+content goes when it lands, and the file is deleted when the last phase has settled — finished work to
+[`specs/`](../specs/), abandoned or deferred work to [`backlogs/`](../backlogs/), forks already taken
+to [`decisions.md`](../decisions.md). If it outlives its phases it has become a backlog by another
+name and should be dissolved on the spot.
+
+**Dissolves to:** **`specs/input.md` + `backlogs/input.md`** — a new area opened by phase 1, because
+`ConjurePointers` is the one reader of XR input and has been living inside `specs/dynamics.md` §6 while
+its consumers stopped being modules (phases 1, 3, 4) · `specs/figures.md` + `backlogs/figures.md`
+(phase 2, the worn component and what import records) · `specs/dynamics.md` (phase 4, the module-facing
+half of contact) · `specs/occlusion.md` (a cross-reference only — see *Open*).
+
+---
+
+## 1. What this is built on
+
+Measured on the catalog and the files themselves, 2026-09-14. Where one of these is wrong, the phase
+resting on it is wrong too.
+
+**The hand models are already labelled in the vocabulary we would have had to invent.** All 25 joints
+are named exactly the WebXR hand joint set — `wrist`, `thumb-metacarpal` … `pinky-finger-tip`, no
+exporter prefixes. So the two indirections the whole of [`specs/figures.md`](../specs/figures.md) is
+built on — *which node* (`humanoid`) and *which way* (`humanoid_axes`) — **collapse to identity here.**
+There is no discovery layer to write, no convention table, no anatomical frame, and no retargeting.
+
+**And the bind pose is authored in the WebXR joint frame**, which is what makes a transform copy legal
+rather than approximate. Down the index chain, each bone lies along its own local **−Z**:
+
+    wrist                     → index-finger-metacarpal      3.80 cm   dir·(−Z) = 0.958
+    index-finger-metacarpal   → …-phalanx-proximal           5.86 cm   dir·(−Z) = 0.999
+    …-phalanx-proximal        → …-phalanx-intermediate       4.06 cm   dir·(−Z) = 1.000
+    …-phalanx-intermediate    → …-phalanx-distal             2.43 cm   dir·(−Z) = 1.000
+    …-phalanx-distal          → index-finger-tip             1.16 cm   dir·(−Z) = 1.000
+
+against the spec's own words — "the `-Z` direction pointing along their associated bone, away from the
+wrist" and "the native origin has its `-Y` direction pointing perpendicular to the skin, outwards from
+the palm". ±Y measures as the palm normal on both hands (0.975 / −0.969, the sign flipping with the
+mirror as it must). The wrist is the only joint the spec leaves loose ("SHOULD point roughly towards
+the centre of the palm"), so it is the one to check on device first.
+
+**Five catalog rows, and only one clean pair among them.** All five are 13 320 tris, 0.2094 m, one
+25-joint skin, wrist→middle-tip 17.75 cm (L) / 17.80 cm (R), tagged across eleven capture sets
+(`bride, jane, barbie, manager, blondie, stewardess, granny, kawaii, goddess, akari, oktoberfest`).
+Content-addressing did not collapse them because they are not the same bytes:
+
+| id | side | textures | materials |
+|---|---|---|---|
+| `b8f676bea0758536` | L | 1 image | `ArmsVR`, `FingernailsVR` |
+| `f586068580143caa` | R | 1 image | `ArmsVR`, `FingernailsVR` |
+| `eb43564f5f93126f` | L | same image | `ArmsAR`, `FingernailsAR` — no right twin |
+| `ef25dc89e8a1de74` | R | none | none at all |
+| `119aad62cfc6f256` | R | none | `New Material` |
+
+So the pair to wear is `b8f676…` + `f586…`; the rest are an orphaned AR-material left and two
+untextured rights. Worth stating because "we imported a lot of hand models" is true by row count and
+false by content.
+
+**Today they are inert.** `rigged: true`, no `humanoid` map, so `/figure` refuses them, `inspect_figure`
+has nothing to say, and `parts_unclassified` is `["model_hand_L"]`. They can be placed as props and
+that is all.
+
+**Two readers of XR hand joints already exist, and neither is shared.** `client/occlusion.js` builds
+its own 25-joint mesh straight from `frame.getJointPose`; `client/conjure-pointers.js` reads exactly
+one joint, `index-finger-tip`, and publishes it as `pointer.fingertip`. A worn hand would be the third
+reader of the same data.
+
+**With hands up, one module in the repo answers you.** `water` branches on `p.isHand` and uses
+fingertip proximity, broadcasting the touch as a tier-B cause. `grab`, `controller-beams`,
+`surface-overlay` and `conjure-client`'s gaze picker all call `ConjurePointers.controllers()`, which
+filters tracked hands out by construction. **This, and not the model, is the reason wearing hands feels
+thin today** — and it is fixed in the layer that already exists to fix it, because modules name
+*actions* and never buttons.
+
+**The skeleton already has two writers and a stated precedence** — a playing clip wins, a pose applies
+when idle ([`figures.md` §8b](../specs/figures.md)) — and `figure.restore()` is the existing mechanism
+for handing the bones back. A worn hand is the third writer and needs one more line of the same rule,
+not a new mechanism.
+
+**Two things will fight a worn entity if not exempted.** `_placeContent` re-solves a plane-relative
+anchor for *every* `#world-root` child carrying `_frefPose`, every capture; and `grab` picks against
+`data-bbox`. A hand on your wrist must leave both, and unwearing must restore the anchor — otherwise
+taking it off loses it.
+
+**XR gives size as well as pose.** `XRJointPose` carries a **`radius` in metres** per joint (the UA
+must supply an emulated value when the device cannot determine one). But the spec's privacy guidance
+says that a UA which anonymises **"must not round each joint independently. Instead the correct way to
+round is to map each hand to a static hand-model"** — so hand size may be a fiction, identical for
+every user. Whether Quest's browser does this is undocumented either way, and it cannot be settled by
+reading: Meta contributed the canonical `generic-hand` assets to the WebXR input-profiles library, so
+a runtime serving that skeleton and a model authored against it would agree *by construction*. Phase 0
+settles it from one pair of hands.
+
+---
+
+## 2. Forks already taken
+
+Recorded in [`decisions.md`](../decisions.md) rather than here, so they survive this file.
+
+- **§24** (existing) Playback is an entity **component**, not a dynamic module. A worn hand is the same
+  shape of thing — it decorates a placed model and has no independent existence — so this is cited, not
+  re-litigated.
+- **§29** (new) `ConjurePointers` gets its own spec. The alternative that looks cheapest — a
+  `specs/hands.md` — splits the one reader of XR input across two documents, hand controls in one and
+  controller controls in the other, which is precisely what the layer exists to prevent. Same move
+  `captures.md` made on 2026-09-13, for the same reason: the consumers stopped matching the file name.
+- **§30** (new) A worn hand is an **occupied entity**, not a per-client setting. It rides the existing
+  patch/snapshot path, persists, replays on reload, and "put it down" names a real place in the world.
+  A per-user default ("always wear these") is a later wrapper over it, not a parallel mechanism.
+- **§31** (new) The model **conforms to the tracked hand** — all 25 joints, position and orientation —
+  and **contact is computed from the tracked joints, never from the skinned mesh.** The two halves argue
+  each other: conforming is what makes the rendered fingertip and the collider the same point, and
+  reading contact off the joints is what keeps a 13 320-triangle skinned mesh out of every module's
+  per-frame path (the rule `grab` already follows for figures, `figures.md` §6).
+
+---
+
+## 3. Phases
+
+Phase 0 is a measurement and phase 1 is documentation; neither ships code that renders. Phases 3 and 4
+are where hands become useful and are worth scheduling independently of 2 — **nothing in 3 or 4 needs a
+hand model to exist.**
+
+### Phase 0 — see the fit, then check the numbers
+
+*Settles into `backlogs/input.md` as a recorded measurement, and `?hands=fit` into `specs/input.md` as
+a debug mode; if it turns into a campaign, to `investigations/`.*
+
+The question is whether Quest reports a **per-user** hand or the static hand-model the privacy clause
+permits — and the obvious experiment, two people in the headset, is not available. It does not have to
+be. **No code branches on the answer**, which is the first thing to settle: `s` is derived from the
+data either way, and if the runtime is serving a canonical skeleton then `s` simply comes out the same
+for everyone. The casualty is a *claim* in the spec, not a design. And the worst case is mild — the
+worn hand matches the skeleton the runtime believes in, which is the same skeleton the occlusion mesh
+and every other WebXR app draw against, so rendering and contact still agree with each other.
+
+**`?hands=fit` — look at the skeleton the runtime believes in, against the hand it belongs to.** In
+passthrough the compositor draws the real world and our layer blends over it, so anything we draw at a
+joint is seen against the real joint underneath. **That gap — tracked skeleton versus your real hand —
+is the question**, asked in the terms the feature is for rather than as a claim about a spec clause.
+
+The mode builds in two steps, because **the model half cannot come first**: conforming a mesh is phase
+2's runtime, while markers need nothing but the joint read.
+
+| Overlay | Settles | Lands |
+|---|---|---|
+| a sphere at each joint, **drawn at the reported `radius`** | whether the radii are plausible per joint or a repeated table — the channel renders itself — and whether 25 spheres sit on your 25 real knuckles | here |
+| a small axis triad per joint | the −Z / −Y convention, and the **wrist**, the one joint the spec leaves loose (`SHOULD point roughly towards the centre of the palm`) | here |
+| the conformed mesh, flat unlit colour at ~0.35 alpha, `depthWrite: false` | does the whole hand FIT — the flesh as well as the joints. Skin-over-skin is unreadable, so a contrasting colour or wireframe, never the texture; no depth write, or the hand occludes its own far side and fingers vanish | phase 2, as its acceptance check |
+
+**What it cannot do**, and the reason the numbers below survive: passthrough is reprojected, so judging
+alignment by eye at close range has an error floor of several millimetres. It resolves *"my fingertip is
+1.5 cm short"* — the scale of a static-model mismatch on hands that are not average — and it cannot
+resolve the 2 mm that separates a real left-and-right pair from a mirrored one.
+
+So the numeric half stays, off the same `[pointers]` log of 24 segment lengths and 25 radii per hand:
+
+| Probe | A static model looks like | A real measurement looks like |
+|---|---|---|
+| **Dispersion** of the 24 segment ratios (tracked ÷ bind) | every ratio the *same* number, σ ≈ 0 — the runtime's skeleton and an XR-authored model are both the canonical hand | a few per cent of scatter: nobody's finger proportions match a reference exactly |
+| **Left vs right** | a bit-identical mirror | a millimetre or two of difference, which every real pair has |
+| **Re-acquisition**: hands out of view, back; then a fresh session | the same value bit-for-bit, every time | a small wobble as the estimate re-converges |
+| **Perturbation**: a thin glove or a wrapped finger | nothing moves | radii at least change — the estimate is coming from the image |
+
+Dispersion is the sharp one: these models are authored to the same WebXR skeleton the runtime would be
+serving, so *uniform* ratios are the tell, and it needs no ruler and no second person.
+
+**`?hands=fit` is not throwaway.** It is the standing way to look at a worn hand for phases 2–4, in the
+same spirit as `?stereodebug=` and `hands-solid`, and it is how any later complaint about alignment gets
+localised. A mixed-reality capture of it belongs in `investigations/` as the durable artifact.
+
+**Left standing:** a one-line opportunistic check in `backlogs/input.md` — when a second person is ever
+in the headset, wear the hands and read the log line. Until then the spec says what was measured, on
+whose hand, and that per-user variation is unverified.
+
+### Phase 1 — extract `specs/input.md`
+
+*Doc-only. `specs/dynamics.md` §6 moves out whole; `decisions.md` §29 records the fork.*
+
+- New `specs/input.md` + `backlogs/input.md`: controls, bindings and actions, reading pointers,
+  `armed()`, and the capture/reserve arbitration — moved, not rewritten.
+- `specs/dynamics.md` keeps the `actions` **manifest field** (it is a `module.json` key) and links out;
+  the runtime list gains a pointer instead of a section.
+- `docs/README.md` gains the area entry beside the others.
+- `specs/occlusion.md` gains one cross-reference and no edit.
+
+**Done when:** `specs/input.md` describes what is built today with no new claims, `dynamics.md` has no
+orphaned §6 references, and nothing else in `docs/` links to a section that moved.
+
+### Phase 2 — wear a hand model
+
+*Settles into `specs/figures.md` as a §8c sibling to `figure-clip`, its attributes into §2; the
+joint-reading half into `specs/input.md`; limits into `backlogs/figures.md`. Top-level `README.md`
+status line when it lands.*
+
+- **Import** records `attributes.hand_joints` (`{webxrJointName: nodeName}`) and a **measured**
+  `hand_side` — from which side of the wrist frame the thumb sits on, never from the `_L` in the
+  filename. Gated by a `validate`-shaped check: all 25 present, each finger a real parent→child chain,
+  each bone along its own −Z. Costs a `FRAME_REV` bump; `_DERIVED_MODEL_ATTRS` and the tripwire test
+  come with it.
+- **Discovery is deliberately not built.** These files arrived pre-labelled; a hand model named any
+  other way gets no map and is refused with a reason. Conventions and inference are
+  `backlogs/figures.md` material until a second naming scheme actually shows up.
+- **State** is `components.hand-rig = {hand: "left"}` — ordinary durable world state, semantic, the same
+  as a pose.
+- **Runtime** composes each bone's world matrix from the joint pose: `compose(xrPosition, xrQuaternion,
+  s)`, where `s` is the **median of the 24 segment-length ratios** (tracked ÷ bind). Median because it
+  is pose-invariant — a fist and a flat hand give the same answer where a whole-skeleton fit would not.
+  `s` exists because joint positions carry **length and never girth**: skinning transports bound
+  vertices rigidly, so without it a large hand gets longer fingers of exactly the authored thickness.
+  Phase 0 says whether `s` varies per user; the code is the same either way.
+- **Precedence: live hand > clip > pose.** Release calls `figure.restore()`, exactly as stopping a clip
+  does.
+- **Exemptions:** out of `_placeContent`'s anchor re-solve and out of `grab`'s picking while worn; the
+  entity's own transform is meaningless while worn; unwearing restores the anchor.
+- **Surface:** `POST /figure/hand`, `wear_hand` / `take_off` for the director, `conjure-ctl wear
+  <entity> --hand left|right|auto` (auto pairs on measured `hand_side`).
+- **Verification:** extraction in `tests/test_figures.py`; the bone writing against a fake skeleton in
+  `tests/js/`; the XR read itself needs the headset and says so.
+
+**Done when:** `b8f676…` worn on the left hand follows every finger; it survives a reload because the
+state is durable; taking it off returns it to where it was placed; the occlusion conflict is logged when
+`--occlusion hands` is also on; and `?hands=fit` shows the translucent mesh sitting on the real hand,
+which is phase 0's fit question finally asked of the flesh and not only the joints.
+
+### Phase 3 — hands get the vocabulary controllers already have
+
+*Settles into `specs/input.md`; the module-facing consequences are one line each in
+`specs/dynamics.md`.*
+
+- `ConjurePointers` publishes the **full joint set plus radii**, read once per frame and cached like
+  everything else it reads. This is the seam that lets `occlusion.js` stop reading joints itself
+  later — **not touched in this plan.**
+- Synthesised hand controls beside the xr-standard gamepad ones: `pinch` (thumb-tip ↔ index-tip, with
+  hysteresis), `grasp` (curl), `poke`. Hands have no buttons, so this is the only way an action ever
+  resolves for them.
+- Bindings gain hand entries, so `select` and `grab` mean something with hands up — and because modules
+  name actions, **`grab` and the beams start working with no module change.** That is the payoff the
+  pointers layer was built for.
+- The `controllers()` filter is then the open question of the phase: widen the existing callers, or add
+  a hands-and-controllers reader beside it. Decide in the phase, against what `grab` needs from a ray.
+
+**Done when:** an object can be grabbed and moved with tracked hands, `water` behaves exactly as before,
+and no module changed to get either.
+
+### Phase 4 — contact, for content that reacts
+
+*Settles into `specs/input.md` (the query) and `specs/dynamics.md` (what a module does with it).*
+
+- A joint **capsule chain** per hand — 24 capsules with the radii the runtime already hands us — and a
+  query a module asks ("which joints are inside this volume, moving how fast"), not a raycast it runs.
+- Touch **events** follow the existing tier-B rule: broadcast the cause, let each client sim from it.
+  This is also why v1 needs nothing new on the wire for peers — they never see my fingers and still see
+  the ripple.
+- `water` migrates from its own fingertip proximity to the shared query **with no behaviour change**,
+  which is the proof the query is the right shape.
+
+**Done when:** a dynamic module reacts to a poke without knowing what a joint is, and `water` is one
+call shorter than it was.
+
+---
+
+## 4. Open, and not yet worth deciding
+
+- **What peers see.** v1 is local-only: only the wearer drives the hand, and for everyone else the
+  entity sits where it was worn. The cheap next step is the wrist pose on the presence stream (7 floats,
+  fingers at rest); the full 25-joint stream is a sync tier nothing in `dynamics.md` has and "sync
+  causes, never effects" says not to build.
+- **Per-joint scale.** If phase 0 finds the radii and the segment lengths disagreeing about hand size,
+  that is a real proportion mismatch and worth logging rather than averaging. Per-joint scale is the
+  fix; it is not worth building before the numbers exist.
+- **Occlusion and worn hands defeat each other.** `--occlusion hands` carves a passthrough hole exactly
+  where the worn model is, so your real hand shows through it. Documented and logged, not fixed — the
+  joint-source unification in phase 3 is what would eventually let `occlusion.js` and a worn hand agree
+  about the same skeleton.
+- **Taking a hand off needs a command,** because hands have no buttons. A gesture is possible once
+  phase 3 exists; v1 is director or CLI.
+- **No haptics on a tracked hand.** Nothing to do; worth writing down before someone designs against it.
+- **A figure's own hands are still not puppeteerable.** Humanoid maps carry no finger bones — fingers
+  are not recoverable from topology ([`figures.md` §3](../specs/figures.md)) — so this plan does not
+  touch the standing "hand poses do not exist" item in `backlogs/figures.md`.
+- **Jitter.** Copying joint positions transmits tracking noise into the mesh. If it shows on device,
+  filter **presentation only** and never the poses contact reads, which would trade latency for
+  smoothness in the one place that cannot afford it. Measure before writing a filter.
