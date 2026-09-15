@@ -265,8 +265,8 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
     for idx, piece in enumerate(thing.pieces):
         uses.setdefault((piece.container, piece.mesh, piece.materials), []).append(idx)
     for (cid, mesh, _m), idxs in uses.items():
-        if len(idxs) < 2:
-            continue
+        if len(idxs) < 2 or any(thing.pieces[i].shadowed for i in idxs):
+            continue                            # a variant pair is not an instance — see `_shadow_variants`
         got = [n for i in idxs for n in by_piece.get(i, [])]
         if len(got) != len(idxs):
             bad.append(f"{build.name(cid)} mesh {mesh} is drawn {len(idxs)}× by the scene and "
@@ -286,9 +286,16 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
             bad.append(f"piece {idx} ({piece.entity!r}) is "
                        f"{'optional' if not piece.enabled else 'live'} in the scene and "
                        f"{'flagged' if flagged else 'not flagged'} in the file")
-        if (node.get("name") in hidden) != (not piece.enabled):
+        if bool(_tag(node).get("variant")) != piece.shadowed:
             bad.append(f"piece {idx} ({piece.entity!r}) is "
-                       f"{'absent from' if not piece.enabled else 'in'} the hidden list, wrongly")
+                       f"{'a variant' if piece.shadowed else 'the only claim'} and the file says "
+                       f"otherwise")
+        # A piece is hidden when the scene switched it off OR when it is the losing half of a variant.
+        # Both are switchable and both are wrong to draw on load.
+        want_hidden = (not piece.enabled) or piece.shadowed
+        if (node.get("name") in hidden) != want_hidden:
+            bad.append(f"piece {idx} ({piece.entity!r}) is "
+                       f"{'absent from' if want_hidden else 'in'} the hidden list, wrongly")
 
     # --- the skeleton, once it has been welded: every joint resolves and names are unique
     for si, skin in enumerate(doc.get("skins") or []):
@@ -697,9 +704,18 @@ def compose_thing(build: Build, thing: Thing, *, capture: str = "",
         work.nodes[node]["extras"] = {MARK: {"piece": index, "container": piece.container,
                                              "mesh": piece.mesh, "path": list(piece.path),
                                              "optional": not piece.enabled,
+                                             # The losing half of a colour switch the site flips with a
+                                             # script the capture does not have. Kept, because it is a
+                                             # wardrobe option the moment anything can switch it — and
+                                             # hidden, because drawn together the two z-fight.
+                                             "variant": piece.shadowed,
                                              "skinned": skin is not None}}
-        if not piece.enabled:
+        if not piece.enabled or piece.shadowed:
             hidden.append(piece.entity)
+    if thing.shadowed:
+        work.note(f"{len(thing.shadowed)} piece(s) draw a mesh another piece already draws in the same "
+                  f"place ({', '.join(p.entity for p in thing.shadowed[:4])}) — a VARIANT rather than an "
+                  f"instance; the better-dressed claim is shown and this one is emitted hidden")
 
     doc: dict = {
         "asset": {"version": "2.0", "generator": "conjure compose"},

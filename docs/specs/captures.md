@@ -234,6 +234,15 @@ leaves `sheen` at a default WHITE with `useSheen: false`, so a check keyed on th
 `useDynamicRefraction` is true exactly **once** in those 208, on Jane's eyes, which is the case the list
 earns its keep for and the one visible thing this does not reproduce.
 
+**A fourth way a layer can be all environment and no content: a refractive LENS.** No maps of its own,
+see-through, `useDynamicRefraction` set — its whole appearance is the environment bent through it, which
+glTF core cannot express. The fallback is not neutral: a flat colour at partial alpha is white PAINT over
+the thing it was meant to enhance. Bride's `Reflections-eyes` is 48% white over her irises and washed the
+brown out to a pale tan. Five of 1,241 bound materials are this shape, four of them named for an eye
+(`Reflections-eyes`, `Genesis 8 Female_EyeMoisture`, `Sclerea`, `eyes`); the fifth is a pane of glass,
+likewise better seen through than fogged. Made invisible and warned about, exactly as the mirror and the
+two blend families above.
+
 It is **additive**: images become buffer views on the end of the existing binary chunk and nothing that
 was in the file moves, so the geometry comes out bit-identical and a map derived from the original still
 applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17
@@ -254,6 +263,22 @@ also removes the skeleton merge entirely, because the scene expands every bone i
 **181/181 for office-babe across three containers, 222/222 bride, 175/175 Oktoberfest, 85/85 Alice**.
 There is one skeleton because there is one scene. A container whose bones the scene does NOT expand
 falls back to carrying its own, and says so loudly; it has never happened here.
+
+**One mesh drawn twice in the SAME place is a VARIANT; drawn twice in two places it is an instance.**
+Both halves are real in this corpus, exactly one case each out of 948 pieces. Bride's heels are one mesh
+on `DEF-foot.L` and `.R`, and flattening them loses a shoe. Alice's hair is `Side_Swept` and
+`Side_Swept2` — one mesh, one transform, both enabled, two material sets — a colour switch the site
+flips with a script the capture does not contain, and drawn together they z-fight: the pale locks at the
+front of her otherwise brown head. The better-dressed claim wins (`how_dressed`) and the loser is kept
+and flagged `variant`, because it is a wardrobe option the moment anything can switch it.
+
+**A base colour outranks a slot count** in `how_dressed`, and Alice's hair is why: her two claims fill
+six map slots each, and one primitive of the losing set carries a SPECULAR map where the winning set
+carries a diffuse, so it renders as flat paint. Slots alone score that a tie and pick by luck. The same
+rule settles which entity's materials win a binding, where it fixed a second case of the same shape:
+ebony's `handmodeltutorial` binds a sphere-map placeholder over both hand primitives and used to beat
+the real `ArmsVR`/`FingernailsVR` on a 2-2 tie — the chrome-hand bug `how_dressed` was written for, one
+capture further on.
 
 **The thing's own scale travels with it and its position does not.** `Banana` is a 0.5 wrapper around a
 0.9166 mesh and a banana that skips it is twice life size; where the scene happens to stand the vase is

@@ -298,6 +298,74 @@ def test_joints_agree_reads_local_matrices_so_depth_does_not_matter():
     assert joints_agree(_S(), rest) == ["b"]
 
 
+def test_one_mesh_drawn_twice_in_the_SAME_place_is_a_variant_not_an_instance(tmp_path):
+    """Alice's hair: `Side_Swept` and `Side_Swept2`, one mesh, one transform, two material sets.
+
+    Both are enabled and the site flips between them with a script the capture does not contain, so
+    drawn together they z-fight — which is the pale locks at the front of her otherwise brown head.
+    The distinction from bride's heels is the transform: same place is a variant, two places is an
+    instance.
+    """
+    glb = _glb([("Hair", [8])])
+    build, thing = _one(("Alice", {}, [("Side_Swept", _render(10, 0, [30]), []),
+                                       ("Side_Swept2", _render(10, 0, [31]), [])]),
+                        tmp_path, renders=[(10000, "Hair", 10, 0)], glbs=[("files/body.glb", glb)],
+                        materials=[(30, "pale", {"specularMap": 40}),
+                                   (31, "brown", {"diffuseMap": 40})],
+                        textures=[(40, "hair.png", "files/hair.png")])
+    assert [p.entity for p in thing.shadowed] == ["Side_Swept"], "the one with no base colour loses"
+    assert [p.entity for p in thing.live] == ["Side_Swept2"]
+    data, notes = compose_thing(build, thing)
+    assert verify_thing(build, thing, data) == [], notes
+    doc = _parse(data)
+    assert doc["extras"]["conjure"]["hidden"] == ["Side_Swept"]
+    assert doc["nodes"][_named(doc)["Side_Swept"]]["extras"]["conjure"]["variant"] is True
+    assert doc["nodes"][_named(doc)["Side_Swept"]].get("mesh") is not None, "kept, not dropped"
+
+
+def test_a_base_colour_outranks_a_slot_count_when_two_claims_tie():
+    """Alice's two hair claims fill six slots each; only one has a base colour on every primitive.
+
+    Slots alone score that a tie and pick by luck, which is how the pale set won. It also fixes a bug
+    of the same shape in `read_build`: ebony's `handmodeltutorial` binds a sphere-map placeholder over
+    both hand primitives and used to beat the real `ArmsVR`/`FingernailsVR` on a 2-2 tie.
+    """
+    from conjure.playcanvas import how_dressed
+
+    class _B:
+        @staticmethod
+        def asset(mid):
+            return {1: {"data": {"specularMap": 9, "opacityMap": 9}},
+                    2: {"data": {"diffuseMap": 9, "opacityMap": 9}}}[mid]
+    assert how_dressed(_B(), (1,)) == (0, 2) and how_dressed(_B(), (2,)) == (1, 2)
+    assert how_dressed(_B(), (2,)) > how_dressed(_B(), (1,))
+
+
+def test_a_refractive_lens_with_no_maps_is_made_invisible_not_painted_on(tmp_path):
+    """Bride's `Reflections-eyes` is 48% white over her irises, and the brown washed out to pale tan."""
+    from conjure.playcanvas import material_from, _Textures
+    build, _thing = _figure_build(tmp_path)
+    tex = _Textures(build, 1024, 90)
+    lens = material_from({"useDynamicRefraction": True, "refraction": 1, "blendType": 2,
+                          "opacity": 0.477273, "diffuse": [1, 1, 1]}, "Reflections-eyes", tex)
+    assert lens["pbrMetallicRoughness"]["baseColorFactor"] == [0.0, 0.0, 0.0, 0.0]
+    assert lens["alphaMode"] == "BLEND"
+    assert any("refractive lens" in w for w in tex.warnings)
+    assert not any("will read as opaque" in w for w in tex.warnings), "the generic warning is now wrong"
+
+
+def test_a_refraction_that_CARRIES_a_texture_is_left_alone(tmp_path):
+    """The rule is about a layer with no detail of its own. Tinted, textured glass is an object."""
+    from conjure.playcanvas import material_from, _Textures
+    build, _thing = _figure_build(tmp_path)
+    tex = _Textures(build, 1024, 90)
+    glass = material_from({"useDynamicRefraction": True, "refraction": 1, "blendType": 2,
+                           "opacity": 0.5, "diffuse": [1, 1, 1], "diffuseMap": 999},
+                          "stained-glass", tex)
+    assert glass["pbrMetallicRoughness"]["baseColorFactor"] != [0.0, 0.0, 0.0, 0.0]
+    assert not any("refractive lens" in w for w in tex.warnings)
+
+
 # ---------------------------------------------------------------- the verifier earns its keep
 
 

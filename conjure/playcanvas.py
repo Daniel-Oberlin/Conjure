@@ -320,6 +320,39 @@ def variant_only(build: Build) -> list[tuple[str, str, str]]:
     return out
 
 
+def how_dressed(build: Build, mats) -> tuple[int, int]:
+    """`(primitives with a BASE COLOUR, filled map slots)` — how DRESSED a claim on a mesh is.
+
+    The tie-break when several entities claim one mesh. First-wins was arbitrary and it picked wrong:
+    three entities bind Jane's right hand, and the one the scene happens to list first is
+    `handmodeltutorial`, wearing a placeholder with nothing but a sphere map. Her left hand has two
+    claimants and got the real material by luck, so the pair came out mismatched — a textured left hand
+    and a chrome right one — with nothing missing from the capture to explain it.
+
+    A placeholder is a DEGENERATE version of the real material, so the richest claim is the authored
+    one. Ties keep first-wins, which is what separates `ArmsVR` from `ArmsVRToolMode`: both fill two
+    slots, and the plain one is listed first.
+
+    **A base colour outranks a slot count, and Alice's hair is why.** Her two claims on `Side_Swept`
+    fill six slots each and are not the same: one primitive of the losing set carries a SPECULAR map
+    where the winning set carries a diffuse, so it renders as flat paint — pale locks at the front of a
+    brown head. Slots alone score that a tie and pick by luck. What decides whether a primitive is a
+    picture or a colour is whether it has a base colour at all, so that is counted first.
+
+    Slots are counted as FILLED, not as distinct textures. A build reuses one image across several
+    slots far more than you would guess — 33 of the 43 mapped materials in Jane's build point every map
+    they have at a single texture, the hands among them, where `Hands_diffuse_2K.jpeg` is both the
+    diffuse and the light map. Counting distinct textures scores all three claimants 1 and decides
+    nothing.
+    """
+    base = slots = 0
+    for material in mats:
+        data = (build.asset(material) or {}).get("data") or {}
+        base += 1 if data.get("diffuseMap") else 0
+        slots += sum(1 for key, value in data.items() if key.endswith("Map") and value)
+    return base, slots
+
+
 def read_build(root: str, *, prefer: str = "scene") -> Build:
     """Load a build and resolve every entity → container → mesh → per-primitive material binding.
 
@@ -350,30 +383,8 @@ def read_build(root: str, *, prefer: str = "scene") -> Build:
     seen: dict[tuple[int, int], Binding] = {}
     clashes: dict[tuple[int, int], set] = {}
 
-    def dressed(mats) -> int:
-        """How many distinct textures a binding's materials reference — how DRESSED the mesh is.
-
-        The tie-break when several entities claim one mesh. First-wins was arbitrary and it picked
-        wrong: three entities bind Jane's right hand, and the one the scene happens to list first is
-        `handmodeltutorial`, wearing a placeholder with nothing but a sphere map. Her left hand has
-        two claimants and got the real material by luck, so the pair came out mismatched — a textured
-        left hand and a chrome right one — with nothing missing from the capture to explain it.
-
-        A placeholder is a DEGENERATE version of the real material, so the richest binding is the
-        authored one. Ties keep first-wins, which is what separates `ArmsVR` from `ArmsVRToolMode`:
-        both fill two slots, and the plain one is listed first.
-
-        Counted as FILLED SLOTS, not distinct textures. A build reuses one image across several slots
-        far more than you would guess — 33 of the 43 mapped materials in Jane's build point every map
-        they have at a single texture, the hands among them, where `Hands_diffuse_2K.jpeg` is both the
-        diffuse and the light map. Counting distinct textures scores all three claimants 1 and decides
-        nothing.
-        """
-        slots = 0
-        for material in mats:
-            data = (build.asset(material) or {}).get("data") or {}
-            slots += sum(1 for key, value in data.items() if key.endswith("Map") and value)
-        return slots
+    def dressed(mats) -> tuple:
+        return how_dressed(build, mats)
 
     def take(entities: dict, source: str = "scene") -> None:
         for entity in (entities or {}).values():
@@ -574,6 +585,9 @@ class Piece:
     # anything that has to place geometry rebuilds the chain from here instead of reading the summary.
     chain: tuple = ()
     node: int = -1                              # the entity that draws it, as an index into `Thing.tree`
+    # Another piece draws this same mesh in this same place, better dressed — see `_shadow_variants`.
+    # A VARIANT, not an instance, and not the scene's wardrobe switch either: emitted hidden.
+    shadowed: bool = False
 
 
 @dataclass
@@ -608,7 +622,12 @@ class Thing:
 
     @property
     def live(self) -> list[Piece]:
-        return [p for p in self.pieces if p.enabled]
+        return [p for p in self.pieces if p.enabled and not p.shadowed]
+
+    @property
+    def shadowed(self) -> list[Piece]:
+        """Alternates: one mesh in one place claimed twice, the losing claim. See `_shadow_variants`."""
+        return [p for p in self.pieces if p.shadowed]
 
     @property
     def optional(self) -> list[Piece]:
@@ -617,7 +636,7 @@ class Thing:
         `underwear` is exactly this in office-babe, Oktoberfest and bride, and it is what the parts
         classifier has been reconstructing from mesh names. Emit it hidden rather than dropping it.
         """
-        return [p for p in self.pieces if not p.enabled]
+        return [p for p in self.pieces if not p.enabled and not p.shadowed]
 
 
 def thing_notes(build: Build, ts: Optional[list] = None, **kw) -> list[str]:
@@ -741,6 +760,7 @@ def things(build: Build, *, roots: Optional[dict] = None, capture: str = "",
             if override is None and label in excluded:
                 continue                                  # the app's own machinery, site-wide
             thing = _walk(build, entities, guid, name)
+            _shadow_variants(build, thing)
             thing.name = wanted.get(label, label) if override is not None else label
             if thing.pieces or override is not None:
                 out.append(thing)
@@ -805,6 +825,34 @@ def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
             stack.append((child, here, links, on, pos, scl, rot, label, mine))
     thing.pieces.sort(key=lambda x: (x.container, x.mesh, x.entity))
     return thing
+
+
+def _shadow_variants(build: Build, thing: Thing) -> None:
+    """One mesh drawn twice in ONE place is a VARIANT; drawn twice in two places it is an instance.
+
+    The distinction is the whole of it, and both halves are real in this corpus — exactly one case each,
+    out of 948 pieces. Bride's heels are `clothes_weddingdress_heels_L` and `_R`: one mesh, two feet,
+    two different chains, and flattening them loses a shoe. Alice's hair is `Side_Swept` and
+    `Side_Swept2`: one mesh, one chain, both enabled, and two different sets of materials. That is a
+    colour switch the site flips at runtime with a script the capture does not contain — and drawn
+    together they z-fight, which is the pale locks at the front of her otherwise brown head.
+
+    So: same mesh AND the same transform all the way up means one of them is an alternate. The
+    best-dressed claim wins, on the same rule that settles it for a binding (`how_dressed` — a base
+    colour outranks a slot count, which is what separates these two), and the loser is kept and marked
+    rather than dropped. It is a wardrobe option the moment anything can switch it.
+    """
+    groups: dict[tuple, list[int]] = {}
+    for i, piece in enumerate(thing.pieces):
+        where = tuple((link[1], link[2], link[3]) for link in piece.chain)
+        groups.setdefault((piece.container, piece.mesh, where), []).append(i)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        best = max(members, key=lambda i: (how_dressed(build, thing.pieces[i].materials), -i))
+        for i in members:
+            if i != best:
+                thing.pieces[i].shadowed = True
 
 
 def dead_meshes(build: Build) -> list[Binding]:
@@ -1292,9 +1340,24 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     mirror = (bool(d.get("useMetalness")) and float(d.get("metalness") or 0) >= 0.9
               and (d.get("useSkybox") or d.get("cubeMap") or d.get("sphereMap"))
               and d.get("diffuseMap") is None and opacity <= 0.6)
+    # A refractive LENS: no maps at all, see-through, and its whole appearance is the environment bent
+    # through it. glTF core cannot express that (`KHR_materials_transmission` can, at the cost of a
+    # transmission pass this does not spend on a Quest), and the fallback is not neutral — a flat colour
+    # at partial alpha is white PAINT over the thing it was meant to enhance. Bride's `Reflections-eyes`
+    # is 48% white over her irises, and the brown came out washed to a pale tan. Five materials across
+    # the twenty captures are this shape and four of them are named for an eye; the fifth is a pane of
+    # glass, which is likewise better seen through than fogged.
+    lens = (d.get("useDynamicRefraction") and blend in (BLEND_NORMAL, BLEND_PREMULTIPLIED)
+            and opacity < 1 and not any(k.endswith("Map") and v for k, v in d.items()))
     lightening = blend in LIGHTENING_BLENDS
     modulating = blend in MODULATING_BLENDS
-    if mirror and not (lightening or modulating):
+    if lens:
+        out["alphaMode"] = "BLEND"
+        pbr["baseColorFactor"] = [0.0, 0.0, 0.0, 0.0]
+        warn.append(f"{name}: a refractive lens ({opacity:.2f} opacity, no maps of its own) — glTF core "
+                    f"cannot bend what is behind it, so it is made invisible rather than drawn as a "
+                    f"flat film over whatever it was meant to refract")
+    elif mirror and not (lightening or modulating):
         out["alphaMode"] = "BLEND"
         pbr["baseColorFactor"] = [0.0, 0.0, 0.0, 0.0]
         warn.append(f"{name}: a see-through mirror ({opacity:.2f} opacity, metalness 1, reflecting a "
@@ -1358,6 +1421,8 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
         warn.append(f"{name}: {', '.join(moved)} map(s) are tiled, offset or rotated — not carried "
                     f"(needs KHR_texture_transform)")
     for label, used, lost in _UNCARRIED:
+        if lens and label == "refraction":
+            continue                    # already reported above, and "will read as opaque" is now wrong
         if used(d):
             warn.append(f"{name}: {label} is set and not carried — {lost}")
     for message in warn:
