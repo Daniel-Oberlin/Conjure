@@ -1,8 +1,8 @@
 # Plan — figures, their animations, and environments
 
 **Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phase 2 PARTIAL (works; open
-defects listed below) · phase 3 DONE (untested on device) · phase 2b steps 0–5 DONE (composed AND
-imported; rehearsed, not yet run on the real catalog) · phases 4–5 open
+defects listed below) · phase 3 DONE (untested on device) · phase 2b steps 0–5 DONE and imported ·
+the capture side settled 2026-09-15 (see NEXT below) · phases 4–5 open
 **Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13 · **Phase 3 landed:** 2026-09-13 · **Phase 2 landed partial:** 2026-09-13
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
@@ -549,6 +549,43 @@ worth a look next to her long-standing eye trouble.
   device sighting (Teacher 1.81, Jane 1.82). The per-container Alice is the same 1.73 m, so nothing
   changed at the switchover. Unresolved — needs a comparison against something of known size in the
   room rather than another measurement of the file.
+
+### NEXT, agreed 2026-09-15 — do these in order
+
+The capture side is settled; what remains is mechanical. Written down because a compaction lands here.
+
+1. **Recompose the whole corpus WITH the Basis decode, and re-import once.** Every compose run so far
+   used `--no-decode` or hit the bug where `compose_build` never decoded at all (fixed, `1a56e53`), so
+   the composed things — and therefore the catalog — are undertextured wherever a capture holds only
+   `.basis`. That is 21 textures now: moon-girl 17, susan 4. The same pass picks up the 216 new
+   `voiced_by` edges and the authored `speed`, so it is one loop:
+
+   ```
+   for cap in $(ls temp/vrh); do playcanvas_rebuild.py temp/vrh/$cap --out temp/things/$cap --compose; done
+   for cap in $(ls temp/vrh); do import_capture.py temp/vrh/$cap --commit; done
+   ```
+
+   Skip `arabic.partial` if it is still there. Verify after: `glb_check.mjs` on the figures, and every
+   figure should show its materials MAPPED rather than merely counted.
+
+2. **Nothing consumes `attributes.speed` yet.** `positions.py` records it (0.5, 0.6, 1.2 are authored,
+   so every clip has been playing wrong) and `/figure/clip` → `figure-clip` ignores it. Small, and it is
+   the defect Daniel reported as "the playback speed seemed wrong for susan/Alice".
+
+3. **Push.** Both repos, ~15 commits in Conjure and 3 in `browser-extension-glb-download` (0.19.0
+   popup/job ownership, 0.20.0 declared audio, 0.20.1 the 401 retry).
+
+**Not next, and recorded elsewhere:** blink and the layered idles (`positions.Layer` holds the data,
+the runtime is unbuilt — `specs/captures.md` § 3 *Positions*), bride's eyelid
+([`investigations/bride-eyelid.md`](../investigations/bride-eyelid.md)), Alice reading large,
+phase 4 rooms-as-environments, phase 5 retargeting, and running the captured app as a reference
+renderer ([`backlogs/captures.md`](../backlogs/captures.md)).
+
+**What the capture side learned, so it is not re-litigated:** a capture is only as complete as what the
+browsing session actually LOADED, because the server answers 401 to a re-fetch of anything the session
+is not entitled to (576 assets in one report — other characters' content in a shared build). A declared
+`variants` file satisfies an asset, so a `.basis` with no `.png` is not a gap. And a re-download
+REPLACES, so audit before discarding the previous copy: `scripts/capture_audit.py --against`.
 
 **What remains is 4's inverse. The agreed approach for 4, 2026-09-14, was:**
 
