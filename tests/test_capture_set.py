@@ -224,3 +224,31 @@ def test_container_files_keys_a_container_both_ways(tmp_path):
         "78": {"id": "78", "type": "material", "name": "skin", "data": {}}}, "scenes": []}))
     found = container_files(str(tmp_path / "cap"))
     assert found == {77: ("office-babe", str(root))}, "materials are not containers"
+
+
+def test_reverting_a_converter_change_does_not_leave_the_asset_in_its_own_tombstone(tmp_path):
+    """An id is a CONTENT ADDRESS, so improving a converter writes new bytes and a new row while the old
+    one steps aside — and REVERTING brings the old bytes, and the old id, back onto a retired row.
+
+    `upsert` never touched `superseded_by`, so the re-import looked clean and the asset stayed
+    invisible. Seen live: backing out one composer change took the catalog from 98 live models to 47,
+    each re-imported id written straight back into its own tombstone.
+    """
+    from conjure.library import AssetLibrary
+    S = "daniel/agents/builder"
+    lib = AssetLibrary(tmp_path / "library.db")
+    lib.upsert("old.glb", kind="model", label="Bride", scope=S, source="cache://old", tags="bride")
+    lib.upsert("new.glb", kind="model", label="Bride", scope=S, source="cache://new", tags="bride")
+    lib.supersede("old.glb", "new.glb")
+    assert (lib.get("old.glb") or {}).get("superseded_by") == "new.glb"
+
+    # the revert: the old bytes are back, so the old id is what an import writes
+    lib.upsert("old.glb", kind="model", label="Bride", scope=S, source="cache://old", tags="bride")
+    assert (lib.get("old.glb") or {}).get("superseded_by") == "new.glb", \
+        "upsert alone must NOT clear it — most callers are partial writes"
+    assert lib.revive("old.glb") is True
+    assert (lib.get("old.glb") or {}).get("superseded_by") is None
+    assert lib.revive("old.glb") is False, "nothing to do the second time"
+    assert lib.revive("never-existed.glb") is False
+    live = {r["id"] for r in lib.by_user("daniel", limit=100)}
+    assert "old.glb" in live and "new.glb" in live

@@ -157,6 +157,13 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
     def put(asset_id, data=None, **fields):
         stats[fields.get("kind", "?")] += 1
         if commit:
+            # An asset this import is WRITING is current, whatever a previous run decided. An id is a
+            # content address, so reverting a converter change brings the old bytes and the old id back
+            # — onto a row a later run had already retired. Without this the import looks clean and the
+            # asset stays invisible: 98 live models became 47, each re-import landing in its own
+            # tombstone.
+            if library.revive(asset_id):
+                stats["revived"] += 1
             if data is not None and _store(cache, asset_id, data):
                 stats["bytes_written"] += 1
             # TAG EVERY ASSET WITH ITS CAPTURE. A set is called `susan` and her figure is called

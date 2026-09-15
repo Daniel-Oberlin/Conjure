@@ -215,6 +215,19 @@ both and nothing to choose between them.
   those two — `dir`, the clip lists, `search`, `by_user` — and a tombstone surfacing in any of them is
   the bug the column exists to end.
 
+`library.revive(id)` clears a tombstone, and it is not optional. An id is a content address in both
+directions: improve a converter and a re-import writes new bytes onto a new row while the old steps
+aside — **revert the change and the old bytes, and therefore the old id, come back onto a row that is
+still marked retired.** `upsert` never touched `superseded_by`, so the re-import looked clean and the
+asset stayed invisible. Measured live while backing out one composer change: the catalog went from 98
+live models to **47**, each re-imported id written straight back into its own tombstone.
+
+Deliberately NOT part of `upsert`, because most calls to that are partial writes — an embedding
+backfill, a curation note — and having those clear a tombstone would resurrect everything ever retired.
+Reviving is a claim that the asset is being INGESTED, so the ingest path says it explicitly. Relations
+are not restored: `supersede` MOVED them, so they belong to whatever replaced the row, and an importer
+is re-creating the ones it means anyway.
+
 **What counts as "the same thing" is `(kind, label)` within ONE capture** — `import_capture.same_thing`.
 The capture tag is the whole safety argument: two captures can ship different `computer_desk` bytes and
 each keeps its row, because a row tagged only `jane` is never a candidate while importing `akari`.

@@ -632,6 +632,32 @@ class AssetLibrary:
             self._db.commit()
         return True, None
 
+    def revive(self, id: str) -> bool:
+        """Clear a tombstone: this asset is current again. True if it had one.
+
+        The inverse of `supersede`, and it is needed because an id is a CONTENT ADDRESS. Improve a
+        converter and a re-import writes new bytes and a new row while the old one steps aside; revert
+        the change and the bytes — and therefore the id — come back, landing on a row that is still
+        marked retired. `upsert` never touched `superseded_by`, so the import appeared to succeed and
+        the asset stayed invisible: reverting one composer change took the live catalog from 98 models
+        to 47, with every re-imported id written straight back into its own tombstone.
+
+        Deliberately NOT part of `upsert`. Most calls to that are partial writes — an embedding
+        backfill, a curation note — and having those clear a tombstone would resurrect the lot. Reviving
+        is a claim that the asset is being INGESTED, so the ingest path says it explicitly.
+
+        Relations are not restored, because `supersede` MOVED them rather than copying: they now belong
+        to whatever replaced this, and the caller is re-creating the ones it means.
+        """
+        with self._lock:
+            row = self._db.execute("SELECT superseded_by FROM assets WHERE id=?", (id,)).fetchone()
+            if row is None or row["superseded_by"] is None:
+                return False
+            self._db.execute("UPDATE assets SET superseded_by=NULL WHERE id=?", (id,))
+            self._db.commit()
+        self._sync_fts(id)                                   # back into search
+        return True
+
     def superseded(self, of: str) -> list[dict]:
         """Rows that stepped aside for `of` — the tombstones pointing here."""
         with self._lock:
