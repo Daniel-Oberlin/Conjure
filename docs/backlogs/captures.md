@@ -151,6 +151,35 @@ What it would give, roughly in order of value:
 Not designed yet, and it should not be bolted onto `audio_role`: this is a second, richer SOURCE of the
 same facts, and the interesting question is which wins when both speak.
 
+## Run the captured app ourselves, as a REFERENCE RENDERER
+
+**Raised 2026-09-15.** A published PlayCanvas app is a static site, and a capture holds essentially all
+of one: `playcanvas-stable.min.js` (their engine), `__start__.js`, `__settings__.js`, `__modules__.js`,
+`__game-scripts.js`, `config.json`, the `files/assets/` tree and the wasm (ammo, basis). Serve the
+directory over HTTP and it should boot. No `index.html` is captured, but PlayCanvas's is boilerplate and
+reconstructible from `__settings__.js`.
+
+**The blocker is the backend, and it is smaller than it looks.** The app talks to a **PocketBase** API
+(`pocketbase.umd.js`, `api/collections/scene/records`, `api/collections/pricing_plan`) for scene
+selection and entitlement — the same thing answering 401 to a re-fetch. But **those responses were
+captured**: `temp/vrh/susan/api/collections/pricing_plan/records` and
+`api/collections/scene/records/<id>` are on disk, so replaying a handful of GETs as static JSON is most
+of the work. Premium gating (`buyPremiumButton.js`, `vrholesBuyPremiumButton.js`) may need
+short-circuiting.
+
+**Why it is worth considering at all, which is not "to have the app".** Nearly every hard question in
+the figure work has been *"does our composed version look like the site's?"* — Alice's white hair and
+her eye sockets, bride's missing eyelid, the washed-out irises, arabic's textures. Today that comparison
+is a person in a headset describing what they see, one round trip at a time, and the eyelid campaign is
+still open after several. A local copy of the original turns it into a side-by-side, and it would have
+settled the eyelid in one look.
+
+**What it would NOT give.** Only what the capture holds: other characters' assets in a shared build are
+401-gated, so those scenes render partially. And it proves nothing about our conversion being *right* —
+it gives something to compare against, which is a different and lesser thing than a test.
+
+Rough size: hours for one build to render, not days; the API stubbing is the uncertain part. Not started.
+
 ## Unsettled — asked for, not yet designed
 
 ### Interactive exclusion at capture import
