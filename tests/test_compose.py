@@ -366,6 +366,47 @@ def test_a_refraction_that_CARRIES_a_texture_is_left_alone(tmp_path):
     assert not any("refractive lens" in w for w in tex.warnings)
 
 
+def test_a_degenerate_scene_claim_loses_to_the_containers_own_materials(tmp_path):
+    """Alice's eyes: the scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` over four primitives where the
+    container's template binds `Eye_R, Cornea_R, Eye_L, Cornea_L`, and reaches for a MAPLESS duplicate
+    while it is at it — three assets are named `aula_Std_Cornea_R` and it takes an empty one. Her
+    corneas are where the blood vessels in the whites are drawn, so the empty pair renders as nothing.
+
+    A claim that repeats one material where another names two has lost information rather than
+    expressed a preference, and only then does the template outrank `prefer="scene"`.
+    """
+    glb = _glb([("Eyes", [4, 4, 4, 4])])
+    root = _build(tmp_path, scene_tree=("Alice", {}, [("CC_Base_Eye", _render(10, 0, [30, 32, 30, 32]), [])]),
+                  renders=[(10000, "Eyes", 10, 0)], glbs=[("files/body.glb", glb)],
+                  materials=[(30, "Eye_R", {"diffuseMap": 40}), (31, "Eye_L", {"diffuseMap": 40}),
+                             (32, "Cornea_R", {}), (33, "Cornea_L", {"diffuseMap": 40})],
+                  textures=[(40, "eye.png", "files/eye.png")],
+                  templates=[(50, "alice", [("CC_Base_Eye", 10000, [30, 32, 31, 33])])])
+    build = read_build(root)
+    thing = things(build, rules={"exclude": [], "captures": {}})[0]
+    piece = thing.pieces[0]
+    assert piece.redressed is True
+    assert piece.materials == (30, 32, 31, 33), "the left eye stops wearing the right eye's material"
+    data, notes = compose_thing(build, thing)
+    assert any("degenerate copy" in n for n in notes), notes
+    assert verify_thing(build, thing, data) == []
+
+
+def test_a_scene_claim_that_merely_has_fewer_MAPS_still_wins(tmp_path):
+    """ebony's scene names the VR hand materials and the template the AR ones — both two distinct, and
+    this is a VR app. Richness alone must not overturn the scene, which is why `prefer` exists."""
+    glb = _glb([("Hand", [4, 4])])
+    root = _build(tmp_path, scene_tree=("Hand", {}, [("model_hand", _render(10, 0, [30, 32]), [])]),
+                  renders=[(10000, "Hand", 10, 0)], glbs=[("files/body.glb", glb)],
+                  materials=[(30, "ArmsVR", {"diffuseMap": 40}), (31, "ArmsAR", {"diffuseMap": 40, "aoMap": 40}),
+                             (32, "NailsVR", {"diffuseMap": 40}), (33, "NailsAR", {"diffuseMap": 40, "aoMap": 40})],
+                  textures=[(40, "h.png", "files/h.png")],
+                  templates=[(50, "hand", [("model_hand", 10000, [31, 33])])])
+    build = read_build(root)
+    thing = things(build, rules={"exclude": [], "captures": {}})[0]
+    assert thing.pieces[0].materials == (30, 32) and thing.pieces[0].redressed is False
+
+
 def test_a_viewing_copy_leaves_out_what_the_scene_does_not_draw(tmp_path):
     """A glb viewer draws every node it is given and ignores `extras`, so the asset looks wrong in one.
 

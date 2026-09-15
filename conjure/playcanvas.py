@@ -353,6 +353,33 @@ def how_dressed(build: Build, mats) -> tuple[int, int]:
     return base, slots
 
 
+def filled_in(build: Build, rich, poor) -> bool:
+    """Is `poor` a DEGENERATE copy of `rich` — one material repeated where the other names several?
+
+    The one case that outranks `prefer`, and it is narrow on purpose. Four meshes in the corpus have a
+    scene claim and a better-dressed template claim, and they do not all mean the same thing:
+
+      · `ebony` / `VR_hand_L` — the scene says `ArmsVR`, the template says `ArmsAR`. Both name two
+        distinct materials; the AR pair merely has more map slots. This is a VR app and the SCENE is
+        right, which is the whole reason `prefer` exists.
+      · `barbie` — `strands Copy` against `sclerea`, again two distinct authored answers.
+      · `susan` / Alice's eyes — the scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` over four
+        primitives where the template binds `Eye_R, Cornea_R, Eye_L, Cornea_L`. Two distinct materials
+        against four. It also reaches for a MAPLESS duplicate: three assets are named
+        `aula_Std_Cornea_R` and the scene takes one of the two empty ones.
+
+    A claim that names one material twice where another names two has lost information rather than
+    expressed a preference, and that is a difference this can see: strictly FEWER DISTINCT materials
+    over the same primitives, and less well dressed with it. Alice matches; the other three do not,
+    so they keep the scene's answer. Visible cost of getting it wrong: her corneas are where the blood
+    vessels in the whites of her eyes are drawn, and the empty pair renders as nothing at all.
+    """
+    if len(rich) != len(poor) or not rich:
+        return False
+    return (len(set(poor)) < len(set(rich))
+            and how_dressed(build, rich) > how_dressed(build, poor))
+
+
 def read_build(root: str, *, prefer: str = "scene") -> Build:
     """Load a build and resolve every entity → container → mesh → per-primitive material binding.
 
@@ -406,8 +433,18 @@ def read_build(root: str, *, prefer: str = "scene") -> Build:
                 # over the captures: of 1,340 meshes both claim, 952 are equally dressed (order decides)
                 # and 384 favour the scene either way — but 4 have a better-dressed TEMPLATE, and for
                 # those "what actually runs" has to beat "what has more maps" or the knob means nothing.
+                #
+                # Except when the preferred claim is a DEGENERATE copy, which `filled_in` decides. Those
+                # same 4 are not one case: ebony's scene names the VR hand materials where the template
+                # names the AR ones, and preferring the template there would be plainly wrong.
+                other = seen[key]
                 if source == prefer and seen[key].source != prefer:
+                    if filled_in(build, other.materials, mats):
+                        continue              # the incumbent is richer AND more distinct — leave it
                     clashes.setdefault(key, set()).add(seen[key].entity)
+                    seen[key] = bound
+                elif filled_in(build, mats, other.materials):
+                    clashes.setdefault(key, set()).add(other.entity)
                     seen[key] = bound
                 continue
             if key in seen and seen[key].materials != mats:
@@ -588,6 +625,9 @@ class Piece:
     # Another piece draws this same mesh in this same place, better dressed — see `_shadow_variants`.
     # A VARIANT, not an instance, and not the scene's wardrobe switch either: emitted hidden.
     shadowed: bool = False
+    # The materials came from the CONTAINER's template rather than from this entity, because the
+    # entity's own list was a degenerate copy — see `filled_in`. Reported, never silent.
+    redressed: bool = False
 
 
 @dataclass
@@ -776,6 +816,7 @@ def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
     top = entities[guid]
     thing = Thing(name=top.get("name") or "?", scene=scene,
                   enabled=top.get("enabled") is not False, entities=0)
+    redress = {(b.container, b.mesh): b.materials for b in build.bindings if b.source == "template"}
     # Depth-first, and a parent is always appended before its children — so `Node.parent` always points
     # at an index that already exists and anything downstream can build the tree in one pass.
     stack = [(guid, (), (), True, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), False, "", -1)]
@@ -814,10 +855,18 @@ def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
             data = (build.asset(render["asset"]) or {}).get("data") or {}
             container, index = data.get("containerAsset"), data.get("renderIndex")
             if container is not None and index is not None:
+                stated = tuple(int(m) if m is not None else None
+                               for m in (render.get("materialAssets") or []))
+                # The entity's own list, EXCEPT where `read_build` judged the scene's claim on this
+                # mesh a degenerate copy and let the container's template win (`filled_in`). Only then,
+                # because a scene entity dressing a mesh its own way is normal and is the whole of the
+                # variant case: Alice's two hair entities must keep their two different material sets,
+                # and her eyes must not keep the right eye's material on the left.
+                instead = redress.get((int(container), int(index)))
                 thing.pieces.append(Piece(
                     container=int(container), mesh=int(index),
-                    materials=tuple(int(m) if m is not None else None
-                                    for m in (render.get("materialAssets") or [])),
+                    materials=instead or stated,
+                    redressed=bool(instead) and instead != stated,
                     entity=label, parent=parent, path=here,
                     enabled=on and render.get("enabled") is not False,
                     position=pos, scale=scl, rotated=rot, chain=links, node=mine))

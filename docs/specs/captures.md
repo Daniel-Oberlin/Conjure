@@ -272,6 +272,19 @@ flips with a script the capture does not contain, and drawn together they z-figh
 front of her otherwise brown head. The better-dressed claim wins (`how_dressed`) and the loser is kept
 and flagged `variant`, because it is a wardrobe option the moment anything can switch it.
 
+**A scene claim that REPEATS a material where the container names several has lost information**, and
+that is the one thing allowed to outrank `prefer="scene"` (`filled_in`). Four meshes in the corpus have a
+scene claim and a better-dressed template claim, and they do not all mean the same thing: ebony's scene
+says `ArmsVR` where the template says `ArmsAR`, and barbie's says `strands Copy` where the template says
+`sclerea` — two distinct authored answers each, and this is a VR app, so the scene is right. Alice's eyes
+are not that shape. The scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` over four primitives where the
+template binds `Eye_R, Cornea_R, Eye_L, Cornea_L`, and reaches for a MAPLESS duplicate while it is at it:
+three assets are named `aula_Std_Cornea_R` and it takes one of the two empty ones. Her corneas are where
+the blood vessels in the whites of her eyes are drawn, so the empty pair renders as nothing at all and
+the per-container output — which never applied `prefer` — looked *better* than the composed thing. So:
+strictly fewer DISTINCT materials over the same primitives, and less well dressed with it. One piece in
+263, reported as `redressed` and never silent.
+
 **A base colour outranks a slot count** in `how_dressed`, and Alice's hair is why: her two claims fill
 six map slots each, and one primitive of the losing set carries a SPECULAR map where the winning set
 carries a diffuse, so it renders as flat paint. Slots alone score that a tie and pick by luck. The same
