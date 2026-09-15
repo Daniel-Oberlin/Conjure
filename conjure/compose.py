@@ -729,9 +729,8 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
     redressed = [p for p in thing.pieces if p.redressed]
     if redressed:
         work.note(f"{len(redressed)} piece(s) wear the CONTAINER's materials rather than the scene "
-                  f"entity's ({', '.join(p.entity for p in redressed[:4])}) — the scene's list repeated "
-                  f"one material where the container names several, which is a degenerate copy rather "
-                  f"than a choice")
+                  f"entity's ({', '.join(p.entity for p in redressed[:4])}) — the scene entity named "
+                  f"none of its own")
     if thing.shadowed:
         work.note(f"{len(thing.shadowed)} piece(s) draw a mesh another piece already draws in the same "
                   f"place ({', '.join(p.entity for p in thing.shadowed[:4])}) — a VARIANT rather than an "

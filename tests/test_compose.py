@@ -366,14 +366,20 @@ def test_a_refraction_that_CARRIES_a_texture_is_left_alone(tmp_path):
     assert not any("refractive lens" in w for w in tex.warnings)
 
 
-def test_a_degenerate_scene_claim_loses_to_the_containers_own_materials(tmp_path):
-    """Alice's eyes: the scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` over four primitives where the
-    container's template binds `Eye_R, Cornea_R, Eye_L, Cornea_L`, and reaches for a MAPLESS duplicate
-    while it is at it — three assets are named `aula_Std_Cornea_R` and it takes an empty one. Her
-    corneas are where the blood vessels in the whites are drawn, so the empty pair renders as nothing.
+def test_a_scene_claim_that_REPEATS_one_material_is_still_what_the_site_draws(tmp_path):
+    """Alice's eyes, and the case that taught this rule twice.
 
-    A claim that repeats one material where another names two has lost information rather than
-    expressed a preference, and only then does the template outrank `prefer="scene"`.
+    Her scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` over four primitives where the container's
+    template binds `Eye_R, Cornea_R, Eye_L, Cornea_L`, and the cornea it reaches for is a MAPLESS
+    duplicate — three assets are named `aula_Std_Cornea_R` and it takes an empty one. Read as intent
+    that looks like information lost, and `filled_in` used to let the template win on exactly that
+    reading. It was the only mesh in twenty captures it ever fired on, and it was wrong.
+
+    The running site is the ground truth and it draws the scene's claim: no blood vessels in either
+    eye, which is what the site shows and what our composed Alice did not. Nothing anywhere in the
+    capture binds the textured corneas — they are unused Character Creator leftovers sitting in the
+    registry. So `prefer` has no exception: what actually runs wins, even when it looks careless,
+    because "careless" was our inference and the pixels were not.
     """
     glb = _glb([("Eyes", [4, 4, 4, 4])])
     root = _build(tmp_path, scene_tree=("Alice", {}, [("CC_Base_Eye", _render(10, 0, [30, 32, 30, 32]), [])]),
@@ -385,10 +391,9 @@ def test_a_degenerate_scene_claim_loses_to_the_containers_own_materials(tmp_path
     build = read_build(root)
     thing = things(build, rules={"exclude": [], "captures": {}})[0]
     piece = thing.pieces[0]
-    assert piece.redressed is True
-    assert piece.materials == (30, 32, 31, 33), "the left eye stops wearing the right eye's material"
+    assert piece.materials == (30, 32, 30, 32), "the scene's own claim, repeats and all"
+    assert piece.redressed is False
     data, notes = compose_thing(build, thing)
-    assert any("degenerate copy" in n for n in notes), notes
     assert verify_thing(build, thing, data) == []
 
 

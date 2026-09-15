@@ -493,9 +493,12 @@ worth a look next to her long-standing eye trouble.
    - **Alice's eyes lost their blood vessels** — and the tell was that `temp/rebuilt/` looked BETTER
      than the composed thing. Her scene claim binds `Eye_R, Cornea_R, Eye_R, Cornea_R` where the
      container's template binds four distinct materials, and reaches for one of three same-named
-     `Cornea_R` assets that has no maps. `prefer="scene"` was letting that win; now a claim that
-     REPEATS a material where another names two loses (`filled_in`), which is narrow enough to leave
-     ebony's VR-over-AR and barbie's alone. `things()` was also bypassing the resolution entirely.
+     `Cornea_R` assets that has no maps. A rule (`filled_in`) was added to let the template win there.
+     **Reverted 2026-09-15: it was wrong.** Checked against the running site, Alice has no blood
+     vessels in either eye, and nothing in the whole build binds the textured corneas — they are unused
+     Character Creator leftovers. The sparse claim IS what the app draws, and `prefer="scene"` has no
+     exception. `specs/captures.md` § 3 keeps the full account. The genuine half of the fix stands:
+     `things()` was bypassing the binding resolution entirely.
    - **the file looks wrong in a viewer even when it is right** — `hidden` lives in `extras`, so a
      viewer draws the whole wardrobe at once. `--as-shown` writes a copy without it. Two of the four
      findings above took an extra round trip because of this, which is the cost of not having it.

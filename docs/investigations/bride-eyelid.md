@@ -60,7 +60,7 @@ re-import looked clean while the asset stayed invisible — 98 live models becam
 |---|---|---|
 | The lid geometry is **detached from the face** in the shared frame | medium | Compare lid vertices against the NEIGHBOURING vertices of the same mesh, not against the donor's rest. Experiment 3 measured the wrong reference: it measures a divergence the site shares, so it cannot explain ONE missing lid on a figure that otherwise looks right |
 | It is a **material**, not skinning | medium | `Eyelashes` sets `depthWrite` off, which glTF cannot express and this pipeline reports and drops; `Reflections-eyes` is now made invisible as a refractive lens. Either could read as a missing lid |
-| The lid **primitive is not in the file**, or wears a degenerate material claim | low–medium | Find which primitive and material carry the lower lid, and whether the scene's claim on it is one `filled_in` would catch (bride's claims were not flagged; Alice's eye claim was — `specs/captures.md` § 3) |
+| The lid **primitive is not in the file**, or wears a degenerate material claim | low–medium | Find which primitive and material carry the lower lid, and whether the scene's claim on it is degenerate in the way Alice's eye claim looked (note that the Alice case turned out NOT to be a defect — the site draws the sparse claim; `specs/captures.md` § 3) |
 | It is **static, not animated** — absent at rest too and only noticed during a clip | medium | One headset observation: place her and look without playing anything. Separates a skinning fault from a drawing fault and costs nothing |
 
 ## Fixes shipped

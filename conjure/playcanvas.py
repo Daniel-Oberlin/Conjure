@@ -353,33 +353,6 @@ def how_dressed(build: Build, mats) -> tuple[int, int]:
     return base, slots
 
 
-def filled_in(build: Build, rich, poor) -> bool:
-    """Is `poor` a DEGENERATE copy of `rich` — one material repeated where the other names several?
-
-    The one case that outranks `prefer`, and it is narrow on purpose. Four meshes in the corpus have a
-    scene claim and a better-dressed template claim, and they do not all mean the same thing:
-
-      · `ebony` / `VR_hand_L` — the scene says `ArmsVR`, the template says `ArmsAR`. Both name two
-        distinct materials; the AR pair merely has more map slots. This is a VR app and the SCENE is
-        right, which is the whole reason `prefer` exists.
-      · `barbie` — `strands Copy` against `sclerea`, again two distinct authored answers.
-      · `susan` / Alice's eyes — the scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` over four
-        primitives where the template binds `Eye_R, Cornea_R, Eye_L, Cornea_L`. Two distinct materials
-        against four. It also reaches for a MAPLESS duplicate: three assets are named
-        `aula_Std_Cornea_R` and the scene takes one of the two empty ones.
-
-    A claim that names one material twice where another names two has lost information rather than
-    expressed a preference, and that is a difference this can see: strictly FEWER DISTINCT materials
-    over the same primitives, and less well dressed with it. Alice matches; the other three do not,
-    so they keep the scene's answer. Visible cost of getting it wrong: her corneas are where the blood
-    vessels in the whites of her eyes are drawn, and the empty pair renders as nothing at all.
-    """
-    if len(rich) != len(poor) or not rich:
-        return False
-    return (len(set(poor)) < len(set(rich))
-            and how_dressed(build, rich) > how_dressed(build, poor))
-
-
 def read_build(root: str, *, prefer: str = "scene") -> Build:
     """Load a build and resolve every entity → container → mesh → per-primitive material binding.
 
@@ -429,22 +402,22 @@ def read_build(root: str, *, prefer: str = "scene") -> Build:
                 build.scene_claims.add(key)
             bound = Binding(entity.get("name") or "?", key[0], key[1], mats, source=source)
             if key in seen and seen[key].source != source:
-                # A scene-vs-TEMPLATE disagreement is settled by `prefer`, not by richness. Measured
-                # over the captures: of 1,340 meshes both claim, 952 are equally dressed (order decides)
-                # and 384 favour the scene either way — but 4 have a better-dressed TEMPLATE, and for
-                # those "what actually runs" has to beat "what has more maps" or the knob means nothing.
+                # A scene-vs-TEMPLATE disagreement is settled by `prefer`, not by richness, and there
+                # is no exception. Measured over the captures: of 1,340 meshes both claim, 952 are
+                # equally dressed (order decides) and 384 favour the scene either way — but 4 have a
+                # better-dressed TEMPLATE, and for those "what actually runs" has to beat "what has
+                # more maps" or the knob means nothing.
                 #
-                # Except when the preferred claim is a DEGENERATE copy, which `filled_in` decides. Those
-                # same 4 are not one case: ebony's scene names the VR hand materials where the template
-                # names the AR ones, and preferring the template there would be plainly wrong.
-                other = seen[key]
+                # There WAS an exception, `filled_in`, for a claim that repeats one material where the
+                # other names several — Alice's eyes, the only mesh in the corpus it ever fired on. It
+                # was wrong. Her scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` and reaches for a
+                # MAPLESS `aula_Std_Cornea_R` where the template names four distinct textured
+                # materials, and reading that as "information lost" was an inference about intent. The
+                # running site is the ground truth and it draws the scene's claim: no blood vessels in
+                # either eye. Nothing in the whole capture binds the textured corneas at all — they are
+                # unused Character Creator leftovers. See `docs/specs/captures.md` § 3.
                 if source == prefer and seen[key].source != prefer:
-                    if filled_in(build, other.materials, mats):
-                        continue              # the incumbent is richer AND more distinct — leave it
                     clashes.setdefault(key, set()).add(seen[key].entity)
-                    seen[key] = bound
-                elif filled_in(build, mats, other.materials):
-                    clashes.setdefault(key, set()).add(other.entity)
                     seen[key] = bound
                 continue
             if key in seen and seen[key].materials != mats:
@@ -625,8 +598,8 @@ class Piece:
     # Another piece draws this same mesh in this same place, better dressed — see `_shadow_variants`.
     # A VARIANT, not an instance, and not the scene's wardrobe switch either: emitted hidden.
     shadowed: bool = False
-    # The materials came from the CONTAINER's template rather than from this entity, because the
-    # entity's own list was a degenerate copy — see `filled_in`. Reported, never silent.
+    # The materials came from the CONTAINER's template rather than from this entity, because the entity
+    # named none of its own. Reported, never silent.
     redressed: bool = False
 
 
@@ -888,11 +861,11 @@ def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
             if container is not None and index is not None:
                 stated = tuple(int(m) if m is not None else None
                                for m in (render.get("materialAssets") or []))
-                # The entity's own list, EXCEPT where `read_build` judged the scene's claim on this
-                # mesh a degenerate copy and let the container's template win (`filled_in`). Only then,
-                # because a scene entity dressing a mesh its own way is normal and is the whole of the
-                # variant case: Alice's two hair entities must keep their two different material sets,
-                # and her eyes must not keep the right eye's material on the left.
+                # The entity's own list, falling back to the container's template only where the
+                # entity named none — a scene entity dressing a mesh its own way is normal and is the
+                # whole of the variant case, so it is never second-guessed. Alice's two hair entities
+                # keep their two different material sets, and her eyes keep the right eye's material
+                # on BOTH, which is what the running site draws.
                 instead = redress.get((int(container), int(index)))
                 thing.pieces.append(Piece(
                     container=int(container), mesh=int(index),

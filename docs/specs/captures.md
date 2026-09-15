@@ -272,18 +272,30 @@ flips with a script the capture does not contain, and drawn together they z-figh
 front of her otherwise brown head. The better-dressed claim wins (`how_dressed`) and the loser is kept
 and flagged `variant`, because it is a wardrobe option the moment anything can switch it.
 
-**A scene claim that REPEATS a material where the container names several has lost information**, and
-that is the one thing allowed to outrank `prefer="scene"` (`filled_in`). Four meshes in the corpus have a
-scene claim and a better-dressed template claim, and they do not all mean the same thing: ebony's scene
-says `ArmsVR` where the template says `ArmsAR`, and barbie's says `strands Copy` where the template says
-`sclerea` — two distinct authored answers each, and this is a VR app, so the scene is right. Alice's eyes
-are not that shape. The scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` over four primitives where the
-template binds `Eye_R, Cornea_R, Eye_L, Cornea_L`, and reaches for a MAPLESS duplicate while it is at it:
-three assets are named `aula_Std_Cornea_R` and it takes one of the two empty ones. Her corneas are where
-the blood vessels in the whites of her eyes are drawn, so the empty pair renders as nothing at all and
-the per-container output — which never applied `prefer` — looked *better* than the composed thing. So:
-strictly fewer DISTINCT materials over the same primitives, and less well dressed with it. One piece in
-263, reported as `redressed` and never silent.
+**`prefer="scene"` has NO exception, and the attempt to give it one is worth recording.** Four meshes in
+the corpus have a scene claim and a better-dressed template claim. Three are obviously the scene's to
+win — ebony's scene says `ArmsVR` where the template says `ArmsAR`, barbie's says `strands Copy` where
+the template says `sclerea`: two distinct authored answers each, and this is a VR app. The fourth is
+Alice's eyes, and it looked different. Her scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` over four
+primitives where the template binds `Eye_R, Cornea_R, Eye_L, Cornea_L`, and the cornea it reaches for is
+a MAPLESS duplicate: three assets are named `aula_Std_Cornea_R` and it takes one of the two empty ones.
+Her corneas are where the blood vessels in the whites are drawn, so the scene's pair renders as nothing —
+and the per-container output, which never applied `prefer`, looked *better* than the composed thing.
+
+A rule called `filled_in` was written for that reading: strictly fewer DISTINCT materials over the same
+primitives, and less well dressed with it. **It was wrong, and it fired on that one mesh and no other in
+twenty captures.** Checked against the running site, Alice has no blood vessels in either eye — the site
+draws the scene's claim, mapless corneas and all, and our Alice was the one with the extra detail. The
+confirming fact is in the capture rather than in the pixels: **nothing anywhere in the build binds the
+textured corneas**, so `aula_Std_Cornea_L` and the textured `aula_Std_Cornea_R` are unused Character
+Creator leftovers sitting in the registry, and reaching for them was reaching for something the app
+never draws.
+
+The lesson is about the shape of the mistake, not the eye. "Fewer distinct materials than available"
+described the data correctly and *inferred intent from it* — that an author who repeats a material must
+have lost something. What actually runs is the only evidence of intent there is, which is what `prefer`
+already said. `Piece.redressed` survives for the narrower case it is honest about: a scene entity that
+names no materials at all falls back to the container's template.
 
 **A base colour outranks a slot count** in `how_dressed`, and Alice's hair is why: her two claims fill
 six map slots each, and one primitive of the losing set carries a SPECULAR map where the winning set
