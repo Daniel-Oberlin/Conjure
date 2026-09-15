@@ -1,7 +1,6 @@
 # Plan — figures, their animations, and environments
 
-**Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phase 2 PARTIAL (works; open
-defects listed below) · phase 3 DONE (untested on device) · phase 2b steps 0–5 DONE and imported ·
+**Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phase 2 DONE (closed 2026-09-15) · phase 3 DONE (untested on device) · phase 2b steps 0–5 DONE and imported ·
 the capture side settled and the corpus recomposed + re-imported 2026-09-15 (see NEXT below) · phases 4–5 open
 **Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13 · **Phase 3 landed:** 2026-09-13 · **Phase 2 landed partial:** 2026-09-13
 
@@ -236,7 +235,7 @@ the corpus and the largest is five); querying clips by `rig_sig` returns them fo
 without either figure being named; the shell can list a figure's clips and their audio; and the
 authored set and the compatible set are separately visible for a figure that has both.
 
-### Phase 2 — clothing on and off ⚠️ PARTIAL
+### Phase 2 — clothing on and off ✅ DONE
 
 *Settles into `specs/figures.md` §runtime; the classifier's limits to `backlogs/figures.md`.*
 
@@ -261,34 +260,45 @@ authored set and the compatible set are separately visible for a figure that has
 stripped state survives a reload, and a model whose clothing is a separate container reports that
 rather than silently doing nothing.
 
-**Where it actually is (2026-09-13).** The classifier, the vocabulary file, `figure-parts`,
-`/figure/parts` and the `dress_figure` tool all work, and four figures were stripped and re-dressed on
-device. Held open rather than closed because headset testing found defects the mechanism itself does
-not explain, and closing the phase would file them as finished:
+**Closed 2026-09-15.** The classifier, the vocabulary file, `figure-parts`, `/figure/parts` and the
+`dress_figure` tool all work, and four figures were stripped and re-dressed on device. It was held open
+because headset testing found four defects the mechanism did not explain. Re-examined against the
+composed corpus, **three of the four were not defects in it** and the fourth was one word:
 
-- **The separate-container half is not built at all.** Jane's `hair.glb` and `underwear.glb` are still
-  place-it-or-do-not, which is the second of the two mechanisms this phase named.
-- **Clothing categories over-trigger.** Removing Barbie's clothes took her hair, with `hair` correctly
-  classified apart from two `clothing` meshes — the director reached for `only_body`. Steering and a
-  `hidden_by_category` report went in; whether that is enough is unmeasured.
-- **Alice keeps a headband** when stripped, and her scalp's white part does not render.
-- **Oktoberfest is neither file, and this is the sharpest case for the separate-container work.** The
-  scene composes her from BOTH: dress, eyebrows, hair and body from `Oktoberfest-milf-fixing.glb`,
-  eyelashes and **a beer** from `Oktoberfest-milf.glb`. So `-fixing` is a woman with no eyelashes and
-  empty hands, and the plain file is a woman holding a beer with a black dress and black skin. Both are
-  in the catalog and neither is her.
+- **The separate-container half — dissolved by phase 2b, not built.** "Off means not placing it at all"
+  was a statement about a pipeline where a container was the unit. A thing merges its containers, so
+  Jane's `hair.glb` and `underwear.glb` are meshes inside one file and turning them off is the same
+  `parts_hidden` flag as everything else. The second mechanism this phase named no longer has anything
+  to be a second mechanism *for*.
+- **Oktoberfest is neither file — fixed by composition.** She is one thing with her beer, confirmed on
+  device. What remained was that `Beer` had no category, which is below.
+- **Alice keeps a headband, and her scalp does not render — neither is ours.** She has no headband mesh
+  at all; if one is visible it is geometry inside `CC_Base_Body`, which `dress` cannot and should not
+  touch. And `aula_Scalp_Female` is a render asset **no scene entity draws**, so the site does not draw
+  it either — the same shape as the cornea case below it in `specs/captures.md` § 3, and faithful
+  rather than broken.
+- **Clothing categories over-trigger — not the classifier.** Barbie classifies cleanly: `hair` is
+  `hair`, apart from `skirt`/`top`/`underwear` as `clothing`. Removing her clothes took her hair because
+  the DIRECTOR reached for `only_body`. Steering and a `hidden_by_category` report went in; whether the
+  steering is *enough* is a director-eval question and not a code change, and it is recorded in
+  `backlogs/figures.md` rather than holding a phase open.
 
-  Her two bodies are the same character at two mesh densities — `[50012, 316, 2649, 5737, 3472]` against
-  `[23532, 316, 2649, 5737, 3472]`, four primitives matching vertex-for-vertex and only the skin
-  differing — so `adopt_unbound` refuses, correctly: it cannot tell a decimated twin from a different
-  mesh, and the rule that stops it here is the rule that stops `computer_desk` taking `cool_button`'s
-  material.
+**The one real gap: a thing the figure HOLDS is not a thing she wears.** `Beer` was the only mesh in
+twenty captures the vocabulary had no word for. `accessory` means worn — filing a pint there means
+"take off your beer" — and `clothing` is plainly wrong, so `held` is a category (vocabulary revision 2,
+removable, ordered after `shoes` and before `accessory`). The tempting rule was structural: the beer is
+the only unskinned mesh in the corpus parented to a HAND bone, so it rides her arm through a clip. But
+bone-parenting alone is wrong three times in four — bride's two heels hang off `DEF-foot` and teacher's
+glasses off the head — and the bone that distinguishes them needs the humanoid map, which the names
+already answer correctly without. So the structure is why the category exists, not how it is decided.
 
-  **The beer is already bone-parented inside the GLB** — node 160 sits under `DEF-hand.R`, unskinned,
-  with its own translation — so a merge across containers would carry it correctly and it would ride her
-  arm through a clip. It is the only mesh in the corpus attached to a *character's* skeleton this way
-  (Jane's bone-parented meshes are the VR rig's own hands). Composition, not attachment, is the missing
-  piece.
+After it, one mesh on a captured FIGURE is unclassified: one literally named `New Entity`. It stays
+that way. The dev-library models are a separate dialect and a separate backlog — `specs/figures.md`
+§5a and `backlogs/figures.md`.
+
+**Done when** (all met): a figure with a classified wardrobe can be stripped to the body and restored,
+the stripped state survives a reload, and a model whose clothing is a separate container reports that
+rather than silently doing nothing — now by merging it, which is better than reporting it.
 
 Two black-figure defects found the same way turned out NOT to be this phase and are fixed: office-babe's
 body was bound by no entity (`adopt_unbound` could not see a mesh with no render asset), and metal had

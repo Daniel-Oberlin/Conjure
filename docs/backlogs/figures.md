@@ -2529,6 +2529,52 @@ it. **Numbers to be measured in the first slice, not guessed at here.**
 
 ---
 
+## The parts vocabulary does not speak the dev library's dialect (2026-09-15)
+
+Measured after force-refreshing every model row: **30 mesh names across nine dev-library models are
+unclassified**, against one on a captured figure. The vocabulary was fitted to 96 names from one
+PlayCanvas origin, and these came from Daz, Reallusion, Mixamo and VRM.
+
+    body  Genesis 8 Female Mesh, Genesis 8.1 Female Mesh, Grace_Mesh, Character, Woman, Shaun
+    face  Eye_L, Eye_R, eyelid, eyelid.001/.002, Mouth, Face, Grace_Tearline Mesh,
+          Genesis 8.1 Female Tear Mesh, mole, eye2
+    ?     Head.002/.003/.005/.020/.127/.1633 (Trish — probably hair or accessory, needs a look),
+          WoodenBat_Saw (Shaun — a HELD prop, and the second instance of that category),
+          Casual_/Formal_ Head|Feet|Legs (Animated Woman — outfit variants)
+
+Not a defect: this is what "the vocabulary is data and is never finished" means, and the backlog list is
+doing the job it exists for. Worth doing because **phase 5 targets exactly these models** — retargeting
+is to be tested on Trish, Saka and Eve — and a figure you cannot undress is a poor subject for it.
+
+Two cautions from fitting it the first time. Rules are first-match-wins SUBSTRING, so `face` as a word
+would also claim `Surface`, and `Head.*` on Trish needs looking at before guessing — six numbered heads
+on one figure is more likely an LOD or a morph set than six accessories. And `WoodenBat_Saw` says `held`
+generalises, which is worth confirming rather than assuming.
+
+Do it as a vocabulary edit plus `refresh-models`; it costs a `parts_rev` bump and no release.
+
+## Does the `dress_figure` steering actually hold? (2026-09-15)
+
+Recorded here rather than holding phase 2 open, because it is a director-eval question and not a code
+change.
+
+On device, "remove her clothes" on Barbie took her hair. The classifier was not at fault — she
+classifies cleanly, `hair` as `hair` apart from `skirt`/`top`/`underwear` as `clothing`. The director
+reached for `only_body`, which removes everything removable. The fix that shipped was steering plus a
+report: `dress_figure`'s docstring now maps five phrasings to the narrowest call that satisfies each and
+says outright that `only_body` "is almost never what 'remove her clothes' means", and the reply lists
+what came off BY CATEGORY, because three times running the director announced "clothing's all off" after
+a call that also took the hair.
+
+**Whether that is enough is unmeasured.** It cannot be settled by a unit test — the thing under test is
+a model's choice between two correct-looking tool calls. What would settle it: a small eval that puts the
+five phrasings to the director against a figure with hair, clothing and shoes, and asserts on the CALL
+rather than the prose. That is the same shape as the other director-behaviour questions here, and worth
+building once for all of them rather than once for this.
+
+Note the category added since: `held`. `only_body` now takes the beer too, which is right, and is one
+more thing a careless `only_body` removes without being asked.
+
 ## Open questions
 
 1. ~~What are these models made of?~~ **Answered 2026-09-01** — see the measurement section. Re-run the

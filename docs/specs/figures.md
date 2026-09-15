@@ -415,11 +415,31 @@ Only nodes carrying a **mesh** are parts. A bone called `DEF_Skirt01` drives a g
 hiding it would do nothing while implying it had.
 
 `attributes.parts_unclassified` is **reported, not swallowed** — it is the vocabulary's backlog and the
-only honest measure of its coverage. Across all twenty captured figures exactly one name is unclassified:
-`Beer`, genuinely a prop mesh inside a figure.
+only honest measure of its coverage, and it works as one: `Beer` sat on it as the single unclassified
+name across the twenty captured figures until `held` was added for it (revision 2). What remains there is
+one mesh literally named `New Entity`, and that stays unclassified, because inventing a category for a
+name that means nothing is how a classifier starts lying.
+
+**Scoped to the captures, and the scope shows.** The vocabulary was fitted to 96 mesh names from one
+origin, and the dev-library models use a different dialect: 30 names across nine of them are
+unclassified — `Genesis 8 Female Mesh`, `Grace_Mesh`, `Character`, `Woman`, `Shaun` are all bodies, and
+`Eye_L`, `eyelid`, `Mouth`, `Face`, `Tearline` are all face. Neither is a defect in the classifier; it
+is what "the vocabulary is data and is never finished" means in practice, and the backlog list is doing
+exactly the job it exists for. The Quest controller and the VR hands are unclassified too and should
+stay so — they are the app's own machinery rather than figures, and a controller button is not clothing.
 
 `body` and `face` are **never removable**: taking the eyes out of a head is not undressing it. `hair` is
 removable and is **not** clothing — stripping a figure to check its integrity should not scalp it.
+
+**`held` is what the figure carries, not what she wears.** Oktoberfest's beer is the case: `accessory`
+means worn, so filing a pint there means "take off your beer". It is removable — putting it down is a
+thing people ask for — and ordered after `shoes` and before `accessory`, which matters both ways.
+
+The tempting rule was structural and is wrong. The beer is the only unskinned mesh in the corpus
+parented to a HAND bone (`DEF-hand.R`), so it rides her arm through a clip — but bone-parenting alone
+misclassifies three of the four cases that have it: bride's two heels hang off `DEF-foot` and teacher's
+glasses off the head. Telling them apart needs the humanoid map, and the names answer it correctly
+without one. **The structure is why the category exists; the vocabulary is how it is decided.**
 
 ## 6. Placement
 
