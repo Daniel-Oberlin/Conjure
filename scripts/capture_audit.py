@@ -16,6 +16,12 @@ re-download REPLACES rather than tops up: a run that captures less than the last
 files. Measured on one: arabic's own character build went from 35 of 35 to 9 of 35. Point this at the
 previous copy before you throw it away.
 
+A whole BUILD can go missing, not just files in one, and that is reported separately as `BUILD GONE`.
+It has to be, because builds are matched by asset-id set and a build that is simply not here has no
+fingerprint to compare — so every file in it would go unreported. moon-girl's re-download dropped its
+entire moon-base release, 62 assets and the two environment things composed from them, while gaining
+12 files elsewhere; the fix is to copy that one directory across rather than to restore the capture.
+
 Builds are matched by their ASSET-ID SET rather than by directory name, because the same build appears
 under many captures — the shared props library is in fifteen of them — and the useful comparison is
 between two copies of one build, wherever they sit.
@@ -111,10 +117,17 @@ def main() -> int:
     if not os.path.isdir(args.path):
         print(f"{args.path} is not a directory")
         return 2
-    theirs = {}
+    theirs, theirs_by_capture = {}, {}
     if args.against:
         for other in captures_under(args.against, True):
-            theirs.update(survey(other))
+            seen = survey(other)
+            theirs.update(seen)
+            # Kept PER CAPTURE as well as flat, because a build can go missing WHOLESALE and the flat
+            # map cannot see that: matching is by asset-id set, so a build that is simply not here has
+            # no fingerprint to compare and every file in it goes unreported. That is not hypothetical
+            # — moon-girl's re-download dropped its entire moon-base release, 62 assets, and this tool
+            # said "nothing was lost".
+            theirs_by_capture[os.path.basename(other.rstrip("/"))] = seen
 
     worst = 0
     for capture in captures_under(args.path, args.each):
@@ -127,6 +140,14 @@ def main() -> int:
         total = sum(len(a) for _fp, (_l, a) in builds.items())
         print(f"\n{name}: {total - missing} of {total} present"
               + (f", {missing} MISSING" if missing else " — complete"))
+        for fp, (label, assets) in sorted(theirs_by_capture.get(name, {}).items(),
+                                          key=lambda kv: -len(kv[1][1])):
+            if fp in builds:
+                continue
+            had = sum(1 for _n, _t, ok in assets.values() if ok)
+            print(f"   {label[:24]:26} BUILD GONE — the earlier copy had it, {had} of {len(assets)} "
+                  f"present. Copy the directory across.")
+            worst += had
         for fp, (label, assets) in sorted(builds.items(), key=lambda kv: -len(kv[1][1])):
             gaps = collections.Counter(t for _n, t, ok in assets.values() if not ok)
             lost = []
