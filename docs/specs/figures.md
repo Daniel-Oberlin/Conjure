@@ -599,6 +599,16 @@ making no noise. So the context state is re-checked AFTER the promise resolves, 
 and the gesture hook resumes the context as well as replaying the element — and re-seeks, because the
 body has moved on while the voice was waiting.
 
+**One element per voice, and the guard is on the URL rather than on the clip.** `_audio` runs twice per
+clip change — from `update`, and again when the GLB finishes loading — and `update` only tears down
+when the CLIP ID changes. So replaying one clip at a different rate, or any patch touching the
+component without changing the clip, reached `_audio` with nothing torn down; it built a second media
+element for the same URL and overwrote `_media` with it, leaving the first unreachable. Nothing
+referenced it, so no later `_silence()` could pause it, and it played on underneath everything after
+it — reported from a headset as *"sometimes I think the old sound is still playing"*. A voice already
+playing is now re-seeked in place, and the deferred `begin()` checks it has not been superseded, which
+is the guard the gesture hook beside it always had.
+
 `GET /figure/clips` answers with **two lists that are never merged**: what `shipped_with` this figure,
 and what its `rig_sig` says can play. Compatibility is not sufficiency — 93 of 206 clip names call out a
 fixture (bed 30, sink 18, toilet 12) — so a clip that binds perfectly still puts a figure leaning on a

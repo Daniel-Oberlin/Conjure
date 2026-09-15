@@ -151,6 +151,7 @@
       this._sound = null;
       this._media = null;
       this._audioUrl = "";
+      this._seek = null;
       this.apply();
     },
 
@@ -232,6 +233,20 @@
     _audio: function () {
       var url = this.data.playing ? this.data.audio : "";
       if (url !== this._audioUrl) this._silence();
+      // ALREADY PLAYING THIS VOICE — re-aim it, do not build a second one. Without this, every
+      // redundant call made another media element for the same url and overwrote `this._media` with
+      // it, which left the previous one unreachable: no later `_silence()` could pause something
+      // nothing referenced, so it played on under whatever came next and the voices piled up.
+      //
+      // The path that does it is the ordinary one. `_audio` is called from `update` AND again when
+      // the clip finishes loading, and `update` only tears down when the CLIP id changes — so
+      // replaying the same clip at a different speed, or any patch that touches the component
+      // without changing the clip, went straight past both guards. That is exactly what changing
+      // `--speed` on one clip does.
+      if (url && this._media) {
+        if (this._seek) this._seek();               // land where the body now is
+        return;
+      }
       if (!url) return;
       var scene = this.el.sceneEl;
       var listener = scene.audioListener || new THREE.AudioListener();
@@ -258,6 +273,7 @@
       this._sound = sound;
       this._media = media;
       this._audioUrl = url;
+      this._seek = null;
       var offset = (now() - this._started) / 1000;
       var self = this;
       var ctx = listener.context;
@@ -269,6 +285,7 @@
                                              : Math.min(Math.max(t, 0), media.duration);
         }
       };
+      this._seek = seek;                            // so a repeat call can re-aim this element
 
       // **A resolved `play()` is not a sound.** An AudioContext created outside a user gesture starts
       // SUSPENDED, and `setMediaElementSource` routes the element through it — so the element plays,
@@ -297,6 +314,10 @@
       };
 
       var begin = function () {
+        // Superseded while we waited for metadata. `arm`'s handler has always had this guard and
+        // `begin` never did, so a voice whose element had already been silenced could still be told
+        // to play once its metadata arrived.
+        if (self._media !== media) return;
         seek();
         if (ctx && ctx.state === "suspended") ctx.resume().catch(function () {});
         media.play().then(function () {
@@ -320,6 +341,7 @@
       }
       if (this._media) { this._media.pause(); this._media.src = ""; this._media = null; }
       this._audioUrl = "";
+      this._seek = null;
     },
 
     // Unbind AND put the skeleton back. An AnimationMixer leaves every bone it touched wherever the last

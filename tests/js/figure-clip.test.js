@@ -120,3 +120,78 @@ test("isConstant tolerates float noise but not movement", () => {
   assert.equal(isConstant(vec("a.position", [0, 1], [1, 2, 3, 1.000001, 2, 3])), true);
   assert.equal(isConstant(vec("a.position", [0, 1], [1, 2, 3, 1.5, 2, 3])), false);
 });
+
+// ---- the VOICE's lifecycle -----------------------------------------------------------------------
+//
+// Reported from a headset: "when I issue new commands, sometimes I think the old sound is still
+// playing." It was, and it stacked — one extra copy per call, playing on under everything after it.
+
+// Enough of the component to exercise `_audio` without a browser. `made` records every media element
+// ever constructed, so the test can ask what is STILL PLAYING rather than what is referenced.
+function audioHarness(url) {
+  const made = [];
+  global.Audio = function () {
+    const el = { paused: true, src: "", currentTime: 0, duration: 4, readyState: 1, loop: false,
+                 play() { this.paused = false; return Promise.resolve(); },
+                 pause() { this.paused = true; },
+                 addEventListener() {} };
+    made.push(el);
+    return el;
+  };
+  // A REAL Object3D underneath: `Object3D.add` calls `removeFromParent` on what it is given, so a
+  // hand-rolled `{ parent: null }` passes a test the browser would fail. Third time a stub laxer than
+  // the platform has hidden a live path, so the rule is to subclass the real thing and add only what
+  // is missing.
+  THREE.PositionalAudio = function () {
+    const o = new THREE.Object3D();
+    o.setMediaElementSource = function () {};
+    return o;
+  };
+  const object3D = new THREE.Object3D();
+  const listener = { context: { state: "running" }, parent: {} };
+  const self = {
+    el: { sceneEl: { audioListener: listener, camera: null, addEventListener() {} },
+          object3D: object3D, id: "fig", emit() {} },
+    data: { playing: true, audio: url, loop: true, clip: "c.glb", speed: 1 },
+    _started: 0, _sound: null, _media: null, _audioUrl: "", _seek: null,
+    _silence: components["figure-clip"]._silence,
+    _audio: components["figure-clip"]._audio
+  };
+  return { self, made, playing: () => made.filter((m) => !m.paused).length };
+}
+
+test("calling _audio again for the SAME voice re-aims it instead of starting a second copy", () => {
+  const h = audioHarness("/assets/voice.mp3");
+  h.self._audio.call(h.self);
+  assert.strictEqual(h.made.length, 1, "one element for one voice");
+  assert.strictEqual(h.playing(), 1);
+
+  // The path that actually happens: `_audio` is called from `update` AND again when the clip finishes
+  // loading, and `update` only tears down when the CLIP ID changes. Replaying one clip at a different
+  // speed goes past both guards, so this used to build a second element and overwrite `_media` with
+  // it — leaving the first unreachable, and therefore unpausable, and therefore audible forever.
+  h.self._audio.call(h.self);
+  h.self._audio.call(h.self);
+  assert.strictEqual(h.made.length, 1, "no second element for a voice already playing");
+  assert.strictEqual(h.playing(), 1, "and certainly not three voices at once");
+});
+
+test("a DIFFERENT voice silences the one before it, leaving exactly one playing", () => {
+  const h = audioHarness("/assets/a.mp3");
+  h.self._audio.call(h.self);
+  h.self.data.audio = "/assets/b.mp3";
+  h.self._audio.call(h.self);
+  assert.strictEqual(h.made.length, 2);
+  assert.strictEqual(h.playing(), 1, "the first was paused, not merely dropped on the floor");
+  assert.strictEqual(h.made[0].paused, true);
+});
+
+test("stopping playback silences the voice rather than leaving it running", () => {
+  const h = audioHarness("/assets/a.mp3");
+  h.self._audio.call(h.self);
+  h.self.data.playing = false;
+  h.self._audio.call(h.self);
+  assert.strictEqual(h.playing(), 0);
+  assert.strictEqual(h.self._media, null);
+  assert.strictEqual(h.self._audioUrl, "");
+});
