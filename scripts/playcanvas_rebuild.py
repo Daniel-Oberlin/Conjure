@@ -147,6 +147,7 @@ def main() -> int:
         return 2
     if args.compose:
         made, problems = compose_build(args.build, args.out, only=args.only, shown=args.as_shown,
+                                       decode=not args.no_decode,
                                        max_texture=args.max_texture, quality=args.quality,
                                        verify=not args.no_verify, report=print)
         print(f"\n{len(made)} thing(s) written to {args.out}"

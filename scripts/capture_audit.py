@@ -20,6 +20,11 @@ Builds are matched by their ASSET-ID SET rather than by directory name, because 
 under many captures — the shared props library is in fifteen of them — and the useful comparison is
 between two copies of one build, wherever they sit.
 
+**A declared VARIANT counts as present.** The engine asks for the compressed form, so a browsed capture
+holds `Agnes_2_Diffuse.basis` and never the `.png` the registry names. Counting that as missing is how
+an earlier version of this reported nancy as having lost her skin textures when her download was
+complete and the only thing that had not run was the Basis pre-pass.
+
 Only assets that a converter actually consumes are counted; see `USED`. Scripts, fonts and stylesheets
 are page furniture, and an asset with no `file` at all (a material, a render asset, an animation state
 graph) is inline in the registry and has nothing to download.
@@ -57,8 +62,22 @@ def survey(root: str) -> dict:
                 continue
             if not ((asset.get("file") or {}).get("url") or ""):
                 continue                                            # inline in the registry
-            path = build.path(aid)
-            here = bool(path and os.path.exists(path) and os.path.getsize(path) > 0)
+            # A DECLARED VARIANT SATISFIES THE ASSET. The engine asks for the compressed form, so a
+            # browsed capture holds `Agnes_2_Diffuse.basis` and never the `.png` the registry names —
+            # and counting that as missing is how this tool reported nancy as having lost her skin
+            # when her download was complete and only the Basis pre-pass had not run.
+            here = False
+            for candidate in [(asset.get("file") or {}).get("url")] + [
+                    v.get("url") for v in ((asset.get("file") or {}).get("variants") or {}).values()]:
+                if not candidate:
+                    continue
+                full = os.path.join(build.root, candidate)
+                if os.path.exists(full) and os.path.getsize(full) > 0:
+                    here = True
+                    break
+            if not here:                                        # also accept the decoded `.png`
+                path = build.path(aid)
+                here = bool(path and os.path.exists(path) and os.path.getsize(path) > 0)
             assets[int(aid)] = (asset.get("name") or str(aid), asset.get("type"), here)
         if assets:
             label = os.path.basename(build_root.rstrip("/")) or os.path.basename(root.rstrip("/"))

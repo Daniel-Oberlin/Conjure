@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from .figures import split_glb, write_glb
-from .playcanvas import (Build, Thing, _Textures, container_meshes, find_builds,
+from .playcanvas import (Build, Thing, _Textures, container_meshes, decode_basis, find_builds,
                          material_from, read_build, things)
 
 #: How far a composed transform may sit from the one the scene states before it is a problem. Generous
@@ -794,6 +794,7 @@ def _safe(name: str) -> str:
 
 def compose_build(root: str, out_dir: str, *, only: str = "", shown: bool = False,
                   max_texture: int = 1024, quality: int = 90, verify: bool = True,
+                  decode: bool = True,
                   report: Optional[Callable[[str], None]] = None) -> tuple[list[str], int]:
     """Compose every thing in every build under `root`. Returns `(files written, problems found)`.
 
@@ -802,6 +803,12 @@ def compose_build(root: str, out_dir: str, *, only: str = "", shown: bool = Fals
     `docs/plans/figures-and-library.md` § 2b plan A.
     """
     say = report or (lambda _s: None)
+    # DECODE BASIS FIRST, exactly as `rebuild_build` does. Forgetting it here cost nancy her skin: the
+    # engine asks for the compressed variant, so a browsed capture holds `Agnes_2_Diffuse.basis` and
+    # never the `.png` the registry names — 14 of her textures. Composed without the pre-pass she came
+    # out with 0 of 6 materials mapped, which reads exactly like a failed download and is not one.
+    if decode:
+        decode_basis(root, say)
     capture = os.path.basename(root.rstrip("/"))
     written: list[str] = []
     problems = 0
