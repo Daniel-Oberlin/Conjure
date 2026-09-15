@@ -37,6 +37,55 @@ does here.
 
 ---
 
+## The site states what this pipeline infers — `main_config` and `position_N_config`
+
+**Found 2026-09-15, chasing "Alice doesn't have any sounds with her animations, but you can hear her on
+the web site".** Four of the twenty captures register JSON config assets, and they are not decoration:
+they are the site's own declaration of most of what this pipeline currently recovers by convention.
+
+`position_N_config.json` — one per authored position, ten or eleven per build:
+
+```
+idle:   animationName "pc_leanOnBed_idle.glb"   soundName       "HotelIdle4.mp3"    speed       0.5
+action: animationName [ …action1, …action2, …action3 ]
+        soundNameAction "HotelAction3.mp3"      soundNameRough  "HotelRough3.mp3"
+        speedAction 0.6                          speedRough      1.2
+boneLayers: Head        <- [pc_leanOnBed_headLeft, …headRight]  every 3–10 s, weight 1
+            Eyelids     <- [pc_blink]                            every 5–8 s
+            EyelidsAndBrows <- [pc_squint], [pc_eyes_closed]      every 5–10 s / 10–15 s
+```
+
+`main_config.json`: `mainModelName` (**which entity is the figure**), `dressObjects` (**which meshes are
+clothing**), `boneLayers[].enabledBones` (the bone mask per layer), `sceneEnvironment`, `toolModeBones`
+with morph targets, `materialSettings.reflectivity`.
+
+**Verified exact, not plausible.** Against ebony's ten configs: **100 of 100 clip names resolve to an
+animation asset and 30 of 30 sound names resolve to an audio asset.**
+
+**It explains the audio gap precisely.** 262 of 772 clip rows carry a `voiced_by` edge. The captures
+that link well (jane, barbie, bride, teacher… 20 of 21 each) are the SLOT-NAMED ones, where the stem
+match works. The captures that link nothing — `susan` 0/8, `nancy` 0/62, `ebony` 0/140, `ebony2` 0/62 —
+are exactly the four that ship configs. **The config is how the newer builds express what the older ones
+expressed by filename**, and `capture_set.audio_role` only knows the filename convention.
+
+What it would give, roughly in order of value:
+
+- **`voiced_by` for the four capture that have none**, from a stated mapping rather than a name match.
+  One audio file to several clips is already the relation's shape.
+- **Playback speed.** 0.5, 0.6 and 1.2 are authored, and every clip currently plays at 1.0.
+- **Layered idles** — blink, squint, head turns, with their own timing ranges and weights. This is the
+  long-open *"Teacher's `Blink.glb` is not played at placement"*, and the answer is that it is not a clip
+  you play, it is a state on an `Eyelids` bone layer that fires every 5–8 seconds.
+- **`mainModelName` replaces a `things.json` guess** for those builds, and `dressObjects` replaces a
+  `parts.py` classification with the author's own answer.
+
+**Availability, measured:** `ebony` and `ebony2` have all 11 configs on disk. `nancy` is missing 11 and
+`susan` all 7, so those two need re-fetching — the same download gap as bride's `underwear.glb` and the
+51 props textures. The other sixteen captures register no configs at all and need none.
+
+Not designed yet, and it should not be bolted onto `audio_role`: this is a second, richer SOURCE of the
+same facts, and the interesting question is which wins when both speak.
+
 ## Unsettled — asked for, not yet designed
 
 ### Interactive exclusion at capture import
