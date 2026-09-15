@@ -45,6 +45,7 @@ import sqlite3
 import struct
 import sys
 from dataclasses import dataclass
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -276,11 +277,19 @@ def limb_dirs(mats: dict):
     return out
 
 
-def dir_error(a: dict, b: dict) -> list[float]:
-    """Degrees between corresponding limb directions."""
+#: Limbs whose direction is WHERE A JOINT IS ATTACHED rather than how it is posed. Shoulder width and
+#: leg splay are build, not pose: no retargeting can change them and none should try. Measured at rest
+#: with no clip at all, Trish's `chest → leftShoulder` is already 152° from Jane's and every rig's
+#: `hips → upperLeg` is 8–67° out. Counting that as retargeting error made four rigs look broken.
+ATTACHMENT = {("chest", "leftShoulder"), ("chest", "rightShoulder"),
+              ("hips", "leftUpperLeg"), ("hips", "rightUpperLeg")}
+
+
+def dir_error(a: dict, b: dict, attachments: bool = False) -> list[float]:
+    """Degrees between corresponding limb directions, over the ARTICULATED limbs by default."""
     out = []
     for k in a:
-        if k not in b:
+        if k not in b or ((k in ATTACHMENT) != attachments):
             continue
         dot = max(-1.0, min(1.0, sum(a[k][i] * b[k][i] for i in range(3))))
         out.append(math.degrees(math.acos(dot)))
@@ -288,6 +297,143 @@ def dir_error(a: dict, b: dict) -> list[float]:
 
 
 # ---------------------------------------------------------------- the probe
+
+#: Which mapped bone each bone's length points AT, for building a convention-free rest frame.
+CHILD_OF = {}
+for _p, _c in LIMBS:
+    CHILD_OF.setdefault(_p, _c)
+CHILD_OF["leftHand"] = None       # the ends of the chains have no limb to point along; they
+CHILD_OF["rightHand"] = None      # inherit their parent's direction (see `canonical_rest`)
+CHILD_OF["leftToes"] = None
+CHILD_OF["rightToes"] = None
+CHILD_OF["head"] = None
+
+PARENT_OF = {c: p for p, c in LIMBS}
+
+#: Which body axis squares up each bone's frame. Body FORWARD for almost everything, because almost
+#: every humanoid limb points up, down or sideways; body UP only for the feet, whose limb IS forward.
+#: A fixed table rather than a measured one — see `canonical_rest`.
+REF_AGAINST_UP = {"leftFoot", "rightFoot", "leftToes", "rightToes"}
+
+
+def canonical_rest(fig: Figure, notes: Optional[list] = None) -> dict[str, tuple]:
+    """A convention-free rest orientation per bone: where its limb POINTS, not how its frame is spelled.
+
+    This is what separates the two ways rigs differ. A bone's authored rest `R` mixes together where the
+    limb physically is and which axis the exporter chose to call "along the bone" — and only the second
+    should be divided out when moving a clip between rigs. So build a frame from things that are
+    physical: the direction to the next joint, squared up against the body's own up.
+
+    `R = C · K` then defines the CONVENTION `K = C⁻¹ · R`, and a retarget that divides out the source's
+    K and multiplies in the target's carries the pose absolutely rather than as a delta from two
+    different starting points — which is the failure the delta correction cannot avoid.
+    """
+    notes = [] if notes is None else notes
+    mats = fig.bind
+    axes = body_axes({b: mats[fig.by_name[n]] for b, n in fig.mapping.items() if n in fig.by_name})
+    if not axes:
+        return {}
+    side, up, fwd_body = axes
+    pos = {}
+    for bone, node in fig.mapping.items():
+        if node in fig.by_name:
+            m = mats[fig.by_name[node]]
+            pos[bone] = (m[12], m[13], m[14])
+    out = {}
+    for bone in pos:
+        child = CHILD_OF.get(bone)
+        a, b = bone, child
+        if not child or child not in pos:                  # a chain end continues its parent's line
+            parent = PARENT_OF.get(bone)
+            if parent and parent in pos:
+                a, b = parent, bone
+            else:
+                a = b = None
+        if a and b and a in pos and b in pos:
+            d = tuple(pos[b][i] - pos[a][i] for i in range(3))
+        else:
+            d = up
+        if sum(c * c for c in d) < 1e-12:
+            d = up
+        along = _norm(d)
+        # THE REFERENCE IS CHOSEN BY THE BONE, NEVER BY MEASUREMENT. Picking it with
+        # `abs(dot(along, up)) < 0.99` is the obvious thing and it is a trap: Jane's hips→spine reads
+        # 0.9684 and office-babe's reads 0.9975, so two rigs in the same rest pose fall on opposite
+        # sides of the threshold, take different branches, and end up with frames a half-turn apart.
+        # That showed up as 179.8° on both shoulders — a flip, not a drift. A bone's rough direction
+        # is known from its NAME, and a table gives every rig the same answer.
+        ref = up if bone in REF_AGAINST_UP else fwd_body
+        cosine = abs(sum(along[i] * ref[i] for i in range(3)))
+        if cosine > 0.94:                                              # ~20° — say so, never guess
+            off = math.degrees(math.acos(min(1.0, cosine)))
+            notes.append(f"{bone}: limb is only {off:.0f}° from its reference axis, so its roll is "
+                         f"poorly conditioned")
+        right = _norm(_cross(ref, along))
+        upper = _cross(along, right)
+        out[bone] = quat_of([right[0], right[1], right[2], 0,
+                             upper[0], upper[1], upper[2], 0,
+                             along[0], along[1], along[2], 0, 0, 0, 0, 1])
+    return out
+
+
+def _world_rotations(src: Figure, dst: Figure, carried: dict, absolute: bool) -> dict[str, tuple]:
+    """Desired WORLD rotation per target node name, under one of the two retargeting laws.
+
+    `absolute=False` is the delta law the plan assumed: preserve each bone's rotation relative to its
+    own rest. `absolute=True` divides out each rig's convention instead, so the pose is carried whole
+    and a difference in REST POSE is not silently added to it.
+    """
+    s_world = posed_world(src, {src.mapping[b]: q for b, q in carried.items()})
+    cs, ct = (canonical_rest(src), canonical_rest(dst)) if absolute else ({}, {})
+    want = {}
+    for bone in carried:
+        if bone not in s_world:
+            continue
+        if absolute:
+            if bone not in cs or bone not in ct:
+                continue
+            k_s = qmul(qconj(cs[bone]), src.rest(bone))    # source convention: canonical -> authored
+            k_t = qmul(qconj(ct[bone]), dst.rest(bone))
+            want[dst.mapping[bone]] = qmul(qmul(s_world[bone], qconj(k_s)), k_t)
+        else:
+            motion = qmul(s_world[bone], qconj(src.rest(bone)))
+            want[dst.mapping[bone]] = qmul(motion, dst.rest(bone))
+    return want
+
+
+def _locals_for(dst: Figure, want: dict) -> dict:
+    """Local rotations that put each named node at its desired WORLD rotation. Top-down, so a bone is
+    measured against where its parent ACTUALLY IS once the clip has moved it."""
+    nodes = dst.doc["nodes"]
+    scenes = dst.doc.get("scenes") or []
+    roots = scenes[dst.doc.get("scene", 0)].get("nodes", []) if scenes else range(len(nodes))
+    out: dict[str, tuple] = {}
+    stack = [(int(r), IDENT) for r in roots]
+    seen = set()
+    while stack:
+        idx, parent_world = stack.pop()
+        if idx in seen or idx >= len(nodes):
+            continue
+        seen.add(idx)
+        nd = nodes[idx]
+        name = nd.get("name")
+        if name in want:
+            local_q = qmul(qconj(quat_of(parent_world)), want[name])
+            out[name] = local_q
+            local = qmat(local_q, nd.get("scale") or (1.0, 1.0, 1.0),
+                         nd.get("translation") or (0.0, 0.0, 0.0))
+        else:
+            local = _local_matrix(nd)
+        world = mmul(parent_world, local)
+        for child in nd.get("children") or []:
+            stack.append((int(child), world))
+    return out
+
+
+def absolute_locals(src: Figure, dst: Figure, carried: dict) -> dict:
+    """Retarget by carrying the pose ABSOLUTELY, with each rig's axis convention divided out."""
+    return _locals_for(dst, _world_rotations(src, dst, carried, absolute=True))
+
 
 def corrected_locals(src: Figure, dst: Figure, carried: dict) -> dict:
     """The REST-CORRECTED local rotations for the target, from the source's local rotations.
@@ -392,12 +538,13 @@ def rolled_copy(fig: Figure, degrees: float) -> Figure:
 
 
 def probe(clip_doc, clip_blob, clip_name, src: Figure, dst: Figure, frames: int):
-    """`(per-bone rotation error, naive direction errors, corrected direction errors, shared)`."""
+    """Per-bone rotation error, then limb-direction error under each of the three laws."""
     shared = [b for b in CORE_BONES if b in src.mapping and b in dst.mapping
               and src.mapping[b] in src.by_name and dst.mapping[b] in dst.by_name]
     per_bone: dict[str, list[float]] = {b: [] for b in shared}
     naive_dirs: list[float] = []
     fixed_dirs: list[float] = []
+    abs_dirs: list[float] = []
     for k in range(frames):
         rots = rotations_at(clip_doc, clip_blob, clip_name, k / max(1, frames - 1))
         if not rots:
@@ -409,6 +556,7 @@ def probe(clip_doc, clip_blob, clip_name, src: Figure, dst: Figure, frames: int)
         s_mats = posed_matrices(src, {src.mapping[b]: q for b, q in carried.items()})
         t_naive = posed_matrices(dst, {dst.mapping[b]: q for b, q in carried.items()})
         t_fixed = posed_matrices(dst, corrected_locals(src, dst, carried))
+        t_abs = posed_matrices(dst, absolute_locals(src, dst, carried))
         for bone in shared:
             if bone not in s_mats or bone not in t_naive:
                 continue
@@ -418,7 +566,8 @@ def probe(clip_doc, clip_blob, clip_name, src: Figure, dst: Figure, frames: int)
         want = limb_dirs(s_mats)
         naive_dirs += dir_error(want, limb_dirs(t_naive))
         fixed_dirs += dir_error(want, limb_dirs(t_fixed))
-    return per_bone, naive_dirs, fixed_dirs, shared
+        abs_dirs += dir_error(want, limb_dirs(t_abs))
+    return per_bone, naive_dirs, fixed_dirs, abs_dirs, shared
 
 
 def main() -> int:
@@ -471,7 +620,7 @@ def main() -> int:
     print("  frame, so proportions and heading do not count as error. `naive` copies the source's local")
     print("  rotations; `corrected` takes each through both rigs' rest poses.\n")
     print(f"{'target':17} {'rig':12} {'by name':>7} {'rest gap':>9} "
-          f"{'naive dir':>10} {'corrected':>12} {'worst':>7}")
+          f"{'naive':>10} {'delta':>9} {'absolute':>11} {'abs worst':>8}  best")
     targets = [(lbl, None) for lbl in
                ("Jane", "Akari", "office-babe", "Blondie", "Alice", "Grace", "Trish", "Saka",
                 "Eve Maccaro", "Steve", "Animated Woman", "Tamaki")]
@@ -483,17 +632,19 @@ def main() -> int:
         if not dst.mapping:
             print(f"{label[:16]:17} {sig:12} {'—':>5}  no humanoid map — refused, which is correct")
             continue
-        per_bone, naive_dirs, fixed_dirs, shared = probe(clip_doc, clip_blob, clip_name, src, dst,
-                                                          args.frames)
+        per_bone, naive_dirs, fixed_dirs, abs_dirs, shared = probe(clip_doc, clip_blob, clip_name,
+                                                                   src, dst, args.frames)
         vals = sorted(v for b in per_bone for v in per_bone[b])
         if not vals:
             print(f"{label[:16]:17} {sig:12} no shared bones")
             continue
         by_name_hits = sum(1 for n in rots0 if n in dst.by_name)
-        nd, fd = sorted(naive_dirs), sorted(fixed_dirs)
+        nd, fd, ad = sorted(naive_dirs), sorted(fixed_dirs), sorted(abs_dirs)
         med = lambda xs: xs[len(xs) // 2] if xs else float("nan")     # noqa: E731
+        best = min(("naive", med(nd)), ("delta", med(fd)), ("absolute", med(ad)), key=lambda kv: kv[1])
         print(f"{label[:16]:17} {sig:12} {by_name_hits:7} {vals[len(vals) // 2]:8.1f}°"
-              f" {med(nd):9.1f}° {med(fd):11.1f}°  {max(fd) if fd else 0:6.1f}°")
+              f" {med(nd):9.1f}° {med(fd):8.1f}° {med(ad):10.1f}° {max(ad) if ad else 0:7.1f}°"
+              f"  {best[0]}")
         if args.per_bone:
             for b in sorted(per_bone, key=lambda b: -max(per_bone[b] or [0])):
                 if per_bone[b]:

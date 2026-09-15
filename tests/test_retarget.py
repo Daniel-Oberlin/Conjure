@@ -19,7 +19,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from retarget_probe import (Figure, angle_between, corrected_locals, limb_dirs,   # noqa: E402
+from retarget_probe import (ATTACHMENT, Figure, absolute_locals, angle_between,   # noqa: E402
+                            canonical_rest, corrected_locals, dir_error, limb_dirs,
                             posed_matrices, qmul, quat_of, rolled_copy)
 
 from conjure.figures import node_world_matrices, parent_map   # noqa: E402
@@ -143,3 +144,81 @@ def test_a_bone_the_clip_does_not_drive_keeps_its_own_rest():
     dst = rolled_copy(src, 45.0)
     out = corrected_locals(src, dst, _pose(30))
     assert set(out) == {"leftUpperArm", "spine"}, "only the driven bones are rewritten"
+
+
+# ---- carrying the pose ABSOLUTELY, rather than as a delta from two different rests ----------------
+
+def test_the_absolute_law_also_recovers_a_rolled_rest_exactly():
+    """Whatever replaces the delta correction still has to pass the control it passes."""
+    src = _rig()
+    dst = rolled_copy(src, 90.0)
+    carried = _pose(50)
+    want = limb_dirs(posed_matrices(src, carried))
+    got = limb_dirs(posed_matrices(dst, absolute_locals(src, dst, carried)))
+    assert _worst(want, got) < 0.01
+
+
+def test_a_difference_in_REST_POSE_is_not_carried_over_as_a_delta():
+    """The case the delta law cannot get right, and the reason for the absolute one.
+
+    Two rigs identical but for the angle the upper arm RESTS at — one nearer an A-pose, one nearer a T.
+    A clip authored on the first puts its arm somewhere definite; the second should end up with its arm
+    in the SAME place, not in its own rest plus the first's delta, which is a different pose entirely.
+    """
+    a = math.radians(40) / 2
+    src = _rig()
+    dst = _rig(arm_rot=(0.0, 0.0, math.sin(a), math.cos(a)))       # rests 40° further round
+    carried = _pose(25)
+    want = limb_dirs(posed_matrices(src, carried))
+
+    delta = limb_dirs(posed_matrices(dst, corrected_locals(src, dst, carried)))
+    absolute = limb_dirs(posed_matrices(dst, absolute_locals(src, dst, carried)))
+    assert _worst(want, delta) > 30.0, "the delta law adds the two rests together"
+    assert _worst(want, absolute) < 0.01, "the absolute law puts the limb where the clip put it"
+
+
+def test_the_reference_axis_is_chosen_by_the_BONE_and_never_by_MEASUREMENT():
+    """A threshold on `dot(along, up)` is the obvious way to square up a bone's frame, and it is a trap.
+
+    Jane's `hips → spine` reads 0.9684 and office-babe's reads 0.9975, so two rigs in the same rest
+    pose land either side of a 0.99 cut, take different branches, and end up with canonical frames a
+    half-turn apart — 179.8° on both shoulders, a flip rather than a drift.
+
+    The two rigs here differ by FOUR DEGREES of spine lean and straddle exactly that cut: 0.985 against
+    0.995. Their frames must differ by about four degrees too. Under the measured rule they came out
+    ninety apart, which is the regression this pins.
+    """
+    def leaning(z: float) -> Figure:
+        fig = _rig()
+        for nd in fig.doc["nodes"]:
+            if nd["name"] in ("spine", "head"):
+                t = nd["translation"]
+                nd["translation"] = [t[0], t[1], t[2] + z]
+        return Figure(fig.label, fig.doc, fig.mapping, fig.source, fig.by_name,
+                      parent_map(fig.doc), node_world_matrices(fig.doc))
+
+    a, b = leaning(0.035), leaning(0.020)          # ~10° and ~6° of lean: dot(up) 0.985 and 0.995
+    ca, cb = canonical_rest(a), canonical_rest(b)
+    for bone in ("hips", "neck", "leftShoulder", "leftUpperArm"):
+        gap = angle_between(ca[bone], cb[bone])
+        assert gap < 15.0, f"{bone}: a 4° difference in lean produced a {gap:.0f}° difference in frame"
+
+
+def test_where_a_joint_is_ATTACHED_is_build_and_not_retargeting_error():
+    """Shoulder width and leg splay are proportion. No retarget can change them and none should try —
+    measured at rest with no clip at all, Trish's `chest → leftShoulder` is already 152° from Jane's.
+    Counting that made four rigs look broken when their articulated limbs were within a few degrees."""
+    assert ("chest", "leftShoulder") in ATTACHMENT and ("hips", "rightUpperLeg") in ATTACHMENT
+    a = {("chest", "leftShoulder"): (1.0, 0, 0), ("leftUpperArm", "leftLowerArm"): (1.0, 0, 0)}
+    b = {("chest", "leftShoulder"): (0.0, 1.0, 0), ("leftUpperArm", "leftLowerArm"): (1.0, 0, 0)}
+    assert dir_error(a, b) == [0.0], "the articulated limb only"
+    assert round(dir_error(a, b, attachments=True)[0]) == 90, "and the attachment is still reportable"
+
+
+def _worst(want: dict, got: dict) -> float:
+    out = 0.0
+    for k in want:
+        if k in got and k not in ATTACHMENT:
+            d = max(-1.0, min(1.0, sum(want[k][i] * got[k][i] for i in range(3))))
+            out = max(out, math.degrees(math.acos(d)))
+    return out

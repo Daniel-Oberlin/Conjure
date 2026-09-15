@@ -865,6 +865,58 @@ difference in bind pose" — is not implementable as written. **The next questio
 but how to tell the two differences apart**, and the probe already has the material: the rest gap and
 the naive direction error disagree exactly where the difference is pose rather than axis.
 
+### The law that works, 2026-09-15 — carry the pose ABSOLUTELY
+
+The delta correction fails because *delta from rest* is the wrong invariant. If Jane rests arms-down
+and Alice rests arms-out, and a clip puts Jane's arms straight down, preserving the delta sends Alice's
+arms half way. What has to survive the crossing is where the limb actually IS.
+
+So: divide out each rig's axis convention instead of its rest pose.
+
+    C   a convention-free rest frame per bone, built from where its limb POINTS
+    K   = C⁻¹ · R           what is left of the authored rest once the physical part is removed
+    Wt  = Ws · Ks⁻¹ · Kt    the source's orientation, respelled in the target's convention
+
+When the two rests agree, `Cs = Ct` and this reduces exactly to the delta correction — which is why
+that one was right for Saka and for the control, and only for them.
+
+| target | rig | naive | delta | **absolute** | abs worst |
+|---|---|---|---|---|---|
+| Jane, rest rolled 90° — **control** | — | 56.1° | 0.0° | **0.0°** | 0.0° |
+| Jane — identity | `85e41f9b8e` | 0.0° | 0.0° | **0.0°** | 0.0° |
+| office-babe | `8ef7eb494a` | 7.3° | 6.0° | **0.3°** | 0.4° |
+| Grace | `c6e3c61972` | 14.4° | 9.6° | **0.2°** | 1.2° |
+| Akari | `85e41f9b8e` | 9.2° | 9.7° | **0.5°** | 0.5° |
+| Eve Maccaro | `fe4965ce0f` | 37.1° | 23.8° | **0.8°** | 58.5° ⚠ |
+| Animated Woman | `cf605bb3ac` | 9.3° | 22.9° | **1.4°** | 1.5° |
+| Saka | `9b9a660f1d` | 89.5° | 15.2° | **3.2°** | 4.1° |
+| Trish | `c6e3c61972` | 38.2° | 51.8° | **3.9°** | 10.3° |
+| Alice | `156ac3838f` | **5.5°** | 15.9° | 8.4° | 9.1° |
+| Blondie | `790c5edf3b` | **6.5°** | 14.4° | 8.4° | 9.2° |
+| Steve | `c773b69506` | 19.5° | 16.1° | **8.7°** | 9.0° |
+| Tamaki | — | refused, no map | | | |
+
+**Nine of eleven, and the medians collapse from tens of degrees to under four on eight rigs.** Saka,
+the case the delta law was built for, improves again: 15.2° → 3.2°. Alice and Blondie still prefer the
+naive copy by about two degrees, which is the remaining question rather than a settled result.
+
+**Two traps, both found by a number that should have been zero and was not.**
+
+*The reference axis must be chosen by the BONE, never by measurement.* Squaring a bone's frame needs a
+second axis, and picking it with `abs(dot(along, up)) < 0.99` is the obvious way. Jane's `hips → spine`
+reads 0.9684 and office-babe's reads 0.9975 — two rigs in the same rest pose, either side of the cut,
+taking different branches, ending a half-turn apart. It showed as **179.8° on both shoulders**: a flip,
+not a drift. A table keyed on the bone name gives every rig the same answer.
+
+*Where a joint is ATTACHED is build, not pose.* `chest → shoulder` and `hips → upperLeg` are shoulder
+width and leg splay. At rest with no clip at all, Trish's `chest → leftShoulder` is already 152° from
+Jane's and every rig's `hips → upperLeg` is 8–67° out. No retarget can change that and none should try;
+counting it made four rigs look broken while their articulated limbs were within a few degrees.
+
+**Open.** Eve's `hips → spine` is 58.5° while every other limb of hers is 1.2° — she is the only figure
+in the set whose map is `inferred` rather than read from a convention, which is the first thing to
+check. And Alice and Blondie preferring the naive copy needs explaining before this ships.
+
 **Do not ship the correction inside a rig signature.** Naive copy on Akari is 8.8° and that is the path
 that already runs on device and looks right, so 8.8° is roughly what "correct" costs in this metric.
 The correction there is 9.5° — no better, and it would rewrite 16 working figures.
