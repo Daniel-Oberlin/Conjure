@@ -1006,14 +1006,39 @@ def validate(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> list[str]
     # Read off the FEET: toes are forward of the ankle on any figure, whichever way it faces, and that
     # holds under a side swap because each toe is compared against its own foot. Measured across every
     # rigged model in the corpus the two sides agree unanimously, with a margin of 2.2 cm at worst and
-    # 9 cm typically — so it is read as a sign, not trusted as a magnitude. With no toes mapped it
+    # 9 cm typically — so it is read as a direction, not trusted as a magnitude. With no toes mapped it
     # falls back to +Z, which is what the rule assumed all along.
-    forward = 0.0
+    #
+    # Taken as a VECTOR in the ground plane rather than as a sign along Z, because a figure can be
+    # turned any amount and not only by 180 degrees. Stewardess is composed from a scene entity yawed
+    # 90 degrees, so her forward is -X and her sides separate along Z; the sign-along-Z version read
+    # her facing as -Z and then compared her hands along X, where they sit at the same coordinate to
+    # three decimals. It rejected her name-based map on all four side checks, inference could not
+    # replace it, and she came out with NO rig signature at all — no `shipped_with`, no compatible
+    # clips, the one figure of twenty that could not be animated.
+    forward = [0.0, 0.0]                            # (x, z) — the ground plane; Y is up and not in it
     for side in ("left", "right"):
-        toe, ankle = z(f"{side}Toes"), z(f"{side}Foot")
-        if toe is not None and ankle is not None:
-            forward += toe - ankle
-    facing = -1.0 if forward < 0 else 1.0
+        toe, ankle = idx(f"{side}Toes"), idx(f"{side}Foot")
+        if toe is not None and ankle is not None and toe in pos and ankle in pos:
+            forward[0] += pos[toe][0] - pos[ankle][0]
+            forward[1] += pos[toe][2] - pos[ankle][2]
+    if abs(forward[0]) < 1e-6 and abs(forward[1]) < 1e-6:
+        forward = [0.0, 1.0]                        # nothing to read: +Z, the original assumption
+    # +X is the model's LEFT when it faces +Z, so left is forward turned a quarter turn: (fz, -fx).
+    # For a figure facing ±Z this is (±1, 0) and `side()` below reduces to ±x — the rule it replaces.
+    left = (forward[1], -forward[0])
+
+    def side(bone: str) -> Optional[float]:
+        """How far along the figure's OWN left the bone sits. Sign is all that is read."""
+        i = idx(bone)
+        if i is None or i not in pos:
+            return None
+        return pos[i][0] * left[0] + pos[i][2] * left[1]
+
+    def _axis(vec) -> str:
+        """`(x, z)` as the nearest axis name, for saying which way the check was taken."""
+        return ("+x" if vec[0] > 0 else "-x") if abs(vec[0]) >= abs(vec[1]) else \
+               ("+z" if vec[1] > 0 else "-z")
 
     # 0. Distinctness and completeness. These fire FIRST because they are what let a hopeless map pass
     #    as clean: Grace's inference mapped leftUpperLeg, leftLowerLeg and leftFoot all to the same IK
@@ -1037,11 +1062,10 @@ def validate(doc: dict, mapping: dict[str, str], blob: bytes = b"") -> list[str]
     # 1. Sides, RELATIVE TO THE FACING computed above. A swap here inverts every later pose.
     for l, r in (("leftHand", "rightHand"), ("leftFoot", "rightFoot"),
                  ("leftUpperArm", "rightUpperArm"), ("leftUpperLeg", "rightUpperLeg")):
-        xl, xr = x(l), x(r)
-        if xl is not None and xr is not None and (xl - xr) * facing <= 0:
-            which = "+x" if facing > 0 else "-x (this figure faces -z)"
-            problems.append(f"{l} is not on the {which} side of {r} ({xl:+.3f} vs {xr:+.3f}) — "
-                            f"sides look swapped")
+        sl, sr = side(l), side(r)
+        if sl is not None and sr is not None and sl - sr <= 0:
+            problems.append(f"{l} is not on the {_axis(left)} side of {r} ({sl:+.3f} vs {sr:+.3f}) "
+                            f"— sides look swapped (this figure faces {_axis(forward)})")
 
     # 2. Vertical order along the body.
     for upper, lower in (("head", "neck"), ("neck", "chest"), ("chest", "spine"), ("spine", "hips"),
@@ -1459,7 +1483,8 @@ def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 14          # 14: extraction classifies a figure's PARTS (which mesh is clothing)
+FRAME_REV = 15          # 15: the side rule follows the figure's facing round a YAW, not just a 180
+                        # 14: extraction classifies a figure's PARTS (which mesh is clothing)
                         # 13: a side letter in the wrong case still matches
                         # 12: the side rule is read off the figure's FACING, not absolute +X
                         # 11: the `cc-base` convention, and hips rejected one level below a fork

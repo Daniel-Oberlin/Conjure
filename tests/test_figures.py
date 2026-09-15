@@ -143,6 +143,36 @@ def test_validate_reads_the_side_rule_off_THE_FIGURES_FACING():
     assert any("faces -z" in p for p in problems), "and it should say which frame it judged in"
 
 
+def test_validate_follows_the_facing_round_a_QUARTER_turn_not_only_a_half():
+    """A figure can be yawed any amount, and Stewardess is: her thing is composed from a scene entity
+    turned 90 degrees, so she faces -x and her sides separate along z.
+
+    The sign-along-z version of this rule could only tell +z from -z. It read her facing as -z, then
+    compared her hands along x — where they sit at the SAME coordinate to three decimals, because x is
+    her front-to-back axis. All four side checks failed, `best_humanoid` discarded a correct
+    name-based map, inference could not replace it, and she was the one figure of twenty with no rig
+    signature at all: no `shipped_with` clips, no compatible clips, nothing that would animate her.
+
+    So facing is a vector in the ground plane and the sides are judged along the perpendicular to it."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    assert not validate(doc, m), "the fixture faces +z and is consistent"
+
+    # Yaw 90 degrees about y: (x, z) -> (z, -x). The figure now faces +x and its left is -z.
+    for node in doc["nodes"]:
+        t = node.get("translation")
+        if t:
+            node["translation"] = [t[2], t[1], -t[0]]
+    assert not [p for p in validate(doc, m) if "sides look swapped" in p], \
+        "a figure turned a quarter of the way round is not a figure with its sides swapped"
+
+    swapped = dict(m)
+    swapped["leftHand"], swapped["rightHand"] = m["rightHand"], m["leftHand"]
+    problems = validate(doc, swapped)
+    assert any("sides look swapped" in p for p in problems), problems
+    assert any("faces +x" in p for p in problems), "and it should name the axis it judged in"
+
+
 def test_validate_falls_back_to_plus_x_when_no_toes_are_mapped():
     """The cue needs feet. Without them the rule is what it always was — which is the right fallback,
     since every figure in the corpus but two is authored facing +z."""
