@@ -69,11 +69,33 @@ fifteen props is `enabled: false` — a CATALOGUE the page never renders — so 
 their textures and a downloader that mirrors network traffic can never see them. Same shape as the
 audio: 276 of one shared scene's files absent because the page plays a handful of the banks it declares.
 
-So the recommendation is a change of mechanism rather than more clicking: **enumerate `config.json` and
-fetch every asset's `file.url` plus every `variants` url**, instead of recording what the page asked
-for. Two things make that cheap — the registry is already the thing this pipeline reads, and a failure
-per asset is then reportable, which is what separates "the server no longer has this" from "nobody
-asked for it".
+So the recommendation is a change of mechanism rather than more clicking: **drive the download from
+`config.json`'s asset registry instead of from observed network traffic.** The registry is already a
+complete, verifiable manifest — every downloadable asset carries exactly what a fetcher needs:
+
+```json
+"file": { "filename": "Agnes2_alpha.png", "size": 9403854,
+          "hash": "df8224f2ec0f3aa0bd7cf646c86f64be",
+          "url": "files/assets/218203895/1/Agnes2_alpha.png",
+          "variants": { "basis": { "url": "…/Agnes2_alpha.basis", "size": 1323790, "hash": "…" } } }
+```
+
+In susan's build, 109 of 221 assets declare a `file`; the other 112 are inline (materials, render
+assets, the state graphs) and need no request at all. So the whole job is: walk `assets`, fetch
+`file.url` and every `file.variants.*.url`, and write each to its `url` path so the relative references
+keep resolving.
+
+Three things that shape makes possible, and each one is a bug this pipeline has already hit:
+
+- **`size` and `hash` verify a download** rather than trusting it. The extension's own history is a list
+  of failures that reported success — a zero-byte file counted as saved. MD5 against `hash` ends that
+  class.
+- **`variants` is why a browsed capture holds `.basis` and never the `.png`.** The engine asks for the
+  compressed variant, so traffic-mirroring saves only that: 91 of one build's textures. Fetching both
+  URLs makes `variant_only` and the Basis pre-pass unnecessary for new captures.
+- **A per-asset outcome is reportable**, which is the difference between "the server no longer has this"
+  (13 marketing lines, three `.mp4`s) and "nobody asked for it" (48 props files). Today both look the
+  same: a file that is not on disk.
 
 Suggestive but not conclusive: susan's fresh everything-selected capture is missing 14 real files from
 the shared app shell that ebony's older capture HAS. Either the selection is not registry-complete or
