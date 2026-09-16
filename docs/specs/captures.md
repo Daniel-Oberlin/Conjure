@@ -53,6 +53,19 @@ registry's relative references still resolve.
 **Verify against `chrome.downloads`, not against intent.** The extension asks the downloads API what
 actually landed and reports saved/failed from that, because every failure above reported success.
 
+**What a capture must contain is specified elsewhere, and deliberately.** A capture is two things — the
+assets we import here, and the only copy of someone's APP — and the second is not Conjure's concern.
+`../playcanvas-unpack` rebuilds a capture into a standalone app, and its
+[`docs/capture-format.md`](../../../playcanvas-unpack/docs/capture-format.md) is the contract the
+grabber has to satisfy, defined by the consumer because the consumer can check it:
+`python3 -m pcunpack check <capture>`.
+
+It matters here for one reason. **Completeness for import and completeness for running are different
+questions, and this pipeline only ever asked the first.** `capture_audit.py` checks assets against
+`config.json`, which is exact — and of twenty captures, seven could not be rebuilt into a working app
+and none of them reported a problem. Six had no engine and no bootstrap at all. If a capture is ever
+re-fetched or re-audited, `pcunpack check` is the other half of the answer.
+
 ## 3. Re-assembling a PlayCanvas build
 
 
