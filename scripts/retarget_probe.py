@@ -18,9 +18,16 @@ number is what says whether a correction worked.
      orientation makes it mean, so copying it onto a rig with a different bind pose is wrong by the
      difference between the two rests. This is the number phase 5 exists to reduce.
 
-The reference is therefore the source driven by *the same 22 channels the retarget can carry*, not by
-all 222. That makes the identity case exact: a clip on its own rig must read 0.0°, and the probe is
-wrong if it does not.
+The source is driven by EVERY channel the clip carries, because that is what the clip actually does. An
+earlier version posed it with the 22 mapped channels only, to make the identity case read exactly 0.0° —
+and that number was a fiction. It also hid a real bug for three rounds: a bone the humanoid does not
+name can be a mapped bone's ANCESTOR, and Alice's `CC_Base_BoneRoot` rotates 36.3° while the hip under
+it rotates 38.6° the other way. They nearly cancel and she SLIDES. Posing the source without the root
+reported the full 38.6° as real on both sides, so the probe agreed with a retarget that had the same
+blind spot, and the retargeted figure swung bodily about her own axis.
+
+So **`Jane → Jane` is the FLOOR, not zero**: it is what channel loss alone costs, with no rig
+difference at all. What a target's number means is its excess over that floor.
 
 **The measurement.** For bone `b` at time `t`:
 
@@ -616,7 +623,11 @@ def probe(clip_doc, clip_blob, clip_name, src: Figure, dst: Figure, frames: int)
         # target with the 22 that map measures channel loss and rest difference at once, and then the
         # identity case does not read zero — which is how this bug was caught.
         carried = {b: rots[src.mapping[b]] for b in shared if src.mapping[b] in rots}
-        s_mats = posed_matrices(src, {src.mapping[b]: q for b, q in carried.items()})
+        # EVERY rotation the clip carries, not only the mapped ones. A bone the humanoid does not name
+        # can still be a mapped bone's ANCESTOR, and then it is part of that bone's world orientation.
+        # Posing the source from the mapped subset made this probe agree with a retarget that had the
+        # same blind spot — it reported Alice and Grace identical while one slid and the other swung.
+        s_mats = posed_matrices(src, rots)
         t_naive = posed_matrices(dst, {dst.mapping[b]: q for b, q in carried.items()})
         t_fixed = posed_matrices(dst, corrected_locals(src, dst, carried))
         t_abs = posed_matrices(dst, absolute_locals(src, dst, carried))
@@ -688,6 +699,8 @@ def main() -> int:
           f"{carried} of which are CORE.")
     print(f"  {len(rots0) - carried} channel(s) — skirt, breast and secondary chains — have no bone on "
           f"any other rig to receive them.\n")
+    print("  `Jane -> Jane` is the FLOOR: channel loss with no rig difference. Read every other row as")
+    print("  its EXCESS over that, not as an absolute.\n")
     print("  LIMB DIRECTION is what judges a retarget: where each limb POINTS, in the figure's own body")
     print("  frame, so proportions and heading do not count as error. `naive` copies the source's local")
     print("  rotations; `corrected` takes each through both rigs' rest poses.\n")

@@ -77,7 +77,7 @@ def figure(naming=None, *, roll: float = 0.0, nameless: bool = False) -> bytes:
 
 
 def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine", "l_fore"),
-         extra=(), slide=(), slide_moves: bool = True) -> bytes:
+         extra=(), slide=(), slide_moves: bool = True, wrapper: str = "") -> bytes:
     """A clip: the authoring rig's nodes, real motion, and no mesh — the shape the corpus ships."""
     table = naming or _MIXAMO
     nodes, _names = _skeleton_nodes(table)
@@ -86,6 +86,11 @@ def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine"
     for bone in extra:                          # a bone no other rig has, e.g. a skirt chain
         nodes.append({"name": bone, "translation": [0.0, 0.1, 0.0], "rotation": [0, 0, 0, 1]})
         nodes[0].setdefault("children", []).append(len(nodes) - 1)
+    root = 0
+    if wrapper:                                 # an UNMAPPED node ABOVE the skeleton, e.g. an armature
+        nodes.append({"name": wrapper, "translation": [0.0, 0.0, 0.0],
+                      "rotation": [0, 0, 0, 1], "children": [0]})
+        root = len(nodes) - 1
     by = {n["name"]: i for i, n in enumerate(nodes)}
     times = [0.0, 0.5, 1.0]
 
@@ -128,7 +133,7 @@ def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine"
                          "output": add(xyz, "VEC3", len(times))})
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": by[node_name], "path": "translation"}})
-    doc = {"scenes": [{"nodes": [0]}], "scene": 0, "nodes": nodes,
+    doc = {"scenes": [{"nodes": [root]}], "scene": 0, "nodes": nodes,
            "buffers": [{"byteLength": len(blob)}], "bufferViews": views, "accessors": accessors,
            "animations": [{"name": name, "channels": channels, "samplers": samplers}]}
     return _glb_bytes(doc, bytes(blob))
@@ -243,3 +248,59 @@ def test_a_bone_that_merely_RESTATES_its_rest_every_frame_is_not_carried():
     assert out.slid == 0
     doc, _blob = split_glb(out.data)
     assert {c["target"]["path"] for c in doc["animations"][0]["channels"]} == {"rotation"}
+
+
+def test_an_UNMAPPED_ANCESTOR_that_rotates_is_part_of_the_pose_it_cannot_be_carried_into():
+    """The bug that survived three rounds of measurement, because the probe made it too.
+
+    A bone the humanoid does not name can still be a mapped bone's ANCESTOR, and then it is part of
+    that bone's world orientation whether or not we can carry it onward. Alice's `CC_Base_BoneRoot`
+    rotates 36.3° over `LayTableIdle` while `CC_Base_Hip` under it rotates 38.6° the other way — they
+    very nearly cancel, and what you see is her SLIDING, not turning.
+
+    Reading the hips' world from the mapped subset alone reported the full 38.6° as real, and the
+    retargeted figure swung bodily about her own axis at the cadence of a motion that does not rotate
+    her at all. Reported from a headset as "Alice translates, Grace rotates" — which is the whole bug in
+    four words.
+    """
+    # `hips` turns, and the unmapped armature above it turns the other way by the same amount.
+    straight = clip(drive=("hips",))
+    cancelled = clip(drive=("hips",), wrapper="Armature")
+    cd, cb = split_glb(cancelled)
+    anim = cd["animations"][0]
+    by = {n.get("name"): i for i, n in enumerate(cd["nodes"])}
+    hips_node = by[_MIXAMO["hips"]]
+    hips_ch = next(c for c in anim["channels"] if c["target"]["node"] == hips_node)
+    # Give the wrapper the INVERSE of the hips' own track, so the two compose to nothing in world.
+    inv = _invert_sampler(cd, cb, anim["samplers"][hips_ch["sampler"]])
+    anim["samplers"].append(inv[0])
+    anim["channels"].append({"sampler": len(anim["samplers"]) - 1,
+                             "target": {"node": by["Armature"], "path": "rotation"}})
+    cancelled = _glb_bytes(cd, inv[1])
+
+    fig = figure(_RIGIFY)
+    turned = _locals(retarget_clip(straight, fig).data)[0]
+    still = _locals(retarget_clip(cancelled, fig).data)[0]
+    tgt = _RIGIFY["hips"]
+    swing = max(_angle(_sample(turned[tgt], 0.0), _sample(turned[tgt], t)) for t in (0.5, 1.0))
+    none_ = max(_angle(_sample(still[tgt], 0.0), _sample(still[tgt], t)) for t in (0.5, 1.0))
+    assert swing > 8.0, "the fixture has to actually turn her, or this proves nothing"
+    assert none_ < swing / 3, (
+        f"an ancestor turning the other way must cancel it: {none_:.1f}° against {swing:.1f}°")
+
+
+def _invert_sampler(doc, blob, sampler):
+    """A copy of `sampler` with every quaternion conjugated, appended to the buffer."""
+    import struct as _s
+    from conjure.retarget import _read_accessor
+    quats = _read_accessor(doc, blob, sampler["output"])
+    flat = [c for q in quats for c in qconj(q)]
+    data = _s.pack("<" + "f" * len(flat), *flat)
+    blob = bytes(blob) + data
+    doc["bufferViews"].append({"buffer": 0, "byteOffset": len(blob) - len(data),
+                               "byteLength": len(data)})
+    doc["accessors"].append({"bufferView": len(doc["bufferViews"]) - 1, "componentType": 5126,
+                             "count": len(quats), "type": "VEC4"})
+    doc["buffers"][0]["byteLength"] = len(blob)
+    return ({"input": sampler["input"], "interpolation": "STEP",
+             "output": len(doc["accessors"]) - 1}, blob)

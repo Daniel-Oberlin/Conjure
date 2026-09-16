@@ -342,15 +342,24 @@ def _posed_world(rig: Rig, locals_by_name: dict) -> dict:
     return out
 
 
-def _target_locals(src: Rig, dst: Rig, carried: dict, swing: tuple) -> dict:
+def _target_locals(src: Rig, dst: Rig, carried: dict, swing: tuple, everything: dict) -> dict:
     """Local rotations on the TARGET that put each mapped bone where the source's is.
 
     Two steps, and the second is what makes this a walk rather than a formula. First the desired WORLD
     rotation per bone, `swing · Ws · Ks⁻¹ · Kt`. Then, top-down, the local that achieves it against the
     parent's ALREADY-MOVED world — using the parent's REST instead is the obvious shortcut and it fails
     the identity case by 32°, which is the only cheap test this has.
+
+    **`everything` is every rotation the clip carries, not only the mapped ones, and that distinction is
+    load-bearing.** A bone the humanoid does not name can still be a mapped bone's ANCESTOR, and then it
+    is part of that bone's world orientation whether we can carry it onward or not. Alice's
+    `CC_Base_BoneRoot` is the case: it rotates 36.3° over `LayTableIdle` while `CC_Base_Hip` under it
+    rotates 38.6° the other way, so the two very nearly cancel and what you see is her SLIDING. Reading
+    the hips' world from the mapped subset alone reported the full 38.6° as if it were real, and the
+    retargeted figure swung bodily about her own axis at the cadence of a motion that does not rotate
+    her at all.
     """
-    s_world = _posed_world(src, {src.mapping[b]: q for b, q in carried.items()})
+    s_world = _posed_world(src, everything)
     want = {}
     for bone, _q in carried.items():
         k_s, k_t = src.convention(bone), dst.convention(bone)
@@ -447,7 +456,8 @@ def retarget_clip(clip_bytes: bytes, figure_bytes: bytes,
     per_bone: dict[str, list] = {}
     for t in times:
         carried = {b: _sample(tracks[src.mapping[b]], t) for b in shared}
-        for name, q in _target_locals(src, dst, carried, swing).items():
+        everything = {node: _sample(tr, t) for node, tr in tracks.items()}
+        for name, q in _target_locals(src, dst, carried, swing, everything).items():
             per_bone.setdefault(name, []).append(q)
     if not per_bone:
         say("nothing survived the mapping")
