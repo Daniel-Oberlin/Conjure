@@ -824,6 +824,49 @@ digit. It covers what is easy to get subtly different: composition order, side m
 antiparallel half-turn, and every clamp. (Comparisons are by quaternion **dot product**: three's
 `Quaternion.angleTo` has a ~3e-8 noise floor even between bit-identical quaternions.)
 
+### Measuring a retarget — and why a model of the client is not the client
+
+Everything else here models the client in Python and compares files. For retargeting that hid **four
+separate defects in a row** — a rotating ancestor nothing carried, translation channels dropped
+wholesale, an armature's units, and a cache serving a clip from an older build — because a model of the
+client is not the client. So these run the real thing: `figure-clip.js`'s own `retarget()`, a real
+`AnimationMixer`, seeked exactly the way `tick()` seeks it.
+
+| harness | the question it answers |
+|---|---|
+| `scripts/retarget_probe.py` | **the specification.** Every rigged figure in the catalog, naive vs delta vs absolute, limbs and whole-body. `--control N` rolls every bone's rest, a case whose right answer is known to be 0. `--swing` restores the term the law dropped, and is the only place it still exists |
+| `scripts/clip_diff.mjs` | are two (clip, figure) pairs doing the same thing over time — hips movement, body turn, worst single-segment limb |
+| `scripts/clip_tilt.mjs` | the ABSOLUTE body axis, which `clip_diff` structurally cannot see: it reports every angle relative to each figure's own `t=0`, so a constant lean reads clean |
+| `scripts/clip_stage.py` | resolves names against the library and writes clip, figure and retarget as files, so two builds can be compared with everything else held identical |
+| `scripts/clip_check.mjs` | binding, plus the client's own drop report |
+
+**Read every row as its excess over the floor.** `Jane → Jane` — the same clip on its own rig — scores
+5.3° on limbs and 4.0° on the body, because channel loss is not retargeting's to fix. A figure scoring
+*below* the floor is not doing well; it is the tell that the metric is measuring the thing it grades.
+
+#### Eight ways a metric has been wrong here, and only twice was the code
+
+This campaign's record is that **every hypothesis reasoned to was wrong and every one a measurement
+found was right** — but a measurement is only as good as what it measures, and these cost more time than
+the defects did.
+
+- A limb metric in each figure's **own body frame** cannot see a figure turned bodily, which is the
+  largest error there is. The naive copy left Alice 79° out and still scored well.
+- `hips → hand` spans the whole torso AND the whole arm, so its direction is set by **proportion**, not
+  pose: one figure's arm-to-torso ratio is 1.24 against another's 0.96, and the two differ by 31° at rest
+  with nothing playing. Reported as retargeting error it made a correct pair look 50° wrong.
+- Posing the two sides with **different bone sets** fakes an identity match.
+- Measuring a bone against its parent's **rest** rather than where the parent actually moved: 32°.
+- A threshold chosen by geometry — `abs(dot(along, up)) < 0.99` — put two rigs in the same rest pose on
+  either side of the cut and ended them a half-turn apart. **A fixed table, never a measurement.**
+- The body metric is the angle between two POSED body frames, and `swing` was constructed to null
+  exactly that, so **the term graded itself**. Four figures scored below the floor.
+- A **range** metric (min/max over a clip) cannot see an interpolation defect, because `STEP` and
+  `LINEAR` visit the same extremes. Only a comparison at an instant exposes it.
+- A **rendered thumbnail of every mesh** describes a figure's whole wardrobe stacked on itself, and a
+  vision model narrates the result fluently and with confidence. Not a retargeting metric, but the same
+  failure: the instrument was pointed at the wrong thing and answered anyway.
+
 ### The utterance layer — `scripts/pose_eval.py`
 
 Everything above verifies the **frame**: given `{"leftUpperArm": {"bend": 45}}`, does the right joint
