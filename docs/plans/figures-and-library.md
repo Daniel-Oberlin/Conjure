@@ -1068,9 +1068,15 @@ answer was experiment 2 and it was the whole of it: `swing` was the static tilt.
 *Alignment* — the term is gone, `RETARGET_REV` is 5, and the composed-rest problem turned out **not** to
 need fixing for this bar, which is worth knowing before anyone opens it.
 
-**2. FINGERS.** ✅ **DONE, untested on device.** 22 bones → 52, dropped 82 → 52, body bit-identical.
-Written up below under *Fingers*. Needs a server restart and a `refresh-models` to re-derive every
-signature — `RIG_SIG_REV` is 2 and nothing in the catalog is stamped for it yet.
+**2. FINGERS.** ✅ **DONE, seen on device 2026-09-16** — *"fingers are working for the most part"*.
+22 bones → 52, dropped 82 → 52, body bit-identical. Fingertip swing against Alice's native 3.8°: Akari
+5.4°, office-babe 4.0°, Saka 8.8°. Grace reads 0.0° and it is her file, not the map — written up below.
+Chasing Saka through it turned up two further defects, both fixed: `refresh-models` respelled the
+figures and left every clip behind (a signature is a comparison, so one side is worse than neither), and
+a STATED VRM map was nobody's job, so her row held a 54-bone map beside a 21-bone fingerprint.
+
+**2a. FACES** — raised here, measured, and NOT started. See *Faces* below. Driving one is small and
+worth doing; retargeting one has no evidence to build on and should wait for a reason.
 
 **3. WHATEVER ELSE PHASE 5 NEEDS** to be honestly done: the residual body swing (7.0° Grace, 4.2° Akari
 against Alice's 1.8°, and `swing` is measured NOT to be the cause), and the `Done when` bar at the
@@ -1085,6 +1091,7 @@ dissolving it. Where each part goes:
 | the retargeting law, `RETARGET_REV`, the three clip lists, what a rewrite cannot carry | `specs/figures.md` |
 | the composed-rest problem, and alignment as a capture concern | `backlogs/captures.md` § Known problems |
 | the residual swing, the map-chain breaks, the parts-vocabulary dialect gap | `backlogs/figures.md` |
+| faces — driving them (small) and retargeting them (not yet), with the corpus measurement | `backlogs/figures.md` |
 | phase 4, rooms as environments — untouched and still wanted | `backlogs/library.md` + `specs/worlds-surfaces.md` |
 | the measurement harnesses and why a model of the client is not the client | `specs/figures.md`, beside the law |
 
@@ -1232,6 +1239,50 @@ of a message that shows three.
 inferred 21-bone body map instead, so she retargets with no fingers at all. Pre-existing and not caused
 by this work; `best_humanoid`'s docstring says a stated map is the caller's job. Belongs in
 `backlogs/figures.md`.
+
+### Faces — measured 2026-09-16, NOT started, and the two halves are not the same job
+
+Raised while the fingers were landing, and recorded here so it is not lost. **Nothing below is built.**
+
+**What the corpus actually has.** Morph targets are everywhere — 30 of 32 rigged models carry some — but
+almost none of them are a face:
+
+| figure | targets | facial | vocabulary |
+|---|---|---|---|
+| Saka | 57 | **57** | VRM's own preset set — `Fcl_ALL_Joy`, `Fcl_BRW_Angry`, `Fcl_EYE_Close_L` |
+| Alice | 36 | **31** | Character Creator / ARKit-ish — `Brow_Raise_Inner_L`, `Eye_Blink_L`, `Eye_L_Look_Up` |
+| Bianca, Blondie | 22, 21 | 19 | **tongue only** — `Tongue_Out`, `T01_Tongue_Up`. No brows, no eyes |
+| everyone else | 3–17 | 0–1 | skin and clothing colour (`Body_Asian`, `Shirt_Blue`), anatomy (`pussy_open`), and the odd `closed_eyes_correction` |
+
+So the expression rigs number **two**, and they speak different languages.
+
+**The captures do not contain performances of them.** 249 of 539 clips drive morph weights, which looks
+promising and is not: the channels target `Body`, `Dress`, `Shorts`, `Hair`, `Shirt` — wardrobe and body
+shape. Corpus-wide, **15 channels are facial** (`CC_Base_Tongue` 7, `CC_Base_Body` 8). Whatever made
+these characters emote on the source site, it was not in the animation files.
+
+**Half one — DRIVE a face ourselves. Small, and worth doing.** A morph weight is one scalar per target
+and three.js applies it through the same mixer that plays a clip, so there is no new client path. It is
+`pose_figure`'s shape: a `set_expression` tool taking `{target: weight}` or a named preset, over the
+figures that have the targets. `morph_targets` is already a catalog attribute, so "who can smile" is a
+query we can answer today. The payoff is not cosmetic — a figure who blinks and looks at you is a
+different presence in a headset, and the director has nothing to work with now.
+
+**Half two — RETARGET a face across rigs. Harder than bones, and the reason is structural.** A bone
+retarget maps through a shared skeleton with geometry to check it against; `validate()` can say an elbow
+is above a shoulder. Morph targets have **names and nothing else**. `Fcl_ALL_Joy` and
+`Brow_Raise_Inner_L` are not the same vocabulary and there is no measurement that relates them — the
+whole discipline this campaign has run on (measure, never extrapolate) has nothing to measure. VRM's
+preset set is the obvious standard to map TO, and that is a table per scheme with no geometric check
+behind it, which is exactly the shape of thing `REF_AGAINST_UP` warns about.
+
+Worse, with two expression rigs in the catalog and no facial performances to carry, there is no evidence
+to build the tables from and nothing to carry across them. **Do not start this until something needs
+it.** If half one ships, the natural source of facial performance is our own director rather than a
+capture, and then the question changes from "retarget" to "author", which is a different and easier job.
+
+**Home:** half one to `backlogs/figures.md` as a sized item; half two to the same file as a NOT YET, with
+the measurement above so nobody re-derives it.
 
 ### The original write-up, kept for the naming tables it got right
 
