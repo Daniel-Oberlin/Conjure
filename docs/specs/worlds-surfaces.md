@@ -263,7 +263,19 @@ server-side (`specs/spaces.md §7`); and pruning protection keeps a surface with
 
 ---
 
-## 8. Related specs
+## 8. Not built — a room model as the environment
+
+`presentation.skybox` and `.grounded` already suppress the scaffold, and `authored` immersion was
+written for content that does not exist yet: a **room model** set as the environment the way a sky is,
+singleton and replacing rather than placed. Four captures ship one, each paired with a cube-mapped sky —
+a projection the library has never held.
+
+Designed in [`backlogs/library.md`](../backlogs/library.md) § *A room model as the ENVIRONMENT*. The
+part that belongs here: the room IS the walls, so it takes the same scaffold switch, and aligning it
+with the real room needs offset and scale from inside the headset — which `grab` currently allows only
+in a void world, and a room inside a real room is exactly the case that needs them.
+
+## 9. Related specs
 
 - [`specs/spaces.md`](./spaces.md) — the space record, ownership, selection, admission.
 - [`specs/spaces-geometry.md`](./spaces-geometry.md) — capture, registration, identity, stability.

@@ -248,6 +248,50 @@ is the only one that can describe what a person would actually say about a figur
 is the difference between "place Jane" and "place someone who fits a hotel bar at midnight" — and the
 same text is what a person needs when `dir --all` returns ninety-eight rows.
 
+### A room model as the ENVIRONMENT — designed, not built
+
+**Moved here 2026-09-16 when the figures plan dissolved; designed 2026-09-12 and untouched since.** It
+was always independent of the figure work, and it is the largest thing the captures already contain that
+nothing consumes: four of them ship a room model *and* a cube-mapped sky.
+
+Touches `specs/worlds-surfaces.md` (presentation and the scaffold), `specs/dynamics.md` (the `grab`
+mode) and this file (the `environment` facet).
+
+- `attributes.environment = {projection: "equirect" | "grounded" | "cubemap" | "mesh" | "cylinder"}`
+  — the facet. `kind` stays `image` or `model`. **`cubemap` is not speculative**: four captures ship a
+  room model *and* a cube-mapped sky (`akari`/JAPANESEROOM, `stewardess`/PrivateJetInterior,
+  `moon-girl`/MOONLANDBASE, `susan`/aula), which is a projection the library has never held.
+- **A room and its sky are two environments that travel together**, linked by `pairs_with` (phase 1).
+  Setting the room offers its sky; neither requires the other, because the pairing is how the scene
+  shipped and not a constraint we should inherit.
+- A room model is **singleton** and replaces, like the sky: `set_environment(model_id)`, not
+  `place_asset`.
+- It **suppresses the scaffold**, on the same switch `presentation.skybox` and `.grounded` already use
+  — the room *is* the walls.
+- It is the content `authored` immersion was written for, which is why that mode currently falls back
+  to `ar`.
+- **`grab` follows the GROUNDED SKYBOX**, which is the mode that already solves this: offset and yaw
+  to place and square the room against the real one, scale to fit it to the physical space. The reason
+  is alignment for walking, not looks.
+- **Known obstacle, and it is the central one.** The grab catalog says it plainly: *"Skybox scale and
+  void mode need a void/outdoor world; skybox yaw works anywhere."* Inside a real space you get yaw and
+  nothing else — and a room model inside a real space is precisely the case that needs offset and scale
+  most, because that is what lining a virtual room up with a physical one *is*. The gate
+  (`WF.isVoid()`) has to learn about an environment model, and this is the phase's real work rather
+  than a footnote to it.
+- **Open:** where the user stands in a room, and whether its floor snaps to the space's floor plane.
+  `authored`'s "built to the real footprint" argues for snapping; `plane_anchor.py` already has the
+  machinery.
+
+**Done when:** a room model can be set as the environment, the scaffold gives way to it, and it can be
+dragged and yawed into alignment with the real room from inside the headset.
+
+**The central obstacle, restated:** the grab catalog says *"Skybox scale and void mode need a
+void/outdoor world; skybox yaw works anywhere."* Inside a real space you get yaw and nothing else — and
+a room model inside a real space is precisely the case that needs offset and scale most, because lining
+a virtual room up with a physical one *is* offset and scale. `WF.isVoid()` has to learn about an
+environment model. That is the phase's work, not a footnote to it.
+
 ### Rigged humanoid import — see `backlogs/figures.md`
 
 Bringing in **figures** (rigged human models from Blender, Open3DLAB and similar) puts most of its weight
