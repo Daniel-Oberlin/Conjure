@@ -55,7 +55,9 @@ from .figures import (_local_matrix, best_humanoid, node_world_matrices, parent_
 #:
 #: `figures.FRAME_REV` exists for the same reason and this is the second artefact to need it, so the
 #: rule is general: anything derived and cached carries the revision of the code that derived it.
-RETARGET_REV = 2        # 2: unmapped ancestors count toward a mapped bone's world orientation, and
+RETARGET_REV = 3        # 3: a carried translation goes out to WORLD and back, so the armature's UNITS
+                        #    are converted and not only its axes
+                        # 2: unmapped ancestors count toward a mapped bone's world orientation, and
                         #    bones the clip SLIDES carry their translation
                         # 1: rotation only, mapped bones only
 
@@ -497,41 +499,49 @@ def _carry_translations(src: Rig, dst: Rig, slides: dict, times: list, bones: li
     authored ADDRESS is discarded and its movement is not.
 
     Carried as a delta from the clip's own first frame, for the same reason: what the source says about
-    where the figure stood belongs to the scene it was captured from. The delta is rotated out of the
-    source bone's parent frame and into the target's — a translation lives in its parent's coordinates,
-    so two rigs that spell those axes differently need it turned — and scaled by the ratio of their
-    heights, because a centimetre on a 1.7 m figure is not a centimetre on a 5 m one.
+    where the figure stood belongs to the scene it was captured from.
+
+    **The delta is taken all the way out to WORLD and back**, through each parent's full bind matrix
+    rather than through its rotation alone. A translation lives in its parent's coordinates, and those
+    coordinates differ in UNITS as well as in direction: Alice's armature bakes centimetres — a parent
+    world scale of 0.01 — where Grace's is metres at 1.0. Turning the delta without rescaling it made a
+    0.64 cm hip sway into 0.61 m, and the figure slid back and forth across the room.
+
+    Measured against HEIGHT first, which looks like the same thing and is not: both figures are about
+    1.7 m tall in world, so the height ratio was 0.96 and corrected nothing. The unit difference is in
+    the armature, not in the body.
+
+    World displacement is preserved rather than scaled by build. A 4 cm sway is 4 cm on anyone; making
+    it proportional to height would be a second guess on top of a first.
     """
     by_bone = {src.mapping[b]: b for b in bones}
-    scale = _height_ratio(src, dst)
     out: dict[str, list] = {}
     for node, track in slides.items():
         bone = by_bone.get(node)
         if bone is None or dst.index(bone) is None:
             continue
         s_parent, t_parent = src.parent.get(src.index(bone)), dst.parent.get(dst.index(bone))
-        turn = qmul(qconj(quat_of(dst.bind[t_parent])) if t_parent is not None else (0, 0, 0, 1),
-                    quat_of(src.bind[s_parent]) if s_parent is not None else (0, 0, 0, 1))
+        s_rot, s_scale = _frame_of(src.bind.get(s_parent))
+        t_rot, t_scale = _frame_of(dst.bind.get(t_parent))
         rest = dst.doc["nodes"][dst.index(bone)].get("translation") or [0.0, 0.0, 0.0]
         base = _sample(track, times[0])
         row = []
         for t in times:
             v = _sample(track, t)
-            d = _rotate((v[0] - base[0], v[1] - base[1], v[2] - base[2]), turn)
-            row.append((rest[0] + d[0] * scale, rest[1] + d[1] * scale, rest[2] + d[2] * scale))
+            local = tuple(v[i] - base[i] for i in range(3))
+            world = _rotate(tuple(local[i] * s_scale[i] for i in range(3)), s_rot)
+            back = _rotate(world, qconj(t_rot))
+            row.append(tuple(rest[i] + back[i] / t_scale[i] for i in range(3)))
         out[dst.mapping[bone]] = row
     return out
 
 
-def _height_ratio(src: Rig, dst: Rig) -> float:
-    """Target height over source height, from hips to head — what a centimetre is worth on each."""
-    def span(rig):
-        pos = rig.positions()
-        if "hips" not in pos or "head" not in pos:
-            return 0.0
-        return math.dist(pos["hips"], pos["head"])
-    a, b = span(src), span(dst)
-    return (b / a) if a > 1e-9 and b > 1e-9 else 1.0
+def _frame_of(m) -> tuple:
+    """`(rotation, scale)` of a bind matrix — the scale is what carries the UNITS."""
+    if m is None:
+        return ((0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0))
+    scale = tuple(math.sqrt(sum(m[c * 4 + k] ** 2 for k in range(3))) or 1.0 for c in range(3))
+    return (quat_of(m), scale)
 
 
 def _rotate(v, q):

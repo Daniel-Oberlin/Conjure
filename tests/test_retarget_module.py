@@ -25,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_server import _MIXAMO, _RIGIFY, _glb_bytes, _skeleton_nodes   # noqa: E402
 
 from conjure.figures import split_glb                                   # noqa: E402
-from conjure.retarget import Rig, _sample, _tracks, qconj, qmul, retarget_clip   # noqa: E402
+from conjure.retarget import (Rig, _read_accessor, _sample, _tracks,   # noqa: E402
+                              qconj, qmul, retarget_clip)
 
 
 def _roll(nodes: list, degrees: float) -> list:
@@ -60,16 +61,29 @@ def _mat3(q):
             2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]
 
 
-def figure(naming=None, *, roll: float = 0.0, nameless: bool = False) -> bytes:
-    """A rigged model: skeleton, one skinned mesh, a bind pose."""
+def figure(naming=None, *, roll: float = 0.0, nameless: bool = False,
+           armature_scale: float = 1.0) -> bytes:
+    """A rigged model: skeleton, one skinned mesh, a bind pose.
+
+    `armature_scale` wraps the skeleton in a scaled node, which is how the captured rigs carry their
+    units — Alice's armature is 0.01, baking centimetres into every local translation beneath it.
+    """
     nodes, names = _skeleton_nodes(naming or _MIXAMO)
     if roll:
         _roll(nodes, roll)
+    if armature_scale != 1.0:
+        for nd in nodes:
+            if nd.get("translation"):
+                nd["translation"] = [c / armature_scale for c in nd["translation"]]
     if nameless:
         for i, nd in enumerate(nodes):
             nd["name"] = f"b{i}"
     nodes.append({"name": "Body", "mesh": 0, "skin": 0})
-    doc = {"scenes": [{"nodes": [0, len(nodes) - 1]}], "scene": 0, "nodes": nodes,
+    roots = [0, len(nodes) - 1]
+    if armature_scale != 1.0:
+        nodes.append({"name": "Armature", "scale": [armature_scale] * 3, "children": roots})
+        roots = [len(nodes) - 1]
+    doc = {"scenes": [{"nodes": roots}], "scene": 0, "nodes": nodes,
            "skins": [{"joints": list(range(len(names)))}],
            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
            "accessors": [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}]}
@@ -304,3 +318,33 @@ def _invert_sampler(doc, blob, sampler):
     doc["buffers"][0]["byteLength"] = len(blob)
     return ({"input": sampler["input"], "interpolation": "STEP",
              "output": len(doc["accessors"]) - 1}, blob)
+
+
+def test_a_carried_translation_converts_the_armatures_UNITS_not_only_its_axes():
+    """The bug that came straight after the last one, and looked nothing like it.
+
+    A translation lives in its parent's coordinates, and those differ in UNITS as well as direction:
+    Alice's armature bakes centimetres — a parent world scale of 0.01 — where Grace's is metres at 1.0.
+    Turning the delta without rescaling it made a 0.64 cm hip sway into 0.61 m and slid the figure
+    across the room, in a rhythm quite unlike the swing it had just stopped doing.
+
+    Scaling by HEIGHT looks like the same correction and is not: both figures are about 1.7 m in world,
+    so the ratio was 0.96 and it corrected nothing. The unit difference is in the armature, not the body.
+    """
+    sliding = clip(drive=("l_arm",), slide=("hips",))
+    metres = retarget_clip(sliding, figure(_RIGIFY))
+    centimetres = retarget_clip(sliding, figure(_RIGIFY, armature_scale=0.01))
+
+    def span(out):
+        doc, blob = split_glb(out.data)
+        anim = doc["animations"][0]
+        for ch in anim["channels"]:
+            if ch["target"]["path"] == "translation":
+                v = _read_accessor(doc, blob, anim["samplers"][ch["sampler"]]["output"])
+                return max(math.dist(p, v[0]) for p in v)
+        return 0.0
+
+    a, b = span(metres), span(centimetres)
+    assert a > 1e-6 and b > 1e-6, "both must carry the slide at all"
+    # The same WORLD movement on a rig whose locals are 100x smaller is 100x larger in those locals.
+    assert 80 < b / a < 120, f"expected ~100x in local units, got {b / a:.1f}x"
