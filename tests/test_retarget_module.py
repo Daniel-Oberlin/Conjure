@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_server import _MIXAMO, _RIGIFY, _glb_bytes, _skeleton_nodes   # noqa: E402
 
-from conjure.figures import node_world_matrices, split_glb              # noqa: E402
+from conjure.figures import (best_humanoid, node_world_matrices,        # noqa: E402
+                             split_glb)
 from conjure.retarget import (Rig, _read_accessor, _sample, _tracks,   # noqa: E402
                               qconj, qmul, retarget_clip)
 
@@ -324,6 +325,33 @@ def test_a_rig_with_only_SOME_fingers_maps_only_those():
     for absent in ("leftMiddleProximal", "leftRingDistal", "rightLittleProximal"):
         assert absent not in rig.mapping, f"{absent} is not in this rig and must not be mapped"
     assert "leftHand" in rig.mapping, "losing three fingers must not cost the hand"
+
+
+def test_a_STATED_vrm_map_beats_inference_and_brings_its_fingers():
+    """A file that names its own bones is better evidence than any guess we can make about it.
+
+    Left to the caller, this split one figure in two: the importer stored Saka's 54-bone VRM map as
+    `humanoid` and then asked `rig_signature` for a fingerprint, which ran discovery again and
+    fingerprinted a 21-bone INFERRED map — so her row held a map and a signature describing different
+    skeletons. The retarget had it worse, because `Rig` has bytes and no caller: it drove her with 21
+    bones while her file names 54, fingers included.
+    """
+    doc, blob = split_glb(figure(_MIXAMO, fingers="mixamo"))
+    stated = {"hips": "Hips", "spine": "Spine", "chest": "Spine1", "neck": "Neck", "head": "Head",
+              "leftUpperArm": "LeftArm", "leftLowerArm": "LeftForeArm", "leftHand": "LeftHand",
+              "rightUpperArm": "RightArm", "rightLowerArm": "RightForeArm", "rightHand": "RightHand",
+              "leftUpperLeg": "LeftUpLeg", "leftLowerLeg": "LeftLeg", "leftFoot": "LeftFoot",
+              "rightUpperLeg": "RightUpLeg", "rightLowerLeg": "RightLeg", "rightFoot": "RightFoot",
+              "leftIndexProximal": "LeftHandIndex1", "leftIndexIntermediate": "LeftHandIndex2"}
+    by = {n.get("name"): i for i, n in enumerate(doc["nodes"])}
+    doc["extensions"] = {"VRMC_vrm": {"humanoid": {"humanBones": {
+        k: {"node": by[v]} for k, v in stated.items() if v in by}}}}
+
+    mapping, source, _follows = best_humanoid(doc, blob)
+    assert source == "vrm", f"the file states its own map and discovery took {source!r} instead"
+    assert mapping["leftIndexIntermediate"] == "LeftHandIndex2"
+    # And the retarget sees the same thing, which is the half that has no caller to do it for it.
+    assert Rig(doc, blob).mapping["leftIndexProximal"] == "LeftHandIndex1"
 
 
 # ---------------------------------------------------------------- the rest body frame

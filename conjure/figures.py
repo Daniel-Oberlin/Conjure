@@ -996,18 +996,31 @@ def follow_bones(doc: dict, mapping: dict[str, str], blob: bytes = b"",
 def best_humanoid(doc: dict, blob: bytes = b"") -> tuple[Optional[dict], Optional[str], dict]:
     """`(map, source, follows)` — the discovery pipeline's cheap layers, in order, gated by `validate()`.
 
-    Layer 1 (names) is free and exact where it hits, and works on a bind pose that defeats geometry.
-    Layer 2 (shape) works on names that mean nothing. They fail on opposite inputs, which is the whole
-    argument for having both. A stated map (VRM) is read before either — that is the caller's job, since
-    it needs no doc-level guessing at all.
+    Layer 0 (STATED) is the file telling us outright — a VRM's own `humanBones` block. Layer 1 (names)
+    is free and exact where it hits, and works on a bind pose that defeats geometry. Layer 2 (shape)
+    works on names that mean nothing. 1 and 2 fail on opposite inputs, which is the whole argument for
+    having both.
+
+    **Layer 0 used to be the caller's job, and that quietly split one figure in two.** The importer read
+    the VRM block and stored it as `humanoid`, then called `rig_signature`, which calls THIS — so Saka's
+    catalog row held a 54-bone stated map beside a fingerprint computed over a 21-bone inferred one, and
+    every consumer that compares by signature was comparing over a map nobody had stored. The retarget
+    had it worse: `Rig` has bytes and no caller, so it could not reach the stated map at all and drove
+    her with 21 bones while her file names 54, fingers included. A stated map is the best evidence there
+    is; the only reason to hold it at arm's length was that nothing checked it, and `validate()` does.
 
     `follows` is computed from the PRUNED map, because it is about exactly the bones pruning removed:
     what the map cannot pose, the mesh still has to hang off something.
     """
-    for candidate, source in ((convention_humanoid(doc), None), (None, "inferred")):
+    from .importer import vrm_humanoid                  # local: importer imports this module
+    for candidate, source in (((vrm_humanoid(doc) or {}, "vrm"), None),
+                              (convention_humanoid(doc), None), (None, "inferred")):
         if candidate is not None:
             raw, scheme = candidate
-            source = f"convention:{scheme}" if raw else None
+            if scheme == "vrm":
+                source = "vrm" if raw else None
+            else:
+                source = f"convention:{scheme}" if raw else None
         else:
             # Every skin in turn, likeliest first. Which one is the BODY cannot be told from joint count
             # (Trish's hair rig has 679 to her body's 362) or from vertex count (her hair mesh outweighs
@@ -1514,7 +1527,8 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: stamped beside every signature so a changed definition is detectable rather than silently splitting
 #: one rig into two. Distinct from FRAME_REV: a discovery fix can change a signature without changing
 #: what a signature MEANS, and the two need to be told apart when regrouping a catalog.
-RIG_SIG_REV = 2         # 2: fingers joined the map, so every signature is respelled
+RIG_SIG_REV = 3         # 3: a stated VRM map is fingerprinted, where inference was before
+                        # 2: fingers joined the map, so every signature is respelled
 
 
 def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
@@ -1546,7 +1560,8 @@ def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 17          # 17: the convention tables reach the FINGERS
+FRAME_REV = 18          # 18: a STATED (VRM) map is layer 0 here, not the caller's job
+                        # 17: the convention tables reach the FINGERS
                         # 16: rig_sig is a DERIVED attribute, so refresh backfills and clears it
                         # 15: the side rule follows the figure's facing round a YAW, not just a 180
                         # 14: extraction classifies a figure's PARTS (which mesh is clothing)
