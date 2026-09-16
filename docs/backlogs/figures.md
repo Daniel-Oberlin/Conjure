@@ -81,6 +81,19 @@ skeletons did not update.
 her, then read the entity's `figure` component and whether her hips visibly drop. Hips dropping with
 straight legs is skinning; nothing moving but the feet is the bone lookup.
 
+## Small, open, and not blockers — carried over when the figures plan dissolved
+
+Each of these was seen and deliberately left, 2026-09-12 to 09-16.
+
+- **Per-model arm clearance.** Akari's 18 cm torso already fails `clears` on `kneel` and `stand`. It
+  predates the plan that recorded it and bites harder across twenty bodies than it did across two.
+- **A half-mapped figure validates clean.** `REQUIRED_BONES` names no hands and no feet, so four
+  unmapped core bones drew no complaint on Blondie or Bianca. Worth a rule; the map is still usable, so
+  the rule should warn rather than reject.
+- **`Steve` measures 2.53 m tall.** Noticed while writing figure descriptions and not chased. Either a
+  blocky character genuinely is that tall or a unit is wrong; `height_m` feeds life-size placement, so
+  it is worth one look.
+
 ## Left open by phase 5, 2026-09-16 — retargeting shipped, these did not
 
 The law and its measurements are in [`specs/figures.md`](../specs/figures.md) §8c. What follows is what

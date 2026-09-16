@@ -21,6 +21,15 @@ captures, including the deck texture `194421251` that made the railing grey.
 `dead_meshes(build)` and `Binding.source`, same section. 47 across twenty captures, which is where the
 Japanese deck and Alice's white scalp both come from.
 
+### Small, open, carried over when the figures plan dissolved
+
+- **Whether the promo-audio skip rule generalises.** It is a name match against one origin's marketing
+  lines. It will not survive a second site; a skip list keyed on content hash would. Worth doing only
+  once there is a second site to test it against.
+- **Template-only bindings on mapless materials** — 188 across the captures, Susan's white skull-cap
+  among them. Whether a template may dress a mesh the running scene never instantiates is unresolved,
+  and the test protecting Jane's hair depends on the current answer.
+
 ### A composed thing's rest pose is the SCENE's pose, not the container's bind
 
 **Found 2026-09-16 while retargeting, and it cost nothing there — which is the surprising half.**
