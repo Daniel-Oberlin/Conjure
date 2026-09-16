@@ -1088,10 +1088,12 @@ space, and a multimodal description into `notes` — kept apart because only the
 third may be refused on this corpus. The renderer (`glb_preview.py`), the captioner and the embedder all
 already exist.
 
-**3. WHATEVER ELSE PHASE 5 NEEDS** to be honestly done: the residual body swing (7.0° Grace, 4.2° Akari
-against Alice's 1.8°, and `swing` is measured NOT to be the cause), and the `Done when` bar at the
-bottom of this section — a clip playing recognisably on Susan, Trish and Saka, a measured drift number,
-and a rig that should fail failing cleanly. The first and third are met; the second is `clip_diff.mjs`.
+**3. WHATEVER ELSE PHASE 5 NEEDS** ✅ **DONE 2026-09-16.** The residual body swing was chased and is
+**not a defect** — it is the `limbs` approximation the probe has always reported, seen in the time
+domain; the account is under *Alignment* below, along with what to measure if anyone reopens it. One
+real defect fell out of the chase (the output interpolated `STEP` where the source is `LINEAR`,
+`RETARGET_REV` 7). The `Done when` bar: a clip plays on Susan, Trish and Saka; the drift is measured at
+4.9–7.2° limbs against a 5.3° channel-loss floor; and Tamaki is refused with the reason named.
 
 **4. DISSOLVE THIS FILE.** It has outlived its phases, which is the condition its own header names for
 dissolving it. Where each part goes:
@@ -1199,9 +1201,39 @@ exists. Pinned by `test_a_rig_that_RESTS_LEANING_does_not_lean_the_target_a_seco
 5.8° if the term comes back, with a companion control asserting the two fixtures really do rest
 differently.
 
-**Still open, and unchanged by this:** the residual body swing. Grace's range across the clip is 86.1°
-–93.7° and Saka's 85.7°–94.1°, against Alice's 93.4°–94.1°. `swing` was already ruled out as its cause
-and this confirms it — the wobble is the same size with the term and without.
+**The residual body swing, chased 2026-09-16 and I think it is not a defect.** Recorded here rather
+than in a backlog because the next person will otherwise chase it again.
+
+What it looks like: Grace's range across the clip is 86.1°–93.7° and Saka's 85.7°–94.1°, against Alice's
+93.4°–94.1°. `swing` was ruled out as the cause, and removing it confirmed that — the wobble is the same
+size with the term and without.
+
+`clip_diff` against Alice playing natively shows the shape of it, and the shape is the finding:
+
+```
+t=0.0  A 0.0°  B 0.0°      t=6.6  A 1.2°  B 1.2°
+t=0.8  A 1.8°  B 4.1°      t=7.5  A 1.6°  B 4.0°
+t=1.7  A 1.0°  B 0.9°      t=8.3  A 0.7°  B 0.7°
+t=2.5  A 1.8°  B 3.9°      t=9.1  A 1.6°  B 3.6°
+```
+
+**Perfectly alternating** — eight samples agree to a tenth of a degree, eight are off by ~2.3°, and it
+never varies. That looked exactly like a sampling artefact, and there was one to find: the output was
+written `STEP` where every source sampler is `LINEAR`, so the target held each pose and jumped. **Fixing
+it changed nothing** — the alternation survives unchanged (`RETARGET_REV` 7; the fix is right anyway).
+
+So it is pose-dependent, not sample-dependent: at the cycle's ends the two rigs agree exactly, and in the
+middle they differ. The limb directions alternate the same way, 2° against 5–6° on `neck → head`. Which
+is the ordinary reading: **this is the `limbs` error the probe has reported all along, 4.9–7.2° against a
+5.3° floor, seen in the time domain rather than as a median.** `K = C⁻¹·R` is exact only where two rigs'
+rest limbs point the same way; where a limb bends away from that, the conversion carries a few degrees.
+That is the law's known approximation, not a bug in it.
+
+**If someone wants to reopen it**, the decisive measurement is bone WORLD ORIENTATIONS over time rather
+than chords or body frames — both of the metrics used so far mix pose with proportion, and this campaign
+has now been caught by that eight times. Do not start from a range metric: STEP and LINEAR visit the
+same extremes, so min/max over a clip cannot see a difference that a comparison at an instant makes
+obvious.
 
 ### Fingers — DONE 2026-09-16, and the naming table in the original write-up was wrong twice
 
