@@ -152,13 +152,58 @@ several containers into one asset is by definition a re-import that supersedes.
 
 ## Future directions
 
-### Visual model embedding via rendered thumbnails
+### Describing and embedding models — a figure's whole searchable self is her name
 
-3D models are kept out of the vector index and matched by FTS/exact on their title, because
-text-derived vectors dominate text queries and bury the images (measured: model titles at distance
-~0.69 vs images at ~1.33). To make models semantically searchable ("a large deciduous tree" → an oak)
-and image-similarity-searchable, render each GLB to a thumbnail and embed **that**, so models join the
-image space at a consistent scale. Needs a GLB→PNG renderer (trimesh/pyrender).
+**The state of it, measured 2026-09-16.** 94 assets carry an embedding and **every one is an image or a
+skybox; no model has one**. Every rigged figure's `notes` and `tags` are empty, so a figure's entire
+searchable text is her `label` — and three of them are called `Animated Woman`. Asking this catalog for
+"a blonde in a cocktail dress" cannot work, and neither can "someone who looks like this".
+
+Models were kept out of the vector index for a reason that still holds: **text-derived vectors dominate
+text queries and bury the images** (measured: model titles at distance ~0.69 against images at ~1.33).
+That is an argument against embedding a model's TITLE. It is not an argument against embedding a
+picture of it.
+
+Three layers, and they are worth keeping apart because they fail differently and only the first is free.
+
+**Layer 1 — structured text, from what is already known. Deterministic, and costs nothing.** A figure's
+`attributes` already hold her height, rig convention, humanoid bone count, `parts` (which meshes are
+jacket, skirt, shoes), clip names and count, whether any are voiced, and her morph target names — which
+on this corpus include skin and hair variants (`Body_Asian`, `Hair_Asian`) and expression sets. Composing
+that into `notes` is a pure function of the row, it is already in the FTS index
+(`label, prompt, query, notes, tags`), and it cannot be refused or hallucinated. **Do this first**: it
+establishes whether search improves at all before anything is spent on a vision pass, and it gives the
+vision pass something to check against.
+
+**Layer 2 — render a thumbnail and embed THAT.** The renderer exists:
+[`scripts/glb_preview.py`](../../scripts/glb_preview.py), headless Blender, several views, written for
+exactly this and saying so. Embedding a rendered view puts models in the **image** space at a consistent
+scale, which is what sidesteps the text-dominance measurement above — and it buys image-similarity
+search ("find me another figure that looks like this one"), which no amount of description gives you.
+`SigLipEmbedder` is configured and does image and text in one space.
+
+**Layer 3 — a multimodal description, into `notes`.** `GeminiCaptioner` is configured and the
+`Captioner` protocol is the seam. This is the layer that answers "a blonde in a cocktail dress", and it
+is the only one that can describe what a person would actually say about a figure.
+
+**Three obstacles, and the second decides whether layer 3 happens at all.**
+
+- **A figure is not one image.** Her clothing is removable (`parts`), she can be posed, and she has 21+
+  clips. A front A-pose describes one configuration of many. Multi-view helps; knowing that the
+  description is *of the default dressed A-pose* matters more, and should be said in the text rather
+  than implied.
+- **The corpus is adult, and a commercial vision provider will refuse or sanitise some of it.** This is
+  not a reason to skip layer 3, but it is the thing to test before designing around it: one render, one
+  call, and the answer is known. If refusals are common the layer is unreliable in a way that is worse
+  than absent — half the figures described and half not is a search index that quietly lies about what
+  it contains. **Cheapest possible experiment; run it first.**
+- **A description is text, so putting it in the VECTOR index reintroduces the exact problem** that took
+  models out of it. Layer 3 belongs in `notes` for FTS; layer 2 owns the vector. Keeping that split is
+  the whole reason these are separate layers and not one pass.
+
+**Where this pays off beyond search.** The director picks figures today from a name. A described catalog
+is the difference between "place Jane" and "place someone who fits a hotel bar at midnight" — and the
+same text is what a person needs when `dir --all` returns ninety-eight rows.
 
 ### Rigged humanoid import — see `backlogs/figures.md`
 

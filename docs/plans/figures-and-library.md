@@ -1078,6 +1078,15 @@ a STATED VRM map was nobody's job, so her row held a 54-bone map beside a 21-bon
 **2a. FACES** — raised here, measured, and NOT started. See *Faces* below. Driving one is small and
 worth doing; retargeting one has no evidence to build on and should wait for a reason.
 
+**2b. DESCRIBING AND EMBEDDING FIGURES** — raised 2026-09-16, measured, written up in
+[`backlogs/library.md`](../backlogs/library.md) § *Describing and embedding models*. Not part of phase 5
+and not blocked by it. The state: 94 assets carry an embedding and **not one is a model**; every
+figure's `notes` and `tags` are empty, so her whole searchable self is a label, and three figures are
+called `Animated Woman`. Three layers — free structured text, a rendered thumbnail in the image vector
+space, and a multimodal description into `notes` — kept apart because only the first is free and the
+third may be refused on this corpus. The renderer (`glb_preview.py`), the captioner and the embedder all
+already exist.
+
 **3. WHATEVER ELSE PHASE 5 NEEDS** to be honestly done: the residual body swing (7.0° Grace, 4.2° Akari
 against Alice's 1.8°, and `swing` is measured NOT to be the cause), and the `Done when` bar at the
 bottom of this section — a clip playing recognisably on Susan, Trish and Saka, a measured drift number,
