@@ -45,6 +45,21 @@ CORE_BONES = (
     "rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand",
 )
 
+#: The fingers, spelled as VRM 0.x spells them — which is not a preference but a match: `vrm_humanoid`
+#: already hands us `leftIndexProximal` and the rest from the file's own extension block, and Saka is in
+#: the catalog today with all thirty. A second vocabulary for the same joints would split her map from
+#: everyone else's for no reason.
+#:
+#: **Separate from `CORE_BONES` on purpose.** Core is what a map is JUDGED on — completeness reports,
+#: the probe's carried-bone count — and most rigs are missing some finger or other. Steve has none at
+#: all, one Mixamo rig has only a thumb and an index, and one dot-side rig's thumb stops at two joints.
+#: Folding them in would report thirty bones missing on a figure whose body map is perfect.
+FINGERS = ("Thumb", "Index", "Middle", "Ring", "Little")
+FINGER_JOINTS = ("Proximal", "Intermediate", "Distal")
+FINGER_BONES = tuple(f"{side}{finger}{joint}"
+                     for side in ("left", "right")
+                     for finger in FINGERS for joint in FINGER_JOINTS)
+
 
 # ---------------------------------------------------------------- node transforms
 
@@ -309,6 +324,54 @@ CONVENTIONS: dict[str, dict[str, str]] = {
         "{s}Toes": "Toe.{X}|ToeBase.{X}",
     },
 }
+
+
+#: Finger spellings per convention, **measured off the files and not extrapolated from the body rows**,
+#: because the fingers are where each of these schemes stops being regular:
+#:
+#: - `cc-base` calls the middle finger `Mid`, not `Middle`, and one base rig spells its whole right side
+#:   lowercase — `CC_Base_r_Mid1` beside `CC_Base_L_Mid1`. The case-insensitive fallback in `resolve`
+#:   already covers that; it was written for the same rig's hands.
+#: - `rigify` prefixes four fingers with `f_` and the THUMB with nothing: `f_index.01.L`, `thumb.01.L`.
+#: - everyone except VRM calls the little finger `Pinky`.
+#: - `dot-side` has fingers after all. The plan recorded "no finger bones at all" from Steve, who has
+#:   none — but `Animated Woman` and `Characters Shaun` are the same scheme and have the full set.
+#:
+#: What none of them promise is that a chain is COMPLETE. One Mixamo rig carries only a thumb and an
+#: index; one dot-side thumb stops at two joints. A slot that matches nothing is simply absent from the
+#: map, which is the same way a missing toe has always been handled.
+#:
+#: `{N}` is the joint 1..3 and is substituted before `{S}`/`{X}`, so a pattern reaches `resolve` looking
+#: like every other candidate.
+_FINGERS_BY_SCHEME: dict[str, dict[str, str]] = {
+    "mixamo": {
+        "Thumb": "{S}HandThumb{N}", "Index": "{S}HandIndex{N}", "Middle": "{S}HandMiddle{N}",
+        "Ring": "{S}HandRing{N}", "Little": "{S}HandPinky{N}",
+    },
+    "rigify-fk": {
+        "Thumb": "thumb.0{N}.{X}", "Index": "f_index.0{N}.{X}", "Middle": "f_middle.0{N}.{X}",
+        "Ring": "f_ring.0{N}.{X}", "Little": "f_pinky.0{N}.{X}",
+    },
+    "rigify-def": {
+        "Thumb": "DEF-thumb.0{N}.{X}", "Index": "DEF-f_index.0{N}.{X}",
+        "Middle": "DEF-f_middle.0{N}.{X}", "Ring": "DEF-f_ring.0{N}.{X}",
+        "Little": "DEF-f_pinky.0{N}.{X}",
+    },
+    "cc-base": {
+        "Thumb": "CC_Base_{X}_Thumb{N}", "Index": "CC_Base_{X}_Index{N}",
+        "Middle": "CC_Base_{X}_Mid{N}", "Ring": "CC_Base_{X}_Ring{N}",
+        "Little": "CC_Base_{X}_Pinky{N}",
+    },
+    "dot-side": {
+        "Thumb": "Thumb{N}.{X}", "Index": "Index{N}.{X}", "Middle": "Middle{N}.{X}",
+        "Ring": "Ring{N}.{X}", "Little": "Pinky{N}.{X}",
+    },
+}
+
+for _scheme, _spelling in _FINGERS_BY_SCHEME.items():
+    for _finger, _pattern in _spelling.items():
+        for _n, _joint in enumerate(FINGER_JOINTS, start=1):
+            CONVENTIONS[_scheme][f"{{s}}{_finger}{_joint}"] = _pattern.replace("{N}", str(_n))
 
 
 def _bare(name: str) -> str:
@@ -1451,7 +1514,7 @@ def anatomical_axes(doc: dict, mapping: dict[str, str], space: str = "parent",
 #: stamped beside every signature so a changed definition is detectable rather than silently splitting
 #: one rig into two. Distinct from FRAME_REV: a discovery fix can change a signature without changing
 #: what a signature MEANS, and the two need to be told apart when regrouping a catalog.
-RIG_SIG_REV = 1
+RIG_SIG_REV = 2         # 2: fingers joined the map, so every signature is respelled
 
 
 def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
@@ -1483,7 +1546,8 @@ def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 16          # 16: rig_sig is a DERIVED attribute, so refresh backfills and clears it
+FRAME_REV = 17          # 17: the convention tables reach the FINGERS
+                        # 16: rig_sig is a DERIVED attribute, so refresh backfills and clears it
                         # 15: the side rule follows the figure's facing round a YAW, not just a 180
                         # 14: extraction classifies a figure's PARTS (which mesh is clothing)
                         # 13: a side letter in the wrong case still matches

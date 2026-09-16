@@ -1068,8 +1068,9 @@ answer was experiment 2 and it was the whole of it: `swing` was the static tilt.
 *Alignment* — the term is gone, `RETARGET_REV` is 5, and the composed-rest problem turned out **not** to
 need fixing for this bar, which is worth knowing before anyone opens it.
 
-**2. FINGERS.** Scope, naming tables and the `RIG_SIG_REV` cost are written up below under *Fingers*.
-Table work, not inference.
+**2. FINGERS.** ✅ **DONE, untested on device.** 22 bones → 52, dropped 82 → 52, body bit-identical.
+Written up below under *Fingers*. Needs a server restart and a `refresh-models` to re-derive every
+signature — `RIG_SIG_REV` is 2 and nothing in the catalog is stamped for it yet.
 
 **3. WHATEVER ELSE PHASE 5 NEEDS** to be honestly done: the residual body swing (7.0° Grace, 4.2° Akari
 against Alice's 1.8°, and `swing` is measured NOT to be the cause), and the `Done when` bar at the
@@ -1185,7 +1186,54 @@ differently.
 –93.7° and Saka's 85.7°–94.1°, against Alice's 93.4°–94.1°. `swing` was already ruled out as its cause
 and this confirms it — the wobble is the same size with the term and without.
 
-### Fingers — the humanoid stops at 22 bones, and it does not have to
+### Fingers — DONE 2026-09-16, and the naming table in the original write-up was wrong twice
+
+Reported on device: *"neither Grace nor Akari's fingers move but Alice's does"*. Correct, and it was the
+vocabulary rather than a defect. The humanoid now names **52 bones**, not 22: `FINGER_BONES`, five
+fingers × three joints × two hands, spelled the way VRM 0.x spells them because `vrm_humanoid` already
+hands us `leftIndexProximal` from a VRM's own extension block and Saka is in the catalog with all
+thirty. `FRAME_REV` 17, `RIG_SIG_REV` 2, `RETARGET_REV` 6.
+
+Measured on `LayTableIdle`: **22 bones carried → 52, dropped 82 → 52**, and the body is bit-identical —
+93.5° / 95.6° / 92.7° with the same min/max as before, because the HANDS were deliberately kept as chain
+ends. A hand's canonical frame has always come from `lowerArm → hand`; letting a thumb redefine it would
+have moved every wrist in the corpus to fix nothing.
+
+**The naming table this plan wrote from memory was wrong in two places**, which is why the tables in
+`figures.py` are measured off the files:
+
+| what the plan said | what the files say |
+|---|---|
+| `cc-base`: `CC_Base_L_Index1/2/3` | right, but the middle finger is `Mid`, not `Middle` — and one base rig spells its whole right side lowercase, `CC_Base_r_Mid1` |
+| `rigify`: `DEF-f_index.01.L` | right for four fingers; the THUMB has no `f_` — `DEF-thumb.01.L` |
+| `mixamo`: `LeftHandIndex1/2/3` | right, but the little finger is `Pinky`, and one rig carries only a thumb and an index |
+| `dot-side`: **no finger bones at all** | **wrong.** Steve has none; `Animated Woman` and `Characters Shaun` are the same scheme with the full set |
+
+**A finger cannot be squared up against a BODY axis** — the one real discovery, and it is measured. A
+hand turns freely at the wrist, so no fixed body direction stays perpendicular to a finger: the best
+body axis available still reads **0.966** against `Characters Shaun`'s index and **0.996** against
+`Bride`'s thumb, either of which is a degenerate frame. Arms and legs get away with a body axis because
+a rest pose holds them roughly fixed against the torso; fingers are one joint further out than that
+holds for. So `_hand_refs` takes the reference from the hand's own bones instead:
+
+- **across the knuckles**, `indexProximal → littleProximal`, for index/middle/ring/little — worst 0.251
+- **the palm normal**, that crossed with the middle finger's direction, for the thumb — worst 0.382,
+  median 0.229, where the knuckle axis would have been 0.851 because a thumb points across the palm
+
+**Grace's fingers still will not bend through**, and it is her file rather than the map. Her three FK
+finger joints are exported as SIBLINGS under one palm bone — what chained them in Blender was a
+constraint, and a GLB carries none — and she has no `DEF-` finger chain to prefer instead. Each joint
+still reaches its correct absolute orientation, because the walk solves every node against its own real
+parent; what cannot happen is a bend carrying to the joint beyond it. Now reported as its own note,
+separately from a BODY chain break, because twenty finger links would otherwise push a broken torso out
+of a message that shows three.
+
+**Open:** Saka's fingers are in her stored VRM map and `best_humanoid` does not read it — it takes the
+inferred 21-bone body map instead, so she retargets with no fingers at all. Pre-existing and not caused
+by this work; `best_humanoid`'s docstring says a stated map is the caller's job. Belongs in
+`backlogs/figures.md`.
+
+### The original write-up, kept for the naming tables it got right
 
 Reported on device: *"neither Grace nor Akari's fingers move but Alice's does"*. Correct, and it is the
 vocabulary rather than a defect — fingers are not humanoid bones, so all 82 of their channels are

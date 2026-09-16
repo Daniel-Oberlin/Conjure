@@ -51,8 +51,8 @@ import math
 import struct
 from typing import Callable, Optional
 
-from .figures import (_local_matrix, best_humanoid, node_world_matrices, parent_map,
-                      split_glb, write_glb)
+from .figures import (FINGER_JOINTS, FINGERS, _local_matrix, best_humanoid,
+                      node_world_matrices, parent_map, split_glb, write_glb)
 
 #: Bump when ANYTHING that changes a rewritten clip's contents changes. A retargeted clip is a DERIVED
 #: artefact cached under a content address, and a content address fingerprints the bytes rather than the
@@ -62,7 +62,8 @@ from .figures import (_local_matrix, best_humanoid, node_world_matrices, parent_
 #:
 #: `figures.FRAME_REV` exists for the same reason and this is the second artefact to need it, so the
 #: rule is general: anything derived and cached carries the revision of the code that derived it.
-RETARGET_REV = 5        # 5: no `swing` — aligning the rest BODY FRAMES added the rest pose twice
+RETARGET_REV = 6        # 6: the humanoid reaches the FINGERS, 22 bones -> 52
+                        # 5: no `swing` — aligning the rest BODY FRAMES added the rest pose twice
                         # 4: resampling HOLDS the previous keyframe (STEP), not the nearest
                         # 3: a carried translation goes out to WORLD and back, so the armature's UNITS
                         #    are converted and not only its axes
@@ -83,12 +84,66 @@ LIMBS = (("hips", "spine"), ("spine", "chest"), ("chest", "neck"), ("neck", "hea
          ("hips", "rightUpperLeg"), ("rightUpperLeg", "rightLowerLeg"),
          ("rightLowerLeg", "rightFoot"), ("rightFoot", "rightToes"))
 
+#: The fingers, appended rather than woven in so the body chain above stays readable. Hand -> Proximal
+#: -> Intermediate -> Distal, five a side. A rig that spells only some of them maps only those, and a
+#: link whose either end is unmapped is skipped everywhere this table is read.
+LIMBS = LIMBS + tuple(
+    (f"{_s}Hand" if _j == 0 else f"{_s}{_f}{FINGER_JOINTS[_j - 1]}", f"{_s}{_f}{FINGER_JOINTS[_j]}")
+    for _s in ("left", "right") for _f in FINGERS for _j in range(len(FINGER_JOINTS)))
+
 CHILD_OF: dict = {}
 for _p, _c in LIMBS:
     CHILD_OF.setdefault(_p, _c)
-for _end in ("leftHand", "rightHand", "leftToes", "rightToes", "head"):
+#: Chain ends continue their parent's line. The HANDS stay ends even though fingers now hang off them:
+#: a hand's canonical frame has always come from `lowerArm -> hand`, every retarget in the catalog was
+#: measured against that, and letting a thumb redefine it would move every wrist in the corpus to fix
+#: nothing. The finger TIPS are ends for the ordinary reason — nothing is below them.
+for _end in (("leftHand", "rightHand", "leftToes", "rightToes", "head")
+             + tuple(f"{_s}{_f}{FINGER_JOINTS[-1]}"
+                     for _s in ("left", "right") for _f in FINGERS)):
     CHILD_OF[_end] = None
 PARENT_OF = {c: p for p, c in LIMBS}
+
+def _hand_refs(pos: dict) -> dict:
+    """The reference axis for each FINGER bone, taken from that hand rather than from the body.
+
+    **A finger cannot be squared up against a body axis, and this was measured rather than assumed.**
+    A hand turns freely at the wrist, so any fixed body direction eventually lines up with a finger and
+    the frame goes degenerate. Across every rigged figure in the catalog, the worst |cos| between a
+    finger's limb and the best body axis available is 0.82 (thumbs, against SIDE) and 0.95–0.97 for the
+    other four, against FORWARD. `Characters Shaun`'s index finger reads 0.966 off body forward and
+    `Bride`'s thumb 0.996 off body up. Arms and legs get away with a body axis because a rest pose holds
+    them roughly fixed against the torso; fingers are one joint further out than that holds for.
+
+    So the reference comes from the hand's own bones, and there are two because a thumb is not a finger:
+
+      ACROSS THE KNUCKLES, `indexProximal -> littleProximal`, for index/middle/ring/little. Perpendicular
+      to all four by construction — worst 0.251 over the corpus, on Yuffie.
+      THE PALM NORMAL, that crossed with the middle finger's own direction, for the thumb. The thumb
+      points across the palm, so the knuckle axis is exactly the wrong reference for it — 0.851 on
+      Yuffie — while the palm normal is 0.382 at worst, on Bianca, and 0.229 median.
+
+    `{}` for a hand that has not got the bones to say: one Mixamo rig in the catalog carries a thumb and
+    an index and no others, so there is no across-palm direction to take. Those fall back to the body
+    axis, which for that rig measures 0.524 — fine, and honest about being a fallback.
+    """
+    out: dict = {}
+    for side in ("left", "right"):
+        a, b = f"{side}IndexProximal", f"{side}LittleProximal"
+        mid, mid_next = f"{side}MiddleProximal", f"{side}MiddleIntermediate"
+        if a not in pos or b not in pos:
+            continue
+        knuckles = _norm(tuple(pos[b][i] - pos[a][i] for i in range(3)))
+        for finger in ("Index", "Middle", "Ring", "Little"):
+            for joint in FINGER_JOINTS:
+                out[f"{side}{finger}{joint}"] = knuckles
+        if mid in pos and mid_next in pos:
+            along_mid = _norm(tuple(pos[mid_next][i] - pos[mid][i] for i in range(3)))
+            palm = _norm(_cross(knuckles, along_mid))
+            for joint in FINGER_JOINTS:
+                out[f"{side}Thumb{joint}"] = palm
+    return out
+
 
 #: Which body axis squares up each bone's frame. Body FORWARD for almost everything, because almost
 #: every humanoid limb points up, down or sideways; body UP only for the feet, whose limb IS forward.
@@ -216,6 +271,7 @@ class Rig:
             return self._canon
         _side, up, fwd_body = axes
         pos = self.positions()
+        hand_ref = _hand_refs(pos)
         for bone in pos:
             child = CHILD_OF.get(bone)
             a, b = bone, child
@@ -226,7 +282,7 @@ class Rig:
             if sum(c * c for c in d) < 1e-12:
                 d = up
             along = _norm(d)
-            ref = up if bone in REF_AGAINST_UP else fwd_body
+            ref = hand_ref.get(bone) or (up if bone in REF_AGAINST_UP else fwd_body)
             right = _norm(_cross(ref, along))
             upper = _cross(along, right)
             self._canon[bone] = quat_of([right[0], right[1], right[2], 0,
@@ -507,11 +563,24 @@ def retarget_clip(clip_bytes: bytes, figure_bytes: bytes,
     dropped = len(tracks) - len(shared)
 
     notes = []
-    breaks = dst.chain_breaks()
-    if breaks:
-        notes.append(f"that figure's bone map is not a CHAIN at {', '.join(breaks[:3])} — those bones "
-                     f"sit in different branches of its skeleton, so motion cannot compose through "
-                     f"them and that part of the body will lag")
+    # BODY breaks and FINGER breaks are the same defect and not the same news, so they are reported
+    # apart. A broken torso link wrecks the whole performance — Trish's `spine->chest` is the case the
+    # note was written for. A broken finger link is cosmetic and COMMON: Grace's rig exports its three
+    # FK finger joints as SIBLINGS under one palm bone, because what chained them in Blender was a
+    # constraint and a GLB carries none. Each joint still reaches its right absolute orientation, since
+    # the walk solves every node against its own real parent; what it cannot do is carry the bend
+    # onward. Reported together, twelve finger links pushed the torso out of a note that shows three.
+    parts = {"body": [], "finger": []}
+    for link in dst.chain_breaks():
+        parts["finger" if any(f in link for f in FINGERS) else "body"].append(link)
+    if parts["body"]:
+        notes.append(f"that figure's bone map is not a CHAIN at {', '.join(parts['body'][:3])} — those "
+                     f"bones sit in different branches of its skeleton, so motion cannot compose "
+                     f"through them and that part of the body will lag")
+    if parts["finger"]:
+        notes.append(f"{len(parts['finger'])} finger link(s) are not a chain on that figure — its "
+                     f"finger joints are siblings rather than a chain, so each one is posed correctly "
+                     f"but a bend does not carry to the joint beyond it")
     if dropped:
         notes.append(f"{dropped} channel(s) drive bones the humanoid does not name — skirt, breast and "
                      f"secondary chains — and no rig has anything to receive them")

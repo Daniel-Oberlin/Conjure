@@ -54,6 +54,45 @@ def _roll(nodes: list, degrees: float) -> list:
     return nodes
 
 
+#: How each real convention spells a finger joint, and the only place these strings are written down
+#: in the tests — `figures.CONVENTIONS` is the thing under test, so a fixture that imported its table
+#: would agree with itself no matter what either said. Taken off the files: `CC_Base_L_Mid1`,
+#: `f_index.01.L`, `LeftHandPinky1`.
+_FINGER_NAMES = {
+    "mixamo": lambda s, f, n: f"{'Left' if s == 'left' else 'Right'}Hand"
+                              f"{'Pinky' if f == 'Little' else f}{n}",
+    "rigify-fk": lambda s, f, n: (f"thumb.0{n}.{'L' if s == 'left' else 'R'}" if f == "Thumb" else
+                                  f"f_{('pinky' if f == 'Little' else f.lower())}.0"
+                                  f"{n}.{'L' if s == 'left' else 'R'}"),
+}
+
+#: Where each finger sits on the palm, in the hand's own local frame: out along +x, spread along z.
+#: The thumb leaves the palm PLANE, which is what makes it need a different reference axis from the
+#: other four and is the whole point of the fixture.
+_FINGER_LAYOUT = {"Index": (0.03, 0.0, 0.03), "Middle": (0.03, 0.0, 0.01),
+                  "Ring": (0.03, 0.0, -0.01), "Little": (0.03, 0.0, -0.03),
+                  "Thumb": (0.02, -0.02, 0.04)}
+
+
+def _add_fingers(nodes: list, naming: dict, scheme: str) -> list:
+    """Five three-joint fingers on each hand, spelled the way `scheme` really spells them."""
+    spell = _FINGER_NAMES[scheme]
+    by = {n["name"]: i for i, n in enumerate(nodes)}
+    for side, slot in (("left", "l_hand"), ("right", "r_hand")):
+        hand = by.get(naming[slot])
+        if hand is None:
+            continue
+        flip = 1.0 if side == "left" else -1.0
+        for finger, (dx, dy, dz) in _FINGER_LAYOUT.items():
+            parent = hand
+            for joint in range(1, 4):
+                step = (dx * flip, dy, dz) if joint == 1 else (0.03 * flip, dy / 2, 0.0)
+                nodes.append({"name": spell(side, finger, joint), "translation": list(step)})
+                nodes[parent].setdefault("children", []).append(len(nodes) - 1)
+                parent = len(nodes) - 1
+    return nodes
+
+
 def _lean(nodes: list, naming: dict, degrees: float) -> list:
     """Tip the SPINE's rest so the body leans, legs and all else untouched.
 
@@ -77,8 +116,8 @@ def _mat3(q):
             2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]
 
 
-def figure(naming=None, *, roll: float = 0.0, lean: float = 0.0, nameless: bool = False,
-           armature_scale: float = 1.0) -> bytes:
+def figure(naming=None, *, roll: float = 0.0, lean: float = 0.0, fingers: str = "",
+           nameless: bool = False, armature_scale: float = 1.0) -> bytes:
     """A rigged model: skeleton, one skinned mesh, a bind pose.
 
     `armature_scale` wraps the skeleton in a scaled node, which is how the captured rigs carry their
@@ -89,6 +128,8 @@ def figure(naming=None, *, roll: float = 0.0, lean: float = 0.0, nameless: bool 
         _roll(nodes, roll)
     if lean:
         _lean(nodes, naming or _MIXAMO, lean)
+    if fingers:
+        _add_fingers(nodes, naming or _MIXAMO, fingers)
     if armature_scale != 1.0:
         for nd in nodes:
             if nd.get("translation"):
@@ -108,7 +149,7 @@ def figure(naming=None, *, roll: float = 0.0, lean: float = 0.0, nameless: bool 
     return _glb_bytes(doc)
 
 
-def clip(naming=None, *, name="wave", roll: float = 0.0, lean: float = 0.0,
+def clip(naming=None, *, name="wave", roll: float = 0.0, lean: float = 0.0, fingers: str = "",
          drive=("l_arm", "spine", "l_fore"),
          extra=(), slide=(), slide_moves: bool = True, wrapper: str = "",
          slide_via_wrapper: bool = False) -> bytes:
@@ -119,6 +160,8 @@ def clip(naming=None, *, name="wave", roll: float = 0.0, lean: float = 0.0,
         _roll(nodes, roll)
     if lean:
         _lean(nodes, table, lean)
+    if fingers:
+        _add_fingers(nodes, table, fingers)
     for bone in extra:                          # a bone no other rig has, e.g. a skirt chain
         nodes.append({"name": bone, "translation": [0.0, 0.1, 0.0], "rotation": [0, 0, 0, 1]})
         nodes[0].setdefault("children", []).append(len(nodes) - 1)
@@ -207,6 +250,80 @@ def _body_up(fig_bytes: bytes, clip_bytes: bytes, t: float = 0.0) -> tuple:
     d = tuple(p["neck"][12 + k] - p["hips"][12 + k] for k in range(3))
     n = math.sqrt(sum(c * c for c in d))
     return tuple(c / n for c in d)
+
+
+# ---------------------------------------------------------------- fingers
+
+def test_a_clip_that_drives_FINGERS_carries_them_across_rigs():
+    """*"Neither Grace nor Akari's fingers move but Alice's does"*, reported on device.
+
+    Correct, and it was the vocabulary rather than a defect: the humanoid named 22 bones, fingers were
+    not among them, and all 82 of their channels were dropped. Alice kept hers only because she plays
+    natively. Thirty more bones — five fingers, three joints, two hands — and they cross.
+    """
+    moving = clip(_MIXAMO, fingers="mixamo",
+                  drive=("l_arm", "spine", "LeftHandIndex1", "LeftHandThumb2",
+                         "RightHandPinky3"))   # `Pinky` in mixamo, `Little` in ours
+    out = retarget_clip(moving, figure(_RIGIFY, fingers="rigify-fk"))
+    assert out is not None
+    after, _times = _locals(out.data)
+    assert "f_index.01.L" in after, f"the index finger did not cross: {sorted(after)}"
+    assert "thumb.02.L" in after, "the thumb did not cross"
+    assert "f_pinky.03.R" in after, "the little finger did not cross"
+    assert out.dropped == 0, f"nothing should have been dropped, {out.dropped} was"
+
+
+def test_a_finger_is_squared_up_against_the_HAND_and_not_against_the_BODY():
+    """The measurement that decided `_hand_refs`, as a property.
+
+    A hand turns freely at the wrist, so no fixed BODY axis stays perpendicular to a finger — measured
+    across the catalog, the best body axis still reads 0.966 against `Characters Shaun`'s index and
+    0.996 against `Bride`'s thumb, either of which is a degenerate frame. Here the wrist is turned so
+    the fingers point straight along body FORWARD, which is what the old rule would have used, and the
+    frames must still come out orthonormal.
+    """
+    nodes, _names = _skeleton_nodes(_MIXAMO)
+    _add_fingers(nodes, _MIXAMO, "mixamo")
+    by = {n["name"]: i for i, n in enumerate(nodes)}
+    a = math.radians(90) / 2                     # roll the hand a quarter turn about the arm
+    nodes[by["LeftHand"]]["rotation"] = [math.sin(a), 0.0, 0.0, math.cos(a)]
+    nodes.append({"name": "Body", "mesh": 0, "skin": 0})
+    doc = {"scenes": [{"nodes": [0, len(nodes) - 1]}], "scene": 0, "nodes": nodes,
+           "skins": [{"joints": list(range(len(nodes) - 1))}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+           "accessors": [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}]}
+    rig = Rig(*split_glb(_glb_bytes(doc)))
+    canon = rig.canonical()
+    for bone in [b for b in canon if "Index" in b or "Thumb" in b]:
+        x, y, z, w = canon[bone]
+        assert abs(math.sqrt(x * x + y * y + z * z + w * w) - 1.0) < 1e-6, (
+            f"{bone}'s canonical frame is not a rotation — the reference axis was parallel to it")
+
+
+def test_a_rig_with_only_SOME_fingers_maps_only_those():
+    """No convention promises a complete hand, so a partial one must not poison the rest of the map.
+
+    Real cases: `Steve` has no finger bones at all, one Mixamo rig in the catalog carries a thumb and an
+    index and nothing else, and `Characters Shaun`'s thumb stops at two joints. A slot that matches
+    nothing is simply absent, the same way a missing toe has always been.
+    """
+    doc, blob = split_glb(figure(_MIXAMO, fingers="mixamo"))
+    gone = {n.get("name") for n in doc["nodes"]
+            if any(f in (n.get("name") or "") for f in ("Middle", "Ring", "Pinky"))}
+    assert gone, "the fixture has to have those fingers before removing them proves anything"
+    keep = [i for i, n in enumerate(doc["nodes"]) if n.get("name") not in gone]
+    renumber = {old: new for new, old in enumerate(keep)}
+    doc["nodes"] = [{**doc["nodes"][i],
+                     "children": [renumber[c] for c in (doc["nodes"][i].get("children") or [])
+                                  if c in renumber]} for i in keep]
+    doc["skins"] = [{"joints": [renumber[j] for j in doc["skins"][0]["joints"] if j in renumber]}]
+    doc["scenes"] = [{"nodes": [renumber[n] for n in doc["scenes"][0]["nodes"] if n in renumber]}]
+
+    rig = Rig(doc, blob)
+    assert "leftIndexProximal" in rig.mapping and "leftThumbDistal" in rig.mapping
+    for absent in ("leftMiddleProximal", "leftRingDistal", "rightLittleProximal"):
+        assert absent not in rig.mapping, f"{absent} is not in this rig and must not be mapped"
+    assert "leftHand" in rig.mapping, "losing three fingers must not cost the hand"
 
 
 # ---------------------------------------------------------------- the rest body frame
