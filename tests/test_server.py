@@ -5296,6 +5296,24 @@ def test_a_clip_from_a_DIFFERENT_rig_is_RETARGETED_rather_than_refused(srv, clie
     assert again["clip"] == r["clip"]
 
 
+def test_a_retargeted_clip_KEEPS_THE_VOICE_recorded_against_it(srv, client, tmp_path):
+    """A rewritten clip is the same performance on another body, and the voice was recorded against the
+    performance rather than against the skeleton. Dropping it makes every cross-rig clip silent, which
+    is half of what these are — found on device, where the first cross-rig play came back `voiced: null`
+    on a clip that is voiced."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    alien = _import_id(client, "weird.glb", _clip_glb(naming=_RIGIFY))
+    srv.library.upsert("voice.mp3", kind="audio", label="her voice", scope=srv.active_scope,
+                       source="cache://")
+    srv.library.add_relation(alien, "voice.mp3", "voiced_by")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert r["ok"] and r["retargeted"] is True
+    assert r["voiced"] == "voice.mp3", "the rewrite must not silence her"
+    assert _ent(client, eid)["components"]["figure-clip"]["audio"] == "/assets/voice.mp3"
+
+
 def test_forcing_a_cross_rig_clip_still_binds_it_by_NAME(srv, client, tmp_path):
     """`force` has always meant "show me the wreck", and retargeting does not take that away — it is
     how you find out what a rig mismatch actually looks like."""

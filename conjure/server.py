@@ -5009,6 +5009,12 @@ async def figure_clip(req: FigureClipRequest) -> dict:
                                             "retargeted_from": rec["id"], "clip_bones": done.bones,
                                             "clip_dropped": done.dropped})
         library.add_relation(new_id, rec["id"], "retargeted_from")
+        # THE VOICE COMES WITH IT. A rewritten clip is the same performance on another body, and the
+        # voice was recorded against the performance rather than against the skeleton — so dropping it
+        # here would make every retargeted clip silent, which is half of what these clips are. Found on
+        # device: the first cross-rig play came back `voiced: null` on a clip that is voiced.
+        for v in library.related(rec["id"], "voiced_by"):
+            library.add_relation(new_id, v["id"], "voiced_by")
         retarget_notes = done.notes
         rec = library.get(new_id) or rec
 
