@@ -799,7 +799,7 @@ def compose_build(root: str, out_dir: str, *, only: str = "", shown: bool = Fals
 
     Alongside the per-container output rather than instead of it: `temp/rebuilt/` stays exactly as it
     is and the importer keeps pointing at it until these files have been looked at. See
-    `docs/plans/figures-and-library.md` § 2b plan A.
+    `docs/specs/captures.md` §3.
     """
     say = report or (lambda _s: None)
     # DECODE BASIS FIRST, exactly as `rebuild_build` does. Forgetting it here cost nancy her skin: the

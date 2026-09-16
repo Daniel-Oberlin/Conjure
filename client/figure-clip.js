@@ -1,5 +1,5 @@
 /* global AFRAME, THREE */
-// `figure-clip` — play a captured animation on a rigged figure (docs/plans/figures-and-library.md § 3).
+// `figure-clip` — play a captured animation on a rigged figure (docs/specs/figures.md §8b, §8c).
 //
 // A clip is a GLB containing nothing but an `AnimationClip`: 222 channels of quaternion per frame, one
 // per bone, and no mesh. It binds to a figure BY NODE NAME, which is why it plays on more than the

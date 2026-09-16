@@ -610,7 +610,7 @@ class Thing:
     A container is one artist's export; a thing is what the app places. The two disagree in both
     directions — office-babe draws from three containers, and `TOOLS LIBRARYblend5.glb` is split into
     fifteen separate props — which is the whole argument for reading scenes
-    (`docs/plans/figures-and-library.md` § 2b).
+    (`docs/specs/captures.md` §3).
     """
 
     name: str                                   # the entity name; becomes the asset label
@@ -931,7 +931,7 @@ def dead_meshes(build: Build) -> list[Binding]:
     and there every binding is template-only and none of them is dead.
 
     Reported, never dropped. A dead mesh is a candidate for removal and the composition work is where
-    that decision belongs (`docs/plans/figures-and-library.md` § 2b) — this tells you where to look.
+    that decision belongs (`docs/specs/captures.md` §3) — this tells you where to look.
     """
     if not build.scened:
         return []

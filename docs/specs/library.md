@@ -231,7 +231,7 @@ is re-creating the ones it means anyway.
 **What counts as "the same thing" is `(kind, label)` within ONE capture** — `import_capture.same_thing`.
 The capture tag is the whole safety argument: two captures can ship different `computer_desk` bytes and
 each keeps its row, because a row tagged only `jane` is never a candidate while importing `akari`.
-Blocks the composition work in [`plans/figures-and-library.md`](../plans/figures-and-library.md) § 2b,
+Blocks the composition work in [`specs/captures.md`](./captures.md) §3,
 which merges several containers into one asset and is therefore a re-import by definition.
 
 **Copying the catalog needs the WAL.** It runs in `journal_mode=wal`, so `cp library.db` reads a stale

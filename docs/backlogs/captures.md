@@ -5,7 +5,7 @@ Unfinished work, future directions and known problems for the capture pipeline
 reasoning behind consequential forks live in [`decisions.md`](../decisions.md).
 
 The active sequence for the composition work is
-[`plans/figures-and-library.md`](../plans/figures-and-library.md) § Phase 2b while that plan is live.
+[`specs/captures.md`](../specs/captures.md) §3, where the scene-conversion model settled.
 
 ---
 

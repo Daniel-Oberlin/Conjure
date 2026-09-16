@@ -75,7 +75,7 @@ None yet for the symptom. Shipped from the campaign:
 
 - [`specs/captures.md`](../specs/captures.md) § 3 — composing, the rest-pose test, and why weldability
   is judged on local rather than world matrices
-- [`plans/figures-and-library.md`](../plans/figures-and-library.md) phase 5 — retargeting, which is what
+- [`specs/figures.md`](../specs/figures.md) §8c — retargeting, which is what
   making these two rigs genuinely one requires
 - [`backlogs/captures.md`](../backlogs/captures.md) — `underwear.glb` and the 51 props files no capture
   ever downloaded
