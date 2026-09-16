@@ -1041,8 +1041,17 @@ period. It halves between a 21-bone `rigify-fk` map and a clean 22-bone `rigify-
 at map quality rather than at the law — worth testing against `office-babe`, the last clean captured
 rig, before theorising.
 
-**The hands.** `hips → rightHand` is 30–35° out on Grace and 15–21° on Akari, steady rather than
-oscillating. A static pose difference, not a wobble, and untouched so far.
+~~**The hands.**~~ **Not a defect — the metric was.** `hips → rightHand` spans the whole torso AND the
+whole arm, so its direction is set by PROPORTION rather than by pose: Saka's arm-to-torso ratio is 1.24
+against Alice's 0.96 — long arms on a short torso — and the two differ by 31° AT REST with nothing
+playing at all. Reported as retargeting error it made Saka's hands read 43–52° wrong when they looked
+fine on device, which they were. `clip_diff.mjs` now measures SINGLE SEGMENTS only, and the worst limb
+across every rig drops to 6–12°, all of it `neck → head`.
+
+This is the same attachment-versus-articulation distinction the probe already makes, applied a step too
+late: `retarget_probe.py` excludes `chest → shoulder` and `hips → upperLeg` for exactly this reason, and
+the new harness was written with its own limb list and did not inherit the lesson. **Seventh time in
+this campaign that a metric, not the code, was what was wrong.**
 
 **Fingers do not move, and that is the vocabulary rather than a defect.** The humanoid names 22 bones
 and fingers are not among them, so every finger channel is in the 82 dropped. Alice keeps hers only

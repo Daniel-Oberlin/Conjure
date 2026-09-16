@@ -106,8 +106,12 @@ const bodyFrame = (b) => {
 const dirs = (b) => {
   const inv = bodyFrame(b).clone().invert();
   const out = {};
+  // SINGLE SEGMENTS only. `hips->hand` spans the whole torso AND the whole arm, so its direction is
+  // set by PROPORTION rather than by pose: Saka's arm/torso is 1.24 against Alice's 0.96 — long arms on
+  // a short torso — and the two differ by 31° AT REST with nothing playing. Reported as retargeting
+  // error it made her hands look 50° wrong when they looked fine, which they were.
   for (const [a, c] of [["hips", "neck"], ["neck", "head"], ["lUpLeg", "lFoot"],
-                        ["rUpLeg", "rFoot"], ["hips", "lHand"], ["hips", "rHand"]]) {
+                        ["rUpLeg", "rFoot"], ["lFoot", "rFoot"]]) {
     if (b[a] && b[c]) out[`${a}->${c}`] = pos(b[c]).sub(pos(b[a])).normalize().applyMatrix4(inv);
   }
   return out;
