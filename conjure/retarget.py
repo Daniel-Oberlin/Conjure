@@ -55,7 +55,8 @@ from .figures import (_local_matrix, best_humanoid, node_world_matrices, parent_
 #:
 #: `figures.FRAME_REV` exists for the same reason and this is the second artefact to need it, so the
 #: rule is general: anything derived and cached carries the revision of the code that derived it.
-RETARGET_REV = 3        # 3: a carried translation goes out to WORLD and back, so the armature's UNITS
+RETARGET_REV = 4        # 4: resampling HOLDS the previous keyframe (STEP), not the nearest
+                        # 3: a carried translation goes out to WORLD and back, so the armature's UNITS
                         #    are converted and not only its axes
                         # 2: unmapped ancestors count toward a mapped bone's world orientation, and
                         #    bones the clip SLIDES carry their translation
@@ -317,18 +318,58 @@ def _tracks(doc, blob, anim) -> tuple[dict, list]:
 
 
 def _sample(track: list, t: float) -> tuple:
-    """Nearest keyframe. The corpus is exported STEP — measured, not assumed — so interpolating would
-    invent frames the original never played."""
+    """The last keyframe AT OR BEFORE `t` — STEP semantics, which is how this corpus is exported.
+
+    NEAREST is the obvious reading of "no interpolation" and it is wrong, because every channel is
+    resampled onto the UNION of all their times. Each channel keeps its own keyframes in the source, so
+    at a union time that belongs to one channel's grid and falls between another's, nearest rounds the
+    second one FORWARD while its neighbours hold — and the pose alternates between two states on
+    successive frames. On device that read as a figure oscillating: measured through the client's own
+    mixer, her body flipped between 0.5° and 7.2° on alternating samples while the same clip on its own
+    rig stayed under 2°. Holding the previous value is what three.js does with `InterpolateDiscrete`,
+    so this now resamples to exactly what the original plays.
+    """
     lo, hi = 0, len(track) - 1
-    while lo < hi:
+    while lo < hi:                                     # first index with time > t
         mid = (lo + hi) // 2
-        if track[mid][0] < t:
+        if track[mid][0] <= t:
             lo = mid + 1
         else:
             hi = mid
-    if lo and abs(track[lo - 1][0] - t) <= abs(track[lo][0] - t):
+    if track[lo][0] > t and lo:
         lo -= 1
     return track[lo][1]
+
+
+def _posed_place(rig: Rig, rots: dict, slides: dict) -> dict:
+    """World POSITION of every mapped bone, with both the clip's rotations and its translations applied.
+
+    Separate from `_posed_world` because they answer different questions and this one needs the slides:
+    where a bone ENDS UP depends on every translation above it, and the translations above a mapped bone
+    are mostly on bones the humanoid does not name.
+    """
+    nodes = rig.doc["nodes"]
+    out = {}
+    for bone in rig.mapping:
+        idx = rig.index(bone)
+        if idx is None:
+            continue
+        chain, j = [], idx
+        while j is not None:
+            chain.append(j)
+            j = rig.parent.get(j)
+        m = IDENT
+        for j in reversed(chain):
+            nd = nodes[j]
+            name = nd.get("name")
+            if name in rots or name in slides:
+                m = mmul(m, qmat(rots.get(name) or tuple(nd.get("rotation") or (0, 0, 0, 1)),
+                                 nd.get("scale") or (1.0, 1.0, 1.0),
+                                 slides.get(name) or nd.get("translation") or (0.0, 0.0, 0.0)))
+            else:
+                m = mmul(m, _local_matrix(nd))
+        out[bone] = (m[12], m[13], m[14])
+    return out
 
 
 def _posed_world(rig: Rig, locals_by_name: dict) -> dict:
@@ -481,7 +522,9 @@ def retarget_clip(clip_bytes: bytes, figure_bytes: bytes,
     # set silently dropped exactly those.
     both = [b for b in src.mapping if b in dst.mapping
             and src.index(b) is not None and dst.index(b) is not None]
-    moved = _carry_translations(src, dst, slides, times, both)
+    moved = _carry_translations(
+        src, dst, slides,
+        [(t, {n: _sample(tr, t) for n, tr in tracks.items()}) for t in times], both)
     if slides and not moved:
         notes.append(f"{len(slides)} bone(s) SLIDE in this clip and none of them maps onto that figure, "
                      f"so that much of the motion is lost")
@@ -490,7 +533,8 @@ def retarget_clip(clip_bytes: bytes, figure_bytes: bytes,
                       notes=notes)
 
 
-def _carry_translations(src: Rig, dst: Rig, slides: dict, times: list, bones: list) -> dict:
+def _carry_translations(src: Rig, dst: Rig, slides: dict, times_and_rots: list,
+                        bones: list) -> dict:
     """Translation tracks for the target, for the bones the clip actually SLIDES.
 
     Rotation alone is not the whole of a pose. Alice's clips move her root a few centimetres and her hip
@@ -514,25 +558,32 @@ def _carry_translations(src: Rig, dst: Rig, slides: dict, times: list, bones: li
     World displacement is preserved rather than scaled by build. A 4 cm sway is 4 cm on anyone; making
     it proportional to height would be a second guess on top of a first.
     """
-    by_bone = {src.mapping[b]: b for b in bones}
+    if not slides:
+        return {}
+    # THE HIPS CARRY EVERYTHING ABOVE THEM. A translation on a bone the humanoid does not name still
+    # moves the figure, and the biggest one always is: Alice's `CC_Base_BoneRoot` slides 4 cm and is the
+    # hips' parent, so on her own rig the hips travel 4 cm while the body barely turns. Carried
+    # per-bone, that slide had nowhere to go — the target has no equivalent root — and the retargeted
+    # figure held still and SWUNG instead, which is the same complaint in a third form.
+    #
+    # So the hips' WORLD displacement is measured on the source with every translation applied, and
+    # folded into the target's hips. Ancestors it cannot name are then carried by the one bone that can.
+    place = [_posed_place(src, rots, {n: _sample(tr, t) for n, tr in slides.items()})
+             for t, rots in times_and_rots]
     out: dict[str, list] = {}
-    for node, track in slides.items():
-        bone = by_bone.get(node)
-        if bone is None or dst.index(bone) is None:
-            continue
-        s_parent, t_parent = src.parent.get(src.index(bone)), dst.parent.get(dst.index(bone))
-        s_rot, s_scale = _frame_of(src.bind.get(s_parent))
+    if "hips" in src.mapping and dst.index("hips") is not None and place:
+        t_parent = dst.parent.get(dst.index("hips"))
         t_rot, t_scale = _frame_of(dst.bind.get(t_parent))
-        rest = dst.doc["nodes"][dst.index(bone)].get("translation") or [0.0, 0.0, 0.0]
-        base = _sample(track, times[0])
+        rest = dst.doc["nodes"][dst.index("hips")].get("translation") or [0.0, 0.0, 0.0]
+        base = place[0].get("hips")
         row = []
-        for t in times:
-            v = _sample(track, t)
-            local = tuple(v[i] - base[i] for i in range(3))
-            world = _rotate(tuple(local[i] * s_scale[i] for i in range(3)), s_rot)
+        for frame in place:
+            here = frame.get("hips", base)
+            world = tuple(here[i] - base[i] for i in range(3))   # already metres: bind is world
             back = _rotate(world, qconj(t_rot))
             row.append(tuple(rest[i] + back[i] / t_scale[i] for i in range(3)))
-        out[dst.mapping[bone]] = row
+        if any(math.dist(v, row[0]) > 1e-6 for v in row):
+            out[dst.mapping["hips"]] = row
     return out
 
 

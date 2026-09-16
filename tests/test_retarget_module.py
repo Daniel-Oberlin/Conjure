@@ -91,7 +91,8 @@ def figure(naming=None, *, roll: float = 0.0, nameless: bool = False,
 
 
 def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine", "l_fore"),
-         extra=(), slide=(), slide_moves: bool = True, wrapper: str = "") -> bytes:
+         extra=(), slide=(), slide_moves: bool = True, wrapper: str = "",
+         slide_via_wrapper: bool = False) -> bytes:
     """A clip: the authoring rig's nodes, real motion, and no mesh — the shape the corpus ships."""
     table = naming or _MIXAMO
     nodes, _names = _skeleton_nodes(table)
@@ -101,6 +102,8 @@ def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine"
         nodes.append({"name": bone, "translation": [0.0, 0.1, 0.0], "rotation": [0, 0, 0, 1]})
         nodes[0].setdefault("children", []).append(len(nodes) - 1)
     root = 0
+    if slide_via_wrapper:                       # the slide sits on an UNMAPPED node ABOVE the skeleton
+        wrapper = wrapper or "Armature"
     if wrapper:                                 # an UNMAPPED node ABOVE the skeleton, e.g. an armature
         nodes.append({"name": wrapper, "translation": [0.0, 0.0, 0.0],
                       "rotation": [0, 0, 0, 1], "children": [0]})
@@ -135,7 +138,7 @@ def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine"
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": by[node_name], "path": "rotation"}})
     for slot in slide:                          # a bone the clip MOVES, not merely rotates
-        node_name = table.get(slot, slot)
+        node_name = wrapper if slide_via_wrapper else table.get(slot, slot)
         if node_name not in by:
             continue
         rest = nodes[by[node_name]].get("translation") or [0.0, 0.0, 0.0]
@@ -348,3 +351,28 @@ def test_a_carried_translation_converts_the_armatures_UNITS_not_only_its_axes():
     assert a > 1e-6 and b > 1e-6, "both must carry the slide at all"
     # The same WORLD movement on a rig whose locals are 100x smaller is 100x larger in those locals.
     assert 80 < b / a < 120, f"expected ~100x in local units, got {b / a:.1f}x"
+
+
+def test_a_slide_on_an_UNMAPPED_ANCESTOR_reaches_the_target_through_the_hips():
+    """The translation half of the ancestor problem, and it took a third form of the same complaint.
+
+    Alice's `CC_Base_BoneRoot` slides 4 cm and is the hips' PARENT, so on her own rig the hips travel
+    4 cm while the body barely turns. The humanoid does not name that bone, so a per-bone carry had
+    nowhere to put it — the target has no equivalent root — and the retargeted figure held still.
+
+    The hips' WORLD displacement is measured on the source with every translation applied, and folded
+    into the target's hips. Measured after: the retargeted hips tracks the native one to within a
+    millimetre over the clip, against nothing at all before.
+    """
+    above = clip(drive=("l_arm",), slide=("hips",), slide_via_wrapper=True)
+    out = retarget_clip(above, figure(_RIGIFY))
+    assert out.slid == 1, "an ancestor's slide still has to reach the figure"
+    doc, blob = split_glb(out.data)
+    anim = doc["animations"][0]
+    by = {n.get("name"): i for i, n in enumerate(doc["nodes"])}
+    moved = [c for c in anim["channels"] if c["target"]["path"] == "translation"]
+    assert len(moved) == 1
+    assert doc["nodes"][moved[0]["target"]["node"]]["name"] == _RIGIFY["hips"], \
+        "carried by the one bone that can carry it"
+    v = _read_accessor(doc, blob, anim["samplers"][moved[0]["sampler"]]["output"])
+    assert max(math.dist(p, v[0]) for p in v) > 1e-4
