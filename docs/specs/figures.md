@@ -483,11 +483,11 @@ graph.**
 ## 7. `FRAME_REV` — a catalog row is a snapshot of what we understood
 
 A figure's map, frame and limits are **cached in the catalog**, and understanding keeps changing while
-rows do not. `figures.FRAME_REV` (**15** today) is bumped whenever anything that changes a derived
+rows do not. `figures.FRAME_REV` (**18** today) is bumped whenever anything that changes a derived
 result changes — inference, the axes, `validate()`, the convention table, which skin is chosen, the
 parts vocabulary.
 
-`retarget.RETARGET_REV` (**2**) is the same idea for a different artefact. A retargeted clip is
+`retarget.RETARGET_REV` (**7**) is the same idea for a different artefact. A retargeted clip is
 DERIVED and cached under a content address, and a content address fingerprints the bytes rather than the
 method that made them — so without a stamp, a pair retargeted by an older build is handed back forever.
 That is not hypothetical: the fix for an unmapped rotating ancestor landed, the server was restarted,
@@ -495,7 +495,15 @@ and the figure kept swinging exactly as before, because the cache still held the
 **Anything derived and cached carries the revision of the code that derived it**; this is the second
 artefact to need that rule and it should be assumed for the third.
 
-`figures.RIG_SIG_REV` (**1**) is a **separate** stamp, and the separation is the point: a discovery fix
+**A signature is a comparison between two rows, so backfilling one side is worse than backfilling
+neither.** `RIG_SIG_REV` 1 → 2 respelled every FIGURE's signature when the humanoid grew fingers, and
+`refresh-models` walked the models and stopped there, because the name says models. Every clip stayed
+stamped with a signature computed over the old vocabulary — so Alice stopped matching her OWN clip, the
+server read a mismatch and offered to retarget her onto herself, and every shipped-clip lookup came back
+empty. A backfill that reported success and broke the catalog's playback. `refresh-models` now
+re-derives both sides in one pass.
+
+`figures.RIG_SIG_REV` (**3**) is a **separate** stamp, and the separation is the point: a discovery fix
 can change a signature without changing what a signature *means*, and the two need telling apart when
 regrouping a catalog. Bump it only when the definition changes — which bones the fingerprint covers, or
 how it is spelled.
@@ -589,11 +597,11 @@ pose — rotation and position, since a clip translates and a pose never does �
 `figure.apply()` could not do this job: it only resets bones it posed, and a clip writes 222 of Jane's
 while a pose names six.
 
-**Across rig signatures, binding by name is refused.** It is the failure that does not announce itself:
-the clip resolves whichever handful of names happen to coincide and drives the figure by those, which
-reads as a broken figure rather than a mismatched clip. `POST /figure/clip` names both signatures and
-refuses; `force` exists for looking at it deliberately. Rewriting the channels is retargeting, and it is
-not built.
+**Across rig signatures, binding by name resolves nothing**, and it is the failure that does not
+announce itself: the clip resolves whichever handful of names happen to coincide and drives the figure
+by those, which reads as a broken figure rather than a mismatched clip. So the channels are **rewritten**
+rather than bound — §8c — and `force` still exists for binding by name across the mismatch and looking
+at the wreck deliberately.
 
 **A label resolves to HER clip first.** `10_action` is eleven different clips across the library, but
 asked of a particular figure the question is not ambiguous: it means the one that shipped with her. Only
@@ -642,6 +650,114 @@ and what its `rig_sig` says can play. Compatibility is not sufficiency — 93 of
 fixture (bed 30, sink 18, toilet 12) — so a clip that binds perfectly still puts a figure leaning on a
 sink that is not there. The authored set is the default and reaching past it takes `all=true`. See
 [`decisions.md`](../decisions.md) §27.
+
+### 8c. Retargeting — a clip rewritten for a rig it was not authored for
+
+`conjure/retarget.py`, server-side, producing an ordinary clip. Until it existed, ten figures in the
+catalog could be offered no clip at all.
+
+**On the server, and the output is just a clip.** The alternative was to send both skeletons to the
+client and do the algebra there, and it is worse in every way that matters: the output is a function of
+two files and nothing else, so it content-addresses and is computed once per (clip, rig) pair ever; the
+client keeps its one bind-by-name path; and the arithmetic stays next to the tests that pin it.
+
+**Both inputs describe themselves.** A clip GLB carries no mesh and no skin, but it does carry its
+authoring rig's NODES, so the source rig's rest pose and its humanoid map are both recoverable from the
+clip alone and nothing has to be looked up.
+
+#### The law: carry the pose ABSOLUTELY
+
+Preserving each bone's rotation relative to its own rest is the obvious method and it is wrong, because
+two rigs rest differently: if one rests arms-down and the other arms-out, a clip that puts the first's
+arms straight down sends the second's half way. What survives the crossing is **where the limb IS**. So
+each rig's axis CONVENTION is divided out instead of its rest POSE:
+
+```
+C   a convention-free rest frame per bone, built from where its limb POINTS
+K   = C⁻¹ · R           what is left of the authored rest once the physical part is removed
+Wt  = Ws · Ks⁻¹ · Kt    the source's orientation, respelled in the target's convention
+```
+
+Then, top-down, the local rotation that achieves `Wt` against the parent's **already-moved** world.
+Using the parent's rest instead is the obvious shortcut and it fails the identity case by 32°.
+
+**There is no whole-body term, and there was one.** `swing = Bt · Bs⁻¹` aligned the two rigs' rest body
+frames, on the reasoning that a figure whose armature rests leaning should perform in HER frame. Wrong
+twice. glTF fixes the world frame at Y-up, so there is no world-frame CONVENTION between two GLBs to
+divide out — a difference between two rest body frames is a difference in rest POSE, and not carrying
+rest pose is the whole of this law. Measured across every rig signature in the catalog: all eleven are
+Y-up and Z-forward, their body frames 0.1°–9.6° off world, and every one of those is a lean about the
+side axis, never a right angle. And the lean is a lean of the spine BONES, which the absolute carry
+already reproduces — so `swing` added it a second time. On `LayTableIdle` that was the whole of a
+reported tilt: figures spread over 11.7° from vertical, and 2.9° without the term.
+
+**`hips → neck` is the chord of a curved spine, not an axis**, which is why the rest geometry cannot
+name a convention to better than about 10°. A body is not square. Building the body frame from the legs
+instead is no better (0.4°–7.9°).
+
+#### What the law does not carry, and the number for it
+
+Limb directions land within **4.9–7.2°** of the source across the catalog, against a **5.3° floor** —
+the floor being `Jane → Jane`, the same clip on its own rig, where the only difference is channel loss.
+Read every figure as its excess over that, never as an absolute.
+
+The residual is **the law's approximation, not a defect**: `K = C⁻¹·R` is exact only where two rigs'
+rest limbs point the same way, and where a limb bends away from that the conversion carries a few
+degrees. It shows up in the time domain as a body wobble of 2–8° against a native 0.7°, alternating
+perfectly with the pose — agreeing exactly at the ends of a cycle and differing in the middle.
+
+**Three refusals**, all of which are better than an approximation: a clip whose own rig has no humanoid
+map (there is nothing to map its channels *through*), a figure with no map (Tamaki — binding by name
+would resolve nothing and play silence while reporting success), and a clip that drives no bone the
+target has.
+
+**Three notes it reports rather than swallows.** Channels that drive bones the humanoid does not name —
+skirt, breast and secondary chains, 52 of them on a 104-channel clip. A target whose bone map is not a
+CHAIN, so motion cannot compose through it and that part of the body lags; reported separately for the
+body and for the fingers, because a broken torso is the performance and a broken finger is cosmetic.
+And bones the clip SLIDES that have nowhere on the target to land.
+
+#### What a rewrite has to carry beyond rotation
+
+Each of these was a defect seen on a headset before it was a rule.
+
+| | |
+|---|---|
+| **an unmapped ANCESTOR is part of the pose** | Alice's `CC_Base_BoneRoot` rotates 36.3° while the hips under it rotate 38.6° the other way; the two nearly cancel and what you see is a SLIDE. Reading the hips' world from the mapped subset reported the full 38.6° as real, and the figure swung bodily about her own axis |
+| **translation, for every shared bone** | not only the rotated ones. A hip shifts weight without turning, and keying translation off the rotation set dropped exactly those |
+| **the armature's UNITS, not only its axes** | a carried translation goes out to world and back. Alice's armature bakes centimetres (parent scale 0.01), Grace's metres; converting axes alone slid a figure a metre |
+| **an ancestor's slide, into the hips** | when the sliding node has no counterpart on the target, its displacement folds into the target's hips rather than being lost |
+| **LINEAR output** | keys are emitted at the union of every source key time, so between two output keys no source channel has one either — the source interpolates there and the target must too. Written `STEP`, the target held each pose and jumped |
+
+#### The fingers
+
+The humanoid names **52 bones, not 22**: five fingers × three joints × two hands, spelled as VRM 0.x
+spells them, because `vrm_humanoid` already hands us `leftIndexProximal` from a file's own extension
+block. Kept out of `CORE_BONES`, which is what a map is JUDGED on — most rigs are missing some finger or
+other, and folding them in would report thirty bones missing on a figure whose body map is perfect.
+
+**A finger cannot be squared up against a BODY axis.** A hand turns freely at the wrist, so no fixed
+body direction stays perpendicular to a finger: measured, the best body axis available still reads 0.966
+against one rig's index finger and 0.996 against another's thumb, either of which is a degenerate frame.
+Arms and legs get away with it because a rest pose holds them roughly fixed against the torso. So the
+reference comes from the hand's own bones — **across the knuckles** (`indexProximal → littleProximal`)
+for the four fingers, worst 0.251, and **the palm normal** for the thumb, worst 0.382, because a thumb
+points across the palm and the knuckle axis is exactly wrong for it.
+
+The HANDS stay chain ends. A hand's canonical frame has always come from `lowerArm → hand`, and letting
+a thumb redefine it would move every wrist in the corpus to fix nothing.
+
+#### Caching, and why it carries a revision
+
+Content-addressed: a (clip, rig) pair is computed once ever and every later play is a lookup — the
+rewrite is seconds on a 40-second clip and it used to run on every play. But **a content address
+fingerprints the bytes, not the method that made them**, so the cache lookup is gated on
+`retargeted_from` + `rig_sig` + `RETARGET_REV`. Without the stamp a pair retargeted by an older build is
+handed back forever and a fix reaches nobody — which happened: the fix landed, the server restarted, and
+the figure kept swinging because the cache still held the clip made before it.
+
+**The voice comes with it.** A rewritten clip is the same performance on another body, and the voice was
+recorded against the performance rather than against the skeleton.
 
 ## 8. The runtime — the `figure` component
 
@@ -840,8 +956,9 @@ Recorded here so the spec can be trusted about its own edges; the design work is
 
 - ~~**No animation.**~~ Built 2026-09-13 as §8b: `figure-clip`, `POST /figure/clip`, and
   `play_clip` / `list_clips` for the director. A pose and a clip compose by the rule in §8b — the clip
-  wins, the pose returns on stop. What is still absent is **retargeting**: a clip only plays on a figure
-  sharing its rig signature, which is groups of sixteen rather than one but is not everything. The
+  wins, the pose returns on stop. **Retargeting** followed on 2026-09-16 (§8c), so a clip is rewritten
+  for a rig it was not authored for rather than refused — which is what the last ten figures in the
+  catalog needed to be offered a clip at all. The
   teacher's shut eyes are now a thing that can be fixed by playing her `Blink.glb` rather than a thing
   with no mechanism, though nothing plays it automatically at placement.
 - ~~**No outfits.**~~ Built 2026-09-13 as §8a: a parts vocabulary classifies each mesh at import, and
