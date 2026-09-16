@@ -1063,12 +1063,10 @@ humanoid standards do define them — and would pay off across posing as well.
 Device testing is finished; Daniel is done looking at figures for now. Four things, in this order, and
 the last one ends the plan.
 
-**1. ALIGNMENT — make Akari lie on her back like the others.** The concrete bar: she reads 105.8° from
-vertical at `t=0` on `LayTableIdle` where Alice reads 94.1° and Grace 97.3°, and all three should agree.
-Start with the measurement list under *How to finish phase 5* — experiment 2 (`swing` and the static
-tilt) is the one nobody has run. Underneath it is the composed-rest problem, which belongs in
-`backlogs/captures.md`; whether it must be fixed to hit the bar is itself unknown and is the first thing
-a measurement should say.
+**1. ALIGNMENT — make Akari lie on her back like the others.** ✅ **DONE, untested on device.** The
+answer was experiment 2 and it was the whole of it: `swing` was the static tilt. Written up below under
+*Alignment* — the term is gone, `RETARGET_REV` is 5, and the composed-rest problem turned out **not** to
+need fixing for this bar, which is worth knowing before anyone opens it.
 
 **2. FINGERS.** Scope, naming tables and the `RIG_SIG_REV` cost are written up below under *Fingers*.
 Table work, not inference.
@@ -1103,12 +1101,12 @@ client's own `retarget()` and mixer.
 
 1. ~~Is `swing` the residual oscillation?~~ **No — measured, ruled out.** Disabled, Akari reads 4.1°
    against 4.2° with it. Do not spend more on `swing` for the swing.
-2. **Is `swing` the static TILT?** Not yet asked, and not the same question: `clip_diff` reports turn
-   relative to `t=0`, so a constant lean is invisible to it. Measure the ABSOLUTE body axis at `t=0`
-   with `swing` disabled, against the 94.1° / 97.3° / 105.8° already recorded.
-3. **If not, the `K`s are next**, and they are rest-derived too. Which matters because of (4).
+2. ~~Is `swing` the static TILT?~~ **Yes, all of it — measured, and the term is gone.** See *Alignment*.
+3. ~~If not, the `K`s are next.~~ Not needed; the `K`s are fine.
 
-**(4) The premise this module was built on does not hold for every capture.** A clip GLB carries its
+**(4) The premise this module was built on does not hold for every capture — and it was NOT the tilt.**
+Recorded before *Alignment* below was written, and left standing because the composed-rest problem is
+real and still belongs in a backlog. What changed is its priority: it is not blocking anything now. A clip GLB carries its
 authoring rig's nodes, and on Jane those match her figure's rest to **0.075°** — measured, and then
 generalised, which was the mistake. On Alice, her composed thing and her clip's rig recover the
 IDENTICAL bone map and their rests differ on **all 22 bones, several by more than 100°**
@@ -1127,6 +1125,65 @@ pointer from `backlogs/figures.md` because the symptom shows up in retargeting a
 tilted figure will look in the capture backlog. Anything proposed there has to explain why it is not
 the per-mesh IBM rewrite that was tried and rejected on device
 ([`investigations/bride-eyelid.md`](../investigations/bride-eyelid.md)).
+
+### Alignment, 2026-09-16 — `swing` was the tilt, and the metric that graded it was its own
+
+*"Akari is tilted back compared to Grace and Alice."* Measured, fixed, and the term is deleted rather
+than tuned. `RETARGET_REV` 4 → 5, so every cached retarget rebuilds on the next play.
+
+**What it was.** The law carried a whole-body term, `swing = Bt · Bs⁻¹`, aligning the source's rest body
+frame to the target's — the reasoning being that a figure whose armature rests leaning should perform in
+HER frame rather than inherit the source's. Wrong twice:
+
+- **glTF fixes the world frame at Y-up**, so there is no world-frame CONVENTION between two GLBs to
+  divide out. A difference between two rest body frames is a difference in rest POSE — and not carrying
+  rest pose is the entire law. Measured across every rig signature in the catalog: all eleven are Y-up
+  and Z-forward, their body frames 0.1°–9.6° off world, and every one of those is a lean about the side
+  axis. There is no rig here whose frame differs by a right angle, which is what a convention would be.
+- **The lean is a lean of the spine BONES**, so an absolute carry already reproduces it. `swing` added
+  it a second time. That is the arithmetic of the tilt exactly: the clip file's rig leans 10.7°, Akari
+  0.1°, and Akari read 11.7° further back than Alice.
+
+**Why nobody caught it.** `hips → neck` is the chord of a curved spine, not an axis — Akari 0.1°,
+office-babe 2.9°, Alice 4.5°, Grace 6.7°, Saka 4.8°, Steve 7.3° — so a body frame built from it reads
+anatomy as orientation. Building it from the legs instead is no better (0.4°–7.9°). **The rest geometry
+cannot tell you a convention to better than about 10°, because a body is not square.**
+
+And the metric agreed with the term because it *was* the term. The probe grades a retarget on `body`,
+the angle between the two POSED body frames, and `swing` is by construction what nulls that. With it on,
+four figures score BELOW the Jane → Jane channel-loss floor of 4.0°, which is the tell — nothing can beat
+the floor. Read as excess over the floor, the total across the corpus **halves**, 42.0° → 21.9°, and the
+spread collapses from −3.4…+10.7 to −0.5…+4.0. `limbs` is unchanged, because it already worked in each
+figure's own body frame. **Eighth time in this campaign that a metric, not the code, was what was
+wrong** — and the first time one was graded by the thing it was measuring.
+
+**End to end**, `LayTableIdle`, angle of `hips → neck` from vertical at `t=0`, through the client's own
+`retarget()` and a real mixer:
+
+| | with `swing` | without | Alice plays it NATIVELY at 94.1° |
+|---|---|---|---|
+| Grace | 97.3° | **93.5°** | −0.6 |
+| Akari | 105.8° | **95.6°** | +1.5 |
+| office-babe | 100.2° | **92.7°** | −1.4 |
+| Saka | 99.5° | **93.8°** | −0.3 |
+| **spread** | **11.7°** | **2.9°** | |
+
+**The composed-rest problem (4) is NOT what this was**, which is the thing to carry into the backlog. It
+is real — Alice's composed thing and her clip's rig differ on all 22 bones — and it cost nothing here,
+because a rotation track replaces a node's rotation and the absolute law never consults the rest except
+through `K`, which is convention and not pose.
+
+**Harnesses.** `scripts/clip_stage.py` resolves names against the library and writes clip, figure and
+retarget as files; `scripts/clip_tilt.mjs` reports the ABSOLUTE body axis, which is what `clip_diff.mjs`
+structurally cannot see — it reports every angle relative to each figure's own `t=0`, so a constant lean
+reads clean. `scripts/retarget_probe.py --swing` restores the term, and is the only place it still
+exists. Pinned by `test_a_rig_that_RESTS_LEANING_does_not_lean_the_target_a_second_time`, which fails by
+5.8° if the term comes back, with a companion control asserting the two fixtures really do rest
+differently.
+
+**Still open, and unchanged by this:** the residual body swing. Grace's range across the clip is 86.1°
+–93.7° and Saka's 85.7°–94.1°, against Alice's 93.4°–94.1°. `swing` was already ruled out as its cause
+and this confirms it — the wobble is the same size with the term and without.
 
 ### Fingers — the humanoid stops at 22 bones, and it does not have to
 

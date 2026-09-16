@@ -22,11 +22,18 @@ crossing is where the limb IS. So each rig's axis CONVENTION is divided out inst
 
     C   a convention-free rest frame per bone, built from where its limb POINTS
     K   = C⁻¹ · R              what is left of the authored rest once the physical part is removed
-    Wt  = swing · Ws · Ks⁻¹ · Kt      the source's orientation, respelled in the target's convention
+    Wt  = Ws · Ks⁻¹ · Kt       the source's orientation, respelled in the target's convention
 
-`swing` takes the source's rest body frame to the target's, so a figure whose armature rests leaning
-performs the clip in ITS frame rather than inheriting the source's. When the two rigs rest the same way
-this reduces exactly to `Ws`, which is why a clip played back on its own rig comes home unchanged.
+**There is no whole-body term, and there was one.** `swing = Bt · Bs⁻¹` aligned the two rigs' rest body
+frames on the reasoning that a figure whose armature rests leaning should perform the clip in ITS frame.
+It is wrong twice over. glTF fixes the world frame at Y-up, so there is no world-frame CONVENTION to
+divide out — a difference between two rest body frames is a difference in rest POSE, and not carrying
+rest pose is the whole of this law. And the rest lean these rigs have is a lean of the spine BONES, so
+the absolute carry already reproduces it; `swing` added it a second time. Measured: it was the whole of
+the reported tilt (`scripts/clip_tilt.mjs`, plan § alignment). It survived as long as it did because the
+probe grades a retarget on the angle between the two POSED body frames and `swing` is by construction
+the term that nulls exactly that — four figures scored BELOW the channel-loss floor, which is the tell.
+`scripts/retarget_probe.py --swing` restores it, and is the only place it still exists.
 
 Measured by `scripts/retarget_probe.py` over every rigged figure in the catalog: limb directions within
 0.2–8.7° and whole-body orientation within 11°, against 5.5–89.5° and up to 84° for a naive copy. The
@@ -55,7 +62,8 @@ from .figures import (_local_matrix, best_humanoid, node_world_matrices, parent_
 #:
 #: `figures.FRAME_REV` exists for the same reason and this is the second artefact to need it, so the
 #: rule is general: anything derived and cached carries the revision of the code that derived it.
-RETARGET_REV = 4        # 4: resampling HOLDS the previous keyframe (STEP), not the nearest
+RETARGET_REV = 5        # 5: no `swing` — aligning the rest BODY FRAMES added the rest pose twice
+                        # 4: resampling HOLDS the previous keyframe (STEP), not the nearest
                         # 3: a carried translation goes out to WORLD and back, so the armature's UNITS
                         #    are converted and not only its axes
                         # 2: unmapped ancestors count toward a mapped bone's world orientation, and
@@ -189,6 +197,9 @@ class Rig:
         return (_norm(_cross(up, fwd)), up, fwd)       # re-orthogonalise; the hips are not square
 
     def body_frame(self) -> tuple:
+        """The rest body frame as a quaternion. **Nothing in the law uses this, deliberately** — see
+        the module docstring. It is kept because the test that pins the law needs a way to say that two
+        fixtures really do rest differently, and because the number is worth being able to print."""
         axes = self.body_axes()
         if not axes:
             return (0.0, 0.0, 0.0, 1.0)
@@ -397,11 +408,11 @@ def _posed_world(rig: Rig, locals_by_name: dict) -> dict:
     return out
 
 
-def _target_locals(src: Rig, dst: Rig, carried: dict, swing: tuple, everything: dict) -> dict:
+def _target_locals(src: Rig, dst: Rig, carried: dict, everything: dict) -> dict:
     """Local rotations on the TARGET that put each mapped bone where the source's is.
 
     Two steps, and the second is what makes this a walk rather than a formula. First the desired WORLD
-    rotation per bone, `swing · Ws · Ks⁻¹ · Kt`. Then, top-down, the local that achieves it against the
+    rotation per bone, `Ws · Ks⁻¹ · Kt`. Then, top-down, the local that achieves it against the
     parent's ALREADY-MOVED world — using the parent's REST instead is the obvious shortcut and it fails
     the identity case by 32°, which is the only cheap test this has.
 
@@ -420,7 +431,7 @@ def _target_locals(src: Rig, dst: Rig, carried: dict, swing: tuple, everything: 
         k_s, k_t = src.convention(bone), dst.convention(bone)
         if bone not in s_world or k_s is None or k_t is None:
             continue
-        want[dst.mapping[bone]] = qmul(qmul(qmul(swing, s_world[bone]), qconj(k_s)), k_t)
+        want[dst.mapping[bone]] = qmul(qmul(s_world[bone], qconj(k_s)), k_t)
 
     nodes = dst.doc["nodes"]
     scenes = dst.doc.get("scenes") or []
@@ -494,7 +505,6 @@ def retarget_clip(clip_bytes: bytes, figure_bytes: bytes,
         say("no humanoid bone the clip drives exists on that figure")
         return None
     dropped = len(tracks) - len(shared)
-    swing = qmul(dst.body_frame(), qconj(src.body_frame()))
 
     notes = []
     breaks = dst.chain_breaks()
@@ -512,7 +522,7 @@ def retarget_clip(clip_bytes: bytes, figure_bytes: bytes,
     for t in times:
         carried = {b: _sample(tracks[src.mapping[b]], t) for b in shared}
         everything = {node: _sample(tr, t) for node, tr in tracks.items()}
-        for name, q in _target_locals(src, dst, carried, swing, everything).items():
+        for name, q in _target_locals(src, dst, carried, everything).items():
             per_bone.setdefault(name, []).append(q)
     if not per_bone:
         say("nothing survived the mapping")

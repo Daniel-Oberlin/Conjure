@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_server import _MIXAMO, _RIGIFY, _glb_bytes, _skeleton_nodes   # noqa: E402
 
-from conjure.figures import split_glb                                   # noqa: E402
+from conjure.figures import node_world_matrices, split_glb              # noqa: E402
 from conjure.retarget import (Rig, _read_accessor, _sample, _tracks,   # noqa: E402
                               qconj, qmul, retarget_clip)
 
@@ -54,6 +54,22 @@ def _roll(nodes: list, degrees: float) -> list:
     return nodes
 
 
+def _lean(nodes: list, naming: dict, degrees: float) -> list:
+    """Tip the SPINE's rest so the body leans, legs and all else untouched.
+
+    Not a synthetic case: every rigged figure in the catalog leans, because `hips -> neck` is the chord
+    of a curved spine and not an axis. Measured, Akari 0.1°, office-babe 2.9°, Alice 4.5°, Grace 6.7°,
+    and the clip file Alice's `LayTableIdle` ships in, 10.7°. The gap between two of those was the whole
+    of the tilt reported on device, because the law used to align the two rest body frames and so added
+    the lean a second time on top of the one the absolute carry already reproduces.
+    """
+    i = next(k for k, n in enumerate(nodes) if n["name"] == naming["spine"])
+    a = math.radians(degrees) / 2
+    nodes[i]["rotation"] = list(qmul(tuple(nodes[i].get("rotation") or (0, 0, 0, 1)),
+                                     (math.sin(a), 0.0, 0.0, math.cos(a))))
+    return nodes
+
+
 def _mat3(q):
     x, y, z, w = q
     return [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w),
@@ -61,7 +77,7 @@ def _mat3(q):
             2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]
 
 
-def figure(naming=None, *, roll: float = 0.0, nameless: bool = False,
+def figure(naming=None, *, roll: float = 0.0, lean: float = 0.0, nameless: bool = False,
            armature_scale: float = 1.0) -> bytes:
     """A rigged model: skeleton, one skinned mesh, a bind pose.
 
@@ -71,6 +87,8 @@ def figure(naming=None, *, roll: float = 0.0, nameless: bool = False,
     nodes, names = _skeleton_nodes(naming or _MIXAMO)
     if roll:
         _roll(nodes, roll)
+    if lean:
+        _lean(nodes, naming or _MIXAMO, lean)
     if armature_scale != 1.0:
         for nd in nodes:
             if nd.get("translation"):
@@ -90,7 +108,8 @@ def figure(naming=None, *, roll: float = 0.0, nameless: bool = False,
     return _glb_bytes(doc)
 
 
-def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine", "l_fore"),
+def clip(naming=None, *, name="wave", roll: float = 0.0, lean: float = 0.0,
+         drive=("l_arm", "spine", "l_fore"),
          extra=(), slide=(), slide_moves: bool = True, wrapper: str = "",
          slide_via_wrapper: bool = False) -> bytes:
     """A clip: the authoring rig's nodes, real motion, and no mesh — the shape the corpus ships."""
@@ -98,6 +117,8 @@ def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine"
     nodes, _names = _skeleton_nodes(table)
     if roll:
         _roll(nodes, roll)
+    if lean:
+        _lean(nodes, table, lean)
     for bone in extra:                          # a bone no other rig has, e.g. a skirt chain
         nodes.append({"name": bone, "translation": [0.0, 0.1, 0.0], "rotation": [0, 0, 0, 1]})
         nodes[0].setdefault("children", []).append(len(nodes) - 1)
@@ -163,6 +184,67 @@ def _angle(a, b) -> float:
 def _locals(data: bytes) -> tuple[dict, list]:
     doc, blob = split_glb(data)
     return _tracks(doc, blob, doc["animations"][0])
+
+
+def _body_up(fig_bytes: bytes, clip_bytes: bytes, t: float = 0.0) -> tuple:
+    """Where `hips -> neck` POINTS once this clip has posed this skeleton — a unit vector in world.
+
+    The physical question, and the one a person in a headset is answering when they say a figure is
+    tilted back. It cannot be asked of rotations: `clip_diff.mjs` reports every angle relative to each
+    figure's own `t=0`, so a constant lean is invisible to it, and the probe's body metric is an angle
+    between two POSED body frames, which the term this is here to pin was constructed to null.
+    """
+    doc, blob = split_glb(fig_bytes)
+    rig = Rig(doc, blob)
+    c_doc, c_blob = split_glb(clip_bytes)
+    tracks, _times = _tracks(c_doc, c_blob, c_doc["animations"][0])
+    by = {n.get("name"): i for i, n in enumerate(doc["nodes"])}
+    for name, track in tracks.items():          # the clip REPLACES a node's rotation, so assign it
+        if name in by:
+            doc["nodes"][by[name]]["rotation"] = list(_sample(track, t))
+    world = node_world_matrices(doc)
+    p = {b: world[i] for b in ("hips", "neck") if (i := rig.index(b)) is not None}
+    d = tuple(p["neck"][12 + k] - p["hips"][12 + k] for k in range(3))
+    n = math.sqrt(sum(c * c for c in d))
+    return tuple(c / n for c in d)
+
+
+# ---------------------------------------------------------------- the rest body frame
+
+def test_a_rig_that_RESTS_LEANING_does_not_lean_the_target_a_second_time():
+    """Reported on device: *"Akari is tilted back compared to Grace and Alice"*, playing Alice's clip.
+
+    Every captured rig rests leaning a little, because `hips -> neck` is the chord of a curved spine —
+    Akari 0.1°, Alice 4.5°, Grace 6.7°, and the clip file itself 10.7°. The law used to carry a
+    `swing = Bt · Bs⁻¹` that aligned the two rest body frames, on the reasoning that a figure should
+    perform in HER frame. But those rigs lean because their spine BONES lean, and an absolute carry
+    reproduces that already; `swing` added it again. Measured end to end, against Alice playing it
+    natively at 94.1° from vertical: Grace 97.3°, Akari 105.8°, office-babe 100.2°, Saka 99.5° — an
+    11.7° spread. Without the term: 93.5°, 95.6°, 92.7°, 93.8°, a spread of 2.9°.
+
+    So: pose a clip authored on a LEANING rig onto an UPRIGHT one and the two bodies must end up
+    pointing the same way. The old law failed this by the difference of the two leans.
+    """
+    src_lean, dst_lean = 12.0, 0.0
+    moving = clip(_MIXAMO, lean=src_lean)
+    out = retarget_clip(moving, figure(_RIGIFY, lean=dst_lean))
+    assert out is not None
+
+    for t in (0.0, 0.5, 1.0):
+        want = _body_up(figure(_MIXAMO, lean=src_lean), moving, t)   # the clip on its OWN rig
+        got = _body_up(figure(_RIGIFY, lean=dst_lean), out.data, t)
+        off = math.degrees(math.acos(max(-1.0, min(1.0, sum(a * b for a, b in zip(want, got))))))
+        assert off < 2.0, (f"t={t}: the retargeted body points {off:.1f}° away from the source's. "
+                           f"The two rests differ by {src_lean - dst_lean:.0f}°, which is what an "
+                           f"alignment term would add here.")
+
+
+def test_the_two_rigs_really_do_REST_DIFFERENTLY_or_the_lean_case_proves_nothing():
+    """The companion every control needs: a fixture that does not actually differ passes anything."""
+    upright = Rig(*split_glb(figure(_RIGIFY)))
+    leaning = Rig(*split_glb(figure(_MIXAMO, lean=12.0)))
+    off = _angle(upright.body_frame(), leaning.body_frame())
+    assert off > 6.0, f"the leaning fixture only leans {off:.1f}°"
 
 
 # ---------------------------------------------------------------- the identity property

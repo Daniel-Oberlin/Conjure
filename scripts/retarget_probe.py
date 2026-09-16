@@ -430,6 +430,9 @@ def canonical_rest(fig: Figure, notes: Optional[list] = None) -> dict[str, tuple
     return out
 
 
+SWING = False         # `--swing` restores the term `conjure.retarget` dropped; see its docstring
+
+
 def _world_rotations(src: Figure, dst: Figure, carried: dict, absolute: bool) -> dict[str, tuple]:
     """Desired WORLD rotation per target node name, under one of the two retargeting laws.
 
@@ -439,12 +442,15 @@ def _world_rotations(src: Figure, dst: Figure, carried: dict, absolute: bool) ->
     """
     s_world = posed_world(src, {src.mapping[b]: q for b, q in carried.items()})
     cs, ct = (canonical_rest(src), canonical_rest(dst)) if absolute else ({}, {})
-    # INTO THE TARGET'S OWN FRAME. Matching world orientations is not the same as matching poses: a
-    # figure whose armature rests with a slight lean should perform the clip in ITS frame rather than
-    # inherit the source's. The naive copy gets this for free by working in each rig's own local terms;
-    # an absolute law has to be told. `Bt · Bs⁻¹` is the whole of it, and it is identity whenever the
-    # two rest the same way — so the control and the identity case are untouched.
-    swing = qmul(rest_body_frame(dst), qconj(rest_body_frame(src))) if absolute else (0, 0, 0, 1)
+    # THE TERM THAT WAS WRONG, kept behind a flag because this file is the specification and a reader
+    # has to be able to re-run what killed it. The reasoning was: a figure whose armature rests with a
+    # slight lean should perform the clip in ITS frame rather than inherit the source's. But glTF fixes
+    # the world frame at Y-up, so two rest body frames differ by rest POSE and nothing else — and these
+    # rigs lean because their spine BONES lean, which the absolute carry already reproduces. `swing`
+    # then added it twice, which is the tilt the device reported. Worse, `body` below is the angle
+    # between the two POSED body frames and `swing` is constructed to null precisely that, so it graded
+    # itself: with it on, four figures score BELOW the Jane->Jane floor.
+    swing = qmul(rest_body_frame(dst), qconj(rest_body_frame(src))) if absolute and SWING else (0, 0, 0, 1)
     want = {}
     for bone in carried:
         if bone not in s_world:
@@ -658,10 +664,16 @@ def main() -> int:
     ap.add_argument("--clip", default="", help="clip label (default: the first Jane shipped with)")
     ap.add_argument("--frames", type=int, default=12)
     ap.add_argument("--per-bone", action="store_true")
+    ap.add_argument("--swing", action="store_true",
+                    help="restore `swing = Bt·Bs⁻¹`, the body-frame alignment the shipped law no "
+                         "longer has: it added each rig's rest POSE a second time, and this metric is "
+                         "the one it nulls by construction — watch four rows drop BELOW the floor")
     ap.add_argument("--control", type=float, nargs="*", default=[],
                     help="also retarget onto Jane with every bone's REST rolled N degrees — a case "
                          "where the right answer is known to be 0")
     args = ap.parse_args()
+    global SWING
+    SWING = args.swing
 
     db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
 
