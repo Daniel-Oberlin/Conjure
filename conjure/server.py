@@ -43,7 +43,7 @@ from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CAC
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
 from . import poses
-from .figures import FRAME_REV, POSE_AXES, clean_pose, resolve_pose
+from .figures import FRAME_REV, POSE_AXES, RIG_SIG_REV, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .plane_anchor import author_anchor, solve_anchor
@@ -4850,6 +4850,24 @@ def _entity_model_id(ent: dict) -> str:
     return src.rsplit("/", 1)[-1] if src.startswith("/assets/") else ""
 
 
+def _retargetable_rows(sig: str, known: set) -> list[dict]:
+    """Clips on OTHER rigs, which tier 2 can rewrite for this one.
+
+    A third tier and not a widening of the second. `compatible` means the channels bind as they are —
+    `shipped_with` is what the scene authored, `rig_sig` is what plays natively, and this is what plays
+    after being rewritten. Merging it into `compatible` would say a retargeted clip and a native one are
+    the same thing, and they are not: the rewrite drops every channel the humanoid does not name, which
+    on a captured clip is 200 of 222.
+    """
+    if library is None or not sig:
+        return []
+    rows = library.query("SELECT * FROM assets WHERE kind = 'animation' "
+                         "AND json_extract(attributes, '$.rig_sig') IS NOT NULL "
+                         f"AND json_extract(attributes, '$.rig_sig') != '{sig}'",
+                         scope=active_scope, limit=2000) or []
+    return [r for r in rows if r["id"] not in known]
+
+
 def _clip_rows_for(model_id: str) -> tuple[list[dict], list[dict], str]:
     """`(shipped, compatible, rig_sig)` for a figure's model — what it was GIVEN, and what will play.
 
@@ -4947,11 +4965,52 @@ async def figure_clip(req: FigureClipRequest) -> dict:
         clip_attrs = {}
     clip_sig = clip_attrs.get("rig_sig") or ""
     mismatch = bool(sig and clip_sig and sig != clip_sig)
-    if mismatch and not req.force:
+    # A figure with NO map at all and a clip that has one is the same problem with a worse failure: it
+    # binds by name, resolves nothing, and plays silence while reporting success. Tamaki is the real
+    # case — rigged, and no humanoid map recoverable. Retargeting cannot help her either, because there
+    # is nothing to map her channels THROUGH, so this is a refusal that says what is missing.
+    if clip_sig and not sig and not req.force:
         return {"ok": False, "error":
-                f"{rec.get('label')!r} is rigged {clip_sig} and {req.id!r} is {sig}. Binding by name "
-                f"across that drops most channels and drives the figure by the few that match — "
-                f"retargeting is not built yet. Pass force to see it anyway."}
+                f"{req.id!r} has no humanoid map, so a clip cannot be aimed at it — binding by name "
+                f"would resolve nothing and play silence. {rec.get('label')!r} is rigged {clip_sig}. "
+                f"Pass force to bind it by name anyway."}
+    # ---- TIER 2: a clip from a DIFFERENT rig is rewritten rather than refused ---------------------
+    #
+    # Binding by node name resolves nothing across rigs, so until this existed a mismatch was a refusal
+    # and ten figures in the catalog could be offered no clip at all. `conjure.retarget` maps both
+    # skeletons through the canonical humanoid and rewrites every channel it can carry; what comes back
+    # is an ordinary clip spelled in the TARGET's node names, so the client's one bind-by-name path
+    # resolves it with no new code.
+    #
+    # Content-addressed, so a (clip, rig) pair is computed once ever and every later play is a lookup.
+    # `--force` still means what it did: bind by name across the mismatch and look at the wreck.
+    retarget_notes: list[str] = []
+    if mismatch and not req.force:
+        clip_path, fig_path = ASSET_CACHE / rec["id"], ASSET_CACHE / _entity_model_id(ent)
+        if not (clip_path.exists() and fig_path.exists()):
+            return {"ok": False, "error": f"{rec.get('label')!r} is rigged {clip_sig} and {req.id!r} "
+                                          f"is {sig}, and the bytes to retarget from are not cached"}
+        why: list[str] = []
+        try:
+            from .retarget import retarget_clip
+            done = retarget_clip(clip_path.read_bytes(), fig_path.read_bytes(), why.append)
+        except Exception as exc:                # noqa: BLE001 — a failed retarget must not 500
+            _slog("figure", f"retarget {rec['id']} -> {sig} failed: {exc}")
+            done = None
+            why.append(str(exc))
+        if done is None:
+            return {"ok": False, "error":
+                    f"{rec.get('label')!r} is rigged {clip_sig} and {req.id!r} is {sig}, and it cannot "
+                    f"be retargeted: {'; '.join(why) or 'no reason given'}. Pass force to bind it by "
+                    f"name anyway and see the wreck."}
+        new_id = register_asset(done.data, kind="animation", ext=".glb",
+                                label=f"{rec.get('label') or rec['id']} ({sig})",
+                                attributes={**clip_attrs, "rig_sig": sig, "rig_sig_rev": RIG_SIG_REV,
+                                            "retargeted_from": rec["id"], "clip_bones": done.bones,
+                                            "clip_dropped": done.dropped})
+        library.add_relation(new_id, rec["id"], "retargeted_from")
+        retarget_notes = done.notes
+        rec = library.get(new_id) or rec
 
     # The voice recorded against this clip, if there is one — 20 of Jane's 21 have one, and the link is
     # many-to-many (one file serves four clips), so it is a relation and not a column. Sent WITH the
@@ -4976,6 +5035,9 @@ async def figure_clip(req: FigureClipRequest) -> dict:
            "loop": bool(req.loop), "started_at": started, "speed": speed,
            "authored_speed": clip_attrs.get("speed"),
            "voiced": voice[0]["id"] if voice else None}
+    if retarget_notes:
+        out["retargeted"] = True
+        out["notes"] = retarget_notes
     if not voice:
         # "Play something with sound" lands on a silent clip roughly one time in twenty, and the honest
         # answer is not "no audio" — it is "not this one". Count hers so the caller can offer a swap
@@ -4984,8 +5046,9 @@ async def figure_clip(req: FigureClipRequest) -> dict:
                      if any(v.get("kind") == "audio" for v in library.related(r["id"], "voiced_by")))
         if others:
             out["voiced_alternatives"] = others
-    if mismatch:
-        out["warning"] = f"rig {clip_sig} on a {sig} figure — forced"
+    if mismatch and req.force:
+        out["warning"] = f"rig {clip_sig} on a {sig} figure — forced, so it is bound by NAME and most "
+        out["warning"] += "channels resolve to nothing. Without force this is retargeted instead."
     return out
 
 
@@ -5021,11 +5084,15 @@ async def figure_clips(id: str, all: bool = False, kind: str = "", voiced: bool 
         return out
 
     shipped_ids = {r["id"] for r in shipped}
+    fits = [r for r in compatible if r["id"] not in shipped_ids]
+    others = _retargetable_rows(sig, shipped_ids | {r["id"] for r in compatible})
     out = {"ok": True, "id": id, "model": model_id, "rig_sig": sig, "shipped": keep(shipped)}
     if all:
-        out["compatible"] = keep([r for r in compatible if r["id"] not in shipped_ids])
+        out["compatible"] = keep(fits)
+        out["retargetable"] = keep(others)
     else:
-        out["compatible_count"] = len([r for r in compatible if r["id"] not in shipped_ids])
+        out["compatible_count"] = len(fits)
+        out["retargetable_count"] = len(others)
     return out
 
 

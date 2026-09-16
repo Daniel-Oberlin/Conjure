@@ -5268,20 +5268,56 @@ def test_stopping_a_clip_leaves_nothing_for_the_client_to_keep_playing(srv, clie
     assert _ent(client, eid)["components"]["figure-clip"] == {"clip": "", "playing": False}
 
 
-def test_a_clip_from_a_DIFFERENT_rig_is_refused_until_it_is_forced(srv, client, tmp_path):
-    """Binding is by node name, so a clip whose rig is spelled differently does not fail loudly — it
-    resolves the handful of names that happen to match and drives the figure by those, which looks like
-    a bug in the figure. Refuse it, say both signatures, and leave `force` for looking anyway."""
+def test_a_clip_from_a_DIFFERENT_rig_is_RETARGETED_rather_than_refused(srv, client, tmp_path):
+    """Binding is by node name, so a clip whose rig is spelled differently resolves NOTHING. That used
+    to be a refusal, and it left ten figures in the catalog with no clip they could be offered at all.
+
+    Now both skeletons are mapped through the canonical humanoid and every channel that can cross is
+    rewritten — on the server, into an ordinary clip spelled in the FIGURE's node names, so the client's
+    one bind-by-name path resolves it with no new code. The entity gets a different asset from the one
+    that was asked for, and says so."""
     fig = _import_id(client, "girl.glb", _figure_glb())
     alien = _import_id(client, "weird.glb", _clip_glb(naming=_RIGIFY))
     eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
 
     r = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
-    assert not r["ok"] and "retargeting is not built yet" in r["error"]
-    assert "figure-clip" not in (_ent(client, eid).get("components") or {})
+    assert r["ok"] and r.get("retargeted") is True, r
+    assert r["clip"] != alien, "a rewritten clip is a different asset"
+    assert _ent(client, eid)["components"]["figure-clip"]["clip"] == f"/assets/{r['clip']}"
 
+    # It carries the FIGURE's signature now, so it is findable for anything else on that rig, and it
+    # remembers where it came from.
+    made = json.loads(srv.library.get(r["clip"])["attributes"])
+    assert made["rig_sig"] == json.loads(srv.library.get(fig)["attributes"])["rig_sig"]
+    assert made["retargeted_from"] == alien
+
+    # Content-addressed: asking again is a lookup, not a second rewrite.
+    again = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert again["clip"] == r["clip"]
+
+
+def test_forcing_a_cross_rig_clip_still_binds_it_by_NAME(srv, client, tmp_path):
+    """`force` has always meant "show me the wreck", and retargeting does not take that away — it is
+    how you find out what a rig mismatch actually looks like."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    alien = _import_id(client, "weird.glb", _clip_glb(naming=_RIGIFY))
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
     r = client.post("/figure/clip", json={"id": eid, "clip": alien, "force": True}).json()
-    assert r["ok"] and "forced" in r["warning"], "asked for twice is a different request"
+    assert r["ok"] and "forced" in r["warning"]
+    assert r["clip"] == alien and not r.get("retargeted"), "forced means the ORIGINAL, unrewritten"
+
+
+def test_a_figure_with_no_bone_map_is_told_WHY_it_cannot_receive_a_clip(srv, client, tmp_path):
+    """Tamaki is the real case: rigged, and no humanoid map at all. A clip bound through a map we could
+    not recover is a figure folded into a knot, so the refusal stays — but it now says what is missing
+    rather than that the feature does not exist."""
+    nameless = _figure_glb(naming={k: f"b{i}" for i, k in enumerate(_MIXAMO)})
+    fig = _import_id(client, "nameless.glb", nameless)
+    alien = _import_id(client, "weird.glb", _clip_glb(naming=_RIGIFY))
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "thing"}).json()["id"]
+    r = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert not r["ok"]
+    assert "not a rigged figure" in r["error"] or "humanoid map" in r["error"], r
 
 
 def test_the_clips_a_figure_SHIPPED_with_are_listed_apart_from_the_ones_that_merely_fit(srv, client,

@@ -633,9 +633,15 @@ async def play_clip(id: str, clip: str, loop: bool = True, speed: Optional[float
     lists them, because the same clip name turns up on different figures and picking one at random plays
     the wrong body.
 
-    A clip plays on any figure with the same rig, not only the one it shipped with, so the answer to
-    "can she do what the other one was doing" is usually yes. Across rigs it is no — that gets refused
-    with both signatures named, and `force` is only for looking at the wreck deliberately.
+    A clip plays on any figure, not only the one it shipped with. Same rig, it binds directly; a
+    different rig, it is REWRITTEN for her first — both skeletons mapped through a canonical humanoid
+    and every channel that can cross rewritten. So the answer to "can she do what the other one was
+    doing" is yes, with one honest caveat: a rewrite carries only the bones a humanoid has, so a skirt,
+    a ponytail or a breast chain stays still while the body moves. The reply says when it happened.
+
+    A figure with no recoverable bone map is still refused, because there is nothing to map through.
+    `force` is only for looking at the wreck deliberately — it binds by NAME across the mismatch, which
+    resolves almost nothing.
 
     **A clip brings its own SOUND.** Most of these were captured with a voice track recorded against
     them — 20 of Barbie's 21 — and it plays automatically, in sync, positioned on the figure. There is
@@ -682,11 +688,15 @@ async def stop_clip(id: str) -> str:
 async def list_clips(id: str, all: bool = False, kind: str = "", voiced: bool = False) -> str:
     """What a figure can be animated with.
 
-    Two lists, and the difference matters. **Shipped** is what this figure's own scene gave it — the
-    safe default. **Compatible** is every clip its skeleton can receive, which is a much larger set and
-    is only listed when you pass `all`. A compatible clip is not automatically a sensible one: many are
-    authored around furniture that is not there, so a figure standing in an empty room will lean on a
-    sink that does not exist. Prefer the shipped list unless the user is exploring.
+    Three lists, and the differences matter. **Shipped** is what this figure's own scene gave it — the
+    safe default. **Compatible** is every clip her skeleton receives as-is. **Retargetable** is every
+    clip from a DIFFERENT rig, rewritten for her on the way; those play, and they lose the channels no
+    other rig has a bone for — a skirt or a ponytail stays still while the body moves. Both of the
+    latter are listed only when you pass `all`.
+
+    A clip that fits is not automatically a sensible one: many are authored around furniture that is not
+    there, so a figure standing in an empty room will lean on a sink that does not exist. Prefer the
+    shipped list unless the user is exploring.
 
     `kind` narrows to "idle" or "action". Idles are quiet and personal to a figure; actions travel.
 
@@ -711,10 +721,20 @@ async def list_clips(id: str, all: bool = False, kind: str = "", voiced: bool = 
              f"Shipped with her ({len(shipped)}):"] + (show(shipped) or ["  none"])
     if all:
         other = out.get("compatible") or []
-        lines.append(f"Also compatible ({len(other)}) — authored for other figures:")
+        lines.append(f"Also compatible ({len(other)}) — authored for other figures on this rig:")
         lines += show(other) or ["  none"]
-    elif out.get("compatible_count"):
-        lines.append(f"{out['compatible_count']} more clips fit this rig — pass all to see them.")
+        far = out.get("retargetable") or []
+        if far:
+            lines.append(f"Retargetable ({len(far)}) — from other rigs, rewritten to fit her:")
+            lines += show(far)
+    else:
+        counts = []
+        if out.get("compatible_count"):
+            counts.append(f"{out['compatible_count']} more fit this rig")
+        if out.get("retargetable_count"):
+            counts.append(f"{out['retargetable_count']} more can be retargeted from other rigs")
+        if counts:
+            lines.append(" and ".join(counts) + " — pass all to see them.")
     return "\n".join(lines)
 
 

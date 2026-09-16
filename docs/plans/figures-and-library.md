@@ -1,7 +1,7 @@
 # Plan — figures, their animations, and environments
 
 **Status:** phase 1 DONE and settled into `specs/library.md` §2a/§5a · phase 2 DONE (closed 2026-09-15) · phase 3 DONE (untested on device) · phase 2b steps 0–5 DONE and imported ·
-the capture side settled and the corpus recomposed + re-imported 2026-09-15 (see NEXT below) · phases 4–5 open
+the capture side settled and the corpus recomposed + re-imported 2026-09-15 (see NEXT below) · phase 5 BUILT (untested on device) · phase 4 open
 **Opened:** 2026-09-12 · **Phase 1 landed:** 2026-09-13 · **Phase 3 landed:** 2026-09-13 · **Phase 2 landed partial:** 2026-09-13
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
@@ -766,7 +766,7 @@ unchanged, and a template is simply one saved thing.
 **Done when:** a room model can be set as the environment, the scaffold gives way to it, and it can be
 dragged and yawed into alignment with the real room from inside the headset.
 
-### Phase 5 — retargeting across rigs
+### Phase 5 — retargeting across rigs ✅ BUILT (untested on device)
 
 *Settles into `specs/figures.md` if it lands; to `backlogs/figures.md` if it is deferred.*
 
@@ -962,6 +962,55 @@ to report it rather than to fail on it.
 **Do not ship the correction inside a rig signature.** Naive copy on Akari is 8.8° and that is the path
 that already runs on device and looks right, so 8.8° is roughly what "correct" costs in this metric.
 The correction there is 9.5° — no better, and it would rewrite 16 working figures.
+
+### Shipped, 2026-09-15 — `conjure/retarget.py` and `/figure/clip`
+
+**On the server, producing an ordinary clip.** The alternative was to send both skeletons to the client
+and do the algebra there, and it is worse in every way that matters: the output is a function of two
+files and nothing else, so it content-addresses and is computed once per (clip, rig) pair *ever*; the
+client keeps its one bind-by-name path; and the arithmetic stays beside the tests that pin it. What
+comes back is a clip spelled in the TARGET's node names. **The client was not changed at all.**
+
+**Both inputs describe themselves.** A clip GLB carries no mesh and no skin, but it does carry its
+authoring rig's NODES — and their rest transforms match the figure they came from to within **0.075°**,
+measured. So the source rig's rest pose and its humanoid map are recoverable from the clip alone and
+nothing has to be looked up.
+
+**The proof it works, in four lines.** Jane's `10_action`, loaded with the client's own `GLTFLoader`
+(`scripts/clip_check.mjs`, new):
+
+    original clip -> Jane      666 tracks, 666 BIND
+    original clip -> Trish     666 tracks,   0 BIND     ← every cross-rig figure, today
+    original clip -> Alice     666 tracks,   0 BIND
+    retargeted    -> Trish      21 tracks,  21 BIND
+    retargeted    -> Alice      22 tracks,  22 BIND
+
+Verified end to end against the corpus: **Jane → Jane is 0.0° on both limbs and body**, which is the
+only cheap test this has and which caught two bugs that had looked like facts about rigs — posing the
+two sides with different bone SETS, and measuring a bone against its parent's REST rather than where
+the parent had actually moved to.
+
+**Three lists, not two.** `retargetable` is a third tier beside `shipped` and `compatible`, deliberately
+not merged into the second: a rewritten clip and a native one are not the same thing, because the
+rewrite drops every channel the humanoid does not name — 200 of 222 on a captured clip. `list_clips`
+says so, and `/figure/clip` returns `retargeted: true` with the notes.
+
+**What is still refused, and now says why.** A figure with no recoverable bone map: there is nothing to
+map channels through. That also closed a silent one found on the way — a rigged figure with no map and
+a clip that HAS a signature used to bind by name, resolve nothing, and report success while playing a
+statue.
+
+**Known limits, all measured and all reported to the caller:**
+
+- 200 of 222 channels have no receiver on any other rig. A skirt or a ponytail stays still.
+- Six of 28 maps are not CHAINS (`Rig.chain_breaks`), so part of the body lags. Named in the notes.
+- Worst-case limb error over the corpus: Akari 0.6°, Grace 0.2°, Saka 4.2°, Steve 9.1°, Trish 10.4°,
+  Alice and Blondie 14.6°, Eve 61.8° — Eve being the broken-chain case rather than a retargeting one.
+
+**Done when** (the original bar): *a `85e41f9b8e` clip plays recognisably on Susan, on Trish and on
+Saka* — mechanically yes, on device untested; *a measured comparison says how far each drifts* — the
+table above and `scripts/retarget_probe.py`; *and a rig that should fail fails cleanly* — Tamaki is
+refused with the reason named.
 
 **Done when:** a `85e41f9b8e` clip plays recognisably on Susan, on Trish and on Saka; a measured
 comparison says how far each drifts from the same clip on its own rig; and a rig that should fail
