@@ -2,6 +2,7 @@
 
     B=/Applications/Blender.app/Contents/MacOS/Blender
     $B --background --python scripts/glb_preview.py -- model.glb outdir/ [--size 512] [--views 4]
+                                                        [--shown]
 
 Two jobs, both from docs/backlogs/figures.md:
 
@@ -9,13 +10,16 @@ Two jobs, both from docs/backlogs/figures.md:
      cheapest way to catch a broken conversion — a collapsed rig, a lost material, a figure lying on its
      side — before it costs a headset trip. It reads the GLB the same way a client will.
   2. **The renderer for the multimodal pass** (layer 4): upright? facing which way? which mesh is the
-     jacket? Also what *Visual model embedding via rendered thumbnails* in backlogs/library.md needs.
+     jacket? Also what *Describing and embedding models* in backlogs/library.md needs — that one wants
+     `--shown`, which draws only what the scene draws.
 
 Prints the imported bounding box and height so the "is it life size" question is answered numerically,
 not just by eye. Uses Workbench rather than Cycles: this is a structural check, not a beauty shot.
 """
+import json
 import math
 import os
+import struct
 import sys
 
 import bpy
@@ -39,8 +43,36 @@ bpy.ops.import_scene.gltf(filepath=glb)
 # represent) in a collection literally named `glTF_not_exported`. They are NOT in the file and no web
 # client ever sees them — but they are 2 m across, so counting them puts the bounding box and the
 # camera framing a metre out. Importer artifact, not model content.
+# WHAT THE SCENE ACTUALLY DRAWS, when asked for it. A composed thing carries every variant its source
+# had — Alice ships three hair meshes and five skirt/underwear variants — and drawing them all stacks
+# wardrobes on top of each other. The composer already knows which lose: `extras.conjure.hidden` is the
+# list, written for importers and ignored by viewers. Read straight out of the GLB's own JSON chunk so
+# this script keeps depending on nothing but Blender.
+#
+# Off by default, because the round-trip check wants to SEE everything: a mesh that came through
+# mangled is still a defect when it happens to be a hidden one. `--shown` is for the multimodal pass,
+# where a second hair mesh intersecting the first reads as "a striking white streak" and is described
+# in earnest.
+def hidden_in(path):
+    try:
+        with open(path, "rb") as fh:
+            fh.read(12)
+            length, kind = struct.unpack("<II", fh.read(8))
+            if kind != 0x4E4F534A:
+                return set()
+            doc = json.loads(fh.read(length))
+    except (OSError, ValueError, struct.error):
+        return set()
+    return set(((doc.get("extras") or {}).get("conjure") or {}).get("hidden") or ())
+
+
+HIDE = hidden_in(glb) if "--shown" in argv else set()
 objs = [o for o in bpy.context.scene.objects if o.type == "MESH"
-        and not any(c.name == "glTF_not_exported" for c in o.users_collection)]
+        and not any(c.name == "glTF_not_exported" for c in o.users_collection)
+        and o.name not in HIDE]
+for o in bpy.context.scene.objects:
+    if o.name in HIDE:
+        o.hide_render = True
 if not objs:
     print("  NO MESHES IMPORTED — the export is broken"); sys.exit(1)
 for o in bpy.context.scene.objects:      # keep them out of the render too
