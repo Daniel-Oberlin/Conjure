@@ -81,6 +81,68 @@ skeletons did not update.
 her, then read the entity's `figure` component and whether her hips visibly drop. Hips dropping with
 straight legs is skinning; nothing moving but the feet is the bone lookup.
 
+## Left open by phase 5, 2026-09-16 — retargeting shipped, these did not
+
+The law and its measurements are in [`specs/figures.md`](../specs/figures.md) §8c. What follows is what
+was deliberately not done, each with the measurement that says how much it matters.
+
+### Faces — driving one is small; retargeting one has nothing to build on
+
+**Measured, not started.** Morph targets are everywhere — 30 of 32 rigged models carry some — and almost
+none of them are a face:
+
+| figure | targets | facial | vocabulary |
+|---|---|---|---|
+| Saka | 57 | **57** | VRM's own preset set — `Fcl_ALL_Joy`, `Fcl_BRW_Angry`, `Fcl_EYE_Close_L` |
+| Alice | 36 | **31** | Character Creator / ARKit-ish — `Brow_Raise_Inner_L`, `Eye_Blink_L` |
+| Bianca, Blondie | 22, 21 | 19 | **tongue only** — no brows, no eyes |
+| everyone else | 3–17 | 0–1 | skin and clothing colour, anatomy, the odd `closed_eyes_correction` |
+
+So there are **two** expression rigs, and they speak different languages.
+
+**The captures hold no facial performance either.** 249 of 539 clips drive morph weights, which looks
+promising until you see the targets: `Body`, `Dress`, `Shorts`, `Hair`, `Shirt` — wardrobe and body
+shape. Corpus-wide, **15 channels are facial**.
+
+**Driving one is small and worth doing.** A morph weight is one scalar per target and three.js applies
+it through the mixer that already plays clips, so there is no new client path. It is `pose_figure`'s
+shape: a `set_expression` taking `{target: weight}` or a named preset. `morph_targets` is already a
+catalog attribute, so "who can smile" is a query today. The payoff is not cosmetic — a figure who blinks
+and looks at you is a different presence, and the director has nothing to work with now.
+
+**Retargeting one should wait for a reason.** A bone retarget maps through a shared skeleton with
+geometry to check it against; morph targets have **names and nothing else**, and `Fcl_ALL_Joy` is not
+`Brow_Raise_Inner_L` in any sense a measurement can establish. VRM's preset set is the obvious standard
+to map TO, and that is a table per scheme with no geometric check behind it — the shape of thing
+`REF_AGAINST_UP` warns about. With two expression rigs and no performances to carry, there is no
+evidence to build the tables from. If driving ships, the natural source of facial performance becomes
+our own director rather than a capture, and the question changes from *retarget* to *author*.
+
+### A bone map that is not a CHAIN, and one rig where the fingers cannot be fixed
+
+`validate()` checks geometry and never whether a bone is actually UNDER its humanoid parent, so a map can
+pass every check and still name bones from different branches of a control rig. **6 of 28 maps break**;
+`Rig.chain_breaks()` finds them and the retarget reports them, separately for the body and the fingers
+because a broken torso is the performance and a broken finger is cosmetic.
+
+Two cases, and they want different fixes:
+
+- **Eve's inferred map** puts `hips` on `ORG-spine` and `spine` on `chest`, so rotating her hips cannot
+  move her spine. That is a discovery defect and `validate()` could catch it — the check is "walk from
+  child to root and expect to meet the parent", which `chain_breaks()` already implements.
+- **Grace's fingers are not fixable from here.** Her three FK finger joints export as SIBLINGS under one
+  palm bone, because what chained them in Blender was a constraint and a GLB carries none, and she has no
+  `DEF-` finger chain to prefer instead. Each joint still reaches its correct absolute orientation; a
+  bend cannot carry onward. Her fingertip measures 0.0° of swing where Alice's native is 3.8°. This is
+  her file, and the only fix is a better export.
+
+### The parts vocabulary is one dialect
+
+`parts.json` classifies by mesh name against a vocabulary measured on one site's captures. It is
+revision 2 and it works there; a second origin will need a second dialect, and the failure mode is
+silent — an unclassified mesh is simply never offered as clothing. `parts_unclassified` records them, so
+the size of the problem is already queryable per figure.
+
 ## Why this is not just "place a model"
 
 `.glb` import already works end to end. `ModelImporter` (`conjure/importer.py:120`) sniffs the glTF magic
