@@ -1058,6 +1058,17 @@ and fingers are not among them, so every finger channel is in the 82 dropped. Al
 because she plays natively. Extending the map to fingers is real work in `figures.py` — VRM and most
 humanoid standards do define them — and would pay off across posing as well.
 
+### DISSOLUTION IN PROGRESS, 2026-09-16 — read this first
+
+Items 1, 2, 2b and 3 below are **done and pushed**. Only item 4, dissolving this file, remains, and it
+is being done section by section with a commit each so partial progress survives. Where each part is
+going is the table under item 4; a section that has already moved is marked **MOVED** in its own
+heading. When the last one is marked, this file is deleted.
+
+If this is being picked up cold: nothing here is unrecorded work. Every finding is already in the git
+log with its measurement, and the phase-5 code is shipped and on device. What is left is editorial —
+putting the right paragraphs in the right permanent files so that deleting this one loses nothing.
+
 ### THE ORDER OF WORK, agreed 2026-09-16 — do these, then delete this file
 
 Device testing is finished; Daniel is done looking at figures for now. Four things, in this order, and
