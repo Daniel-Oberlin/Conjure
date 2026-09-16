@@ -1058,6 +1058,72 @@ and fingers are not among them, so every finger channel is in the 82 dropped. Al
 because she plays natively. Extending the map to fingers is real work in `figures.py` — VRM and most
 humanoid standards do define them — and would pay off across posing as well.
 
+### How to finish phase 5 — agreed 2026-09-16
+
+**Measure first, in this order, and stop when a run explains it.** Every hypothesis this campaign has
+reasoned its way to has been wrong, and every one a measurement found has been right;
+`scripts/clip_diff.mjs` answers each of these in one run because it plays both sides through the
+client's own `retarget()` and mixer.
+
+1. ~~Is `swing` the residual oscillation?~~ **No — measured, ruled out.** Disabled, Akari reads 4.1°
+   against 4.2° with it. Do not spend more on `swing` for the swing.
+2. **Is `swing` the static TILT?** Not yet asked, and not the same question: `clip_diff` reports turn
+   relative to `t=0`, so a constant lean is invisible to it. Measure the ABSOLUTE body axis at `t=0`
+   with `swing` disabled, against the 94.1° / 97.3° / 105.8° already recorded.
+3. **If not, the `K`s are next**, and they are rest-derived too. Which matters because of (4).
+
+**(4) The premise this module was built on does not hold for every capture.** A clip GLB carries its
+authoring rig's nodes, and on Jane those match her figure's rest to **0.075°** — measured, and then
+generalised, which was the mistake. On Alice, her composed thing and her clip's rig recover the
+IDENTICAL bone map and their rests differ on **all 22 bones, several by more than 100°**
+(`rightUpperArm` 117°, `leftLowerArm` 113°).
+
+Why it is survivable at all: **a rotation track REPLACES a node's rotation**, so for a bone the clip
+drives the rest is irrelevant to playback — which is why Alice looks right natively. The rest matters
+only for bones the clip does NOT drive, and for the `K`/`swing` arithmetic, which is built from nothing
+else. So a wrong rest is invisible until you retarget.
+
+The cause is in the COMPOSER, not here: a thing's node tree is built from the scene entity tree, keeping
+each entity's rotation and scale, so a composed figure's rest is *the scene's pose of the skeleton*
+rather than the container's bind. `rebound` already exists to adopt the container's bone transform and
+did not fire for Alice (`rebound: []`). **Home: `backlogs/captures.md` § Known problems**, with a
+pointer from `backlogs/figures.md` because the symptom shows up in retargeting and nobody chasing a
+tilted figure will look in the capture backlog. Anything proposed there has to explain why it is not
+the per-mesh IBM rewrite that was tried and rejected on device
+([`investigations/bride-eyelid.md`](../investigations/bride-eyelid.md)).
+
+### Fingers — the humanoid stops at 22 bones, and it does not have to
+
+Reported on device: *"neither Grace nor Akari's fingers move but Alice's does"*. Correct, and it is the
+vocabulary rather than a defect — fingers are not humanoid bones, so all 82 of their channels are
+dropped. Alice keeps hers only because she plays natively.
+
+**Feasible.** Every convention in the corpus names them regularly, so this is table work in
+`figures.py` rather than inference:
+
+| convention | scheme |
+|---|---|
+| `cc-base` | `CC_Base_L_Index1` / `2` / `3` |
+| `rigify-def` | `DEF-f_index.01.L` / `.02.L` / `.03.L` |
+| `vrm` | `J_Bip_L_Index1` / `2` / `3` |
+| `mixamo` | `LeftHandIndex1` / `2` / `3` |
+| `dot-side` | **no finger bones at all** — Steve has none, so that rig maps none |
+
+Thirty bones: five fingers × three joints × two hands. It pays off beyond retargeting — `pose_figure`
+cannot ask for a fist or a point today either.
+
+**The cost is the signature, and it is the reason to decide deliberately.** `rig_signature` is computed
+over the MAPPED bones, so adding fingers changes **every signature in the catalog**. That is what
+`RIG_SIG_REV` exists for, and the bump has consequences: `shipped_with` survives (it is a relation),
+but every compatible-clip lookup is keyed on `rig_sig`, and every cached retarget is stamped with the
+signature it was built for. Plan on re-deriving all of it in one pass, as the `FRAME_REV` 15→16
+backfill already did.
+
+**Also needs:** a reference axis per finger bone in `REF_AGAINST_UP`'s table — a finger points along the
+hand, not up or forward — and `LIMBS` entries so the canonical frame can be built. Neither is hard; both
+are the kind of table that must not be guessed from geometry, for the reason `REF_AGAINST_UP` already
+documents.
+
 **Done when** (the original bar): *a `85e41f9b8e` clip plays recognisably on Susan, on Trish and on
 Saka* — mechanically yes, on device untested; *a measured comparison says how far each drifts* — the
 table above and `scripts/retarget_probe.py`; *and a rig that should fail fails cleanly* — Tamaki is
