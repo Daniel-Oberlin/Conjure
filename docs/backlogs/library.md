@@ -152,7 +152,27 @@ several containers into one asset is by definition a re-import that supersedes.
 
 ## Future directions
 
-### Describing and embedding models — a figure's whole searchable self is her name
+### Describing and embedding models ✅ DONE 2026-09-16 — all three layers shipped
+
+`conjure/describe.py` (layer 1), `scripts/describe_figures.py` (2 and 3), `glb_preview.py --shown`
+(the render). **38 rigged figures, all three layers, no failures.** The catalog went from 94 embedded
+assets of which none was a model to 132 of which 38 are, and from every figure's `notes` being empty to
+every figure carrying a paragraph. FTS now answers `bikini` → Arabic, Goddess; `sneakers` → four;
+`pigtails` → four; `silver hair` → Goddess. None of that was findable before.
+
+Re-run it after an import: `python scripts/describe_figures.py --commit --render --embed --caption`.
+
+**The one thing that would have gone wrong quietly**, and did until it was caught by eye: a render of
+EVERY mesh stacks a figure's wardrobe on top of itself, and the vision model describes the result in
+complete earnest. Alice's hidden underwear came back as *"a bright pink fanny pack worn diagonally
+across her front"* and the losing half of a hair variant as *"a striking white streak"*. Both fluent,
+both false. `--shown` reads `extras.conjure.hidden` out of the GLB and draws only what the scene draws.
+**A vision pass does not fail loudly; it fails plausibly.**
+
+What follows is the design as written before any of it was built, kept because the reasoning is still
+the reasoning.
+
+### Why it was built in three layers — a figure's whole searchable self was her name
 
 **The state of it, measured 2026-09-16.** 94 assets carry an embedding and **every one is an image or a
 skybox; no model has one**. Every rigged figure's `notes` and `tags` are empty, so a figure's entire

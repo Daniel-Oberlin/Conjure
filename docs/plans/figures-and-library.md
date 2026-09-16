@@ -1078,7 +1078,8 @@ a STATED VRM map was nobody's job, so her row held a 54-bone map beside a 21-bon
 **2a. FACES** — raised here, measured, and NOT started. See *Faces* below. Driving one is small and
 worth doing; retargeting one has no evidence to build on and should wait for a reason.
 
-**2b. DESCRIBING AND EMBEDDING FIGURES** — raised 2026-09-16, measured, written up in
+**2b. DESCRIBING AND EMBEDDING FIGURES** ✅ **DONE 2026-09-16** — all three layers, 38 figures,
+no failures. Written up in
 [`backlogs/library.md`](../backlogs/library.md) § *Describing and embedding models*. Not part of phase 5
 and not blocked by it. The state: 94 assets carry an embedding and **not one is a model**; every
 figure's `notes` and `tags` are empty, so her whole searchable self is a label, and three figures are
