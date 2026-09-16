@@ -1,10 +1,14 @@
 # Plan — run a captured build locally
 
-**Status:** **IT RUNS.** `scripts/capture_serve.py` serves a capture as a working app — measured on
-`barbie`: the engine starts, WebGL initialises, the app's own Tailwind is injected, and the server logs
-**zero misses**, meaning every file the running build asked for was already on disk. Not yet looked at
-in a real browser (headless SwiftShader renders it far too slowly to screenshot); the URL is the test.
-**Opened:** 2026-09-16 · **First boot:** 2026-09-16
+**Status:** **DONE, and the work MOVED OUT.** It runs, and it lives in its own repo:
+**`../playcanvas-unpack`**, a sibling of this one and of `browser-extension-glb-download`. Python,
+standard library only, `check` / `serve` / `build`. Turning someone else's build into a standalone app
+is not Conjure's job, and the prototype this plan describes — `scripts/capture_serve.py` — is deleted
+here.
+
+**What is left in THIS file** is the part that is Conjure's: what the grabber should capture, and what
+`capture_audit.py` should check. Everything else has a better home now.
+**Opened:** 2026-09-16 · **First boot:** 2026-09-16 · **Moved out:** 2026-09-16
 
 **This file is temporary.** It holds one sequence across `specs/captures.md` and the grabber's own repo
 while that sequence is being executed, and is deleted when the last part has settled — finished work to
@@ -88,7 +92,8 @@ twenty were broken in a way nobody could see.
 2. **Stop skipping `css` and `font`.** The README calls them "page furniture", which is right for an
    asset capture and wrong for a runnable build. `styles.css` survived only because it was also
    observed as a network request; `fonts.gstatic.com` woff2 made it into one capture of twenty.
-3. **Teach `capture_audit.py` a SHELL CHECK.** It verifies assets against `config.json` exactly and says
+3. **Teach `capture_audit.py` a SHELL CHECK** — or shell out to `pcunpack check`, which now does it,
+   and reports 13 of 20 runnable. It verifies assets against `config.json` exactly and says
    nothing about whether a build can boot. A list of required shell files, reported the way `BUILD GONE`
    already is, would have caught all six broken captures and flagged the 143 strays. **This is the hour
    of work with lasting value** — it is the same rule the retargeting campaign kept re-learning: a stage
@@ -99,10 +104,11 @@ the only extensionless files are API responses, which need a stub anyway.
 
 ---
 
-## 4a. What actually happened, 2026-09-16
+## 4a. What actually happened, 2026-09-16 — the tool is `../playcanvas-unpack`
 
-`scripts/capture_serve.py <capture-dir>`, and the estimate below was roughly right except that the
-backend turned out to be cheap. Four things it does, each of which was a real obstacle:
+`python3 -m pcunpack build <capture> --out DIR`, and the estimate below was roughly right except that
+the backend turned out to be cheap. **Five** obstacles, not the three §2 predicted — and the two extra
+ones were invisible from reading and each cost a round:
 
 1. **Recovers the shell** from the strays, by CONTENT and not by name — a `.html` under `files/assets`
    is the app only if it loads `__start__.js` and the engine. Works on **13 of 20** captures.
@@ -114,7 +120,13 @@ backend turned out to be cheap. Four things it does, each of which was a real ob
    replays the responses the capture already holds. Far less invasive than editing a 4 MB minified file,
    and it is visible in one place. **This was the part the estimate said would take a day. It took an
    hour**, because `detectPortal()` only ever affects the ORIGIN, and an origin is one regex.
-4. **Strips the analytics.** The Cloudflare beacon and Plausible, which are not part of the app and
+4. **Supplies the SCENE and the SESSION, neither of which the assessment saw coming.** The app reads
+   `?scene_id=` from the query string and reports *"No scene found."* over a splash at 0% without one —
+   so a perfect capture, correctly served, looks broken. And with no `auth_token` it runs
+   `location.replace("https://" + detectPortal() + ".com")` and sends you to the real website. Both are
+   recorded in the capture. A build gets a STAND-IN token rather than the recorded one: that one is a
+   live credential, and it expires in ten days, so a build made today would quietly rot.
+5. **Strips the analytics.** The Cloudflare beacon and Plausible, which are not part of the app and
    throw when blocked.
 
 **The capture is never written to.** Everything generated lives in memory.
@@ -126,6 +138,10 @@ backend turned out to be cheap. Four things it does, each of which was a real ob
   the warning is Tailwind's own banner. Read statically, it looks like a missing dependency.
 - **Zero server misses.** The strongest evidence there is that a capture is complete: the running app
   asked for nothing the capture did not have.
+- **The capture root is only the PLAYER.** The scene — and every model, texture and sound in it — lives
+  under `release/<token>/` behind the API, reached by a chain the capture also recorded: scene record →
+  `main_project` → `main_resource_rel` → `resource_project_release`. §2's inventory missed this
+  entirely, and a tool that copies the root and stops has copied a player with nothing to play.
 - Headless Chrome needs `--use-angle=swiftshader --enable-unsafe-swiftshader`, and even then a frame
   takes minutes. **Headless is good for "does it boot", useless for "does it look right".**
 
