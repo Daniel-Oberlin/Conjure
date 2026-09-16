@@ -1058,6 +1058,42 @@ and fingers are not among them, so every finger channel is in the 82 dropped. Al
 because she plays natively. Extending the map to fingers is real work in `figures.py` — VRM and most
 humanoid standards do define them — and would pay off across posing as well.
 
+### THE ORDER OF WORK, agreed 2026-09-16 — do these, then delete this file
+
+Device testing is finished; Daniel is done looking at figures for now. Four things, in this order, and
+the last one ends the plan.
+
+**1. ALIGNMENT — make Akari lie on her back like the others.** The concrete bar: she reads 105.8° from
+vertical at `t=0` on `LayTableIdle` where Alice reads 94.1° and Grace 97.3°, and all three should agree.
+Start with the measurement list under *How to finish phase 5* — experiment 2 (`swing` and the static
+tilt) is the one nobody has run. Underneath it is the composed-rest problem, which belongs in
+`backlogs/captures.md`; whether it must be fixed to hit the bar is itself unknown and is the first thing
+a measurement should say.
+
+**2. FINGERS.** Scope, naming tables and the `RIG_SIG_REV` cost are written up below under *Fingers*.
+Table work, not inference.
+
+**3. WHATEVER ELSE PHASE 5 NEEDS** to be honestly done: the residual body swing (7.0° Grace, 4.2° Akari
+against Alice's 1.8°, and `swing` is measured NOT to be the cause), and the `Done when` bar at the
+bottom of this section — a clip playing recognisably on Susan, Trish and Saka, a measured drift number,
+and a rig that should fail failing cleanly. The first and third are met; the second is `clip_diff.mjs`.
+
+**4. DISSOLVE THIS FILE.** It has outlived its phases, which is the condition its own header names for
+dissolving it. Where each part goes:
+
+| content | destination |
+|---|---|
+| the retargeting law, `RETARGET_REV`, the three clip lists, what a rewrite cannot carry | `specs/figures.md` |
+| the composed-rest problem, and alignment as a capture concern | `backlogs/captures.md` § Known problems |
+| the residual swing, the map-chain breaks, the parts-vocabulary dialect gap | `backlogs/figures.md` |
+| phase 4, rooms as environments — untouched and still wanted | `backlogs/library.md` + `specs/worlds-surfaces.md` |
+| the measurement harnesses and why a model of the client is not the client | `specs/figures.md`, beside the law |
+
+**What must not be lost in the move**, because each cost a device round trip: a rotation track REPLACES
+a node's rest, so a wrong rest is invisible until you retarget; a metric that works in a figure's own
+body frame cannot see the figure turned bodily; `hips → hand` measures PROPORTION, not pose; and
+anything derived and cached carries the revision of the code that derived it.
+
 ### How to finish phase 5 — agreed 2026-09-16
 
 **Measure first, in this order, and stop when a run explains it.** Every hypothesis this campaign has
