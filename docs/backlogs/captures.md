@@ -21,6 +21,32 @@ captures, including the deck texture `194421251` that made the railing grey.
 `dead_meshes(build)` and `Binding.source`, same section. 47 across twenty captures, which is where the
 Japanese deck and Alice's white scalp both come from.
 
+### A composed thing's rest pose is the SCENE's pose, not the container's bind
+
+**Found 2026-09-16 while retargeting, and it cost nothing there — which is the surprising half.**
+
+A thing's node tree is built from the scene entity tree, keeping each entity's rotation and scale, so a
+composed figure's rest is *the scene's pose of the skeleton* rather than the container's bind pose.
+Measured: Alice's composed thing and her clip's authoring rig recover the IDENTICAL bone map — same
+names, `CC_Base_Hip`, `CC_Base_Waist`, … — and their rests differ on **all 22 bones, several by more
+than 100°** (`rightUpperArm` 117°, `leftLowerArm` 113°). On Jane the two match to **0.075°**, which is
+what the retargeting work generalised from, and the generalisation was the mistake.
+
+`rebound` already exists to adopt the container's bone transform and did not fire for Alice
+(`rebound: []`).
+
+**Why it survives at all:** a rotation track REPLACES a node's rotation, so for any bone a clip drives,
+the rest is irrelevant to playback. That is why Alice looks right playing natively. The rest matters
+only for bones a clip does NOT drive, and for arithmetic built from nothing else.
+
+**It is NOT the cause of the retargeting tilt**, which is worth knowing before opening this: that was a
+whole-body alignment term, removed, and the composed-rest problem cost nothing measurable once it was
+gone. The absolute-carry law never consults a rest except through `K`, which is convention and not pose.
+So this is real, and it is not urgent.
+
+**Anything proposed here has to explain why it is not the per-mesh IBM rewrite** that was tried and
+rejected on device — see [`investigations/bride-eyelid.md`](../investigations/bride-eyelid.md).
+
 ### `adopt_unbound` is a patch, and the right model removes the need for it
 
 It gives an unbound mesh the material of an identically-named mesh elsewhere
@@ -151,7 +177,41 @@ What it would give, roughly in order of value:
 Not designed yet, and it should not be bolted onto `audio_role`: this is a second, richer SOURCE of the
 same facts, and the interesting question is which wins when both speak.
 
-## Run the captured app ourselves, as a REFERENCE RENDERER
+## Run the captured app ourselves ✅ BUILT 2026-09-16 — `../playcanvas-unpack`
+
+It runs. `python3 -m pcunpack build <capture> --out DIR` writes a standalone directory that serves under
+any static file server with nothing reaching the internet, and `pcunpack check` says whether a capture
+has what it needs. **Of the twenty captures to hand, thirteen rebuild and seven cannot.**
+
+It lives in its own repo — a sibling of this one and of `browser-extension-glb-download` — because
+turning someone else's published build into a runnable app is not Conjure's job and shares no code with
+it. Its [`docs/capture-format.md`](../../../playcanvas-unpack/docs/capture-format.md) is the contract
+the grabber has to satisfy, defined there because the consumer is the side that can check it.
+
+**What the estimate below got wrong**, both worth carrying because they change what a capture must hold:
+
+- **The capture root is only the PLAYER.** The engine, the bootstrap and the root `config.json` are a
+  launcher; the scene — every model, texture and sound in it — lives under `release/<token>/` behind the
+  API, reached by a chain the capture also records (scene record → `main_project` →
+  `main_resource_rel` → `resource_project_release`). Anything that audits the root against the root's
+  `config.json` will call a contentless capture complete.
+- **Two obstacles nobody predicted, and neither is an asset.** The app takes its scene from
+  `?scene_id=` and reports *"No scene found."* over a splash at 0% without one — so a perfect capture
+  opened at `/` looks broken. And with no `auth_token` it runs `location.replace("https://" +
+  detectPortal() + ".com")` and sends you to the live website; `detectPortal()` falls through to the
+  live site, so no hostname you serve from avoids it.
+
+The backend turned out to be **an hour, not a day**: `detectPortal()` only ever affects the ORIGIN, and
+an origin is one regex, so a thirty-line shim ahead of the app redirects `fetch` and `XMLHttpRequest`
+to a replay of the recorded responses. No bundle patching.
+
+**Completeness for IMPORT and completeness for RUNNING are different questions, and this pipeline only
+ever asked the first.** `capture_audit.py` checks assets against `config.json`, which is exact — and
+seven captures could not be rebuilt while none reported a problem downloading. Six have `config.json`
+and every texture and no engine at all. `pcunpack check` is the other half of the answer; calling it
+from `capture_audit.py` is an open, cheap improvement.
+
+### The original assessment, 2026-09-15 — kept because the reasoning still holds
 
 **Raised 2026-09-15.** A published PlayCanvas app is a static site, and a capture holds essentially all
 of one: `playcanvas-stable.min.js` (their engine), `__start__.js`, `__settings__.js`, `__modules__.js`,
@@ -179,6 +239,7 @@ settled the eyelid in one look.
 it gives something to compare against, which is a different and lesser thing than a test.
 
 Rough size: hours for one build to render, not days; the API stubbing is the uncertain part. Not started.
+*(Correct on the size. Wrong that the API was the uncertain part — it was the cheapest of the five.)*
 
 ## Unsettled — asked for, not yet designed
 
