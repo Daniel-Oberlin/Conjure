@@ -10,6 +10,13 @@
  * nothing, because binding is by node NAME and the whole point of the rewrite is to change those names
  * to the target's. A clip that binds 0 of 22 plays a figure standing perfectly still while every log
  * line says success — which is exactly the failure this pipeline keeps rediscovering in other forms.
+ *
+ * It then runs the CLIENT'S OWN `retarget()` over the result and reports what that drops, which is a
+ * second question again: the client has rules of its own — nothing may write the mixer root's
+ * transform, a constant scale track is discarded, a moving position track is re-based — and a clip can
+ * bind every track and still lose half of them there. That is how the missing translation channels were
+ * found: a retargeted clip kept 21 of 21 tracks while the native one kept 204 of 312, and the 101
+ * re-based position tracks in the difference were motion nothing was carrying across.
  */
 import { readFileSync } from "node:fs";
 
@@ -18,6 +25,15 @@ globalThis.createImageBitmap = globalThis.createImageBitmap || (async () => ({ w
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+
+// `figure-clip.js` is a plain browser script that registers itself against AFRAME. Stub just enough of
+// that for it to load, so the rules under test are the ones that actually ship.
+globalThis.THREE = THREE;
+const _components = {};
+globalThis.window = { AFRAME: { components: _components, registerComponent: (n, d) => { _components[n] = d; } },
+                      addEventListener() {}, removeEventListener() {} };
+globalThis.AFRAME = globalThis.window.AFRAME;
+const { retarget } = await import("../client/figure-clip.js");
 
 const [clipPath, figPath] = process.argv.slice(2);
 if (!figPath) {
@@ -49,4 +65,9 @@ for (const track of anim.tracks) {
 const name = clipPath.split("/").pop();
 console.log(`${name.padEnd(16)} "${anim.name}" ${anim.duration.toFixed(1)}s  ${anim.tracks.length} track(s), `
   + `${hit} BIND` + (miss.length ? `, ${miss.length} miss (${miss.slice(0, 3).join(", ")})` : ""));
+
+const kept = retarget(anim, fig.scene);
+const why = Object.entries(kept.why).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(", ");
+console.log(`${"".padEnd(16)} the client keeps ${kept.clip.tracks.length} of ${anim.tracks.length}`
+  + (why ? ` — dropped ${why}` : ""));
 process.exit(hit ? 0 : 1);

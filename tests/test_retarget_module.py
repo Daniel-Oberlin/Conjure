@@ -77,7 +77,7 @@ def figure(naming=None, *, roll: float = 0.0, nameless: bool = False) -> bytes:
 
 
 def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine", "l_fore"),
-         extra=()) -> bytes:
+         extra=(), slide=(), slide_moves: bool = True) -> bytes:
     """A clip: the authoring rig's nodes, real motion, and no mesh — the shape the corpus ships."""
     table = naming or _MIXAMO
     nodes, _names = _skeleton_nodes(table)
@@ -115,6 +115,19 @@ def clip(naming=None, *, name="wave", roll: float = 0.0, drive=("l_arm", "spine"
                          "output": add(quats, "VEC4", len(times))})
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": by[node_name], "path": "rotation"}})
+    for slot in slide:                          # a bone the clip MOVES, not merely rotates
+        node_name = table.get(slot, slot)
+        if node_name not in by:
+            continue
+        rest = nodes[by[node_name]].get("translation") or [0.0, 0.0, 0.0]
+        xyz = []
+        for i in range(len(times)):
+            step = (0.04 * i) if slide_moves else 0.0
+            xyz += [rest[0] + step, rest[1], rest[2]]
+        samplers.append({"input": t_acc, "interpolation": "STEP",
+                         "output": add(xyz, "VEC3", len(times))})
+        channels.append({"sampler": len(samplers) - 1,
+                         "target": {"node": by[node_name], "path": "translation"}})
     doc = {"scenes": [{"nodes": [0]}], "scene": 0, "nodes": nodes,
            "buffers": [{"byteLength": len(blob)}], "bufferViews": views, "accessors": accessors,
            "animations": [{"name": name, "channels": channels, "samplers": samplers}]}
@@ -202,3 +215,31 @@ def test_channels_with_no_bone_to_receive_them_are_DROPPED_AND_COUNTED():
     out = retarget_clip(clip(extra=("DEF_Skirt01", "DEF_Skirt02")), figure(_RIGIFY))
     assert out.dropped >= 2
     assert any("no rig has anything to receive them" in n for n in out.notes), out.notes
+
+
+def test_a_bone_the_clip_SLIDES_carries_its_translation_too():
+    """Rotation alone is not the whole of a pose.
+
+    The client's own `retarget()` has always kept moving position tracks, re-basing each onto the
+    model's rest so the clip's authored ADDRESS is discarded and its movement is not — and a rewrite
+    that emitted rotations only was quietly dropping all of them. Measured on a real clip: the native
+    path kept 204 tracks of 312, of which 101 were re-based positions, while the rewrite kept 21 of 21
+    and carried no translation at all.
+    """
+    sliding = clip(drive=("l_arm",), slide=("hips",))
+    out = retarget_clip(sliding, figure(_RIGIFY))
+    assert out.slid == 1, "the sliding bone is carried"
+    doc, _blob = split_glb(out.data)
+    paths = {c["target"]["path"] for c in doc["animations"][0]["channels"]}
+    assert paths == {"rotation", "translation"}
+
+
+def test_a_bone_that_merely_RESTATES_its_rest_every_frame_is_not_carried():
+    """Most translation channels do not move. Measured on `LayTableIdle`: 104 of them, of which FOUR
+    move at all. Carrying the rest would make a retargeted clip the size of the skeleton instead of the
+    size of the motion, and would nudge every still bone by whatever the two rigs round differently."""
+    still = clip(drive=("l_arm",), slide=("hips",), slide_moves=False)
+    out = retarget_clip(still, figure(_RIGIFY))
+    assert out.slid == 0
+    doc, _blob = split_glb(out.data)
+    assert {c["target"]["path"] for c in doc["animations"][0]["channels"]} == {"rotation"}

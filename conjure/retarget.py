@@ -256,6 +256,33 @@ def _read_accessor(doc, blob, idx) -> list:
     return [tuple(vals[i:i + size]) for i in range(0, len(vals), size)] if size > 1 else vals
 
 
+def _moving_translations(doc, blob, anim, rest_of) -> dict:
+    """`{node name: [(time, xyz)]}` for translation channels that actually MOVE.
+
+    Most do not. Measured on `LayTableIdle`: 104 translation channels, of which **4** move at all — the
+    root by 4 cm, the hip by 6 mm, two rib twists by less. The rest restate the rest pose every frame.
+    Carrying only the movers keeps a retargeted clip the size of the motion in it rather than the size
+    of the skeleton, and means a bone with no authored translation is left exactly where the target rig
+    puts it instead of being nudged by a rounding difference between two rigs.
+    """
+    out = {}
+    for ch in anim.get("channels") or []:
+        if ch["target"]["path"] != "translation" or ch["target"].get("node") is None:
+            continue
+        name = (doc["nodes"][ch["target"]["node"]] or {}).get("name")
+        if not name:
+            continue
+        sam = anim["samplers"][ch["sampler"]]
+        t = _read_accessor(doc, blob, sam["input"])
+        v = _read_accessor(doc, blob, sam["output"])
+        if not t or not v:
+            continue
+        span = max(math.dist(p, v[0]) for p in v)
+        if span > 1e-3 * max(1.0, abs(rest_of.get(name, 1.0))):
+            out[name] = list(zip(t, v))
+    return out
+
+
 def _tracks(doc, blob, anim) -> tuple[dict, list]:
     """`({node name: [(time, quaternion)]}, sorted union of every keyframe time)`."""
     out, times = {}, set()
@@ -360,12 +387,13 @@ def _target_locals(src: Rig, dst: Rig, carried: dict, swing: tuple) -> dict:
 class Retargeted:
     """The rewritten clip and an honest account of what did and did not survive."""
 
-    def __init__(self, data: bytes, *, bones: int, times: int, dropped: int,
+    def __init__(self, data: bytes, *, bones: int, times: int, dropped: int, slid: int = 0,
                  notes: Optional[list] = None):
         self.data = data
         self.bones = bones            # humanoid bones actually rewritten
         self.times = times            # keyframes emitted
         self.dropped = dropped        # source channels with no bone on the target to receive them
+        self.slid = slid              # bones carrying a TRANSLATION, not only a rotation
         self.notes = notes or []
 
 
@@ -393,6 +421,9 @@ def retarget_clip(clip_bytes: bytes, figure_bytes: bytes,
 
     anim = anims[0]
     tracks, times = _tracks(clip_doc, clip_blob, anim)
+    rest_of = {n.get("name"): max(abs(c) for c in (n.get("translation") or [1.0]))
+               for n in clip_doc.get("nodes") or [] if n.get("name")}
+    slides = _moving_translations(clip_doc, clip_blob, anim, rest_of)
     shared = [b for b in src.mapping if b in dst.mapping and src.mapping[b] in tracks
               and dst.index(b) is not None and src.index(b) is not None]
     if not shared or not times:
@@ -421,11 +452,74 @@ def retarget_clip(clip_bytes: bytes, figure_bytes: bytes,
     if not per_bone:
         say("nothing survived the mapping")
         return None
-    return Retargeted(_write_clip(anim.get("name") or "clip", times, per_bone),
-                      bones=len(per_bone), times=len(times), dropped=dropped, notes=notes)
+    # Every bone the two rigs SHARE, not only the ones the clip rotates: a bone can slide without
+    # turning — a hip that shifts weight, a root that drifts — and keying translation off the rotation
+    # set silently dropped exactly those.
+    both = [b for b in src.mapping if b in dst.mapping
+            and src.index(b) is not None and dst.index(b) is not None]
+    moved = _carry_translations(src, dst, slides, times, both)
+    if slides and not moved:
+        notes.append(f"{len(slides)} bone(s) SLIDE in this clip and none of them maps onto that figure, "
+                     f"so that much of the motion is lost")
+    return Retargeted(_write_clip(anim.get("name") or "clip", times, per_bone, moved),
+                      bones=len(per_bone), times=len(times), dropped=dropped, slid=len(moved),
+                      notes=notes)
 
 
-def _write_clip(name: str, times: list, per_bone: dict) -> bytes:
+def _carry_translations(src: Rig, dst: Rig, slides: dict, times: list, bones: list) -> dict:
+    """Translation tracks for the target, for the bones the clip actually SLIDES.
+
+    Rotation alone is not the whole of a pose. Alice's clips move her root a few centimetres and her hip
+    a few millimetres, and dropping that made a retargeted figure stiller than the original — the
+    client's own `retarget()` has always kept these, re-basing each onto the model's rest so the clip's
+    authored ADDRESS is discarded and its movement is not.
+
+    Carried as a delta from the clip's own first frame, for the same reason: what the source says about
+    where the figure stood belongs to the scene it was captured from. The delta is rotated out of the
+    source bone's parent frame and into the target's — a translation lives in its parent's coordinates,
+    so two rigs that spell those axes differently need it turned — and scaled by the ratio of their
+    heights, because a centimetre on a 1.7 m figure is not a centimetre on a 5 m one.
+    """
+    by_bone = {src.mapping[b]: b for b in bones}
+    scale = _height_ratio(src, dst)
+    out: dict[str, list] = {}
+    for node, track in slides.items():
+        bone = by_bone.get(node)
+        if bone is None or dst.index(bone) is None:
+            continue
+        s_parent, t_parent = src.parent.get(src.index(bone)), dst.parent.get(dst.index(bone))
+        turn = qmul(qconj(quat_of(dst.bind[t_parent])) if t_parent is not None else (0, 0, 0, 1),
+                    quat_of(src.bind[s_parent]) if s_parent is not None else (0, 0, 0, 1))
+        rest = dst.doc["nodes"][dst.index(bone)].get("translation") or [0.0, 0.0, 0.0]
+        base = _sample(track, times[0])
+        row = []
+        for t in times:
+            v = _sample(track, t)
+            d = _rotate((v[0] - base[0], v[1] - base[1], v[2] - base[2]), turn)
+            row.append((rest[0] + d[0] * scale, rest[1] + d[1] * scale, rest[2] + d[2] * scale))
+        out[dst.mapping[bone]] = row
+    return out
+
+
+def _height_ratio(src: Rig, dst: Rig) -> float:
+    """Target height over source height, from hips to head — what a centimetre is worth on each."""
+    def span(rig):
+        pos = rig.positions()
+        if "hips" not in pos or "head" not in pos:
+            return 0.0
+        return math.dist(pos["hips"], pos["head"])
+    a, b = span(src), span(dst)
+    return (b / a) if a > 1e-9 and b > 1e-9 else 1.0
+
+
+def _rotate(v, q):
+    m = qmat(q)
+    return (m[0] * v[0] + m[4] * v[1] + m[8] * v[2],
+            m[1] * v[0] + m[5] * v[1] + m[9] * v[2],
+            m[2] * v[0] + m[6] * v[1] + m[10] * v[2])
+
+
+def _write_clip(name: str, times: list, per_bone: dict, moved: Optional[dict] = None) -> bytes:
     """A GLB carrying nothing but rotation channels, one node per driven bone.
 
     No hierarchy and no mesh, because a clip needs neither: three.js binds a track to the model by the
@@ -436,7 +530,7 @@ def _write_clip(name: str, times: list, per_bone: dict) -> bytes:
     views, accessors = [], []
 
     def add(values, kind: str, count: int) -> int:
-        flat = [c for v in values for c in v] if kind == "VEC4" else list(values)
+        flat = [c for v in values for c in v] if kind in ("VEC4", "VEC3") else list(values)
         data = struct.pack("<" + "f" * len(flat), *flat)
         while len(blob) % 4:
             blob.append(0)
@@ -450,14 +544,26 @@ def _write_clip(name: str, times: list, per_bone: dict) -> bytes:
 
     time_acc = add([float(t) for t in times], "SCALAR", len(times))
     nodes, channels, samplers = [], [], []
+    index: dict = {}
     for bone_name, quats in sorted(per_bone.items()):
         if len(quats) != len(times):
             continue                                   # a bone the walk could not place every frame
+        index[bone_name] = len(nodes)
         nodes.append({"name": bone_name})
         samplers.append({"input": time_acc, "interpolation": "STEP",
                          "output": add(quats, "VEC4", len(quats))})
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": len(nodes) - 1, "path": "rotation"}})
+    for bone_name, xyz in sorted((moved or {}).items()):
+        if len(xyz) != len(times):
+            continue
+        if bone_name not in index:
+            index[bone_name] = len(nodes)
+            nodes.append({"name": bone_name})
+        samplers.append({"input": time_acc, "interpolation": "STEP",
+                         "output": add(xyz, "VEC3", len(xyz))})
+        channels.append({"sampler": len(samplers) - 1,
+                         "target": {"node": index[bone_name], "path": "translation"}})
     doc = {
         "asset": {"version": "2.0", "generator": "conjure retarget"},
         "scene": 0, "scenes": [{"nodes": list(range(len(nodes)))}], "nodes": nodes,
