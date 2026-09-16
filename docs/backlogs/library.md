@@ -192,14 +192,37 @@ is the only one that can describe what a person would actually say about a figur
   clips. A front A-pose describes one configuration of many. Multi-view helps; knowing that the
   description is *of the default dressed A-pose* matters more, and should be said in the text rather
   than implied.
-- **The corpus is adult, and a commercial vision provider will refuse or sanitise some of it.** This is
-  not a reason to skip layer 3, but it is the thing to test before designing around it: one render, one
-  call, and the answer is known. If refusals are common the layer is unreliable in a way that is worse
-  than absent — half the figures described and half not is a search index that quietly lies about what
-  it contains. **Cheapest possible experiment; run it first.**
+- ~~**The corpus is adult, so a vision provider will refuse or sanitise some of it.**~~ **Tested
+  2026-09-16 and it did not happen: eight figures, eight `FinishReason.STOP`, no refusal and no
+  sanitising** — including Saka in a black underwear set and Goddess in a metallic bikini with a chain
+  body harness, both described plainly and in full. The premise was wrong in a way worth writing down:
+  **these figures are CLOTHED in their default composed state**, which is the state a render of the
+  thing produces. Undressing is something `dress` does at runtime by hiding parts, and no pipeline has
+  any reason to caption that. Layer 3 is feasible; gemini-2.5-flash, one call each, 32 figures is
+  nothing.
 - **A description is text, so putting it in the VECTOR index reintroduces the exact problem** that took
   models out of it. Layer 3 belongs in `notes` for FTS; layer 2 owns the vector. Keeping that split is
   the whole reason these are separate layers and not one pass.
+
+**What the test found instead**, none of which was predicted:
+
+- **The existing caption prompt is the wrong prompt, by a mile.** `_IMAGE_PROMPT` is tuned for images
+  and returns `"Female 3D model white background"`, `"3D render woman in dress"` — worse than the label
+  it would replace. A figure-specific prompt returns a full searchable paragraph: *"…light grey
+  long-sleeved collared shirt tucked into a black pleated mini-skirt… a bright pink fanny pack… pink and
+  white low-top sneakers"* for Alice, and it correctly read Jane as medieval, Steve as Minecraft-like,
+  and Moon Girl's outfit as *"maid, school…"*. Layer 3 is a prompt as much as a pass, and the prompt is
+  most of it.
+- **The render has to be told which way she FACES.** Moon Girl came out back-to-camera, and the caption
+  duly described a square neckline *at the back* and a bow at the waist. Figures do not agree on facing
+  — one rig in this catalog rests yawed 27° — and `humanoid_axes` already knows the answer, so this is
+  wiring rather than work. A back view is not a failure that announces itself: the description reads
+  perfectly well and is about the wrong side of the figure.
+- **Workbench renders carry enough colour.** The worry that a structural renderer would lose the texture
+  was misplaced — it caught pink sneakers, silver hair with darker roots, a golden tiara and coral
+  fabric. No need for EEVEE and its cost.
+- **The descriptions run long** (a dense paragraph each). `notes` wants a length cap, or FTS scoring
+  starts favouring whichever figure got the most verbose answer.
 
 **Where this pays off beyond search.** The director picks figures today from a name. A described catalog
 is the difference between "place Jane" and "place someone who fits a hotel bar at midnight" — and the
