@@ -62,7 +62,8 @@ from .figures import (FINGER_JOINTS, FINGERS, _local_matrix, best_humanoid,
 #:
 #: `figures.FRAME_REV` exists for the same reason and this is the second artefact to need it, so the
 #: rule is general: anything derived and cached carries the revision of the code that derived it.
-RETARGET_REV = 6        # 6: the humanoid reaches the FINGERS, 22 bones -> 52
+RETARGET_REV = 7        # 7: the OUTPUT interpolates LINEAR — written STEP, it stuttered
+                        # 6: the humanoid reaches the FINGERS, 22 bones -> 52
                         # 5: no `swing` — aligning the rest BODY FRAMES added the rest pose twice
                         # 4: resampling HOLDS the previous keyframe (STEP), not the nearest
                         # 3: a carried translation goes out to WORLD and back, so the armature's UNITS
@@ -704,6 +705,18 @@ def _write_clip(name: str, times: list, per_bone: dict, moved: Optional[dict] = 
         accessors.append(acc)
         return len(accessors) - 1
 
+    # LINEAR, and this was STEP until it was measured. A key is emitted at the UNION of every source
+    # key time, so between two consecutive output keys no source channel has a key either — the source
+    # is interpolating linearly there and the target has to as well. Written STEP, the target instead
+    # HELD each pose and jumped to the next, which on a 134-key clip is a visible stutter and reads as
+    # a wobble: against Alice playing natively, `clip_diff` showed Akari's body turn agreeing EXACTLY
+    # on every sample that landed on a keyframe and off by ~2.3° on every sample between two, in a
+    # perfect alternation. Sixteen samples, eight exact, eight wrong; a physical defect does not do
+    # that. It also explains why a range metric could not see it: STEP visits the same extremes as
+    # LINEAR, so min/max over the clip is unchanged and only a comparison AT AN INSTANT exposes it.
+    #
+    # `_sample` still HOLDS when reading the source, and that is a different question — there it is
+    # reconstructing the source's own value at a time, and NEAREST was measured wrong for it.
     time_acc = add([float(t) for t in times], "SCALAR", len(times))
     nodes, channels, samplers = [], [], []
     index: dict = {}
@@ -712,7 +725,7 @@ def _write_clip(name: str, times: list, per_bone: dict, moved: Optional[dict] = 
             continue                                   # a bone the walk could not place every frame
         index[bone_name] = len(nodes)
         nodes.append({"name": bone_name})
-        samplers.append({"input": time_acc, "interpolation": "STEP",
+        samplers.append({"input": time_acc, "interpolation": "LINEAR",
                          "output": add(quats, "VEC4", len(quats))})
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": len(nodes) - 1, "path": "rotation"}})
@@ -722,7 +735,7 @@ def _write_clip(name: str, times: list, per_bone: dict, moved: Optional[dict] = 
         if bone_name not in index:
             index[bone_name] = len(nodes)
             nodes.append({"name": bone_name})
-        samplers.append({"input": time_acc, "interpolation": "STEP",
+        samplers.append({"input": time_acc, "interpolation": "LINEAR",
                          "output": add(xyz, "VEC3", len(xyz))})
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": index[bone_name], "path": "translation"}})
