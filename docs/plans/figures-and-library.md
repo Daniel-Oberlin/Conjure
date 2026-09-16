@@ -1007,6 +1007,48 @@ statue.
 - Worst-case limb error over the corpus: Akari 0.6°, Grace 0.2°, Saka 4.2°, Steve 9.1°, Trish 10.4°,
   Alice and Blondie 14.6°, Eve 61.8° — Eve being the broken-chain case rather than a retargeting one.
 
+### Open after device testing, 2026-09-16
+
+Six defects came out of one clip played on one figure, every one real and every one invisible to the
+Python model of the client that found none of them. They are in the git log; what follows is what is
+still wrong. `scripts/clip_diff.mjs` measures all of it in one run — it plays two (clip, figure) pairs
+through `figure-clip.js`'s own `retarget()` and a real `AnimationMixer`, seeked the way `tick()` seeks.
+
+**The retarget aligns to the CLIP's rest, and the figure it was authored for no longer has that rest.**
+This is the tilt, reported as *"Akari is tilted back compared to Grace and Alice"*. Measured on Alice's
+`LayTableIdle`, at `t=0`, where all three should lie flat together:
+
+| | tilt from vertical | rest spine lean |
+|---|---|---|
+| Alice, playing it NATIVELY | 94.1° | 4.5° |
+| Grace, retargeted | 97.3° (+3.2°) | 6.7° |
+| Akari, retargeted | 105.8° (+11.7°) | 0.1° |
+| **the clip file's own rig** | — | **10.7°** |
+
+The clip carries its authoring rig and `swing` aligns to it, which is right in principle and is not what
+Alice shows: her COMPOSED figure and the clip's rig recover the identical bone map — `CC_Base_Hip`,
+`CC_Base_Waist`, … — and still differ by 6° of spine lean, because composing a thing bakes the scene
+entity's transform into it and a clip has never been through that. So "match the clip" and "match the
+figure it shipped with" are two different targets and this one picks the first.
+
+Fixing it needs a decision rather than a patch. Either the retarget looks up a figure with the clip's
+`rig_sig` and aligns to THAT — which reintroduces the lookup this module was built to avoid, and picks
+one of sixteen figures arbitrarily — or the composer stops baking a rotation a clip cannot know about.
+The second is probably right and reaches further than phase 5.
+
+**The residual body swing.** Grace oscillates 7.0° and Akari 4.2° where Alice oscillates 1.8°, same
+period. It halves between a 21-bone `rigify-fk` map and a clean 22-bone `rigify-def` one, which points
+at map quality rather than at the law — worth testing against `office-babe`, the last clean captured
+rig, before theorising.
+
+**The hands.** `hips → rightHand` is 30–35° out on Grace and 15–21° on Akari, steady rather than
+oscillating. A static pose difference, not a wobble, and untouched so far.
+
+**Fingers do not move, and that is the vocabulary rather than a defect.** The humanoid names 22 bones
+and fingers are not among them, so every finger channel is in the 82 dropped. Alice keeps hers only
+because she plays natively. Extending the map to fingers is real work in `figures.py` — VRM and most
+humanoid standards do define them — and would pay off across posing as well.
+
 **Done when** (the original bar): *a `85e41f9b8e` clip plays recognisably on Susan, on Trish and on
 Saka* — mechanically yes, on device untested; *a measured comparison says how far each drifts* — the
 table above and `scripts/retarget_probe.py`; *and a rig that should fail fails cleanly* — Tamaki is
