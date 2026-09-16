@@ -1168,6 +1168,40 @@ def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dic
     return {**attrs, **write}
 
 
+def _refresh_clip_sig(asset_id: str, attrs: dict, force: bool = False) -> dict:
+    """A clip's rig signature, re-derived from its bytes when the stored one predates this build.
+
+    **A signature is a two-sided comparison, so backfilling one side is worse than backfilling neither.**
+    `RIG_SIG_REV` 1 → 2 respelled every FIGURE's signature — the humanoid grew thirty finger bones — and
+    `refresh-models` walked the models and stopped there, because the name says models. Every clip was
+    left stamped rev 1 with a signature computed over the old vocabulary, so Alice stopped matching her
+    OWN clip: the server read a mismatch and offered to retarget her onto herself, and every
+    shipped-clip lookup keyed on the signature came back empty. That is the whole catalog's playback,
+    broken by a backfill that ran successfully.
+
+    Narrow on purpose — only the signature, not the clip's whole extraction. Duration, activity and
+    channel counts are functions of the bytes and have not changed; re-deriving them here would widen
+    the blast radius of a signature bump to everything a clip knows about itself.
+    """
+    if not force and attrs.get("rig_sig_rev") == RIG_SIG_REV:
+        return attrs
+    path = ASSET_CACHE / asset_id
+    if not path.exists():
+        return attrs
+    from .figures import rig_signature, split_glb
+    try:
+        doc, blob = split_glb(path.read_bytes())
+        sig = rig_signature(doc, blob) or ""
+    except Exception as exc:                      # noqa: BLE001 — one bad file must not stop the pass
+        _slog("figure", f"{asset_id}: clip signature re-derive failed: {exc}")
+        return attrs
+    # `""` and not absent, for the reason `_refresh_model_attrs` gives: a signature that can no longer
+    # be justified has to be CLEARED, or it goes on offering a clip to a rig it does not fit.
+    write = {"rig_sig": sig, "rig_sig_rev": RIG_SIG_REV}
+    library.upsert(asset_id, attributes=write)
+    return {**attrs, **write}
+
+
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
                      bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
                      humanoid=None, humanoid_axes=None, humanoid_follows=None,
@@ -3831,7 +3865,18 @@ async def library_refresh_models(req: RefreshModelsRequest) -> dict:
             changed.append({"id": row["id"], "label": row["label"],
                             "rigged": bool(after.get("rigged")),
                             "bones": len(after.get("humanoid") or {})})
-    return {"ok": True, "checked": len(rows), "updated": changed}
+    # AND THE CLIPS, because a signature is a comparison between the two. Bumping `RIG_SIG_REV` and
+    # refreshing only the models leaves every figure unable to match the clip that shipped with her —
+    # measured, on this catalog, the first time it happened. `_refresh_clip_sig` is a no-op for a clip
+    # already stamped current, so this costs nothing on the ordinary run.
+    clips = library.search(kind="animation", limit=20000, scope=_caller_scope.get())
+    respelled = 0
+    for row in clips:
+        before = json.loads(row["attributes"] or "{}")
+        if _refresh_clip_sig(row["id"], before, force=req.force) != before:
+            respelled += 1
+    return {"ok": True, "checked": len(rows), "updated": changed,
+            "clips_checked": len(clips), "clips_respelled": respelled}
 
 
 class RetagSkyboxesRequest(BaseModel):

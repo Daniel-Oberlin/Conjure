@@ -4677,6 +4677,38 @@ def test_a_signature_extraction_can_no_longer_justify_is_CLEARED(srv, client, tm
     assert (json.loads(srv.library.get(fig)["attributes"]).get("rig_sig") or "") == ""
 
 
+def test_refresh_re_derives_the_CLIPS_signature_too_not_only_the_figures(srv, client, tmp_path):
+    """A signature is a comparison between two rows, so backfilling one side is worse than neither.
+
+    Measured the first time it happened: `RIG_SIG_REV` 1 -> 2 respelled every FIGURE's signature when the
+    humanoid grew thirty finger bones, `refresh-models` walked the models and stopped there, and Alice
+    stopped matching her OWN clip — the server read a mismatch and offered to retarget her onto herself,
+    while every shipped-clip lookup keyed on the signature came back empty. A successful backfill that
+    broke the catalog's playback.
+    """
+    clip = _import_id(client, "wave.glb", _clip_glb())
+    sig = json.loads(srv.library.get(clip)["attributes"]).get("rig_sig")
+    assert sig, "the import path writes it on a clip too"
+
+    # A clip stamped by an OLDER definition of the signature: it has one, and it is the wrong one.
+    srv.library.upsert(clip, attributes={"rig_sig": "0bsolete01", "rig_sig_rev": 0})
+    client.post("/library/refresh-models", json={}).json()
+    after = json.loads(srv.library.get(clip)["attributes"])
+    assert after["rig_sig"] == sig, "the clip's signature was not re-derived"
+    assert after["rig_sig_rev"] == srv.RIG_SIG_REV
+
+
+def test_a_clip_already_stamped_CURRENT_is_not_re_derived(srv, client, tmp_path):
+    """The ordinary run walks every clip in the catalog — 539 of them here — so it has to be a lookup
+    and not a parse. Guarded by the revision, the same way the model side is."""
+    clip = _import_id(client, "wave.glb", _clip_glb())
+    before = json.loads(srv.library.get(clip)["attributes"])
+    assert before["rig_sig_rev"] == srv.RIG_SIG_REV
+    r = client.post("/library/refresh-models", json={}).json()
+    assert r["clips_respelled"] == 0, "nothing was stale, so nothing should have been rewritten"
+    assert r["clips_checked"] >= 1
+
+
 def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client, tmp_path):
     """A tripwire, and it has already caught one live miss.
 

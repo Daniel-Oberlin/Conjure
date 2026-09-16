@@ -489,7 +489,11 @@ def cmd_refresh_models(s: Settings, a) -> None:
     updated = out.get("updated") or []
     for row in updated:
         print(f"  {row['label'] or row['id']}: rigged={row['rigged']} bones={row['bones']}")
-    _say(out, a.verbose, f"{len(updated)} of {out.get('checked', 0)} model(s) updated.")
+    tail = ""
+    if out.get("clips_respelled"):
+        tail = (f" {out['clips_respelled']} of {out.get('clips_checked', 0)} clip signature(s) "
+                f"re-derived.")
+    _say(out, a.verbose, f"{len(updated)} of {out.get('checked', 0)} model(s) updated.{tail}")
 
 
 def cmd_retag_skyboxes(s: Settings, a) -> None:
