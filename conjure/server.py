@@ -4986,6 +4986,21 @@ async def figure_clip(req: FigureClipRequest) -> dict:
     # `--force` still means what it did: bind by name across the mismatch and look at the wreck.
     retarget_notes: list[str] = []
     if mismatch and not req.force:
+        # ALREADY DONE? Content-addressing dedupes the BYTES, not the work: the rewrite is ~9 s on a
+        # 40-second clip and it ran on every play, producing the same id each time. Measured on device.
+        # A (clip, rig) pair has one answer forever, so the second play is this lookup.
+        made = library.query(
+            "SELECT * FROM assets WHERE kind = 'animation' "
+            f"AND json_extract(attributes, '$.retargeted_from') = '{rec['id']}' "
+            f"AND json_extract(attributes, '$.rig_sig') = '{sig}'", scope=active_scope, limit=1) or []
+        if made and (ASSET_CACHE / made[0]["id"]).exists():
+            rec, mismatch = made[0], False
+            clip_attrs = json.loads(rec.get("attributes") or "{}")
+            # The caveats are a property of the PAIR, not of this call, so they are stored with the
+            # asset and replayed. A cached play that said nothing would quietly stop mentioning the
+            # skirt that does not move and the torso that lags.
+            retarget_notes = clip_attrs.get("retarget_notes") or []
+    if mismatch and not req.force:
         clip_path, fig_path = ASSET_CACHE / rec["id"], ASSET_CACHE / _entity_model_id(ent)
         if not (clip_path.exists() and fig_path.exists()):
             return {"ok": False, "error": f"{rec.get('label')!r} is rigged {clip_sig} and {req.id!r} "
@@ -5007,7 +5022,8 @@ async def figure_clip(req: FigureClipRequest) -> dict:
                                 label=f"{rec.get('label') or rec['id']} ({sig})",
                                 attributes={**clip_attrs, "rig_sig": sig, "rig_sig_rev": RIG_SIG_REV,
                                             "retargeted_from": rec["id"], "clip_bones": done.bones,
-                                            "clip_dropped": done.dropped})
+                                            "clip_dropped": done.dropped,
+                                            "retarget_notes": done.notes})
         library.add_relation(new_id, rec["id"], "retargeted_from")
         # THE VOICE COMES WITH IT. A rewritten clip is the same performance on another body, and the
         # voice was recorded against the performance rather than against the skeleton — so dropping it

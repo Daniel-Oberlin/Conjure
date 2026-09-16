@@ -5291,9 +5291,11 @@ def test_a_clip_from_a_DIFFERENT_rig_is_RETARGETED_rather_than_refused(srv, clie
     assert made["rig_sig"] == json.loads(srv.library.get(fig)["attributes"])["rig_sig"]
     assert made["retargeted_from"] == alien
 
-    # Content-addressed: asking again is a lookup, not a second rewrite.
+    # Asking again is a LOOKUP, not a second rewrite — content-addressing dedupes the bytes, not the
+    # work, and the rewrite is ~9 s on a 40-second clip. The caveats come back with it, because they
+    # are a property of the pair rather than of this call.
     again = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
-    assert again["clip"] == r["clip"]
+    assert again["clip"] == r["clip"] and again["notes"] == r["notes"]
 
 
 def test_a_retargeted_clip_KEEPS_THE_VOICE_recorded_against_it(srv, client, tmp_path):
