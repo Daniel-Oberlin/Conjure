@@ -4989,10 +4989,13 @@ async def figure_clip(req: FigureClipRequest) -> dict:
         # ALREADY DONE? Content-addressing dedupes the BYTES, not the work: the rewrite is ~9 s on a
         # 40-second clip and it ran on every play, producing the same id each time. Measured on device.
         # A (clip, rig) pair has one answer forever, so the second play is this lookup.
+        from .retarget import RETARGET_REV
         made = library.query(
             "SELECT * FROM assets WHERE kind = 'animation' "
             f"AND json_extract(attributes, '$.retargeted_from') = '{rec['id']}' "
-            f"AND json_extract(attributes, '$.rig_sig') = '{sig}'", scope=active_scope, limit=1) or []
+            f"AND json_extract(attributes, '$.rig_sig') = '{sig}' "
+            f"AND json_extract(attributes, '$.retarget_rev') = {RETARGET_REV}",
+            scope=active_scope, limit=1) or []
         if made and (ASSET_CACHE / made[0]["id"]).exists():
             rec, mismatch = made[0], False
             clip_attrs = json.loads(rec.get("attributes") or "{}")
@@ -5007,7 +5010,7 @@ async def figure_clip(req: FigureClipRequest) -> dict:
                                           f"is {sig}, and the bytes to retarget from are not cached"}
         why: list[str] = []
         try:
-            from .retarget import retarget_clip
+            from .retarget import RETARGET_REV, retarget_clip
             done = retarget_clip(clip_path.read_bytes(), fig_path.read_bytes(), why.append)
         except Exception as exc:                # noqa: BLE001 — a failed retarget must not 500
             _slog("figure", f"retarget {rec['id']} -> {sig} failed: {exc}")
@@ -5023,6 +5026,8 @@ async def figure_clip(req: FigureClipRequest) -> dict:
                                 attributes={**clip_attrs, "rig_sig": sig, "rig_sig_rev": RIG_SIG_REV,
                                             "retargeted_from": rec["id"], "clip_bones": done.bones,
                                             "clip_dropped": done.dropped,
+                                            "retarget_slid": done.slid,
+                                            "retarget_rev": RETARGET_REV,
                                             "retarget_notes": done.notes})
         library.add_relation(new_id, rec["id"], "retargeted_from")
         # THE VOICE COMES WITH IT. A rewritten clip is the same performance on another body, and the

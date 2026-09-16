@@ -487,6 +487,14 @@ rows do not. `figures.FRAME_REV` (**15** today) is bumped whenever anything that
 result changes — inference, the axes, `validate()`, the convention table, which skin is chosen, the
 parts vocabulary.
 
+`retarget.RETARGET_REV` (**2**) is the same idea for a different artefact. A retargeted clip is
+DERIVED and cached under a content address, and a content address fingerprints the bytes rather than the
+method that made them — so without a stamp, a pair retargeted by an older build is handed back forever.
+That is not hypothetical: the fix for an unmapped rotating ancestor landed, the server was restarted,
+and the figure kept swinging exactly as before, because the cache still held the clip made before it.
+**Anything derived and cached carries the revision of the code that derived it**; this is the second
+artefact to need that rule and it should be assumed for the third.
+
 `figures.RIG_SIG_REV` (**1**) is a **separate** stamp, and the separation is the point: a discovery fix
 can change a signature without changing what a signature *means*, and the two need telling apart when
 regrouping a catalog. Bump it only when the definition changes — which bones the fingerprint covers, or

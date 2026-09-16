@@ -47,6 +47,18 @@ from typing import Callable, Optional
 from .figures import (_local_matrix, best_humanoid, node_world_matrices, parent_map,
                       split_glb, write_glb)
 
+#: Bump when ANYTHING that changes a rewritten clip's contents changes. A retargeted clip is a DERIVED
+#: artefact cached under a content address, and a content address fingerprints the bytes rather than the
+#: method that made them — so without a stamp, a pair retargeted by an older build is handed back
+#: forever and a fix reaches nobody. That is exactly what happened: the ancestor fix landed, the server
+#: was restarted, and the figure kept swinging because the cache still held the clip made before it.
+#:
+#: `figures.FRAME_REV` exists for the same reason and this is the second artefact to need it, so the
+#: rule is general: anything derived and cached carries the revision of the code that derived it.
+RETARGET_REV = 2        # 2: unmapped ancestors count toward a mapped bone's world orientation, and
+                        #    bones the clip SLIDES carry their translation
+                        # 1: rotation only, mapped bones only
+
 IDENT = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
 
 #: The humanoid skeleton as parent → child, for reading a limb's DIRECTION.

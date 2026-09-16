@@ -5297,6 +5297,16 @@ def test_a_clip_from_a_DIFFERENT_rig_is_RETARGETED_rather_than_refused(srv, clie
     again = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
     assert again["clip"] == r["clip"] and again["notes"] == r["notes"]
 
+    # A cached clip made by an OLDER build must not be handed back forever. A content address
+    # fingerprints the bytes, not the method that made them, so the cache is stamped with the revision
+    # of the code that filled it — without which a fix reaches nobody and the figure keeps moving the
+    # way it did before, which is exactly how this was found.
+    import conjure.retarget as _rt
+    srv.library.upsert(r["clip"], attributes={"retarget_rev": _rt.RETARGET_REV - 1})
+    after = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert after["ok"] and after["retargeted"] is True
+    assert json.loads(srv.library.get(after["clip"])["attributes"])["retarget_rev"] == _rt.RETARGET_REV
+
 
 def test_a_retargeted_clip_KEEPS_THE_VOICE_recorded_against_it(srv, client, tmp_path):
     """A rewritten clip is the same performance on another body, and the voice was recorded against the
