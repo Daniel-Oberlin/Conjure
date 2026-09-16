@@ -1,8 +1,10 @@
 # Plan — run a captured build locally
 
-**Status:** ASSESSED, not started. Nothing here has been executed; every number below is measured off
-the twenty captures in `temp/vrh`, and the boot has not been attempted.
-**Opened:** 2026-09-16
+**Status:** **IT RUNS.** `scripts/capture_serve.py` serves a capture as a working app — measured on
+`barbie`: the engine starts, WebGL initialises, the app's own Tailwind is injected, and the server logs
+**zero misses**, meaning every file the running build asked for was already on disk. Not yet looked at
+in a real browser (headless SwiftShader renders it far too slowly to screenshot); the URL is the test.
+**Opened:** 2026-09-16 · **First boot:** 2026-09-16
 
 **This file is temporary.** It holds one sequence across `specs/captures.md` and the grabber's own repo
 while that sequence is being executed, and is deleted when the last part has settled — finished work to
@@ -97,7 +99,37 @@ the only extensionless files are API responses, which need a stub anyway.
 
 ---
 
-## 4. Running one — the estimate
+## 4a. What actually happened, 2026-09-16
+
+`scripts/capture_serve.py <capture-dir>`, and the estimate below was roughly right except that the
+backend turned out to be cheap. Four things it does, each of which was a real obstacle:
+
+1. **Recovers the shell** from the strays, by CONTENT and not by name — a `.html` under `files/assets`
+   is the app only if it loads `__start__.js` and the engine. Works on **13 of 20** captures.
+2. **Localises the absolute URLs.** The shell pulls axios from cdnjs; the capture has that exact path on
+   disk, so it is a rewrite rather than a fetch. This is what the word standalone is for: a build that
+   still pulls axios off a CDN runs on someone else's uptime.
+3. **Redirects the API instead of patching the bundle.** 30 lines injected ahead of the app, wrapping
+   `fetch` and `XMLHttpRequest`, pointing `https://api.<portal>/…` at `/__api/…` on this server — which
+   replays the responses the capture already holds. Far less invasive than editing a 4 MB minified file,
+   and it is visible in one place. **This was the part the estimate said would take a day. It took an
+   hour**, because `detectPortal()` only ever affects the ORIGIN, and an origin is one regex.
+4. **Strips the analytics.** The Cloudflare beacon and Plausible, which are not part of the app and
+   throw when blocked.
+
+**The capture is never written to.** Everything generated lives in memory.
+
+**What booting it taught us that no amount of reading would have:**
+
+- `cdn.tailwindcss.com` appears in the console and is **not** an external fetch — the app carries
+  Tailwind as a registry asset (`files/assets/233605928/1/tailwind.js.txt`) and injects it inline, so
+  the warning is Tailwind's own banner. Read statically, it looks like a missing dependency.
+- **Zero server misses.** The strongest evidence there is that a capture is complete: the running app
+  asked for nothing the capture did not have.
+- Headless Chrome needs `--use-angle=swiftshader --enable-unsafe-swiftshader`, and even then a frame
+  takes minutes. **Headless is good for "does it boot", useless for "does it look right".**
+
+## 4b. Running one — the estimate, as written before any of it was tried
 
 **Half a day to first pixels. One to two days to something genuinely useful.** Untried, so treat the
 second number as the one that can move.
