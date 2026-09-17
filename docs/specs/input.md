@@ -245,12 +245,15 @@ across re-acquisitions, so this runtime does not serve a static mirrored table �
 session, and hand size is real data here. Taken over all 24 segments the ratios spread by **36%** at a
 median of **1.017**, which read as a differently-proportioned hand and is nothing of the kind.
 
-**One number here is inferred, not measured, and is marked as such until it is.** The 36% and the
-1.017 are readings; the grouping came from a description of the on-screen ratios — *"the first column
-varies more, subsequent columns are around 1, the last column varies significantly"* — and the claim
-that the 14 bones are uniform is so far only a simulation that reproduces 1.017/36% from that shape.
-The HUD now computes the bone-only `cv` directly, so one reload settles it. Until then this section
-says what the ratios *look* like, not what they are.
+Grouped, the spread falls from 36% to **5.0% (left) and 5.6% (right)** — so the ten non-bone segments
+were most of it and not all of it. The residual is **not cleanly attributable**: our own two hand
+models disagree by `cv` **2.86%** across those same 14 bones, so a 5% disagreement is being measured
+against a reference that is itself 3% inconsistent.
+
+It is small enough not to matter for what `s` is *for*. Joint positions are exact by construction — each
+joint is placed at the pose the runtime reports — so `s` never positions anything and per-bone error
+cannot accumulate along a chain. It scales girth, because joint positions carry length and never
+thickness, and 5% of a finger's girth is under a millimetre.
 
 **Read jitter first.** The `s` probe's premise is known to be shaky: our own two hand models are not
 mirrors of each other — their index metacarpals differ by **6.3 mm**, measured — so a non-zero `cv` is

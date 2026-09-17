@@ -172,7 +172,7 @@ you want the full numbers in `temp/conjure.log` (the verdicts are on the HUD eit
 | left vs right | **0.240 mm** apart | not one table mirrored — a shared skeleton would be identical |
 | across re-acquisitions | moves | the runtime **re-estimates**; a stored table cannot |
 | ratio, all 24 segments | `s` 1.017, spread **36%** | looked like a differently-proportioned hand, and was not |
-| ratio, by group | 5 wrist offsets and 5 tips scattered, 14 bones "around 1" | the spread was ten numbers that are not bone lengths |
+| ratio, all 24 vs by group | 36% → **5.0% (L) / 5.6% (R)** on the 14 bones | most of the spread was ten segments that are not bone lengths — but not all of it |
 
 So **hand size is real per-session data here**, which answers the question this phase was opened for:
 the privacy clause's static-hand-model does not describe this runtime, and `s` has to be derived at
@@ -184,10 +184,24 @@ the discrepancy points a different way per finger. `*-distal → *-tip` compares
 at the fingertip *surface* and is derived from the runtime's own estimate, against an authored tip bone.
 Neither says anything about how long a bone is.
 
-**The grouping is measured; "the 14 are uniform" is not yet.** It comes from a description of the
-on-screen ratios and a simulation that reproduces `s = 1.017` with a 36% spread from exactly that
-shape. The bone-only `cv` is now on the HUD and one reload confirms or kills it. Everything below
-assumes it holds; if it does not, the 14 need per-bone scale and phase 2 changes shape.
+**The grouping is confirmed and "the 14 are uniform" is FALSE.** Regrouping took the spread from 36% to
+**5.0% (L) and 5.6% (R)** — so the ten non-bone segments were most of it, and something real is left.
+
+Some of that residual is **ours**: our own two hand models disagree by **cv 2.86%** across the same 14
+bones, concentrated in the index finger (`index-finger-phalanx-proximal` 0.937, `…-intermediate`
+0.930). A 5% disagreement with a reference that is itself 3% inconsistent cannot be cleanly attributed,
+and nothing here tries to.
+
+**This does not change phase 2, and the reason is worth stating because the number looks alarming.**
+`s` is not positioning anything — every joint is placed at the pose the runtime reports, so joint
+positions are exact by construction and per-bone error cannot accumulate down a chain. `s` exists only
+because joint positions carry **length and never girth**: it scales the flesh. 5% of a finger's girth is
+well under a millimetre. A single scalar therefore stands, and per-joint scale stays where it is, in
+*Open*.
+
+What the 5% does buy is a number to check against: if a conformed hand looks wrong **at the knuckles**
+rather than overall, that is this residual showing up as stretch in the skinning blend, and it is
+`5%` of a bone — a couple of millimetres — not a scale bug.
 
 That is a one-line correction to phase 2 with a real consequence: taking the median over all 24 would
 have biased `s` by several per cent on every figure, in a direction that depends on the wearer's hand.
