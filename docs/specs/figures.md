@@ -845,6 +845,56 @@ drops the brows) and not measured. Its **visemes are weaker still**: that rig ha
 `ee` is a spread mouth and `ou` a pursed one, good enough to read as speech at conversational distance
 and not claimed to be more.
 
+### 8e. Carrying the FACE through a retarget
+
+§8c maps a clip through the humanoid map, and the map has **51 bones — core plus fingers — none of
+them facial**. So every retargeted clip arrived with a dead face, and that was almost the whole corpus:
+**519 of 543 captured clips rotate a facial bone**, and not the handful with facial names. `1_idle`
+spends **9,031° on a face** with `DEF-lid.T.L`/`.R` as its top two movers at 15% and 14%; a figure
+playing it *natively* has been blinking all along.
+
+Facial bones are carried by their **local delta** — the rotation the clip applies to its own rest,
+re-applied to the target's rest — and not through the law. That is forced, not preferred: the law
+squares a bone up against a frame derived from **where it points**, and a facial bone frequently points
+nowhere. Every `DEF-jaw` in the corpus is a leaf, and so is every one of Eve Maccaro's lids.
+
+Never the source's absolute local, either. Two faces of the same build rest differently because they
+*are* different faces; pasting one rest onto the other is a shape transplant, not a performance.
+
+#### The gate, and the two frames that were wrong first
+
+A name match is **not** evidence. Eve Maccaro's facial bones carry the identical Rigify names and rest
+inverted; carried by name alone, a blink swings her lid the wrong way while every count says it worked.
+So each bone is gated on how far the two rigs' rests disagree, and refused past `FACE_REST_TOLERANCE`
+(30°, against a blink of 16–26°).
+
+**Which rest** took two wrong answers to find:
+
+| frame | why it fails |
+|---|---|
+| **world** | a clip and a figure disagree about the whole armature — `1_idle`'s head rests **180°** from Barbie's — so every facial bone reads ~175° apart and every one is refused, on rigs that agree to 14° |
+| **head-relative** | depends on both humanoid maps choosing the same vertebra, and they do not: office-babe's `head` is `DEF-spine.007` where Barbie's and the clip's are `DEF-spine.006`, injecting 73° of pure bookkeeping |
+| **local** ✓ | a local delta is indifferent to every ancestor above the bone, so this is the only frame neither the armature nor the bone-map's choice can corrupt |
+
+Measured against `1_idle`'s 65 facial bones: Akari 11.2° median, Barbie 14.0°, office-babe 14.3° —
+and **Eve Maccaro 142.6°**, refused. Per bone rather than per rig, so a figure carries what can be
+justified and drops what cannot, and both counts appear in the clip's notes.
+
+#### What it actually buys, measured
+
+| | |
+|---|---|
+| 16 figures sharing the capture rig | already had it — a native play keeps every track whose name resolves |
+| **office-babe** | **61 facial bones, 16 eyelids** (body bones 52 → 127) |
+| Bianca | 2 eyelids; 15 refused |
+| Eve Maccaro | 6 carried, 63 correctly refused |
+| Grace, Trish, Yuffie, Alice, Blondie, Saka | **nothing** — their facial bones share no name with a Rigify clip |
+
+So one figure gains a full face and two gain a fragment. The rest are blocked on a different problem:
+Daz spells an eyelid `eyelidUpper.L`, Character Creator `lEyelidUpper`, Rigify `DEF-lid.T.L`. Carrying
+between families needs a name map, and the local-rest gate cannot justify one — across two different
+rig builds the rests disagree by construction, so the check that makes this safe would refuse it.
+
 ## 8. The runtime — the `figure` component
 
 `client/figure.js` is an ordinary A-Frame component on the placed model entity, **not** a dynamic module
@@ -1115,7 +1165,10 @@ Recorded here so the spec can be trusted about its own edges; the design work is
   `set_expression`, over a semantic vocabulary resolved per expression rig. **Driving** a face, not
   retargeting one — §8d says why that distinction is what makes the tables checkable. Two figures in the
   catalog can use it, which is a fact about the corpus and not a limit of the mechanism.
-- **No MORPH-driven facial performance to carry, but bone-driven performance exists and is unreachable.**
+- ~~**Bone-driven facial performance is unreachable.**~~ Carried since 2026-09-16 — see §8e. What is
+  still unreachable is a face across a NAMING FAMILY: Daz spells an eyelid `eyelidUpper.L` and
+  Character Creator `lEyelidUpper`, neither of which a Rigify clip names, so nothing maps.
+- **No MORPH-driven facial performance to carry.**
   Corrected 2026-09-16 after measuring rather than counting channels. 249 of 543 captured clips drive
   morph weights and **none of them drive a facial target** — those channels are `Dress` and `Body`, and
   a clip GLB carries no meshes, so the weights are anonymous anyway.

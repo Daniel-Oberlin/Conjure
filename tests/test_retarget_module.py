@@ -603,3 +603,198 @@ def test_a_slide_on_an_UNMAPPED_ANCESTOR_reaches_the_target_through_the_hips():
         "carried by the one bone that can carry it"
     v = _read_accessor(doc, blob, anim["samplers"][moved[0]["sampler"]]["output"])
     assert max(math.dist(p, v[0]) for p in v) > 1e-4
+
+
+# --------------------------------------------------------------- the face
+#
+# 519 of 543 captured clips rotate a facial bone — not the handful with facial names, the ordinary body
+# performances. `1_idle` spends 9,031 degrees on a face with the eyelids as its top two movers. All of
+# it was dropped here, because the carried set is built from the humanoid map and the map has 51 bones,
+# none facial: a retargeted figure moved her body with a dead face.
+#
+# Facial bones are carried by their LOCAL DELTA rather than through the law, and that is forced: the
+# law squares a bone up against a frame derived from where it POINTS, and a facial bone frequently
+# points nowhere. Every `DEF-jaw` in the corpus is a leaf, and so is every one of Eve Maccaro's lids.
+
+import math                                                            # noqa: E402
+
+from conjure.retarget import (FACE_REST_TOLERANCE, _facial_bones,      # noqa: E402
+                              _quat_gap, retarget_clip)
+
+
+def _about(axis, degrees):
+    half = math.radians(degrees) / 2
+    s = math.sin(half)
+    return [axis[0] * s, axis[1] * s, axis[2] * s, math.cos(half)]
+
+
+def _with_face(naming, faces: dict, extra=()):
+    """A figure GLB carrying facial bones at stated LOCAL rests. `faces` maps name -> rest quaternion."""
+    nodes, names = _skeleton_nodes(naming)
+    head = names.index(naming["head"])
+    kids = nodes[head].setdefault("children", [])
+    for bone, rest in faces.items():
+        kids.append(len(nodes))
+        nodes.append({"name": bone, "translation": [0, 0, 0], "rotation": list(rest)})
+    for bone in extra:
+        kids.append(len(nodes))
+        nodes.append({"name": bone, "translation": [0, 0, 0]})
+    nodes.append({"name": "Body", "mesh": 0, "skin": 0})
+    doc = {"scenes": [{"nodes": [0, len(nodes) - 1]}], "scene": 0, "nodes": nodes,
+           "skins": [{"joints": list(range(len(names)))}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+           "accessors": [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}]}
+    return _glb_bytes(doc)
+
+
+def _face_clip(naming, faces: dict, swing_degrees=26.0):
+    """A clip on `naming` whose facial bones rest at `faces` and rotate `swing_degrees` about X."""
+    nodes, names = _skeleton_nodes(naming)
+    face_index = {}
+    for bone, rest in faces.items():
+        face_index[bone] = len(nodes)
+        nodes.append({"name": bone, "translation": [0, 0, 0], "rotation": list(rest)})
+    # Frame 0 at rest, frame 1 swung — so the delta is exactly `swing_degrees` from this rig's rest.
+    swung = {b: _mul(_about((1, 0, 0), swing_degrees), faces[b]) for b in faces}
+    blob = struct.pack("<2f", 0.0, 1.0)
+    samplers, channels = [], []
+    views = [{"buffer": 0, "byteOffset": 0, "byteLength": 8}]
+    accessors = [{"bufferView": 0, "componentType": 5126, "count": 2, "type": "SCALAR",
+                  "min": [0.0], "max": [1.0]}]
+
+    def add_rotation(node_index, first, second):
+        offset = len(blob[:])
+        views.append({"buffer": 0, "byteOffset": offset, "byteLength": 32})
+        accessors.append({"bufferView": len(views) - 1, "componentType": 5126, "count": 2,
+                          "type": "VEC4"})
+        samplers.append({"input": 0, "output": len(accessors) - 1, "interpolation": "LINEAR"})
+        channels.append({"sampler": len(samplers) - 1,
+                         "target": {"node": node_index, "path": "rotation"}})
+        return struct.pack("<8f", *first, *second)
+
+    # The BODY, at identity, because a retarget refuses a clip that drives no humanoid bone at all —
+    # and a clip that drives only a face is not the case this feature is for. Every captured clip that
+    # carries a face carries a body performance with it.
+    for i in range(len(names)):
+        blob += add_rotation(i, (0, 0, 0, 1), (0, 0, 0, 1))
+    for bone, idx in face_index.items():
+        blob += add_rotation(idx, faces[bone], swung[bone])
+    doc = {"scenes": [{"nodes": [0]}], "scene": 0, "nodes": nodes,
+           "buffers": [{"byteLength": len(blob)}], "bufferViews": views, "accessors": accessors,
+           "animations": [{"name": "1_idle", "samplers": samplers, "channels": channels}]}
+    return _glb_bytes(doc, blob)
+
+
+
+def _mul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return [aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz]
+
+
+AGREE = {"DEF-lid.T.L": _about((0, 1, 0), 10), "DEF-jaw": _about((0, 1, 0), 5)}
+
+
+def _carried(clip_bytes, figure_bytes):
+    """Which bones the output actually drives."""
+    out = retarget_clip(clip_bytes, figure_bytes)
+    assert out is not None, "the retarget refused outright"
+    doc, _blob = split_glb(out.data)
+    nodes = doc.get("nodes") or []
+    driven = set()
+    for anim in doc.get("animations") or []:
+        for ch in anim.get("channels") or []:
+            i = (ch.get("target") or {}).get("node")
+            if isinstance(i, int) and i < len(nodes):
+                driven.add(nodes[i].get("name"))
+    return out, driven
+
+
+def test_a_facial_bone_both_rigs_name_and_rest_alike_is_CARRIED():
+    clip = _face_clip(_MIXAMO, AGREE)
+    figure = _with_face(_RIGIFY, AGREE)
+    out, driven = _carried(clip, figure)
+    assert "DEF-lid.T.L" in driven, "the eyelid must survive the retarget"
+    assert "DEF-jaw" in driven, "a LEAF bone must survive — the law cannot square one up, the delta can"
+    assert any("facial" in n for n in out.notes)
+
+
+def test_the_carried_rotation_is_the_SOURCE_DELTA_on_the_target_rest():
+    """Not the source's absolute local. Two faces of the same build rest differently because they ARE
+    different faces; pasting one rest onto the other is a shape transplant, not a performance."""
+    swing = 26.0
+    clip = _face_clip(_MIXAMO, {"DEF-lid.T.L": _about((0, 1, 0), 10)}, swing_degrees=swing)
+    # The target rests the SAME bone 25 degrees away — inside tolerance, so it carries.
+    figure = _with_face(_RIGIFY, {"DEF-lid.T.L": _about((0, 1, 0), 25)})
+    out = retarget_clip(clip, figure)
+    doc, blob = split_glb(out.data)
+    nodes = doc["nodes"]
+    i = next(k for k, n in enumerate(nodes) if n.get("name") == "DEF-lid.T.L")
+    anim = doc["animations"][0]
+    track = next(ch for ch in anim["channels"] if ch["target"]["node"] == i)
+    values = list(_read_accessor(doc, blob, anim["samplers"][track["sampler"]]["output"]))
+    if values and not isinstance(values[0], (tuple, list)):
+        values = [tuple(values[j:j + 4]) for j in range(0, len(values), 4)]
+    target_rest = _about((0, 1, 0), 25)
+    # Frame 0 lands ON the target's rest, and frame 1 exactly `swing` away from it.
+    assert _quat_gap(values[0], target_rest) < 0.01
+    assert abs(_quat_gap(values[-1], target_rest) - swing) < 0.01
+
+
+def test_a_facial_bone_the_two_rigs_rest_DIFFERENTLY_is_refused_and_named():
+    """Eve Maccaro is this case and it is why the gate exists: her facial bones carry the IDENTICAL
+    Rigify names and rest inverted — median 142.6 degrees against the clip. Carried by name alone a
+    blink swings her lid the wrong way while every count says it worked."""
+    clip = _face_clip(_MIXAMO, {"DEF-lid.T.L": _about((0, 1, 0), 10)})
+    figure = _with_face(_RIGIFY, {"DEF-lid.T.L": _about((0, 1, 0), 170)})
+    out, driven = _carried(clip, figure)
+    assert "DEF-lid.T.L" not in driven
+    assert any("REFUSED" in n for n in out.notes), "a refusal that says nothing is a silent wrong answer"
+
+
+def test_the_gate_is_on_the_LOCAL_rest_so_a_flipped_ARMATURE_does_not_refuse_everything():
+    """Measured in WORLD, `1_idle`'s head rests 180 degrees from Barbie's, so every facial bone reads
+    ~175 degrees apart and every one is refused — on rigs that agree to within 14. A local delta is
+    indifferent to every ancestor above the bone, so the local rest is the only frame neither the
+    armature nor the bone-map's choice of vertebra can corrupt."""
+    clip = _face_clip(_MIXAMO, AGREE)
+    figure_doc, _ = split_glb(_with_face(_RIGIFY, AGREE))
+    # Flip the whole armature: every world basis moves 180 degrees, every LOCAL rest is untouched.
+    figure_doc["nodes"][0]["rotation"] = _about((0, 1, 0), 180)
+    flipped = _glb_bytes(figure_doc)
+    _out, driven = _carried(clip, flipped)
+    assert "DEF-lid.T.L" in driven, "a rotated armature is bookkeeping, not a disagreement about a face"
+
+
+def test_a_facial_bone_the_TARGET_does_not_have_is_simply_absent():
+    clip = _face_clip(_MIXAMO, AGREE)
+    figure = _with_face(_RIGIFY, {"DEF-jaw": _about((0, 1, 0), 5)})
+    _out, driven = _carried(clip, figure)
+    assert "DEF-jaw" in driven
+    assert "DEF-lid.T.L" not in driven
+
+
+def test_a_NON_facial_unmapped_bone_is_still_dropped():
+    """The skirt and breast chains. Carrying every unmapped name that happens to match would put a
+    source figure's secondary motion onto a target whose cloth is shaped differently."""
+    clip = _face_clip(_MIXAMO, {**AGREE, "DEF-skirt.L": _about((0, 1, 0), 10)})
+    figure = _with_face(_RIGIFY, {**AGREE, "DEF-skirt.L": _about((0, 1, 0), 10)})
+    _out, driven = _carried(clip, figure)
+    assert "DEF-lid.T.L" in driven
+    assert "DEF-skirt.L" not in driven
+
+
+def test_the_refusal_quotes_the_median_of_what_it_REFUSED():
+    """It quoted the median of every measured bone, which explained a refusal with a number below the
+    threshold that caused it — "refused because they rest 11 degrees apart", where 11 is what carries."""
+    faces = {"DEF-lid.T.L": _about((0, 1, 0), 10), "DEF-lid.T.R": _about((0, 1, 0), 10),
+             "DEF-jaw": _about((0, 1, 0), 5)}
+    far = {"DEF-lid.T.L": _about((0, 1, 0), 10), "DEF-lid.T.R": _about((0, 1, 0), 10),
+           "DEF-jaw": _about((0, 1, 0), 175)}
+    clip, figure = _face_clip(_MIXAMO, faces), _with_face(_RIGIFY, far)
+    _carry, refuse, median = _facial_bones(Rig(*split_glb(clip)), Rig(*split_glb(figure)))
+    assert refuse == ["DEF-jaw"]
+    assert median > FACE_REST_TOLERANCE, "the number quoted must be one that justifies the refusal"

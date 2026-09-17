@@ -130,10 +130,20 @@ motion into `DEF-jaw_master`** — that is lip sync, recorded, on disk, today. 2
 So the retargeting question is no longer "author or retarget" — it is **which representation**:
 
 - A morph retarget still has names and nothing else, and should still wait.
-- A BONE retarget of a facial clip is the machinery of §8c and nothing more, except that the humanoid
-  map has 51 bones and none are facial. Extending it to eyelids and a jaw would let `1_idle_speaking`
-  talk on a rig that did not record it. That is a real piece of work with a real payoff and it is not
-  started.
+- ~~A BONE retarget of a facial clip is the machinery of §8c…~~ **Built 2026-09-16 as §8e**, though not
+  the way that sentence assumed: the law cannot square a facial bone up, because most of them are
+  leaves with no direction to square against. They are carried as a local delta, gated per bone on how
+  far the two rigs rest them apart.
+
+  **What it does not reach is a face across a NAMING FAMILY**, and that is now the whole of the
+  remaining problem. Daz spells an eyelid `eyelidUpper.L`, Character Creator `lEyelidUpper`, Rigify
+  `DEF-lid.T.L`. Grace, Trish, Yuffie, Alice, Blondie and Saka therefore receive nothing.
+
+  A name map across the three families is the obvious next move and is **harder than it looks for a
+  specific reason**: the thing that makes §8e safe is a measured rest agreement, and across two
+  different rig builds the rests disagree by construction. The gate that justifies the carry would
+  refuse the mapping. Something else would have to justify it — the geometry of the mesh the bone
+  moves, most likely, which is the measurement `expressions.check_regions` already makes for morphs.
 - Meanwhile these clips DO play natively: `pc_blink` matches 16 figures by rig signature, so `play_clip`
   offers it on every capture from that site already.
 
