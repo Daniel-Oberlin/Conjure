@@ -335,10 +335,12 @@ the server restarted** before any hand carries a joint map.
 **To try it:**
 
 ```
-python3 -m conjure.ctl refresh-models          # RESTART THE SERVER FIRST — a refresh derives what the
-                                               # server process knows, not what is on disk
-conjure-ctl asset … / place the hand model, then:
-conjure-ctl wear <entity> --hand auto
+# RESTART THE SERVER FIRST — a refresh derives what the server PROCESS knows, not what is on disk
+python3 -m conjure.ctl refresh-models
+
+python3 -m conjure.ctl wear            # what is there to wear, in the library and in the world
+python3 -m conjure.ctl wear --pair     # place both hands and wear them — the whole test, one command
+python3 -m conjure.ctl wear <entity> --hand off      # put one down
 ```
 
 **Done when:** `b8f676…` worn on the left hand follows every finger; it survives a reload because the

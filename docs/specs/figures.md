@@ -1014,6 +1014,13 @@ hand you can see.
 auto|left|right|off`. `auto` pairs on the measured side; asking for the **wrong** side is refused, because
 a mirrored glove reads as broken tracking rather than as a mistake anyone made.
 
+`GET /figure/hands` answers *which* — wearable hands in the library, and hands already placed, with
+which of them is worn. It exists because `wear <entity>` is otherwise unanswerable: a hand has to be
+placed before it can be worn and nothing in the CLI placed a library model, so `conjure-ctl wear` with
+no id lists both and `--pair` places both sides and wears them. Same gap `scripts/faces.py` filled for
+faces — `dir` lists assets and `inspect_figure` answers for one already placed, and neither answers
+*which of these can do the thing*.
+
 **Not verified on a headset.** The arithmetic is tested against a fake skeleton in `tests/js/` and the
 extraction in `tests/test_hands.py`; the XR read itself needs the device.
 

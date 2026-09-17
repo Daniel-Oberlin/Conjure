@@ -392,19 +392,81 @@ def cmd_pose(s: Settings, a) -> None:
 
 
 def cmd_wear(s: Settings, a) -> None:
-    """Wear a placed hand model, or take it off.
+    """Wear a placed hand model, or take it off — and with no id, say what there is to wear.
 
     `--hand auto` is the default and almost always right: which hand a model IS was measured from its
     geometry at import, not read from the `_L` in its name. Wearing does not consume the model — it
-    occupies it, so `--hand off` puts it back exactly where it was placed."""
-    out = _post(s, "/figure/hand", {"id": a.id, "hand": a.hand})
+    occupies it, so `--hand off` puts it back exactly where it was placed.
+
+    A hand has to be PLACED before it can be worn, and nothing in this CLI placed a library model — so
+    `--place` does it, and `--pair` does both sides at once, which is what anyone actually wants.
+    """
+    if a.pair:
+        return _wear_pair(s, a)
+    if not a.id:
+        return _wear_list(s)
+    eid = a.id
+    if a.place:
+        put = _post(s, "/place_cached_asset", {"id": a.id, "name": a.name or None})
+        if not put.get("ok"):
+            print(f"wear: could not place {a.id}: {put.get('error', 'failed')}")
+            return
+        eid = put["id"]
+        print(f"placed {a.id} as {eid}")
+    out = _post(s, "/figure/hand", {"id": eid, "hand": a.hand})
     if not out.get("ok"):
         print(f"wear: {out.get('error', 'failed')}")
         return
     if not out.get("worn"):
         _say(out, a.verbose, "taken off — back where it was placed")
         return
-    _say(out, a.verbose, f"worn on the {out.get('hand')} hand, {out.get('joints')} joints driven")
+    _say(out, a.verbose, f"{eid}: worn on the {out.get('hand')} hand, "
+                         f"{out.get('joints')} joints driven")
+
+
+def _wear_list(s: Settings) -> None:
+    out = _get(s, "/figure/hands")
+    placed, lib = out.get("placed") or [], out.get("library") or []
+    if placed:
+        print("placed, and wearable right now:")
+        for h in placed:
+            state = f"WORN on the {h['worn']}" if h["worn"] else "not worn"
+            print(f"  {h['id']:<24} {h['side'] or '?':<6} {h['label'][:28]:<28} {state}")
+    if lib:
+        print("\nin the library — place one with `wear <asset-id> --place`:")
+        for h in lib:
+            print(f"  {h['id']:<24} {h['side'] or '?':<6} {h['label'][:28]}")
+    if not placed and not lib:
+        # Two absences with one appearance, so say which. A library catalogued before hands existed
+        # has no `hand_wearable` on any row and needs a refresh; a library with no hand models in it
+        # needs an import, and a refresh would waste the time.
+        print("no wearable hands. If you have hand models, they were catalogued before hands were\n"
+              "measured — RESTART THE SERVER and run `refresh-models`, which re-derives what the\n"
+              "server process knows rather than what is on disk.")
+    if not placed and lib:
+        print("\n  conjure-ctl wear --pair          places both sides and wears them")
+
+
+def _wear_pair(s: Settings, a) -> None:
+    """Place both hands and wear them — the whole test, in one command."""
+    lib = (_get(s, "/figure/hands").get("library") or [])
+    worn = []
+    for side in ("left", "right"):
+        have = next((h for h in lib if h["side"] == side), None)
+        if not have:
+            print(f"wear: no {side} hand in the library")
+            continue
+        put = _post(s, "/place_cached_asset", {"id": have["id"], "name": f"hand_{side}"})
+        if not put.get("ok"):
+            print(f"wear: could not place the {side} hand: {put.get('error', 'failed')}")
+            continue
+        out = _post(s, "/figure/hand", {"id": put["id"], "hand": side})
+        if out.get("ok"):
+            worn.append(f"{put['id']} ({side})")
+        else:
+            print(f"wear: placed {put['id']} but could not wear it: {out.get('error')}")
+    _say({"ok": bool(worn), "worn": worn}, a.verbose,
+         ("wearing " + ", ".join(worn)) if worn else "nothing worn")
 
 
 def cmd_dress(s: Settings, a) -> None:
@@ -651,9 +713,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("wear", help="drive a placed HAND model from your tracked hand")
     a.set_defaults(fn=cmd_wear)
-    a.add_argument("id", help="the ENTITY id of a placed hand model")
+    a.add_argument("id", nargs="?", help="the ENTITY id of a placed hand — or an ASSET id with "
+                                         "--place. With neither, lists what there is to wear")
     a.add_argument("--hand", default="auto", choices=["auto", "left", "right", "off"],
                    help="auto pairs on the MEASURED side (default); off puts it back down")
+    a.add_argument("--place", action="store_true",
+                   help="the id is a LIBRARY asset: place it first, then wear it")
+    a.add_argument("--name", help="entity id to place it as (with --place)")
+    a.add_argument("--pair", action="store_true",
+                   help="place BOTH hands from the library and wear them — the whole test in one")
 
     a = sub.add_parser("clips", help="list the animations a placed figure can play")
     a.set_defaults(fn=cmd_clips)

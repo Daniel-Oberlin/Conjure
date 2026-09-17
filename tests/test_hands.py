@@ -220,3 +220,34 @@ def test_inspect_describes_a_hand_as_a_HAND_and_not_as_a_broken_figure():
 
     worn = figure_description(label="VR_hand_L", hand_side="left", worn="left")
     assert "Currently worn on the left hand" in worn
+
+
+def test_the_library_and_the_world_can_both_be_ASKED_what_is_wearable(srv, client):
+    """`wear <entity>` is unanswerable without this. A hand has to be placed before it can be worn,
+    nothing in the CLI placed a library model, and "what do I pass?" is not a question a feature
+    should leave to `world` and a squint."""
+    from test_server import _import_id
+    left = _import_id(client, "VR_hand_L.glb", write_glb(_hand("left")))
+    right = _import_id(client, "VR_hand_R.glb", write_glb(_hand("right")))
+
+    out = client.get("/figure/hands").json()
+    assert out["ok"]
+    assert sorted(h["side"] for h in out["library"]) == ["left", "right"]
+    assert {h["id"] for h in out["library"]} == {left, right}
+    assert out["placed"] == [], "nothing is placed yet, and that is the distinction that matters"
+
+    client.post("/place_cached_asset", json={"id": left, "name": "hand_left"})
+    out = client.get("/figure/hands").json()
+    assert [h["id"] for h in out["placed"]] == ["hand_left"]
+    assert out["placed"][0]["side"] == "left" and out["placed"][0]["worn"] == ""
+
+    client.post("/figure/hand", json={"id": "hand_left", "hand": "auto"})
+    assert client.get("/figure/hands").json()["placed"][0]["worn"] == "left"
+
+
+def test_a_figure_that_is_not_a_hand_is_not_LISTED_as_wearable(srv, client):
+    from test_figures import _named_skeleton
+    from test_server import _import_id
+    doc, _ = _named_skeleton("dot-side", arms_down=False)
+    _import_id(client, "not_a_hand.glb", write_glb(doc))
+    assert client.get("/figure/hands").json()["library"] == []

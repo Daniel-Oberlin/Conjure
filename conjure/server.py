@@ -4927,6 +4927,35 @@ async def figure_expression(req: FigureExpressionRequest) -> dict:
     return out
 
 
+@app.get("/figure/hands")
+async def figure_hands() -> dict:
+    """Which hands can be worn — in the LIBRARY, and already placed in the world.
+
+    Exists because `wear <entity>` is unanswerable without it. A hand has to be placed before it can be
+    worn, nothing in the CLI placed a library model, and "what do I pass?" is not a question a feature
+    should leave to `world` and a squint. Same shape of gap `scripts/faces.py` filled for faces: `dir`
+    lists assets and `inspect_figure` answers for one already placed, and neither answers *which of
+    these can do the thing*.
+    """
+    out_lib = []
+    for row in library.search(kind="model", limit=5000):
+        attrs = row.get("attributes")
+        attrs = json.loads(attrs) if isinstance(attrs, str) else (attrs or {})
+        if not attrs.get("hand_wearable"):
+            continue
+        out_lib.append({"id": row["id"], "label": row.get("label") or "?",
+                        "side": attrs.get("hand_side") or ""})
+    placed = []
+    for ent in store.doc["entities"]:
+        meta = ent.get("meta") or {}
+        if not meta.get("hand_joints"):
+            continue
+        placed.append({"id": ent["id"], "label": meta.get("title") or ent["id"],
+                       "side": meta.get("hand_side") or "",
+                       "worn": ((ent.get("components") or {}).get("hand-rig") or {}).get("hand") or ""})
+    return {"ok": True, "library": out_lib, "placed": placed}
+
+
 class FigureHandRequest(BaseModel):
     id: str
     hand: str = "auto"                   # left | right | auto (pair on the MEASURED side) | off
