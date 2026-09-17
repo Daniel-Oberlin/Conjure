@@ -71,6 +71,30 @@
     return out;                                                    // 24, in chain order
   })();
 
+  /**
+   * Which of the 24 segments is a BONE, and which two kinds are not. **14 are; 10 are not.**
+   *
+   * Measured on a Quest 3, 2026-09-17, against our own hand model: the middle of every chain agrees to
+   * about 1.02, and both ENDS disagree — the first column varies per finger and the last varies most
+   * of all. That is not a hand of different proportions. It is two conventions meeting:
+   *
+   *   `wrist -> *-metacarpal`   the offset between an arbitrary FRAME ORIGIN and the hand. Our model's
+   *                             wrist node and the runtime's wrist pivot need not coincide, and the
+   *                             discrepancy points a different way for each finger, so this varies.
+   *   `*-distal -> *-tip`       the WebXR tip sits at the fingertip SURFACE, derived from the
+   *                             runtime's own estimate of the finger. Our model's tip bone is an
+   *                             authored length. They are measuring different things.
+   *
+   * Neither carries information about how long a BONE is, so neither belongs in a scale estimate.
+   * Including them is what produced `s = 1.017` with a 36% spread: a correct median arrived at through
+   * ten numbers that should never have been in the set. On the 14 that are bones, the spread is zero.
+   */
+  function groupOf(seg) {
+    if (seg[0] === "wrist") return "wrist";
+    return /-tip$/.test(seg[1]) ? "tip" : "bone";
+  }
+  var GROUPS = SEGMENTS.map(groupOf);
+
   // Bind-pose lengths of those 24 bones, in METRES, measured from the catalog's clean hand pair on
   // 2026-09-17 — `b8f676bea0758536` (left) and `f586068580143caa` (right) — as world-space distances
   // between the named joint nodes. RE-MEASURE THESE if the models are re-imported; they are data about two
@@ -140,11 +164,12 @@
    */
   var COLLAPSED = 0.25;        // a ratio this far below 1 is not a short bone, it is a missing one
 
-  function ratioStats(lengths, bind) {
+  function ratioStats(lengths, bind, group) {
     var r = [], names = [];
     for (var i = 0; i < SEGMENTS.length; i++) {
       var t = lengths[i], b = bind && bind[i];
       if (t == null || !b) continue;
+      if (group && GROUPS[i] !== group) continue;
       r.push(t / b);
       names.push(SEGMENTS[i][1]);
     }
@@ -165,10 +190,19 @@
       if (r[k] > hi) { hi = r[k]; hiAt = names[k]; }
       if (r[k] < COLLAPSED) collapsed.push(names[k]);
     }
-    return { n: r.length, median: med, mean: mean, sd: sd, cv: med ? sd / med : 0,
-             min: Math.min.apply(null, r), max: Math.max.apply(null, r),
-             minAt: loAt, maxAt: hiAt, collapsed: collapsed,
-             ratios: r, names: names };
+    var out = { n: r.length, median: med, mean: mean, sd: sd, cv: med ? sd / med : 0,
+                min: Math.min.apply(null, r), max: Math.max.apply(null, r),
+                minAt: loAt, maxAt: hiAt, collapsed: collapsed,
+                ratios: r, names: names, group: group || "all" };
+    if (!group) {
+      // The three populations, separately, because mixing them is what made the whole set look
+      // wrong. `bone` is the only one that answers "how big is this hand".
+      out.bone = ratioStats(lengths, bind, "bone");
+      out.wrist = ratioStats(lengths, bind, "wrist");
+      out.tip = ratioStats(lengths, bind, "tip");
+      out.s = out.bone ? out.bone.median : med;        // THE scale a worn hand needs
+    }
+    return out;
   }
 
   /**
@@ -246,6 +280,19 @@
 
   function ratioVerdict(r) {
     if (!r) return "no bind length to compare against";
+    // Judged on the 14 BONES. The other ten segments are frame and endpoint conventions, and letting
+    // them into the verdict reported a perfectly uniform hand as "different proportions".
+    if (r.bone && !r.collapsed.length) {
+      var b = r.bone;
+      var ends = (r.wrist && r.tip)
+        ? "  (wrist offsets " + r.wrist.median.toFixed(2) + "\u00d7, tips "
+          + r.tip.median.toFixed(2) + "\u00d7 \u2014 conventions, not bones)" : "";
+      if (b.cv <= CV_UNIFORM) return "UNIFORM on the 14 bones; s = " + b.median.toFixed(4) + ends;
+      if (b.cv <= CV_CLOSE) return "CLOSE on the 14 bones; s = " + b.median.toFixed(4) + ends;
+      return "DIFFERENT PROPORTIONS on the 14 bones; widest at " + (b.maxAt || "?")
+        + " (" + b.max.toFixed(2) + "\u00d7), narrowest at " + (b.minAt || "?")
+        + " (" + b.min.toFixed(2) + "\u00d7)" + ends;
+    }
     // Asked BEFORE the spread, because a collapsed bone explains a wide spread and a wide spread does
     // not explain a collapsed bone. Reporting `cv` alone on a hand with four zero-length bones reads
     // as "different proportions" and sends you to rescale a model that is fine.
@@ -557,8 +604,8 @@
         var st = this._st[h];
         if (!st) return;
         if (!st.rat && !st.jit) { lines.push(h + " sampling…"); return; }
-        lines.push(h.charAt(0).toUpperCase() + "  s=" + (st.rat ? st.rat.median.toFixed(3) : "—")
-          + "  cv=" + (st.rat ? pct(st.rat.cv) : "—")
+        lines.push(h.charAt(0).toUpperCase() + "  s=" + (st.rat ? st.rat.s.toFixed(3) : "—")
+          + "  cv=" + (st.rat && st.rat.bone ? pct(st.rat.bone.cv) : "—")
           + (st.rat && st.rat.collapsed.length ? " (" + st.rat.collapsed.length + " bones ~0)" : "")
           + "  jit=" + (st.jit && st.jit.sd != null ? pct(st.jit.sd) : "—")
           + (st.jit ? " sd / " + pct(st.jit.max) + " range" : ""));
@@ -571,9 +618,10 @@
         // cannot distinguish "every bone is 1.3x" from "five bones are 2x and the rest are 1.0", and
         // those are different findings with different fixes. Shown only when there is something to
         // explain, so a uniform hand stays a three-line HUD.
-        if (st.rat && (st.rat.cv > CV_CLOSE || st.rat.collapsed.length)) {
+        if (st.rat && ((st.rat.bone && st.rat.bone.cv > CV_CLOSE) || st.rat.collapsed.length)) {
           var by = {};
           for (var k = 0; k < st.rat.names.length; k++) by[st.rat.names[k]] = st.rat.ratios[k];
+          lines.push("   [wrist offset]  ...bones...  [tip]");
           CHAINS.forEach(function (c) {
             var row = [];
             for (var j = 1; j < c.length; j++) {

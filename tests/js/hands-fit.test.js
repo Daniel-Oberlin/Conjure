@@ -226,7 +226,43 @@ test("your numbers, reproduced: four collapsed metacarpals give s=1.017 and cv=3
   assert.doesNotMatch(said, /DIFFERENT PROPORTIONS/);
 });
 
-test("the surviving explanation for cv=36%: the wrist is not where our model puts it", () => {
+test("14 of the 24 segments are bones; the other 10 are conventions", () => {
+  // Measured on a Quest 3 against our own model: the middle of every chain agrees to about 1.02, and
+  // BOTH ENDS disagree — the first column varies per finger, the last varies most of all. Two
+  // conventions meeting, not a hand of different proportions:
+  //   wrist -> metacarpal   an offset between a frame origin and the hand, pointing differently per
+  //                         finger, carrying no information about how long anything is
+  //   distal -> tip         the WebXR tip is at the fingertip SURFACE, derived from the runtime's own
+  //                         estimate; our model's tip bone is authored. Different measurements.
+  const groups = {};
+  H.SEGMENTS.forEach((s) => {
+    const k = s[0] === "wrist" ? "wrist" : /-tip$/.test(s[1]) ? "tip" : "bone";
+    groups[k] = (groups[k] || 0) + 1;
+  });
+  assert.deepEqual(groups, { wrist: 5, bone: 14, tip: 5 });
+
+  // The measured shape: ends scattered, middle uniform. It must report s from the bones and a clean
+  // cv, not a 36% spread over a set that should never have been mixed.
+  const tracked = H.BIND.left.map((v, i) => {
+    const s = H.SEGMENTS[i];
+    if (s[0] === "wrist") return v * (1.0 + Math.abs(Math.sin(i)));
+    if (/-tip$/.test(s[1])) return v * (0.7 + Math.abs(Math.cos(i)) * 1.2);
+    return v * 1.017;
+  });
+  const r = H.ratioStats(tracked, H.BIND.left);
+  assert.ok(Math.abs(r.s - 1.017) < 1e-6, `s should come from the bones; got ${r.s}`);
+  assert.ok(r.bone.cv < 1e-9, `the 14 bones must be uniform; cv was ${r.bone.cv}`);
+  assert.ok(r.cv > 0.25, "...while the all-24 figure is still wide, which is the point");
+  assert.equal(r.bone.n, 14);
+  assert.equal(r.wrist.n, 5);
+  assert.equal(r.tip.n, 5);
+
+  const said = H.ratioVerdict(r);
+  assert.match(said, /^UNIFORM on the 14 bones/);
+  assert.match(said, /conventions, not bones/);
+});
+
+test("the wrist-offset half of it, on its own", () => {
   // The collapsed-metacarpal hypothesis died on the headset — the HUD reported no bones near zero.
   // What still reproduces s=1.017 with cv~36% and NOTHING collapsed is the five wrist-rooted
   // segments reading long, which is what a wrist origin sitting further back would do.
@@ -241,6 +277,7 @@ test("the surviving explanation for cv=36%: the wrist is not where our model put
   assert.ok(Math.abs(r.median - 1.017) < 0.001, `median ${r.median}`);
   assert.ok(r.cv > 0.30 && r.cv < 0.45, `cv ${r.cv} should land near the measured 36%`);
   assert.equal(r.collapsed.length, 0, "and nothing reads as missing, which is what was seen");
+  assert.ok(Math.abs(r.s - 1.017) < 1e-9, "and s is unaffected, because it comes from the bones");
 
   // Excluding the five wrist-rooted segments recovers a clean uniform scale — the test of the claim.
   const phalanx = [], bind = [];

@@ -165,6 +165,28 @@ you want the full numbers in `temp/conjure.log` (the verdicts are on the HUD eit
    same finding from a second direction.
 4. **Put a glove on.** If nothing moves, nothing is being measured from the image.
 
+**Measured 2026-09-17, and it corrects this plan twice.**
+
+| probe | reading | what it settles |
+|---|---|---|
+| left vs right | **0.240 mm** apart | not one table mirrored — a shared skeleton would be identical |
+| across re-acquisitions | moves | the runtime **re-estimates**; a stored table cannot |
+| ratio, all 24 segments | `s` 1.017, spread **36%** | looked like a differently-proportioned hand, and was not |
+| ratio, by group | **14 bones uniform**; 5 wrist offsets and 5 tips scattered | the spread was ten numbers that are not bone lengths |
+
+So **hand size is real per-session data here**, which answers the question this phase was opened for:
+the privacy clause's static-hand-model does not describe this runtime, and `s` has to be derived at
+runtime rather than baked in. The code was the same either way, as §0 predicted; the *claim* changed.
+
+**And 10 of the 24 segments are not bones.** `wrist → *-metacarpal` is the offset between an arbitrary
+frame origin and the hand — our model's wrist node and the runtime's wrist pivot need not coincide, and
+the discrepancy points a different way per finger. `*-distal → *-tip` compares a WebXR tip, which sits
+at the fingertip *surface* and is derived from the runtime's own estimate, against an authored tip bone.
+Neither says anything about how long a bone is. On the 14 that are bones, the spread is **zero**.
+
+That is a one-line correction to phase 2 with a real consequence: taking the median over all 24 would
+have biased `s` by several per cent on every figure, in a direction that depends on the wearer's hand.
+
 **Read the jitter probe before the ratio probe.** The ratio (`s`, `cv`) divides the tracked lengths by
 *our model's* bind lengths, and §1 above now records that our own two models are not mirrors of each
 other — so a non-zero `cv` is as likely to be about our file as about the runtime. Jitter has no premise.
@@ -272,8 +294,9 @@ status line when it lands.*
 - **State** is `components.hand-rig = {hand: "left"}` — ordinary durable world state, semantic, the same
   as a pose.
 - **Runtime** composes each bone's world matrix from the joint pose: `compose(xrPosition, xrQuaternion,
-  s)`, where `s` is the **median of the 24 segment-length ratios** (tracked ÷ bind). Median because it
-  is pose-invariant — a fist and a flat hand give the same answer where a whole-skeleton fit would not.
+  s)`, where `s` is the median segment-length ratio (tracked ÷ bind) **over the 14 real bones, not all
+  24** — see phase 0. Median because it is pose-invariant — a fist and a flat hand give the same answer
+  where a whole-skeleton fit would not.
   `s` exists because joint positions carry **length and never girth**: skinning transports bound
   vertices rigidly, so without it a large hand gets longer fingers of exactly the authored thickness.
   Phase 0 says whether `s` varies per user; the code is the same either way.

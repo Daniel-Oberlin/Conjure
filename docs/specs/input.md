@@ -225,7 +225,7 @@ agree. The overlay averages 30 frames per acquisition and reports:
 | Probe | Reads | Premise |
 |---|---|---|
 | **jitter** — how much each length moved across the sampled frames | constant ⇒ the runtime is **posing a stored skeleton**, because posing rotates bones and cannot stretch them; movement ⇒ joints are positioned **independently**, which is exactly what the WebXR privacy guidance says an anonymising UA must not do | **none** |
-| **`s`** — the median of tracked ÷ our model's bind length, and the spread (`cv`) around it | `cv ≈ 0` ⇒ the runtime's skeleton is a uniform scale of our model, and the median is the `s` a worn hand needs | **our model is the canonical skeleton** |
+| **`s`** — the median of tracked ÷ our model's bind length **over the 14 real bones**, and the spread (`cv`) around it | `cv ≈ 0` ⇒ the runtime's skeleton is a uniform scale of our model, and the median is the `s` a worn hand needs | **our model is the canonical skeleton** |
 | **`s` across acquisitions** | unchanged after hands leave view and return ⇒ nothing is being re-estimated | none |
 | **left vs right** | a real pair differs by a millimetre or two; the same table twice does not | none |
 | **radii** | how many *distinct* values the 25 radii take. Three or fewer is a table, not a measurement | none |
@@ -234,10 +234,17 @@ Two windows per acquisition, because the first version conflated convergence wit
 frames 1–30 are the **fresh** reading, 61–90 the **settled** one. The settled figure is the headline and
 the gap between them is the re-acquisition probe asked without making you move.
 
-**Measured on a Quest 3, 2026-09-17: jitter is ~2.5%, both hands.** So this runtime does **not** serve a
-static hand model — it positions each joint independently. What that licenses is a statement about
-rigidity and nothing more: independent positions could still be a fixed skeleton plus noise, and
-separating those needs the perturbation probe or a second pair of hands.
+**Only 14 of the 24 segments are bones.** `wrist → *-metacarpal` is the offset between an arbitrary
+frame origin and the hand, pointing a different way for each finger; `*-distal → *-tip` compares a
+WebXR tip — at the fingertip *surface*, derived from the runtime's own estimate — against an authored
+tip bone. Neither carries information about how long a bone is, so `s` is the median over the other
+fourteen and the three groups are reported separately.
+
+**Measured on a Quest 3, 2026-09-17.** Left and right differ by **0.240 mm** and the figures move
+across re-acquisitions, so this runtime does not serve a static mirrored table — it re-estimates per
+session, and hand size is real data here. Taken over all 24 segments the ratios spread by **36%**,
+which read as a differently-proportioned hand and was nothing of the kind: on the 14 bones the spread
+is **zero**, at `s ≈ 1.02`. That is what a summary statistic costs when the population is mixed.
 
 **Read jitter first.** The `s` probe's premise is known to be shaky: our own two hand models are not
 mirrors of each other — their index metacarpals differ by **6.3 mm**, measured — so a non-zero `cv` is
