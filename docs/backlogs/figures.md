@@ -181,7 +181,8 @@ Open, and small:
 
 ### Eye contact — aiming the eyes at the wearer
 
-**Not started, and the measurement says it is far more tractable than the facial retarget.** Every rig
+**Planned: [`plans/gaze-and-blink.md`](../plans/gaze-and-blink.md).** The measurement says it is far
+more tractable than the facial retarget. Every rig
 in the corpus has eye bones:
 
 | figure | eye bones | in the humanoid map? | look morphs |
