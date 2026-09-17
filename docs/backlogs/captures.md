@@ -225,8 +225,13 @@ from `capture_audit.py` is an open, cheap improvement.
 **Raised 2026-09-15.** A published PlayCanvas app is a static site, and a capture holds essentially all
 of one: `playcanvas-stable.min.js` (their engine), `__start__.js`, `__settings__.js`, `__modules__.js`,
 `__game-scripts.js`, `config.json`, the `files/assets/` tree and the wasm (ammo, basis). Serve the
-directory over HTTP and it should boot. No `index.html` is captured, but PlayCanvas's is boilerplate and
-reconstructible from `__settings__.js`.
+directory over HTTP and it should boot.
+
+*(Two claims here were wrong and are kept for the record. "No `index.html` is captured" — glb-grabber
+0.21.0 offers the document, and before that one was in every capture anyway, misfiled under a texture's
+name 143 times over, because an SPA answers a 404 with its own shell. And "serve the directory over
+HTTP and it should boot" is false: the app asks one endpoint twice and needs two different answers,
+which a file server cannot give. See `playcanvas-unpack/docs/decisions.md`.)*
 
 **The blocker is the backend, and it is smaller than it looks.** The app talks to a **PocketBase** API
 (`pocketbase.umd.js`, `api/collections/scene/records`, `api/collections/pricing_plan`) for scene

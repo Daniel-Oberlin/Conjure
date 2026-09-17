@@ -41,6 +41,8 @@ from __future__ import annotations
 import argparse
 import collections
 import os
+import pathlib
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -104,6 +106,59 @@ def captures_under(path: str, each: bool) -> list[str]:
             if os.path.isdir(os.path.join(path, name)) and find_builds(os.path.join(path, name))]
 
 
+#: The sibling repo that turns a capture into a runnable app, and therefore the only thing that can
+#: say whether one boots. Resolved relative to this checkout, since the two live side by side.
+UNPACK = pathlib.Path(__file__).resolve().parent.parent.parent / "playcanvas-unpack"
+
+
+def boot_report(path: str, each: bool = False) -> None:
+    """Can these captures BOOT — asked by shelling out to `pcunpack check`.
+
+    Everything above answers one question: did the download finish. It reads `config.json`, which is a
+    complete manifest of what a build LOADS, and reports every asset that did not arrive.
+
+    It cannot answer the other question. An app needs `index.html`, the engine, and five `__*.js`
+    bootstrap files — none of which are assets, so none of which appear in any manifest, so none of
+    which this script can see missing. Measured across twenty captures: **six had `config.json` and
+    every texture and no app code at all, and not one reported a problem.** Meanwhile `index.html`
+    landed on disk 143 times by accident, misfiled under texture names, because a single-page app
+    answers a 404 with its own shell.
+
+    "The download finished" and "this can run" are different questions, and only one was being asked.
+
+    Shelled out to rather than reimplemented, deliberately. The list of required files is a property of
+    the thing that CONSUMES a capture, and `playcanvas-unpack` is where it is already measured, tested
+    and kept current — `docs/capture-format.md` there is the contract. A second copy of the list here
+    would be a second thing to be wrong, and the failure mode of a stale copy is the one this whole
+    check exists to remove: a stage that reports success it has not earned.
+    """
+    if not (UNPACK / "pcunpack").is_dir():
+        print(f"\nboot check skipped — no {UNPACK} beside this checkout.")
+        print("  Without it, 'complete' above means every ASSET arrived and nothing about whether the")
+        print("  app can start: the engine and the five __*.js files are in no manifest.")
+        return
+    # ABSOLUTE, and the captures rather than their parent. It runs with `cwd=UNPACK`, so a relative
+    # path resolves against the wrong directory — and `--each` means the children are the captures, so
+    # handing over the parent asks `check` about a directory that holds no build of its own.
+    root = pathlib.Path(path).resolve()
+    targets = ([str(d) for d in sorted(root.iterdir()) if d.is_dir()] if each else [str(root)])
+    if not targets:
+        return
+    print("\ncan it boot?  (pcunpack check — the assets above are a different question)")
+    try:
+        done = subprocess.run([sys.executable, "-m", "pcunpack", "check", "--brief", *targets],
+                              cwd=UNPACK, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as exc:        # noqa: BLE001 — never the main report
+        print(f"  could not run it: {exc}")
+        return
+    for line in (done.stdout or "").splitlines():
+        print(f"  {line}")
+    if done.returncode not in (0, 1):
+        # 1 is "something cannot run", which is a finding rather than a failure of the tool.
+        for line in (done.stderr or "").splitlines()[:3]:
+            print(f"  ! {line}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("path", help="a capture, or a directory of them")
@@ -112,6 +167,8 @@ def main() -> int:
     ap.add_argument("--files", action="store_true", help="name every missing file, not just count it")
     ap.add_argument("--each", action="store_true",
                     help="treat each child directory as its own capture (use for temp/vrh)")
+    ap.add_argument("--no-boot", dest="boot", action="store_false",
+                    help="skip the boot check (see `boot_report`)")
     args = ap.parse_args()
 
     if not os.path.isdir(args.path):
@@ -170,6 +227,8 @@ def main() -> int:
     if theirs:
         print(f"\n{worst} file(s) the earlier copy had and this one does not"
               if worst else "\nnothing was lost against the earlier copy")
+    if args.boot:
+        boot_report(args.path, each=args.each)
     return 1 if worst else 0
 
 

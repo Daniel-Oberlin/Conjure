@@ -63,8 +63,16 @@ grabber has to satisfy, defined by the consumer because the consumer can check i
 It matters here for one reason. **Completeness for import and completeness for running are different
 questions, and this pipeline only ever asked the first.** `capture_audit.py` checks assets against
 `config.json`, which is exact — and of twenty captures, seven could not be rebuilt into a working app
-and none of them reported a problem. Six had no engine and no bootstrap at all. If a capture is ever
-re-fetched or re-audited, `pcunpack check` is the other half of the answer.
+and none of them reported a problem. Six had no engine and no bootstrap at all, which no manifest can
+reveal: the engine and the five `__*.js` files are not assets, so nothing lists them.
+
+**So `capture_audit.py` now asks both questions.** After the asset report it shells out to
+`pcunpack check` and prints `RUNNABLE` / `CANNOT RUN` per capture (`--no-boot` opts out; a missing
+sibling repo degrades to a line saying what the audit therefore cannot tell you). Shelled out to rather
+than reimplemented, deliberately: the list of required files is a property of the CONSUMER, it is
+already measured and tested over there, and a second copy here would be a second thing to be wrong —
+with the stale-copy failure mode being precisely the one this check exists to remove, a stage reporting
+success it has not earned.
 
 ## 3. Re-assembling a PlayCanvas build
 
