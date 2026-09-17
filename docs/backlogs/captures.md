@@ -322,3 +322,27 @@ them. It is not.
 
 Worth resolving before the full set is captured, because 47 files × every capture is either a large
 recurring hole or a line that can stop being printed.
+
+## The extension drops a trailing SPACE from a filename, as it drops a run of dots (2026-09-17)
+
+Two manglings, same place — the characters just before the extension — and both write a file that is
+present, correct, and unreachable by the only name the asset registry will ever ask for:
+
+| declared in `config.json` | written to disk |
+|---|---|
+| `…VR holes dot com..mp3` | `…VR holes dot com.mp3`  (a run of dots collapsed) |
+| `TOOLS%20.glb` → `TOOLS .glb` | `TOOLS.glb`  (a trailing space dropped) |
+
+The dots case was known and worked around downstream. The space case was found on 2026-09-17 while
+fixing the launcher captures, and it had been costing the **older** captures too: `granny`'s build
+gained a 1.5 MB container and a JSON the moment the repair learned about spaces.
+
+**The space case matters more than the dots case did.** The dots were eight voice lines per capture, so
+the symptom was silence. `TOOLS .glb` is a **container** — a model — so the symptom is missing geometry,
+which reads as a bad capture rather than a mangled filename. One per capture on the new set.
+
+Worked around in `pcunpack build` (`_mangled`, driven by the registry, copying rather than moving so
+the mirrored name stays as the record of the download). **Not fixed at source**, and it should be: a
+download that cannot round-trip the name it asked for is a producer bug, and the workaround only helps
+a capture that goes through `pcunpack`. Related: the same fix shape would cover whatever else the
+download pipeline normalises, which nobody has enumerated.
