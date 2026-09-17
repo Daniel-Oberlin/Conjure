@@ -847,6 +847,9 @@ and not claimed to be more.
 
 ### 8e. Carrying the FACE through a retarget
 
+*The approaches this rejected on the way — and they are the reusable part — are in
+[`investigations/facial-expression.md`](../investigations/facial-expression.md).*
+
 §8c maps a clip through the humanoid map, and the map has **51 bones — core plus fingers — none of
 them facial**. So every retargeted clip arrived with a dead face, and that was almost the whole corpus:
 **519 of 543 captured clips rotate a facial bone**, and not the handful with facial names. `1_idle`
