@@ -204,11 +204,21 @@ def describe(doc: dict) -> dict:
     if not joints:
         return {}
     problems = check(doc, joints)
+    # WHAT IT LOOKS LIKE, so a pair can be chosen rather than stumbled into. The catalog holds five
+    # hand files and they are not five hands: two are the textured VR pair, one is an orphaned AR left,
+    # and two rights carry NO MATERIALS AT ALL. Picking the first of each side put a grey untextured
+    # right next to a textured left on the first wearing, which reads as a broken import.
+    #
+    # The material NAMES are what identify a pair — `ArmsVR` next to `ArmsVR` — and that is a stronger
+    # signal than counting textures, because the orphaned AR left is textured too.
+    mats = [m.get("name") or "" for m in (doc.get("materials") or [])]
     out = {
         "hand_joints": joints,
         "hand_side": hand_side(doc, joints),
         "hand_rev": HAND_REV,
         "hand_wearable": not problems,
+        "hand_materials": sorted(n for n in mats if n),
+        "hand_images": len(doc.get("images") or []),
     }
     if problems:
         out["hand_problems"] = problems

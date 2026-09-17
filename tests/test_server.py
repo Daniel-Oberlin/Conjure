@@ -4739,12 +4739,13 @@ def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client
     the library was already stamped current, refresh-models found nothing to do, and the fix reached
     nobody — while the code, the tests and the renders all said it worked. If you change either of these
     literals, change the other: a new derived field is exactly the case the stamp exists for."""
-    assert srv.FRAME_REV == 20
+    assert srv.FRAME_REV == 21
     assert srv._DERIVED_MODEL_ATTRS == (
         "bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
         "morph_names", "expression_scheme", "facial_morphs", "expression_rev",
         "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified", "rig_sig", "rig_sig_rev",
-        "hand_joints", "hand_side", "hand_rev", "hand_wearable", "hand_problems")
+        "hand_joints", "hand_side", "hand_rev", "hand_wearable", "hand_problems",
+        "hand_materials", "hand_images")
 
 
 def test_a_bone_that_rides_its_limb_reaches_the_entity(srv, client, tmp_path):

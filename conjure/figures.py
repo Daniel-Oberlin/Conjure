@@ -1652,7 +1652,10 @@ def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 20          # 20: HANDS — the WebXR joint map, the measured side, and whether it is
+FRAME_REV = 21          # 21: a hand's MATERIALS and texture count, so a PAIR can be chosen rather
+                        #     than stumbled into — the catalog's five hand files are two textured, one
+                        #     orphaned AR left, and two rights with no materials at all.
+                        # 20: HANDS — the WebXR joint map, the measured side, and whether it is
                         #     wearable at all (conjure/hands.py). A hand is not a figure and shares
                         #     none of its vocabulary, but it rides the same catalog row and the same
                         #     stamp, so a library catalogued before hands existed re-derives on refresh.

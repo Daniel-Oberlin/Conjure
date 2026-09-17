@@ -48,7 +48,17 @@
     BONE_PAIRS.push([f + "-finger-phalanx-intermediate", f + "-finger-phalanx-distal"]);
   });
 
+  // The five `*-distal -> *-tip` segments, which are NOT bones and get their own treatment below.
+  var TIPS = ["thumb-tip", "index-finger-tip", "middle-finger-tip", "ring-finger-tip",
+              "pinky-finger-tip"];
+  var TIP_PARENT = {
+    "thumb-tip": "thumb-phalanx-distal", "index-finger-tip": "index-finger-phalanx-distal",
+    "middle-finger-tip": "middle-finger-phalanx-distal", "ring-finger-tip": "ring-finger-phalanx-distal",
+    "pinky-finger-tip": "pinky-finger-phalanx-distal"
+  };
+
   var S_MIN = 0.5, S_MAX = 2.0;      // a scale outside this is a bad frame, not a big hand
+  var TIP_MAX = 3.0;                 // a tip ratio beyond this is a tracking artefact, not a finger
   var LOST_MS = 400;                 // tracking gone this long → hand back to its rest pose
 
   function log(msg) {
@@ -79,6 +89,7 @@
       this._bind = null;             // {joint: world position at rest}
       this._rest = null;             // bone -> local matrix at rest, for putting it back
       this._s = 1;
+      this._tips = null;             // {tipJoint: its own finger's distal→tip ratio}
       this._lastSeen = 0;
       this._restored = true;
       this._tmp = { m: new this.T.Matrix4(), inv: new this.T.Matrix4(), p: new this.T.Vector3(),
@@ -194,11 +205,42 @@
      * Walked in `JOINTS` order, which is parents before children, so a parent's `matrixWorld` is
      * already the one we just wrote by the time a child asks for it.
      */
+    /**
+     * Per-finger scale for the five TIP bones, derived rather than dialled.
+     *
+     * Reported on device: the wearer's real fingertips protrude about 5 mm beyond the virtual ones.
+     * The tip JOINT lands exactly where the runtime says — every joint does — so this is not a
+     * placement error. It is the flesh: the fingertip cap is bound to the tip bone, and `s` only
+     * scales it by the GIRTH ratio, which says nothing about how far a fingertip sticks out.
+     *
+     * And phase 0 already measured why it would not: `*-distal -> *-tip` is the one segment where our
+     * model and the runtime are measuring different things — the WebXR tip sits at the fingertip
+     * SURFACE, derived from the runtime's own estimate of the finger, while the model's tip bone is an
+     * authored length. That ratio was the widest-varying column of the whole reading.
+     *
+     * So each tip bone is scaled by its OWN finger's tracked ÷ bind ratio for that segment. A tip bone
+     * is a leaf, so nothing inherits the scale and it cannot propagate; and the number comes from the
+     * same measurement that predicted the problem, rather than from a millimetre figure typed in.
+     */
+    _tipScale: function (pos) {
+      var bind = this._bind, out = {};
+      for (var i = 0; i < TIPS.length; i++) {
+        var tip = TIPS[i], par = TIP_PARENT[tip];
+        if (!pos[tip] || !pos[par] || !bind[tip] || !bind[par]) continue;
+        var was = bind[par].distanceTo(bind[tip]);
+        if (was < 1e-5) continue;
+        var r = pos[par].distanceTo(pos[tip]) / was;
+        if (r > 0 && r < TIP_MAX) out[tip] = r;
+      }
+      return out;
+    },
+
     _drive: function (jm) {
-      var bones = this._bones, t = this._tmp, s = this._s;
+      var bones = this._bones, t = this._tmp, s = this._s, tips = this._tips || {};
       for (var i = 0; i < JOINTS.length; i++) {
         var j = JOINTS[i], bone = bones[j];
-        t.sc.set(s, s, s);
+        var k = tips[j] != null ? tips[j] : s;
+        t.sc.set(k, k, k);
         t.m.compose(jm.pos[j], jm.quat[j], t.sc);
         if (bone.parent) {
           t.inv.copy(bone.parent.matrixWorld).invert();
@@ -218,6 +260,7 @@
         bone.position.copy(p); bone.quaternion.copy(q); bone.scale.copy(sc);
       });
       this._restored = true;
+      this._tips = null;
     },
 
     tick: function () {
@@ -250,6 +293,13 @@
         // Eased, so one odd frame cannot flick the girth. It is a slowly-varying property of a hand,
         // not a per-frame measurement.
         this._s = this._s ? this._s * 0.9 + s * 0.1 : s;
+      }
+      var tips = this._tipScale(jm.pos);
+      if (!this._tips) this._tips = tips;
+      else {
+        for (var k in tips) {
+          this._tips[k] = this._tips[k] != null ? this._tips[k] * 0.9 + tips[k] * 0.1 : tips[k];
+        }
       }
       this._drive(jm);
     }

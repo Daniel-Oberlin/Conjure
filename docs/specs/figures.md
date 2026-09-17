@@ -966,6 +966,7 @@ hand named any other way is refused with a reason rather than guessed at
 | `hand_joints` | `{webxrJointName: nodeName}` — an identity map today, written out anyway so a second naming scheme changes one place |
 | `hand_side` | `left`/`right`, **measured** from the hand's own chirality, never read from the `_L` in a filename |
 | `hand_wearable` | did it pass the gate |
+| `hand_materials`, `hand_images` | what it is dressed in, so a **pair** can be chosen. The catalog's five hand files are not one pair: two are the textured VR set, one an orphaned AR left, and two rights carry no materials at all. Taken in order, the first wearing put a grey untextured right beside a textured left — which reads as a broken import rather than as two files that were never a pair. `conjure-ctl wear --pair` matches on material NAMES, which is a stronger signal than counting textures because the orphaned left is textured too. |
 | `hand_problems` | why not, when it did not — recorded rather than swallowed, so "not a hand" and "a hand we rejected" are distinguishable |
 
 The gate asks two things: all 25 joints present, and every bone along its own local −Z. **Not** that the
@@ -995,6 +996,16 @@ girth.** Every joint is placed at the pose the runtime reports, so positions are
 and a scale error cannot accumulate down a chain; `s` scales the flesh, and 5% of a finger's girth is
 under a millimetre. It is eased frame to frame, because girth is a slowly-varying property of a hand
 rather than a per-frame measurement.
+
+**The five tip bones get their own scale, derived per finger.** Worn on a Quest 3, the wearer's real
+fingertips protruded about 5 mm beyond the virtual ones. That is not a placement error — the tip joint
+lands exactly where the runtime says, as every joint does. It is the *flesh*: the fingertip cap is bound
+to the tip bone, and `s` scales it by the girth ratio, which says nothing about how far a fingertip
+sticks out. Phase 0 had already measured why `s` could not help — `*-distal → *-tip` is the one segment
+where the model and the runtime measure different things, and it was the widest-varying column of the
+whole reading. So each tip bone takes its own finger's tracked ÷ bind ratio for that segment. A tip bone
+is a **leaf**, so nothing inherits the scale and it cannot propagate; and the number comes from the same
+measurement that predicted the problem rather than from a millimetre figure typed in.
 
 **Precedence: live hand > clip > pose.** Settled by taking the other two writers *off* — `figure-clip`
 is paused and `figure.restore()` is called on wear — rather than by winning a race with them, since

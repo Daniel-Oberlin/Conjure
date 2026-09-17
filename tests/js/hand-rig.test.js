@@ -186,3 +186,58 @@ test("a model missing a joint is REFUSED rather than driven in part", () => {
   self._bones = null;
   assert.equal(self._collect(), null);
 });
+
+test("the TIP bones get their own derived scale, and it does not touch anything else", () => {
+  // Reported on device: the wearer's real fingertips protrude ~5 mm beyond the virtual ones. The tip
+  // JOINT lands exactly where the runtime says — every joint does — so this is the flesh, not the
+  // placement: the fingertip cap is bound to the tip bone and `s` only scales it by the GIRTH ratio.
+  //
+  // Phase 0 measured why it would not help: `distal -> tip` is the one segment where the model and the
+  // runtime measure different things, and it was the widest-varying column of the whole reading.
+  const { self } = rig("flat", 0.03);
+  self._collect();
+
+  // A frame at exactly the bind pose: every tip ratio is 1, so nothing is stretched.
+  const same = self._tipScale(frame(0.03).pos);
+  assert.equal(Object.keys(same).length, 5, "one per finger, and only the fingers");
+  Object.values(same).forEach((r) => assert.ok(Math.abs(r - 1) < 1e-9));
+
+  // Now push every tip 5 mm further out, which is the reported symptom.
+  const f = frame(0.03);
+  Object.keys(same).forEach((tip) => { f.pos[tip].z -= 0.005; });
+  const longer = self._tipScale(f.pos);
+  Object.entries(longer).forEach(([tip, r]) => {
+    assert.ok(Math.abs(r - 0.035 / 0.03) < 1e-9, `${tip} ratio ${r}`);
+  });
+
+  // ...and the BONE scale is untouched by it, or the whole hand would swell to fix a fingertip.
+  assert.ok(Math.abs(self._scale(f.pos) - 1) < 1e-9);
+});
+
+test("a tip ratio is applied to the tip BONE only, and cannot propagate", () => {
+  const { self, root, bones } = rig("chain");          // the shape where propagation would show
+  self._collect();
+  self._s = 1;
+  const f = frame(0.03);
+  ["thumb-tip", "index-finger-tip", "middle-finger-tip", "ring-finger-tip", "pinky-finger-tip"]
+    .forEach((tip) => { f.pos[tip].z -= 0.006; });
+  self._tips = self._tipScale(f.pos);
+  self._drive(f);
+  root.updateMatrixWorld(true);
+  const sc = new THREE.Vector3();
+  JOINTS.forEach((n) => {
+    bones[n].matrixWorld.decompose(new THREE.Vector3(), new THREE.Quaternion(), sc);
+    const want = n.endsWith("-tip") ? 0.036 / 0.03 : 1;
+    assert.ok(Math.abs(sc.x - want) < 1e-6, `${n} world scale ${sc.x}, wanted ${want}`);
+  });
+});
+
+test("a wild tip ratio is refused — that is a tracking artefact, not a finger", () => {
+  const { self } = rig("flat", 0.03);
+  self._collect();
+  const f = frame(0.03);
+  f.pos["index-finger-tip"] = f.pos["index-finger-phalanx-distal"].clone();   // collapsed onto it
+  const r = self._tipScale(f.pos);
+  assert.ok(!("index-finger-tip" in r), "a zero-length tip must not scale the cap to nothing");
+  assert.equal(Object.keys(r).length, 4, "and the other four are unaffected");
+});

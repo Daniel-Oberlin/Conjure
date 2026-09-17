@@ -1,7 +1,7 @@
 # Plan — hands: models you wear, and hands as input
 
-**Status:** phases 0, 1 and 2 **built** 2026-09-17 — phase 0 read on device; phase 2 awaits a
-headset · phases 3, 4 open · **Opened:** 2026-09-14
+**Status:** phases 0, 1 and 2 **built** 2026-09-17 — phase 0 read on device; phase 2 worn on device
+and corrected twice · phases 3, 4 open · **Opened:** 2026-09-14
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
@@ -347,6 +347,17 @@ python3 -m conjure.ctl wear <entity> --hand off      # put one down
 state is durable; taking it off returns it to where it was placed; the occlusion conflict is logged when
 `--occlusion hands` is also on; and `?hands=fit` shows the translucent mesh sitting on the real hand,
 which is phase 0's fit question finally asked of the flesh and not only the joints.
+
+**Worn on a Quest 3, 2026-09-17 — it works, and it found two things.**
+
+| seen | what it was | fixed by |
+|---|---|---|
+| one hand grey and untextured | the catalog's five hand files are **not one pair**: two textured, one orphaned AR left, two rights with no materials at all. `--pair` took the first of each side. | record `hand_materials`; match a pair on material NAMES, which the orphaned AR left fails and texture-counting would not |
+| real fingertips protrude ~**5 mm** past the virtual ones | not placement — the tip joint lands exactly where the runtime says. The fingertip FLESH: the cap is bound to the tip bone and `s` scales it by the GIRTH ratio, which says nothing about how far a fingertip sticks out | a per-finger scale on the five **tip** bones, from that finger's own tracked ÷ bind ratio for `distal → tip`. A tip bone is a leaf, so it cannot propagate |
+
+The second one is phase 0 paying for itself: `*-distal → *-tip` was already measured as the one segment
+where the model and the runtime measure different things, and as the widest-varying column of the
+reading. Without that, 5 mm would have been fixed with 5 mm.
 
 **What to watch for, given what phase 0 measured.** The per-bone residual after a single `s` is ~5%, and
 it shows up as stretch in the skinning blend **at the knuckles** rather than as a hand of the wrong size

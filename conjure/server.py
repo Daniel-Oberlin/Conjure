@@ -1122,7 +1122,8 @@ _DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", 
                         # bool that is usually False: a refresh must be able to CLEAR a claim it can no
                         # longer justify, and "this used to be wearable" is the shape of stale that
                         # silently puts a broken model on someone's wrist.
-                        "hand_joints", "hand_side", "hand_rev", "hand_wearable", "hand_problems")
+                        "hand_joints", "hand_side", "hand_rev", "hand_wearable", "hand_problems",
+                        "hand_materials", "hand_images")
 
 
 def _extracted_model_attrs(asset_id: str) -> dict:
@@ -4944,7 +4945,13 @@ async def figure_hands() -> dict:
         if not attrs.get("hand_wearable"):
             continue
         out_lib.append({"id": row["id"], "label": row.get("label") or "?",
-                        "side": attrs.get("hand_side") or ""})
+                        "side": attrs.get("hand_side") or "",
+                        "materials": attrs.get("hand_materials") or [],
+                        "images": int(attrs.get("hand_images") or 0)})
+    # Best-dressed first, so anything that takes "the left one" takes a textured left. Five hand files
+    # in the catalog and they are not five hands: two are a textured pair, one an orphaned AR left, and
+    # two rights carry no materials at all.
+    out_lib.sort(key=lambda h: (-h["images"], -len(h["materials"]), h["id"]))
     placed = []
     for ent in store.doc["entities"]:
         meta = ent.get("meta") or {}

@@ -435,7 +435,8 @@ def _wear_list(s: Settings) -> None:
     if lib:
         print("\nin the library — place one with `wear <asset-id> --place`:")
         for h in lib:
-            print(f"  {h['id']:<24} {h['side'] or '?':<6} {h['label'][:28]}")
+            dress = ", ".join(h.get("materials") or []) or "NO MATERIALS — it will render grey"
+            print(f"  {h['id']:<24} {h['side'] or '?':<6} {h['label'][:20]:<20} {dress}")
     if not placed and not lib:
         # Two absences with one appearance, so say which. A library catalogued before hands existed
         # has no `hand_wearable` on any row and needs a refresh; a library with no hand models in it
@@ -448,11 +449,32 @@ def _wear_list(s: Settings) -> None:
 
 
 def _wear_pair(s: Settings, a) -> None:
-    """Place both hands and wear them — the whole test, in one command."""
+    """Place both hands and wear them — the whole test, in one command.
+
+    **Matched on MATERIAL NAMES, not taken in order.** The catalog's hand files are not one pair: two
+    are the textured VR set, one is an orphaned AR left, and two rights carry no materials at all.
+    Taking the first of each side put a grey untextured right next to a textured left on the first
+    wearing, which reads as a broken import rather than as two files that were never a pair.
+    """
     lib = (_get(s, "/figure/hands").get("library") or [])
+    lefts = [h for h in lib if h["side"] == "left"]
+    rights = [h for h in lib if h["side"] == "right"]
+    chosen = {}
+    for left in lefts:                       # already best-dressed first
+        mate = next((r for r in rights if r["materials"] == left["materials"]), None)
+        if mate:
+            chosen = {"left": left, "right": mate}
+            break
+    if not chosen:
+        # No two agree, so say so rather than assembling a mismatched pair in silence.
+        if lefts and rights:
+            print("wear: no matching pair — no left and right share a material set. Taking the "
+                  "best-dressed of each; expect them to look different.")
+        chosen = {"left": lefts[0] if lefts else None, "right": rights[0] if rights else None}
+
     worn = []
     for side in ("left", "right"):
-        have = next((h for h in lib if h["side"] == side), None)
+        have = chosen.get(side)
         if not have:
             print(f"wear: no {side} hand in the library")
             continue
