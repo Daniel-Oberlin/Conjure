@@ -82,6 +82,28 @@ BONES = tuple(i for i, g in enumerate(GROUPS) if g == "bone")
 AXIS_MIN = 0.90
 
 
+#: How far a worn fingertip is pushed past the joint the runtime reports, and the thumb's exception.
+#:
+#: **Both are geometry, not preference, which is the only reason they are defaults at all.**
+#:
+#: `radius` — the WebXR tip joint sits at the CENTRE of the fingertip and `XRJointPose.radius` is that
+#: fingertip's radius, so the surface is one radius further out. That is an identity, not a fudge, and
+#: it predicted the measurement before the measurement was taken: 8 mm was the figure that landed the
+#: fingertips by hand on a Quest 3, and a human fingertip radius is about 8 mm.
+#:
+#: `0.7` on the thumb — one radius overshoots a thumb, because a thumb has one fewer phalanx and a
+#: broad, flat pad. Its reported radius is the half-width of that pad, which OVERSTATES how far the tip
+#: protrudes, where on a rounder fingertip the two are nearly the same. So the exception is about
+#: thumbs rather than about a hand.
+#:
+#: **Read on ONE pair of hands** (2026-09-17), and that is the honest limit of it. What makes them
+#: defensible as defaults anyway is that neither is a length: a radius comes from the runtime's own
+#: per-finger measurement, and 0.7 is a ratio between two things that vary together. A millimetre
+#: figure would have been one person's hand; these are not.
+TIP_OUT_DEFAULT = "radius"
+TIP_THUMB_DEFAULT = "0.7"
+
+
 def _unit(v):
     n = math.sqrt(sum(c * c for c in v))
     return [c / n for c in v] if n else [0.0, 0.0, 0.0]

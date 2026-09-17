@@ -1003,9 +1003,11 @@ exactly where the runtime says, as every joint does. It is the *flesh* — the f
 the tip bone, and `s` scales it by the girth ratio, which says nothing about how far a fingertip sticks
 out.
 
-`tipOut` pushes each tip bone along its own local −Z (the bone direction away from the wrist) by a
-number of millimetres. **Default 0**, which is the only defensible default: everything else here is
-exact by construction, and a non-zero default would quietly make that untrue.
+`tipOut` pushes each tip bone along its own local −Z (the bone direction away from the wrist) — a
+number of millimetres, or `radius`. **The defaults are `radius` and a thumb coefficient of `0.7`**,
+stated once in `conjure/hands.py` (`TIP_OUT_DEFAULT`, `TIP_THUMB_DEFAULT`) and pinned against the
+component's own schema by a test, since every path that sets `hand-rig` goes through the server and a
+drift would be invisible. `off` returns to exactly where the runtime says.
 
 **It is dialled live.** `conjure-ctl wear --tip-out MM` with no id adjusts every worn hand and takes
 effect on the next frame. The component reads `tipOut` per frame and has **no `update` handler** — so
@@ -1050,10 +1052,14 @@ case), composing with `radius:k` rather than replacing it, and ignored in the fl
 there is no radius to correct. A bare `--tip-thumb` leaves the offset already set alone, which is the
 point of dialling one number at a time.
 
-**Still open:** whether `radius` becomes the default. The evidence for it is now good — it is a
-geometric identity, it held across four fingers on the first try, and its one exception has an
-anatomical reason — but it has been read on one pair of hands, and the coefficient the thumb wants is
-not yet a number.
+**Measured: the thumb wants 0.7.** So the pair `radius` + `0.7` is the default, and the reason it is
+defensible off one pair of hands is that **neither value is a length**. A radius comes from the
+runtime's own per-finger measurement, and 0.7 is a ratio between two things that vary together — a
+thumb's pad half-width and its tip protrusion. The 8 mm that got there first *was* one person's hand,
+and would have been wrong for the next.
+
+Read on one wearer (2026-09-17), which is the honest limit of it. A second pair of hands is the cheap
+check and nothing here depends on it: `off` and a millimetre figure both remain.
 
 **Precedence: live hand > clip > pose.** Settled by taking the other two writers *off* — `figure-clip`
 is paused and `figure.restore()` is called on wear — rather than by winning a race with them, since

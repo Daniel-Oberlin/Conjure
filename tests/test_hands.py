@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -247,11 +248,12 @@ def test_the_library_and_the_world_can_both_be_ASKED_what_is_wearable(srv, clien
     # And the fingertip knob READS BACK. Absent from the listing at first, and the omission made it
     # one-way by accident: you could dial it and not see it, so "how do I turn this off" had no
     # answer on screen.
-    assert client.get("/figure/hands").json()["placed"][0]["tip_out"] == "0"
-    client.post("/figure/hand", json={"id": "hand_left", "hand": "auto", "tip_out": "radius"})
-    assert client.get("/figure/hands").json()["placed"][0]["tip_out"] == "radius"
+    tip = lambda: client.get("/figure/hands").json()["placed"][0]["tip_out"]
+    assert tip() == "radius", "the measured default, applied without being asked for"
+    client.post("/figure/hand", json={"id": "hand_left", "hand": "auto", "tip_out": "8"})
+    assert tip() == "8"
     client.post("/figure/hand", json={"id": "hand_left", "hand": "auto", "tip_out": "off"})
-    assert client.get("/figure/hands").json()["placed"][0]["tip_out"] == "off"
+    assert tip() == "off"
 
 
 def test_a_figure_that_is_not_a_hand_is_not_LISTED_as_wearable(srv, client):
@@ -269,7 +271,7 @@ def test_the_tip_offset_is_carried_to_the_component_and_defaults_to_zero(srv, cl
     eid = _place_hand(srv, client)
     client.post("/figure/hand", json={"id": eid, "hand": "auto"})
     ent = next(e for e in srv.store.doc["entities"] if e["id"] == eid)
-    assert ent["components"]["hand-rig"]["tipOut"] == "0"
+    assert ent["components"]["hand-rig"]["tipOut"] == "radius"     # the measured default
 
     out = client.post("/figure/hand", json={"id": eid, "hand": "auto", "tip_out": "5"}).json()
     assert out["ok"] and out["tip_out"] == "5"
@@ -312,6 +314,35 @@ def test_the_thumb_coefficient_is_its_own_axis_and_reads_back(srv, client):
     placed = client.get("/figure/hands").json()["placed"][0]
     assert placed["tip_out"] == "radius" and placed["tip_thumb"] == "0.8"
 
-    # Default is 1 — no special case until one is measured.
-    client.post("/figure/hand", json={"id": eid, "hand": "auto", "tip_out": "radius"})
+    # An explicit 1 turns the special case OFF, which is different from not asking.
+    client.post("/figure/hand", json={"id": eid, "hand": "auto",
+                                      "tip_out": "radius", "tip_thumb": "1"})
     assert client.get("/figure/hands").json()["placed"][0]["tip_thumb"] == "1"
+
+
+def test_the_fingertip_DEFAULTS_are_stated_once_and_the_client_agrees():
+    """A tripwire, in the shape this repo already uses for `FRAME_REV`.
+
+    Every path that sets `hand-rig` goes through the server, so the component's own schema defaults
+    are only reached when something bypasses it — which means a drift between the two would be
+    invisible until the one time it mattered. Pinned here rather than trusted.
+    """
+    from conjure.hands import TIP_OUT_DEFAULT, TIP_THUMB_DEFAULT
+    assert (TIP_OUT_DEFAULT, TIP_THUMB_DEFAULT) == ("radius", "0.7")
+    js = (Path(__file__).resolve().parent.parent / "client" / "hand-rig.js").read_text()
+    assert f'tipOut: {{ type: "string", default: "{TIP_OUT_DEFAULT}" }}' in js
+    assert f'tipThumb: {{ type: "string", default: "{TIP_THUMB_DEFAULT}" }}' in js
+
+
+def test_wearing_with_no_arguments_applies_the_measured_defaults(srv, client):
+    """`radius` is a geometric identity and 0.7 is a ratio about thumb anatomy — neither is a length,
+    which is what makes them defensible as defaults off one pair of hands. A millimetre figure would
+    have been one person's hand."""
+    eid = _place_hand(srv, client)
+    out = client.post("/figure/hand", json={"id": eid, "hand": "auto"}).json()
+    assert out["tip_out"] == "radius" and out["tip_thumb"] == "0.7"
+    rig = next(e for e in srv.store.doc["entities"] if e["id"] == eid)["components"]["hand-rig"]
+    assert rig["tipOut"] == "radius" and rig["tipThumb"] == "0.7"
+    # ...and `off` still gets you back to exactly where the runtime says.
+    client.post("/figure/hand", json={"id": eid, "hand": "auto", "tip_out": "off"})
+    assert client.get("/figure/hands").json()["placed"][0]["tip_out"] == "off"

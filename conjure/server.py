@@ -44,6 +44,7 @@ from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CAC
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
 from . import expressions
+from . import hands
 from . import poses
 from .figures import FRAME_REV, POSE_AXES, RIG_SIG_REV, clean_pose, resolve_pose
 from .library import AssetLibrary
@@ -4964,8 +4965,8 @@ async def figure_hands() -> dict:
                        # What the fingertip knob is actually set to. Absent from the listing at first,
                        # and the omission made the knob one-way by accident: you could dial it and
                        # not read it back, so "how do I turn this off" had no answer on screen.
-                       "tip_out": str(rig.get("tipOut") or "0"),
-                       "tip_thumb": str(rig.get("tipThumb") or "1")})
+                       "tip_out": str(rig.get("tipOut") or hands.TIP_OUT_DEFAULT),
+                       "tip_thumb": str(rig.get("tipThumb") or hands.TIP_THUMB_DEFAULT)})
     return {"ok": True, "library": out_lib, "placed": placed}
 
 
@@ -4979,11 +4980,11 @@ class FigureHandRequest(BaseModel):
     #: A STRING, because `radius` is a candidate RULE and a millimetre count is one wearer's setting,
     #: and the whole open question is which of those the right answer is. A float field could not
     #: carry the question.
-    tip_out: str = "0"
+    tip_out: str = hands.TIP_OUT_DEFAULT
     #: A coefficient on the THUMB's radius in `radius` mode. Its own axis because the thumb is its own
     #: anatomical case: one radius lands all four fingers and leaves the thumb long, because a thumb's
     #: reported radius is the half-width of a broad flat pad and overstates how far its tip protrudes.
-    tip_thumb: str = "1"
+    tip_thumb: str = hands.TIP_THUMB_DEFAULT
 
 
 @app.post("/figure/hand")

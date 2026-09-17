@@ -353,7 +353,7 @@ which is phase 0's fit question finally asked of the flesh and not only the join
 | seen | what it was | fixed by |
 |---|---|---|
 | one hand grey and untextured | the catalog's five hand files are **not one pair**: two textured, one orphaned AR left, two rights with no materials at all. `--pair` took the first of each side. | record `hand_materials`; match a pair on material NAMES, which the orphaned AR left fails and texture-counting would not |
-| real fingertips protrude ~**5 mm** past the virtual ones | not placement — the tip joint lands exactly where the runtime says. The fingertip FLESH: the cap is bound to the tip bone and `s` scales it by the GIRTH ratio, which says nothing about how far a fingertip sticks out | `tipOut`, in millimetres, along each tip bone's own −Z. Default 0 |
+| real fingertips protrude ~**5 mm** past the virtual ones | not placement — the tip joint lands exactly where the runtime says. The fingertip FLESH: the cap is bound to the tip bone and `s` scales it by the GIRTH ratio, which says nothing about how far a fingertip sticks out | **one reported radius** per finger, ×0.7 on the thumb — both now the default |
 
 **The fingertip fix was wrong first, and the way it was wrong is the lesson.** The first version scaled
 each tip bone by that finger's tracked ÷ bind ratio for `distal → tip`, reasoning from phase 0 that this
@@ -382,12 +382,17 @@ its one exception has a reason that is about thumbs rather than about a hand. A 
 phalanx and a broad flat pad, so its reported radius is the half-width of that pad and overstates how
 far the tip protrudes; a rounder fingertip's radius and protrusion are nearly the same thing.
 
-`--tip-thumb K` is that, as its own axis (default 1). **Next reading:** the K that lands the thumb.
-0.8 is the obvious first guess and is a guess; `--tip-thumb` dials live like everything else.
+**Measured: the thumb wants 0.7.** `radius` + `tipThumb 0.7` is now the DEFAULT, so a worn hand fits
+with nothing to dial.
 
-Once there is a number, the open question is whether `radius` plus that K becomes the DEFAULT. The
-evidence is good — a geometric identity, four fingers on the first try, one exception with an
-anatomical explanation — and it is still one pair of hands. If 5 mm lands it, the question becomes whether the right rule is a constant or
+What makes that defensible off one pair of hands is that **neither value is a length**: a radius is the
+runtime's own per-finger measurement, and 0.7 is a ratio between a thumb's pad half-width and its tip
+protrusion — two things that vary together. The 8 mm that got there first *was* one person's hand and
+would have been wrong for the next one. That is the difference between a setting and a rule, and it is
+the whole reason the knob was worth keeping open until the shape of the answer was clear.
+
+Still one wearer, and the spec says so. A second pair of hands is the cheap check, and nothing depends
+on it: `off` and a millimetre figure both remain. If 5 mm lands it, the question becomes whether the right rule is a constant or
 a multiple of the reported radius — and those numbers are in that line.
 
 **What to watch for, given what phase 0 measured.** The per-bone residual after a single `s` is ~5%, and

@@ -82,12 +82,14 @@
       joints: { type: "string", default: "" },   // {webxrJoint: nodeName}; identity today, see hands.py
       // How far to push each fingertip out along its own bone: a number of MILLIMETRES, or `radius`
       // for one tip radius as the runtime reports it (`radius:0.8` to scale that). See `_tipOut`.
-      // Zero is "exactly where the runtime says the tip is", which is the only defensible default
-      // until one of the two is known to be a rule rather than one wearer's setting.
-      tipOut: { type: "string", default: "0" },
+      // `off` is "exactly where the runtime says the tip is", which was the default until the radius
+      // rule was read on device. THESE TWO MUST MATCH conjure/hands.py's TIP_OUT_DEFAULT and
+      // TIP_THUMB_DEFAULT, which carry the provenance and which a test pins them against — every path
+      // that sets this component goes through the server, so a drift here would be invisible.
+      tipOut: { type: "string", default: "radius" },
       // A coefficient applied to the THUMB's radius only, in `radius` mode. Its own axis because the
       // thumb is anatomically its own case — see `_tipOut`.
-      tipThumb: { type: "string", default: "1" }
+      tipThumb: { type: "string", default: "0.7" }
     },
 
     init: function () {
