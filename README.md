@@ -290,7 +290,11 @@ scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
             retarget_probe.py (the retargeting specification, measured over every rig),
             clip_diff.mjs / clip_tilt.mjs / clip_stage.py (does a retargeted clip do
             what the original did — run through the CLIENT'S own code, not a model of it),
-            c4_frame_cost.py (hands-free A/B of frame cost while posing)
+            c4_frame_cost.py (hands-free A/B of frame cost while posing),
+            faces.py (what every figure's face can do, and which clips move one;
+            --check runs both geometric checks over the corpus),
+            hand_bind.py (the 24 bind bone lengths of a hand model; --check is the
+            tripwire on the table client/hands-fit.js compares tracked hands against)
 tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`); a
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
 docs/       vision · spec · architecture · decisions · providers · roadmap · setup · testing/https guides

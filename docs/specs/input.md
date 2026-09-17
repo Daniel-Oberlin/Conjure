@@ -173,11 +173,14 @@ Everything that reacts to a controller, module or not. This is the list that mot
 | `dynamics/grab/grab.js` | `controllers()`, `claim`, `reserve` | tier-C manipulation |
 | `dynamics/water/water.js` | `list()`, `isHand`, `fingertip` | the only hand-aware consumer |
 
-**One reader of XR input, but not the only reader of XR joints.**
-`client/occlusion.js` builds its own 25-joint hand mesh straight from `frame.getJointPose`
-([`occlusion.md` §4](./occlusion.md)); `ConjurePointers` reads exactly one joint,
-`index-finger-tip`, and publishes it as `pointer.fingertip`. The two do not share a read. Unifying them
-is [`backlogs/input.md`](../backlogs/input.md).
+**One reader of XR input, but three readers of XR joints.** `ConjurePointers` reads exactly one joint,
+`index-finger-tip`, and publishes it as `pointer.fingertip`. `client/occlusion.js` builds its own
+25-joint hand mesh straight from `frame.getJointPose` ([`occlusion.md` §4](./occlusion.md)). And
+`client/hands-fit.js` reads all 25 for the debug overlay (§9). None of the three share a read, which is
+the duplication this layer removed for buttons and has not yet removed for joints —
+[`backlogs/input.md`](../backlogs/input.md). The overlay is a deliberate exception: it exists to *look
+at* the raw frame, so routing it through a cache would put the thing under test behind the thing it is
+testing.
 
 ---
 
@@ -187,3 +190,60 @@ XR interaction cannot be unit-tested, so on-device tracing is the only way to se
 and the same rule as a module applies ([`dynamics.md` §5](./dynamics.md)): mirror to the console **and**
 to `POST /client_log`, gated by `window.CONJURE_DEBUG_LOG`, tagged `[pointers]`, one-shot messages
 latched so a per-frame condition logs once rather than flooding.
+
+---
+
+## 9. `?hands=fit` — looking at the tracked hand skeleton
+
+`client/hands-fit.js`, on the scene, inert unless the query param is set. A debug mode, not a feature:
+it renders the skeleton the runtime believes in so it can be read against the real hand underneath it.
+In passthrough the compositor draws your hand and our layer blends over it, so anything drawn at a joint
+is seen against the real joint.
+
+| `?hands=` | Draws |
+|---|---|
+| `off` (default, and anything unrecognised) | nothing; the component returns from `init` |
+| `joints` | a sphere at each of the 25 joints, **at the runtime's own reported `radius`** |
+| `axes` | an axis triad per joint |
+| `fit` (also `1`, `true`, `on`) | both |
+
+Spheres are translucent (0.35) with `depthWrite: false`, so the real knuckle shows through and the
+spheres never hide each other; the wrist is drawn in its own colour because it is the one joint the
+WebXR spec leaves loose (*"SHOULD point roughly towards the centre of the palm"*) and therefore the one
+to look at first. Left is cyan, right amber.
+
+The triad draws **the three directions the convention is stated in** — `+X` red, **`−Y` green** (out
+through the palm), **`−Z` blue** (along the bone, away from the wrist) — rather than the positive axes,
+because drawing `+Y`/`+Z` would render the convention backwards and read as a broken rig. Lines skip
+depth testing entirely; a one-pixel line behind a sphere is invisible and the direction is the point.
+
+### What the numbers answer, and which of them carries a premise
+
+Bones are rigid, so the 24 bone lengths are **pose-invariant** — measured in a fist or a flat hand they
+agree. The overlay averages 30 frames per acquisition and reports:
+
+| Probe | Reads | Premise |
+|---|---|---|
+| **jitter** — how much each length moved across the sampled frames | bit-identical ⇒ the runtime is serving a **static hand model**, which the WebXR privacy guidance explicitly permits; movement ⇒ the numbers come from the camera | **none** |
+| **`s`** — the median of tracked ÷ our model's bind length, and the spread (`cv`) around it | `cv ≈ 0` ⇒ the runtime's skeleton is a uniform scale of our model, and the median is the `s` a worn hand needs | **our model is the canonical skeleton** |
+| **`s` across acquisitions** | unchanged after hands leave view and return ⇒ nothing is being re-estimated | none |
+| **left vs right** | a real pair differs by a millimetre or two; the same table twice does not | none |
+| **radii** | how many *distinct* values the 25 radii take. Three or fewer is a table, not a measurement | none |
+
+**Read jitter first.** The `s` probe's premise is known to be shaky: our own two hand models are not
+mirrors of each other — their index metacarpals differ by **6.3 mm**, measured — so a non-zero `cv` is
+as likely to be about our model as about the runtime. A stale bind table produces the same symptom, which
+is why `scripts/hand_bind.py --check` exists.
+
+The overlay draws with no flags; the numbers need `--debug-log` to reach `temp/conjure.log`. The
+verdicts therefore also go on a small HUD, because in a headset the terminal is not where you are
+looking.
+
+**It cannot settle alignment to better than several millimetres.** Passthrough is reprojected, so
+judging fit by eye at close range has that error floor: it resolves *"my fingertip is 1.5 cm short"* and
+cannot resolve the 2 mm that separates a real pair from a mirrored one. That is what the numeric half is
+for.
+
+**`--occlusion hands` defeats it** — the hand occluder carves a passthrough hole exactly where the
+overlay draws, so joints vanish behind your real hand. The component logs this when both are on;
+`?occlusion=off` is the per-client override.

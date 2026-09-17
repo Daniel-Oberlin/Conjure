@@ -1,6 +1,7 @@
 # Plan — hands: models you wear, and hands as input
 
-**Status:** phase 1 **landed** 2026-09-17 · phases 0, 2, 3, 4 open · **Opened:** 2026-09-14
+**Status:** phases 0 and 1 **built** 2026-09-17 — phase 0 awaits its headset reading ·
+phases 2, 3, 4 open · **Opened:** 2026-09-14
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
@@ -60,6 +61,27 @@ Content-addressing did not collapse them because they are not the same bytes:
 So the pair to wear is `b8f676…` + `f586…`; the rest are an orphaned AR-material left and two
 untextured rights. Worth stating because "we imported a lot of hand models" is true by row count and
 false by content.
+
+**Re-measured 2026-09-17 (`scripts/hand_bind.py`), and two of the claims above need correcting.** The
+catalog now holds `5a36d74c…`/`4494f48b…` where it held `eb43564f…`/`ef25dc89…`, so the ids drifted; more
+importantly, **all five rows carry one of exactly two skeletons** — every left agrees with every other
+left to 0.005 mm, and likewise the rights. Five rows, two hands.
+
+1. **The 25 joints are SIBLINGS, not a chain.** Every joint is parented directly to `hand_L`/`hand_R`,
+   each with a Blender `<name>_end` tail node beside it. Phase 2's import gate below asks for "each finger
+   a real parent→child chain" — **that check would refuse the very files it was written for.** The bind
+   pose is still exact; a flat hierarchy says nothing about where the joints *are*. But the gate has to
+   ask something else: the chain exists in the *skin's* joint list and in the geometry, not in the node
+   tree.
+2. **The pair is not a mirror.** The right index metacarpal is **6.3 mm** shorter than the left and its
+   proximal 4.0 mm longer, while middle, ring and pinky agree to within 0.3 mm. So the two files cannot
+   both be the canonical WebXR skeleton, and the dispersion probe below inherits a premise it does not
+   quite have — see phase 0.
+
+The `−Z` claim **holds, with one refinement**: down every finger `dir·(−Z)` is ≥ 0.986 on both hands,
+and at the **wrist** it falls to 0.706–0.975. That is not a defect. The wrist has one frame and five
+bones leaving it, which is exactly why the WebXR spec leaves that joint loose — and why it is the first
+thing the overlay draws in its own colour.
 
 **Today they are inert.** `rigged: true`, no `humanoid` map, so `/figure` refuses them, `inspect_figure`
 has nothing to say, and `parts_unclassified` is `["model_hand_L"]`. They can be placed as props and
@@ -126,10 +148,33 @@ Phase 0 is a measurement and phase 1 is documentation; neither ships code that r
 are where hands become useful and are worth scheduling independently of 2 — **nothing in 3 or 4 needs a
 hand model to exist.**
 
-### Phase 0 — see the fit, then check the numbers
+### Phase 0 — see the fit, then check the numbers — 🔶 BUILT 2026-09-17, UNREAD
 
-*Settles into `backlogs/input.md` as a recorded measurement, and `?hands=fit` into `specs/input.md` as
-a debug mode; if it turns into a campaign, to `investigations/`.*
+*The overlay is documented in [`specs/input.md`](../specs/input.md) §9. The measurement it exists to make
+has not been taken — that needs a headset. It settles into `backlogs/input.md` as a recorded
+measurement; if it turns into a campaign, to `investigations/`.*
+
+**What to do with it, in order.** `?hands=fit` on the client URL, controllers down, `--debug-log` on if
+you want the full numbers in `temp/conjure.log` (the verdicts are on the HUD either way):
+
+1. **Look.** Do 25 spheres sit on your 25 knuckles? The wrist is the pink one — does its blue line point
+   along your forearm and its green line out through your palm?
+2. **Read the HUD.** `jit=0.000%` means the runtime is serving a stored skeleton. That is the answer to
+   the question this phase was opened for, and it needs no second person.
+3. **Put your hands behind your back and bring them out again.** `s` unchanged across acquisitions is the
+   same finding from a second direction.
+4. **Put a glove on.** If nothing moves, nothing is being measured from the image.
+
+**Read the jitter probe before the ratio probe.** The ratio (`s`, `cv`) divides the tracked lengths by
+*our model's* bind lengths, and §1 above now records that our own two models are not mirrors of each
+other — so a non-zero `cv` is as likely to be about our file as about the runtime. Jitter has no premise.
+A stale `BIND` table produces the same symptom as a mismatched hand, which is what
+`python3 scripts/hand_bind.py --check` is for.
+
+*Implementation note that changed the shape of the phase:* the overlay is now the **third** unshared
+reader of XR joints, and it should stay that way — it exists to look at the raw frame, so routing it
+through a cache would put the thing under test behind the thing testing it
+([`backlogs/input.md`](../backlogs/input.md)).
 
 The question is whether Quest reports a **per-user** hand or the static hand-model the privacy clause
 permits — and the obvious experiment, two people in the headset, is not available. It does not have to
@@ -149,8 +194,8 @@ The mode builds in two steps, because **the model half cannot come first**: conf
 
 | Overlay | Settles | Lands |
 |---|---|---|
-| a sphere at each joint, **drawn at the reported `radius`** | whether the radii are plausible per joint or a repeated table — the channel renders itself — and whether 25 spheres sit on your 25 real knuckles | here |
-| a small axis triad per joint | the −Z / −Y convention, and the **wrist**, the one joint the spec leaves loose (`SHOULD point roughly towards the centre of the palm`) | here |
+| a sphere at each joint, **drawn at the reported `radius`** | whether the radii are plausible per joint or a repeated table — the channel renders itself — and whether 25 spheres sit on your 25 real knuckles | **built** (`?hands=joints`) |
+| a small axis triad per joint | the −Z / −Y convention, and the **wrist**, the one joint the spec leaves loose (`SHOULD point roughly towards the centre of the palm`) | **built** (`?hands=axes`) |
 | the conformed mesh, flat unlit colour at ~0.35 alpha, `depthWrite: false` | does the whole hand FIT — the flesh as well as the joints. Skin-over-skin is unreadable, so a contrasting colour or wireframe, never the texture; no depth write, or the hand occludes its own far side and fingers vanish | phase 2, as its acceptance check |
 
 **What it cannot do**, and the reason the numbers below survive: passthrough is reprojected, so judging
@@ -215,8 +260,11 @@ status line when it lands.*
 
 - **Import** records `attributes.hand_joints` (`{webxrJointName: nodeName}`) and a **measured**
   `hand_side` — from which side of the wrist frame the thumb sits on, never from the `_L` in the
-  filename. Gated by a `validate`-shaped check: all 25 present, each finger a real parent→child chain,
-  each bone along its own −Z. Costs a `FRAME_REV` bump; `_DERIVED_MODEL_ATTRS` and the tripwire test
+  filename. Gated by a `validate`-shaped check: all 25 present, and each bone along its own −Z **down
+  the fingers only** — at the wrist that dot product is 0.706–0.975 because five bones leave one frame,
+  so a flat threshold there would refuse every hand we have. **The parent→child chain requirement is
+  dropped**: §1 measures these files as 25 siblings under `hand_L`, and the chain lives in the skin's
+  joint list, not the node tree. Costs a `FRAME_REV` bump; `_DERIVED_MODEL_ATTRS` and the tripwire test
   come with it.
 - **Discovery is deliberately not built.** These files arrived pre-labelled; a hand model named any
   other way gets no map and is refused with a reason. Conventions and inference are

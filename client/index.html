@@ -19,6 +19,7 @@
              space-capture
              controller-beams
              occlusion
+             hands-fit
              scene-environment
              renderer="foveationLevel: 0"
              webxr="optionalFeatures: plane-detection, mesh-detection, hit-test, anchors, depth-sensing, hand-tracking, local-floor">
@@ -47,12 +48,16 @@
 
     <script src="/static/conjure-clock.js"></script>
     <!-- The single XR input reader + action bindings. Must load BEFORE any module that reads input
-         (dynamic modules below, controller-beams) — see docs/specs/dynamics.md §6. -->
+         (dynamic modules below, controller-beams) — see docs/specs/input.md. -->
     <script src="/static/conjure-pointers.js"></script>
     <!-- __DYNAMIC_MODULES__ : the server injects a <script> per module scoped to the ACTIVE agent
          (docs/specs/dynamics.md §9), re-injected on agent switch. -->
     <script src="/static/world-model.js"></script>
     <script src="/static/occlusion.js"></script>
+    <!-- Debug-only hand-skeleton overlay (?hands=fit|joints|axes): the 25 tracked joints drawn at the
+         runtime's own reported radius, plus the numeric "is this a table or an estimate" probe. Inert
+         unless the query param is set — see docs/specs/input.md §9. -->
+    <script src="/static/hands-fit.js"></script>
     <script src="/static/space-snap.js"></script>
     <script src="/static/plane-anchor.js"></script>
     <script src="/static/grounded-skybox.js"></script>

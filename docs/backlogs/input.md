@@ -33,18 +33,24 @@ Two sub-questions that should be answered together and not guessed:
 
 Owned by [`plans/hands.md`](../plans/hands.md) phase 3 while that plan is live.
 
-## Two unshared readers of XR joints
+## Three unshared readers of XR joints
 
 `client/occlusion.js` builds a 25-joint hand mesh from `frame.getJointPose` directly;
-`ConjurePointers` reads `index-finger-tip` only. Neither knows about the other, and a third consumer
-(anything that wears or collides with a hand) would be the third read of the same data — the same
-duplication-breeds-drift shape the pointers layer was created to remove for buttons.
+`client/hands-fit.js` reads all 25 for the `?hands=fit` overlay ([`specs/input.md`](../specs/input.md)
+§9); `ConjurePointers` reads `index-finger-tip` only. None knows about the others — the same
+duplication-breeds-drift shape the pointers layer was created to remove for buttons, now at three.
 
 The seam is for `ConjurePointers` to publish the **full joint set plus per-joint `radius`**, read once
 per frame and cached like everything else it reads, and for `occlusion.js` to consume that instead of
-reading the frame. Worth stating plainly: the occlusion mesh works today, so this is a
-duplication-removal, not a defect — and it should not be done until a second consumer exists to justify
-the shape of the published snapshot.
+reading the frame. Two qualifications, both worth stating:
+
+- the occlusion mesh works today, so this is duplication-removal rather than a defect;
+- the **overlay should stay outside** whatever gets built. It exists to look at the raw frame, and
+  routing it through a cache would put the thing under test behind the thing testing it.
+
+The shape of the published snapshot is the real open question, and `?hands=fit` is what will answer it:
+whether `radius` is worth publishing at all depends on whether the runtime supplies a per-joint value or
+a table.
 
 ## Contact is a raycast every consumer would write itself
 
