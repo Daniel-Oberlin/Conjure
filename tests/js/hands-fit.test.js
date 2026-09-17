@@ -37,12 +37,13 @@ function bone(child) {
 function accumulate(frames) {
   const n = H.SEGMENTS.length;
   const acc = { frames: 0, n: new Array(n).fill(0), sum: new Array(n).fill(0),
+                sq: new Array(n).fill(0),
                 min: new Array(n).fill(Infinity), max: new Array(n).fill(-Infinity) };
   frames.forEach((L) => {
     acc.frames++;
     for (let i = 0; i < n; i++) {
       if (L[i] == null) continue;
-      acc.n[i]++; acc.sum[i] += L[i];
+      acc.n[i]++; acc.sum[i] += L[i]; acc.sq[i] += L[i] * L[i];
       acc.min[i] = Math.min(acc.min[i], L[i]);
       acc.max[i] = Math.max(acc.max[i], L[i]);
     }
@@ -96,7 +97,10 @@ test("a hand of different PROPORTIONS does not read as uniform, whatever its siz
   const odd = H.BIND.left.map((v, i) => v * (i < 4 ? 0.96 : 1.12));
   const r = H.ratioStats(odd, H.BIND.left);
   assert.ok(r.cv > 0.03, `cv ${r.cv} should exceed the CLOSE threshold`);
-  assert.match(H.ratioVerdict(r), /^DIFFERENT HAND/);
+  assert.match(H.ratioVerdict(r), /^DIFFERENT PROPORTIONS/);
+  // It must NAME the bones, not only the spread — a number cannot be acted on and a bone can.
+  assert.ok(r.maxAt && r.minAt, "the widest and narrowest bones must be named");
+  assert.match(H.ratioVerdict(r), /widest at \S+ .*narrowest at \S+/);
   // And the verdict is monotone: scattering more never reads as more uniform.
   const worse = H.BIND.left.map((v, i) => v * (1 + 0.3 * Math.sin(i)));
   assert.ok(H.ratioStats(worse, H.BIND.left).cv > r.cv);
@@ -193,4 +197,55 @@ test("two windows per acquisition, so convergence is not mistaken for steady sta
   assert.equal(which(total), "settled");
   // ~1.25 s at 72 Hz: long enough to settle, short enough that nobody holds a pose waiting for it.
   assert.ok(total / 72 < 2, `${total} frames is ${(total / 72).toFixed(2)} s — too long to hold still`);
+});
+
+test("your numbers, reproduced: four collapsed metacarpals give s=1.017 and cv=36%", () => {
+  // Measured on a Quest 3, 2026-09-17: s=1.017, cv~36% on BOTH hands, and left-vs-right max delta
+  // displayed as zero. Those do not fit "a hand of different proportions" — a real pair differs, and
+  // 36% is not a proportion difference, it is a category difference.
+  //
+  // They fit one thing exactly: the four finger metacarpals reported at the WRIST, so
+  // `wrist -> X-finger-metacarpal` measures ~0 for four of the 24 bones while the other twenty sit at
+  // a uniform 1.017. This test is that hypothesis, written down so the next reading either confirms
+  // or kills it.
+  const tracked = H.BIND.left.map((v) => v * 1.017);
+  for (const n of ["index-finger-metacarpal", "middle-finger-metacarpal",
+                   "ring-finger-metacarpal", "pinky-finger-metacarpal"]) {
+    tracked[bone(n)] = 0.0005;                                  // half a millimetre: a collapsed joint
+  }
+  const r = H.ratioStats(tracked, H.BIND.left);
+  assert.ok(Math.abs(r.median - 1.017) < 0.001, `median ${r.median}`);
+  assert.ok(r.cv > 0.30 && r.cv < 0.45, `cv ${r.cv} should land near the measured 36%`);
+  assert.equal(r.collapsed.length, 4);
+
+  // And the verdict must say MISSING JOINTS, not "different proportions": they call for opposite
+  // responses — do not drive those bones, versus rescale the model.
+  const said = H.ratioVerdict(r);
+  assert.match(said, /^MISSING JOINTS/);
+  assert.match(said, /must not be driven from tracked data/);
+  assert.doesNotMatch(said, /DIFFERENT PROPORTIONS/);
+});
+
+test("range and SD are reported together, because range is one bad frame wide", () => {
+  // 29 identical frames and one outlier give a 2.5% RANGE on a table that never changed — which is
+  // how a mirrored table first read as a per-joint estimate.
+  const frames = [];
+  for (let i = 0; i < 29; i++) frames.push(H.BIND.left.slice());
+  const odd = H.BIND.left.slice();
+  odd[bone("index-finger-phalanx-proximal")] *= 1.025;
+  frames.push(odd);
+  const j = H.jitterStats(accumulate(frames));
+  assert.ok(j.max > 0.02, "the range sees the outlier");
+  assert.ok(j.sd < j.max / 4, `sd ${j.sd} must be far below the range ${j.max}`);
+  // Reported as a CLAUSE and not as a different verdict: over 30 samples even ordinary noise gives a
+  // range about four times the SD, so this says where to look, not what it is.
+  assert.match(H.jitterVerdict(j), /concentrated in a few frames/);
+  assert.match(H.jitterVerdict(j), /^NOT RIGID/);
+
+  // Whereas movement on every frame carries no such clause — there is nowhere else to look.
+  const moving = [];
+  for (let i = 0; i < 30; i++) moving.push(H.BIND.left.map((v, k) => v * (1 + 0.02 * Math.sin(i + k))));
+  const spread = H.jitterVerdict(H.jitterStats(accumulate(moving)));
+  assert.match(spread, /^NOT RIGID/);
+  assert.doesNotMatch(spread, /concentrated/);
 });

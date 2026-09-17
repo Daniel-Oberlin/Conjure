@@ -138,19 +138,37 @@
    * Tracked ÷ bind, over the bones both agree on. `cv` is the spread that decides probe 3: the standard
    * deviation over the median, so it is scale-free and a uniform scale reads 0 whatever the scale is.
    */
+  var COLLAPSED = 0.25;        // a ratio this far below 1 is not a short bone, it is a missing one
+
   function ratioStats(lengths, bind) {
-    var r = [];
+    var r = [], names = [];
     for (var i = 0; i < SEGMENTS.length; i++) {
       var t = lengths[i], b = bind && bind[i];
       if (t == null || !b) continue;
       r.push(t / b);
+      names.push(SEGMENTS[i][1]);
     }
     if (!r.length) return null;
     var med = median(r), mean = r.reduce(function (a, b2) { return a + b2; }, 0) / r.length;
     var varr = r.reduce(function (a, x) { return a + (x - mean) * (x - mean); }, 0) / r.length;
     var sd = Math.sqrt(varr);
+    // WHICH bones are the outliers, not only how wide the spread is. A summary number cannot tell a
+    // hand of different proportions from a hand with joints the runtime does not report separately,
+    // and those call for opposite responses — per-joint scale in the first case, and in the second,
+    // not driving those bones from the tracked data at all.
+    // Seeded from the FIRST ratio, not from the median. Seeded from the median, a spread that is
+    // entirely on one side of it leaves the name null and the verdict says "widest at ?" — which is
+    // exactly the case a wide spread produces.
+    var lo = r[0], hi = r[0], loAt = names[0], hiAt = names[0], collapsed = [];
+    for (var k = 0; k < r.length; k++) {
+      if (r[k] < lo) { lo = r[k]; loAt = names[k]; }
+      if (r[k] > hi) { hi = r[k]; hiAt = names[k]; }
+      if (r[k] < COLLAPSED) collapsed.push(names[k]);
+    }
     return { n: r.length, median: med, mean: mean, sd: sd, cv: med ? sd / med : 0,
-             min: Math.min.apply(null, r), max: Math.max.apply(null, r) };
+             min: Math.min.apply(null, r), max: Math.max.apply(null, r),
+             minAt: loAt, maxAt: hiAt, collapsed: collapsed,
+             ratios: r, names: names };
   }
 
   /**
@@ -158,7 +176,7 @@
    * This is the premise-free probe: a stored table cannot vary, an estimate must.
    */
   function jitterStats(acc) {
-    var worst = -1, at = -1, n = 0;
+    var worst = -1, at = -1, n = 0, sdWorst = -1, sdAt = -1;
     for (var i = 0; i < SEGMENTS.length; i++) {
       if (!acc.n[i]) continue;
       n++;
@@ -166,9 +184,19 @@
       if (!mean) continue;
       var rel = (acc.max[i] - acc.min[i]) / mean;
       if (rel > worst) { worst = rel; at = i; }
+      // RANGE and SD together, because range alone is dominated by a single frame. 29 identical
+      // frames and one bad one give a 2.5% range on a table that never changed — which is how a
+      // mirrored table first read as a per-joint estimate. SD says whether the movement is the
+      // signal or the exception.
+      if (acc.sq && acc.n[i] > 1) {
+        var v = acc.sq[i] / acc.n[i] - mean * mean;
+        var sd = Math.sqrt(v > 0 ? v : 0) / mean;
+        if (sd > sdWorst) { sdWorst = sd; sdAt = i; }
+      }
     }
     if (!n) return null;
-    return { bones: n, max: worst, at: at, name: at >= 0 ? SEGMENTS[at][1] : null };
+    return { bones: n, max: worst, at: at, name: at >= 0 ? SEGMENTS[at][1] : null,
+             sd: sdWorst >= 0 ? sdWorst : null, sdName: sdAt >= 0 ? SEGMENTS[sdAt][1] : null };
   }
 
   /** Bone-by-bone difference between two hands. A real left/right pair differs; a mirrored table does not. */
@@ -200,17 +228,38 @@
    */
   function jitterVerdict(j) {
     if (!j) return "no bones measured";
-    if (j.max <= JITTER_RIGID) return "RIGID — bit-identical lengths; a stored skeleton, posed";
-    if (j.max <= JITTER_NOISE) return "RIGID — float noise only; still a stored skeleton, posed";
+    var m = (j.sd == null) ? j.max : j.sd;       // SD when we have it; range is the fallback
+    if (m <= JITTER_RIGID) return "RIGID — bit-identical lengths; a stored skeleton, posed";
+    if (m <= JITTER_NOISE) return "RIGID — float noise only; still a stored skeleton, posed";
+    // A CLAUSE, not a different verdict. Over 30 samples a normal spread already gives a range about
+    // four times the SD, so "range >> sd" is not a threshold that distinguishes an outlier from
+    // ordinary noise — it only says WHERE to look. Asserting more than that would be inventing a
+    // statistic, and the honest move is to report both numbers and name what a gap between them
+    // means.
+    var concentrated = (j.sd != null && j.max > j.sd * 5)
+      ? " — and the movement is concentrated in a few frames (range " + (100 * j.max).toFixed(2)
+        + "% against sd " + (100 * j.sd).toFixed(2) + "%), so look at dropped tracking before size"
+      : "";
     return "NOT RIGID — bone lengths move, so joints are positioned independently, not posed "
-         + "off a fixed skeleton (which says nothing yet about whose hand it is)";
+         + "off a fixed skeleton (which says nothing yet about whose hand it is)" + concentrated;
   }
 
   function ratioVerdict(r) {
     if (!r) return "no bind length to compare against";
+    // Asked BEFORE the spread, because a collapsed bone explains a wide spread and a wide spread does
+    // not explain a collapsed bone. Reporting `cv` alone on a hand with four zero-length bones reads
+    // as "different proportions" and sends you to rescale a model that is fine.
+    if (r.collapsed.length) {
+      return "MISSING JOINTS — " + r.collapsed.length + " bone(s) read as ~0 length ("
+        + r.collapsed.slice(0, 4).join(", ") + (r.collapsed.length > 4 ? ", …" : "")
+        + "); the runtime is not reporting those joints apart from their parent, so they are not a "
+        + "size difference and must not be driven from tracked data";
+    }
     if (r.cv <= CV_UNIFORM) return "UNIFORM — a uniform scale of our model; s = " + r.median.toFixed(4);
     if (r.cv <= CV_CLOSE) return "CLOSE — same hand, slightly different proportions; s = " + r.median.toFixed(4);
-    return "DIFFERENT HAND — not a uniform scale of our model (says nothing about per-user tracking)";
+    return "DIFFERENT PROPORTIONS — not a uniform scale of our model; widest at "
+      + (r.maxAt || "?") + " (" + r.max.toFixed(2) + "\u00d7) and narrowest at "
+      + (r.minAt || "?") + " (" + r.min.toFixed(2) + "\u00d7)";
   }
 
   function resolveMode() {
@@ -390,6 +439,7 @@
     _window: function () {
       var n = SEGMENTS.length;
       return { frames: 0, n: new Array(n).fill(0), sum: new Array(n).fill(0),
+               sq: new Array(n).fill(0),
                min: new Array(n).fill(Infinity), max: new Array(n).fill(-Infinity),
                radSum: {}, radN: {}, noRadius: 0 };
     },
@@ -402,7 +452,7 @@
       w.frames++;
       for (var i = 0; i < L.length; i++) {
         if (L[i] == null) continue;
-        w.n[i]++; w.sum[i] += L[i];
+        w.n[i]++; w.sum[i] += L[i]; w.sq[i] += L[i] * L[i];
         if (L[i] < w.min[i]) w.min[i] = L[i];
         if (L[i] > w.max[i]) w.max[i] = L[i];
       }
@@ -509,8 +559,9 @@
         if (!st.rat && !st.jit) { lines.push(h + " sampling…"); return; }
         lines.push(h.charAt(0).toUpperCase() + "  s=" + (st.rat ? st.rat.median.toFixed(3) : "—")
           + "  cv=" + (st.rat ? pct(st.rat.cv) : "—")
-          + "  jit=" + (st.jit ? pct(st.jit.max) : "—")
-          + (st.fresh ? " (" + pct(st.fresh.max) + " fresh)" : ""));
+          + (st.rat && st.rat.collapsed.length ? " (" + st.rat.collapsed.length + " bones ~0)" : "")
+          + "  jit=" + (st.jit && st.jit.sd != null ? pct(st.jit.sd) : "—")
+          + (st.jit ? " sd / " + pct(st.jit.max) + " range" : ""));
         // The verdict, not only the numbers. It used to live in the log, which needs --debug-log —
         // so the person wearing the headset got four figures and no reading of them.
         if (st.jit) lines.push("   " + jitterVerdict(st.jit).split(" \u2014 ")[0]);
@@ -518,7 +569,11 @@
       var l = this._st.left, r = this._st.right;
       if (l && l.mean && r && r.mean) {
         var cmp = compareHands(l.mean, r.mean);
-        if (cmp) lines.push("L/R max Δ " + cm(cmp.maxAbs) + " cm");
+        // MILLIMETRES, to three places. In centimetres to two, everything below 0.05 mm printed as
+        // "0.00" — and "the two hands agree exactly" is a completely different finding from "they
+        // agree to a tenth of a millimetre", so the display must not be the thing that decides.
+        if (cmp) lines.push("L/R max Δ " + (cmp.maxAbs * 1000).toFixed(3) + " mm"
+          + (cmp.maxAbs === 0 ? "  EXACT — one table, mirrored" : ""));
       }
       return lines.join("\n");
     },
