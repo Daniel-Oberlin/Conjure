@@ -1117,7 +1117,12 @@ _DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", 
                         # were in that state, including the three phase 5 exists to be tested on: their
                         # signatures compute fine from the bytes (Grace and Trish c6e3c61972, Saka
                         # 9b9a660f1d, Eve fe4965ce0f, Steve c773b69506) and simply never reached a row.
-                        "rig_sig", "rig_sig_rev")
+                        "rig_sig", "rig_sig_rev",
+                        # The hand. `hand_wearable` is deliberately in the list even though it is a
+                        # bool that is usually False: a refresh must be able to CLEAR a claim it can no
+                        # longer justify, and "this used to be wearable" is the shape of stale that
+                        # silently puts a broken model on someone's wrist.
+                        "hand_joints", "hand_side", "hand_rev", "hand_wearable", "hand_problems")
 
 
 def _extracted_model_attrs(asset_id: str) -> dict:
@@ -1212,7 +1217,8 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
                      bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
                      humanoid=None, humanoid_axes=None, humanoid_follows=None,
                      parts=None, parts_hidden=None, morph_names=None,
-                     expression_scheme="") -> dict:
+                     expression_scheme="", hand_joints=None, hand_side="",
+                     hand_wearable=False) -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
@@ -1263,6 +1269,13 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
             # knows nothing about expressions.
             meta["morph_names"] = list(morph_names)
             meta["expression_scheme"] = expression_scheme or ""
+        if hand_wearable and hand_joints:
+            # A HAND YOU CAN WEAR. Travels for the same reason as everything above — `/figure/hand`
+            # needs no catalog lookup and the client writes the joints it is given — and `hand_side`
+            # travels too because it was MEASURED from the geometry at import, which is the only place
+            # it can be. `wear` uses it to pair a hand with a hand rather than trusting a filename.
+            meta["hand_joints"] = dict(hand_joints)
+            meta["hand_side"] = hand_side or ""
     components: dict = {"gltf-model": f"/assets/{model_id}"}
     if parts_hidden:
         # WHAT THE SOURCE HAD SWITCHED OFF, applied from the first frame. A composed capture carries its
@@ -3811,7 +3824,10 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           humanoid_follows=attrs.get("humanoid_follows"),
                           parts=attrs.get("parts"), parts_hidden=attrs.get("parts_hidden"),
                           morph_names=attrs.get("morph_names"),
-                          expression_scheme=attrs.get("expression_scheme"))
+                          expression_scheme=attrs.get("expression_scheme"),
+                          hand_joints=attrs.get("hand_joints"),
+                          hand_side=attrs.get("hand_side") or "",
+                          hand_wearable=bool(attrs.get("hand_wearable")))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
@@ -4909,6 +4925,60 @@ async def figure_expression(req: FigureExpressionRequest) -> dict:
     if skipped:
         out["skipped"] = skipped
     return out
+
+
+class FigureHandRequest(BaseModel):
+    id: str
+    hand: str = "auto"                   # left | right | auto (pair on the MEASURED side) | off
+
+
+@app.post("/figure/hand")
+async def figure_hand(req: FigureHandRequest) -> dict:
+    """Wear a hand model, or take it off.
+
+    Wearing is durable world state on the entity, not a per-client setting (`decisions.md` §30). It
+    rides the existing patch/snapshot path, so it persists, replays on reload, and "put it down" names
+    a real place in the world — a preference would have nowhere to put the hand when you take it off.
+
+    `auto` pairs on the side MEASURED from the geometry at import, never on the `_L` in the filename.
+    Asking for the wrong side is refused rather than honoured: a left model on a right hand is a
+    mirrored glove, and it would look like a tracking fault rather than like a mistake anyone made.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+    meta = ent.get("meta") or {}
+    want = (req.hand or "auto").strip().lower()
+
+    if want in ("off", "none", ""):
+        patch = [{"op": "update", "id": req.id, "set": {"components.hand-rig": {"hand": ""}}}]
+        await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="hand-rig")})
+        return {"ok": True, "id": req.id, "worn": False}
+
+    joints = meta.get("hand_joints") or {}
+    if not joints:
+        hint = (" It was placed before hands were measured — place it again."
+                if meta.get("rigged") else "")
+        return {"ok": False, "error": f"{req.id!r} is not a wearable hand: no WebXR joint map "
+                                      f"recorded.{hint}"}
+    side = (meta.get("hand_side") or "").lower()
+    if want == "auto":
+        if not side:
+            return {"ok": False, "error": f"{req.id!r} has no measured side, so `auto` has nothing to "
+                                          f"pair on. Name left or right."}
+        want = side
+    if want not in ("left", "right"):
+        return {"ok": False, "error": f"hand must be left, right, auto or off — not {req.hand!r}"}
+    if side and want != side:
+        return {"ok": False, "error":
+                f"{req.id!r} is a {side} hand and you asked to wear it on the {want}. Mirrored, it "
+                f"reads as a tracking fault rather than as a mistake — place the {want} model instead."}
+
+    patch = [{"op": "update", "id": req.id,
+              "set": {"components.hand-rig": {"hand": want,
+                                              "joints": json.dumps(joints, separators=(",", ":"))}}}]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="hand-rig")})
+    return {"ok": True, "id": req.id, "worn": True, "hand": want, "joints": len(joints)}
 
 
 @app.post("/figure/parts")

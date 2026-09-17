@@ -59,6 +59,7 @@
         "list_poses",
         "pose_figure",
         "set_expression",
+        "wear_hand",
         "dress_figure",
         "list_clips",
         "play_clip",

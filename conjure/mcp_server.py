@@ -571,7 +571,9 @@ async def inspect_figure(id: str) -> str:
         tris=meta.get("tris"), bones=(meta.get("humanoid_axes") or {}),
         has_map=bool(meta.get("humanoid")), posed=already,
         removable=groups if parts else {}, hidden=hidden,
-        morphs=meta.get("morph_names"), expression=meta.get("expression_scheme"))
+        morphs=meta.get("morph_names"), expression=meta.get("expression_scheme"),
+        hand_side=(meta.get("hand_side") or "") if meta.get("hand_joints") else "",
+        worn=((ent.get("components") or {}).get("hand-rig") or {}).get("hand") or "")
 
 
 @mcp.tool()
@@ -852,6 +854,32 @@ async def pose_figure(id: str, pose: dict | None = None, named: str = "", clear:
         # rather than doing nothing, and knowing which one was hit is how the next request gets better.
         return moved + " Joint limits applied: " + "; ".join(out["limited"]) + "."
     return moved
+
+
+@mcp.tool()
+async def wear_hand(id: str, hand: str = "auto") -> str:
+    """Put a placed HAND MODEL on the wearer's hand, so it follows their real one. Use for "wear
+    these hands", "put the left hand on", "take the hands off".
+
+    A worn hand is driven by the headset's hand tracking, all twenty-five joints, every frame — so it
+    moves exactly as the person's own hand does. Nothing about it is posable and no animation plays on
+    it; it is the wearer's hand, wearing a model.
+
+    hand is "auto" (pair it with the side the model actually is), "left", "right", or "off" to take it
+    off. `auto` is almost always what you want: which hand a model is was MEASURED from its geometry
+    when it was imported, not read from its name. Asking for the wrong side is refused, because a left
+    model worn on a right hand looks like broken tracking rather than like a mistake.
+
+    Taking it off puts it back where it was placed — wearing does not consume the model, it occupies
+    it. It needs hand tracking: with controllers in hand there is nothing to follow, and the model
+    simply rests where it was put.
+    """
+    out = await _post("/figure/hand", {"id": id, "hand": hand})
+    if not out.get("ok"):
+        return f"Couldn't do that: {_reason(out)}."
+    if not out.get("worn"):
+        return "Taken off — it's back where it was placed."
+    return f"Worn on the {out.get('hand')} hand, following all {out.get('joints')} joints."
 
 
 @mcp.tool()

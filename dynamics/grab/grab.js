@@ -169,6 +169,13 @@
         var el = kids[i];
         if (!el.id || el.dataset.real || el.dataset.scaffold) continue;
         if (el.components && el.components.grab) continue;    // never grab the grab entity itself
+        // A WORN HAND is not a thing in the room. Its entity transform is meaningless while worn — the
+        // skeleton is driven from the tracked joints and the transform is only where it will be PUT
+        // DOWN — so a selection box would sit wherever it was placed, metres from the hand you can see,
+        // and dragging it would move nothing. Excluded while `hand` is set; a hand on the floor is an
+        // ordinary model again and grabs like one.
+        var rig = el.components && el.components["hand-rig"];
+        if (rig && rig.data && rig.data.hand) continue;
         if (el.object3D) out.push(el);
       }
       return out;

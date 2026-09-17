@@ -1,7 +1,7 @@
 # Plan — hands: models you wear, and hands as input
 
-**Status:** phases 0 and 1 **built** 2026-09-17 — phase 0 awaits its headset reading ·
-phases 2, 3, 4 open · **Opened:** 2026-09-14
+**Status:** phases 0, 1 and 2 **built** 2026-09-17 — phase 0 read on device; phase 2 awaits a
+headset · phases 3, 4 open · **Opened:** 2026-09-14
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
@@ -293,7 +293,7 @@ stated. Neither is a new claim about behaviour:
 **Done:** `specs/input.md` describes what is built today; `dynamics.md`'s remaining `§6` references are
 the clock and the bus only; every relative link in the touched files resolves.
 
-### Phase 2 — wear a hand model
+### Phase 2 — wear a hand model — 🔶 BUILT 2026-09-17, UNWORN
 
 *Settles into `specs/figures.md` as a §8c sibling to `figure-clip`, its attributes into §2; the
 joint-reading half into `specs/input.md`; limits into `backlogs/figures.md`. Top-level `README.md`
@@ -328,10 +328,29 @@ status line when it lands.*
 - **Verification:** extraction in `tests/test_figures.py`; the bone writing against a fake skeleton in
   `tests/js/`; the XR read itself needs the headset and says so.
 
+**Built** (`conjure/hands.py`, `client/hand-rig.js`, `POST /figure/hand`, `wear_hand`,
+`conjure-ctl wear`, `specs/figures.md` §8f). `FRAME_REV` 19→20, so **the library needs a refresh with
+the server restarted** before any hand carries a joint map.
+
+**To try it:**
+
+```
+python3 -m conjure.ctl refresh-models          # RESTART THE SERVER FIRST — a refresh derives what the
+                                               # server process knows, not what is on disk
+conjure-ctl asset … / place the hand model, then:
+conjure-ctl wear <entity> --hand auto
+```
+
 **Done when:** `b8f676…` worn on the left hand follows every finger; it survives a reload because the
 state is durable; taking it off returns it to where it was placed; the occlusion conflict is logged when
 `--occlusion hands` is also on; and `?hands=fit` shows the translucent mesh sitting on the real hand,
 which is phase 0's fit question finally asked of the flesh and not only the joints.
+
+**What to watch for, given what phase 0 measured.** The per-bone residual after a single `s` is ~5%, and
+it shows up as stretch in the skinning blend **at the knuckles** rather than as a hand of the wrong size
+— so a hand that looks right overall and odd at the joints is that, not a scale bug. The **tip** and the
+**wrist** are the two places to expect disagreement: the tip is derived from the runtime's own estimate
+and the wrist is a frame convention, and neither is driven by `s`.
 
 ### Phase 3 — hands get the vocabulary controllers already have
 

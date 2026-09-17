@@ -391,6 +391,22 @@ def cmd_pose(s: Settings, a) -> None:
     _say(out, a.verbose, "\n".join(lines))
 
 
+def cmd_wear(s: Settings, a) -> None:
+    """Wear a placed hand model, or take it off.
+
+    `--hand auto` is the default and almost always right: which hand a model IS was measured from its
+    geometry at import, not read from the `_L` in its name. Wearing does not consume the model — it
+    occupies it, so `--hand off` puts it back exactly where it was placed."""
+    out = _post(s, "/figure/hand", {"id": a.id, "hand": a.hand})
+    if not out.get("ok"):
+        print(f"wear: {out.get('error', 'failed')}")
+        return
+    if not out.get("worn"):
+        _say(out, a.verbose, "taken off — back where it was placed")
+        return
+    _say(out, a.verbose, f"worn on the {out.get('hand')} hand, {out.get('joints')} joints driven")
+
+
 def cmd_dress(s: Settings, a) -> None:
     """Turn parts of a figure off and on — clothing, hair, shoes, accessories.
 
@@ -632,6 +648,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--show", action="append", metavar="CATEGORY|MESH", help="…and to bring back")
     a.add_argument("--only-body", dest="only_body", action="store_true",
                    help="strip everything removable, HAIR INCLUDED")
+
+    a = sub.add_parser("wear", help="drive a placed HAND model from your tracked hand")
+    a.set_defaults(fn=cmd_wear)
+    a.add_argument("id", help="the ENTITY id of a placed hand model")
+    a.add_argument("--hand", default="auto", choices=["auto", "left", "right", "off"],
+                   help="auto pairs on the MEASURED side (default); off puts it back down")
 
     a = sub.add_parser("clips", help="list the animations a placed figure can play")
     a.set_defaults(fn=cmd_clips)

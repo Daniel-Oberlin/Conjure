@@ -516,6 +516,15 @@ class ModelImporter(AssetImporter):
                             attributes["parts_unclassified"] = found["unclassified"]
                     except Exception as exc:  # noqa: BLE001 — a figure without a wardrobe still poses
                         print(f"[conjure] parts classification failed for {filename}: {exc}")
+                    # A HAND YOU CAN WEAR is a different thing from a figure and shares none of its
+                    # machinery: no vocabulary to discover, nothing to retarget, and the side MEASURED
+                    # from the geometry rather than read out of the filename. `describe` returns {} for
+                    # everything that is not one, so this costs a name check on every other model.
+                    try:
+                        from .hands import describe as describe_hand
+                        attributes.update(describe_hand(doc))
+                    except Exception as exc:  # noqa: BLE001 — never fail an import over it
+                        print(f"[conjure] hand extraction failed for {filename}: {exc}")
         # Stamped on EVERY model, not only the ones that turn out to be figures. The stamp records which
         # build looked at this file, and "we looked and it is a prop" is exactly as much worth recording
         # as a bone map — three rigged characters sat in the catalog as props because an earlier ingest

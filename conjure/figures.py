@@ -1652,7 +1652,11 @@ def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 19          # 19: the FACE — morph names, scheme and facial count (`morph_targets`
+FRAME_REV = 20          # 20: HANDS — the WebXR joint map, the measured side, and whether it is
+                        #     wearable at all (conjure/hands.py). A hand is not a figure and shares
+                        #     none of its vocabulary, but it rides the same catalog row and the same
+                        #     stamp, so a library catalogued before hands existed re-derives on refresh.
+                        # 19: the FACE — morph names, scheme and facial count (`morph_targets`
                         #     was a per-primitive sum and read 399 for Saka's 57)
                         # 18: a STATED (VRM) map is layer 0 here, not the caller's job
                         # 17: the convention tables reach the FINGERS
@@ -1948,7 +1952,8 @@ def _quat_mul(a: list[float], b: list[float]) -> list[float]:
 
 def figure_description(*, label: str, height_m: Optional[float] = None, tris=None,
                        bones=(), has_map: bool = False, posed=(), removable=None,
-                       hidden=(), morphs=None, expression=None) -> str:
+                       hidden=(), morphs=None, expression=None,
+                       hand_side="", worn="") -> str:
     """What `inspect_figure` says about a figure — the bones it has and how they can be asked to move.
 
     Kept here rather than in the MCP tool because this text is part of the tool SURFACE under test: the
@@ -1958,6 +1963,17 @@ def figure_description(*, label: str, height_m: Optional[float] = None, tris=Non
     bones = sorted(bones)
     height = f"{height_m:.2f} m tall" if height_m else "unknown height"
     lines = [f"{label} — {height}, {tris or '?'} triangles."]
+    # A WEARABLE HAND is described first and instead of everything else, because it is not a figure:
+    # nothing about it is posable, no clip plays on it, and listing the bones it does not have would
+    # invite exactly the calls that cannot work. Same lesson as the clothing and the face — a tool that
+    # describes a figure has to describe the whole figure — read the other way for once.
+    if hand_side:
+        lines.append(f"This is a {hand_side} HAND you can wear: `wear_hand` drives all 25 of its "
+                     f"joints from the real hand of whoever is in the headset.")
+        lines.append("Currently worn on the " + worn + " hand." if worn
+                     else "Not worn — it is sitting where it was placed.")
+        lines.append("It is not posable and no clip plays on it; while worn it IS the wearer's hand.")
+        return "\n".join(lines)
     if bones:
         limbs = [b for b in bones if b not in TRUNK_BONES]
         lines.append(f"Posable bones ({len(bones)}): {', '.join(bones)}")

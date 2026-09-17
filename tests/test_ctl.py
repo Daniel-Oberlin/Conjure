@@ -25,6 +25,7 @@ def test_every_subcommand_binds_a_handler():
             "skybox-from": ["skybox-from", "e1"], "grab-mode": ["grab-mode", "skybox"],
             "clips": ["clips", "jane"], "clip": ["clip", "jane", "1_idle"],
             "pose": ["pose", "jane", "kneel"], "dress": ["dress", "jane"],
+            "wear": ["wear", "hand_l"],
         }.get(name, [name])
         assert callable(getattr(p.parse_args(args), "fn", None)), name
 

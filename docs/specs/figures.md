@@ -947,6 +947,76 @@ arrives first would find no skeleton. Every `/static/*.js` reference is mtime-st
 `server.py`; `figure.js` shipped without a stamp once and the headset served a stale copy through several
 reloads, so three fixes never ran.
 
+### 8f. Hands you WEAR — `hand-rig`
+
+A placed hand model driven by the headset's own hand tracking, all 25 joints, every frame. It is not a
+figure: nothing about it is posable, no clip plays on it, and while worn it **is** the wearer's hand.
+
+**It needs no discovery layer, and that is the whole reason it is cheap.** These models are authored in
+the WebXR joint frame — their nodes carry the WebXR joint names exactly and each bone lies along its own
+local −Z — so the two indirections the rest of this document rests on, *which node* (§3) and *which way*
+(§4), collapse to identity. A bone's world transform **is** the joint pose. Nothing is inferred, and a
+hand named any other way is refused with a reason rather than guessed at
+([`decisions.md`](../decisions.md) §31).
+
+**What import records** (`conjure/hands.py`, `FRAME_REV` 20):
+
+| attribute | |
+|---|---|
+| `hand_joints` | `{webxrJointName: nodeName}` — an identity map today, written out anyway so a second naming scheme changes one place |
+| `hand_side` | `left`/`right`, **measured** from the hand's own chirality, never read from the `_L` in a filename |
+| `hand_wearable` | did it pass the gate |
+| `hand_problems` | why not, when it did not — recorded rather than swallowed, so "not a hand" and "a hand we rejected" are distinguishable |
+
+The gate asks two things: all 25 joints present, and every bone along its own local −Z. **Not** that the
+joints form a parent→child chain — the catalog's five hand files are two skeletons whose 25 joints are
+*siblings* under one node, so that check would have refused the files it was written for. And the
+**wrist is exempt** from the axis test: five bones leave one frame and it cannot point along all of them
+(measured 0.706–0.975 there against ≥0.986 down every finger), which is exactly why the WebXR spec
+leaves that joint loose.
+
+**State** is `components.hand-rig = {hand, joints}` — durable world state, not a per-client setting, so
+it persists, replays on reload, and taking it off names a real place to put it
+([`decisions.md`](../decisions.md) §30).
+
+**The runtime** composes each bone's **world** matrix from the joint pose and a scale, then divides it
+back through the parent. Going through world is what stops the scale compounding: a bone's world scale
+is exactly `s` however deep it sits, and the same code works whether a file's joints are a chain or
+siblings.
+
+**`s` is the median ratio over the 14 real BONES, not all 24 inter-joint distances.** `wrist →
+*-metacarpal` is the offset between an arbitrary frame origin and the hand; `*-distal → *-tip` compares a
+runtime-derived surface point against an authored tip bone. Neither is a bone length. Measured on a
+Quest 3, including them spread the ratios **36%** on a hand whose real bones agree to **5%** — so a
+scale taken over 24 would be biased by several per cent on every wearer.
+
+`s` does one job and it is worth being precise about which: **joint positions carry length and never
+girth.** Every joint is placed at the pose the runtime reports, so positions are exact by construction
+and a scale error cannot accumulate down a chain; `s` scales the flesh, and 5% of a finger's girth is
+under a millimetre. It is eased frame to frame, because girth is a slowly-varying property of a hand
+rather than a per-frame measurement.
+
+**Precedence: live hand > clip > pose.** Settled by taking the other two writers *off* — `figure-clip`
+is paused and `figure.restore()` is called on wear — rather than by winning a race with them, since
+A-Frame gives no tick order between components on one entity.
+
+**All or nothing per frame.** A partial joint read is discarded: some bones driven and the rest at rest
+renders as a hand tearing itself apart, which is worse than a hand that stops. Tracking loss is held for
+400 ms before the skeleton goes back to rest, because hand tracking blinks out constantly and snapping
+on every gap reads as a twitch rather than as loss.
+
+**Two exemptions while worn**, both because the entity's transform is meaningless then: it is skipped by
+`_placeContent`'s plane-relative anchor re-solve (skipped, not cleared — `_frefPose` is where it goes
+back to), and excluded from `grab`'s picking, where a selection box would otherwise sit metres from the
+hand you can see.
+
+**Surface:** `POST /figure/hand` · `wear_hand` for the director · `conjure-ctl wear <id> --hand
+auto|left|right|off`. `auto` pairs on the measured side; asking for the **wrong** side is refused, because
+a mirrored glove reads as broken tracking rather than as a mistake anyone made.
+
+**Not verified on a headset.** The arithmetic is tested against a fake skeleton in `tests/js/` and the
+extraction in `tests/test_hands.py`; the XR read itself needs the device.
+
 ## 9. How a figure gets here
 
 Two out-of-band ingest paths, and **both moved to [`specs/captures.md`](./captures.md)** on 2026-09-13:
