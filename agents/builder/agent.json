@@ -58,6 +58,7 @@
         "inspect_figure",
         "list_poses",
         "pose_figure",
+        "set_expression",
         "dress_figure",
         "list_clips",
         "play_clip",

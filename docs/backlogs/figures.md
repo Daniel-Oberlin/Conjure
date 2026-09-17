@@ -99,37 +99,40 @@ Each of these was seen and deliberately left, 2026-09-12 to 09-16.
 The law and its measurements are in [`specs/figures.md`](../specs/figures.md) §8c. What follows is what
 was deliberately not done, each with the measurement that says how much it matters.
 
-### Faces — driving one is small; retargeting one has nothing to build on
+### Faces — driving one SHIPPED 2026-09-16; retargeting one still has nothing to build on
 
-**Measured, not started.** Morph targets are everywhere — 30 of 32 rigged models carry some — and almost
-none of them are a face:
+**Driving is built**, as [`specs/figures.md`](../specs/figures.md) §8d: `conjure/expressions.py`, the
+`figure-face` component, `POST /figure/expression` and `set_expression`. A semantic vocabulary —
+`smile`, `blink`, `look_left`, and five visemes — resolved per expression rig into whatever that
+figure's author called it. Two of 38 rigged figures can use it, which is a fact about the corpus.
 
-| figure | targets | facial | vocabulary |
-|---|---|---|---|
-| Saka | 57 | **57** | VRM's own preset set — `Fcl_ALL_Joy`, `Fcl_BRW_Angry`, `Fcl_EYE_Close_L` |
-| Alice | 36 | **31** | Character Creator / ARKit-ish — `Brow_Raise_Inner_L`, `Eye_Blink_L` |
-| Bianca, Blondie | 22, 21 | 19 | **tongue only** — no brows, no eyes |
-| everyone else | 3–17 | 0–1 | skin and clothing colour, anatomy, the odd `closed_eyes_correction` |
+The tables are verified geometrically, which is the part worth knowing about: a morph target carries
+position deltas, so `check_regions` (brow above eye above mouth) and `check_directions` (a shape moves
+the mesh the way its name says) are measurements rather than assertions. §8d has the numbers and the
+three defects they caught — including a **vacuous pass** where Alice's whole face measured as empty
+because sparse accessors were read as zero vertices, and the check reported OK on no data.
 
-So there are **two** expression rigs, and they speak different languages.
+**Retargeting still should wait, and for the reason originally given.** A bone retarget maps through a
+shared skeleton with geometry to check it against; carrying a PERFORMANCE between two morph vocabularies
+has names and nothing else, and `Fcl_ALL_Joy` is not `Brow_Raise_Inner_L` in any sense a measurement can
+establish. Note what the geometric checks do and do not buy here: they verify that a target is where and
+what its name claims *on its own rig*, which is enough to justify a table from a semantic name to an
+author's label. They say nothing about whether two authors' labels mean the same thing.
 
-**The captures hold no facial performance either.** 249 of 539 clips drive morph weights, which looks
-promising until you see the targets: `Body`, `Dress`, `Shorts`, `Hair`, `Shirt` — wardrobe and body
-shape. Corpus-wide, **15 channels are facial**.
+**And the captures hold no facial performance to carry anyway.** 249 of 539 clips drive morph weights,
+which looks promising until you see the targets: `Body`, `Dress`, `Shorts`, `Hair`, `Shirt` — wardrobe
+and body shape. Corpus-wide, **15 channels are facial**. With driving shipped, the natural source of
+facial performance is now our own director rather than a capture, and the question changes from
+*retarget* to *author*.
 
-**Driving one is small and worth doing.** A morph weight is one scalar per target and three.js applies
-it through the mixer that already plays clips, so there is no new client path. It is `pose_figure`'s
-shape: a `set_expression` taking `{target: weight}` or a named preset. `morph_targets` is already a
-catalog attribute, so "who can smile" is a query today. The payoff is not cosmetic — a figure who blinks
-and looks at you is a different presence, and the director has nothing to work with now.
+Open, and small:
 
-**Retargeting one should wait for a reason.** A bone retarget maps through a shared skeleton with
-geometry to check it against; morph targets have **names and nothing else**, and `Fcl_ALL_Joy` is not
-`Brow_Raise_Inner_L` in any sense a measurement can establish. VRM's preset set is the obvious standard
-to map TO, and that is a table per scheme with no geometric check behind it — the shape of thing
-`REF_AGAINST_UP` warns about. With two expression rigs and no performances to carry, there is no
-evidence to build the tables from. If driving ships, the natural source of facial performance becomes
-our own director rather than a capture, and the question changes from *retarget* to *author*.
+- **Nothing blinks on its own.** A face holds whatever it was last set to, so a figure given `blink: 1`
+  stays with her eyes shut. An idle blink is a timer, not a mechanism, but it needs somewhere to live.
+- **Nothing drives visemes from speech.** The five mouth shapes exist and the voice path exists; nothing
+  connects them.
+- **`squint` on VRM is `Fcl_EYE_Joy`** — the narrowed-eye shape, whatever it happens to be named after.
+  Right by geometry, odd by name, and worth re-checking if that rig ever gains a second figure.
 
 ### A bone map that is not a CHAIN, and one rig where the fingers cannot be fixed
 

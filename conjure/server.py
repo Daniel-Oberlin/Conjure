@@ -42,6 +42,7 @@ from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
+from . import expressions
 from . import poses
 from .figures import FRAME_REV, POSE_AXES, RIG_SIG_REV, clean_pose, resolve_pose
 from .library import AssetLibrary
@@ -1103,6 +1104,10 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
 #: Everything about a model that is DERIVED from its bytes. Extraction owns these outright — a stale one
 #: is not worth keeping, since it was computed from the same file by older code.
 _DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
+                        # The face. `morph_targets` was a COUNT and a wrong one — summed per primitive,
+                        # so Saka read 399 for 57 — and these three are what replaced it. Listed here so
+                        # a refresh re-derives them onto every model catalogued before faces existed.
+                        "morph_names", "expression_scheme", "facial_morphs", "expression_rev",
                         "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows",
                         "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified",
                         # `rig_sig` was written ONLY by the import path and never backfilled here, so a
@@ -1205,7 +1210,8 @@ def _refresh_clip_sig(asset_id: str, attrs: dict, force: bool = False) -> dict:
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
                      bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
                      humanoid=None, humanoid_axes=None, humanoid_follows=None,
-                     parts=None, parts_hidden=None) -> dict:
+                     parts=None, parts_hidden=None, morph_names=None,
+                     expression_scheme="") -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
@@ -1249,6 +1255,13 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
             # same motion on a VRM and on a re-parented Daz rig. Measured from the bind pose at import
             # (figures.anatomical_axes) — a property of the file, so it travels with the entity too.
             meta["humanoid_axes"] = dict(humanoid_axes)
+        if morph_names:
+            # The figure's own morph vocabulary, travelling for exactly the reason the bone map does:
+            # `/figure/expression` resolves "smile" into whatever this author called it without a
+            # catalog lookup, and the client stays generic — it writes the weights it is given and
+            # knows nothing about expressions.
+            meta["morph_names"] = list(morph_names)
+            meta["expression_scheme"] = expression_scheme or ""
     components: dict = {"gltf-model": f"/assets/{model_id}"}
     if parts_hidden:
         # WHAT THE SOURCE HAD SWITCHED OFF, applied from the first frame. A composed capture carries its
@@ -3783,7 +3796,9 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           placement=req.placement, rigged=bool(attrs.get("rigged")),
                           humanoid=attrs.get("humanoid"), humanoid_axes=attrs.get("humanoid_axes"),
                           humanoid_follows=attrs.get("humanoid_follows"),
-                          parts=attrs.get("parts"), parts_hidden=attrs.get("parts_hidden"))
+                          parts=attrs.get("parts"), parts_hidden=attrs.get("parts_hidden"),
+                          morph_names=attrs.get("morph_names"),
+                          expression_scheme=attrs.get("expression_scheme"))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
@@ -4800,11 +4815,82 @@ class FigureRequest(BaseModel):
     clear: bool = False                           # drop the pose and return to the bind pose
 
 
+class FigureExpressionRequest(BaseModel):
+    id: str
+    expression: Optional[dict] = None    # {semantic name OR raw target: weight 0..1}
+    clear: bool = False                  # every weight back to zero
+
+
 class FigurePartsRequest(BaseModel):
     id: str
     hide: list[str] = []                 # categories or node names to hide
     show: list[str] = []                 # ...and to bring back
     only_body: bool = False              # strip everything removable, in one word
+
+
+@app.post("/figure/expression")
+async def figure_expression(req: FigureExpressionRequest) -> dict:
+    """Drive a figure's FACE — smile, blink, look, speak.
+
+    Semantic, like bone names and for the same reason: there are two expression rigs in the corpus and
+    they share no vocabulary. Saka's author states the emotion (`Fcl_ALL_Joy`); Alice's names muscles
+    (`Mouth_Smile_L`). A caller says `smile` and `expressions.resolve` turns that into whatever this
+    figure's author happened to call it — or reports that this figure cannot, which most cannot: 22 of
+    38 rigged figures carry morph targets and **two** carry a face. The rest are wardrobe, skin tone
+    and anatomy.
+
+    A RAW target name is also accepted and wins over the semantic table, so a caller that has inspected
+    a figure can drive anything it carries — including the tongue-only rigs, which have no expression
+    scheme at all but are perfectly drivable by name.
+
+    Weights compose additively and clamp at 1: a smile and a viseme both using `Jaw_Open` must not let
+    the last one silently win. Stored on the entity so a reload replays it, on its OWN component —
+    posing needs a bone map and a face does not, and plenty of figures have one without the other.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+
+    if req.clear:
+        patch = [{"op": "update", "id": req.id,
+                  "set": {"components.figure-face": {"expression": ""}}}]
+        await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-face")})
+        return {"ok": True, "id": req.id, "cleared": True}
+
+    if not isinstance(req.expression, dict) or not req.expression:
+        return {"ok": False, "error": "pass an expression like {\"smile\": 1}, or clear=true"}
+
+    meta = ent.get("meta") or {}
+    names = meta.get("morph_names") or []
+    if not names:
+        # Two different absences with one appearance, so say which. A figure imported before faces
+        # existed has no `morph_names` recorded and needs re-placing; a figure that genuinely has no
+        # morph targets can never do this and re-placing it would waste the caller's time.
+        hint = (" It was placed before expressions were measured — place it again."
+                if meta.get("rigged") else "")
+        return {"ok": False, "error": f"{req.id!r} has no morph targets recorded.{hint}"}
+
+    weights, skipped = expressions.resolve(names, req.expression)
+    if not weights:
+        scheme = expressions.scheme_of(names)
+        face = expressions.facial(names)
+        if not face:
+            return {"ok": False, "error":
+                    f"{req.id!r} has {len(names)} morph target(s) and none of them are a face — "
+                    f"they are wardrobe, skin tone or anatomy. Nothing here can smile."}
+        return {"ok": False, "error":
+                f"{req.id!r} ({scheme or 'unrecognised'} scheme) cannot do "
+                f"{', '.join(skipped)}. It has: {', '.join(face[:12])}"}
+
+    patch = [{"op": "update", "id": req.id,
+              "set": {"components.figure-face":
+                      {"expression": json.dumps(weights, separators=(",", ":"))}}}]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-face")})
+    out = {"ok": True, "id": req.id, "applied": sorted(req.expression),
+           "targets": weights, "scheme": expressions.scheme_of(names)}
+    if skipped:
+        out["skipped"] = skipped
+    return out
 
 
 @app.post("/figure/parts")

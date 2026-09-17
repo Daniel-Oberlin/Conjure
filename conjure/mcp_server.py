@@ -854,6 +854,56 @@ async def pose_figure(id: str, pose: dict | None = None, named: str = "", clear:
 
 
 @mcp.tool()
+async def set_expression(id: str, expression: dict | None = None, clear: bool = False) -> str:
+    """Change a figure's FACE — smile, blink, look at you, mouth a word. Use for "have her smile",
+    "make her look surprised", "close her eyes", "have her look left".
+
+    expression maps what you want to how much of it, 0 to 1. Several combine, so a face can do more
+    than one thing at once:
+
+        {"smile": 1}                          a smile
+        {"smile": 0.4}                        a slight one
+        {"blink": 1}                          eyes closed
+        {"joy": 1}                            a full happy face — mouth AND eyes
+        {"surprised": 1}                      brows up, jaw open
+        {"smile": 0.6, "look_left": 1}        smiling, glancing left
+        {"brow_raise": 1, "mouth_open": 0.3}  a questioning look
+
+    What you can ask for: neutral, smile, joy, sad, angry, surprised, blink, blink_left, blink_right,
+    squint, brow_raise, brow_lower, mouth_open, pucker, look_left, look_right, look_up, look_down.
+    Mouth shapes for speech: aa, ee, ih, oh, ou.
+
+    NOT EVERY FIGURE HAS A FACE, and most do not — a figure may be fully rigged, posable and
+    animated and still have no facial shapes at all. `inspect_figure` says which. When a figure
+    cannot, the reply says so plainly; do not retry with different wording, because the shapes are
+    simply not in the model.
+
+    Expressions REPLACE each other rather than accumulate: each call sets the whole face, so pass
+    everything you want at once. Pass clear=true to return to a resting face.
+    """
+    body: dict = {"id": id}
+    if clear:
+        body["clear"] = True
+    elif isinstance(expression, dict) and expression:
+        body["expression"] = expression
+    else:
+        return ('Give me an expression like {"smile": 1} or {"blink": 1, "smile": 0.5}, '
+                "or clear=true to relax her face.")
+    out = await _post("/figure/expression", body)
+    if not out.get("ok"):
+        return f"Couldn't do that: {_reason(out)}."
+    if out.get("cleared"):
+        return "Face relaxed."
+    said = ", ".join(sorted(out.get("applied") or []))
+    msg = f"Set {said}."
+    if out.get("skipped"):
+        # A face this figure has only part of. Said out loud: a tongue-only rig asked to raise its
+        # brows has no brows, and silence there reads as the tool not working.
+        msg += f" This figure cannot {', '.join(out['skipped'])}, so that was skipped."
+    return msg
+
+
+@mcp.tool()
 async def add_entity(
     shape: str,
     color: str = "white",

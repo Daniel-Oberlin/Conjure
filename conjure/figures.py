@@ -145,6 +145,98 @@ def _read_vec4(doc: dict, blob: bytes, accessor_index: int, limit: int = 200000)
         yield struct.unpack_from("<" + fmt * 4, blob, off)
 
 
+def morph_names(doc: dict) -> list[str]:
+    """Every DISTINCT morph target name a model carries, in order of first appearance.
+
+    Distinct, and that is the fix rather than a nicety. The catalog counted
+    `sum(len(p["targets"]) for every mesh, for every primitive)`, which counts one target once per
+    primitive it appears in and once per mesh that shares the vocabulary: Saka reads **399** for 57
+    real targets and Alice **172** for 34. "Who can smile" was already a query and it was querying a
+    number with no meaning.
+
+    Names live in `mesh.extras.targetNames` — glTF has no other place for them, which is why an
+    exporter that drops extras leaves a face that can be counted and not driven.
+    """
+    seen: dict[str, None] = {}
+    for mesh in doc.get("meshes") or []:
+        for name in ((mesh.get("extras") or {}).get("targetNames") or []):
+            if isinstance(name, str) and name not in seen:
+                seen[name] = None
+    return list(seen)
+
+
+def morph_displacements(doc: dict, blob: bytes) -> dict[str, float]:
+    """For each morph target, the mean VERTICAL displacement it applies — positive is up.
+
+    A second measurement, independent of `morph_centroids`, and it catches a different fault. The
+    centroid says WHERE a target acts, so it catches a brow classified onto a mouth. This says WHICH
+    WAY it moves the mesh, so it catches a target whose name says one thing and whose geometry does
+    the opposite — an author who modelled a shape inverted, or a table entry reaching for `Brow_Drop`
+    when it meant `Brow_Raise`.
+
+    Weighted by displacement magnitude, for the same reason the centroid is: a target that nudges a
+    thousand vertices imperceptibly and shoves fifty a long way is described by the shove.
+    """
+    totals: dict[str, list[float]] = {}
+    for mesh in doc.get("meshes") or []:
+        names = (mesh.get("extras") or {}).get("targetNames") or []
+        for prim in mesh.get("primitives") or []:
+            targets = prim.get("targets") or []
+            if not names or not targets:
+                continue
+            for i, name in enumerate(names):
+                if i >= len(targets) or "POSITION" not in targets[i]:
+                    continue
+                weight = rise = 0.0
+                for d in _read_vec3(doc, blob, targets[i]["POSITION"]):
+                    m = abs(d[0]) + abs(d[1]) + abs(d[2])
+                    if m > 1e-5:
+                        weight += m
+                        rise += m * d[1]
+                if weight > 0:
+                    totals.setdefault(name, []).append(rise / weight)
+    return {n: sum(v) / len(v) for n, v in totals.items()}
+
+
+def morph_centroids(doc: dict, blob: bytes) -> dict[str, float]:
+    """For each morph target, the height at which it actually moves the mesh.
+
+    The weighted mean Y of the vertices a target displaces, weighted by how far it displaces each —
+    so a target that nudges a thousand vertices imperceptibly and shoves fifty a long way is reported
+    where the shove is.
+
+    This is what makes `expressions.check_regions` a measurement rather than an assertion. A morph
+    target carries position deltas, so "this one is a brow" is testable: measured across both
+    expression rigs the brow, eye and mouth bands do not overlap at all.
+    """
+    totals: dict[str, list[float]] = {}
+    for mesh in doc.get("meshes") or []:
+        names = (mesh.get("extras") or {}).get("targetNames") or []
+        prims = mesh.get("primitives") or []
+        if not names or not prims:
+            continue
+        for prim in prims:
+            targets = prim.get("targets") or []
+            pos_acc = (prim.get("attributes") or {}).get("POSITION")
+            if pos_acc is None or not targets:
+                continue
+            ys = [v[1] for v in _read_vec3(doc, blob, pos_acc)]
+            if not ys:
+                continue
+            for i, name in enumerate(names):
+                if i >= len(targets) or "POSITION" not in targets[i]:
+                    continue
+                weight = height = 0.0
+                for j, d in enumerate(_read_vec3(doc, blob, targets[i]["POSITION"])):
+                    m = abs(d[0]) + abs(d[1]) + abs(d[2])
+                    if m > 1e-5 and j < len(ys):
+                        weight += m
+                        height += m * ys[j]
+                if weight > 0:
+                    totals.setdefault(name, []).append(height / weight)
+    return {n: sum(v) / len(v) for n, v in totals.items()}
+
+
 def deform_joints(doc: dict, blob: bytes, min_weight: float = 0.02) -> set[int]:
     """Node indices that actually move geometry — i.e. some vertex is weighted to them.
 
@@ -1560,7 +1652,9 @@ def rig_signature(doc: dict, blob: bytes = b"") -> Optional[str]:
 #: this stored frame carry the keys today's code needs" — which cannot express "the validator got
 #: stricter", the change that actually mattered: two catalogued maps were rejected only after `validate`
 #: learned that a limb has to be a chain.
-FRAME_REV = 18          # 18: a STATED (VRM) map is layer 0 here, not the caller's job
+FRAME_REV = 19          # 19: the FACE — morph names, scheme and facial count (`morph_targets`
+                        #     was a per-primitive sum and read 399 for Saka's 57)
+                        # 18: a STATED (VRM) map is layer 0 here, not the caller's job
                         # 17: the convention tables reach the FINGERS
                         # 16: rig_sig is a DERIVED attribute, so refresh backfills and clears it
                         # 15: the side rule follows the figure's facing round a YAW, not just a 180
@@ -2090,20 +2184,64 @@ def clean_pose(pose: dict, axes: dict) -> tuple[dict, Optional[str]]:
 def _read_vec3(doc: dict, blob: bytes, accessor_index: int, limit: int = 400000):
     """Yield up to `limit` VEC3 float triples from an accessor — the vertex-position counterpart to
     `_read_vec4`. Skinned positions are stored in BIND space, which is exactly the frame the bone map
-    and `anatomical_axes` are measured in, so no transform is needed to compare them."""
+    and `anatomical_axes` are measured in, so no transform is needed to compare them.
+
+    **Sparse accessors are read too**, and that is not a refinement. A sparse accessor stores a base
+    (often absent entirely, meaning all zeros) plus a list of overridden indices, and it is how a morph
+    target is normally stored — a target moves a few hundred vertices of a mesh with sixty thousand.
+    This used to `return` on `"bufferView" not in acc`, which for a sparse-only accessor yields NOTHING
+    and reads as "this target moves no vertices". Alice's whole face measured as empty that way, and
+    the region check passed her vacuously: no bands, no violations, a green result meaning nothing.
+    """
     import struct
     acc = (doc.get("accessors") or [])[accessor_index]
     fmt, size = _COMPONENT.get(acc.get("componentType"), (None, 0))
-    if not fmt or acc.get("type") != "VEC3" or "bufferView" not in acc:
+    if not fmt or acc.get("type") != "VEC3":
         return
-    bv = (doc.get("bufferViews") or [])[acc["bufferView"]]
-    base = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
-    stride = bv.get("byteStride") or (size * 3)
-    for i in range(min(acc.get("count", 0), limit)):
-        off = base + i * stride
-        if off + size * 3 > len(blob):
-            return
-        yield struct.unpack_from("<" + fmt * 3, blob, off)
+    count = min(acc.get("count", 0), limit)
+    sparse = acc.get("sparse")
+    if "bufferView" not in acc and not sparse:
+        return
+
+    if not sparse:
+        bv = (doc.get("bufferViews") or [])[acc["bufferView"]]
+        base = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+        stride = bv.get("byteStride") or (size * 3)
+        for i in range(count):
+            off = base + i * stride
+            if off + size * 3 > len(blob):
+                return
+            yield struct.unpack_from("<" + fmt * 3, blob, off)
+        return
+
+    # Sparse: materialise, because an override can land on any index and the overrides are not sorted
+    # in any order a single pass could rely on. The base is all-zero when there is no bufferView.
+    values = [(0.0, 0.0, 0.0)] * count
+    if "bufferView" in acc:
+        bv = (doc.get("bufferViews") or [])[acc["bufferView"]]
+        base = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+        stride = bv.get("byteStride") or (size * 3)
+        for i in range(count):
+            off = base + i * stride
+            if off + size * 3 > len(blob):
+                break
+            values[i] = struct.unpack_from("<" + fmt * 3, blob, off)
+    try:
+        idx, val = sparse["indices"], sparse["values"]
+        ibv = (doc.get("bufferViews") or [])[idx["bufferView"]]
+        vbv = (doc.get("bufferViews") or [])[val["bufferView"]]
+        ifmt, isize = _COMPONENT[idx["componentType"]]
+        ibase = ibv.get("byteOffset", 0) + idx.get("byteOffset", 0)
+        vbase = vbv.get("byteOffset", 0) + val.get("byteOffset", 0)
+        for k in range(sparse.get("count", 0)):
+            if ibase + k * isize + isize > len(blob) or vbase + k * 12 + 12 > len(blob):
+                break
+            j = struct.unpack_from("<" + ifmt, blob, ibase + k * isize)[0]
+            if 0 <= j < count:
+                values[j] = struct.unpack_from("<fff", blob, vbase + k * 12)
+    except (KeyError, IndexError, struct.error):
+        pass                          # a malformed sparse block leaves the base, not an exception
+    yield from values
 
 
 #: The bones whose vertices are the TORSO — what a hanging arm has to clear. Deliberately not the whole

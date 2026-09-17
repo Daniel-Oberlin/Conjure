@@ -444,3 +444,122 @@ test("the pose's NAME reaches the client rather than being dropped as an unknown
   f.comp.apply();
   assert.strictEqual(f.comp.data.named, "kneel");
 });
+
+// ------------------------------------------------------------- figure-face
+//
+// Driving the face: one scalar per morph target, straight onto the meshes that carry it.
+//
+// Its own component rather than a property of `figure`, because `figure` refuses to do anything
+// without a humanoid bone map and an anatomical frame, and an expression needs neither. Most of these
+// claims are about which meshes get written and which weights get cleared, and both were reasoned
+// about from real files: Alice's face is three meshes and `Jaw_Open` is on two of them.
+const FACE = components["figure-face"];
+
+/** A model of `n` meshes, each carrying the named morph targets. */
+function faceEl(meshes, expression) {
+  const root = new THREE.Object3D();
+  const built = meshes.map((names, i) => {
+    const m = new THREE.Object3D();
+    m.name = "mesh" + i;
+    m.morphTargetDictionary = {};
+    m.morphTargetInfluences = names.map(() => 0);
+    names.forEach((n, j) => { m.morphTargetDictionary[n] = j; });
+    root.add(m);
+    return m;
+  });
+  const el = {
+    id: "fig",
+    addEventListener() {},
+    removeEventListener() {},
+    getObject3D: (k) => (k === "mesh" ? root : null)
+  };
+  const c = Object.create(FACE);
+  c.el = el;
+  c.data = { expression: expression === undefined ? "" : JSON.stringify(expression) };
+  return { c, meshes: built };
+}
+
+function weights(mesh) {
+  const out = {};
+  Object.keys(mesh.morphTargetDictionary).forEach((n) => {
+    out[n] = mesh.morphTargetInfluences[mesh.morphTargetDictionary[n]];
+  });
+  return out;
+}
+
+test("a weight lands on the target named, and nothing else moves", () => {
+  const { c, meshes } = faceEl([["Brow_Drop_L", "Jaw_Open", "Eye_Blink_L"]], { Jaw_Open: 0.5 });
+  c.apply();
+  assert.deepEqual(weights(meshes[0]), { Brow_Drop_L: 0, Jaw_Open: 0.5, Eye_Blink_L: 0 });
+});
+
+test("EVERY mesh carrying the target is written, not just the first", () => {
+  // Alice's head, tongue and teeth are three meshes and `Jaw_Open` is on two of them. Finding "the"
+  // face mesh would open her jaw and leave the teeth behind.
+  const { c, meshes } = faceEl([["Jaw_Open"], ["Tongue_Out"], ["Jaw_Open"]], { Jaw_Open: 1 });
+  c.apply();
+  assert.equal(weights(meshes[0]).Jaw_Open, 1);
+  assert.equal(weights(meshes[2]).Jaw_Open, 1);
+  assert.equal(weights(meshes[1]).Tongue_Out, 0);
+});
+
+test("a weight dropped from the expression goes back to zero without a reload", () => {
+  const { c, meshes } = faceEl([["Jaw_Open", "Eye_Blink_L"]], { Jaw_Open: 1, Eye_Blink_L: 1 });
+  c.apply();
+  c.data.expression = JSON.stringify({ Jaw_Open: 1 });
+  c.apply();
+  assert.deepEqual(weights(meshes[0]), { Jaw_Open: 1, Eye_Blink_L: 0 });
+});
+
+test("a weight the model SHIPPED with is left alone", () => {
+  // A figure may carry non-zero rest weights — a body shape or skin tone baked on by its author.
+  // Zeroing everything we did not set would undo the figure the library actually holds, every time
+  // an expression changed.
+  const { c, meshes } = faceEl([["Body_Alabaster", "Jaw_Open"]], { Jaw_Open: 1 });
+  meshes[0].morphTargetInfluences[0] = 0.8;              // as the author left it
+  c.apply();
+  assert.equal(weights(meshes[0]).Body_Alabaster, 0.8);
+  c.data.expression = JSON.stringify({});
+  c.apply();
+  assert.equal(weights(meshes[0]).Body_Alabaster, 0.8, "still the author's");
+  assert.equal(weights(meshes[0]).Jaw_Open, 0, "but ours is cleared");
+});
+
+test("weights are clamped, and rubbish is not written as NaN", () => {
+  const { c, meshes } = faceEl([["Jaw_Open", "Eye_Blink_L", "Brow_Drop_L"]],
+                               { Jaw_Open: 5, Eye_Blink_L: -2, Brow_Drop_L: "wide" });
+  c.apply();
+  assert.deepEqual(weights(meshes[0]), { Jaw_Open: 1, Eye_Blink_L: 0, Brow_Drop_L: 0 });
+});
+
+test("a target this model does not have is ignored rather than thrown", () => {
+  const { c, meshes } = faceEl([["Jaw_Open"]], { Fcl_ALL_Joy: 1, Jaw_Open: 1 });
+  assert.doesNotThrow(() => c.apply());
+  assert.equal(weights(meshes[0]).Jaw_Open, 1);
+});
+
+test("a model with no morph targets at all is survived", () => {
+  const root = new THREE.Object3D();
+  root.add(new THREE.Object3D());
+  const c = Object.create(FACE);
+  c.el = { id: "fig", addEventListener() {}, removeEventListener() {},
+           getObject3D: () => root };
+  c.data = { expression: JSON.stringify({ smile: 1 }) };
+  assert.doesNotThrow(() => c.apply());
+});
+
+test("nothing happens before the model has loaded, and no state is lost", () => {
+  const c = Object.create(FACE);
+  c.el = { id: "fig", addEventListener() {}, removeEventListener() {}, getObject3D: () => null };
+  c.data = { expression: JSON.stringify({ Jaw_Open: 1 }) };
+  assert.doesNotThrow(() => c.apply());
+});
+
+test("removing the component puts every weight IT set back to zero", () => {
+  const { c, meshes } = faceEl([["Jaw_Open", "Body_Alabaster"]], { Jaw_Open: 1 });
+  meshes[0].morphTargetInfluences[1] = 0.8;
+  c.apply();
+  c.remove();
+  assert.equal(weights(meshes[0]).Jaw_Open, 0);
+  assert.equal(weights(meshes[0]).Body_Alabaster, 0.8, "never ours to clear");
+});

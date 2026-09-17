@@ -485,6 +485,91 @@
   //
   // Visibility, never removal. The mesh stays in the scene, stays skinned and stays posed with the rest
   // of the figure — so showing it again needs no reload, and a pose survives undressing.
+  // The FACE — one scalar per morph target.
+  //
+  // Its own component, not a property of `figure`, for the same reason `figure-parts` is: `figure`
+  // refuses to do anything without a humanoid bone map and an anatomical frame, and an expression
+  // needs neither. A figure with a face and no usable skeleton must still be able to smile, and
+  // writing `components.figure` to set a weight would also overwrite the pose stored beside it.
+  //
+  // The weights arrive ALREADY RESOLVED from semantic names — the client never sees "smile". Choosing
+  // a scheme needs the figure's whole vocabulary, which lives in the catalog, so resolving here would
+  // mean shipping the tables to the client and reading them against a model that may not have loaded.
+  AFRAME.registerComponent("figure-face", {
+    schema: {
+      expression: { type: "string", default: "" }   // {morphTargetName: weight 0..1}, JSON
+    },
+
+    init: function () {
+      var self = this;
+      this._onLoad = function () { self._once = false; self.apply(); };
+      this.el.addEventListener("model-loaded", this._onLoad);
+      this.apply();
+    },
+
+    update: function () { this.apply(); },
+
+    // A morph target is per-MESH, and a face is usually several — Alice's head, tongue and teeth are
+    // three, and `Jaw_Open` exists on two of them. So every morphed mesh is visited and every name it
+    // recognises is written, rather than finding "the" face mesh: picking one would open the jaw and
+    // leave the teeth behind.
+    //
+    // `morphTargetDictionary` is built by GLTFLoader from `mesh.extras.targetNames`, the only place
+    // glTF can put a morph name. An exporter that drops extras leaves a face that can be COUNTED and
+    // not driven, so the log below says which of those it is rather than doing nothing quietly.
+    apply: function () {
+      var want = parse(this.data.expression) || {};
+      var root = this.el.getObject3D("mesh");
+      if (!root) return;
+      var prev = this._applied || {};
+      var touched = {}, hit = 0, meshes = 0;
+
+      root.traverse(function (n) {
+        var dict = n.morphTargetDictionary, infl = n.morphTargetInfluences;
+        if (!dict || !infl) return;
+        meshes += 1;
+        Object.keys(dict).forEach(function (name) {
+          var i = dict[name];
+          if (i == null || i >= infl.length) return;
+          if (Object.prototype.hasOwnProperty.call(want, name)) {
+            infl[i] = Math.max(0, Math.min(1, Number(want[name]) || 0));
+            touched[name] = true;
+            hit += 1;
+          } else if (prev[name]) {
+            // Only what WE set last time. A model may ship non-zero rest weights — a body shape or
+            // skin tone baked on by its author — and zeroing those would undo the figure the library
+            // actually holds, every time an expression changed.
+            infl[i] = 0;
+          }
+        });
+      });
+
+      this._applied = touched;
+      if (!this._once && Object.keys(want).length) {
+        this._once = true;
+        if (!meshes) log("NO MORPH TARGETS on " + (this.el.id || "?") + " — the model carries none");
+        else if (!hit) log("NO SUCH MORPH TARGET on " + (this.el.id || "?") + ": wanted "
+                          + Object.keys(want).join(", ") + " across " + meshes + " morphed mesh(es)");
+        else log("expression: " + hit + " weight(s) across " + meshes + " mesh(es) of "
+                 + (this.el.id || "?"));
+      }
+    },
+
+    remove: function () {
+      this.el.removeEventListener("model-loaded", this._onLoad);
+      var root = this.el.getObject3D("mesh");
+      var prev = this._applied || {};
+      if (!root) return;
+      root.traverse(function (n) {
+        var dict = n.morphTargetDictionary, infl = n.morphTargetInfluences;
+        if (!dict || !infl) return;
+        Object.keys(prev).forEach(function (name) {
+          if (dict[name] != null && dict[name] < infl.length) infl[dict[name]] = 0;
+        });
+      });
+    }
+  });
+
   AFRAME.registerComponent("figure-parts", {
     schema: {
       hidden: { type: "string", default: "" }      // JSON array of glTF node names

@@ -759,6 +759,92 @@ the figure kept swinging because the cache still held the clip made before it.
 **The voice comes with it.** A rewritten clip is the same performance on another body, and the voice was
 recorded against the performance rather than against the skeleton.
 
+### 8d. The face — `figure-face`, and the two expression rigs
+
+A figure who blinks and looks at you is a different presence. Driving one is small: a morph weight is
+one scalar per target, so there is no new client path.
+
+**Measured across 38 rigged figures. 22 carry morph targets; two carry a face.**
+
+| figure | targets | facial | vocabulary |
+|---|---|---|---|
+| Saka | 57 | **57** | VRM presets — `Fcl_ALL_Joy`, `Fcl_BRW_Angry`, `Fcl_MTH_A` |
+| Alice | 34 | **26** | Character Creator / ARKit-ish — `Brow_Raise_Inner_L`, `Jaw_Open` |
+| Bianca, Blondie | 22, 21 | 0 | **tongue only** — no brows, no eyes |
+| Moon Girl, Kawaii, Goddess | 14, 3, 3 | 1 | one stray `closed_eyes_correction` |
+| everyone else | 2–17 | 0 | skin and clothing colour, anatomy |
+
+So `smile` cannot be a target name. It is a semantic request — exactly as `leftUpperArm` is a semantic
+bone — resolved per scheme by `conjure/expressions.py` into whatever that figure's author called it.
+`set_expression` / `POST /figure/expression` take `{smile: 1}`, `{blink: 1, look_left: 1}` or a RAW
+target name, which wins over the table so an inspected figure can be driven directly — including the
+tongue-only rigs, which have no scheme and are perfectly drivable by name.
+
+Weights compose **additively and clamp at 1**: a `surprised` and an `aa` both reach for `Jaw_Open`, and
+letting whichever came last in a dict win would make the result depend on key order.
+
+**A request a figure cannot meet is reported, never approximated.** VRM aims the eyes with BONES, so
+that rig has no `look_*` morphs at all; substituting a head turn would be a lie and returning nothing
+silently reads as the tool being broken.
+
+Its own component and not a property of `figure`, for the reason `figure-parts` is: `figure` refuses to
+act without a humanoid map and an anatomical frame, and a face needs neither.
+
+#### Why a table here is not the thing §8c warns about
+
+[`backlogs/figures.md`](../backlogs/figures.md) argues that a morph *retarget* has "names and nothing
+else" — `Fcl_ALL_Joy` is not `Brow_Raise_Inner_L` in any sense a measurement can establish. That stands,
+and it is about carrying one figure's PERFORMANCE onto another.
+
+This is a different job, and unlike that one **it is checkable**. Mapping `smile` → `Fcl_ALL_Fun` reads
+the author's own label (discovery layer 0, the same move as `vrm_humanoid()`), and a morph target
+carries position deltas — so a claim about what it does can be tested against where and how it moves
+the mesh. Two independent checks, both green on both rigs:
+
+**`check_regions`** — brow above eye above mouth, which is anatomy, not convention. The bands do not
+overlap at all, so anything looser would pass a table that has genuinely gone wrong:
+
+| | brow | eye | mouth |
+|---|---|---|---|
+| Saka | 1.4228–1.4257 | 1.3973–1.4104 | 1.3387–1.3440 |
+| Alice | 1.5989–1.6018 | 1.5658–1.5854 | 1.5135–1.5237 |
+
+**`check_directions`** — a shape must move the mesh the way its NAME says. This catches what the region
+check cannot: a rig with `Brow_Raise` and `Brow_Drop` modelled the wrong way round passes the regions
+completely (both are brows, both in the brow band) and puts an angry face on every request for a
+surprised one.
+
+Three things these checks caught while being built, and each was a real defect rather than a hypothetical:
+
+- **A vacuous pass.** `_read_vec3` returned early on an accessor with no `bufferView`, which is exactly
+  how a **sparse** accessor is stored — and sparse is how a morph target is normally stored, because a
+  target moves a few hundred vertices of a mesh with sixty thousand. Alice's entire face measured as
+  moving nothing, so there were no bands, so there were no violations, so the check reported OK. A green
+  result that cannot go red is worse than no check, because it is trusted. `check_regions` now
+  distinguishes *not applicable* (a figure with one stray facial shape makes no ordering claim) from
+  *not measured* (a recognised expression rig that yields no bands is a failure).
+- **A composite is not a feature.** `Fcl_ALL_Joy` is facial — the most facial thing on the rig — and has
+  no band of its own, because it moves brows, eyes and mouth together. The same shape of mistake was
+  then made twice: the direction check asserted it must RISE, on the reasoning that joy is a smile.
+  Measured, it falls (-0.00376), and correctly — `Fcl_EYE_Joy` is -0.00584, because happy eyes close and
+  an eyelid closes downward, and `Fcl_MTH_Joy` is -0.00246 because the mouth opens. Both checks now
+  exclude whole-face composites, for one reason.
+- **The catalog count meant nothing.** `morph_targets` summed `len(primitive.targets)` over every
+  primitive of every mesh, so a vocabulary shared by four primitives counted four times: **Saka read 399
+  for 57 real targets and Alice 172 for 34.** "Who can smile" was already a query and it was querying
+  that number. It is now a count of DISTINCT names, beside `morph_names`, `expression_scheme` and
+  `facial_morphs` — and `facial_morphs` is the one that answers the question, because a count of targets
+  says a figure is expressive when it can only change its shorts.
+
+#### What has the least evidence behind it
+
+Stated rather than implied, in `expressions.PROVENANCE`. The VRM table is one entry per expression and
+the author states the emotion outright. The Character Creator table names muscles, so its **emotions are
+composites we author** — FACS-ish readings (a smile is zygomatic; a real one crinkles the eyes; anger
+drops the brows) and not measured. Its **visemes are weaker still**: that rig has no `A/I/U/E/O`, so
+`ee` is a spread mouth and `ou` a pursed one, good enough to read as speech at conversational distance
+and not claimed to be more.
+
 ## 8. The runtime — the `figure` component
 
 `client/figure.js` is an ordinary A-Frame component on the placed model entity, **not** a dynamic module
@@ -1025,7 +1111,16 @@ Recorded here so the spec can be trusted about its own edges; the design work is
 - The judge exists and the renderer exists, but nothing yet proposes
   a pose, renders it, verifies it and freezes it into a library.
 - **No FBX front door**, so no Mixamo.
-- **No morph, spring-bone or MToon support.** VRM material data is in the file and A-Frame's plain glTF
+- ~~**No morph support.**~~ Built 2026-09-16 as §8d: `figure-face`, `POST /figure/expression` and
+  `set_expression`, over a semantic vocabulary resolved per expression rig. **Driving** a face, not
+  retargeting one — §8d says why that distinction is what makes the tables checkable. Two figures in the
+  catalog can use it, which is a fact about the corpus and not a limit of the mechanism.
+- **No facial performance to carry.** 249 of 539 captured clips drive morph weights and corpus-wide
+  **15 channels are facial** — the rest are `Body`, `Dress`, `Shorts`, `Hair`. With two expression rigs
+  and no performances to carry, there is nothing to build retargeting tables from; if a face is to be
+  animated the natural source is now our own director, and the question becomes *author* rather than
+  *retarget*.
+- **No spring-bone or MToon support.** VRM material data is in the file and A-Frame's plain glTF
   loader ignores it.
 
 ## 13. Related specs
