@@ -997,15 +997,28 @@ and a scale error cannot accumulate down a chain; `s` scales the flesh, and 5% o
 under a millimetre. It is eased frame to frame, because girth is a slowly-varying property of a hand
 rather than a per-frame measurement.
 
-**The five tip bones get their own scale, derived per finger.** Worn on a Quest 3, the wearer's real
-fingertips protruded about 5 mm beyond the virtual ones. That is not a placement error — the tip joint
-lands exactly where the runtime says, as every joint does. It is the *flesh*: the fingertip cap is bound
-to the tip bone, and `s` scales it by the girth ratio, which says nothing about how far a fingertip
-sticks out. Phase 0 had already measured why `s` could not help — `*-distal → *-tip` is the one segment
-where the model and the runtime measure different things, and it was the widest-varying column of the
-whole reading. So each tip bone takes its own finger's tracked ÷ bind ratio for that segment. A tip bone
-is a **leaf**, so nothing inherits the scale and it cannot propagate; and the number comes from the same
-measurement that predicted the problem rather than from a millimetre figure typed in.
+**`tipOut` — fingertips, and a tunable that is marked as one.** Worn on a Quest 3, the wearer's real
+fingertips protruded about 5 mm beyond the virtual ones. Not a placement error: the tip joint lands
+exactly where the runtime says, as every joint does. It is the *flesh* — the fingertip cap is bound to
+the tip bone, and `s` scales it by the girth ratio, which says nothing about how far a fingertip sticks
+out.
+
+`tipOut` pushes each tip bone along its own local −Z (the bone direction away from the wrist) by a
+number of millimetres. **Default 0**, which is the only defensible default: everything else here is
+exact by construction, and a non-zero default would quietly make that untrue.
+
+*It is a tunable and not a derivation, and the first attempt at making it one is worth keeping.* That
+version scaled each tip bone by its finger's tracked ÷ bind ratio for `*-distal → *-tip`, reasoning from
+§8f's phase-0 measurement that this is the one segment where the model and the runtime measure different
+things. It is — but the ratio came out **below one**, so the caps shrank: the fingers went pointy and
+got shorter still. The reasoning was sound and **the sign was an assumption**, and that segment being
+unreliable does not tell you which way it is unreliable.
+
+No measurement settles it, because the gap is between the runtime's tip estimate and the wearer's actual
+fingertip and the runtime does not report the second. So the component logs what *is* knowable once per
+wearing — each finger's tracked and bind `distal → tip`, their ratio, and the radius reported at the tip
+— under `--debug-log`, so that whether the right rule is a constant, a multiple of the radius, or
+per-finger can be read off a headset rather than reasoned to.
 
 **Precedence: live hand > clip > pose.** Settled by taking the other two writers *off* — `figure-clip`
 is paused and `figure.restore()` is called on wear — rather than by winning a race with them, since

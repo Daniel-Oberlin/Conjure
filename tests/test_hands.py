@@ -251,3 +251,18 @@ def test_a_figure_that_is_not_a_hand_is_not_LISTED_as_wearable(srv, client):
     doc, _ = _named_skeleton("dot-side", arms_down=False)
     _import_id(client, "not_a_hand.glb", write_glb(doc))
     assert client.get("/figure/hands").json()["library"] == []
+
+
+def test_the_tip_offset_is_carried_to_the_component_and_defaults_to_zero(srv, client):
+    """Zero is the only defensible default: everything else about this component is exact by
+    construction — every joint lands on the pose the runtime reports — and a non-zero default would
+    quietly make that untrue."""
+    eid = _place_hand(srv, client)
+    client.post("/figure/hand", json={"id": eid, "hand": "auto"})
+    ent = next(e for e in srv.store.doc["entities"] if e["id"] == eid)
+    assert ent["components"]["hand-rig"]["tipOut"] == "0"
+
+    out = client.post("/figure/hand", json={"id": eid, "hand": "auto", "tip_out": 5}).json()
+    assert out["ok"] and out["tip_out_mm"] == 5
+    ent = next(e for e in srv.store.doc["entities"] if e["id"] == eid)
+    assert ent["components"]["hand-rig"]["tipOut"] == "5"

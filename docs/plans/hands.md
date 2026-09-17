@@ -353,11 +353,25 @@ which is phase 0's fit question finally asked of the flesh and not only the join
 | seen | what it was | fixed by |
 |---|---|---|
 | one hand grey and untextured | the catalog's five hand files are **not one pair**: two textured, one orphaned AR left, two rights with no materials at all. `--pair` took the first of each side. | record `hand_materials`; match a pair on material NAMES, which the orphaned AR left fails and texture-counting would not |
-| real fingertips protrude ~**5 mm** past the virtual ones | not placement — the tip joint lands exactly where the runtime says. The fingertip FLESH: the cap is bound to the tip bone and `s` scales it by the GIRTH ratio, which says nothing about how far a fingertip sticks out | a per-finger scale on the five **tip** bones, from that finger's own tracked ÷ bind ratio for `distal → tip`. A tip bone is a leaf, so it cannot propagate |
+| real fingertips protrude ~**5 mm** past the virtual ones | not placement — the tip joint lands exactly where the runtime says. The fingertip FLESH: the cap is bound to the tip bone and `s` scales it by the GIRTH ratio, which says nothing about how far a fingertip sticks out | `tipOut`, in millimetres, along each tip bone's own −Z. Default 0 |
 
-The second one is phase 0 paying for itself: `*-distal → *-tip` was already measured as the one segment
-where the model and the runtime measure different things, and as the widest-varying column of the
-reading. Without that, 5 mm would have been fixed with 5 mm.
+**The fingertip fix was wrong first, and the way it was wrong is the lesson.** The first version scaled
+each tip bone by that finger's tracked ÷ bind ratio for `distal → tip`, reasoning from phase 0 that this
+is the one segment where the model and the runtime measure different things. It is — and the ratio came
+out **below one**, so the caps shrank and the fingers went pointy and shorter still.
+
+The reasoning was sound. **The sign was an assumption.** "This segment is unreliable" does not tell you
+which way it is unreliable, and phase 0 never measured the direction because nothing asked it to.
+
+No measurement settles it either: the gap is between the runtime's tip estimate and the wearer's real
+fingertip, and the runtime does not report the second. So `tipOut` is a **tunable**, defaulting to 0,
+and the component logs the numbers a rule would have to be found in — each finger's tracked and bind
+`distal → tip`, the ratio, and the tip radius — so the rule can be read off a headset instead of
+reasoned to. Reasoning to it is what produced pointy fingers.
+
+**Next reading wanted:** `--tip-out 5` and then, with `--debug-log` on, the `[hand-rig] tips (cm)` line
+from `temp/conjure.log`. If 5 mm lands it, the question becomes whether the right rule is a constant or
+a multiple of the reported radius — and those numbers are in that line.
 
 **What to watch for, given what phase 0 measured.** The per-bone residual after a single `s` is ~5%, and
 it shows up as stretch in the skinning blend **at the knuckles** rather than as a hand of the wrong size

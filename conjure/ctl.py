@@ -413,15 +413,16 @@ def cmd_wear(s: Settings, a) -> None:
             return
         eid = put["id"]
         print(f"placed {a.id} as {eid}")
-    out = _post(s, "/figure/hand", {"id": eid, "hand": a.hand})
+    out = _post(s, "/figure/hand", {"id": eid, "hand": a.hand, "tip_out": a.tip_out})
     if not out.get("ok"):
         print(f"wear: {out.get('error', 'failed')}")
         return
     if not out.get("worn"):
         _say(out, a.verbose, "taken off — back where it was placed")
         return
+    tip = f", fingertips +{a.tip_out:g} mm" if a.tip_out else ""
     _say(out, a.verbose, f"{eid}: worn on the {out.get('hand')} hand, "
-                         f"{out.get('joints')} joints driven")
+                         f"{out.get('joints')} joints driven{tip}")
 
 
 def _wear_list(s: Settings) -> None:
@@ -482,7 +483,8 @@ def _wear_pair(s: Settings, a) -> None:
         if not put.get("ok"):
             print(f"wear: could not place the {side} hand: {put.get('error', 'failed')}")
             continue
-        out = _post(s, "/figure/hand", {"id": put["id"], "hand": side})
+        out = _post(s, "/figure/hand", {"id": put["id"], "hand": side,
+                                        "tip_out": a.tip_out})
         if out.get("ok"):
             worn.append(f"{put['id']} ({side})")
         else:
@@ -744,6 +746,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--name", help="entity id to place it as (with --place)")
     a.add_argument("--pair", action="store_true",
                    help="place BOTH hands from the library and wear them — the whole test in one")
+    a.add_argument("--tip-out", dest="tip_out", type=float, default=0.0, metavar="MM",
+                   help="push each fingertip out along its own bone, in mm. A TUNABLE: the runtime's "
+                        "tip joint sits short of a real fingertip by an amount nothing reports. 0 = "
+                        "exactly where the runtime says")
 
     a = sub.add_parser("clips", help="list the animations a placed figure can play")
     a.set_defaults(fn=cmd_clips)

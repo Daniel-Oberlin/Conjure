@@ -4966,6 +4966,9 @@ async def figure_hands() -> dict:
 class FigureHandRequest(BaseModel):
     id: str
     hand: str = "auto"                   # left | right | auto (pair on the MEASURED side) | off
+    #: Millimetres to push each fingertip out along its own bone. A TUNABLE, not a derivation — see
+    #: `specs/figures.md` §8f. Zero is "exactly where the runtime says the tip is".
+    tip_out: float = 0.0
 
 
 @app.post("/figure/hand")
@@ -5012,9 +5015,11 @@ async def figure_hand(req: FigureHandRequest) -> dict:
 
     patch = [{"op": "update", "id": req.id,
               "set": {"components.hand-rig": {"hand": want,
-                                              "joints": json.dumps(joints, separators=(",", ":"))}}}]
+                                              "joints": json.dumps(joints, separators=(",", ":")),
+                                              "tipOut": f"{req.tip_out:g}"}}}]
     await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="hand-rig")})
-    return {"ok": True, "id": req.id, "worn": True, "hand": want, "joints": len(joints)}
+    return {"ok": True, "id": req.id, "worn": True, "hand": want, "joints": len(joints),
+            "tip_out_mm": req.tip_out}
 
 
 @app.post("/figure/parts")

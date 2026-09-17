@@ -187,57 +187,79 @@ test("a model missing a joint is REFUSED rather than driven in part", () => {
   assert.equal(self._collect(), null);
 });
 
-test("the TIP bones get their own derived scale, and it does not touch anything else", () => {
-  // Reported on device: the wearer's real fingertips protrude ~5 mm beyond the virtual ones. The tip
-  // JOINT lands exactly where the runtime says — every joint does — so this is the flesh, not the
-  // placement: the fingertip cap is bound to the tip bone and `s` only scales it by the GIRTH ratio.
-  //
-  // Phase 0 measured why it would not help: `distal -> tip` is the one segment where the model and the
-  // runtime measure different things, and it was the widest-varying column of the whole reading.
-  const { self } = rig("flat", 0.03);
-  self._collect();
-
-  // A frame at exactly the bind pose: every tip ratio is 1, so nothing is stretched.
-  const same = self._tipScale(frame(0.03).pos);
-  assert.equal(Object.keys(same).length, 5, "one per finger, and only the fingers");
-  Object.values(same).forEach((r) => assert.ok(Math.abs(r - 1) < 1e-9));
-
-  // Now push every tip 5 mm further out, which is the reported symptom.
-  const f = frame(0.03);
-  Object.keys(same).forEach((tip) => { f.pos[tip].z -= 0.005; });
-  const longer = self._tipScale(f.pos);
-  Object.entries(longer).forEach(([tip, r]) => {
-    assert.ok(Math.abs(r - 0.035 / 0.03) < 1e-9, `${tip} ratio ${r}`);
-  });
-
-  // ...and the BONE scale is untouched by it, or the whole hand would swell to fix a fingertip.
-  assert.ok(Math.abs(self._scale(f.pos) - 1) < 1e-9);
-});
-
-test("a tip ratio is applied to the tip BONE only, and cannot propagate", () => {
-  const { self, root, bones } = rig("chain");          // the shape where propagation would show
+test("the tip OFFSET is zero by default, so nothing is moved off the runtime's pose", () => {
+  // The only defensible default. Everything else here is exact by construction — every joint lands on
+  // the pose the runtime reports — and a non-zero default would quietly make that untrue.
+  const { self, root, bones } = rig();
   self._collect();
   self._s = 1;
+  assert.equal(self._tipOut(), 0);
   const f = frame(0.03);
-  ["thumb-tip", "index-finger-tip", "middle-finger-tip", "ring-finger-tip", "pinky-finger-tip"]
-    .forEach((tip) => { f.pos[tip].z -= 0.006; });
-  self._tips = self._tipScale(f.pos);
   self._drive(f);
   root.updateMatrixWorld(true);
-  const sc = new THREE.Vector3();
+  const p = new THREE.Vector3();
   JOINTS.forEach((n) => {
-    bones[n].matrixWorld.decompose(new THREE.Vector3(), new THREE.Quaternion(), sc);
-    const want = n.endsWith("-tip") ? 0.036 / 0.03 : 1;
-    assert.ok(Math.abs(sc.x - want) < 1e-6, `${n} world scale ${sc.x}, wanted ${want}`);
+    p.setFromMatrixPosition(bones[n].matrixWorld);
+    assert.ok(p.distanceTo(f.pos[n]) < 1e-6, `${n} moved with tipOut unset`);
   });
 });
 
-test("a wild tip ratio is refused — that is a tracking artefact, not a finger", () => {
-  const { self } = rig("flat", 0.03);
+test("the tip offset pushes ONLY the five tips, along their own bone", () => {
+  // Worn on a Quest 3 the real fingertips protruded ~5 mm past the virtual ones. This is a TUNABLE and
+  // not a derivation: the gap is between the runtime's tip estimate and the wearer's actual
+  // fingertip, and the runtime does not report the second.
+  const { self, root, bones } = rig();
   self._collect();
+  self._s = 1;
+  self.data.tipOut = "5";
   const f = frame(0.03);
-  f.pos["index-finger-tip"] = f.pos["index-finger-phalanx-distal"].clone();   // collapsed onto it
-  const r = self._tipScale(f.pos);
-  assert.ok(!("index-finger-tip" in r), "a zero-length tip must not scale the cap to nothing");
-  assert.equal(Object.keys(r).length, 4, "and the other four are unaffected");
+  self._drive(f);
+  root.updateMatrixWorld(true);
+  const p = new THREE.Vector3();
+  JOINTS.forEach((n) => {
+    p.setFromMatrixPosition(bones[n].matrixWorld);
+    const moved = p.distanceTo(f.pos[n]);
+    if (n.endsWith("-tip")) {
+      assert.ok(Math.abs(moved - 0.005) < 1e-6, `${n} moved ${moved} m, wanted 0.005`);
+      // ...along −Z, which is the bone direction away from the wrist, not just anywhere
+      assert.ok(p.z < f.pos[n].z - 0.004, `${n} went the wrong way: ${p.z} vs ${f.pos[n].z}`);
+    } else {
+      assert.ok(moved < 1e-6, `${n} is not a tip and must not move`);
+    }
+  });
+});
+
+test("a preposterous offset is ignored rather than applied", () => {
+  const { self } = rig();
+  self.data.tipOut = "500";                     // half a metre of fingertip
+  assert.equal(self._tipOut(), 0);
+  self.data.tipOut = "nonsense";
+  assert.equal(self._tipOut(), 0);
+  self.data.tipOut = "-4";                      // pulling them IN is legitimate
+  assert.ok(Math.abs(self._tipOut() + 0.004) < 1e-9);
+});
+
+test("the tip numbers are LOGGED, so the rule can be read rather than reasoned to", () => {
+  // The first attempt scaled each tip by that finger's tracked/bind ratio, reasoning from phase 0
+  // that `distal -> tip` was the unreliable segment. It is — but the ratio came out BELOW one, the
+  // caps shrank, and the fingers went pointy. The reasoning was sound and the SIGN was an assumption.
+  const { self } = rig();
+  self._collect();
+  const lines = [];
+  global.window.CONJURE_DEBUG_LOG = true;
+  const orig = console.log;
+  console.log = (m) => lines.push(String(m));
+  try {
+    self._s = 1.02;
+    self._report({ pos: frame(0.03).pos, quat: {}, rad: {} });
+  } finally {
+    console.log = orig;
+    global.window.CONJURE_DEBUG_LOG = false;
+  }
+  const said = lines.join("\n");
+  assert.match(said, /tracked/);
+  assert.match(said, /bind/);
+  assert.match(said, /ratio/);
+  assert.match(said, /radius/, "the radius is the one candidate rule we can actually test");
+  ["thumb", "index", "middle", "ring", "pinky"].forEach((f) => assert.match(said, new RegExp(f)));
 });

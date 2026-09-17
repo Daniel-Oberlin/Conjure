@@ -79,7 +79,10 @@
   AFRAME.registerComponent("hand-rig", {
     schema: {
       hand: { type: "string", default: "" },     // "left" | "right" — which tracked hand drives this
-      joints: { type: "string", default: "" }    // {webxrJoint: nodeName}; identity today, see hands.py
+      joints: { type: "string", default: "" },   // {webxrJoint: nodeName}; identity today, see hands.py
+      // Millimetres to push each fingertip out along its own bone. A TUNABLE — see `_tipOut`. Zero is
+      // "exactly where the runtime says the tip is", which is the only defensible default.
+      tipOut: { type: "string", default: "0" }
     },
 
     init: function () {
@@ -89,7 +92,7 @@
       this._bind = null;             // {joint: world position at rest}
       this._rest = null;             // bone -> local matrix at rest, for putting it back
       this._s = 1;
-      this._tips = null;             // {tipJoint: its own finger's distal→tip ratio}
+      this._said = 0;
       this._lastSeen = 0;
       this._restored = true;
       this._tmp = { m: new this.T.Matrix4(), inv: new this.T.Matrix4(), p: new this.T.Vector3(),
@@ -178,7 +181,7 @@
 
     _read: function (frame, refSpace, hand) {
       if (!frame.getJointPose || !hand || !hand.get) return null;
-      var pos = {}, quat = {}, got = 0;
+      var pos = {}, quat = {}, rad = {}, got = 0;
       for (var i = 0; i < JOINTS.length; i++) {
         var space = hand.get(JOINTS[i]);
         var pose = space && frame.getJointPose(space, refSpace);
@@ -186,11 +189,37 @@
         var p = pose.transform.position, q = pose.transform.orientation;
         pos[JOINTS[i]] = new this.T.Vector3(p.x, p.y, p.z);
         quat[JOINTS[i]] = new this.T.Quaternion(q.x, q.y, q.z, q.w);
+        rad[JOINTS[i]] = pose.radius == null ? null : pose.radius;
         got++;
       }
       // All or nothing. A partial skeleton would leave some bones driven and the rest at rest, which
       // renders as a hand tearing itself apart — far worse than a hand that simply stops.
-      return got === JOINTS.length ? { pos: pos, quat: quat } : null;
+      return got === JOINTS.length ? { pos: pos, quat: quat, rad: rad } : null;
+    },
+
+    /**
+     * The numbers a tip rule would have to be found in, logged once per wearing.
+     *
+     * Deliberately not a verdict. What it prints is what is actually knowable — each finger's tracked
+     * and bind `distal → tip`, their ratio, and the radius the runtime reports at the tip — so that
+     * whether the right rule is a constant, a multiple of the radius, or per-finger can be READ off a
+     * headset instead of reasoned to. Reasoning to it is what produced pointy fingers.
+     */
+    _report: function (jm) {
+      if (this._said || !window.CONJURE_DEBUG_LOG) return;
+      this._said = 1;
+      var bind = this._bind, rows = [];
+      for (var i = 0; i < TIPS.length; i++) {
+        var tip = TIPS[i], par = TIP_PARENT[tip];
+        if (!jm.pos[tip] || !bind[tip]) continue;
+        var track = jm.pos[par].distanceTo(jm.pos[tip]) * 100;
+        var was = bind[par].distanceTo(bind[tip]) * 100;
+        var r = jm.rad[tip] == null ? "—" : (jm.rad[tip] * 100).toFixed(2);
+        rows.push(tip.split("-")[0] + " tracked " + track.toFixed(2) + " bind " + was.toFixed(2)
+          + " ratio " + (was ? (track / was).toFixed(2) : "—") + " radius " + r);
+      }
+      log("tips (cm), s=" + this._s.toFixed(3) + ", tipOut=" + (this._tipOut() * 1000).toFixed(1)
+        + "mm:\n  " + rows.join("\n  "));
     },
 
     /**
@@ -206,42 +235,42 @@
      * already the one we just wrote by the time a child asks for it.
      */
     /**
-     * Per-finger scale for the five TIP bones, derived rather than dialled.
+     * How far each tip bone is pushed out along its own −Z, in metres. **A tunable, not a derivation,
+     * and marked as one** — which is the point of it.
      *
-     * Reported on device: the wearer's real fingertips protrude about 5 mm beyond the virtual ones.
-     * The tip JOINT lands exactly where the runtime says — every joint does — so this is not a
-     * placement error. It is the flesh: the fingertip cap is bound to the tip bone, and `s` only
-     * scales it by the GIRTH ratio, which says nothing about how far a fingertip sticks out.
+     * Reported on device: the wearer's real fingertips protruded ~5 mm beyond the virtual ones. The
+     * tip JOINT lands exactly where the runtime says, as every joint does, so this is the FLESH.
      *
-     * And phase 0 already measured why it would not: `*-distal -> *-tip` is the one segment where our
-     * model and the runtime are measuring different things — the WebXR tip sits at the fingertip
-     * SURFACE, derived from the runtime's own estimate of the finger, while the model's tip bone is an
-     * authored length. That ratio was the widest-varying column of the whole reading.
+     * The first attempt at it was wrong, in a way worth keeping written down. It scaled each tip bone
+     * by that finger's tracked ÷ bind ratio for `distal → tip`, reasoning from phase 0 that this was
+     * the one segment where the model and the runtime measure different things. It is — but the ratio
+     * came out BELOW one, so the caps shrank: the fingers went pointy and got shorter still. The
+     * reasoning was sound and the sign was an assumption, and the difference between those two is the
+     * whole lesson. `*-distal → *-tip` being unreliable does not tell you which way it is unreliable.
      *
-     * So each tip bone is scaled by its OWN finger's tracked ÷ bind ratio for that segment. A tip bone
-     * is a leaf, so nothing inherits the scale and it cannot propagate; and the number comes from the
-     * same measurement that predicted the problem, rather than from a millimetre figure typed in.
+     * There is no measurement available that would settle it — the gap is between the runtime's tip
+     * estimate and the wearer's actual fingertip, and the runtime does not report the second. So this
+     * is a number someone sets, defaulting to zero, with the tip radii logged beside it so a rule can
+     * be found if one exists (a constant? proportional to the radius? per finger?).
      */
-    _tipScale: function (pos) {
-      var bind = this._bind, out = {};
-      for (var i = 0; i < TIPS.length; i++) {
-        var tip = TIPS[i], par = TIP_PARENT[tip];
-        if (!pos[tip] || !pos[par] || !bind[tip] || !bind[par]) continue;
-        var was = bind[par].distanceTo(bind[tip]);
-        if (was < 1e-5) continue;
-        var r = pos[par].distanceTo(pos[tip]) / was;
-        if (r > 0 && r < TIP_MAX) out[tip] = r;
-      }
-      return out;
+    _tipOut: function () {
+      var mm = parseFloat(this.data.tipOut);
+      return (isFinite(mm) && mm > -30 && mm < 30) ? mm / 1000 : 0;
     },
 
     _drive: function (jm) {
-      var bones = this._bones, t = this._tmp, s = this._s, tips = this._tips || {};
+      var bones = this._bones, t = this._tmp, s = this._s, out = this._tipOut();
       for (var i = 0; i < JOINTS.length; i++) {
         var j = JOINTS[i], bone = bones[j];
-        var k = tips[j] != null ? tips[j] : s;
-        t.sc.set(k, k, k);
-        t.m.compose(jm.pos[j], jm.quat[j], t.sc);
+        t.sc.set(s, s, s);
+        var at = jm.pos[j];
+        if (out && TIP_PARENT[j]) {
+          // Along the JOINT'S OWN −Z, which is the bone direction away from the wrist — measured on
+          // both catalog skeletons at ≥0.986 down every finger, so it is the axis to push along.
+          t.p.set(0, 0, -1).applyQuaternion(jm.quat[j]).multiplyScalar(out);
+          at = t.p.add(at);
+        }
+        t.m.compose(at, jm.quat[j], t.sc);
         if (bone.parent) {
           t.inv.copy(bone.parent.matrixWorld).invert();
           t.m.premultiply(t.inv);
@@ -260,7 +289,6 @@
         bone.position.copy(p); bone.quaternion.copy(q); bone.scale.copy(sc);
       });
       this._restored = true;
-      this._tips = null;
     },
 
     tick: function () {
@@ -294,13 +322,7 @@
         // not a per-frame measurement.
         this._s = this._s ? this._s * 0.9 + s * 0.1 : s;
       }
-      var tips = this._tipScale(jm.pos);
-      if (!this._tips) this._tips = tips;
-      else {
-        for (var k in tips) {
-          this._tips[k] = this._tips[k] != null ? this._tips[k] * 0.9 + tips[k] * 0.1 : tips[k];
-        }
-      }
+      this._report(jm);
       this._drive(jm);
     }
   });
