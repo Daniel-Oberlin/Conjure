@@ -562,9 +562,27 @@
           + (st.rat && st.rat.collapsed.length ? " (" + st.rat.collapsed.length + " bones ~0)" : "")
           + "  jit=" + (st.jit && st.jit.sd != null ? pct(st.jit.sd) : "—")
           + (st.jit ? " sd / " + pct(st.jit.max) + " range" : ""));
-        // The verdict, not only the numbers. It used to live in the log, which needs --debug-log —
-        // so the person wearing the headset got four figures and no reading of them.
+        // Both verdicts, not only the jitter one. Putting a summary statistic on screen with no
+        // reading of it is how three sessions went: `cv=36%` is a number you cannot act on, and the
+        // sentence that says WHICH BONES is the one that ends the guessing.
         if (st.jit) lines.push("   " + jitterVerdict(st.jit).split(" \u2014 ")[0]);
+        if (st.rat) lines.push("   " + ratioVerdict(st.rat).split(";")[0]);
+        // And when the spread is wide, the ratios themselves — per chain, two figures each. A summary
+        // cannot distinguish "every bone is 1.3x" from "five bones are 2x and the rest are 1.0", and
+        // those are different findings with different fixes. Shown only when there is something to
+        // explain, so a uniform hand stays a three-line HUD.
+        if (st.rat && (st.rat.cv > CV_CLOSE || st.rat.collapsed.length)) {
+          var by = {};
+          for (var k = 0; k < st.rat.names.length; k++) by[st.rat.names[k]] = st.rat.ratios[k];
+          CHAINS.forEach(function (c) {
+            var row = [];
+            for (var j = 1; j < c.length; j++) {
+              var v = by[c[j]];
+              row.push(v == null ? " -- " : (v < 10 ? v.toFixed(2) : ">9.9"));
+            }
+            lines.push("   " + (c[1].split("-")[0] + "      ").slice(0, 6) + " " + row.join(" "));
+          });
+        }
       }, this);
       var l = this._st.left, r = this._st.right;
       if (l && l.mean && r && r.mean) {
@@ -572,7 +590,7 @@
         // MILLIMETRES, to three places. In centimetres to two, everything below 0.05 mm printed as
         // "0.00" — and "the two hands agree exactly" is a completely different finding from "they
         // agree to a tenth of a millimetre", so the display must not be the thing that decides.
-        if (cmp) lines.push("L/R max Δ " + (cmp.maxAbs * 1000).toFixed(3) + " mm"
+        if (cmp) lines.push("L/R max Δ " + (cmp.maxAbs * 1000).toFixed(3) + " mm at " + cmp.name
           + (cmp.maxAbs === 0 ? "  EXACT — one table, mirrored" : ""));
       }
       return lines.join("\n");

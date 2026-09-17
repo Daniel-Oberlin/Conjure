@@ -226,6 +226,34 @@ test("your numbers, reproduced: four collapsed metacarpals give s=1.017 and cv=3
   assert.doesNotMatch(said, /DIFFERENT PROPORTIONS/);
 });
 
+test("the surviving explanation for cv=36%: the wrist is not where our model puts it", () => {
+  // The collapsed-metacarpal hypothesis died on the headset — the HUD reported no bones near zero.
+  // What still reproduces s=1.017 with cv~36% and NOTHING collapsed is the five wrist-rooted
+  // segments reading long, which is what a wrist origin sitting further back would do.
+  //
+  // The point is not the number. It is that `wrist -> X-metacarpal` IS NOT A BONE: it is the offset
+  // between an arbitrary frame origin and the hand, so it says nothing about hand SIZE and should not
+  // be inside a scale estimate. 19 of the 24 segments are real phalanges; those are the ones `s`
+  // should be the median of.
+  const tracked = H.BIND.left.map((v) => v * 1.017);
+  H.SEGMENTS.forEach((s, i) => { if (s[0] === "wrist") tracked[i] *= 1.9; });
+  const r = H.ratioStats(tracked, H.BIND.left);
+  assert.ok(Math.abs(r.median - 1.017) < 0.001, `median ${r.median}`);
+  assert.ok(r.cv > 0.30 && r.cv < 0.45, `cv ${r.cv} should land near the measured 36%`);
+  assert.equal(r.collapsed.length, 0, "and nothing reads as missing, which is what was seen");
+
+  // Excluding the five wrist-rooted segments recovers a clean uniform scale — the test of the claim.
+  const phalanx = [], bind = [];
+  H.SEGMENTS.forEach((s, i) => {
+    if (s[0] === "wrist") return;
+    phalanx.push(tracked[i]); bind.push(H.BIND.left[i]);
+  });
+  assert.equal(phalanx.length, 19);
+  const mean = phalanx.reduce((a, b, i) => a + b / bind[i], 0) / 19;
+  const sd = Math.sqrt(phalanx.reduce((a, b, i) => a + (b / bind[i] - mean) ** 2, 0) / 19);
+  assert.ok(sd / mean < 1e-9, `the 19 real bones must be uniform; cv was ${sd / mean}`);
+});
+
 test("range and SD are reported together, because range is one bad frame wide", () => {
   // 29 identical frames and one outlier give a 2.5% RANGE on a table that never changed — which is
   // how a mirrored table first read as a per-joint estimate.
