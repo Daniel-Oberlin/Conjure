@@ -1948,7 +1948,7 @@ def _quat_mul(a: list[float], b: list[float]) -> list[float]:
 
 def figure_description(*, label: str, height_m: Optional[float] = None, tris=None,
                        bones=(), has_map: bool = False, posed=(), removable=None,
-                       hidden=()) -> str:
+                       hidden=(), morphs=None, expression=None) -> str:
     """What `inspect_figure` says about a figure — the bones it has and how they can be asked to move.
 
     Kept here rather than in the MCP tool because this text is part of the tool SURFACE under test: the
@@ -1988,6 +1988,23 @@ def figure_description(*, label: str, height_m: Optional[float] = None, tris=Non
         lines.append("Every bone also takes bend (forward +/back -), spread (out from the body +) and "
                      "turn (inward +), in degrees, as a rotation from where it rests. out/in and spread "
                      "are already mirrored: the same sign on both sides gives a symmetric pose.")
+    # THE FACE. Absent when `set_expression` shipped, and the omission would have read as an answer for
+    # exactly the reason the clothing one did: a director asked what a figure can do calls this tool,
+    # and a tool that describes a figure has to describe the whole figure or its silence gets quoted.
+    if morphs is not None:
+        from .expressions import EXPRESSIONS, facial, resolve
+        face = facial(morphs)
+        if face:
+            can = [e for e in EXPRESSIONS if resolve(morphs, {e: 1.0})[0]]
+            lines.append(f"Face ({len(face)} facial shapes, {expression or 'unrecognised'} scheme): "
+                         f"{', '.join(can)}. Set them with set_expression, 0 to 1, several at once.")
+        elif morphs:
+            # Having morph targets and having a face are different things, and the difference is the
+            # whole question: 22 of 38 rigged figures carry targets and two carry a face.
+            lines.append(f"No facial shapes — its {len(morphs)} morph target(s) are wardrobe, skin "
+                         f"tone or anatomy, so it cannot change expression. They can still be driven "
+                         f"by name: {', '.join(list(morphs)[:6])}"
+                         + (" …" if len(morphs) > 6 else ""))
     if posed:
         lines.append(f"Currently posed: {', '.join(sorted(posed))}")
     return "\n".join(lines)

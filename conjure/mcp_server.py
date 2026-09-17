@@ -570,7 +570,8 @@ async def inspect_figure(id: str) -> str:
         height_m=(bbox[1][1] - bbox[0][1]) if bbox else None,
         tris=meta.get("tris"), bones=(meta.get("humanoid_axes") or {}),
         has_map=bool(meta.get("humanoid")), posed=already,
-        removable=groups if parts else {}, hidden=hidden)
+        removable=groups if parts else {}, hidden=hidden,
+        morphs=meta.get("morph_names"), expression=meta.get("expression_scheme"))
 
 
 @mcp.tool()
