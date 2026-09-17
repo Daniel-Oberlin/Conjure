@@ -1030,6 +1030,11 @@ is per-finger (a thumb is fatter than a pinky) and it generalises to any hand th
 The two modes are distinguishable on device precisely because of that per-finger difference, which a
 flat 8 mm cannot reproduce. A missing or preposterous radius falls back to **no offset**, never to `NaN`.
 
+`off` (or `none`, or `0`) puts them back exactly where the runtime says, and `GET /figure/hands`
+reports the current value per worn hand. Both because the knob was one-way by accident: an unparseable
+value already fell through to zero, and nothing on screen said what was set — so *"how do I turn this
+off?"* had no answer, which is the first question anyone asks after dialling something on.
+
 The component logs what is knowable once per wearing under `--debug-log` — each finger's tracked and
 bind `distal → tip`, their ratio, the radius reported at the tip, and the offset each mode resolves to
 — so the question can be read off a headset rather than reasoned to.

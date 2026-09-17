@@ -259,6 +259,10 @@
      */
     _tipOut: function (joint, jm) {
       var v = String(this.data.tipOut == null ? "0" : this.data.tipOut).trim().toLowerCase();
+      // `off` and `none` mean 0, spelled the way someone asks for it. An unparseable value already
+      // fell through to 0 by accident; saying so on purpose is the difference between a guard and a
+      // documented way to turn something off.
+      if (v === "off" || v === "none" || v === "") return 0;
       // `radius` — ONE TIP RADIUS out, per finger, from the number the runtime itself reports.
       //
       // Worth trying because 8 mm, the value that landed it for one wearer, is about a human

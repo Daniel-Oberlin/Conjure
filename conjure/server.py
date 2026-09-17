@@ -4957,9 +4957,14 @@ async def figure_hands() -> dict:
         meta = ent.get("meta") or {}
         if not meta.get("hand_joints"):
             continue
+        rig = (ent.get("components") or {}).get("hand-rig") or {}
         placed.append({"id": ent["id"], "label": meta.get("title") or ent["id"],
                        "side": meta.get("hand_side") or "",
-                       "worn": ((ent.get("components") or {}).get("hand-rig") or {}).get("hand") or ""})
+                       "worn": rig.get("hand") or "",
+                       # What the fingertip knob is actually set to. Absent from the listing at first,
+                       # and the omission made the knob one-way by accident: you could dial it and
+                       # not read it back, so "how do I turn this off" had no answer on screen.
+                       "tip_out": str(rig.get("tipOut") or "0")})
     return {"ok": True, "library": out_lib, "placed": placed}
 
 

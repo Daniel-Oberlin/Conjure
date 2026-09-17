@@ -244,6 +244,15 @@ def test_the_library_and_the_world_can_both_be_ASKED_what_is_wearable(srv, clien
     client.post("/figure/hand", json={"id": "hand_left", "hand": "auto"})
     assert client.get("/figure/hands").json()["placed"][0]["worn"] == "left"
 
+    # And the fingertip knob READS BACK. Absent from the listing at first, and the omission made it
+    # one-way by accident: you could dial it and not see it, so "how do I turn this off" had no
+    # answer on screen.
+    assert client.get("/figure/hands").json()["placed"][0]["tip_out"] == "0"
+    client.post("/figure/hand", json={"id": "hand_left", "hand": "auto", "tip_out": "radius"})
+    assert client.get("/figure/hands").json()["placed"][0]["tip_out"] == "radius"
+    client.post("/figure/hand", json={"id": "hand_left", "hand": "auto", "tip_out": "off"})
+    assert client.get("/figure/hands").json()["placed"][0]["tip_out"] == "off"
+
 
 def test_a_figure_that_is_not_a_hand_is_not_LISTED_as_wearable(srv, client):
     from test_figures import _named_skeleton
@@ -281,7 +290,7 @@ def test_the_tip_offset_can_be_dialled_on_an_ALREADY_WORN_hand(srv, client):
     pose and the captured rest all survive. Dialling a number in must not cost a reload."""
     eid = _place_hand(srv, client)
     client.post("/figure/hand", json={"id": eid, "hand": "auto"})
-    for mm in ("5", "9", "0", "-2", "radius", "radius:0.8"):
+    for mm in ("5", "9", "0", "-2", "radius", "radius:0.8", "off"):
         out = client.post("/figure/hand", json={"id": eid, "hand": "auto", "tip_out": mm}).json()
         assert out["ok"] and out["worn"] is True
         ent = next(e for e in srv.store.doc["entities"] if e["id"] == eid)

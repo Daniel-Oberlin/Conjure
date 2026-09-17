@@ -340,3 +340,18 @@ test("`radius` falls back to NOTHING when the runtime supplies no radius", () =>
   f.rad["index-finger-tip"] = 0.08;
   assert.equal(self._tipOut("index-finger-tip", f), 0);
 });
+
+test("`off` turns it off, and so do the other ways of saying nothing", () => {
+  // An unparseable value already fell through to 0 by accident. Saying so on purpose is the
+  // difference between a guard and a documented way to turn something off — and "how do I turn this
+  // off?" is the first thing anyone asks after dialling it on.
+  const { self } = rig();
+  self._collect();
+  const f = frame(0.03);
+  f.rad = { "index-finger-tip": 0.008 };
+  const tip = (v) => { self.data.tipOut = v; return self._tipOut("index-finger-tip", f); };
+  assert.ok(Math.abs(tip("radius") - 0.008) < 1e-9, "on, so off means something");
+  for (const v of ["off", "OFF", "none", "0", "", "  "]) {
+    assert.equal(tip(v), 0, `${JSON.stringify(v)} should turn it off`);
+  }
+});

@@ -441,7 +441,11 @@ def _wear_list(s: Settings) -> None:
         print("placed, and wearable right now:")
         for h in placed:
             state = f"WORN on the {h['worn']}" if h["worn"] else "not worn"
-            print(f"  {h['id']:<24} {h['side'] or '?':<6} {h['label'][:28]:<28} {state}")
+            tip = h.get("tip_out") or "0"
+            if h["worn"] and tip not in ("0", ""):
+                state += f", fingertips out by {tip}"
+            print(f"  {h['id']:<22} {h['side'] or '?':<6} {h['label'][:22]:<22} {state}")
+        print("\n  wear --tip-out 8 | radius | off       dial the fingertips, live")
     if lib:
         print("\nin the library — place one with `wear <asset-id> --place`:")
         for h in lib:
@@ -776,9 +780,9 @@ def build_parser() -> argparse.ArgumentParser:
     # where the runtime says" is the thing you dial back to, and it must be distinguishable from
     # not having asked.
     a.add_argument("--tip-out", dest="tip_out", default=None, metavar="MM|radius",
-                   help="push each fingertip out along its own bone: millimetres, or `radius` for one "
-                        "tip radius as the RUNTIME reports it (radius:0.8 scales it). The runtime's "
-                        "tip joint sits short of a real fingertip; 0 = exactly where it says")
+                   help="push each fingertip out along its own bone: millimetres (`8`), `radius` for "
+                        "one tip radius as the RUNTIME reports it (`radius:0.8` scales it), or `off` "
+                        "to put them back exactly where the runtime says")
 
     a = sub.add_parser("clips", help="list the animations a placed figure can play")
     a.set_defaults(fn=cmd_clips)
