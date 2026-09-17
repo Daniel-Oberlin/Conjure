@@ -153,8 +153,15 @@ sits 16° off rest. And `pc_squint` is a genuine no-op at 0.13° from rest, desp
 
 Open, and small:
 
-- **Nothing blinks on its own.** A face holds whatever it was last set to, so a figure given `blink: 1`
-  stays with her eyes shut. An idle blink is a timer, not a mechanism, but it needs somewhere to live.
+- **Nothing blinks on its own, and for Saka and Alice a timer is the only answer.** A face holds
+  whatever it was last set to, so a figure given `blink: 1` stays with her eyes shut. The 16 capture
+  figures do not need this — 519 of 543 clips rotate their eyelids, so they blink whenever a clip
+  plays (§8e). Saka and Alice are the opposite case: morph faces with **no morph performance anywhere
+  in the corpus**, so nothing will ever blink them. That makes an idle timer right for exactly those
+  two, and pointless for everyone else.
+
+  Deliberately not built before the face work is seen on a headset: a timer over a broken driver just
+  automates the fault. See [`plans/test-clips-and-faces.md`](../plans/test-clips-and-faces.md) §2.
 - **Nothing drives visemes from speech.** The five mouth shapes exist and the voice path exists; nothing
   connects them.
 - **`squint` on VRM is `Fcl_EYE_Joy`** — the narrowed-eye shape, whatever it happens to be named after.

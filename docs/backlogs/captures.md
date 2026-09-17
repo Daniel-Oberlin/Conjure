@@ -307,3 +307,18 @@ row and the id, so a wrong inference costs a column.
 - [`specs/captures.md`](../specs/captures.md) — what the pipeline does today.
 - [`backlogs/library.md`](./library.md) — the catalog's own backlog.
 - [`backlogs/figures.md`](./figures.md) — what a figure needs once it has arrived.
+
+## The Tools release is short by the same 47 textures in every capture (2026-09-17)
+
+`capture_audit.py` reports release `1qrfsvzaf4wkg24` at **7 of 59 assets** — 47 textures, 2 cubemaps,
+3 containers missing — and reports it identically for all ten of the new captures. A shortfall that is
+the same everywhere is not a download that went wrong; it is either something the app never requests
+or something the grabber never sees.
+
+It does not stop anything: all ten captures are `RUNNABLE` and the apps run. So this is a question
+rather than a defect, and the cheap way to answer it is the conversation recording — if the app never
+asks for those URLs they are not missing, and if it does, `pcunpack run` would be logging misses for
+them. It is not.
+
+Worth resolving before the full set is captured, because 47 files × every capture is either a large
+recurring hole or a line that can stop being printed.
