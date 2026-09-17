@@ -119,11 +119,27 @@ establish. Note what the geometric checks do and do not buy here: they verify th
 what its name claims *on its own rig*, which is enough to justify a table from a semantic name to an
 author's label. They say nothing about whether two authors' labels mean the same thing.
 
-**And the captures hold no facial performance to carry anyway.** 249 of 539 clips drive morph weights,
-which looks promising until you see the targets: `Body`, `Dress`, `Shorts`, `Hair`, `Shirt` — wardrobe
-and body shape. Corpus-wide, **15 channels are facial**. With driving shipped, the natural source of
-facial performance is now our own director rather than a capture, and the question changes from
-*retarget* to *author*.
+**The captures hold no MORPH performance to carry — but they do hold a bone one, and it is stranded.**
+Measured 2026-09-16: 249 of 543 clips drive morph weights and **not one drives a facial target**; those
+channels are `Dress` and `Body`, and a clip GLB has no meshes so the weights carry no names at all.
+
+But these captures use a **Rigify facial rig**, and the performance is on its bones. `pc_blink` spends
+83° on `DEF-lid.T.L`/`.R` and its top six movers are all eyelids; `1_idle_speaking` puts **74.9% of its
+motion into `DEF-jaw_master`** — that is lip sync, recorded, on disk, today. 29 clips have a facial name.
+
+So the retargeting question is no longer "author or retarget" — it is **which representation**:
+
+- A morph retarget still has names and nothing else, and should still wait.
+- A BONE retarget of a facial clip is the machinery of §8c and nothing more, except that the humanoid
+  map has 51 bones and none are facial. Extending it to eyelids and a jaw would let `1_idle_speaking`
+  talk on a rig that did not record it. That is a real piece of work with a real payoff and it is not
+  started.
+- Meanwhile these clips DO play natively: `pc_blink` matches 16 figures by rig signature, so `play_clip`
+  offers it on every capture from that site already.
+
+**A facial name is not evidence of a facial performance.** `clip_activity` measures angular TRAVEL, so a
+two-keyframe clip holding an expression reads as motionless — `pc_mouth_opened` has 3° of travel and
+sits 16° off rest. And `pc_squint` is a genuine no-op at 0.13° from rest, despite its name.
 
 Open, and small:
 

@@ -1115,11 +1115,25 @@ Recorded here so the spec can be trusted about its own edges; the design work is
   `set_expression`, over a semantic vocabulary resolved per expression rig. **Driving** a face, not
   retargeting one — §8d says why that distinction is what makes the tables checkable. Two figures in the
   catalog can use it, which is a fact about the corpus and not a limit of the mechanism.
-- **No facial performance to carry.** 249 of 539 captured clips drive morph weights and corpus-wide
-  **15 channels are facial** — the rest are `Body`, `Dress`, `Shorts`, `Hair`. With two expression rigs
-  and no performances to carry, there is nothing to build retargeting tables from; if a face is to be
-  animated the natural source is now our own director, and the question becomes *author* rather than
-  *retarget*.
+- **No MORPH-driven facial performance to carry, but bone-driven performance exists and is unreachable.**
+  Corrected 2026-09-16 after measuring rather than counting channels. 249 of 543 captured clips drive
+  morph weights and **none of them drive a facial target** — those channels are `Dress` and `Body`, and
+  a clip GLB carries no meshes, so the weights are anonymous anyway.
+
+  The facial performance in this corpus is on **bones**. These captures use a Rigify facial rig, and
+  `pc_blink` spends 83° of its travel on `DEF-lid.T.L`/`.R` with the top six movers all eyelids;
+  `1_idle_speaking` puts **74.9% of all its motion into `DEF-jaw_master`**, which is lip sync. 29 of 543
+  clips have a facial name.
+
+  Two things follow, and both are open:
+  - **They play natively but cannot be retargeted.** `pc_blink` matches 16 figures by rig signature, so
+    `play_clip` offers it on all of them today. But the humanoid map covers 51 bones — core plus
+    fingers — and **none are facial**, so §8c cannot carry a facial clip onto a rig that does not
+    already share the skeleton.
+  - **`clip_activity` cannot see a held pose.** It measures angular TRAVEL, so a two-keyframe clip that
+    holds an expression reads as motionless: `pc_mouth_opened` has 3° of travel and sits 16° off rest.
+    Measured this way `pc_squint` is a genuine no-op — 0.13° from rest — so a facial-sounding name is
+    not evidence that a clip does anything.
 - **No spring-bone or MToon support.** VRM material data is in the file and A-Frame's plain glTF
   loader ignores it.
 
