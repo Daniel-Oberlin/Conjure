@@ -1039,9 +1039,21 @@ The component logs what is knowable once per wearing under `--debug-log` — eac
 bind `distal → tip`, their ratio, the radius reported at the tip, and the offset each mode resolves to
 — so the question can be read off a headset rather than reasoned to.
 
-**Still open:** whether the default becomes `radius`. It stays `0` until `radius` and the wearer's
-millimetre figure are compared on a head, because shipping a default on the strength of an argument is
-exactly what the tip-scale attempt did.
+**Measured on a Quest 3: `radius` lands all four fingers, and leaves the thumb slightly long.** So the
+radius rule holds, and the thumb is its own case — which is a fact about thumbs rather than about a
+hand. A thumb has one fewer phalanx and a broad, flat pad, so its reported radius is the half-width of
+that pad and **overstates** how far the tip protrudes, where on a rounder fingertip the radius and the
+protrusion are nearly the same.
+
+`tipThumb` is therefore its own axis: a coefficient on the thumb's radius, default `1` (no special
+case), composing with `radius:k` rather than replacing it, and ignored in the flat-millimetre mode where
+there is no radius to correct. A bare `--tip-thumb` leaves the offset already set alone, which is the
+point of dialling one number at a time.
+
+**Still open:** whether `radius` becomes the default. The evidence for it is now good — it is a
+geometric identity, it held across four fingers on the first try, and its one exception has an
+anatomical reason — but it has been read on one pair of hands, and the coefficient the thumb wants is
+not yet a number.
 
 **Precedence: live hand > clip > pose.** Settled by taking the other two writers *off* — `figure-clip`
 is paused and `figure.restore()` is called on wear — rather than by winning a race with them, since

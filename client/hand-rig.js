@@ -84,7 +84,10 @@
       // for one tip radius as the runtime reports it (`radius:0.8` to scale that). See `_tipOut`.
       // Zero is "exactly where the runtime says the tip is", which is the only defensible default
       // until one of the two is known to be a rule rather than one wearer's setting.
-      tipOut: { type: "string", default: "0" }
+      tipOut: { type: "string", default: "0" },
+      // A coefficient applied to the THUMB's radius only, in `radius` mode. Its own axis because the
+      // thumb is anatomically its own case — see `_tipOut`.
+      tipThumb: { type: "string", default: "1" }
     },
 
     init: function () {
@@ -221,6 +224,7 @@
           + " ratio " + (was ? (track / was).toFixed(2) : "—") + " radius " + r);
       }
       log("tips (cm), s=" + this._s.toFixed(3) + ", tipOut=" + this.data.tipOut
+        + " thumb×" + this.data.tipThumb
         + " → " + TIPS.map(function (x) {
             return (this._tipOut(x, jm) * 1000).toFixed(1);
           }, this).join("/") + "mm:\n  " + rows.join("\n  "));
@@ -274,6 +278,16 @@
       if (v.charAt(0) === "r") {
         var k = parseFloat(v.split(":")[1]);
         if (!isFinite(k)) k = 1;
+        // THE THUMB IS ITS OWN CASE, and not because of one wearer. Measured on a Quest 3: one radius
+        // lands all four fingers and leaves the thumb slightly long. That is a fact about thumbs. A
+        // thumb has one fewer phalanx and a broad, flat pad — its reported radius is the half-width
+        // of that pad, which OVERSTATES how far the tip protrudes, where on a rounder fingertip the
+        // two are nearly the same. So it takes its own coefficient, and it generalises for the same
+        // reason the radius rule does: it is about anatomy, not about a hand.
+        if (joint === "thumb-tip") {
+          var tk = parseFloat(this.data.tipThumb);
+          if (isFinite(tk) && tk >= 0 && tk <= 2) k *= tk;
+        }
         var r = jm && jm.rad ? jm.rad[joint] : null;
         return (r == null || !(r > 0 && r < 0.05)) ? 0 : r * k;
       }

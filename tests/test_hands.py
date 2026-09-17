@@ -298,3 +298,20 @@ def test_the_tip_offset_can_be_dialled_on_an_ALREADY_WORN_hand(srv, client):
         assert rig["tipOut"] == mm, mm
         # and the rest of the component is untouched, or re-dialling would re-wear it
         assert rig["hand"] == "left" and len(json.loads(rig["joints"])) == 25
+
+
+def test_the_thumb_coefficient_is_its_own_axis_and_reads_back(srv, client):
+    """Its own axis because a bare `--tip-thumb` must not argue with the offset already set — the
+    point of dialling one number at a time."""
+    eid = _place_hand(srv, client)
+    out = client.post("/figure/hand", json={"id": eid, "hand": "auto",
+                                            "tip_out": "radius", "tip_thumb": "0.8"}).json()
+    assert out["ok"] and out["tip_out"] == "radius" and out["tip_thumb"] == "0.8"
+    rig = next(e for e in srv.store.doc["entities"] if e["id"] == eid)["components"]["hand-rig"]
+    assert rig["tipOut"] == "radius" and rig["tipThumb"] == "0.8"
+    placed = client.get("/figure/hands").json()["placed"][0]
+    assert placed["tip_out"] == "radius" and placed["tip_thumb"] == "0.8"
+
+    # Default is 1 — no special case until one is measured.
+    client.post("/figure/hand", json={"id": eid, "hand": "auto", "tip_out": "radius"})
+    assert client.get("/figure/hands").json()["placed"][0]["tip_thumb"] == "1"

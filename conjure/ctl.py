@@ -401,9 +401,13 @@ def cmd_wear(s: Settings, a) -> None:
     A hand has to be PLACED before it can be worn, and nothing in this CLI placed a library model — so
     `--place` does it, and `--pair` does both sides at once, which is what anyone actually wants.
     """
-    a.tip_out_given = a.tip_out is not None
+    a.tip_out_given = a.tip_out is not None or a.tip_thumb is not None
     if a.tip_out is None:
-        a.tip_out = "0"
+        # A bare `--tip-thumb` adjusts the thumb WITHOUT arguing with the offset already set, which is
+        # the whole point of dialling one number at a time.
+        a.tip_out = _worn_tip_out(s) if a.tip_thumb is not None else "0"
+    if a.tip_thumb is None:
+        a.tip_thumb = "1"
     if a.pair:
         return _wear_pair(s, a)
     if not a.id:
@@ -422,7 +426,8 @@ def cmd_wear(s: Settings, a) -> None:
             return
         eid = put["id"]
         print(f"placed {a.id} as {eid}")
-    out = _post(s, "/figure/hand", {"id": eid, "hand": a.hand, "tip_out": a.tip_out})
+    out = _post(s, "/figure/hand", {"id": eid, "hand": a.hand, "tip_out": a.tip_out,
+                                    "tip_thumb": a.tip_thumb})
     if not out.get("ok"):
         print(f"wear: {out.get('error', 'failed')}")
         return
@@ -444,8 +449,12 @@ def _wear_list(s: Settings) -> None:
             tip = h.get("tip_out") or "0"
             if h["worn"] and tip not in ("0", ""):
                 state += f", fingertips out by {tip}"
+                thumb = h.get("tip_thumb") or "1"
+                if thumb not in ("1", ""):
+                    state += f" (thumb ×{thumb})"
             print(f"  {h['id']:<22} {h['side'] or '?':<6} {h['label'][:22]:<22} {state}")
-        print("\n  wear --tip-out 8 | radius | off       dial the fingertips, live")
+        print("\n  wear --tip-out 8 | radius | off       dial the fingertips, live"
+              "\n  wear --tip-thumb 0.8                 ...and the thumb on its own")
     if lib:
         print("\nin the library — place one with `wear <asset-id> --place`:")
         for h in lib:
@@ -462,6 +471,12 @@ def _wear_list(s: Settings) -> None:
         print("\n  conjure-ctl wear --pair          places both sides and wears them")
 
 
+def _worn_tip_out(s: Settings) -> str:
+    """What the worn hands are already set to, so one knob can be turned without resetting another."""
+    worn = [h for h in (_get(s, "/figure/hands").get("placed") or []) if h["worn"]]
+    return next((h.get("tip_out") or "0" for h in worn), "0")
+
+
 def _wear_tip(s: Settings, a) -> None:
     """Push the fingertips of every WORN hand in or out, live."""
     worn = [h for h in (_get(s, "/figure/hands").get("placed") or []) if h["worn"]]
@@ -470,7 +485,8 @@ def _wear_tip(s: Settings, a) -> None:
         return
     done = []
     for h in worn:
-        out = _post(s, "/figure/hand", {"id": h["id"], "hand": h["worn"], "tip_out": a.tip_out})
+        out = _post(s, "/figure/hand", {"id": h["id"], "hand": h["worn"],
+                                        "tip_out": a.tip_out, "tip_thumb": a.tip_thumb})
         if out.get("ok"):
             done.append(h["id"])
         else:
@@ -514,7 +530,7 @@ def _wear_pair(s: Settings, a) -> None:
             print(f"wear: could not place the {side} hand: {put.get('error', 'failed')}")
             continue
         out = _post(s, "/figure/hand", {"id": put["id"], "hand": side,
-                                        "tip_out": a.tip_out})
+                                        "tip_out": a.tip_out, "tip_thumb": a.tip_thumb})
         if out.get("ok"):
             worn.append(f"{put['id']} ({side})")
         else:
@@ -779,6 +795,10 @@ def build_parser() -> argparse.ArgumentParser:
     # `default=None` and a separate flag, because 0 is a REAL value here: "put them back exactly
     # where the runtime says" is the thing you dial back to, and it must be distinguishable from
     # not having asked.
+    a.add_argument("--tip-thumb", dest="tip_thumb", default=None, metavar="K",
+                   help="coefficient on the THUMB's radius in `radius` mode. Its own axis because a "
+                        "thumb's radius is the half-width of a broad flat pad and overstates how far "
+                        "its tip protrudes; 1 = no special case")
     a.add_argument("--tip-out", dest="tip_out", default=None, metavar="MM|radius",
                    help="push each fingertip out along its own bone: millimetres (`8`), `radius` for "
                         "one tip radius as the RUNTIME reports it (`radius:0.8` scales it), or `off` "

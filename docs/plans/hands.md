@@ -377,11 +377,17 @@ about 8 mm, and the WebXR tip joint sits at the **centre** of the fingertip whil
 is that fingertip's radius, so the surface is one radius further out. If *that* is the rule, it is not a
 setting at all: it is per-finger and it generalises to any hand the runtime measures.
 
-**Next reading wanted, and it discriminates:** `--tip-out 8` against `--tip-out radius`. A thumb is
-fatter than a pinky, so the two modes differ per finger and a flat 8 mm cannot imitate the radius rule.
-If `radius` looks as good or better, the default becomes `radius` and the knob becomes a fallback. If
-8 mm is better, it stays one wearer's number and the default stays 0. With `--debug-log` on, the
-`[hand-rig] tips (cm)` line prints the radii and both resolved offsets beside each other. If 5 mm lands it, the question becomes whether the right rule is a constant or
+**Read: `radius` lands all four fingers and leaves the THUMB slightly long.** So the rule holds — and
+its one exception has a reason that is about thumbs rather than about a hand. A thumb has one fewer
+phalanx and a broad flat pad, so its reported radius is the half-width of that pad and overstates how
+far the tip protrudes; a rounder fingertip's radius and protrusion are nearly the same thing.
+
+`--tip-thumb K` is that, as its own axis (default 1). **Next reading:** the K that lands the thumb.
+0.8 is the obvious first guess and is a guess; `--tip-thumb` dials live like everything else.
+
+Once there is a number, the open question is whether `radius` plus that K becomes the DEFAULT. The
+evidence is good — a geometric identity, four fingers on the first try, one exception with an
+anatomical explanation — and it is still one pair of hands. If 5 mm lands it, the question becomes whether the right rule is a constant or
 a multiple of the reported radius — and those numbers are in that line.
 
 **What to watch for, given what phase 0 measured.** The per-bone residual after a single `s` is ~5%, and

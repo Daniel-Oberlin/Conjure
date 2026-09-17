@@ -4964,7 +4964,8 @@ async def figure_hands() -> dict:
                        # What the fingertip knob is actually set to. Absent from the listing at first,
                        # and the omission made the knob one-way by accident: you could dial it and
                        # not read it back, so "how do I turn this off" had no answer on screen.
-                       "tip_out": str(rig.get("tipOut") or "0")})
+                       "tip_out": str(rig.get("tipOut") or "0"),
+                       "tip_thumb": str(rig.get("tipThumb") or "1")})
     return {"ok": True, "library": out_lib, "placed": placed}
 
 
@@ -4979,6 +4980,10 @@ class FigureHandRequest(BaseModel):
     #: and the whole open question is which of those the right answer is. A float field could not
     #: carry the question.
     tip_out: str = "0"
+    #: A coefficient on the THUMB's radius in `radius` mode. Its own axis because the thumb is its own
+    #: anatomical case: one radius lands all four fingers and leaves the thumb long, because a thumb's
+    #: reported radius is the half-width of a broad flat pad and overstates how far its tip protrudes.
+    tip_thumb: str = "1"
 
 
 @app.post("/figure/hand")
@@ -5026,10 +5031,11 @@ async def figure_hand(req: FigureHandRequest) -> dict:
     patch = [{"op": "update", "id": req.id,
               "set": {"components.hand-rig": {"hand": want,
                                               "joints": json.dumps(joints, separators=(",", ":")),
-                                              "tipOut": str(req.tip_out)}}}]
+                                              "tipOut": str(req.tip_out),
+                                              "tipThumb": str(req.tip_thumb)}}}]
     await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="hand-rig")})
     return {"ok": True, "id": req.id, "worn": True, "hand": want, "joints": len(joints),
-            "tip_out": str(req.tip_out)}
+            "tip_out": str(req.tip_out), "tip_thumb": str(req.tip_thumb)}
 
 
 @app.post("/figure/parts")

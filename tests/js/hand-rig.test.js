@@ -355,3 +355,43 @@ test("`off` turns it off, and so do the other ways of saying nothing", () => {
     assert.equal(tip(v), 0, `${JSON.stringify(v)} should turn it off`);
   }
 });
+
+test("the THUMB takes its own coefficient, and that is anatomy rather than a preference", () => {
+  // Measured on a Quest 3: one radius lands all four fingers and leaves the thumb slightly long. A
+  // thumb has one fewer phalanx and a broad, flat pad — its reported radius is the half-width of that
+  // pad, which OVERSTATES how far the tip protrudes, where on a rounder fingertip the two are nearly
+  // the same. So it generalises for the same reason the radius rule does: it is about thumbs.
+  const { self, root, bones } = rig();
+  self._collect();
+  self._s = 1;
+  const f = frame(0.03);
+  f.rad = { "thumb-tip": 0.0105, "index-finger-tip": 0.0080, "middle-finger-tip": 0.0082,
+            "ring-finger-tip": 0.0075, "pinky-finger-tip": 0.0066 };
+  self.data.tipOut = "radius";
+  self.data.tipThumb = "0.8";
+  self._drive(f);
+  root.updateMatrixWorld(true);
+  const p = new THREE.Vector3();
+  const want = { "thumb-tip": 0.0105 * 0.8, "index-finger-tip": 0.0080,
+                 "middle-finger-tip": 0.0082, "ring-finger-tip": 0.0075, "pinky-finger-tip": 0.0066 };
+  Object.entries(want).forEach(([tip, d]) => {
+    p.setFromMatrixPosition(bones[tip].matrixWorld);
+    assert.ok(Math.abs((f.pos[tip].z - p.z) - d) < 1e-6, `${tip} moved ${f.pos[tip].z - p.z}, wanted ${d}`);
+  });
+
+  // It composes with the overall coefficient rather than replacing it.
+  self.data.tipOut = "radius:0.5";
+  assert.ok(Math.abs(self._tipOut("thumb-tip", f) - 0.0105 * 0.5 * 0.8) < 1e-9);
+  assert.ok(Math.abs(self._tipOut("index-finger-tip", f) - 0.0080 * 0.5) < 1e-9);
+
+  // ...and it does not touch the FLAT millimetre mode, where there is no radius to correct.
+  self.data.tipOut = "8";
+  assert.ok(Math.abs(self._tipOut("thumb-tip", f) - 0.008) < 1e-9);
+
+  // A nonsense or out-of-range coefficient is ignored, not applied.
+  self.data.tipOut = "radius";
+  for (const bad of ["nonsense", "-1", "9"]) {
+    self.data.tipThumb = bad;
+    assert.ok(Math.abs(self._tipOut("thumb-tip", f) - 0.0105) < 1e-9, bad);
+  }
+});
