@@ -28,6 +28,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -1585,16 +1586,28 @@ async def server_time() -> dict:
 
 @app.get("/tunnel")
 @app.get("/tunnel/{user}")
-async def tunnel(user: str = DEFAULT_USER) -> RedirectResponse:
+async def tunnel(request: Request, user: str = DEFAULT_USER) -> RedirectResponse:
     """Redirect to the current cloudflared tunnel URL (written by scripts/tunnel.sh). Lets you type a
     short, fixed LAN address (http://<this-machine>:<port>/tunnel) on the Quest instead of the long
     random trycloudflare URL that changes every session. `/tunnel/<user>` logs that user in for the web
-    session by carrying it through as `?user=<user>` (the headset client reads it)."""
+    session by carrying it through as `?user=<user>` (the headset client reads it).
+
+    **The incoming query string is carried across**, which it was not until 2026-09-17. Every
+    client-side debug mode is a query parameter — `?hands=fit`, `?occlusion=`, `?stereodebug=`,
+    `?user=` — and this is the only address anyone types on a headset. So `/tunnel?hands=fit` silently
+    redirected to the bare tunnel root and the overlay never came on, which looks exactly like an
+    overlay that does not work. What the caller typed wins over anything in the tunnel file, and the
+    `/tunnel/<user>` path form still wins over both, since naming a user in the path is the more
+    specific request."""
     url = TUNNEL_FILE.read_text().strip() if TUNNEL_FILE.exists() else ""
     if not url:
         raise HTTPException(status_code=404, detail="No tunnel running — start one with scripts/tunnel.sh")
+    parts = urlsplit(url)
+    params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    params.update({k: v for k, v in request.query_params.items()})
     if user and user != DEFAULT_USER:
-        url = url + ("&" if "?" in url else "?") + "user=" + user
+        params["user"] = user
+    url = urlunsplit(parts._replace(query=urlencode(params)))
     # Temporary (the URL changes each run) + no-store so the browser never caches a stale tunnel.
     return RedirectResponse(url, status_code=307, headers=_NO_STORE)
 

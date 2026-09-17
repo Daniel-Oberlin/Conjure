@@ -970,6 +970,29 @@ def test_tunnel_404_when_none_running(srv, client, tmp_path, monkeypatch):
     assert client.get("/tunnel", follow_redirects=False).status_code == 404
 
 
+def test_tunnel_carries_the_query_string_across(srv, client, tmp_path, monkeypatch):
+    """Every client-side debug mode is a query parameter and /tunnel is the only address anyone types
+    on a headset, so dropping the query meant `?hands=fit` silently never arrived — indistinguishable
+    from an overlay that does not work."""
+    f = tmp_path / "tunnel_url"
+    f.write_text("https://abc.trycloudflare.com")
+    monkeypatch.setattr(srv, "TUNNEL_FILE", f)
+    loc = client.get("/tunnel?hands=fit", follow_redirects=False).headers["location"]
+    assert loc.startswith("https://abc.trycloudflare.com?") and "hands=fit" in loc
+
+    # several parameters, and one that is empty — `?occlusion=` is a real way to clear an override
+    loc = client.get("/tunnel?hands=axes&occlusion=", follow_redirects=False).headers["location"]
+    assert "hands=axes" in loc and "occlusion=" in loc
+
+    # the path form still wins: naming a user in the path is the more specific request
+    loc = client.get("/tunnel/bob?hands=fit&user=eve", follow_redirects=False).headers["location"]
+    assert "user=bob" in loc and "user=eve" not in loc and "hands=fit" in loc
+
+    # and a bare /tunnel is unchanged — no stray `?`
+    assert client.get("/tunnel", follow_redirects=False).headers["location"] \
+        == "https://abc.trycloudflare.com"
+
+
 def test_capture_authority_rejects_other_headset(srv, client):
     client.post("/space/capture", json={"client_id": "h1", "surfaces": []})
     r = client.post("/space/capture", json={"client_id": "h2", "surfaces": []})
