@@ -882,18 +882,28 @@ justified and drops what cannot, and both counts appear in the clip's notes.
 
 #### What it actually buys, measured
 
-| | |
-|---|---|
-| 16 figures sharing the capture rig | already had it — a native play keeps every track whose name resolves |
-| **office-babe** | **61 facial bones, 16 eyelids** (body bones 52 → 127) |
-| Bianca | 2 eyelids; 15 refused |
-| Eve Maccaro | 6 carried, 63 correctly refused |
-| Grace, Trish, Yuffie, Alice, Blondie, Saka | **nothing** — their facial bones share no name with a Rigify clip |
+**The direction matters, and measuring only one of them understates it by an order of magnitude.**
+Carrying the capture set's own clips outward reaches one figure. Carrying office-babe's clips *inward*
+reaches all sixteen — and hers include `1_idle_speaking`, which is lip sync.
 
-So one figure gains a full face and two gain a fragment. The rest are blocked on a different problem:
-Daz spells an eyelid `eyelidUpper.L`, Character Creator `lEyelidUpper`, Rigify `DEF-lid.T.L`. Carrying
-between families needs a name map, and the local-rest gate cannot justify one — across two different
-rig builds the rests disagree by construction, so the check that makes this safe would refuse it.
+| borrow | body bones | face carried |
+|---|---|---|
+| **office-babe's 21 face-driving clips → each of the 16 capture figures** | 116–131 | **~50: jaw 6, lips 6–8, eyelids 8–16, brows 16–18** |
+| the capture set's 455 face-driving clips → office-babe | 127 | 61, incl. 16 eyelids |
+| the Character Creator rig's 14 → 9 capture figures | ~55 | 2 eyelids — a fragment |
+| → Eve Maccaro | 27 | 6 carried, **63 correctly refused** |
+| → Grace, Trish, Yuffie, Alice, Blondie, Saka | — | **nothing** |
+
+Across the whole library, **28 of 132 cross-rig figure pairings carry eyelids**; weighted by clips that
+is roughly 1,400 (clip, figure) borrowings that now deliver a face where **none did before**.
+
+Within the 16 figures sharing the capture rig nothing is borrowed at all — a native play keeps every
+track whose name resolves, which is 38% of all pairings in the library and has always worked.
+
+The figures that gain nothing are blocked on a different problem: Daz spells an eyelid
+`eyelidUpper.L`, Character Creator `lEyelidUpper`, Rigify `DEF-lid.T.L`. Carrying between families
+needs a name map, and the local-rest gate cannot justify one — across two different rig builds the
+rests disagree by construction, so the check that makes this safe would refuse it.
 
 ## 8. The runtime — the `figure` component
 
