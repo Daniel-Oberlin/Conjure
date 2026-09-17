@@ -102,12 +102,12 @@ test("a hand of different PROPORTIONS does not read as uniform, whatever its siz
   assert.ok(H.ratioStats(worse, H.BIND.left).cv > r.cv);
 });
 
-test("the premise-free probe: identical frames are a TABLE, a moving bone is an ESTIMATE", () => {
+test("the premise-free probe: constant lengths mean a POSED skeleton, moving ones do not", () => {
   const still = accumulate([0, 1, 2, 3].map(() => H.BIND.left.slice()));
   const j = H.jitterStats(still);
   assert.equal(j.bones, 24);
   assert.equal(j.max, 0);
-  assert.match(H.jitterVerdict(j), /RIGID TABLE/);
+  assert.match(H.jitterVerdict(j), /^RIGID/);
 
   const wander = bone("index-finger-phalanx-proximal");
   const moving = [H.BIND.left.slice(), H.BIND.left.slice()];
@@ -115,11 +115,22 @@ test("the premise-free probe: identical frames are a TABLE, a moving bone is an 
   const j2 = H.jitterStats(accumulate(moving));
   assert.ok(j2.max > 0.02);
   assert.equal(j2.name, "index-finger-phalanx-proximal");      // it names the bone, not just the number
-  assert.match(H.jitterVerdict(j2), /ESTIMATED/);
+  assert.match(H.jitterVerdict(j2), /^NOT RIGID/);
 
-  // Float noise is not re-estimation: one part in ten thousand still reads as a table.
+  // Float noise is not re-estimation: one part in ten thousand still reads as a posed skeleton.
   const noisy = [H.BIND.left.slice(), H.BIND.left.map((v) => v * 1.0001)];
-  assert.match(H.jitterVerdict(H.jitterStats(accumulate(noisy))), /near-rigid/);
+  assert.match(H.jitterVerdict(H.jitterStats(accumulate(noisy))), /^RIGID/);
+});
+
+test("the verdict claims RIGIDITY and not measurement — the distinction it got wrong first", () => {
+  // Measured on a Quest 3: ~2.5%. The sound inference is that joints are positioned independently,
+  // because posing a stored skeleton cannot change a bone's LENGTH however noisy the pose. That is not
+  // the same as "this is your hand", and the wording must not claim it.
+  const real = H.jitterStats(accumulate([H.BIND.left.slice(), H.BIND.left.map((v, i) => v * (1 + (i % 3) * 0.025))]));
+  const said = H.jitterVerdict(real);
+  assert.match(said, /positioned independently/);
+  assert.match(said, /says nothing yet about whose hand/);
+  assert.doesNotMatch(said, /from the image/, "that was an inference the number does not license");
 });
 
 test("jitterStats and ratioStats say NOTHING rather than something wrong when there is no data", () => {
@@ -163,4 +174,23 @@ test("a table compared with itself is a mirror; our OWN hand pair is not", () =>
     const i = bone(child);
     assert.ok(Math.abs(H.BIND.left[i] - H.BIND.right[i]) < 0.0005, `${child} should agree to 0.5 mm`);
   }
+});
+
+test("two windows per acquisition, so convergence is not mistaken for steady state", () => {
+  // The first reading conflated them: ~2.5% jitter, sampled over the 30 frames immediately after
+  // acquisition, which is exactly when an estimate is still settling. A non-zero figure there already
+  // rules out a stored skeleton — a stored one cannot converge — but its MAGNITUDE said nothing.
+  assert.ok(H.SAMPLES > 0 && H.SETTLE > 0, "both windows must exist");
+  // fresh = 1..SAMPLES, a gap of SETTLE, settled = SAMPLES+SETTLE+1 .. SAMPLES+SETTLE+SAMPLES
+  const total = H.SAMPLES + H.SETTLE + H.SAMPLES;
+  const which = (frame) => frame <= H.SAMPLES ? "fresh"
+                         : frame > H.SAMPLES + H.SETTLE ? "settled" : "gap";
+  assert.equal(which(1), "fresh");
+  assert.equal(which(H.SAMPLES), "fresh");
+  assert.equal(which(H.SAMPLES + 1), "gap");
+  assert.equal(which(H.SAMPLES + H.SETTLE), "gap");
+  assert.equal(which(H.SAMPLES + H.SETTLE + 1), "settled");
+  assert.equal(which(total), "settled");
+  // ~1.25 s at 72 Hz: long enough to settle, short enough that nobody holds a pose waiting for it.
+  assert.ok(total / 72 < 2, `${total} frames is ${(total / 72).toFixed(2)} s — too long to hold still`);
 });

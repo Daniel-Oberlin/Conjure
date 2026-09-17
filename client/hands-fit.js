@@ -97,7 +97,16 @@
     ]
   };
 
-  var SAMPLES = 30;            // frames averaged before a report — one frame of a fresh track is noise
+  var SAMPLES = 30;            // frames averaged per window — one frame of a fresh track is noise
+  // TWO windows per acquisition, because the first reading conflated two different things. Measured on
+  // a Quest 3: jitter came back ~2.5%, sampled over the 30 frames IMMEDIATELY after acquisition — which
+  // is exactly when an estimate is still converging. A non-zero number there already rules out a stored
+  // table (a table cannot converge), but its MAGNITUDE says nothing about steady state.
+  //
+  // So: frames 1..30 are the FRESH window, frames 61..90 the SETTLED one. The settled figure is the
+  // headline, and the gap between the two is itself the measurement the plan calls re-acquisition — how
+  // much the runtime revises its estimate once it has looked for a while.
+  var SETTLE = 30;             // frames skipped between the two windows (~0.4 s at 72 Hz)
   var AXIS_LEN = 0.015;        // 15 mm; a joint radius is ~10 mm, so the triad must not swamp it
   var JITTER_RIGID = 1e-6;     // below this, the lengths are a stored table, not an estimate
   var JITTER_NOISE = 0.002;    // below this, float noise rather than re-estimation
@@ -176,11 +185,25 @@
              rms: Math.sqrt(sq / n) };
   }
 
+  /**
+   * What a jitter figure licenses you to say, and no more.
+   *
+   * The sound inference is about RIGIDITY, not about measurement. A stored hand-model that is POSED
+   * gives constant bone lengths however noisy the pose, because posing rotates bones and cannot
+   * stretch them. So lengths that move mean the joints are positioned INDEPENDENTLY rather than read
+   * off a rigid skeleton — which is exactly what the WebXR privacy guidance says an anonymising UA
+   * must not do ("must not round each joint independently").
+   *
+   * It does NOT by itself establish that the size is *yours*. Independent per-joint positions could
+   * still be a fixed skeleton plus noise. The probes that separate those are perturbation (a glove)
+   * and a second pair of hands, and neither is this number.
+   */
   function jitterVerdict(j) {
     if (!j) return "no bones measured";
-    if (j.max <= JITTER_RIGID) return "RIGID TABLE — bit-identical, the runtime is not re-estimating";
-    if (j.max <= JITTER_NOISE) return "near-rigid — float noise only, still a table";
-    return "ESTIMATED — lengths move frame to frame, so they come from the image";
+    if (j.max <= JITTER_RIGID) return "RIGID — bit-identical lengths; a stored skeleton, posed";
+    if (j.max <= JITTER_NOISE) return "RIGID — float noise only; still a stored skeleton, posed";
+    return "NOT RIGID — bone lengths move, so joints are positioned independently, not posed "
+         + "off a fixed skeleton (which says nothing yet about whose hand it is)";
   }
 
   function ratioVerdict(r) {
@@ -203,6 +226,7 @@
 
   window.HandsFit = {
     JOINTS: JOINTS, SEGMENTS: SEGMENTS, CHAINS: CHAINS, BIND: BIND,
+    SAMPLES: SAMPLES, SETTLE: SETTLE,
     segmentLengths: segmentLengths, ratioStats: ratioStats, jitterStats: jitterStats,
     compareHands: compareHands, jitterVerdict: jitterVerdict, ratioVerdict: ratioVerdict,
     resolveMode: resolveMode, median: median,
@@ -363,39 +387,53 @@
 
     // ---- the numeric half: accumulate SAMPLES frames per acquisition, then report once.
 
-    _sampler: function () {
+    _window: function () {
       var n = SEGMENTS.length;
       return { frames: 0, n: new Array(n).fill(0), sum: new Array(n).fill(0),
                min: new Array(n).fill(Infinity), max: new Array(n).fill(-Infinity),
-               radSum: {}, radN: {}, noRadius: 0, reported: false };
+               radSum: {}, radN: {}, noRadius: 0 };
+    },
+
+    _sampler: function () {
+      return { frames: 0, fresh: this._window(), settled: this._window(), reported: false };
+    },
+
+    _into: function (w, jm, L) {
+      w.frames++;
+      for (var i = 0; i < L.length; i++) {
+        if (L[i] == null) continue;
+        w.n[i]++; w.sum[i] += L[i];
+        if (L[i] < w.min[i]) w.min[i] = L[i];
+        if (L[i] > w.max[i]) w.max[i] = L[i];
+      }
+      w.noRadius += jm.noRadius;
+      for (var name in jm.rad) {
+        var r = jm.rad[name];
+        if (r == null) continue;
+        w.radSum[name] = (w.radSum[name] || 0) + r;
+        w.radN[name] = (w.radN[name] || 0) + 1;
+      }
     },
 
     _sample: function (st, jm) {
       var L = segmentLengths(jm.pos);
       st.frames++;
-      for (var i = 0; i < L.length; i++) {
-        if (L[i] == null) continue;
-        st.n[i]++; st.sum[i] += L[i];
-        if (L[i] < st.min[i]) st.min[i] = L[i];
-        if (L[i] > st.max[i]) st.max[i] = L[i];
-      }
-      st.noRadius += jm.noRadius;
-      for (var name in jm.rad) {
-        var r = jm.rad[name];
-        if (r == null) continue;
-        st.radSum[name] = (st.radSum[name] || 0) + r;
-        st.radN[name] = (st.radN[name] || 0) + 1;
-      }
+      if (st.frames <= SAMPLES) this._into(st.fresh, jm, L);
+      else if (st.frames > SAMPLES + SETTLE) this._into(st.settled, jm, L);
       return L;
     },
 
+    _done: function (st) { return st.frames >= SAMPLES + SETTLE + SAMPLES; },
+
     _report: function (handed, st, acq) {
-      var mean = [];
-      for (var i = 0; i < SEGMENTS.length; i++) mean.push(st.n[i] ? st.sum[i] / st.n[i] : null);
-      var jit = jitterStats(st);
+      var w = st.settled, mean = [];
+      for (var i = 0; i < SEGMENTS.length; i++) mean.push(w.n[i] ? w.sum[i] / w.n[i] : null);
+      var jit = jitterStats(w);
+      var fresh = jitterStats(st.fresh);
       var rat = ratioStats(mean, BIND[handed]);
 
-      log(handed + " #" + acq + " over " + st.frames + " frames — " + (jit ? jit.bones : 0) + "/24 bones");
+      log(handed + " #" + acq + " — " + (jit ? jit.bones : 0) + "/24 bones, settled window "
+        + "(frames " + (SAMPLES + SETTLE + 1) + "\u2013" + st.frames + ")");
       var at = 0;
       CHAINS.forEach(function (c) {
         var row = [];
@@ -404,18 +442,35 @@
       });
       log("  jitter: max " + pct(jit && jit.max) + (jit && jit.name ? " at " + jit.name : "")
         + "  ⇒ " + jitterVerdict(jit));
+      // The FRESH window on its own says nothing a table could not; the two together say whether the
+      // runtime revises its estimate once it has looked for a while, which is the plan's
+      // re-acquisition probe asked without needing you to move.
+      if (fresh) {
+        log("  jitter on acquisition: max " + pct(fresh.max)
+          + (jit && fresh.max > jit.max * 1.5 ? "  ⇒ CONVERGING — the fresh reading is the worse one"
+             : jit && jit.max > fresh.max * 1.5 ? "  ⇒ the settled reading is worse, which is odd"
+             : "  ⇒ steady from the start"));
+      }
+      // A means-of-means comparison, so it is about the estimate and not about frame noise.
+      var fm = [];
+      for (var k2 = 0; k2 < SEGMENTS.length; k2++) fm.push(st.fresh.n[k2] ? st.fresh.sum[k2] / st.fresh.n[k2] : null);
+      var drift = compareHands(fm, mean);
+      if (drift) {
+        log("  revision fresh\u2192settled: max |\u0394| " + cm(drift.maxAbs) + " cm at " + drift.name
+          + ", rms " + cm(drift.rms) + " cm");
+      }
       if (rat) {
         log("  vs bind(" + handed + "): s median " + rat.median.toFixed(4) + " cv " + pct(rat.cv)
           + " range " + rat.min.toFixed(4) + "–" + rat.max.toFixed(4) + "  ⇒ " + ratioVerdict(rat));
       }
       var radii = [], distinct = {};
-      for (var nm in st.radSum) {
-        var r = st.radSum[nm] / st.radN[nm];
+      for (var nm in w.radSum) {
+        var r = w.radSum[nm] / w.radN[nm];
         radii.push(r);
         distinct[r.toFixed(5)] = 1;
       }
-      if (st.noRadius) {
-        log("  radius: MISSING on " + st.noRadius + " joint-reads — the UA is not supplying one, so the "
+      if (w.noRadius) {
+        log("  radius: MISSING on " + w.noRadius + " joint-reads — the UA is not supplying one, so the "
           + "spheres are a fixed 8 mm and girth is unknowable from the runtime");
       } else if (radii.length) {
         log("  radii(cm) " + cm(Math.min.apply(null, radii)) + "–" + cm(Math.max.apply(null, radii))
@@ -443,7 +498,7 @@
                                    : "NOT A MIRROR — the two hands differ, as a real pair must"));
         }
       }
-      return { mean: mean, jit: jit, rat: rat, history: hist };
+      return { mean: mean, jit: jit, fresh: fresh, rat: rat, history: hist };
     },
 
     _hudLine: function () {
@@ -454,7 +509,11 @@
         if (!st.rat && !st.jit) { lines.push(h + " sampling…"); return; }
         lines.push(h.charAt(0).toUpperCase() + "  s=" + (st.rat ? st.rat.median.toFixed(3) : "—")
           + "  cv=" + (st.rat ? pct(st.rat.cv) : "—")
-          + "  jit=" + (st.jit ? pct(st.jit.max) : "—"));
+          + "  jit=" + (st.jit ? pct(st.jit.max) : "—")
+          + (st.fresh ? " (" + pct(st.fresh.max) + " fresh)" : ""));
+        // The verdict, not only the numbers. It used to live in the log, which needs --debug-log —
+        // so the person wearing the headset got four figures and no reading of them.
+        if (st.jit) lines.push("   " + jitterVerdict(st.jit).split(" \u2014 ")[0]);
       }, this);
       var l = this._st.left, r = this._st.right;
       if (l && l.mean && r && r.mean) {
@@ -510,10 +569,11 @@
         }
         if (!st.reported) {
           this._sample(st, jm);
-          if (st.frames >= SAMPLES) {
+          if (this._done(st)) {
             st.reported = true;
             var out = this._report(handed, st, st.acq);
-            st.mean = out.mean; st.jit = out.jit; st.rat = out.rat; st.history = out.history;
+            st.mean = out.mean; st.jit = out.jit; st.fresh = out.fresh;
+            st.rat = out.rat; st.history = out.history;
             this._hudShow(this._hudLine());
           }
         }
