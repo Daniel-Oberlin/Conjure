@@ -60,7 +60,9 @@ Two implementation constraints that are easy to get wrong:
 
 - **Joints come from `frame.getJointPose`, not three's `getHand`** — the latter never populated joints
   under A-Frame. The scene root is pinned to the XR reference space, so a joint pose in that space maps
-  1:1 into scene coordinates.
+  1:1 into scene coordinates. This read is **its own**, not shared with `ConjurePointers`
+  ([`specs/input.md`](./input.md)), which reads `index-finger-tip` only; unifying the two is
+  [`backlogs/input.md`](../backlogs/input.md).
 - **The mesh is added to the scene graph**, not rendered in a separate pass. three renders its own depth
   content *before* A-Frame's scene render, which clears depth (`autoClearDepth = true`) — anything drawn
   earlier is wiped. Living in the scene graph means it renders inside A-Frame's own pass, after the clear.

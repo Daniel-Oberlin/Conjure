@@ -118,7 +118,7 @@ change, no restart (`_dynamics_registry()` reloads per request).
   "singleton": false,              // true = one live instance, reused/reconfigured across conjures
   "face_user": true,               // free-standing flat content faces the viewer AT CREATION (fixed)
   "default_pos": [0.0, 1.4, -1.2], // where it centres when no position is given (metres)
-  "actions": ["select"],           // XR actions it consumes (§6) — informational today
+  "actions": ["select"],           // XR actions it consumes (input.md) — informational today
   "description": "One line — feeds the director catalog (dynamics://available).",
   "config_schema": {               // the LLM-facing params: {type, default, desc, enum?}
     "damping": { "type": "number", "default": 0.996, "desc": "→1 = long-lived ripples" }
@@ -154,7 +154,8 @@ Notes:
 - **`actions`** declares which semantic XR actions the module consumes, in the same declarative spirit as
   `config_schema`. It is parsed into `DynamicModuleDef.actions` (`dynamics.py:152`) and **nothing reads it
   yet** — it is not validated against known action names, not in the catalog, and never reaches the
-  client. Runtime action resolution comes entirely from `window.CONJURE_BINDINGS` (§6). Declare it
+  client. Runtime action resolution comes entirely from `window.CONJURE_BINDINGS`
+  ([`input.md`](./input.md)), which is also where the action vocabulary is defined. Declare it
   accurately anyway; making it load-bearing is a backlog item.
 - A malformed manifest is **skipped and logged** by the world server, never fatal to the world
   (`_dynamics_registry`). An agent that *requires* a missing module fails to load (§9).
@@ -194,7 +195,7 @@ registration and no-op when A-Frame is absent:
 | `AFRAME.THREE` | the renderer's THREE; `this.el.sceneEl.renderer` for the WebGL renderer |
 | `window.ConjureClock` | the shared clock (§6) |
 | `window.ConjureBus` | the cross-client event bus (§6) |
-| `window.ConjurePointers` | the XR input reader + action bindings + pointer arbitration (§6) |
+| `window.ConjurePointers` | the XR input reader + action bindings + pointer arbitration ([`input.md`](./input.md)) |
 | `window.ConjureFrames` | frame conversion for tier-C commits (§8) |
 | `window.ConjureWorldFrame` | the derived-frame deltas — skybox pose/scale and a void world's parking (§8b) |
 | placement + facing | the server positions the entity before the component runs (§7) |
@@ -220,7 +221,9 @@ messages so a per-frame condition logs once rather than flooding.
 
 ## 6. The runtime surface
 
-Four globals, loaded before any module (`client/index.html`).
+Globals loaded before any module (`client/index.html`). Two are documented here; **XR input is its own
+area** ([`specs/input.md`](./input.md)) because its consumers are not all modules, and the frame-conversion
+globals are documented where they are used — `ConjureFrames` in §8, `ConjureWorldFrame` in §8b.
 
 ### `ConjureClock` — shared time
 
@@ -256,100 +259,17 @@ routes per instance. **Unsubscribe every handler in `remove`.**
 
 ### `ConjurePointers` — XR input, as ACTIONS
 
-`client/conjure-pointers.js` is the **one reader of XR input** and the seam that keeps controls out of
-module code. Before it, every consumer walked `session.inputSources` itself and hard-coded button indices:
-four places to fix when a mapping changed, a control scheme you could only discover by reading source, and
-control *sharing* that "worked" only because `grab` happened to use GRIP while `water` used TRIGGER.
+**Moved.** `client/conjure-pointers.js` is the one reader of XR input, and it is specified in
+[`specs/input.md`](./input.md): the controls, the binding table, what a pointer carries, `armed()`, and
+the capture/reservation arbitration that lets two modules share a trigger. It moved out of this spec on
+2026-09-17 because it is read by components that are not modules at all — the beams, the gaze picker,
+the surface overlay ([`decisions.md`](../decisions.md) §29).
 
-Two jobs: read the XR frame **once per frame** and publish a normalized snapshot per pointer (cached on
-the frame, so N consumers cost one read); and resolve semantic **actions** through a binding table, so a
-module asks "is `resize` active?" and never names a button.
+What a module needs from it is three lines:
 
-**Controls** (xr-standard gamepad mapping) — the vocabulary a binding may refer to:
-
-| Control | Source |
-|---|---|
-| `trigger` | button 0 |
-| `grip` | button 1 |
-| `stickPress` | button 3 |
-| `a` / `b` | buttons 4 / 5 |
-| `stickX` / `stickY` | axes 2 / 3 |
-
-**Bindings** map control → action. They are config (`Settings.bindings`, injected as
-`window.CONJURE_BINDINGS`), never hard-coded in a module. Defaults (`config.py` `DEFAULT_BINDINGS`, a
-single constant that both the dataclass default and `get_settings()` read — they used to carry the literal
-separately, and adding an action to one left the running server serving the old scheme):
-
-```json
-{"select": "trigger", "grab": "grip", "resize": "trigger", "reel": "right.stickY",
- "yaw": "right.stickX", "pitch": "left.stickY", "bank": "left.stickX",
- "mark": "b", "surfaces": "a"}
-```
-
-The last two are diagnostics rather than interaction: `mark` writes the geometry ground-truth probe
-([`spaces-geometry.md` §10.3](./spaces-geometry.md)) and `surfaces` cycles the surface debug overlay's
-layers (§11 there).
-
-A control may be **hand-qualified** (`"left.stickY"`), so one hand can hold an object while the other
-shapes it. Re-binding is a config change, not an edit in every module.
-
-**Reading pointers:**
-
-- `ConjurePointers.list(sceneEl)` — every pointer this frame (controllers *and* tracked hands), `[]`
-  outside an XR session.
-- `ConjurePointers.controllers(sceneEl)` — controllers only, the common case for ray interaction.
-
-Both are cached per XRFrame with a 4 ms recency window. The recency check matters: the browser is not
-guaranteed to hand out a fresh `XRFrame` object each frame, and an identity-only cache would never
-invalidate — every consumer would see the first frame's buttons forever.
-
-**Each pointer** carries pose and resolved controls:
-
-| Member | Meaning |
-|---|---|
-| `key` | stable per input source — `"right:ctrl"`, `"left:hand"` |
-| `handedness`, `isHand`, `source` | the raw XR input source and its kind |
-| `origin`, `dir`, `quat` | target-ray pose in the world frame (the rig sits at the origin) |
-| `fingertip` | index-finger-tip position for tracked hands, else `null` |
-| `value(action)` | 0..1 for buttons, −1..1 for axes, resolved through the bindings |
-| `active(action)` | `value(action) >= 0.5` (`ACTIVE_AT`) |
-| `started(action)` / `ended(action)` | rising / falling edge this frame (own-hand controls) |
-| `armed()` | is this pointer **in use** — see below |
-| `anyActive()` | is any bound action engaged |
-| `availableTo(owner)` | free, or already this owner's (see arbitration) |
-
-**`armed()` — one definition of "in use".** A pointer arms when `select` is pulled past
-`beam_trigger` (default 0.05) **or** any bound action is engaged, and lingers for `beam_timeout`
-(default 10 s) after the most recent pull. Continuous use keeps re-arming it, so a momentary release
-mid-gesture does not flicker it off.
-
-Arming lives in the input layer rather than in the beam so that **presentation and focus agree by
-construction**: `controller-beams.js` shows a beam exactly when `armed()`, and `grab` refuses to highlight
-anything when it is false. A selection box appearing with no visible beam aimed at it reads as the scene
-reacting to nothing.
-
-### Sharing a pointer between modules
-
-Module tick order is not guaranteed, and two modules can want the same control — `resize` and `select` are
-both the trigger by default. Arbitration is explicit and lives here:
-
-| Mechanism | Lifetime | Use |
-|---|---|---|
-| **capture** — `claim(key, owner)` / `release(key, owner)` | until released | held for a whole gesture. While `grab` is dragging, that pointer is exclusively grab's and nothing else reacts to its buttons. |
-| **reservation** — `reserve(key, owner)` | the next press; **renewed every frame** | "I'd take the next press here." `grab` reserves while the beam is on one of its corner handles, so the same trigger resizes *there* and ripples on the picture's body. |
-
-`ownerOf(key)` returns the capture if there is one, else a reservation **made this frame or last**. That
-one frame of slack is what makes reservations order-independent: a module ticking before the reserver
-still defers.
-
-The contract for a consuming module is one line, before acting on a pointer:
-
-```js
-if (!p.availableTo("mymodule")) continue;      // someone else holds or has reserved it
-```
-
-Edge state (`_was`, captures, reservations, arm windows) is dropped when a pointer vanishes, so a
-reconnecting controller never inherits a stale "held".
+- ask by **action**, never by button — `p.active("select")`, not `buttons[0]`;
+- declare those actions in `module.json` `actions` (§4);
+- check `p.availableTo("<yourmodule>")` before acting, and `claim`/`release` around a gesture.
 
 ---
 
@@ -411,7 +331,7 @@ Two rules make this stable, both learned the hard way:
   filtered for finiteness (`_nearest`) — a `NaN` loses every `<` comparison, so one reaching an
   accumulator pins it permanently.
 
-No pointer, no highlight: focus requires `p.armed()` (§6).
+No pointer, no highlight: focus requires `p.armed()` ([`input.md`](./input.md) §5).
 
 ### The HUD
 
@@ -463,7 +383,7 @@ object the HUD box is drawn around, so what will turn is exactly what you can se
 consequences follow from the same place the frame modes' stick does:
 
 - **Applied once per tick, not per pointer.** `yaw`/`pitch`/`bank` are hand-qualified bindings, which
-  resolve *globally* (§6), so every pointer reports the same deflection and a per-pointer loop would double
+  resolve *globally* ([`input.md`](./input.md) §3), so every pointer reports the same deflection and a per-pointer loop would double
   it. A gesture in flight suppresses the hover path entirely, since the held branch already folds the stick
   into its own drag.
 - **A stick has no release event**, so the commit fires once the sticks have *stayed* neutral for 300 ms,
@@ -583,7 +503,7 @@ sky does nothing.
 - **`yaw` on the stick**, same control and sign as object mode — but **with no grip required**. There is no
   object to be holding, and demanding a grip on the floor first is a step with nothing behind it. Applied
   once per tick rather than per pointer, because a hand-qualified binding like `right.stickX` resolves
-  globally (§6), so every pointer reports the same value and a per-pointer loop would double it. A stick has
+  globally ([`input.md`](./input.md) §3), so every pointer reports the same value and a per-pointer loop would double it. A stick has
   no release event, so the commit fires when it returns to neutral.
 
 **A void world's sky moves with its content.** `frame.yaw`/`frame.offset` are applied by `_pinSky` as well as
@@ -779,8 +699,8 @@ Fully described in §8. Its `mode` config switches it to adjusting the skybox or
 ### Not a module: `controller-beams`
 
 `client/controller-beams.js` draws the laser from each controller. It is ordinary client infrastructure,
-not a conjurable module — but it reads the same `ConjurePointers` layer and keys purely off `armed()`,
-which is what keeps the visible beam and grab's highlight in agreement.
+not a conjurable module — but it reads the same `ConjurePointers` layer ([`input.md`](./input.md)) and
+keys purely off `armed()`, which is what keeps the visible beam and grab's highlight in agreement.
 
 ---
 
@@ -790,8 +710,8 @@ which is what keeps the visible beam and grab's highlight in agreement.
    `actions` if it reads input.
 2. `dynamics/<name>/<entry>.js` — register the component; idempotent; deterministic where claimed; never
    throw out of `tick`; full disposal in `remove`.
-3. Read input only through `ConjurePointers`, by **action**; check `availableTo` before acting; `claim`
-   for the duration of a gesture and `release` on end.
+3. Read input only through `ConjurePointers`, by **action** ([`input.md`](./input.md)); check
+   `availableTo` before acting; `claim` for the duration of a gesture and `release` on end.
 4. Add `<name>` to an agent's `agent.json` `dynamics` list (and `dynamics://available` to its `context`).
 5. Conjure it: `conjure_module(module="<name>", …)`. Confirm it renders, is shared across two clients,
    and disposes cleanly on `dismiss_module`.

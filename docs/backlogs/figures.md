@@ -14,7 +14,8 @@ the design rationale is the expensive part and it does not survive being cut in 
 - the **import half** touches [`backlogs/library.md`](./library.md) — conversion, catalog `attributes`,
   licence capture
 - the **runtime half** touches [`backlogs/dynamics.md`](./dynamics.md) and
-  [`specs/dynamics.md`](../specs/dynamics.md) — a new module, the sync tiers, `ConjurePointers`
+  [`specs/dynamics.md`](../specs/dynamics.md) — a new module, the sync tiers — and
+  [`specs/input.md`](../specs/input.md) for `ConjurePointers`
 
 Rejected alternatives and consequential forks belong in [`docs/decisions.md`](../decisions.md) once they
 are settled.

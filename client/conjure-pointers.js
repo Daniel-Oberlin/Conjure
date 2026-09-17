@@ -1,5 +1,6 @@
 /* global AFRAME */
 // ConjurePointers — the ONE reader of XR input, and the seam that keeps controls out of module code.
+// Spec: docs/specs/input.md (its own area since 2026-09-17 — decisions.md §29).
 //
 // Before this, every consumer (controller-beams, grab, water, occlusion) walked `session.inputSources`
 // itself and hard-coded button indices. That is the same duplication-breeds-drift trap as the

@@ -560,7 +560,7 @@ these, never raw devices.
 - **Latency/placement:** host devices add a hop → tight loops may run the motion model host-side.
 
 **Built today — the client half, for XR controllers and hands** (`client/conjure-pointers.js`,
-[specs/dynamics.md §6](./specs/dynamics.md)). It is the abstraction above proved out on the source that
+[specs/input.md](./specs/input.md)). It is the abstraction above proved out on the source that
 exists now; host devices, drivers and hotplug remain designed.
 
 - **One reader per frame.** `ConjurePointers` is the *only* consumer of `session.inputSources`. It

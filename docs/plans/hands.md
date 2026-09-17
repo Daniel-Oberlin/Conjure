@@ -1,6 +1,6 @@
 # Plan — hands: models you wear, and hands as input
 
-**Status:** all phases open · **Opened:** 2026-09-14
+**Status:** phase 1 **landed** 2026-09-17 · phases 0, 2, 3, 4 open · **Opened:** 2026-09-14
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
@@ -9,9 +9,10 @@ content goes when it lands, and the file is deleted when the last phase has sett
 to [`decisions.md`](../decisions.md). If it outlives its phases it has become a backlog by another
 name and should be dissolved on the spot.
 
-**Dissolves to:** **`specs/input.md` + `backlogs/input.md`** — a new area opened by phase 1, because
-`ConjurePointers` is the one reader of XR input and has been living inside `specs/dynamics.md` §6 while
-its consumers stopped being modules (phases 1, 3, 4) · `specs/figures.md` + `backlogs/figures.md`
+**Dissolves to:** **[`specs/input.md`](../specs/input.md) + [`backlogs/input.md`](../backlogs/input.md)**
+— a new area, opened by phase 1 on 2026-09-17, because `ConjurePointers` is the one reader of XR input
+and had been living inside `specs/dynamics.md` §6 while its consumers stopped being modules
+(phases 1, 3, 4) · `specs/figures.md` + `backlogs/figures.md`
 (phase 2, the worn component and what import records) · `specs/dynamics.md` (phase 4, the module-facing
 half of contact) · `specs/occlusion.md` (a cross-reference only — see *Open*).
 
@@ -177,19 +178,34 @@ localised. A mixed-reality capture of it belongs in `investigations/` as the dur
 in the headset, wear the hands and read the log line. Until then the spec says what was measured, on
 whose hand, and that per-user variation is unverified.
 
-### Phase 1 — extract `specs/input.md`
+### Phase 1 — extract `specs/input.md` — ✅ LANDED 2026-09-17
 
-*Doc-only. `specs/dynamics.md` §6 moves out whole; `decisions.md` §29 records the fork.*
+*Doc-only. `specs/dynamics.md` §6 moved out; `decisions.md` §29 records the fork.*
 
-- New `specs/input.md` + `backlogs/input.md`: controls, bindings and actions, reading pointers,
-  `armed()`, and the capture/reserve arbitration — moved, not rewritten.
+- [`specs/input.md`](../specs/input.md) + [`backlogs/input.md`](../backlogs/input.md): controls,
+  bindings and actions, reading pointers, `armed()`, and the capture/reserve arbitration — moved, not
+  rewritten.
 - `specs/dynamics.md` keeps the `actions` **manifest field** (it is a `module.json` key) and links out;
-  the runtime list gains a pointer instead of a section.
-- `docs/README.md` gains the area entry beside the others.
-- `specs/occlusion.md` gains one cross-reference and no edit.
+  §6 keeps the clock and the bus and carries a pointer where the section was.
+- `docs/README.md` gains the area entry; the top-level `README.md` lists it among the specs;
+  `specs/occlusion.md`, `architecture.md` §11, `backlogs/figures.md` and
+  `client/conjure-pointers.js`'s own header now point at it.
+- `decisions.md` gained **§29, §30 and §31** — §29 resolved, the two phase-2 forks marked DESIGNED. They
+  now survive this file, which is what §2 above claims.
 
-**Done when:** `specs/input.md` describes what is built today with no new claims, `dynamics.md` has no
-orphaned §6 references, and nothing else in `docs/` links to a section that moved.
+**Two things the move documented rather than moved**, both facts about the code that §6 cited and never
+stated. Neither is a new claim about behaviour:
+
+- **A hand-qualified action resolves globally.** `value`/`active` read the named hand's pointer whichever
+  pointer you ask, so a per-pointer loop over `reel` applies it twice — which §8 and §8b of
+  `dynamics.md` each warned about locally, pointing at a §6 that did not say it. `started`/`ended` are
+  the exception: own-hand only, ignoring the qualifier.
+- **Tracked hands resolve no action at all**, because they have no gamepad — so `controllers()` filtering
+  them out is not the whole reason hands feel thin; there would be nothing to resolve either way. That
+  reframes phase 3: it is a *control synthesis* job, not a filter widening.
+
+**Done:** `specs/input.md` describes what is built today; `dynamics.md`'s remaining `§6` references are
+the clock and the bus only; every relative link in the touched files resolves.
 
 ### Phase 2 — wear a hand model
 

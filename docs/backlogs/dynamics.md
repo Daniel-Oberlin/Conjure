@@ -270,9 +270,9 @@ Cross-referenced in [`spaces-geometry`](./spaces-geometry.md).
 (`dynamics.py:152`) and read by nothing. `grab` and `water` both declare it accurately, so it is honest
 documentation and no more. At minimum it should be validated against the known action names (the keys of
 `Settings.bindings`) at load, so a typo fails loudly instead of silently. Beyond that it could feed the
-director catalog ("this module uses the trigger"), and — the real prize — let the arbitration layer know
-which modules contend for which action *before* a frame, instead of discovering it through
-capture/reserve at runtime.
+director catalog ("this module uses the trigger"). The real prize belongs to the input layer — letting
+arbitration know which modules contend for which action *before* a frame rather than discovering it
+through capture/reserve at runtime — and is [`backlogs/input.md`](./input.md).
 
 **Validate `tier`.** Accepted as any string, defaulted to `"A"`, acted on nowhere. Either validate it
 against `A|B|C` or drop the field. Currently a manifest claiming `"tier": "Z"` loads fine.

@@ -29,6 +29,10 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 25 | Do multi-area plans need a durable doc tier? | ✅ RESOLVED | No — `docs/plans/` holds them while live and they dissolve into specs/backlogs |
 | 26 | An asset owned by more than one agent | ✅ RESOLVED | `asset_scopes` join table — many owners, one row, curation shared |
 | 27 | Is a clip selected by compatibility, or by what shipped with the model? | ✅ RESOLVED | Both, kept separate: `rig_sig` is mechanical, `shipped_with` is authorial intent |
+| 28 | A figure renders black — the capture's fault or ours? | ✅ RESOLVED | Ours, twice: adopt a donor material from the container FILE, and ship a generated IBL |
+| 29 | Does `ConjurePointers` belong in the dynamics spec? | ✅ RESOLVED | No — `specs/input.md`; its consumers are not all modules |
+| 30 | Is a worn hand model world state, or a per-client setting? | 🔶 DESIGNED | An occupied entity — durable, replayed on reload, "put it down" names a place |
+| 31 | Does a worn hand conform to the tracked hand, and what does contact read? | 🔶 DESIGNED | Conform all 25 joints; contact reads the JOINTS, never the skinned mesh |
 
 > Numbering note: §15 appears twice (an older "Users, spaces, and a user-first namespace" section
 > predates the table row for world/space identity), and §16 has a section but no table row. External
@@ -665,3 +669,68 @@ material — the same symptom, newly self-inflicted. A name match is evidence, n
 moment it is diagnosable, and grey is a thing the source never produces either — on Jane that grey was
 her hair. Also rejected: three's `RoomEnvironment`, which lives in `examples/` and is not in A-Frame's
 bundled build, in favour of a generated gradient that ships no asset and can fail no request.
+
+### 29. Does `ConjurePointers` belong in the dynamics spec? — ✅ RESOLVED
+**Choice:** No. XR input gets its own area — [`specs/input.md`](./specs/input.md) +
+[`backlogs/input.md`](./backlogs/input.md) — and `specs/dynamics.md` §6 keeps the clock and the bus,
+with a pointer out. The `module.json` `actions` field stays with the manifest, because it is a manifest
+key.
+
+**Why:** The area boundaries here are drawn by **who reads a thing**, not by which file it ships in.
+`ConjurePointers` is read by four components that are not dynamic modules at all — `controller-beams`,
+the gaze picker in `conjure-client`, `surface-overlay`, and (for one joint) nothing shared with
+`occlusion.js`, which reads the XR frame itself. Documenting a layer with non-module consumers inside
+"the spec for conjurable, live, shared modules" makes the dynamics spec the place you go to learn about
+the beam, which is explicitly *not a module* in its own §10.
+
+The forcing function was hands. Synthesised hand controls (`pinch`, `grasp`, `poke`) and their bindings
+are input, not dynamics, and the cheapest-looking alternative — a `specs/hands.md` — would have split
+the one reader of XR input across two documents, hand controls in one and controller controls in the
+other. That is precisely what the layer exists to prevent: the pre-`ConjurePointers` state was four
+consumers each with their own idea of the mapping.
+
+**Rejected:** `specs/hands.md` (splits one layer by input device); leaving it in `dynamics.md` and
+growing it (the section was already the longest in the file and about to gain a joint snapshot, a
+capsule chain and a contact query); and a `specs/runtime.md` holding all five globals (clock and bus
+are genuinely module infrastructure, and grouping by "is a `window.` global" is grouping by
+implementation detail).
+
+**Precedent:** the same move `captures.md` made on 2026-09-13, for the same reason — the consumers
+stopped matching the file name.
+
+### 30. Is a worn hand model world state, or a per-client setting? — 🔶 DESIGNED
+**Choice:** An **occupied entity**. Wearing a hand is `components.hand-rig = {hand: "left"}` on a
+placed model — ordinary durable world state that rides the existing patch/snapshot path, persists,
+replays on reload, and where "put it down" names a real place in the world.
+
+**Why:** It is the same shape of thing as §24's clip playback: it decorates a placed model and has no
+independent existence. And the alternative loses the model. A per-client preference ("I wear these")
+has nowhere to put the hand when you take it off, so taking it off either deletes it or drops it
+somewhere implicit; as an entity, unwearing restores the anchor it was placed with. A per-user default
+is a later wrapper over this, not a parallel mechanism.
+
+**Rejected:** a per-client setting (above), and a dynamic module (§24 settles that — a module is a
+conjurable shared effect, and a worn hand is per-figure state).
+
+### 31. Does a worn hand conform to the tracked hand, and what does contact read? — 🔶 DESIGNED
+**Choice:** Both halves, and they argue each other. The model **conforms** to the tracked hand — all 25
+joints, position and orientation, with one scalar length ratio — and **contact is computed from the
+tracked joints, never from the skinned mesh.**
+
+**Why:** Conforming is what makes the rendered fingertip and the collider the same point; reading
+contact off the joints is what keeps a 13,320-triangle skinned mesh out of every consumer's per-frame
+path. Take either half alone and they disagree: pose the model by wrist-and-fingers-approximated and
+the rendered finger is not where the collider is; read contact off the mesh and every module pays a
+skinning read per frame. `grab` already follows the second rule for figures
+([`specs/figures.md`](./specs/figures.md) §6).
+
+The conforming half is only legal because these hand models are **authored in the WebXR joint frame** —
+all 25 joints named exactly the WebXR set, each bone along its own local −Z (measured: 0.958 at the
+wrist, ≥0.999 down the index chain). A transform copy is therefore exact rather than approximate, and
+the two indirections the whole of `specs/figures.md` rests on — which node, and which way — collapse to
+identity. A hand authored any other way gets no map and is refused with a reason.
+
+**Rejected:** retargeting a hand through the figure machinery (nothing to retarget — the frames already
+agree); driving only the wrist and letting a clip or IK approximate the fingers (the fingers are the
+whole point); and colliding against the skinned mesh (per-frame cost, for a silhouette the joints
+already describe).
