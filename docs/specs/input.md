@@ -242,9 +242,15 @@ fourteen and the three groups are reported separately.
 
 **Measured on a Quest 3, 2026-09-17.** Left and right differ by **0.240 mm** and the figures move
 across re-acquisitions, so this runtime does not serve a static mirrored table — it re-estimates per
-session, and hand size is real data here. Taken over all 24 segments the ratios spread by **36%**,
-which read as a differently-proportioned hand and was nothing of the kind: on the 14 bones the spread
-is **zero**, at `s ≈ 1.02`. That is what a summary statistic costs when the population is mixed.
+session, and hand size is real data here. Taken over all 24 segments the ratios spread by **36%** at a
+median of **1.017**, which read as a differently-proportioned hand and is nothing of the kind.
+
+**One number here is inferred, not measured, and is marked as such until it is.** The 36% and the
+1.017 are readings; the grouping came from a description of the on-screen ratios — *"the first column
+varies more, subsequent columns are around 1, the last column varies significantly"* — and the claim
+that the 14 bones are uniform is so far only a simulation that reproduces 1.017/36% from that shape.
+The HUD now computes the bone-only `cv` directly, so one reload settles it. Until then this section
+says what the ratios *look* like, not what they are.
 
 **Read jitter first.** The `s` probe's premise is known to be shaky: our own two hand models are not
 mirrors of each other — their index metacarpals differ by **6.3 mm**, measured — so a non-zero `cv` is

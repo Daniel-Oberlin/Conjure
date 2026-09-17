@@ -172,7 +172,7 @@ you want the full numbers in `temp/conjure.log` (the verdicts are on the HUD eit
 | left vs right | **0.240 mm** apart | not one table mirrored — a shared skeleton would be identical |
 | across re-acquisitions | moves | the runtime **re-estimates**; a stored table cannot |
 | ratio, all 24 segments | `s` 1.017, spread **36%** | looked like a differently-proportioned hand, and was not |
-| ratio, by group | **14 bones uniform**; 5 wrist offsets and 5 tips scattered | the spread was ten numbers that are not bone lengths |
+| ratio, by group | 5 wrist offsets and 5 tips scattered, 14 bones "around 1" | the spread was ten numbers that are not bone lengths |
 
 So **hand size is real per-session data here**, which answers the question this phase was opened for:
 the privacy clause's static-hand-model does not describe this runtime, and `s` has to be derived at
@@ -182,7 +182,12 @@ runtime rather than baked in. The code was the same either way, as §0 predicted
 frame origin and the hand — our model's wrist node and the runtime's wrist pivot need not coincide, and
 the discrepancy points a different way per finger. `*-distal → *-tip` compares a WebXR tip, which sits
 at the fingertip *surface* and is derived from the runtime's own estimate, against an authored tip bone.
-Neither says anything about how long a bone is. On the 14 that are bones, the spread is **zero**.
+Neither says anything about how long a bone is.
+
+**The grouping is measured; "the 14 are uniform" is not yet.** It comes from a description of the
+on-screen ratios and a simulation that reproduces `s = 1.017` with a 36% spread from exactly that
+shape. The bone-only `cv` is now on the HUD and one reload confirms or kills it. Everything below
+assumes it holds; if it does not, the 14 need per-bone scale and phase 2 changes shape.
 
 That is a one-line correction to phase 2 with a real consequence: taking the median over all 24 would
 have biased `s` by several per cent on every figure, in a direction that depends on the wearer's hand.
