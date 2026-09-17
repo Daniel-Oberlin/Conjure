@@ -369,8 +369,11 @@ and the component logs the numbers a rule would have to be found in — each fin
 `distal → tip`, the ratio, and the tip radius — so the rule can be read off a headset instead of
 reasoned to. Reasoning to it is what produced pointy fingers.
 
-**Next reading wanted:** `--tip-out 5` and then, with `--debug-log` on, the `[hand-rig] tips (cm)` line
-from `temp/conjure.log`. If 5 mm lands it, the question becomes whether the right rule is a constant or
+**Dial it live** — `conjure-ctl wear --tip-out MM` with no id adjusts every worn hand on the next frame,
+no reload.
+
+**Next reading wanted:** the number that lands it, and then, with `--debug-log` on, the
+`[hand-rig] tips (cm)` line from `temp/conjure.log`. If 5 mm lands it, the question becomes whether the right rule is a constant or
 a multiple of the reported radius — and those numbers are in that line.
 
 **What to watch for, given what phase 0 measured.** The per-bone residual after a single `s` is ~5%, and

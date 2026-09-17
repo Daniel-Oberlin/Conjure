@@ -1007,6 +1007,12 @@ out.
 number of millimetres. **Default 0**, which is the only defensible default: everything else here is
 exact by construction, and a non-zero default would quietly make that untrue.
 
+**It is dialled live.** `conjure-ctl wear --tip-out MM` with no id adjusts every worn hand and takes
+effect on the next frame. The component reads `tipOut` per frame and has **no `update` handler** — so
+A-Frame replaces `this.data` on the patch and `init` does not re-run, leaving the collected skeleton,
+the captured bind positions and the rest matrices intact. Finding a number by trying numbers should not
+cost a page reload each time, and it does not.
+
 *It is a tunable and not a derivation, and the first attempt at making it one is worth keeping.* That
 version scaled each tip bone by its finger's tracked ÷ bind ratio for `*-distal → *-tip`, reasoning from
 §8f's phase-0 measurement that this is the one segment where the model and the runtime measure different

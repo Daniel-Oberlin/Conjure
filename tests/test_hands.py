@@ -266,3 +266,19 @@ def test_the_tip_offset_is_carried_to_the_component_and_defaults_to_zero(srv, cl
     assert out["ok"] and out["tip_out_mm"] == 5
     ent = next(e for e in srv.store.doc["entities"] if e["id"] == eid)
     assert ent["components"]["hand-rig"]["tipOut"] == "5"
+
+
+def test_the_tip_offset_can_be_dialled_on_an_ALREADY_WORN_hand(srv, client):
+    """Live, and that is the point: the component reads `tipOut` per frame and A-Frame replaces
+    `this.data` on the patch, with no `update` handler to re-run `init` — so the skeleton, the bind
+    pose and the captured rest all survive. Dialling a number in must not cost a reload."""
+    eid = _place_hand(srv, client)
+    client.post("/figure/hand", json={"id": eid, "hand": "auto"})
+    for mm in (5, 9, 0, -2):
+        out = client.post("/figure/hand", json={"id": eid, "hand": "auto", "tip_out": mm}).json()
+        assert out["ok"] and out["worn"] is True
+        ent = next(e for e in srv.store.doc["entities"] if e["id"] == eid)
+        rig = ent["components"]["hand-rig"]
+        assert rig["tipOut"] == f"{mm:g}", mm
+        # and the rest of the component is untouched, or re-dialling would re-wear it
+        assert rig["hand"] == "left" and len(json.loads(rig["joints"])) == 25

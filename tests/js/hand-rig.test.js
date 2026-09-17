@@ -263,3 +263,26 @@ test("the tip numbers are LOGGED, so the rule can be read rather than reasoned t
   assert.match(said, /radius/, "the radius is the one candidate rule we can actually test");
   ["thumb", "index", "middle", "ring", "pinky"].forEach((f) => assert.match(said, new RegExp(f)));
 });
+
+test("changing tipOut takes effect with no re-init, so a number can be dialled live", () => {
+  // The component has no `update` handler on purpose: A-Frame replaces `this.data` and `init` does
+  // not re-run, so the skeleton, the bind pose and the captured rest survive a patch. `_drive` reads
+  // `tipOut` per frame. If any of that changed, dialling a number in would cost a reload.
+  assert.equal(DEF.update, undefined, "an update handler here would re-run nothing and risk re-init");
+  const { self, root, bones } = rig();
+  self._collect();
+  self._s = 1;
+  const bind = self._bind, rest = self._rest;
+  const f = frame(0.03);
+  const p = new THREE.Vector3();
+  for (const [mm, want] of [["0", 0], ["5", 0.005], ["9", 0.009], ["-2", -0.002]]) {
+    self.data.tipOut = mm;                        // what a patch does to `this.data`
+    self._drive(f);
+    root.updateMatrixWorld(true);
+    p.setFromMatrixPosition(bones["index-finger-tip"].matrixWorld);
+    const along = f.pos["index-finger-tip"].z - p.z;       // −Z is out, so this is positive when out
+    assert.ok(Math.abs(along - want) < 1e-6, `tipOut ${mm} moved ${along} m, wanted ${want}`);
+  }
+  assert.equal(self._bind, bind, "the bind pose must survive a dial");
+  assert.equal(self._rest, rest, "and so must the rest matrices, or it could not be put back");
+});

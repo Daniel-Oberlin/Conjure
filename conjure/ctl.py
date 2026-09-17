@@ -392,7 +392,7 @@ def cmd_pose(s: Settings, a) -> None:
 
 
 def cmd_wear(s: Settings, a) -> None:
-    """Wear a placed hand model, or take it off — and with no id, say what there is to wear.
+    """Wear a placed hand model, take it off, dial its fingertips, or say what there is to wear.
 
     `--hand auto` is the default and almost always right: which hand a model IS was measured from its
     geometry at import, not read from the `_L` in its name. Wearing does not consume the model — it
@@ -401,9 +401,18 @@ def cmd_wear(s: Settings, a) -> None:
     A hand has to be PLACED before it can be worn, and nothing in this CLI placed a library model — so
     `--place` does it, and `--pair` does both sides at once, which is what anyone actually wants.
     """
+    a.tip_out_given = a.tip_out is not None
+    if a.tip_out is None:
+        a.tip_out = 0.0
     if a.pair:
         return _wear_pair(s, a)
     if not a.id:
+        # `--tip-out` with no id adjusts EVERY worn hand. It takes effect on the next frame — the
+        # component reads `tipOut` per frame and A-Frame replaces `this.data` on the patch, and there
+        # is no `update` handler to re-run `init`, so the skeleton, the bind pose and the captured rest
+        # all survive. Dialling a number in should not cost a reload, and it does not.
+        if a.tip_out_given:
+            return _wear_tip(s, a)
         return _wear_list(s)
     eid = a.id
     if a.place:
@@ -447,6 +456,23 @@ def _wear_list(s: Settings) -> None:
               "server process knows rather than what is on disk.")
     if not placed and lib:
         print("\n  conjure-ctl wear --pair          places both sides and wears them")
+
+
+def _wear_tip(s: Settings, a) -> None:
+    """Push the fingertips of every WORN hand in or out, live."""
+    worn = [h for h in (_get(s, "/figure/hands").get("placed") or []) if h["worn"]]
+    if not worn:
+        print("nothing is worn — `wear --pair` first, then `wear --tip-out MM` to dial it")
+        return
+    done = []
+    for h in worn:
+        out = _post(s, "/figure/hand", {"id": h["id"], "hand": h["worn"], "tip_out": a.tip_out})
+        if out.get("ok"):
+            done.append(h["id"])
+        else:
+            print(f"wear: {h['id']}: {out.get('error', 'failed')}")
+    _say({"ok": bool(done), "adjusted": done, "tip_out_mm": a.tip_out}, a.verbose,
+         f"fingertips {a.tip_out:+g} mm on {', '.join(done)} — live, no reload")
 
 
 def _wear_pair(s: Settings, a) -> None:
@@ -746,7 +772,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--name", help="entity id to place it as (with --place)")
     a.add_argument("--pair", action="store_true",
                    help="place BOTH hands from the library and wear them — the whole test in one")
-    a.add_argument("--tip-out", dest="tip_out", type=float, default=0.0, metavar="MM",
+    # `default=None` and a separate flag, because 0 is a REAL value here: "put them back exactly
+    # where the runtime says" is the thing you dial back to, and it must be distinguishable from
+    # not having asked.
+    a.add_argument("--tip-out", dest="tip_out", type=float, default=None, metavar="MM",
                    help="push each fingertip out along its own bone, in mm. A TUNABLE: the runtime's "
                         "tip joint sits short of a real fingertip by an amount nothing reports. 0 = "
                         "exactly where the runtime says")
