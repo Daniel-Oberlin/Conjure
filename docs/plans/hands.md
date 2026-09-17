@@ -1,7 +1,7 @@
 # Plan — hands: models you wear, and hands as input
 
-**Status:** phases 0, 1 and 2 **built** 2026-09-17 — phase 0 read on device; phase 2 worn on device
-and corrected twice · phases 3, 4 open · **Opened:** 2026-09-14
+**Status:** phases 0–3 **built** 2026-09-17 — 0 and 2 read on device, 3 untried · phase 4 open ·
+**Opened:** 2026-09-14
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
@@ -401,7 +401,7 @@ it shows up as stretch in the skinning blend **at the knuckles** rather than as 
 **wrist** are the two places to expect disagreement: the tip is derived from the runtime's own estimate
 and the wrist is a frame convention, and neither is driven by `s`.
 
-### Phase 3 — hands get the vocabulary controllers already have
+### Phase 3 — hands get the vocabulary controllers already have — 🔶 BUILT 2026-09-17, UNTOUCHED
 
 *Settles into `specs/input.md`; the module-facing consequences are one line each in
 `specs/dynamics.md`.*
@@ -418,8 +418,22 @@ and the wrist is a frame convention, and neither is driven by `s`.
 - The `controllers()` filter is then the open question of the phase: widen the existing callers, or add
   a hands-and-controllers reader beside it. Decide in the phase, against what `grab` needs from a ray.
 
+**Built.** `pinch`/`grasp`/`poke` synthesised in `conjure-pointers.js`; `select`, `grab` and `resize`
+bind to both vocabularies at once (a binding may now name several controls, largest wins); `acting()`
+beside `controllers()`; the four callers moved one line each.
+
+**The filter question answered itself the other way round.** This phase expected to decide between
+widening `controllers()` and adding a reader. The right answer was a reader — `controllers` is named
+for controllers, and a function whose name stops being true is worse than one more function. And the
+premise behind the question was wrong anyway: a tracked hand has always had a `targetRaySpace`, so the
+ray was never the obstacle. Phase 1 had already found that (§1 above) and it took building this to see
+what it implied.
+
 **Done when:** an object can be grabbed and moved with tracked hands, `water` behaves exactly as before,
-and no module changed to get either.
+and no module changed to get either. **Not tried on a headset**, and two things to watch: the pinch and
+curl thresholds are first guesses from anatomy rather than measurements, and `controller-beams` will now
+draw a beam from a tracked hand — which is correct, keys off `armed()` like everything else, and may
+still look wrong.
 
 ### Phase 4 — contact, for content that reacts
 

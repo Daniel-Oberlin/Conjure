@@ -3754,7 +3754,14 @@ def test_index_injects_pointer_bindings_and_the_shared_reader(srv, client):
     # Control→action bindings are config, so re-binding (e.g. resize onto the trigger) needs no module edit.
     # resize shares the trigger with select; arbitration (grab reserves the pointer while the beam is on
     # one of its corner handles) is what keeps them apart — see client/conjure-pointers.js.
-    assert '"resize":"trigger"' in html and '"select":"trigger"' in html and '"grab":"grip"' in html
+    # A binding may name SEVERAL controls, which is how one action means one thing on a controller AND
+    # on a tracked hand: a controller's `pinch` is 0 and a hand's `trigger` is 0, so the vocabularies
+    # are disjoint and the largest wins with no device test anywhere.
+    assert '"select":["trigger","pinch"]' in html
+    assert '"grab":["grip","grasp"]' in html
+    assert '"resize":["trigger","pinch"]' in html
+    # ...and a single control still binds, since most of them are one: sticks stay sticks.
+    assert '"reel":"right.stickY"' in html
     rebound = '{"select":"trigger","grab":"grip","resize":"grip","reel":"stickY"}'
     monkey = dataclasses.replace(srv.settings, bindings=rebound)
     srv.settings, old = monkey, srv.settings

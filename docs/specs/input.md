@@ -45,11 +45,31 @@ The xr-standard gamepad mapping — the vocabulary a binding may refer to.
 | `a` / `b` | buttons 4 / 5 |
 | `stickX` / `stickY` | axes 2 / 3 |
 
-**Tracked hands have no controls.** They carry no gamepad, so every control reads 0 and therefore
-**every action is inactive on a hand** — there is nothing for a binding to resolve. What a hand
-publishes is pose and `fingertip` (§4). `water` is the one consumer that reads a hand today, and it
-does so by fingertip proximity rather than by action. Synthesising controls for hands (`pinch`,
-`grasp`, `poke`) is [`backlogs/input.md`](../backlogs/input.md).
+**A tracked hand has no gamepad, so its controls are SYNTHESISED from the shape of the hand.** Until
+2026-09-17 there were none, which meant no action resolved on a hand at all — `controllers()` filtering
+hands out was never why hand tracking felt thin, because there was nothing to filter.
+
+| Control | From |
+|---|---|
+| `pinch` | thumb-tip ↔ index-tip distance, 70 mm open to 22 mm shut |
+| `grasp` | mean finger curl: tip-to-metacarpal over **that finger's own** summed bone length, so it means the same on a large hand and a small one — the same reasoning that puts `s` on a ratio in [`figures.md` §8f](./figures.md) |
+| `poke` | an index that is out **while the others are in**, which is what separates a pointing hand from an open one and a curl average cannot |
+
+They sit in the same namespace as `trigger` and `grip`: a binding refers to them the same way and a
+module still never names either. The thresholds are first guesses from hand anatomy rather than
+measurements, and are logged under `CONJURE_DEBUG_LOG` so they can be dialled against a real hand.
+
+**Hysteresis, and where it lives.** A gesture is a continuous distance held near its own threshold by a
+human hand, so an unhysteresised control chatters at exactly the distance anyone holds. Press at 0.6,
+release at 0.4 — and applied by **rescaling the control**, so that `value >= ACTIVE_AT` *is* the
+hysteretic predicate:
+
+    released:  raw [0, 0.6]  →  [0, 0.5)          held:  raw [0.4, 1]  →  [0.5, 1]
+
+Monotonic, 0 is still nothing and 1 still fully closed, and nothing downstream — `active()` included —
+has to carry a rule that three controls need. The first version only *raised* a latched value to
+`ACTIVE_AT`, which was half a mechanism: it held a pinch through a dip and did nothing to stop one
+engaging below the press threshold, because the raw distance crosses 0.5 well before it crosses 0.6.
 
 ---
 
@@ -69,6 +89,15 @@ literal separately, and adding an action to one left the running server serving 
 The last two are diagnostics rather than interaction: `mark` writes the geometry ground-truth probe
 ([`spaces-geometry.md` §10.3](./spaces-geometry.md)) and `surfaces` cycles the surface debug overlay's
 layers (§11 there).
+
+**A binding may name SEVERAL controls, and the largest wins.** That is the whole of what it takes for
+one action to mean one thing on a controller *and* on a tracked hand: a controller's `pinch` is 0 and a
+hand's `trigger` is 0, so the two vocabularies are disjoint, no device test is required and none is
+written. `select: ["trigger", "pinch"]`, `grab: ["grip", "grasp"]`.
+
+Only those and `resize` gain hand controls. The stick-driven actions deliberately do not: a hand has no
+analog axis, and faking one from a wrist angle would be a gesture pretending to be a stick, which feels
+broken rather than missing.
 
 A control may be **hand-qualified** (`"left.stickY"`), so one hand can hold an object while the other
 shapes it. Re-binding is a config change, not an edit in every module.
@@ -93,8 +122,18 @@ stickY}` so a headset stays usable.
 
 - `ConjurePointers.list(sceneEl)` — every pointer this frame (controllers *and* tracked hands), `[]`
   outside an XR session.
-- `ConjurePointers.controllers(sceneEl)` — controllers only, the common case for ray interaction. The
-  filter is `!p.isHand && p.source.gamepad`, so **tracked hands are excluded by construction.**
+- `ConjurePointers.controllers(sceneEl)` — controllers only, for anything that genuinely needs a
+  **gamepad**. The filter is `!p.isHand && p.source.gamepad`.
+- `ConjurePointers.acting(sceneEl)` — every pointer that can resolve an action: controllers **and**
+  tracked hands. This is what ray-driven interaction wants, and every caller of `controllers()` that
+  meant "something I can point and click with" now calls it. A tracked hand has always had a
+  `targetRaySpace`, so it has always had an aim; what it lacked was a control.
+
+  Added *beside* `controllers()` rather than widening it, because a function whose name stops being true
+  is worse than one more function. Callers invoke it as `(CP.acting || CP.controllers)`: the Quest's
+  cache has served a stale `/static/*.js` through several reloads before now, and a consumer updated
+  against a pointers layer that has not would otherwise throw inside its tick — degrading to
+  controllers-only is exactly the previous behaviour.
 
 Both are cached per XRFrame with a 4 ms recency window. The recency check matters: the browser is not
 guaranteed to hand out a fresh `XRFrame` object each frame, and an identity-only cache would never
@@ -108,6 +147,8 @@ invalidate — every consumer would see the first frame's buttons forever.
 | `handedness`, `isHand`, `source` | the raw XR input source and its kind |
 | `origin`, `dir`, `quat` | target-ray pose in the world frame (the rig sits at the origin) |
 | `fingertip` | index-finger-tip position for tracked hands, else `null` |
+| `joints`, `radii` | all 25 WebXR joints and their reported radii for a tracked hand, else `null` — read once per frame with everything else here |
+| `canAct` | a gamepad, or a hand we synthesise controls for. What `acting()` filters on |
 | `value(action)` | 0..1 for buttons, −1..1 for axes, resolved through the bindings |
 | `active(action)` | `value(action) >= 0.5` (`ACTIVE_AT`) |
 | `started(action)` / `ended(action)` | rising / falling edge this frame (own-hand controls) |

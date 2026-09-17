@@ -34,8 +34,80 @@
     stickY: function (gp) { return axis(gp, 3); },
   };
 
+  // ---------------------------------------------------------------- hand controls
+  //
+  // A TRACKED HAND HAS NO BUTTONS, and until this existed that meant no action resolved on one at all.
+  // `controllers()` filtering hands out was never the reason hand tracking felt thin: there was nothing
+  // to filter, because `CONTROLS` reads a gamepad and a hand has none. So these are synthesised from
+  // the joint geometry and sit in the same namespace as `trigger` and `grip` — a binding refers to them
+  // the same way, and a module still never names either.
+  //
+  // The numbers are FIRST GUESSES from hand anatomy, not measurements, and they are logged under
+  // `CONJURE_DEBUG_LOG` so they can be dialled against a real hand rather than argued about. Each is a
+  // distance normalised to 0..1 between a "released" and a "held" span.
+  var PINCH_OPEN = 0.070, PINCH_SHUT = 0.022;   // thumb-tip ↔ index-tip, metres (two fingertip radii)
+  var CURL_OUT = 0.90, CURL_IN = 0.45;          // tip-to-metacarpal over the finger's own bone length
+  //: Hysteresis. A pinch is a continuous distance held near its own threshold by a human hand, so an
+  //: unhysteresised control chatters at exactly the distance anyone holds. Press at 0.6, release at
+  //: 0.4: while latched the value is reported as at least `ACTIVE_AT`, so `active()` holds through the
+  //: dip without the analog value being faked upward anywhere it would be read for magnitude.
+  var PRESS_AT = 0.6, RELEASE_AT = 0.4;
+
+  var FINGERS = ["index", "middle", "ring", "pinky"];
+  //: Every joint a synthesised control needs. Read per hand per frame; the other nine are published for
+  //: consumers (a worn hand, a capsule chain) and cost nothing extra once the hand is being walked.
+  var HAND_JOINTS = ["wrist", "thumb-metacarpal", "thumb-phalanx-proximal", "thumb-phalanx-distal",
+                     "thumb-tip"];
+  FINGERS.forEach(function (f) {
+    ["metacarpal", "phalanx-proximal", "phalanx-intermediate", "phalanx-distal", "tip"]
+      .forEach(function (part) { HAND_JOINTS.push(f + "-finger-" + part); });
+  });
+
+  function span(a, b, hi, lo) {         // a distance → 0 at `hi`, 1 at `lo`
+    if (a == null || b == null) return 0;
+    var d = a.distanceTo(b);
+    return Math.max(0, Math.min(1, (hi - d) / (hi - lo)));
+  }
+
+  /**
+   * `pinch`, `grasp` and `poke` from one hand's joints.
+   *
+   * `grasp` is normalised by the finger's OWN tracked bone length rather than by a constant, so it
+   * means the same on a large hand and a small one — the same reasoning that put `s` on a ratio in
+   * hand-rig.js. `poke` is an index that is out while the others are in, which is what distinguishes a
+   * pointing hand from an open one.
+   */
+  function handControls(pos) {
+    var out = { pinch: 0, grasp: 0, poke: 0 };
+    if (!pos.wrist) return out;
+    out.pinch = span(pos["thumb-tip"], pos["index-finger-tip"], PINCH_OPEN, PINCH_SHUT);
+    var curls = {}, n = 0, sum = 0;
+    for (var i = 0; i < FINGERS.length; i++) {
+      var f = FINGERS[i];
+      var mc = pos[f + "-finger-metacarpal"], tip = pos[f + "-finger-tip"];
+      if (!mc || !tip) continue;
+      var reach = 0, chain = ["-finger-metacarpal", "-finger-phalanx-proximal",
+                              "-finger-phalanx-intermediate", "-finger-phalanx-distal", "-finger-tip"];
+      for (var k = 0; k < chain.length - 1; k++) {
+        var a = pos[f + chain[k]], b = pos[f + chain[k + 1]];
+        if (a && b) reach += a.distanceTo(b);
+      }
+      if (reach < 1e-4) continue;
+      var straight = mc.distanceTo(tip) / reach;          // 1 = extended, ~0.45 = fisted
+      curls[f] = Math.max(0, Math.min(1, (CURL_OUT - straight) / (CURL_OUT - CURL_IN)));
+      sum += curls[f]; n++;
+    }
+    if (n) out.grasp = sum / n;
+    if (curls.index != null && n > 1) {
+      var others = (sum - curls.index) / (n - 1);
+      out.poke = Math.max(0, Math.min(1, (1 - curls.index) * others));
+    }
+    return out;
+  }
+
   // Bindings the server injects from config.py; the fallback keeps a headset usable if injection is absent.
-  var FALLBACK = { select: "trigger", grab: "grip", resize: "grip", reel: "stickY" };
+  var FALLBACK = { select: ["trigger", "pinch"], grab: ["grip", "grasp"],
+                   resize: ["grip", "grasp"], reel: "stickY" };
   var ACTIVE_AT = 0.5;         // a button counts as held past this (analog triggers rest slightly above 0)
 
   function btn(gp, i) {
@@ -92,16 +164,36 @@
       var ctrl = {};
       for (var name in CONTROLS) ctrl[name] = CONTROLS[name](gp);
 
-      // Tracked hands have no buttons; their "input" is the fingertip, which a module can use for
-      // proximity/touch (water does). Exposed here so hands and controllers arrive through one path.
-      var tip = null;
+      // Tracked hands have no buttons; their input is their SHAPE. All 25 joints are read here — once
+      // per frame, like everything else this file reads — and the synthesised controls go into the same
+      // `ctrl` bag the gamepad ones do, so nothing downstream has to know which kind of hand it has.
+      //
+      // Publishing the whole joint set rather than just the fingertip is also the seam `occlusion.js`
+      // and `hand-rig.js` would consume to stop reading the frame themselves (backlogs/input.md). They
+      // are NOT changed here: `hand-rig` must keep its own read for the same reason `?hands=fit` does,
+      // and occlusion works today.
+      var tip = null, joints = null, radii = null;
       if (src.hand && src.hand.get && frame.getJointPose) {
-        var j = src.hand.get("index-finger-tip");
-        var jp = j && frame.getJointPose(j, refSpace);
-        if (jp) tip = new THREE.Vector3(jp.transform.position.x, jp.transform.position.y, jp.transform.position.z);
+        joints = {}; radii = {};
+        for (var jn = 0; jn < HAND_JOINTS.length; jn++) {
+          var name = HAND_JOINTS[jn];
+          var space = src.hand.get(name);
+          var jp = space && frame.getJointPose(space, refSpace);
+          if (!jp) continue;
+          var jpp = jp.transform.position;
+          joints[name] = new THREE.Vector3(jpp.x, jpp.y, jpp.z);
+          radii[name] = jp.radius == null ? null : jp.radius;
+        }
+        tip = joints["index-finger-tip"] || null;
+        var synth = handControls(joints);
+        for (var sc in synth) ctrl[sc] = synth[sc];
+        hysteresis(key, ctrl);
+        once("hand:" + key, "hand " + key + " — " + Object.keys(joints).length + "/25 joints, "
+          + "pinch/grasp/poke " + synth.pinch.toFixed(2) + "/" + synth.grasp.toFixed(2) + "/"
+          + synth.poke.toFixed(2));
       }
       out.push(makePointer(key, src, ctrl, new THREE.Vector3(o.x, o.y, o.z),
-        new THREE.Vector3(0, 0, -1).applyQuaternion(quat).normalize(), quat, tip));
+        new THREE.Vector3(0, 0, -1).applyQuaternion(quat).normalize(), quat, tip, joints, radii));
     }
     // Refresh the arm window: a light pull of `select`, or ANY bound action engaged (so it stays lit
     // through a grab or resize instead of dropping mid-gesture).
@@ -122,13 +214,31 @@
     return out;
   }
 
-  function makePointer(key, src, ctrl, origin, dir, quat, tip) {
+  function makePointer(key, src, ctrl, origin, dir, quat, tip, joints, radii) {
     function ctl(action) { return bindings()[action] || action; }
     // Resolve a control, honouring a HAND-QUALIFIED binding like "left.stickY". A two-handed scheme —
     // hold an object with one hand and shape it with the other hand's stick — otherwise can't be expressed
     // in config, and would have to be hard-coded in the module, which is what this layer exists to avoid.
     function raw(action) {
-      var c = ctl(action), dot = c.indexOf(".");
+      var c = ctl(action);
+      // A BINDING MAY NAME SEVERAL CONTROLS, and `max` over them is the whole of what that needs:
+      // `select: ["trigger", "pinch"]` reads the trigger on a controller and the pinch on a hand,
+      // because a controller's `pinch` is 0 and a hand's `trigger` is 0 — the two vocabularies are
+      // disjoint, so no device test is required and none is written. One control can therefore mean
+      // one action across both kinds of hand without a second binding table.
+      if (Array.isArray(c)) {
+        var best = 0;
+        for (var n = 0; n < c.length; n++) {
+          var v = one(c[n]);
+          if (Math.abs(v) > Math.abs(best)) best = v;
+        }
+        return best;
+      }
+      return one(c);
+    }
+
+    function one(c) {
+      var dot = c.indexOf(".");
       if (dot > 0) {
         var hand = c.slice(0, dot), name = c.slice(dot + 1), all = self._all || [];
         for (var i = 0; i < all.length; i++) {
@@ -142,16 +252,21 @@
     var self = {
       key: key, handedness: src.handedness || "", isHand: !!src.hand, source: src,
       origin: origin, dir: dir, quat: quat, fingertip: tip, ctrl: ctrl,
+      // All 25 joints and their reported radii for a tracked hand, else null. Read once per frame with
+      // everything else this layer reads, so N consumers cost one read.
+      joints: joints || null, radii: radii || null,
+      /** Can this pointer resolve an action at all — a gamepad, or a hand we synthesise controls for. */
+      canAct: !!(src.gamepad || joints),
       // 0..1 for buttons, -1..1 for axes — resolved through the bindings, so callers name ACTIONS.
       value: function (action) { return raw(action); },
       active: function (action) { return this.value(action) >= ACTIVE_AT; },
-      started: function (action) {                       // rising edge this frame (own-hand controls)
-        var c = ctl(action), now = ctrl[c] || 0, before = this._was ? (this._was[c] || 0) : 0;
-        return now >= ACTIVE_AT && before < ACTIVE_AT;
+      // Own-hand controls only, and over the whole list when a binding names several: the edge that
+      // matters is "did THIS action start", whichever of its controls did it.
+      started: function (action) {
+        return own(ctl(action), ctrl) >= ACTIVE_AT && own(ctl(action), this._was) < ACTIVE_AT;
       },
-      ended: function (action) {                         // falling edge this frame (own-hand controls)
-        var c = ctl(action), now = ctrl[c] || 0, before = this._was ? (this._was[c] || 0) : 0;
-        return now < ACTIVE_AT && before >= ACTIVE_AT;
+      ended: function (action) {
+        return own(ctl(action), ctrl) < ACTIVE_AT && own(ctl(action), this._was) >= ACTIVE_AT;
       },
       // Free for `owner` to act on? False while ANOTHER module holds or has reserved this pointer.
       availableTo: function (owner) { var o = ownerOf(key); return !o || o === owner; },
@@ -168,6 +283,54 @@
       },
     };
     return self;
+  }
+
+  //: key + "." + control → is it currently held. Module-level, because hysteresis is by definition a
+  //: memory of the previous frame and the pointer objects are rebuilt each one.
+  var held = {};
+
+  /**
+   * Latch each synthesised control, in place, by RESCALING it around its own thresholds.
+   *
+   * Applied to the CONTROL rather than to `active()`, because `active()` is generic — `value >=
+   * ACTIVE_AT` for buttons and axes alike — and putting gesture-specific debouncing there would make
+   * every control carry a rule that three of them need.
+   *
+   * The first version only raised a latched value to `ACTIVE_AT`, and it was half a mechanism: it held
+   * a pinch through a dip and did nothing to stop one ENGAGING below the press threshold, because the
+   * raw distance crosses 0.5 on its own well before it crosses 0.6. A hand held mid-range still
+   * chattered — the exact thing hysteresis is for.
+   *
+   * So the value is remapped instead, so that `value >= ACTIVE_AT` *is* the hysteretic predicate:
+   *
+   *     released:  raw [0, PRESS_AT]    →  [0, ACTIVE_AT)
+   *     held:      raw [RELEASE_AT, 1]  →  [ACTIVE_AT, 1]
+   *
+   * Monotonic, continuous within each state, 0 is still nothing and 1 is still fully closed. The scale
+   * depends on the state, which is what a hysteretic control IS — and it means no consumer needs to
+   * know these thresholds exist, including `active()`.
+   */
+  function hysteresis(key, ctrl) {
+    ["pinch", "grasp", "poke"].forEach(function (name) {
+      var k = key + "." + name, v = ctrl[name] || 0;
+      var on = held[k] ? v >= RELEASE_AT : v >= PRESS_AT;
+      held[k] = on;
+      var f = on ? (v - RELEASE_AT) / (1 - RELEASE_AT) : v / PRESS_AT;
+      f = Math.max(0, Math.min(1, f));
+      ctrl[name] = on ? ACTIVE_AT + (1 - ACTIVE_AT) * f : ACTIVE_AT * f;
+    });
+  }
+
+  //: The largest value any of `c`'s controls has in a given control bag. `null` reads as 0, which is
+  //: what a pointer that did not exist last frame should look like to an edge test.
+  function own(c, bag) {
+    if (!bag) return 0;
+    var names = Array.isArray(c) ? c : [c], best = 0;
+    for (var i = 0; i < names.length; i++) {
+      var v = bag[names[i]] || 0;
+      if (Math.abs(v) > Math.abs(best)) best = v;
+    }
+    return best;
   }
 
   function ownerOf(key) {
@@ -223,9 +386,29 @@
       }
       return cache.list;
     },
-    /** Controllers only (skip tracked hands) — the common case for ray-driven interaction. */
+    /** Controllers only (skip tracked hands). For anything that genuinely needs a GAMEPAD. */
     controllers: function (sceneEl) {
       return this.list(sceneEl).filter(function (p) { return !p.isHand && p.source.gamepad; });
+    },
+    /**
+     * Every pointer that can resolve an action — controllers, and tracked hands.
+     *
+     * The reader ray-driven interaction wants. A tracked hand has a `targetRaySpace` like a controller
+     * does, so it has always had an aim; what it lacked was any control to resolve, which is what
+     * `handControls` supplies. Every caller of `controllers()` that wanted "something I can point and
+     * click with" wanted this.
+     *
+     * Added BESIDE `controllers()` rather than widening it, because `controllers` is named for
+     * controllers and a function whose name stops being true is worse than one more function. The five
+     * call sites moved; anything that really does need a gamepad still has the honest name to ask for.
+     *
+     * They call it as `(CP.acting || CP.controllers)`, deliberately. The Quest's cache has served a
+     * stale `/static/*.js` through several reloads before now, and a consumer updated against a
+     * pointers layer that has not updated would find `acting` undefined and throw inside its tick —
+     * so it degrades to controllers-only instead, which is exactly the previous behaviour.
+     */
+    acting: function (sceneEl) {
+      return this.list(sceneEl).filter(function (p) { return p.canAct; });
     },
     bindings: bindings,
   };

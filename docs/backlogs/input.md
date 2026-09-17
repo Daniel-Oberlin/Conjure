@@ -12,26 +12,33 @@ dissolves without executing.
 
 ---
 
-## Tracked hands resolve no action
+## ~~Tracked hands resolve no action~~ — BUILT 2026-09-17
 
-A hand has no gamepad, so no control resolves and therefore no action does. `ConjurePointers.list()`
-publishes hands, but `controllers()` — which `grab`, `controller-beams`, `surface-overlay` and the gaze
-picker all call — filters them out by construction. The one consumer that reacts to a hand,
-[`water`](../specs/dynamics.md), does it by fingertip proximity and its own distance test.
+`pinch`, `grasp` and `poke` are synthesised from the joint geometry and live in the same namespace as
+`trigger` and `grip`; `select`, `grab` and `resize` bind to both vocabularies at once; and
+`acting()` is the reader that includes hands. `grab`, the beams, the surface overlay and the gaze
+picker changed one line each and now work with hands up — [`specs/input.md`](../specs/input.md) §2–§4.
 
-So with hands up, one module in the repo answers you. **This, and not the absence of a hand model, is
-why hand tracking feels thin.** The fix is in the layer that already exists for it: synthesised hand
-controls (`pinch`, `grasp`, `poke`) beside the xr-standard ones, and binding entries for them — after
-which `grab` and the beams start working **with no module change**, because modules name actions.
+Both sub-questions this item said to answer together were answered, and one of them differently than
+expected:
 
-Two sub-questions that should be answered together and not guessed:
+- **A third reader, not a widening.** `controllers()` is named for controllers and a function whose
+  name stops being true is worse than one more function. A tracked hand always had a `targetRaySpace`,
+  so the ray was never the obstacle — the control was.
+- **Hysteresis by RESCALING the control**, not by a rule in `active()`. Pressing at 0.6 and releasing
+  at 0.4 while remapping the value so `>= ACTIVE_AT` is the predicate itself keeps the debouncing in
+  the three controls that need it instead of in the generic reader.
 
-- whether `controllers()`'s callers are widened or a third reader is added beside it — decide against
-  what `grab` actually needs from a ray, since a pinch has no ray;
-- hysteresis on a synthesised control. A pinch is a continuous distance, and an unhysteresised threshold
-  chatters at exactly the distance a user holds.
+What is left here is smaller and follows from having built it:
 
-Owned by [`plans/hands.md`](../plans/hands.md) phase 3 while that plan is live.
+- **The thresholds are first guesses from hand anatomy, not measurements.** 70/22 mm for a pinch,
+  0.90/0.45 for a curl. Logged under `CONJURE_DEBUG_LOG` and not yet read off a headset.
+- **No `grasp`-to-stick equivalent, deliberately.** The stick-driven actions (`reel`, `yaw`, `pitch`,
+  `bank`) have no hand binding, because a hand has no analog axis and faking one from a wrist angle
+  would be a gesture pretending to be a stick.
+- **Whether a beam from a fingertip is the right presentation.** `controller-beams` now draws for hands
+  because it keys off `armed()` and actions resolve — which is correct and may still look wrong. Nobody
+  has watched it.
 
 ## Three unshared readers of XR joints
 
@@ -40,17 +47,16 @@ Owned by [`plans/hands.md`](../plans/hands.md) phase 3 while that plan is live.
 §9); `ConjurePointers` reads `index-finger-tip` only. None knows about the others — the same
 duplication-breeds-drift shape the pointers layer was created to remove for buttons, now at three.
 
-The seam is for `ConjurePointers` to publish the **full joint set plus per-joint `radius`**, read once
-per frame and cached like everything else it reads, and for `occlusion.js` to consume that instead of
-reading the frame. Two qualifications, both worth stating:
+**Half done, 2026-09-17:** `ConjurePointers` now publishes the full joint set and the per-joint
+`radius` on each hand pointer, read once per frame like everything else it reads. What has *not*
+happened is the consumers moving onto it. Two qualifications, both worth stating:
 
 - the occlusion mesh works today, so this is duplication-removal rather than a defect;
 - the **overlay should stay outside** whatever gets built. It exists to look at the raw frame, and
   routing it through a cache would put the thing under test behind the thing testing it.
 
-The shape of the published snapshot is the real open question, and `?hands=fit` is what will answer it:
-whether `radius` is worth publishing at all depends on whether the runtime supplies a per-joint value or
-a table.
+The radius turned out to be worth publishing for a reason nobody predicted: it is the fingertip offset
+a worn hand needs (`specs/figures.md` §8f), which makes it load-bearing rather than diagnostic.
 
 ## Contact is a raycast every consumer would write itself
 

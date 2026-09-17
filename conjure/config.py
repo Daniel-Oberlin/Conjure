@@ -24,7 +24,15 @@ PROJECT_CACHE = ROOT / ".cache"
 # Control → ACTION bindings for XR interaction. ONE definition: the dataclass default and get_settings()
 # both read this. They used to carry the literal separately, and adding an action to one silently left the
 # other behind — the running server kept serving the old scheme.
-DEFAULT_BINDINGS = ('{"select":"trigger","grab":"grip","resize":"trigger","reel":"right.stickY",'
+# A binding may name SEVERAL controls and the largest wins, which is how one action means one thing on
+# a controller and on a tracked hand at the same time: a controller's `pinch` is 0 and a hand's
+# `trigger` is 0, so the two vocabularies are disjoint and no device test is needed anywhere.
+#
+# Only `select`, `grab` and `resize` gain hand controls. The stick-driven actions deliberately do not:
+# a hand has no analog axis and faking one from a wrist angle would be a gesture pretending to be a
+# stick, which is the sort of thing that feels broken rather than missing.
+DEFAULT_BINDINGS = ('{"select":["trigger","pinch"],"grab":["grip","grasp"],'
+                    '"resize":["trigger","pinch"],"reel":"right.stickY",'
                     '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX","mark":"b",'
                     '"surfaces":"a"}')
 

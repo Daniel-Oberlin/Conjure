@@ -986,7 +986,7 @@
         // headset's actual state visible, and "I was asked for something I don't understand" is part of that.
         this._modeHud(bad ? "GRAB  — unknown mode " + JSON.stringify(bad) + "; using object"
                           : (mode === "object" ? null : this._modeLine(mode)));
-        var pointers = CP ? CP.controllers(this.el.sceneEl) : [];
+        var pointers = CP ? (CP.acting || CP.controllers).call(CP, this.el.sceneEl) : [];
         if (!pointers.length) { this._setHud(null); this._settleHover(null); return; }
         this._once("xr", "XR session live — " + this._manipulables().length + " manipulable object(s) in world-root");
         var hover = null;

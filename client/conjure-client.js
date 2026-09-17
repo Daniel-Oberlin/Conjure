@@ -2097,7 +2097,7 @@
         var CP = window.ConjurePointers;
         if (!window.CONJURE_GEOMETRY_LOG || !CP) return;
         var ptrs;
-        try { ptrs = CP.controllers(sceneEl); } catch (e) { return; }
+        try { ptrs = (CP.acting || CP.controllers).call(CP, sceneEl); } catch (e) { return; }
         var hit = null;
         for (var i = 0; i < ptrs.length; i++) if (ptrs[i].started("mark")) { hit = ptrs[i]; break; }
         if (!hit) return;
