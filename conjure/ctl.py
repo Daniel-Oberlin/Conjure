@@ -486,6 +486,20 @@ def cmd_refresh_models(s: Settings, a) -> None:
     after a build that changes what extraction knows."""
     _working("re-extracting models…")
     out = _post(s, "/library/refresh-models", {"force": bool(a.force)})
+    # A refresh runs INSIDE the server, so it can only derive what that process's code knows. A server
+    # started before a build reports "0 of 98 updated" and reads as "the build needed no refresh" —
+    # measured: a server 23 hours old against a FRAME_REV that had moved 18 -> 19, and `--force` would
+    # not have helped either, because the old process has no idea the new attributes exist.
+    from .figures import FRAME_REV as LOCAL_FRAME_REV
+    running = out.get("frame_rev")
+    if running != LOCAL_FRAME_REV:
+        # ABSENT counts as stale, and has to: the field was added by the same build that needed this
+        # warning, so a server old enough to be the problem is also too old to report its revision.
+        # Leaving `None` unhandled meant the one case the check existed for was the one it skipped.
+        seen = "does not report one" if running is None else f"is at {running}"
+        print(f"  ! this server's FRAME_REV {seen}; the code on disk is at {LOCAL_FRAME_REV}.\n"
+              f"    A refresh derives what the SERVER knows, so RESTART IT and run this again — "
+              f"--force will not help, the running process cannot see the new attributes.")
     updated = out.get("updated") or []
     for row in updated:
         print(f"  {row['label'] or row['id']}: rigged={row['rigged']} bones={row['bones']}")

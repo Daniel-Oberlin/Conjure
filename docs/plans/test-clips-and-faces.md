@@ -44,6 +44,18 @@ eyelid. Treat every green below as "not yet contradicted".
 do not exist on a single row yet. Until they do, `set_expression` will refuse every figure with
 *"has no morph targets recorded"* — which looks exactly like the feature not working.
 
+**RESTART THE SERVER FIRST.** A refresh runs *inside* the server process, so it can only derive what
+that process's code knows — and a server started before the face work reports `0 of 98 updated`, which
+reads as "the build needed no refresh". Measured: a server 23 hours old against a `FRAME_REV` that had
+moved 18 → 19. `--force` does not help either; the old process has no idea the new attributes exist.
+
+`ctl refresh-models` now says so rather than leaving it to be discovered:
+
+```
+! this server's FRAME_REV does not report one; the code on disk is at 19.
+  A refresh derives what the SERVER knows, so RESTART IT and run this again
+```
+
 ```
 python3 -m conjure.ctl refresh-models
 ```

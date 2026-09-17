@@ -3890,7 +3890,12 @@ async def library_refresh_models(req: RefreshModelsRequest) -> dict:
         before = json.loads(row["attributes"] or "{}")
         if _refresh_clip_sig(row["id"], before, force=req.force) != before:
             respelled += 1
+    # The revisions THIS PROCESS is running, so a caller can tell "nothing to do" from "this server is
+    # older than the code on disk". A refresh derives what the SERVER knows, and a server started
+    # before a build reports 0 updated and looks like the build needed no refresh — which is exactly
+    # what the FRAME_REV tripwire exists to prevent and cannot see from inside.
     return {"ok": True, "checked": len(rows), "updated": changed,
+            "frame_rev": FRAME_REV, "rig_sig_rev": RIG_SIG_REV,
             "clips_checked": len(clips), "clips_respelled": respelled}
 
 
