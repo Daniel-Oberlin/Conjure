@@ -372,8 +372,16 @@ reasoned to. Reasoning to it is what produced pointy fingers.
 **Dial it live** — `conjure-ctl wear --tip-out MM` with no id adjusts every worn hand on the next frame,
 no reload.
 
-**Next reading wanted:** the number that lands it, and then, with `--debug-log` on, the
-`[hand-rig] tips (cm)` line from `temp/conjure.log`. If 5 mm lands it, the question becomes whether the right rule is a constant or
+**Measured: 8 mm lands it** for one wearer. Which is a suspicious number — a human fingertip radius is
+about 8 mm, and the WebXR tip joint sits at the **centre** of the fingertip while `XRJointPose.radius`
+is that fingertip's radius, so the surface is one radius further out. If *that* is the rule, it is not a
+setting at all: it is per-finger and it generalises to any hand the runtime measures.
+
+**Next reading wanted, and it discriminates:** `--tip-out 8` against `--tip-out radius`. A thumb is
+fatter than a pinky, so the two modes differ per finger and a flat 8 mm cannot imitate the radius rule.
+If `radius` looks as good or better, the default becomes `radius` and the knob becomes a fallback. If
+8 mm is better, it stays one wearer's number and the default stays 0. With `--debug-log` on, the
+`[hand-rig] tips (cm)` line prints the radii and both resolved offsets beside each other. If 5 mm lands it, the question becomes whether the right rule is a constant or
 a multiple of the reported radius — and those numbers are in that line.
 
 **What to watch for, given what phase 0 measured.** The per-bone residual after a single `s` is ~5%, and

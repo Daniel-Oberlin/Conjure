@@ -1020,11 +1020,23 @@ things. It is — but the ratio came out **below one**, so the caps shrank: the 
 got shorter still. The reasoning was sound and **the sign was an assumption**, and that segment being
 unreliable does not tell you which way it is unreliable.
 
-No measurement settles it, because the gap is between the runtime's tip estimate and the wearer's actual
-fingertip and the runtime does not report the second. So the component logs what *is* knowable once per
-wearing — each finger's tracked and bind `distal → tip`, their ratio, and the radius reported at the tip
-— under `--debug-log`, so that whether the right rule is a constant, a multiple of the radius, or
-per-finger can be read off a headset rather than reasoned to.
+**`radius` — the candidate rule.** `tipOut` also takes `radius` (or `radius:0.8`), which pushes each
+finger out by **its own** reported `XRJointPose.radius`. Worth trying because **8 mm** landed it for one
+wearer and a human fingertip radius is about 8 mm — and there is a reason that would be no coincidence:
+the WebXR tip joint sits at the **centre** of the fingertip and `radius` is that fingertip's radius, so
+the surface is one radius further out. If that is the rule then it is not one person's 8 mm at all: it
+is per-finger (a thumb is fatter than a pinky) and it generalises to any hand the runtime measures.
+
+The two modes are distinguishable on device precisely because of that per-finger difference, which a
+flat 8 mm cannot reproduce. A missing or preposterous radius falls back to **no offset**, never to `NaN`.
+
+The component logs what is knowable once per wearing under `--debug-log` — each finger's tracked and
+bind `distal → tip`, their ratio, the radius reported at the tip, and the offset each mode resolves to
+— so the question can be read off a headset rather than reasoned to.
+
+**Still open:** whether the default becomes `radius`. It stays `0` until `radius` and the wearer's
+millimetre figure are compared on a head, because shipping a default on the strength of an argument is
+exactly what the tip-scale attempt did.
 
 **Precedence: live hand > clip > pose.** Settled by taking the other two writers *off* — `figure-clip`
 is paused and `figure.restore()` is called on wear — rather than by winning a race with them, since

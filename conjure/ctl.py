@@ -403,7 +403,7 @@ def cmd_wear(s: Settings, a) -> None:
     """
     a.tip_out_given = a.tip_out is not None
     if a.tip_out is None:
-        a.tip_out = 0.0
+        a.tip_out = "0"
     if a.pair:
         return _wear_pair(s, a)
     if not a.id:
@@ -429,7 +429,7 @@ def cmd_wear(s: Settings, a) -> None:
     if not out.get("worn"):
         _say(out, a.verbose, "taken off — back where it was placed")
         return
-    tip = f", fingertips +{a.tip_out:g} mm" if a.tip_out else ""
+    tip = f", fingertips out by {a.tip_out}" if a.tip_out not in ("0", 0) else ""
     _say(out, a.verbose, f"{eid}: worn on the {out.get('hand')} hand, "
                          f"{out.get('joints')} joints driven{tip}")
 
@@ -471,8 +471,8 @@ def _wear_tip(s: Settings, a) -> None:
             done.append(h["id"])
         else:
             print(f"wear: {h['id']}: {out.get('error', 'failed')}")
-    _say({"ok": bool(done), "adjusted": done, "tip_out_mm": a.tip_out}, a.verbose,
-         f"fingertips {a.tip_out:+g} mm on {', '.join(done)} — live, no reload")
+    _say({"ok": bool(done), "adjusted": done, "tip_out": a.tip_out}, a.verbose,
+         f"fingertips out by {a.tip_out} on {', '.join(done)} — live, no reload")
 
 
 def _wear_pair(s: Settings, a) -> None:
@@ -775,10 +775,10 @@ def build_parser() -> argparse.ArgumentParser:
     # `default=None` and a separate flag, because 0 is a REAL value here: "put them back exactly
     # where the runtime says" is the thing you dial back to, and it must be distinguishable from
     # not having asked.
-    a.add_argument("--tip-out", dest="tip_out", type=float, default=None, metavar="MM",
-                   help="push each fingertip out along its own bone, in mm. A TUNABLE: the runtime's "
-                        "tip joint sits short of a real fingertip by an amount nothing reports. 0 = "
-                        "exactly where the runtime says")
+    a.add_argument("--tip-out", dest="tip_out", default=None, metavar="MM|radius",
+                   help="push each fingertip out along its own bone: millimetres, or `radius` for one "
+                        "tip radius as the RUNTIME reports it (radius:0.8 scales it). The runtime's "
+                        "tip joint sits short of a real fingertip; 0 = exactly where it says")
 
     a = sub.add_parser("clips", help="list the animations a placed figure can play")
     a.set_defaults(fn=cmd_clips)

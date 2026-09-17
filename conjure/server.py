@@ -4966,9 +4966,14 @@ async def figure_hands() -> dict:
 class FigureHandRequest(BaseModel):
     id: str
     hand: str = "auto"                   # left | right | auto (pair on the MEASURED side) | off
-    #: Millimetres to push each fingertip out along its own bone. A TUNABLE, not a derivation — see
-    #: `specs/figures.md` §8f. Zero is "exactly where the runtime says the tip is".
-    tip_out: float = 0.0
+    #: How far to push each fingertip out along its own bone: a number of MILLIMETRES, or `radius`
+    #: for one tip radius as the runtime reports it (`radius:0.8` scales that). A TUNABLE, not a
+    #: derivation — see `specs/figures.md` §8f. `0` is "exactly where the runtime says the tip is".
+    #:
+    #: A STRING, because `radius` is a candidate RULE and a millimetre count is one wearer's setting,
+    #: and the whole open question is which of those the right answer is. A float field could not
+    #: carry the question.
+    tip_out: str = "0"
 
 
 @app.post("/figure/hand")
@@ -5016,10 +5021,10 @@ async def figure_hand(req: FigureHandRequest) -> dict:
     patch = [{"op": "update", "id": req.id,
               "set": {"components.hand-rig": {"hand": want,
                                               "joints": json.dumps(joints, separators=(",", ":")),
-                                              "tipOut": f"{req.tip_out:g}"}}}]
+                                              "tipOut": str(req.tip_out)}}}]
     await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="hand-rig")})
     return {"ok": True, "id": req.id, "worn": True, "hand": want, "joints": len(joints),
-            "tip_out_mm": req.tip_out}
+            "tip_out": str(req.tip_out)}
 
 
 @app.post("/figure/parts")

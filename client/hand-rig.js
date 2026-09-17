@@ -80,8 +80,10 @@
     schema: {
       hand: { type: "string", default: "" },     // "left" | "right" — which tracked hand drives this
       joints: { type: "string", default: "" },   // {webxrJoint: nodeName}; identity today, see hands.py
-      // Millimetres to push each fingertip out along its own bone. A TUNABLE — see `_tipOut`. Zero is
-      // "exactly where the runtime says the tip is", which is the only defensible default.
+      // How far to push each fingertip out along its own bone: a number of MILLIMETRES, or `radius`
+      // for one tip radius as the runtime reports it (`radius:0.8` to scale that). See `_tipOut`.
+      // Zero is "exactly where the runtime says the tip is", which is the only defensible default
+      // until one of the two is known to be a rule rather than one wearer's setting.
       tipOut: { type: "string", default: "0" }
     },
 
@@ -218,8 +220,10 @@
         rows.push(tip.split("-")[0] + " tracked " + track.toFixed(2) + " bind " + was.toFixed(2)
           + " ratio " + (was ? (track / was).toFixed(2) : "—") + " radius " + r);
       }
-      log("tips (cm), s=" + this._s.toFixed(3) + ", tipOut=" + (this._tipOut() * 1000).toFixed(1)
-        + "mm:\n  " + rows.join("\n  "));
+      log("tips (cm), s=" + this._s.toFixed(3) + ", tipOut=" + this.data.tipOut
+        + " → " + TIPS.map(function (x) {
+            return (this._tipOut(x, jm) * 1000).toFixed(1);
+          }, this).join("/") + "mm:\n  " + rows.join("\n  "));
     },
 
     /**
@@ -253,18 +257,34 @@
      * is a number someone sets, defaulting to zero, with the tip radii logged beside it so a rule can
      * be found if one exists (a constant? proportional to the radius? per finger?).
      */
-    _tipOut: function () {
-      var mm = parseFloat(this.data.tipOut);
+    _tipOut: function (joint, jm) {
+      var v = String(this.data.tipOut == null ? "0" : this.data.tipOut).trim().toLowerCase();
+      // `radius` — ONE TIP RADIUS out, per finger, from the number the runtime itself reports.
+      //
+      // Worth trying because 8 mm, the value that landed it for one wearer, is about a human
+      // fingertip radius — and there is a reason it would be: the WebXR tip joint sits at the CENTRE
+      // of the fingertip, and `XRJointPose.radius` is that fingertip's radius, so the surface is one
+      // radius further out. If that is the rule then it is not one person's 8 mm at all; it is
+      // per-finger (a thumb is fatter than a pinky) and it generalises to any hand the runtime
+      // measures. `radius:0.8` scales it, for testing the coefficient rather than assuming 1.
+      if (v.charAt(0) === "r") {
+        var k = parseFloat(v.split(":")[1]);
+        if (!isFinite(k)) k = 1;
+        var r = jm && jm.rad ? jm.rad[joint] : null;
+        return (r == null || !(r > 0 && r < 0.05)) ? 0 : r * k;
+      }
+      var mm = parseFloat(v);
       return (isFinite(mm) && mm > -30 && mm < 30) ? mm / 1000 : 0;
     },
 
     _drive: function (jm) {
-      var bones = this._bones, t = this._tmp, s = this._s, out = this._tipOut();
+      var bones = this._bones, t = this._tmp, s = this._s;
       for (var i = 0; i < JOINTS.length; i++) {
         var j = JOINTS[i], bone = bones[j];
         t.sc.set(s, s, s);
         var at = jm.pos[j];
-        if (out && TIP_PARENT[j]) {
+        var out = TIP_PARENT[j] ? this._tipOut(j, jm) : 0;
+        if (out) {
           // Along the JOINT'S OWN −Z, which is the bone direction away from the wrist — measured on
           // both catalog skeletons at ≥0.986 down every finger, so it is the axis to push along.
           t.p.set(0, 0, -1).applyQuaternion(jm.quat[j]).multiplyScalar(out);

@@ -193,7 +193,7 @@ test("the tip OFFSET is zero by default, so nothing is moved off the runtime's p
   const { self, root, bones } = rig();
   self._collect();
   self._s = 1;
-  assert.equal(self._tipOut(), 0);
+  assert.equal(self._tipOut('index-finger-tip', null), 0);
   const f = frame(0.03);
   self._drive(f);
   root.updateMatrixWorld(true);
@@ -232,9 +232,9 @@ test("the tip offset pushes ONLY the five tips, along their own bone", () => {
 test("a preposterous offset is ignored rather than applied", () => {
   const { self } = rig();
   self.data.tipOut = "500";                     // half a metre of fingertip
-  assert.equal(self._tipOut(), 0);
+  assert.equal(self._tipOut('index-finger-tip', null), 0);
   self.data.tipOut = "nonsense";
-  assert.equal(self._tipOut(), 0);
+  assert.equal(self._tipOut('index-finger-tip', null), 0);
   self.data.tipOut = "-4";                      // pulling them IN is legitimate
   assert.ok(Math.abs(self._tipOut() + 0.004) < 1e-9);
 });
@@ -285,4 +285,58 @@ test("changing tipOut takes effect with no re-init, so a number can be dialled l
   }
   assert.equal(self._bind, bind, "the bind pose must survive a dial");
   assert.equal(self._rest, rest, "and so must the rest matrices, or it could not be put back");
+});
+
+test("`radius` mode pushes each finger out by its OWN reported radius", () => {
+  // 8 mm landed it for one wearer, and a human fingertip radius is about 8 mm. There is a reason that
+  // would be no coincidence: the WebXR tip joint sits at the CENTRE of the fingertip and
+  // XRJointPose.radius is that fingertip's radius, so the surface is one radius further out. If that
+  // is the rule then it is not one person's 8 mm — it is per-finger and it generalises to any hand.
+  const { self, root, bones } = rig();
+  self._collect();
+  self._s = 1;
+  const f = frame(0.03);
+  f.rad = {};
+  // A real hand's fingers differ: a thumb is fatter than a pinky, and that difference is the whole
+  // test — a flat 8 mm cannot reproduce it, so the two modes are distinguishable on device.
+  const radii = { "thumb-tip": 0.0105, "index-finger-tip": 0.0080, "middle-finger-tip": 0.0082,
+                  "ring-finger-tip": 0.0075, "pinky-finger-tip": 0.0066 };
+  Object.assign(f.rad, radii);
+
+  self.data.tipOut = "radius";
+  self._drive(f);
+  root.updateMatrixWorld(true);
+  const p = new THREE.Vector3();
+  Object.entries(radii).forEach(([tip, r]) => {
+    p.setFromMatrixPosition(bones[tip].matrixWorld);
+    const along = f.pos[tip].z - p.z;
+    assert.ok(Math.abs(along - r) < 1e-6, `${tip} moved ${along} m, wanted its radius ${r}`);
+  });
+
+  // A coefficient, for testing the multiple rather than assuming 1.
+  self.data.tipOut = "radius:0.5";
+  self._drive(f);
+  root.updateMatrixWorld(true);
+  p.setFromMatrixPosition(bones["thumb-tip"].matrixWorld);
+  assert.ok(Math.abs((f.pos["thumb-tip"].z - p.z) - radii["thumb-tip"] / 2) < 1e-6);
+});
+
+test("`radius` falls back to NOTHING when the runtime supplies no radius", () => {
+  // The WebXR spec lets a UA emulate a radius, but it does not have to be there — and a missing one
+  // must mean "do not move it", never "move it by NaN".
+  const { self, root, bones } = rig();
+  self._collect();
+  self._s = 1;
+  self.data.tipOut = "radius";
+  const f = frame(0.03);
+  f.rad = { "index-finger-tip": null };
+  assert.equal(self._tipOut("index-finger-tip", f), 0);
+  assert.equal(self._tipOut("thumb-tip", f), 0, "absent, not merely null");
+  self._drive(f);
+  root.updateMatrixWorld(true);
+  const p = new THREE.Vector3().setFromMatrixPosition(bones["index-finger-tip"].matrixWorld);
+  assert.ok(p.distanceTo(f.pos["index-finger-tip"]) < 1e-6);
+  // ...and a preposterous radius is refused too: 5 cm is not a fingertip.
+  f.rad["index-finger-tip"] = 0.08;
+  assert.equal(self._tipOut("index-finger-tip", f), 0);
 });
