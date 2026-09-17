@@ -162,6 +162,57 @@ Open, and small:
 
   Deliberately not built before the face work is seen on a headset: a timer over a broken driver just
   automates the fault. See [`plans/test-clips-and-faces.md`](../plans/test-clips-and-faces.md) §2.
+
+  **Scope it by "is anything driving this face", not by which figure.** A capture figure blinks while a
+  clip plays and stops the moment it is stopped, so the rule is per-moment rather than per-rig: blink
+  when nothing else is moving the eyelids. That also settles the composition question — the timer must
+  yield to a clip rather than fight it.
+
+  **The interval needs variation or it reads as a metronome.** A human at rest blinks every 3–5 s with
+  wide spread, and a closure lasts 100–150 ms, not a frame. A fixed period is the thing people notice;
+  jittering it is one line and most of the realism. Occasional doubles are a nice-to-have.
+
+  **Two mechanisms, and the bone one has to be derived rather than authored.** Saka and Alice blink by
+  morph weight, which `figure-face` already writes. The 16 capture figures have no blink morph and
+  blink with `DEF-lid.*` BONES — so a bone blink needs the closed pose, and the honest source for it is
+  the recorded performance: `pc_blink`'s most-closed frame is a measured 26.4° delta per lid bone.
+  Extracting a blink pose per rig from a clip we already have beats authoring one against a rig we
+  cannot see.
+
+### Eye contact — aiming the eyes at the wearer
+
+**Not started, and the measurement says it is far more tractable than the facial retarget.** Every rig
+in the corpus has eye bones:
+
+| figure | eye bones | in the humanoid map? | look morphs |
+|---|---|---|---|
+| Saka (VRM) | `J_Adj_L_FaceEye`, `J_Adj_R_FaceEye` | **yes — `leftEye`/`rightEye`, stated by the file** | 0 |
+| Alice (CC) | `CC_Base_L_Eye`, `CC_Base_R_Eye` | no | **8** (`Eye_L_Look_Up` …) |
+| Barbie, office-babe (Rigify) | `DEF-eye.L/R`, `DEF-eye_master.L/R` | no | 0 |
+| Grace (Daz) | `eye.L/R` | no | 0 |
+
+**The reason this is not blocked by what blocks §8e:** gaze is an **`aim`**, not a delta. §8e has to
+carry a rotation between two rigs and therefore depends on their rest frames agreeing — which is why
+it refuses Eve and cannot cross a naming family. Aiming a bone at a world-space point needs no such
+agreement: `figures.compose_frame` already resolves "point this bone there" from whatever rest a rig
+happens to have, and that is the whole of `aim`'s existing job. Four naming families is then a
+discovery-layer-1 table, which is the cheap kind.
+
+So the work is roughly:
+
+1. `leftEye`/`rightEye` into the bone vocabulary, with a convention entry per family. **Saka needs
+   none of this** — VRM states them, so she is already mapped and could be aimed today.
+2. A client component that aims both eyes at the active camera each frame. It must run AFTER the mixer,
+   because a clip drives eye bones too — `1_idle_speaking` puts 42.7° of travel into `CC_Base_R_Eye` —
+   and gaze should win while it is on.
+3. **Clamp hard, and this is the part that decides whether it looks alive or possessed.** Human eyes
+   reach ~30–35° off centre; past that a head turn does the rest. Unclamped eye aim at a wearer walking
+   behind the figure is the classic uncanny failure, and worse than no gaze at all.
+4. Alice's eight look morphs are a second route for her specifically, and a useful cross-check: two
+   mechanisms on one figure should agree about where she is looking.
+
+Open questions worth settling before building: whether the head should follow past the clamp (probably,
+slowly), and whether gaze should break occasionally — a figure that never looks away is also wrong.
 - **Nothing drives visemes from speech.** The five mouth shapes exist and the voice path exists; nothing
   connects them.
 - **`squint` on VRM is `Fcl_EYE_Joy`** — the narrowed-eye shape, whatever it happens to be named after.
