@@ -51,13 +51,29 @@ hands out was never why hand tracking felt thin, because there was nothing to fi
 
 | Control | From |
 |---|---|
-| `pinch` | thumb-tip ↔ index-tip distance, 70 mm open to 22 mm shut |
-| `grasp` | mean finger curl: tip-to-metacarpal over **that finger's own** summed bone length, so it means the same on a large hand and a small one — the same reasoning that puts `s` on a ratio in [`figures.md` §8f](./figures.md) |
-| `poke` | an index that is out **while the others are in**, which is what separates a pointing hand from an open one and a curl average cannot |
+| `pinch` | thumb-tip ↔ index-tip, 70 mm open to 22 mm shut, **times how open the other three fingers are** |
+| `grasp` | the **weakest** finger's curl — tip-to-metacarpal over *that finger's own* summed bone length, so it means the same on a large hand and a small one (the reasoning that puts `s` on a ratio in [`figures.md` §8f](./figures.md)) |
+| `poke` | an index that is out **while the others are in** |
+
+**Each gesture excludes the others, and it has to.** Measured on the synthetic hands the moment anyone
+asked which of these were bound to anything:
+
+- a **fist** read `pinch` 0.77 *and* `grasp` 0.80 — so closing your hand fired `select` and `grab`
+  together, and `water` would ripple every time you reached for something. In a fist the thumb lies
+  across the fingers and its tip is a few centimetres from the index tip, squarely inside the pinch
+  span: **the distance alone cannot tell the two gestures apart.**
+- **pointing** read `grasp` 0.64, because three of four fingers are curled and `grasp` was their
+  *mean* — so pointing at an object grabbed it.
+
+Both are one fault: a control that measures a quantity and rules nothing out. `grasp` is now the
+weakest finger (a hand is closed when *every* finger is closed; an average lets three fingers vote for
+a gesture the hand is not making) and `pinch` is gated on the others being open — the discriminator
+`poke` already had.
 
 They sit in the same namespace as `trigger` and `grip`: a binding refers to them the same way and a
 module still never names either. The thresholds are first guesses from hand anatomy rather than
-measurements, and are logged under `CONJURE_DEBUG_LOG` so they can be dialled against a real hand.
+measurements; the raw per-finger straightness is logged beside the resolved controls under
+`CONJURE_DEBUG_LOG`, because that is the number they would have to be dialled against.
 
 **Hysteresis, and where it lives.** A gesture is a continuous distance held near its own threshold by a
 human hand, so an unhysteresised control chatters at exactly the distance anyone holds. Press at 0.6,
@@ -95,7 +111,20 @@ one action to mean one thing on a controller *and* on a tracked hand: a controll
 hand's `trigger` is 0, so the two vocabularies are disjoint, no device test is required and none is
 written. `select: ["trigger", "pinch"]`, `grab: ["grip", "grasp"]`.
 
-Only those and `resize` gain hand controls. The stick-driven actions deliberately do not: a hand has no
+Which is to say, as shipped:
+
+| control | actions it resolves | what consumes them |
+|---|---|---|
+| `pinch` | `select`, `resize` | `water`'s ripples, `grab`'s corner handles, and arming the beam |
+| `grasp` | `grab` | `grab`'s drag |
+| `poke` | **nothing** | — |
+
+`poke` is vocabulary with no consumer yet. It is kept because it is the one gesture that separates
+intent to *touch* from intent to *hold*, which is what the contact query
+([`backlogs/input.md`](../backlogs/input.md)) will want — and because it earns its place already as the
+discriminator the other two borrow.
+
+The stick-driven actions (`reel`, `yaw`, `pitch`, `bank`) deliberately gain nothing: a hand has no
 analog axis, and faking one from a wrist angle would be a gesture pretending to be a stick, which feels
 broken rather than missing.
 

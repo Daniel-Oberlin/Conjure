@@ -140,13 +140,14 @@ test("pinch, grasp and poke read the SHAPE of the hand", () => {
   // control already has.
   const flat = pointers({ hands: [{ pos: hand(0.07) }] }).all[0];
   assert.ok(!flat.active("grab"), `an open hand is not grabbing (${flat.ctrl.grasp})`);
-  const fist = pointers({ hands: [{ pos: hand(0.03, { index: 1, middle: 1, ring: 1, pinky: 1 }) }] }).all[0];
+  const fist = pointers({ hands: [{ pos: hand(0.035, { index: 1, middle: 1, ring: 1, pinky: 1 }) }] }).all[0];
   assert.ok(fist.active("grab"), `a fist is grabbing (${fist.ctrl.grasp})`);
   assert.ok(fist.ctrl.grasp > flat.ctrl.grasp + 0.5, "and by a wide margin, not by a hair");
 
   // `poke` is an index that is OUT while the others are IN — what distinguishes a pointing hand from
   // an open one, which a curl average alone cannot.
   const point = pointers({ hands: [{ pos: hand(0.06, { middle: 1, ring: 1, pinky: 1 }) }] }).all[0];
+  assert.ok(!point.active("grab"), "and pointing at a thing must not GRAB it");
   assert.ok(point.ctrl.poke >= CP.ACTIVE_AT, `pointing poke ${point.ctrl.poke}`);
   assert.ok(flat.ctrl.poke < CP.ACTIVE_AT, `open hand poke ${flat.ctrl.poke}`);
   assert.ok(fist.ctrl.poke < CP.ACTIVE_AT, `fist poke ${fist.ctrl.poke}`);
@@ -215,4 +216,39 @@ test("`controllers()` keeps its honest name, and callers degrade if this file is
     assert.ok(src.includes("(CP.acting || CP.controllers)"), `${f} must degrade, not throw`);
     assert.ok(!/CP\.acting\(/.test(src), `${f} must not call acting() unguarded`);
   }
+});
+
+test("each gesture EXCLUDES the others, or the hand fires two actions at once", () => {
+  // Found the moment anyone asked which of these were bound to anything. Measured, before the fix:
+  //   a FIST read pinch 0.77 AND grasp 0.80, so closing your hand fired `select` and `grab` together
+  //     and `water` would ripple every time you reached for something;
+  //   POINTING read grasp 0.64, because three of four fingers are curled and grasp was their MEAN,
+  //     so pointing at an object grabbed it.
+  // Both are one fault: a control that measures a quantity and rules nothing out.
+  const of = (pos) => pointers({ hands: [{ pos }] }).all[0];
+
+  const fist = of(hand(0.035, { index: 1, middle: 1, ring: 1, pinky: 1 }));
+  assert.ok(fist.active("grab"), "a fist grabs");
+  assert.ok(!fist.active("select"), `...and does NOT select (pinch ${fist.ctrl.pinch})`);
+
+  const point = of(hand(0.06, { middle: 1, ring: 1, pinky: 1 }));
+  assert.ok(!point.active("grab"), `pointing does not grab (grasp ${point.ctrl.grasp})`);
+  assert.ok(!point.active("select"), `nor select (pinch ${point.ctrl.pinch})`);
+  assert.ok(point.ctrl.poke >= CP.ACTIVE_AT, "it pokes, which is bound to nothing yet");
+
+  // A pinch with the other fingers relaxed rather than rigid is still a pinch — the exclusion must
+  // not be so strict that only an anatomically perfect gesture counts.
+  const relaxed = of(hand(0.018, { middle: 0.3, ring: 0.3, pinky: 0.3 }));
+  assert.ok(relaxed.active("select"), `a relaxed pinch still selects (${relaxed.ctrl.pinch})`);
+  assert.ok(!relaxed.active("grab"));
+});
+
+test("grasp is the WEAKEST finger, not the average", () => {
+  // A hand is closed when every finger is closed. An average lets three fingers vote for a gesture
+  // the hand is not making, which is exactly how pointing came to grab things.
+  const of = (curls) => pointers({ hands: [{ pos: hand(0.06, curls) }] }).all[0].ctrl.grasp;
+  const all = of({ index: 1, middle: 1, ring: 1, pinky: 1 });
+  const allButOne = of({ middle: 1, ring: 1, pinky: 1 });
+  assert.ok(all > 0.7, `all four curled ${all}`);
+  assert.ok(allButOne < 0.05, `one finger out is not a grasp, whatever the other three say (${allButOne})`);
 });

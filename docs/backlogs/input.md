@@ -32,7 +32,11 @@ expected:
 What is left here is smaller and follows from having built it:
 
 - **The thresholds are first guesses from hand anatomy, not measurements.** 70/22 mm for a pinch,
-  0.90/0.45 for a curl. Logged under `CONJURE_DEBUG_LOG` and not yet read off a headset.
+  0.90/0.45 for a curl. The raw per-finger straightness is logged beside the resolved controls under
+  `CONJURE_DEBUG_LOG` and has not been read off a headset. `CURL_OUT = 0.90` is the one to suspect: a
+  relaxed hand is not a straight hand, so a natural grab of a large object may read below threshold.
+- **`poke` is bound to nothing.** Synthesised, exclusive, and consumed by no action — kept because it
+  separates intent to *touch* from intent to *hold*, which is what the contact query below wants.
 - **No `grasp`-to-stick equivalent, deliberately.** The stick-driven actions (`reel`, `yaw`, `pitch`,
   `bank`) have no hand binding, because a hand has no analog axis and faking one from a wrist angle
   would be a gesture pretending to be a stick.

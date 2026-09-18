@@ -80,8 +80,7 @@
   function handControls(pos) {
     var out = { pinch: 0, grasp: 0, poke: 0 };
     if (!pos.wrist) return out;
-    out.pinch = span(pos["thumb-tip"], pos["index-finger-tip"], PINCH_OPEN, PINCH_SHUT);
-    var curls = {}, n = 0, sum = 0;
+    var curls = {}, straights = {}, n = 0, sum = 0;
     for (var i = 0; i < FINGERS.length; i++) {
       var f = FINGERS[i];
       var mc = pos[f + "-finger-metacarpal"], tip = pos[f + "-finger-tip"];
@@ -95,13 +94,41 @@
       if (reach < 1e-4) continue;
       var straight = mc.distanceTo(tip) / reach;          // 1 = extended, ~0.45 = fisted
       curls[f] = Math.max(0, Math.min(1, (CURL_OUT - straight) / (CURL_OUT - CURL_IN)));
+      straights[f] = straight;                           // the raw number, for the log
       sum += curls[f]; n++;
     }
-    if (n) out.grasp = sum / n;
-    if (curls.index != null && n > 1) {
-      var others = (sum - curls.index) / (n - 1);
+    // EACH GESTURE EXCLUDES THE OTHERS, and it has to. Measured on the synthetic hands the moment
+    // anyone asked which of these were bound to anything:
+    //
+    //   a FIST read pinch 0.77 AND grasp 0.80 — so closing your hand fired `select` and `grab` at
+    //     once, and `water` would ripple every time you reached for something;
+    //   POINTING read grasp 0.64 — because three of four fingers are curled and grasp was their MEAN,
+    //     so pointing at an object grabbed it.
+    //
+    // Both are the same fault: a control that measures one quantity and rules nothing out. The fixes
+    // are the discriminator `poke` already had.
+    var others = 0, on = 0;
+    ["middle", "ring", "pinky"].forEach(function (f) {
+      if (curls[f] != null) { others += curls[f]; on++; }
+    });
+    others = on ? others / on : 0;
+
+    // `grasp` is the WEAKEST finger, not the average: a hand is closed when every finger is closed,
+    // and an average lets three fingers vote for a gesture the hand is not making.
+    if (n) {
+      var least = 1;
+      for (var f2 in curls) least = Math.min(least, curls[f2]);
+      out.grasp = least;
+    }
+    // `pinch` requires the other fingers to be comparatively OPEN. In a fist the thumb lies across
+    // the fingers and its tip is a few centimetres from the index tip, which is squarely inside the
+    // pinch span — the distance alone cannot tell the two gestures apart.
+    out.pinch = span(pos["thumb-tip"], pos["index-finger-tip"], PINCH_OPEN, PINCH_SHUT)
+              * Math.max(0, 1 - others);
+    if (curls.index != null && on) {
       out.poke = Math.max(0, Math.min(1, (1 - curls.index) * others));
     }
+    out.straights = straights;                           // not a control; see the log in `build`
     return out;
   }
 
@@ -186,11 +213,19 @@
         }
         tip = joints["index-finger-tip"] || null;
         var synth = handControls(joints);
+        var straights = synth.straights || {};
+        delete synth.straights;
         for (var sc in synth) ctrl[sc] = synth[sc];
         hysteresis(key, ctrl);
+        // The RAW straightness per finger beside the controls, because `CURL_OUT`/`CURL_IN` are first
+        // guesses from anatomy and this is the number they would have to be dialled against. Same
+        // discipline the fingertip offset ended up needing: log what a rule would be found in rather
+        // than reason about where the threshold should sit.
+        var st = [];
+        for (var f3 in straights) st.push(f3 + " " + straights[f3].toFixed(2));
         once("hand:" + key, "hand " + key + " — " + Object.keys(joints).length + "/25 joints, "
           + "pinch/grasp/poke " + synth.pinch.toFixed(2) + "/" + synth.grasp.toFixed(2) + "/"
-          + synth.poke.toFixed(2));
+          + synth.poke.toFixed(2) + "; straightness " + st.join(" "));
       }
       out.push(makePointer(key, src, ctrl, new THREE.Vector3(o.x, o.y, o.z),
         new THREE.Vector3(0, 0, -1).applyQuaternion(quat).normalize(), quat, tip, joints, radii));
