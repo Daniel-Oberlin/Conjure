@@ -1,7 +1,8 @@
 # Plan — hands: models you wear, and hands as input
 
 **Status:** **all phases built** 2026-09-17 — 0 and 2 read on device; 3 and 4 untried ·
-**Opened:** 2026-09-14 · ready to dissolve once 3 and 4 are watched
+**Opened:** 2026-09-14 · **blocked from dissolving** by
+[`test-hands-on-a-headset.md`](./test-hands-on-a-headset.md)
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
