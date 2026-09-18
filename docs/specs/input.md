@@ -241,10 +241,14 @@ Everything that reacts to a controller, module or not. This is the list that mot
 | `client/conjure-client.js` | `controllers()` | the gaze/ray picker |
 | `client/surface-overlay.js` | `controllers()` | the surface debug overlay |
 | `dynamics/grab/grab.js` | `controllers()`, `claim`, `reserve` | tier-C manipulation |
-| `dynamics/water/water.js` | `list()`, `isHand`, `fingertip` | the only hand-aware consumer |
+| `dynamics/water/water.js` | `list()`, and `ConjureContact` (§10) for the hand half | ripples |
+| `client/conjure-contact.js` | `acting()`, `joints`, `radii` | the contact query every module asks (§10) |
 
-**One reader of XR input, but three readers of XR joints.** `ConjurePointers` reads exactly one joint,
-`index-finger-tip`, and publishes it as `pointer.fingertip`. `client/occlusion.js` builds its own
+**One reader of XR input, and `ConjurePointers` now publishes all 25 joints** — so `ConjureContact`
+consumes them rather than reading the frame, which is what the seam was for. Two direct readers of the
+XR frame remain and both are deliberate: `occlusion.js`, which works and has no second reason to change;
+and `hand-rig.js`/`hands-fit.js`, one of which drives a skeleton and the other of which exists to look at
+the raw frame. `ConjurePointers` still reads exactly one joint for `pointer.fingertip`. `client/occlusion.js` builds its own
 25-joint hand mesh straight from `frame.getJointPose` ([`occlusion.md` §4](./occlusion.md)). And
 `client/hands-fit.js` reads all 25 for the debug overlay (§9). None of the three share a read, which is
 the duplication this layer removed for buttons and has not yet removed for joints —
@@ -342,3 +346,58 @@ for.
 **`--occlusion hands` defeats it** — the hand occluder carves a passthrough hole exactly where the
 overlay draws, so joints vanish behind your real hand. The component logs this when both are on;
 `?occlusion=off` is the per-client override.
+
+---
+
+## 10. `ConjureContact` — what a hand is touching, as a QUERY
+
+`client/conjure-contact.js`. A consumer asks *"which of my hand's bones are inside this volume, how far
+in, and how fast"* and gets an answer in **its own frame**. It never runs a cast and never learns what a
+joint is.
+
+Before it, the one module that reacted to a hand did that arithmetic itself: take `pointer.fingertip`,
+convert it into the module's local frame, reject beyond a depth, scale to UV. Thirty lines per module,
+each with its own idea of what *touching* means, and each reading exactly one of the twenty-five joints
+because that was the only one published. Three modules would have been three answers to one question.
+
+| | |
+|---|---|
+| `inBox(object3D, half, opts)` | the general query. A plane with a touch depth **is** a box, which is why there is no separate plane query |
+| `inSphere(centre, radius, opts)` | a point query with the radius as slack, so its corners are round — a sphere approximated as a box over-reaches by 73% of the radius at the corners |
+| `capsules(sceneEl)` | every bone as a world-space capsule, for a consumer that wants to draw them |
+
+`opts.joints` restricts which joints may contribute, and `opts.owner` applies the same arbitration
+every other consumer of this layer follows — `grab` holding a pointer mid-drag must not also be
+rippling the water it is dragging past.
+
+**Capsules, not points.** A fingertip *joint* can be outside a volume while the finger is inside it:
+joints are ~25 mm apart and the flesh ~8 mm thick, so a point test leaves a centimetre of finger that
+touches nothing — and a thin volume is exactly where that gap falls, which is exactly where `water`
+lives. Each of the 24 bones is a capsule: its two joints and the larger of their reported radii. A
+missing radius falls back to a stated 8 mm and says so once, never to `NaN`.
+
+**Exact, not sampled.** Distance from a point to a convex box is convex and stays convex along a
+straight segment, so a ternary search on the closest-approach parameter converges on the true minimum —
+fourteen steps narrows a 25 mm bone to about 2 µm. Fixed-interval sampling was the first idea and is
+worse in a specific way: it can only ever *miss* a contact, and the size of the miss scales with the
+bone, so the false negatives would have been longest on the long bones, which are most of the hand.
+
+**Speed needs one frame of memory and two slots to hold it.** A single `previous` map written at the end
+of each query works for one consumer and breaks for the second: the first module of the frame overwrites
+it with *this* frame, so the second compares the frame against itself and every speed reads zero.
+`thisFrame` is therefore captured once per distinct frame and the one it displaces becomes `lastFrame`,
+which every speed is measured against. A gap over 250 ms reads as zero — that is a dropped track, not
+motion.
+
+**No events, and nothing new on the wire.** A touch is a **cause**, and `ConjureBus` already carries
+causes to peers ([`dynamics.md` §2](./dynamics.md), tier B): a module broadcasts its own touch exactly as
+it did before, every client simulates from it, and nothing about anyone's fingers is ever transmitted.
+That is why hands needed no sync tier.
+
+**`water` is the migration that proves the shape.** It asks for `[width/2, height/2, touchDepth]` and
+gets UV-ready local coordinates, having deleted the proximity half of its own `_toUV`. Restricted to
+`index-finger-tip` so the behaviour is **identical** to what it replaced — the query returns every bone
+that reaches the water, which is better and is a different feature, and widening it is deleting one
+option deliberately.
+
+---

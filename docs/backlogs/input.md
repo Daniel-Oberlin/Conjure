@@ -77,15 +77,18 @@ happened is the consumers moving onto it. Two qualifications, both worth stating
 The radius turned out to be worth publishing for a reason nobody predicted: it is the fingertip offset
 a worn hand needs (`specs/figures.md` §8f), which makes it load-bearing rather than diagnostic.
 
-## Contact is a raycast every consumer would write itself
+## ~~Contact is a raycast every consumer would write itself~~ — BUILT 2026-09-17
 
-There is no shared way to ask "which joints are inside this volume, moving how fast". `water` answers
-it privately with a fingertip distance test against its own plane. A joint **capsule chain** with the
-radii the runtime already supplies, exposed as a query a consumer asks rather than a cast it runs, is
-the general form; `water` migrating onto it **with no behaviour change** is the proof it is the right
-shape.
+`ConjureContact` ([`specs/input.md`](../specs/input.md) §10), and `water` migrated onto it with its
+behaviour unchanged, which was the acceptance test. What is left is smaller:
 
-Owned by [`plans/hands.md`](../plans/hands.md) phase 4 while that plan is live.
+- **Widen `water` to the whole hand.** It asks for `index-finger-tip` only, because identical
+  behaviour was the point of the migration. Rippling from a knuckle or the back of a hand is better
+  and is a different feature; it is one deleted option away.
+- **Nothing uses `speed` yet.** It is computed and returned and no consumer reads it. The obvious
+  user is a poke that has to be distinguished from a rest, which is also what `poke` is waiting for.
+- **`capsules()` has no consumer.** Published for anything that wants to draw the hand it is
+  colliding with — a `?hands=fit` layer, most likely — and nothing does.
 
 ## `actions` tells the arbitration layer nothing
 

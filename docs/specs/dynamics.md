@@ -196,6 +196,7 @@ registration and no-op when A-Frame is absent:
 | `window.ConjureClock` | the shared clock (§6) |
 | `window.ConjureBus` | the cross-client event bus (§6) |
 | `window.ConjurePointers` | the XR input reader + action bindings + pointer arbitration ([`input.md`](./input.md)) |
+| `window.ConjureContact` | "which of my hand's bones are in this volume, how far in, how fast" ([`input.md`](./input.md) §10) |
 | `window.ConjureFrames` | frame conversion for tier-C commits (§8) |
 | `window.ConjureWorldFrame` | the derived-frame deltas — skybox pose/scale and a void world's parking (§8b) |
 | placement + facing | the server positions the entity before the component runs (§7) |
@@ -256,6 +257,18 @@ routes per instance. **Unsubscribe every handler in `remove`.**
 
 > Only the `shared` scope exists today. The planned `local` and `out` (downsampled LLM feed) scopes, and a
 > structured event envelope (`{type, source, target, payload, t}`), are backlog.
+
+### `ConjureContact` — what a hand is touching
+
+`ConjureContact.inBox(this.el.object3D, [w/2, h/2, depth], {owner: "mymodule"})` → the bones inside
+that volume, **in the entity's own frame**, with how far in and how fast. A module asks a question; it
+never runs a cast and never learns what a joint is. Specified with the rest of the input layer in
+[`specs/input.md`](./input.md) §10.
+
+Two things it is worth knowing it does NOT do. It publishes no **events**: a touch is a cause, and
+`ConjureBus` above already carries causes to peers, so a module broadcasts its own touch exactly as
+`water` always did and every client simulates from it. And it puts nothing on the **wire** — peers never
+see anyone's fingers and still see the ripple, which is why hands needed no new sync tier (§2).
 
 ### `ConjurePointers` — XR input, as ACTIONS
 

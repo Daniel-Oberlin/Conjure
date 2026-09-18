@@ -187,6 +187,10 @@
     },
 
     // World point → plane UV. If `proximity`, require |local z| < touchDepth (fingertip in the water).
+    //
+    // The proximity half is now ConjureContact's job (docs/specs/input.md §10) and is kept only as the
+    // fallback for a client served a stale conjure-contact.js — the Quest's cache has done that before.
+    // The RAY path below still uses this one, so it does not shrink to nothing.
     _toUV: function (p, proximity) {
       var lp = this._mesh.worldToLocal(new T.Vector3(p.x, p.y, p.z));
       if (proximity && Math.abs(lp.z) > this.data.touchDepth) return null;
@@ -218,7 +222,26 @@
         // its corner handles, so the SAME control resizes there and ripples everywhere else on the picture.
         if (!p.availableTo("water")) { this._lastUV[key] = null; continue; }
         if (p.isHand) {
-          if (p.fingertip) uv = this._toUV(p.fingertip, true);
+          // Through the SHARED contact query rather than this module's own geometry. `_toUV(p, true)`
+          // did the same arithmetic — world point into the plane's frame, reject beyond touchDepth,
+          // scale to UV — and did it here, where a second module would have had to write it again and
+          // would have got a slightly different answer about what "touching" means.
+          //
+          // Restricted to `index-finger-tip` so the behaviour is IDENTICAL to what it replaced. The
+          // query returns every bone that reaches the water, which is better and is a different
+          // feature: widening it is deleting the `joints` option, and worth doing deliberately.
+          var CC = window.ConjureContact;
+          if (CC) {
+            var hit = CC.inBox(this._mesh, [this.data.width / 2, this.data.height / 2,
+                                            this.data.touchDepth],
+                               { joints: ["index-finger-tip"], owner: "water",
+                                 sceneEl: this.el.sceneEl })[0];
+            // `local` arrives in the plane's own frame, so this is the UV scaling and nothing else.
+            if (hit) uv = { x: hit.local.x / this.data.width + 0.5,
+                            y: hit.local.y / this.data.height + 0.5 };
+          } else if (p.fingertip) {
+            uv = this._toUV(p.fingertip, true);          // stale client: the old path still works
+          }
         } else if (p.active("select")) {
           if (!this._trigLogged) { this._trigLogged = true; wlog("select held (" + key + ")"); }
           uv = this._rayUV({ position: p.origin, orientation: p.quat });

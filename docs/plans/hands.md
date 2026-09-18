@@ -1,7 +1,7 @@
 # Plan — hands: models you wear, and hands as input
 
-**Status:** phases 0–3 **built** 2026-09-17 — 0 and 2 read on device, 3 untried · phase 4 open ·
-**Opened:** 2026-09-14
+**Status:** **all phases built** 2026-09-17 — 0 and 2 read on device; 3 and 4 untried ·
+**Opened:** 2026-09-14 · ready to dissolve once 3 and 4 are watched
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its
@@ -435,7 +435,7 @@ curl thresholds are first guesses from anatomy rather than measurements, and `co
 draw a beam from a tracked hand — which is correct, keys off `armed()` like everything else, and may
 still look wrong.
 
-### Phase 4 — contact, for content that reacts
+### Phase 4 — contact, for content that reacts — 🔶 BUILT 2026-09-17, UNTOUCHED
 
 *Settles into `specs/input.md` (the query) and `specs/dynamics.md` (what a module does with it).*
 
@@ -447,8 +447,24 @@ still look wrong.
 - `water` migrates from its own fingertip proximity to the shared query **with no behaviour change**,
   which is the proof the query is the right shape.
 
+**Built** — `client/conjure-contact.js`, `inBox`/`inSphere`/`capsules`,
+[`specs/input.md`](../specs/input.md) §10, and `water` migrated.
+
+Two things came out differently from the sketch above:
+
+- **The capsules are not a chain anyone holds.** They are computed per query from the joints
+  `ConjurePointers` already publishes, which makes this the layer's fourth consumer rather than a
+  fifth reader of the XR frame. Nothing stores 24 capsules.
+- **Speed needed one frame of memory and TWO SLOTS to hold it.** A single `previous` map written at
+  the end of each query works for one consumer and breaks for the second: the first module of the
+  frame overwrites it with *this* frame, so the second compares the frame against itself and reads
+  every speed as zero. Found by a test written for exactly that claim, after a first fix that moved
+  the frame stamp and did not move the write.
+
 **Done when:** a dynamic module reacts to a poke without knowing what a joint is, and `water` is one
-call shorter than it was.
+call shorter than it was. **`water` is migrated and untouched on a headset** — restricted to
+`index-finger-tip` so its behaviour is identical to what it replaced, which was the point; widening it
+to the whole hand is deleting one option and worth doing deliberately.
 
 ---
 

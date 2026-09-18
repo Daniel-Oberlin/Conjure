@@ -68,6 +68,9 @@
     <!-- A placed hand model driven by the wearer's tracked hand, all 25 joints. Inert until
          `hand-rig` names a side — see docs/specs/figures.md §8f. -->
     <script src="/static/hand-rig.js"></script>
+    <!-- "What is my hand touching" as a query modules ask, over a capsule chain per hand. Loaded
+         after conjure-pointers.js, whose one-read-per-frame joint snapshot it consumes. -->
+    <script src="/static/conjure-contact.js"></script>
     <script src="/static/controller-beams.js"></script>
     <!-- Debug-only surface overlay (--debug-surface-overlay): seed / device-rect / device-polygon
          wireframes drawn together in F_track. Inert unless the flag is on. -->
