@@ -106,6 +106,15 @@
                     q: new this.T.Quaternion(), sc: new this.T.Vector3() };
       this._onLoad = function () { self._bones = null; self._bind = null; };
       this.el.addEventListener("model-loaded", this._onLoad);
+      // `--occlusion hands` carves a passthrough hole exactly where this model draws, so the wearer's
+      // REAL hand shows through the virtual one. The two features defeat each other by construction
+      // and neither is wrong; said out loud because the symptom — a worn hand you can see your own
+      // hand through — reads as a transparency bug (docs/plans/hands.md, Open).
+      var occ = (window.CONJURE_OCCLUSION == null ? "" : String(window.CONJURE_OCCLUSION)).toLowerCase();
+      if (occ === "hands" || occ === "hands-solid") {
+        log("! --occlusion " + occ + " is on: it carves passthrough exactly where this hand draws, so "
+          + "your real hand will show through the model. ?occlusion=off to wear it properly.");
+      }
       // LIVE HAND > CLIP > POSE (docs/specs/figures.md §8b gains one line for this). Settled by taking
       // the other two writers OFF rather than by winning a race with them: A-Frame gives no tick order
       // between components on one entity, so "we write last" is not something this could rely on.

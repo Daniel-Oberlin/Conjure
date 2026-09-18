@@ -458,19 +458,26 @@ call shorter than it was.
   entity sits where it was worn. The cheap next step is the wrist pose on the presence stream (7 floats,
   fingers at rest); the full 25-joint stream is a sync tier nothing in `dynamics.md` has and "sync
   causes, never effects" says not to build.
-- **Per-joint scale.** If phase 0 finds the radii and the segment lengths disagreeing about hand size,
-  that is a real proportion mismatch and worth logging rather than averaging. Per-joint scale is the
-  fix; it is not worth building before the numbers exist.
+- ~~**Per-joint scale.**~~ **Settled by phase 0, and not built.** The per-bone residual after a single
+  scalar is ~5%, and `s` scales girth only — every joint is placed at the pose the runtime reports, so
+  the error cannot accumulate down a chain. 5% of a finger's girth is under a millimetre. A single
+  scalar stands. The one thing it buys: a conformed hand that looks wrong **at the knuckles** rather
+  than overall is that residual in the skinning blend, not a scale bug.
 - **Occlusion and worn hands defeat each other.** `--occlusion hands` carves a passthrough hole exactly
-  where the worn model is, so your real hand shows through it. Documented and logged, not fixed — the
-  joint-source unification in phase 3 is what would eventually let `occlusion.js` and a worn hand agree
-  about the same skeleton.
-- **Taking a hand off needs a command,** because hands have no buttons. A gesture is possible once
-  phase 3 exists; v1 is director or CLI.
+  where the worn model is, so your real hand shows through it. Now **logged by `hand-rig` on wear** and
+  still not fixed. Phase 3 built half the seam — `ConjurePointers` publishes the full joint set — and
+  moved no consumer onto it, which is deliberate: `occlusion.js` works, and a shared read is worth doing
+  when there is a second reason, not as a tidy-up.
+- **Taking a hand off needs a command,** because hands have no buttons. **Phase 3 makes a gesture
+  possible** — `pinch`, `grasp` and `poke` resolve on a hand now, and none is bound to this — and it is
+  still director or CLI, because a gesture that takes a hand off is a gesture you can trigger while
+  reaching for something.
 - **No haptics on a tracked hand.** Nothing to do; worth writing down before someone designs against it.
 - **A figure's own hands are still not puppeteerable.** Humanoid maps carry no finger bones — fingers
   are not recoverable from topology ([`figures.md` §3](../specs/figures.md)) — so this plan does not
   touch the standing "hand poses do not exist" item in `backlogs/figures.md`.
-- **Jitter.** Copying joint positions transmits tracking noise into the mesh. If it shows on device,
-  filter **presentation only** and never the poses contact reads, which would trade latency for
-  smoothness in the one place that cannot afford it. Measure before writing a filter.
+- **Jitter.** Copying joint positions transmits tracking noise into the mesh. **Worn on device and not
+  reported**, which is weak evidence rather than none: the wearing turned up a grey hand and 5 mm of
+  fingertip and no complaint about shake. If it does show, filter **presentation only** and never the
+  poses contact reads, which would trade latency for smoothness in the one place that cannot afford it.
+  Measure before writing a filter.

@@ -44,6 +44,21 @@ What is left here is smaller and follows from having built it:
   because it keys off `armed()` and actions resolve — which is correct and may still look wrong. Nobody
   has watched it.
 
+## Opportunistic: a SECOND pair of hands
+
+Everything measured about hand tracking here was read on one wearer (2026-09-17), and two claims rest
+on that and would be cheap to check the next time anyone else puts the headset on:
+
+- **`?hands=fit`** — whether the runtime's skeleton differs between two people at all. Left and right
+  differ by 0.240 mm and the figures move across re-acquisitions, so it re-estimates *something*; what
+  is unverified is that it re-estimates per PERSON.
+- **`tipOut`** — whether `radius` and a thumb coefficient of 0.7 land someone else's fingertips
+  ([`specs/figures.md` §8f](../specs/figures.md)). Neither value is a length, which is the whole reason
+  they are defaults off one reading, but that is an argument and not a second measurement.
+
+Nothing depends on either: `off` and a flat millimetre figure both remain, and no code branches on the
+answer. Worth a minute when the opportunity arises and not worth arranging.
+
 ## Three unshared readers of XR joints
 
 `client/occlusion.js` builds a 25-joint hand mesh from `frame.getJointPose` directly;
