@@ -15,7 +15,8 @@ from test_figures import _skeleton
 from conjure.figures import (CORE_BONES, POSE_AXES, anatomical_axes, apply_pose, body_frame,
                              bone_directions, figure_description, infer_humanoid,
                              node_world_positions)
-from conjure.judge import (FakeJudge, GeminiJudge, Verdict, build_judge, parse_choice, prompt_for)
+from conjure.judge import (FakeJudge, GeminiJudge, LocalJudge, Verdict, build_judge, decide,
+                           parse_choice, prompt_for)
 from conjure.pose_corpus import (CAST, CORPUS, IMPOSSIBLE_BONE, IMPOSSIBLE_TWIST, MOVES, PREDICATES,
                                  PLAUSIBLE_BAD, PLAUSIBLE_OK, PLAUSIBLE_OPTIONS, Phrase,
                                  bones_used, by_id, check_call, check_geometry, check_predicates)
@@ -297,6 +298,54 @@ def test_judging_can_be_turned_off_and_a_typo_does_not_pass_silently():
 
 def test_an_explicit_override_beats_config():
     assert isinstance(build_judge(_Settings(provider="gemini", google="k"), "fake"), FakeJudge)
+
+
+# ---------------------------------------------------------------- the local judge reads the letter
+
+def test_the_local_judge_needs_no_key():
+    """Every other backend can be configured and still yield None for a missing key. The local one
+    has nothing to be missing, so `judge_provider=local` always produces a judge."""
+    judge = build_judge(_Settings(provider="local"))
+    assert isinstance(judge, LocalJudge) and judge.name == "Qwen/Qwen3-VL-4B-Instruct"
+
+
+def test_the_local_judge_picks_the_best_scoring_letter():
+    v = decide([0.1, 3.0, 0.2], ["up", "down", "out"])
+    assert (v.choice, v.label) == (1, "down") and v.answered
+
+
+def test_a_confident_call_reports_a_high_probability_and_a_close_one_does_not():
+    """The confidence is the advisory half — an eval line a person reads should say how close it was."""
+    sure = decide([10.0, 0.0], ["yes", "no"])
+    coin = decide([1.0, 1.0], ["yes", "no"])
+    assert float(sure.raw.split("p=")[1]) > 0.99
+    assert abs(float(coin.raw.split("p=")[1]) - 0.5) < 1e-6
+
+
+def test_the_floor_turns_an_unsure_call_into_an_abstention():
+    """`choice == -1` is load-bearing — it must never be scored as a pass — and a plain argmax can
+    never produce one. The floor is how the local backend keeps that outcome reachable."""
+    assert decide([1.0, 1.0], ["yes", "no"], floor=0.9).choice == -1
+    assert decide([10.0, 0.0], ["yes", "no"], floor=0.9).choice == 0
+
+
+def test_the_floor_is_off_by_default_so_none_of_these_stays_the_real_decline_path():
+    """Declining is supposed to be an OPTION the model picks, not a threshold we tuned."""
+    v = decide([1.0, 1.0, 1.2], ["a pose", "another", "none of these"])
+    assert (v.choice, v.label) == (2, "none of these")
+
+
+def test_an_unrepresentable_letter_cannot_win_and_all_of_them_is_an_abstention():
+    assert decide([float("-inf"), 0.5], ["x", "y"]).choice == 1
+    assert decide([float("-inf"), float("-inf")], ["x", "y"]).choice == -1
+
+
+def test_the_local_judge_cannot_return_an_out_of_range_choice():
+    """The whole point of reading logits instead of generating: `parse_choice`'s failure modes — a
+    letter outside the offered range, an empty reply, a restated option — are unreachable."""
+    for n in range(1, 8):
+        v = decide([float(i) for i in range(n)], [f"opt{i}" for i in range(n)])
+        assert 0 <= v.choice < n
 
 
 def test_the_plausibility_question_has_an_out_that_is_not_a_failure():

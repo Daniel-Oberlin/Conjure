@@ -471,14 +471,20 @@ class Settings:
     embed_backend: str = "auto"
     embed_model: str = "google/siglip2-so400m-patch14-384"
     # Caption backfill for assets with no label (docs/backlogs/library.md). Gemini multimodal by
-    # default; "none"/"fake" to disable/test.
+    # default; "none"/"fake" to disable/test, "local" for an on-device VLM.
     caption_provider: str = "gemini"
     caption_model: str = "gemini-2.5-flash"
+    caption_device: str = ""   # local captioner only; empty = mps when available, else cpu
     # The visual judge behind the pose eval harness (docs/backlogs/figures.md, slice 2): who looks at a
     # render and answers a multiple-choice question about it. "none"/"fake" to disable/test. An empty
     # model means the backend's own default, so switching provider needs one setting, not two.
     judge_provider: str = "gemini"
     judge_model: str = ""
+    # Local-judge only (judge_provider=local). Empty device = MPS when available, else CPU. The floor
+    # is the probability below which the local judge declines rather than answers; 0.0 = never, which
+    # is the default because the real decline path is offering "none of these" as an option.
+    judge_device: str = ""
+    judge_floor: float = 0.0
     # Controller pointer beams (see docs/specs/dynamics.md §6): a laser from each controller,
     # shown while you're pointing/interacting (e.g. rippling a Water Picture) and hidden otherwise. The beam
     # arms when the trigger is pulled past `beam_trigger` (analog 0..1) and LINGERS for `beam_timeout`
@@ -622,8 +628,11 @@ def get_settings() -> Settings:
         embed_model=os.environ.get("CONJURE_EMBED_MODEL", "google/siglip2-so400m-patch14-384"),
         caption_provider=os.environ.get("CONJURE_CAPTION_PROVIDER", "gemini"),
         caption_model=os.environ.get("CONJURE_CAPTION_MODEL", "gemini-2.5-flash"),
+        caption_device=os.environ.get("CONJURE_CAPTION_DEVICE", ""),
         judge_provider=os.environ.get("CONJURE_JUDGE_PROVIDER", "gemini"),
         judge_model=os.environ.get("CONJURE_JUDGE_MODEL", ""),
+        judge_device=os.environ.get("CONJURE_JUDGE_DEVICE", ""),
+        judge_floor=float(os.environ.get("CONJURE_JUDGE_FLOOR", "0") or 0),
         beam_timeout=float(os.environ.get("CONJURE_BEAM_TIMEOUT", "10.0")),
         beam_trigger=float(os.environ.get("CONJURE_BEAM_TRIGGER", "0.05")),
         bindings=os.environ.get("CONJURE_BINDINGS", DEFAULT_BINDINGS),
@@ -689,8 +698,11 @@ SETTABLE: dict[str, tuple[str, str]] = {
     "skybox_size":           ("live", "skybox resolution, e.g. 4K"),
     "caption_provider":      ("live", "who writes labels for unlabelled assets"),
     "caption_model":         ("live", "caption model"),
+    "caption_device":        ("live", "local captioner device (empty = mps if available, else cpu)"),
     "judge_provider":        ("live", "who judges pose renders in the eval harness"),
     "judge_model":           ("live", "judge model (empty = the provider's default)"),
+    "judge_device":          ("live", "local judge device (empty = mps if available, else cpu)"),
+    "judge_floor":           ("live", "local judge declines below this confidence (0 = never)"),
     "history_cap":           ("live", "transcript turns sent to the LLM each turn (0 = no limit)"),
     "geometry_log_days":     ("live", "days of geometry logs to keep (0 = keep all)"),
     "on_surface_standoff":   ("live", "metres an on-surface image floats off its host"),

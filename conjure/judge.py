@@ -195,9 +195,148 @@ class ClaudeJudge:
         return _verdict(text, options)
 
 
+def decide(scores: Sequence[float], options: Sequence[str], floor: float = 0.0) -> Verdict:
+    """Turn one score per option into a `Verdict` — the whole decision the local judge makes.
+
+    Pure and torch-free on purpose: this is where the argmax, the confidence and the abstention floor
+    live, so it is the part worth testing, and testing it must not cost a model load.
+
+    The softmax runs over ONLY the offered options, so the reported probability means "how sure
+    between these answers" rather than being diluted by a 150k-token vocabulary that was never on
+    offer. `-inf` marks an option whose letter the tokenizer could not produce; it scores zero and
+    cannot win.
+    """
+    import math
+
+    if not options:
+        return Verdict(-1, "", "no options offered")
+    finite = [x for x in scores if x != float("-inf")]
+    if not finite:
+        return Verdict(-1, "", "no option letter was representable")
+    top = max(finite)
+    exps = [math.exp(x - top) if x != float("-inf") else 0.0 for x in scores]
+    total = sum(exps) or 1.0
+    probs = [e / total for e in exps]
+    choice = max(range(len(options)), key=lambda i: probs[i])
+    conf = probs[choice]
+    raw = f"({_LETTERS[choice]}) p={conf:.3f}"
+    if conf < floor:
+        return Verdict(-1, "", f"{raw} < floor {floor:.3f} — declined")
+    return Verdict(choice, options[choice], raw)
+
+
+class LocalJudge:
+    """Judge via a local vision-language model — **the letter is read, never generated.**
+
+    Every question here is multiple choice and the answer is one letter, so this runs a single forward
+    pass and compares the logits of the candidate letter tokens. It does not sample, does not decode,
+    and does not parse. Four things follow, and the first two are why this backend exists:
+
+    * **Reproducible.** Same weights and same pixels give the same verdict, bit for bit. The hosted
+      judges provably do not: `backlogs/figures.md` records Gemini answering "no" then "yes" to
+      *identical images at temperature 0*, which cost four full 60-cell runs to attribute — "nothing
+      was moving except the model". A regression net that moves under you is not a net.
+    * **Private, and it cannot decline.** The figure corpus includes undressed exports, and a hosted
+      model refusing to look at one is a gap in the battery that reads like a pass.
+    * **Malformed answers are impossible.** The choice is an argmax over exactly the letters offered,
+      so `parse_choice` has nothing to fail at and an out-of-range letter cannot occur.
+    * **Cheap.** One prefill, zero decode — and no per-call cost, so the "generous budget" the eval
+      harness was designed around stops being a budget.
+
+    **Abstention is kept deliberately.** `choice == -1` is load-bearing (the recognition fixture must
+    DECLINE the wrong kneel), and a plain argmax always answers — which would score a perfect
+    abstention rate by destroying the signal. The primary decline path is unchanged and needs nothing
+    from this class: the caller offers "none of these" as an option and it wins on its own merits.
+    `floor` adds a second, opt-in net — abstain when the best candidate's share of the probability mass
+    is below it. Default 0.0 (off), because a floor chosen without measurement is a thumb on the scale.
+
+    The confidence is reported in `Verdict.raw` either way, so an advisory line a person reads says how
+    close the call was. Uses `torch` + `transformers` — already present for SigLIP embeddings — so this
+    needs a forward pass, not an inference server.
+    """
+
+    def __init__(self, model_id: str, *, device: str = "", floor: float = 0.0):
+        self.name = model_id
+        self._device = device
+        self._floor = floor
+        self._model = None
+        self._proc = None
+        self._torch = None
+
+    def _ensure(self) -> None:
+        if self._model is not None:
+            return
+        import torch
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        self._torch = torch
+        if not self._device:
+            self._device = "mps" if torch.backends.mps.is_available() else "cpu"
+        # bf16 on the GPU, fp32 on CPU. NOT fp16: it has the same 16 bits but far less exponent
+        # range, and these models are trained in bf16 — the narrow range is a known source of
+        # quiet quality loss rather than an error anyone would see. Half precision on CPU is
+        # slower, not faster, and the accuracy there is not spare either.
+        dtype = torch.float32 if self._device == "cpu" else torch.bfloat16
+        model = AutoModelForImageTextToText.from_pretrained(self.name, dtype=dtype)
+        self._model = model.to(self._device).eval()
+        self._proc = AutoProcessor.from_pretrained(self.name)
+
+    def _letter_ids(self, n: int) -> list[list[int]]:
+        """The token ids that would START each option's answer, one list per option.
+
+        A tokenizer may render "b" differently bare, capitalised, space-prefixed or after a bracket,
+        and which one the model reaches for is its habit, not ours. So every plausible surface form is
+        scored and the option takes its best — the alternative is guessing the convention and silently
+        measuring the guess.
+        """
+        tok = self._proc.tokenizer
+        out = []
+        for i in range(n):
+            ch = _LETTERS[i]
+            ids = set()
+            for variant in (ch, ch.upper(), f" {ch}", f" {ch.upper()}", f"({ch}", f"({ch.upper()}"):
+                enc = tok.encode(variant, add_special_tokens=False)
+                if enc:
+                    ids.add(enc[0])
+            out.append(sorted(ids))
+        return out
+
+    def _call(self, images: Sequence[Image], question: str, options: Sequence[str], mime: str) -> Verdict:
+        import io
+
+        from PIL import Image as PILImage
+
+        torch = self._torch
+        pics = [PILImage.open(io.BytesIO(data)).convert("RGB") for _, data in images]
+        content: list = [{"type": "image"} for _ in pics]
+        content.append({"type": "text", "text": prompt_for(images, question, options)})
+        chat = self._proc.apply_chat_template(
+            [{"role": "user", "content": content}], tokenize=False, add_generation_prompt=True)
+        inputs = self._proc(text=[chat], images=pics or None, return_tensors="pt")
+        inputs = {k: (v.to(self._device) if hasattr(v, "to") else v) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            logits = self._model(**inputs).logits[0, -1].float()
+
+        # One score per option: the best of its surface forms. The decision itself is `decide`.
+        scores = [
+            float(torch.max(logits[torch.tensor(ids, device=logits.device)]).item()) if ids
+            else float("-inf")
+            for ids in self._letter_ids(len(options))
+        ]
+        return decide(scores, options, self._floor)
+
+    async def choose(self, images, question, options, *, mime="image/png") -> Verdict:
+        import asyncio
+
+        self._ensure()
+        return await asyncio.to_thread(self._call, images, question, options, mime)
+
+
 #: Each backend's model when config doesn't name one, so `judge_model` can stay empty and still mean
 #: something sensible after a provider switch.
-_DEFAULT_MODELS = {"gemini": "gemini-2.5-flash", "claude": "claude-sonnet-4-6"}
+_DEFAULT_MODELS = {"gemini": "gemini-2.5-flash", "claude": "claude-sonnet-4-6",
+                   "local": "Qwen/Qwen3-VL-4B-Instruct"}
 
 
 def build_judge(settings, provider: str = "") -> Optional[Judge]:
@@ -224,5 +363,10 @@ def build_judge(settings, provider: str = "") -> Optional[Judge]:
             return ClaudeJudge(key, model)
         print("[conjure] judge_provider=claude but ANTHROPIC_API_KEY not set — no visual judging")
         return None
+    if backend == "local":
+        # No key to check — the failure mode here is a missing model or missing torch, and both are
+        # worth surfacing at the point of use with their own message rather than as a silent None.
+        return LocalJudge(model, device=getattr(settings, "judge_device", "") or "",
+                          floor=float(getattr(settings, "judge_floor", 0.0) or 0.0))
     print(f"[conjure] unknown judge_provider {backend!r} — no visual judging")
     return None

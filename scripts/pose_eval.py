@@ -489,7 +489,7 @@ def main() -> int:
     ap.add_argument("--phrases", default="", help="comma-separated phrase ids (default: all)")
     ap.add_argument("--rigs", default="", help="comma-separated rig names (default: the whole cast)")
     ap.add_argument("--llm", default="", help="director to steer, e.g. Claude / Gemini (default: active)")
-    ap.add_argument("--judge", default="", help="judge backend: gemini | claude | fake | none")
+    ap.add_argument("--judge", default="", help="judge backend: gemini | claude | local | fake | none")
     ap.add_argument("--calls-only", action="store_true",
                     help="score the tool call and stop — reads the rigs, but no Blender and no judge")
     ap.add_argument("--no-render", action="store_true", help="geometry but no pictures")
