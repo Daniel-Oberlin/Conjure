@@ -42,6 +42,12 @@ async def main() -> int:
     from conjure import mcp_server
 
     tools = await mcp_server.mcp.list_tools()
+    # Resources, not just tools. An agent's `context` list is the OTHER place a renamed capability
+    # hides, and it fails more quietly: `Director._fetch_context` skips a resource it cannot read
+    # (`except Exception: continue`), so a stale URI costs the agent its live scene with no error
+    # anywhere. Found the hard way — `room://current` outlived the rename that produced
+    # `space://current`, and an audit that only walked tools did not see it.
+    resources = {str(r.uri) for r in await mcp_server.mcp.list_resources()}
     by_name = {t.name: t for t in tools}
     everything = sum(_size(t) for t in tools)
 
@@ -64,11 +70,20 @@ async def main() -> int:
         if chars > widest[0]:
             widest = (chars, granted)
 
-    missing = {n for name in agent_names()
-               for ref in load_agent(name).servers for n in ref.tools} - set(by_name)
-    if missing:
-        # A grant naming a tool the server does not have is dead weight in the agent def, not context.
-        print(f"\n  granted but not on the server: {', '.join(sorted(missing))}")
+    for name in agent_names():
+        try:
+            agent = load_agent(name)
+        except Exception:
+            continue
+        gone = [n for ref in agent.servers for n in ref.tools if n not in by_name]
+        stale = [u for u in (agent.context or []) if u not in resources]
+        if gone:
+            # Dead weight in the agent def rather than context — it costs nothing but grants nothing.
+            print(f"\n  {name}: granted but not on the server: {', '.join(sorted(gone))}")
+        if stale:
+            # Worse than dead weight: the agent silently loses that slice of its live context.
+            print(f"\n  {name}: context resource does not exist: {', '.join(stale)}"
+                  f"\n{' ' * 4}(available: {', '.join(sorted(resources))})")
 
     if args.tools and widest[1]:
         print(f"\nthe widest agent's tools, largest first:\n")
