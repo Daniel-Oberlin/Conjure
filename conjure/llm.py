@@ -97,6 +97,16 @@ MAX_TOOL_HOPS = 24
 HOP_LIMIT_NOTICE = "I got stuck repeating myself, so I stopped there. Ask me again?"
 
 
+#: The tool search tool itself, when `tool_search` is on. Regex rather than BM25: our tool names are
+#: a controlled vocabulary with shared stems (`place_image`/`place_asset`, `style_surface`/`style_edges`),
+#: which regex matches predictably and BM25 scores by corpus statistics we have no reason to trust at 56
+#: documents. Swap via `tool_search_kind` if measurement disagrees.
+_TOOL_SEARCH = {
+    "regex": {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"},
+    "bm25": {"type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25"},
+}
+
+
 class ClaudeLLM:
     name: str
 
@@ -104,22 +114,119 @@ class ClaudeLLM:
         self.name = name
         self._api_key = api_key
         self.model = model
+        self._search = ""            # "" = off; else a key of _TOOL_SEARCH
+        self._always: tuple[str, ...] = ()
+        #: Per-hop token usage for the LAST turn only, as the provider reported it. `context_stats`
+        #: counts CHARS because that is the one figure comparable across four providers; this is the
+        #: other half — what a turn actually cost, which only the provider can say. Kept for
+        #: measurement (docs/plans/local-llms.md §5a), so it is a plain list and not a running total.
+        self.last_usage: list[dict] = []
+        self._cache = True           # prompt caching; see `_system_for`
+
+    def configure(self, settings) -> None:
+        """Read the provider-specific settings `ROSTER` construction does not carry.
+
+        Called by `build_roster` on any director that defines it, so a provider can have options
+        without every provider growing the same constructor.
+        """
+        self._cache = bool(getattr(settings, "prompt_cache", True))
+        if not getattr(settings, "tool_search", False):
+            return
+        kind = (getattr(settings, "tool_search_kind", "regex") or "regex").strip().lower()
+        self._search = kind if kind in _TOOL_SEARCH else "regex"
+        names = (getattr(settings, "tool_search_always", "") or "")
+        self._always = tuple(n.strip() for n in names.split(",") if n.strip())
+
+    def _tools_for(self, tools: list[ToolSpec]) -> list[dict]:
+        """The tool array as Anthropic receives it.
+
+        With `tool_search` off this is the whole catalog, as it always was. With it on, every tool is
+        marked `defer_loading` except the named always-loaded core, and the search tool goes in front:
+        Claude then sees the search tool plus the core, and pulls the rest in by reference only when a
+        turn actually needs them. The tools are unchanged — what changes is how many of their schemas
+        ride in the request. Deferral is the SDK's, not a beta: `defer_loading` is a field on the
+        standard tool param in `anthropic` 0.105.2 and needs no beta header.
+        """
+        out = [{"name": t.name, "description": t.description, "input_schema": t.input_schema}
+               for t in tools]
+        if self._cache and out:
+            # A SECOND breakpoint, and the one that survives a new turn. Tools render at position 0
+            # and a system-prompt content change preserves the tools cache — which matters here
+            # because the system prompt is NOT stable across turns: it carries the live `{context}`
+            # injection. Measured with a changing context and only the system marker, hop 1 of every
+            # turn wrote 19.4k and read nothing. With this marker the ~12.7k of tool schemas is read
+            # instead, turn after turn, and only the prompt is re-processed.
+            out[-1] = dict(out[-1], cache_control={"type": "ephemeral"})
+        if not self._search:
+            return out
+        for t in out:
+            if t["name"] not in self._always:
+                t["defer_loading"] = True
+        return [dict(_TOOL_SEARCH[self._search])] + out
+
+    def _system_for(self, system: str):
+        """The system prompt, with a cache breakpoint on it when caching is on.
+
+        This one marker is the whole optimisation, because of the order the API renders a request:
+        **`tools` → `system` → `messages`**. A breakpoint on the last system block therefore caches the
+        tool schemas *and* the prompt as one prefix — for the builder agent that is ~15k tokens that
+        would otherwise be re-sent, at full price, on every hop of every turn.
+
+        It works here because a director turn is a loop that only ever APPENDS to `messages`, and a
+        message-content change does not invalidate the tools or system caches. Hop 1 writes the prefix;
+        hops 2..n read it. Measured before this existed: three hops at 19,390 / 19,603 / 19,699 tokens,
+        with `cache_read_input_tokens` zero throughout.
+
+        Caching changes what a request COSTS, not what the model sees — so unlike tool search it needs
+        no behavioural regression testing, which is why it is on by default and tool search is not.
+
+        It is one of TWO breakpoints, and they cover different spans on purpose — see `_tools_for`
+        for the other. This one covers tools+system and is what hops 2..n of a turn read. It does NOT
+        survive into the next turn, because the prompt carries the live `{context}` injection and that
+        changes every turn (measured: hop 1 wrote 19.4k and read 0 on each of two turns). The tools
+        marker is the one that crosses turns.
+
+        The minimum cacheable prefix is 1024 tokens on Sonnet 4.6 (512 on Opus 5, 4096 on some others),
+        so a tiny agent like `scratch` silently will not cache — no error, just no entry.
+        """
+        if not self._cache:
+            return system
+        return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
     async def run_turn(self, *, system, history, user_text, tools, execute_tool, emit) -> str:
         import anthropic
 
         client = anthropic.AsyncAnthropic(api_key=self._api_key)
-        ant_tools = [{"name": t.name, "description": t.description, "input_schema": t.input_schema}
-                     for t in tools]
+        ant_tools = self._tools_for(tools)
         messages: list = [{"role": role, "content": text} for role, text in _messages(history)]
         messages.append({"role": "user", "content": user_text})
 
         final_text = ""
+        self.last_usage = []
         for _ in range(MAX_TOOL_HOPS):
-            resp = await client.messages.create(
-                model=self.model, max_tokens=1024, system=system, tools=ant_tools, messages=messages,
-            )
+            create: dict = {"model": self.model, "max_tokens": 1024,
+                            "system": self._system_for(system), "tools": ant_tools,
+                            "messages": messages}
+            if self._cache:
+                # Top-level auto-caching puts a second breakpoint on the growing conversation tail, so
+                # each hop also reads back the tool results the last hop appended. Paired with the
+                # system marker this is the documented shape for an agent loop; 2 of the 4 allowed
+                # breakpoints. Default 5-minute TTL is right — hops are seconds apart, and a read
+                # refreshes the timer, so the 2x write premium of the 1h TTL would buy nothing.
+                create["cache_control"] = {"type": "ephemeral"}
+            resp = await client.messages.create(**create)
+            u = getattr(resp, "usage", None)
+            if u is not None:
+                self.last_usage.append({
+                    "input": getattr(u, "input_tokens", 0) or 0,
+                    "output": getattr(u, "output_tokens", 0) or 0,
+                    "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
+                    "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+                })
             messages.append({"role": "assistant", "content": resp.content})
+            # Only CLIENT tool calls are ours to run. Tool search is a *server* tool: Anthropic runs it
+            # and hands back `tool_search_tool_result`, so it arrives as `server_tool_use` and must not
+            # be looked up in our MCP registry — it would 404 against a tool we never registered.
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             text = "".join(b.text for b in resp.content if b.type == "text").strip()
             if text:
@@ -127,6 +234,11 @@ class ClaudeLLM:
                 if not tool_uses:
                     final_text = text
             if not tool_uses:
+                # A server-side tool still in flight ends the response without ending the TURN. Going
+                # round again with the assistant block already echoed is how that is resumed; breaking
+                # here would silently truncate a turn that had only searched for its tools so far.
+                if getattr(resp, "stop_reason", None) == "pause_turn":
+                    continue
                 break
             results = []
             for tu in tool_uses:
@@ -553,8 +665,13 @@ def build_roster(settings: Settings) -> tuple[dict[str, LLM], str]:
     roster: dict[str, LLM] = {}
     for e in ROSTER:
         if e.director and getattr(settings, e.key_field):
-            roster[e.name] = e.director(e.name, getattr(settings, e.key_field),
-                                        getattr(settings, e.director_model_field))
+            llm = e.director(e.name, getattr(settings, e.key_field),
+                             getattr(settings, e.director_model_field))
+            # Opt-in hook for provider-specific settings, so one provider gaining an option does not
+            # widen every director's constructor. Absent on most of them, and that is the normal case.
+            if hasattr(llm, "configure"):
+                llm.configure(settings)
+            roster[e.name] = llm
     pref = (settings.llm or "").strip().lower()
     active = next((e.name for e in ROSTER if e.name in roster and e.name.lower() == pref), "")
     return roster, active or next(iter(roster), "")

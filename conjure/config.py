@@ -470,6 +470,16 @@ class Settings:
     # optional torch/transformers are installed, else stays off; "fake"/"none" for tests/disable.
     embed_backend: str = "auto"
     embed_model: str = "google/siglip2-so400m-patch14-384"
+    # What a director turn costs (docs/plans/local-llms.md §5a). Prompt caching is ON — it changes
+    # what a request COSTS, not what the model sees, so it needs none of the behavioural testing that
+    # gates tool search. Tool search is OFF: it changes what the model sees on every turn, and
+    # measured worse than caching on this workload. `tool_search_always` names the tools that stay in
+    # the request regardless — the ones a turn nearly always reaches for, where a search hop is a loss.
+    prompt_cache: bool = True
+    tool_search: bool = False
+    tool_search_kind: str = "regex"
+    tool_search_always: str = "query_world,query_space"
+
     # Caption backfill for assets with no label (docs/backlogs/library.md). Gemini multimodal by
     # default; "none"/"fake" to disable/test, "local" for an on-device VLM.
     caption_provider: str = "gemini"
@@ -569,6 +579,11 @@ def get_settings() -> Settings:
         tts=os.environ.get("CONJURE_TTS", "kokoro"),
         llm=os.environ.get("CONJURE_LLM", "claude"),
         llm_model=os.environ.get("CONJURE_LLM_MODEL", "claude-sonnet-4-6"),
+        prompt_cache=os.environ.get("CONJURE_PROMPT_CACHE", "1").strip().lower()
+                     not in ("0", "false", "no", "off"),
+        tool_search=os.environ.get("CONJURE_TOOL_SEARCH", "").strip().lower() in ("1", "true", "yes", "on"),
+        tool_search_kind=os.environ.get("CONJURE_TOOL_SEARCH_KIND", "regex"),
+        tool_search_always=os.environ.get("CONJURE_TOOL_SEARCH_ALWAYS", "query_world,query_space"),
         image_provider=os.environ.get("CONJURE_IMAGE_PROVIDER", "gemini"),
         image_model=os.environ.get("CONJURE_IMAGE_MODEL", "gemini-2.5-flash-image"),
         # Skyboxes wrap the whole view, so they use a higher-res model (Nano Banana Pro @ 4K).
@@ -687,6 +702,10 @@ SECRET_KEYS = frozenset({
 SETTABLE: dict[str, tuple[str, str]] = {
     # -- live: the next turn sees it
     "llm_model":             ("live", "Claude model the director runs on"),
+    "prompt_cache":          ("live", "cache the tools+system prefix across hops (on by default)"),
+    "tool_search":           ("live", "defer tool schemas and let Claude search for them"),
+    "tool_search_kind":      ("live", "tool search implementation: regex | bm25"),
+    "tool_search_always":    ("live", "tools that stay loaded when tool_search is on"),
     "gemini_model":          ("live", "Gemini director model"),
     "openai_director_model": ("live", "OpenAI director model"),
     "xai_director_model":    ("live", "Grok director model"),

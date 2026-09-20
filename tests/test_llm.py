@@ -126,7 +126,9 @@ async def test_claude_runs_tools_then_returns_final(monkeypatch):
     msgs = calls["last_kwargs"]["messages"]
     assert msgs[0] == {"role": "user", "content": "earlier"}
     assert msgs[1] == {"role": "assistant", "content": "hello"}
-    assert calls["last_kwargs"]["system"] == "SYS"
+    # System now rides as a block list so it can carry the cache breakpoint (see `_system_for`).
+    assert calls["last_kwargs"]["system"] == [
+        {"type": "text", "text": "SYS", "cache_control": {"type": "ephemeral"}}]
 
 
 # --------------------------------------------------------------------------- Gemini loop
@@ -585,3 +587,132 @@ async def test_grok_image_generate_decodes_b64_and_rides_extra_body(monkeypatch)
     # aspect_ratio + resolution are xAI extensions → extra_body, and bytes come back as b64_json
     assert _Images.kw["response_format"] == "b64_json"
     assert _Images.kw["extra_body"] == {"resolution": "2k", "aspect_ratio": "16:9"}
+
+
+# --------------------------------------------------------------------------- tool search (§5a)
+
+def _spec(name):
+    return ToolSpec(name, f"does {name}", {"type": "object"})
+
+
+def _claude(**settings_overrides):
+    llm = ClaudeLLM("Claude", "key", "claude-x")
+    llm.configure(_settings(**settings_overrides))
+    return llm
+
+
+def test_tool_search_is_off_by_default_and_the_request_is_unchanged():
+    """It changes what the model sees on every turn, so nothing happens until it is asked for."""
+    sent = _claude()._tools_for([_spec("place_asset"), _spec("query_world")])
+    assert [t["name"] for t in sent] == ["place_asset", "query_world"]
+    assert not any("defer_loading" in t for t in sent)
+
+
+def test_tool_search_defers_everything_except_the_always_loaded_core():
+    sent = _claude(tool_search=True, tool_search_always="query_world")._tools_for(
+        [_spec("place_asset"), _spec("query_world"), _spec("set_skybox")])
+    assert sent[0]["type"] == "tool_search_tool_regex_20251119"      # the search tool leads
+    deferred = {t["name"]: t.get("defer_loading", False) for t in sent[1:]}
+    assert deferred == {"place_asset": True, "query_world": False, "set_skybox": True}
+
+
+def test_the_tools_themselves_are_not_changed_by_deferral():
+    """Deferral is about how many schemas ride in the request, not about what the tools are — an
+    agent's granted set must be identical either way or scoping has quietly moved."""
+    tools = [_spec("place_asset"), _spec("query_world")]
+    off = {t["name"] for t in _claude()._tools_for(tools)}
+    on = {t["name"] for t in _claude(tool_search=True)._tools_for(tools)} - {"tool_search_tool_regex"}
+    assert off == on
+
+
+def test_bm25_can_be_selected_and_a_typo_falls_back_rather_than_sending_junk():
+    assert _claude(tool_search=True, tool_search_kind="bm25")._tools_for([])[0]["type"] \
+        == "tool_search_tool_bm25_20251119"
+    assert _claude(tool_search=True, tool_search_kind="wat")._tools_for([])[0]["type"] \
+        == "tool_search_tool_regex_20251119"
+
+
+def test_build_roster_configures_a_director_that_asks_for_it():
+    """`configure` is the opt-in hook — the roster must call it, or the setting is inert."""
+    roster, _ = build_roster(_settings(anthropic_api_key="k", tool_search=True))
+    assert roster["Claude"]._tools_for([_spec("x")])[0]["name"] == "tool_search_tool_regex"
+
+
+# --------------------------------------------------------------------------- prompt caching
+
+def test_caching_is_on_by_default_and_marks_the_system_block():
+    """Unlike tool search, caching changes cost and not what the model sees — so it defaults ON."""
+    sysblocks = ClaudeLLM("Claude", "k", "m")._system_for("PROMPT")
+    assert sysblocks == [{"type": "text", "text": "PROMPT",
+                          "cache_control": {"type": "ephemeral"}}]
+
+
+def test_caching_can_be_turned_off_and_then_system_is_a_plain_string():
+    llm = ClaudeLLM("Claude", "k", "m")
+    llm.configure(_settings(prompt_cache=False))
+    assert llm._system_for("PROMPT") == "PROMPT"
+
+
+def test_two_breakpoints_cover_two_different_spans():
+    """tools+system for the hops of one turn, and tools alone for the next turn — the system prompt
+    carries a per-turn injection, so a single marker on it caches nothing across turns."""
+    llm = ClaudeLLM("Claude", "k", "m")
+    sent = llm._tools_for([_spec("place_asset"), _spec("query_world")])
+    assert "cache_control" not in sent[0]              # only the LAST tool carries it
+    assert sent[-1]["cache_control"] == {"type": "ephemeral"}
+    assert llm._system_for("PROMPT")[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_no_tool_breakpoint_when_caching_is_off():
+    llm = ClaudeLLM("Claude", "k", "m")
+    llm.configure(_settings(prompt_cache=False))
+    assert not any("cache_control" in t for t in llm._tools_for([_spec("x")]))
+
+
+def test_the_tool_marker_does_not_disturb_the_tool_itself():
+    """`cache_control` is an annotation; the name/description/schema the model sees must be identical."""
+    llm = ClaudeLLM("Claude", "k", "m")
+    on = llm._tools_for([_spec("place_asset")])[0]
+    llm.configure(_settings(prompt_cache=False))
+    off = llm._tools_for([_spec("place_asset")])[0]
+    assert {k: v for k, v in on.items() if k != "cache_control"} == off
+
+
+async def test_a_cached_turn_still_sends_the_same_tools_and_messages(monkeypatch):
+    """Caching must only ANNOTATE the request — the tools and the turn's own content are unchanged,
+    and the provider's usage lands in `last_usage` so a measurement can read it."""
+    import anthropic
+
+    seen = {}
+
+    class _Msgs:
+        async def create(self, **kw):
+            # Copy: the loop appends the assistant turn to this very list afterwards.
+            seen["messages"] = list(kw["messages"])
+            seen["system"] = kw["system"]
+            seen["tools"] = kw["tools"]
+            seen["cache_control"] = kw.get("cache_control")
+            return type("R", (), {
+                "content": [_blk("text", text="hi")],
+                "stop_reason": "end_turn",
+                "usage": type("U", (), {"input_tokens": 5, "output_tokens": 1,
+                                        "cache_read_input_tokens": 4,
+                                        "cache_creation_input_tokens": 0})(),
+            })()
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic",
+                        lambda **kw: type("C", (), {"messages": _Msgs()})())
+
+    async def emit(text, *, final): pass
+    async def ex(name, args): return "ok"
+
+    llm = ClaudeLLM("Claude", "k", "m")
+    await llm.run_turn(system="SYS", history=[], user_text="hello",
+                       tools=[_spec("place_asset")], execute_tool=ex, emit=emit)
+
+    assert seen["cache_control"] == {"type": "ephemeral"}          # the growing tail
+    assert seen["system"][0]["cache_control"] == {"type": "ephemeral"}   # tools + prompt
+    assert [t["name"] for t in seen["tools"]] == ["place_asset"]
+    assert seen["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert seen["messages"] == [{"role": "user", "content": "hello"}]
+    assert llm.last_usage == [{"input": 5, "output": 1, "cache_read": 4, "cache_write": 0}]
