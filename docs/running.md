@@ -62,12 +62,20 @@ this doc + **`scripts/setup.sh`** (system libs), **`conjure/doctor.py`** (the ru
 pip install -e .                 # base — world server, MCP, CLI. No ML, no voice.
 pip install -e ".[voice]"        # + local STT/TTS (Whisper, Kokoro) and the voice loop. Pulls torch.
 pip install -e ".[embed]"        # + SigLIP embeddings: semantic + image-similarity asset search.
+pip install -e ".[vision]"       # + on-device captioning and pose judging (a local VLM). Includes [embed].
 pip install -e ".[dev]"          # + pytest, pytest-asyncio, respx.
 ```
 
 `[embed]` is separate on purpose: it's multi-GB, and the catalog runs fine without it on FTS5 + exact
 match. Install it to turn on `search_library`'s semantic half. On a machine with no GPU, use the CPU
 torch wheel to avoid the CUDA download.
+
+`[vision]` builds on `[embed]` — same torch + transformers — and adds **torchvision**, which `[embed]`
+does not need: SigLIP's processor handles stills, while a VLM's `AutoProcessor` pulls in a *video*
+processor that imports torchvision even when only stills are ever passed. It enables
+`caption_provider=local` and `judge_provider=local`; without it both report that the group is missing
+and stay off, rather than failing at the first image. The model weights are a separate multi-GB
+download, fetched from Hugging Face on first use.
 
 ## Manual system-dependency install
 

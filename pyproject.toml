@@ -35,6 +35,17 @@ embed = [
     "torch>=2.2",
     "transformers>=4.45",
 ]
+# Local vision-language backends (docs/plans/local-llms.md): `caption_provider=local` writes asset
+# captions on-device, `judge_provider=local` answers the pose harness's multiple-choice questions by
+# reading the candidate letters' logits. Same torch+transformers as `embed`, which is why it builds on
+# that group rather than repeating its pins — plus **torchvision**, which `embed` genuinely does not
+# need: SigLIP's processor is image-only, while a VLM's `AutoProcessor` pulls in a *video* processor
+# that imports torchvision even when only stills are ever passed. Omitting it fails at first caption,
+# not at install, which is why it is declared here rather than left to the error message.
+vision = [
+    "conjure[embed]",
+    "torchvision>=0.17",
+]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",

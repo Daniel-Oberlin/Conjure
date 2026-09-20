@@ -11,6 +11,7 @@ Pluggable behind `Captioner`; default `GeminiCaptioner` (google-genai, the exist
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import re
 from typing import Optional, Protocol, runtime_checkable
 
@@ -170,6 +171,10 @@ def clean_caption(text: str) -> str:
     return first.strip().strip('"').strip("'").rstrip(".").strip()
 
 
+def _have(*mods: str) -> bool:
+    return all(importlib.util.find_spec(m) is not None for m in mods)
+
+
 def build_captioner(settings) -> Optional[Captioner]:
     """Pick the captioner backend from config, or None if it can't run (the backfill is then a no-op)."""
     backend = (getattr(settings, "caption_provider", "gemini") or "gemini").strip().lower()
@@ -184,7 +189,13 @@ def build_captioner(settings) -> Optional[Captioner]:
         print("[conjure] caption_provider=gemini but GOOGLE_API_KEY not set — captioning off")
         return None
     if backend == "local":
-        # Nothing to be missing — no key, no network. A bad model id fails loudly at first use.
+        # No key and no network to be missing — but the deps can be. Degrade to None with a message
+        # naming the group, the same way `build_embedder` does, rather than letting it surface as an
+        # ImportError from inside `AutoProcessor` on the first image someone imports.
+        if not _have("torch", "transformers", "torchvision"):
+            print("[conjure] caption_provider=local but torch/transformers/torchvision not installed "
+                  "— captioning off (install the optional 'vision' dependency group)")
+            return None
         model = (getattr(settings, "caption_model", "") or "").strip()
         if not model or model.startswith("gemini"):   # the default belongs to the other backend
             model = LOCAL_CAPTION_MODEL

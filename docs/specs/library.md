@@ -431,7 +431,9 @@ Its linking rules are `conjure/capture_set.py`.
 none of the mutators ([`specs/agents.md §4`](./agents.md)).
 
 **Config:** `embed_backend`, `embed_model`, `caption_*`. **Deps:** `sqlite-vec` is core; `torch` +
-`transformers` are the optional `[embed]` group.
+`transformers` are the optional `[embed]` group; `caption_provider=local` additionally needs
+`torchvision`, which is the `[vision]` group. A missing group turns the feature off with a message
+naming it — never a boot failure and never an ImportError mid-ingest.
 
 ## 10. Related specs
 

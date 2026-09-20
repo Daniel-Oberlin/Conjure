@@ -530,3 +530,13 @@ def test_every_pose_whose_arms_hang_asserts_that_they_clear():
         assert any(p[0] == "clears" for p in pose.signature), f"{name} has hanging arms and no clearance"
     # ...and the aim carries a real outward component rather than being plumb.
     assert resolve("stand").bones["leftUpperArm"]["aim"][0] > 0.05
+
+
+def test_local_judging_is_off_rather_than_a_crash_when_the_deps_are_absent(monkeypatch, capsys):
+    """None is a legitimate outcome: the harness still runs its geometry pass and reports that
+    nothing looked at the pictures. An ImportError mid-battery is not."""
+    import conjure.judge as j
+
+    monkeypatch.setattr(j, "_have", lambda *mods: False)
+    assert build_judge(_Settings(provider="local")) is None
+    assert "vision" in capsys.readouterr().out

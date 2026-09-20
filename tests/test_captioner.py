@@ -58,3 +58,25 @@ def test_a_colon_inside_the_description_survives():
     """The preamble strip is guarded by length, because a caption can legitimately contain a colon."""
     long_left = "a diner sign reading open all night: neon lettering at dusk"
     assert clean_caption(long_left) == long_left
+
+
+def test_local_captioning_is_off_rather_than_a_crash_when_the_deps_are_absent(monkeypatch, capsys):
+    """A fresh install without the `vision` group must degrade like every other backend here — None
+    and a message naming the group — not an ImportError raised from inside `AutoProcessor` on the
+    first image someone imports."""
+    import conjure.captioner as c
+
+    monkeypatch.setattr(c, "_have", lambda *mods: False)
+    assert build_captioner(_S("local")) is None
+    assert "vision" in capsys.readouterr().out
+
+
+def test_the_deps_it_checks_for_include_torchvision(monkeypatch):
+    """torchvision is the easy one to forget: `embed` does not need it, but a VLM's AutoProcessor
+    pulls in a video processor that imports it even for stills."""
+    import conjure.captioner as c
+
+    asked = []
+    monkeypatch.setattr(c, "_have", lambda *mods: asked.extend(mods) or True)
+    build_captioner(_S("local"))
+    assert {"torch", "transformers", "torchvision"} <= set(asked)

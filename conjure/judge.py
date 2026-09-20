@@ -21,6 +21,7 @@ geometry pass alone rather than failing.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import re
 from dataclasses import dataclass
 from typing import Optional, Protocol, Sequence, runtime_checkable
@@ -339,6 +340,10 @@ _DEFAULT_MODELS = {"gemini": "gemini-2.5-flash", "claude": "claude-sonnet-4-6",
                    "local": "Qwen/Qwen3-VL-4B-Instruct"}
 
 
+def _have(*mods: str) -> bool:
+    return all(importlib.util.find_spec(m) is not None for m in mods)
+
+
 def build_judge(settings, provider: str = "") -> Optional[Judge]:
     """Pick the judge backend from config (or an explicit override), or None if it can't run.
 
@@ -364,8 +369,13 @@ def build_judge(settings, provider: str = "") -> Optional[Judge]:
         print("[conjure] judge_provider=claude but ANTHROPIC_API_KEY not set — no visual judging")
         return None
     if backend == "local":
-        # No key to check — the failure mode here is a missing model or missing torch, and both are
-        # worth surfacing at the point of use with their own message rather than as a silent None.
+        # No key to check, but the deps can be absent. Same contract as every other backend here:
+        # None plus a message, so the harness still runs its geometry pass and says nobody looked at
+        # the pictures — rather than an ImportError from inside `AutoProcessor` mid-battery.
+        if not _have("torch", "transformers", "torchvision"):
+            print("[conjure] judge_provider=local but torch/transformers/torchvision not installed "
+                  "— no visual judging (install the optional 'vision' dependency group)")
+            return None
         return LocalJudge(model, device=getattr(settings, "judge_device", "") or "",
                           floor=float(getattr(settings, "judge_floor", 0.0) or 0.0))
     print(f"[conjure] unknown judge_provider {backend!r} — no visual judging")
