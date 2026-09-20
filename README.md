@@ -58,7 +58,7 @@ Specs: [spaces](./docs/specs/spaces.md) (the record) ·
         ┌───────────┐  WS   │              │       │ + assets/gen │             └──────────────┘
         │    CLI    │ ◀───▶ └──────┬───────┘       └──────┬───────┘
         └───────────┘              └──────────────────────┤ follows the live world/session over /ws
-                                    Poly Pizza (models) · Gemini/OpenAI (images) · local Whisper/Kokoro
+                                    Poly Pizza (models) · Gemini/OpenAI (images) · local Whisper/Kokoro/SigLIP/VLM
 ```
 
 - **World server** (`conjure/server.py`, FastAPI) owns one declarative world document, applies

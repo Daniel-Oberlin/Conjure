@@ -46,7 +46,20 @@ in the context.
 
 The roster (casual name → vendor/key/models/roles) lives in **one place**: the `ROSTER` table in
 `conjure/llm.py`. Add a row and it's instantly a director and/or image generator everywhere.
-| 💡 Local Ollama (Qwen / Llama w/ tool-calling) | local | Zero-key / offline director. Works, but tool-calling is less reliable — experimentation, not the robust default. |
+| 💡 Local Ollama (Qwen / Llama w/ tool-calling) | local | Zero-key / offline director. Works, but tool-calling is less reliable — experimentation, not the robust default. **Not yet built**; blocked behind tool-surface reduction, since the builder agent ships ~15k tokens of tools + prompt before a word is said ([plans/local-llms.md](./plans/local-llms.md) §1, §5b). |
+
+**Prompt caching (Anthropic).** ✅ **On by default** (`prompt_cache`). Two `cache_control` breakpoints:
+the last **tool** definition, which survives into the next turn because a system-prompt change
+preserves the tools cache — load-bearing here, since the prompt carries the per-turn `{context}`
+injection — and the last **system** block, which covers tools+prompt for the hops within a turn, plus
+top-level auto-caching for the message tail. **Measured 88% cheaper** over three turns
+([plans/local-llms.md](./plans/local-llms.md) §5a-caching). Not yet done for Gemini/OpenAI.
+
+**Tool search (Anthropic).** `defer_loading` marks a tool discoverable-but-not-loaded and Claude pulls
+it in on demand. GA in `anthropic` 0.105.2 — a field on the standard tool param, no beta header. Built
+behind `tool_search` (**off** by default). Measured: it does cut the tool block 96%, but the turn took
+6 hops instead of 3 and ran slower — **prompt caching beats it on this workload** and costs no
+behaviour risk.
 
 ### Text-to-speech (TTS)
 | Option | Hosting | Notes |
@@ -97,6 +110,17 @@ one explicitly (clear error if it can't do the job), or omit it for the hard-cod
 **Defaults per op:** Gemini for generate/edit/outpaint/skybox; **transparency steers to OpenAI**. The
 LLM should omit the generator unless the user asked for a specific one or needs a capability the
 default lacks.
+
+### Image → text (captions, verdicts)
+Two seams, same shape, different return type: a **caption** is prose for search
+(`conjure/captioner.py`), a **verdict** is a constrained multiple-choice answer
+(`conjure/judge.py`).
+
+| Option | Hosting | Notes |
+|---|---|---|
+| ✅ **Gemini 2.5 Flash** | cloud | Default for both. Best recognition accuracy measured so far. |
+| ✅ **Claude** (judge only) | cloud | Same key as the director; for rubric-heavy questions. |
+| ✅ **Local VLM** (`Qwen3-VL`, transformers + MPS) | local | `caption_provider=local` / `judge_provider=local`. No key, no server, no runtime — `torch` + `transformers` are already present for SigLIP. **The judge reads the answer from the candidate letters' logits instead of generating it**, so a malformed answer is impossible and the verdict is bit-reproducible — which the hosted models provably are not (they flip on identical images at temperature 0). **Captioning: good enough today. Judging: 4B is not** — 27/39 misidentified vs Gemini's 7. See [plans/local-llms.md](./plans/local-llms.md) §2e, §3a. |
 
 ### Image processing — up-res & outpainting (vision §5)
 | Option | Hosting | Notes |
