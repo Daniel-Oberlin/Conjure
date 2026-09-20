@@ -80,6 +80,23 @@ def _messages(history: list[Turn]) -> list[tuple[str, str]]:
 
 # =================================================================== director LLMs
 
+#: Per-hop token usage, normalised so the fields mean the SAME thing for every provider — which they
+#: do not on the wire. Anthropic reports `input_tokens` as the UNCACHED remainder, with cache reads
+#: counted separately; OpenAI and Google report a prompt total that INCLUDES the cached part. Left
+#: raw, "input" would mean two different things and a comparison between providers would silently
+#: read as a 90% gap that is only a difference in accounting. So every adapter stores:
+#:
+#:   input       — tokens processed at full price this hop (never includes cached ones)
+#:   cache_read  — tokens served from a cache (Anthropic ~0.1x, OpenAI 0.5x, Gemini up to 0.25x)
+#:   cache_write — tokens written INTO a cache (Anthropic only; the others never charge for a write)
+#:   output      — generated tokens
+#:
+#: `context_stats` counts chars because that is comparable across providers a priori; this is what the
+#: provider says afterwards, which is the only ground truth about what a turn actually cost.
+def _usage(*, input: int, output: int, cache_read: int = 0, cache_write: int = 0) -> dict:
+    return {"input": max(0, input), "output": output,
+            "cache_read": cache_read, "cache_write": cache_write}
+
 # A turn is a loop — call tools, feed the results back, repeat until the model stops asking. Nothing in
 # the protocol guarantees it ever stops: a model can answer every tool result with the same tool call
 # forever, and each hop costs an API call and broadcasts a patch to every client. Observed 2026-08-28
@@ -217,12 +234,12 @@ class ClaudeLLM:
             resp = await client.messages.create(**create)
             u = getattr(resp, "usage", None)
             if u is not None:
-                self.last_usage.append({
-                    "input": getattr(u, "input_tokens", 0) or 0,
-                    "output": getattr(u, "output_tokens", 0) or 0,
-                    "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
-                    "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
-                })
+                # Anthropic already reports `input_tokens` as the uncached remainder — no subtraction.
+                self.last_usage.append(_usage(
+                    input=getattr(u, "input_tokens", 0) or 0,
+                    output=getattr(u, "output_tokens", 0) or 0,
+                    cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
+                    cache_write=getattr(u, "cache_creation_input_tokens", 0) or 0))
             messages.append({"role": "assistant", "content": resp.content})
             # Only CLIENT tool calls are ours to run. Tool search is a *server* tool: Anthropic runs it
             # and hands back `tool_search_tool_result`, so it arrives as `server_tool_use` and must not
@@ -258,6 +275,7 @@ class GeminiLLM:
         self.name = name
         self._api_key = api_key
         self.model = model
+        self.last_usage: list[dict] = []
 
     async def run_turn(self, *, system, history, user_text, tools, execute_tool, emit) -> str:
         from google import genai
@@ -282,9 +300,19 @@ class GeminiLLM:
         contents.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
 
         final_text = ""
+        self.last_usage = []
         for _ in range(MAX_TOOL_HOPS):
             resp = await client.aio.models.generate_content(
                 model=self.model, contents=contents, config=config)
+            m = getattr(resp, "usage_metadata", None)
+            if m is not None:
+                # Implicit caching is on by default for 2.5 models and has no request-side opt-in;
+                # `cached_content_token_count` is a SUBSET of `prompt_token_count`, so subtract it.
+                cached = getattr(m, "cached_content_token_count", 0) or 0
+                self.last_usage.append(_usage(
+                    input=(getattr(m, "prompt_token_count", 0) or 0) - cached,
+                    output=getattr(m, "candidates_token_count", 0) or 0,
+                    cache_read=cached))
             cand = (resp.candidates or [None])[0]
             parts = (cand.content.parts if cand and cand.content else []) or []
             calls = [p.function_call for p in parts if getattr(p, "function_call", None)]
@@ -321,6 +349,7 @@ class _OpenAICompatibleLLM:
         self.name = name
         self._api_key = api_key
         self.model = model
+        self.last_usage: list[dict] = []
 
     def _client(self):
         from openai import AsyncOpenAI
@@ -329,6 +358,29 @@ class _OpenAICompatibleLLM:
         if self.base_url:
             kwargs["base_url"] = self.base_url
         return AsyncOpenAI(**kwargs)
+
+    def _cache_key(self, tools: list[ToolSpec]) -> Optional[str]:
+        """A routing hint so repeated requests with the same prefix land on the same backend.
+
+        OpenAI's caching is automatic and needs no opt-in, but it is *best effort*: a hit requires the
+        request to reach a machine that already holds the prefix, and measured here the same prompt
+        cached 0, then 1,792, then 0 tokens across three consecutive turns. `prompt_cache_key` is the
+        documented lever for exactly that — same key, same backend.
+
+        Keyed on the TOOL SET, because that is the part of the prefix that is actually stable: the
+        system prompt carries a per-turn `{context}` injection, and the messages differ every turn.
+        Two agents with different grants get different keys and are not competing for one backend's
+        cache.
+
+        OpenAI only — `base_url` set means a vendor merely mirroring the API (xAI), which need not
+        accept the field, and an unknown parameter is a 400 rather than a graceful ignore.
+        """
+        if self.base_url or not tools:
+            return None
+        import hashlib
+
+        names = ",".join(sorted(t.name for t in tools))
+        return "conjure-" + hashlib.sha256(names.encode()).hexdigest()[:16]
 
     async def run_turn(self, *, system, history, user_text, tools, execute_tool, emit) -> str:
         import json
@@ -339,13 +391,27 @@ class _OpenAICompatibleLLM:
         messages: list = [{"role": "system", "content": system}]
         messages += [{"role": role, "content": text} for role, text in _messages(history)]
         messages.append({"role": "user", "content": user_text})
+        cache_key = self._cache_key(tools)
 
         final_text = ""
+        self.last_usage = []
         for _ in range(MAX_TOOL_HOPS):
             kwargs: dict = {"model": self.model, "messages": messages}
             if oa_tools:
                 kwargs["tools"] = oa_tools
+            if cache_key:
+                kwargs["prompt_cache_key"] = cache_key
             resp = await client.chat.completions.create(**kwargs)
+            u = getattr(resp, "usage", None)
+            if u is not None:
+                # Caching is automatic above 1024 tokens — there is no request-side switch. As with
+                # Gemini, `cached_tokens` is a subset of `prompt_tokens`, not a sibling of it.
+                details = getattr(u, "prompt_tokens_details", None)
+                cached = (getattr(details, "cached_tokens", 0) or 0) if details else 0
+                self.last_usage.append(_usage(
+                    input=(getattr(u, "prompt_tokens", 0) or 0) - cached,
+                    output=getattr(u, "completion_tokens", 0) or 0,
+                    cache_read=cached))
             msg = resp.choices[0].message
             tool_calls = [tc for tc in (msg.tool_calls or []) if tc.type == "function"]
             text = (msg.content or "").strip()

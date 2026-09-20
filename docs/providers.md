@@ -53,7 +53,15 @@ the last **tool** definition, which survives into the next turn because a system
 preserves the tools cache — load-bearing here, since the prompt carries the per-turn `{context}`
 injection — and the last **system** block, which covers tools+prompt for the hops within a turn, plus
 top-level auto-caching for the message tail. **Measured 88% cheaper** over three turns
-([plans/local-llms.md](./plans/local-llms.md) §5a-caching). Not yet done for Gemini/OpenAI.
+([plans/local-llms.md](./plans/local-llms.md) §5a-caching).
+
+**The other two cache automatically — there is nothing to switch on, only something to verify.**
+OpenAI: best-effort above 1024 tokens; `prompt_cache_key` (keyed on the tool set) took it from ~5% to
+99% of the prefix, though it still misses some turns. Withheld from xAI, which mirrors the API but
+need not accept the field. Gemini: implicit caching is on by default and measures **~5%** — the only
+lever left is explicit `cachedContents`, judged not worth its lifecycle for a roster alternate. All
+three adapters now report per-hop usage in a normalised form (`input` never includes cached tokens,
+which on the wire it does for OpenAI and Google but not Anthropic).
 
 **Tool search (Anthropic).** `defer_loading` marks a tool discoverable-but-not-loaded and Claude pulls
 it in on demand. GA in `anthropic` 0.105.2 — a field on the standard tool param, no beta header. Built

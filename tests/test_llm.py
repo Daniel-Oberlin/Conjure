@@ -716,3 +716,77 @@ async def test_a_cached_turn_still_sends_the_same_tools_and_messages(monkeypatch
     assert seen["tools"][-1]["cache_control"] == {"type": "ephemeral"}
     assert seen["messages"] == [{"role": "user", "content": "hello"}]
     assert llm.last_usage == [{"input": 5, "output": 1, "cache_read": 4, "cache_write": 0}]
+
+
+# --------------------------------------------------------------------------- the other two providers
+
+def test_the_openai_cache_key_is_stable_for_a_tool_set_and_differs_between_them():
+    """Same prefix -> same backend. Keyed on the TOOL SET because that is the stable part: the system
+    prompt carries a per-turn injection and the messages differ every turn."""
+    llm = OpenAILLM("Chat", "k", "m")
+    a = llm._cache_key([_spec("place_asset"), _spec("query_world")])
+    b = llm._cache_key([_spec("query_world"), _spec("place_asset")])   # order must not matter
+    c = llm._cache_key([_spec("place_asset")])
+    assert a == b and a != c and a.startswith("conjure-")
+
+
+def test_no_cache_key_for_a_vendor_that_only_mirrors_the_api():
+    """`prompt_cache_key` is OpenAI's. xAI reuses the Chat Completions shape but need not accept the
+    field, and an unknown parameter is a 400 rather than a graceful ignore."""
+    assert GrokLLM("Grok", "k", "m")._cache_key([_spec("x")]) is None
+    assert OpenAILLM("Chat", "k", "m")._cache_key([]) is None
+
+
+async def test_the_openai_turn_sends_the_cache_key(monkeypatch):
+    import openai
+
+    seen = {}
+
+    class _Completions:
+        async def create(self, **kw):
+            seen.update(kw)
+            return type("R", (), {
+                "choices": [type("C", (), {"message": type("M", (), {
+                    "content": "hi", "tool_calls": None})()})()],
+                "usage": type("U", (), {
+                    "prompt_tokens": 9000, "completion_tokens": 12,
+                    "prompt_tokens_details": type("D", (), {"cached_tokens": 8000})()})(),
+            })()
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kw: type(
+        "C", (), {"chat": type("Ch", (), {"completions": _Completions()})()})())
+
+    llm = OpenAILLM("Chat", "k", "m")
+    async def emit(t, *, final): pass
+    async def ex(n, a): return "ok"
+    await llm.run_turn(system="SYS", history=[], user_text="hello",
+                       tools=[_spec("place_asset")], execute_tool=ex, emit=emit)
+    assert seen["prompt_cache_key"] == llm._cache_key([_spec("place_asset")])
+    # `cached_tokens` is a SUBSET of `prompt_tokens` here, unlike Anthropic — it must be subtracted
+    # out, or "input" means something different depending on which provider answered.
+    assert llm.last_usage == [{"input": 1000, "output": 12,
+                               "cache_read": 8000, "cache_write": 0}]
+
+
+async def test_gemini_usage_subtracts_the_cached_subset_too(monkeypatch):
+    from google import genai
+
+    class _Models:
+        async def generate_content(self, **kw):
+            return type("R", (), {
+                "candidates": [type("C", (), {"content": type("Ct", (), {"parts": []})()})()],
+                "usage_metadata": type("U", (), {
+                    "prompt_token_count": 5000, "candidates_token_count": 7,
+                    "cached_content_token_count": 4000})(),
+            })()
+
+    monkeypatch.setattr(genai, "Client", lambda **kw: type(
+        "C", (), {"aio": type("A", (), {"models": _Models()})()})())
+
+    llm = GeminiLLM("Gemini", "k", "m")
+    async def emit(t, *, final): pass
+    async def ex(n, a): return "ok"
+    await llm.run_turn(system="SYS", history=[], user_text="hi",
+                       tools=[], execute_tool=ex, emit=emit)
+    assert llm.last_usage == [{"input": 1000, "output": 7,
+                               "cache_read": 4000, "cache_write": 0}]

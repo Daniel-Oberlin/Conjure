@@ -443,6 +443,61 @@ which is an argument about quality, not tokens, and would need the harness to te
 when a local director makes the provider-neutral half matter. Caching for the other roster providers
 (Gemini, OpenAI) is the better-value follow-up and is the same shape of change.
 
+### 5a-caching-others. Gemini and OpenAI (2026-09-19)
+
+**Neither has a `cache_control` equivalent — both cache automatically, and the work is measuring
+whether they actually do.** OpenAI caches any prompt over 1024 tokens in 128-token increments; Gemini
+2.5 has implicit caching on by default over the same threshold. Nothing to switch on.
+
+Measured on the builder agent with `{context}` changing every turn (the production shape), after
+teaching both adapters to report usage:
+
+| | before | after |
+|---|---|---|
+| **OpenAI** gpt-4.1 (13,129-token prompt) | 0 / 1,792 / 0 cached | **13,056 / 13,056 / 0** |
+| **Gemini** 2.5-flash (29,630-token prompt) | — | 0 / 0 / 1,990 / 1,982 / 3,974 / 1,991 → **~5%** |
+
+**OpenAI: fixed, with a routing hint.** Automatic caching is *best effort* — a hit needs the request
+to reach a machine that already holds the prefix, which is why the same prompt cached 0, then 1,792,
+then 0. `prompt_cache_key` is the documented lever, and it took hits from ~5% to **99.4%** on two turns
+of three. Keyed on the **tool set**, because that is the part of the prefix that is genuinely stable
+(the system prompt carries the per-turn injection); two agents with different grants get different
+keys rather than competing for one backend. Withheld from xAI, which mirrors the API but need not
+accept the field — an unknown parameter there is a 400, not a graceful ignore.
+
+It is still best effort: turn 3 cached nothing. Unlike Anthropic's explicit breakpoints, there is no
+way to make it a guarantee.
+
+**Gemini: implicit caching is on, and doing almost nothing** — 0–13%, averaging ~5% of a 29,630-token
+prompt, consistently across six turns. There is no routing hint. The only remaining lever is
+**explicit context caching** (`cachedContents`): create a cache object, hold a TTL, manage its
+lifecycle. **Not recommended now** — that is real lifecycle machinery for a roster alternate rather
+than the default director, and the same effort spent on the structural fix below would help all three.
+
+### What the three providers together actually say
+
+| provider | mechanism | control | measured |
+|---|---|---|---|
+| Anthropic | explicit `cache_control` | full — breakpoints where we choose | **84%** of the prefix, reliably |
+| OpenAI | automatic + `prompt_cache_key` | routing hint only | 99% when it lands, 0% when it does not |
+| Gemini | implicit only | none | ~5% |
+
+**The structural fix is the one that would help everywhere.** All three cache by prefix and all three
+say the same thing: keep the front stable, put what varies at the end. Conjure puts the live
+`{context}` injection *inside the system prompt*, which is at the front. Anthropic's tools breakpoint
+routes around that; OpenAI survives it only because the injection sits at the very end of the prompt
+(line 75 of 76) and the 128-token granularity forgives the tail; Gemini does not survive it at all.
+
+Moving that injection out of the system prompt and into a trailing message would put the volatile
+content where every provider's documentation asks for it. It is a change to what the model sees —
+position, not content — so unlike caching it is not free of behavioural risk, and it wants the harness
+from §9. **This is the highest-value item left on this plan.**
+
+**Incidental, and operational:** gpt-4.1 has a 30,000 TPM limit on this account, and a builder turn is
+~13k tokens — so the OpenAI director throttles after about two turns a minute. Caching does not help;
+cached tokens still count toward TPM. Gemini's tokenizer counts the same prompt as 29,630 tokens
+against OpenAI's 13,129, so "15k of context" is model-relative.
+
 ### 5b. `search_tools` — the provider-neutral layer
 
 Today's scoping is **static**: an agent's `ServerRef.tools` allow-list is fixed at load. The proposal
