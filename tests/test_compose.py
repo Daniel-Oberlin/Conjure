@@ -646,3 +646,114 @@ def test_the_capture_name_is_not_in_the_bytes(tmp_path):
     mark = _parse(first)["extras"]["conjure"]
     assert "capture" not in mark
     assert set(mark) == {"thing", "scene", "pieces", "hidden", "rebound", "containers", "shown"}
+
+
+# ---------------------------------------------------------------- situations the full set of 58 found
+
+
+def test_a_second_thing_with_the_same_name_does_not_overwrite_the_first(tmp_path):
+    """The guard said "never silently overwrite" and did the opposite: it only looked for a new name
+    when the file existed AND this run had not written it. So a second same-named thing overwrote the
+    first, and a re-run into the same directory suffixed every file instead of replacing it."""
+    import json
+    from conjure.compose import compose_build
+    root = _build(tmp_path, scene_tree=("unused", {}, []),
+                  renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                  glbs=[("files/body.glb", _glb([("a", [3]), ("b", [4])]))])
+    # Two things with ONE name, side by side under Root — what `_scene` cannot express.
+    ents = {"r": {"name": "Root", "children": ["p1", "p2"]},
+            "p1": {"name": "Prop", "children": ["m1"]}, "m1": {"name": "mesh", "children": [], **_render(10, 0, [30])},
+            "p2": {"name": "Prop", "children": ["m2"]}, "m2": {"name": "mesh", "children": [], **_render(10, 1, [31])}}
+    (tmp_path / "scene.json").write_text(json.dumps({"entities": ents}))
+    out = str(tmp_path / "out")
+    for _run in range(2):
+        made, _problems = compose_build(root, out, decode=False)
+        assert sorted(os.path.basename(m) for m in made) == ["Prop-2.glb", "Prop.glb"]
+    assert sorted(os.listdir(out)) == ["Prop-2.glb", "Prop.glb"], "a re-run replaces, it does not pile up"
+
+
+def test_a_material_the_registry_never_had_does_not_fail_the_thing(tmp_path):
+    """fucked.in.basement binds a doorframe and two chains to material ids in no `config.json`. The site
+    draws those with its default material and so does a glTF primitive with none, so the file already
+    matches what runs; failing it made the capture exit 1 for something no re-download can change."""
+    tree = ("Chains", {}, [("Chain", _render(10, 0, [99999]), [])])
+    build, thing = _one(tree, tmp_path, renders=[(10000, "Chain", 10, 0)],
+                        glbs=[("files/body.glb", _glb([("Chain", [3])]))])
+    data, _notes = compose_thing(build, thing)
+    assert verify_thing(build, thing, data) == []
+
+
+def test_a_hidden_part_is_named_so_the_client_hides_exactly_it(tmp_path):
+    """The runtime hides by node name, after three's loader has renamed repeats `_1`, `_2`. rave.wc's
+    washroom has `Stall_Door` three times — a group, a switched-off door and a drawn one — and hiding
+    "Stall_Door" hid whichever loaded first. Pieces now get unique names; the scene's name is kept."""
+    from conjure.compose import loader_name
+    tree = ("Toalety", {}, [
+        ("Stall_Door", {}, [("stall", {}, [])]),                                   # a GROUP, not a piece
+        ("Blue", {}, [("Stall_Door", {**_render(10, 0, [30]), "enabled": False}, [])]),
+        ("White", {}, [("Stall_Door", _render(10, 1, [30]), [])]),
+    ])
+    build, thing = _one(tree, tmp_path, renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                        glbs=[("files/body.glb", _glb([("a", [3]), ("b", [3])]))])
+    data, _notes = compose_thing(build, thing)
+    assert verify_thing(build, thing, data) == []
+    doc = _parse(data)
+    hidden = doc["extras"]["conjure"]["hidden"]
+    seen = [loader_name(n["name"]) for n in doc["nodes"]]
+    assert len(hidden) == 1 and seen.count(loader_name(hidden[0])) == 1
+    off = next(n for n in doc["nodes"] if n.get("name") == hidden[0])
+    assert off["extras"]["conjure"]["optional"] is True, "and it is the switched-off door that is hidden"
+    assert off["extras"]["conjure"]["entity"] == "Stall_Door", "the scene's own name is kept"
+    assert any(n.get("name") == "Stall_Door" and n.get("mesh") is None for n in doc["nodes"]), \
+        "the group keeps its name — only drawn pieces are renamed"
+
+
+def test_the_verifier_judges_a_hidden_name_as_the_client_will_load_it(tmp_path):
+    """Bianca's two `underwear` meshes were both in the list and both named `underwear`, so a raw-name
+    check passed while the loader called the second `underwear_1` and the runtime left it drawn."""
+    build, thing = _figure_build(tmp_path)
+    data, _n = compose_thing(build, thing)
+
+    def twin(doc):
+        doc["nodes"][_named(doc)["Dress"]]["name"] = "Slip"
+    assert any("cannot reach exactly this one" in p for p in verify_thing(build, thing, _tamper(data, twin)))
+
+    def dotted(doc):   # distinct raw names that the loader turns into one
+        doc["nodes"][_named(doc)["Dress"]]["name"] = "Sl.ip"
+        doc["nodes"][_named(doc)["Slip"]]["name"] = "Slip"
+        doc["extras"]["conjure"]["hidden"] = ["Slip"]
+    assert any("cannot reach exactly this one" in p for p in verify_thing(build, thing, _tamper(data, dotted)))
+
+
+def test_rigs_that_reuse_bone_names_each_keep_their_own_bones(tmp_path):
+    """underwater's MOVING group holds three fish, each its own subtree with its own `core`, `spine01`.
+    Bones keyed by name, first wins, skinned every fish to the FIRST fish's bones and drew them piled
+    onto it: 5 bones off each against the first fish, 0 against their own."""
+    small = [("core", None, (0.0, 0.0, 0.1), None), ("tail", 0, (0.0, 0.0, -0.1), None)]
+    large = [("core", None, (0.0, 0.0, 0.3), None), ("tail", 0, (0.0, 0.0, -0.3), None)]
+    tree = ("School", {}, [
+        ("fishA", {}, [("core", {"position": [0.0, 0.0, 0.1]}, [("tail", {"position": [0.0, 0.0, -0.1]}, [])]),
+                       ("bodyA", _render(10, 0, [30]), [])]),
+        ("fishB", {}, [("core", {"position": [0.0, 0.0, 0.3]}, [("tail", {"position": [0.0, 0.0, -0.3]}, [])]),
+                       ("bodyB", _render(11, 0, [30]), [])]),
+    ])
+    build, thing = _one(tree, tmp_path,
+                        containers=[(10, "fishA.glb", "files/a.glb"), (11, "fishB.glb", "files/b.glb")],
+                        renders=[(10000, "bodyA", 10, 0), (11000, "bodyB", 11, 0)],
+                        glbs=[("files/a.glb", _glb([("bodyA", [6])], bones=small, skinned=[0])),
+                              ("files/b.glb", _glb([("bodyB", [6])], bones=large, skinned=[0]))])
+    data, notes = compose_thing(build, thing)
+    assert verify_thing(build, thing, data) == [], notes
+    assert not any("DIFFERENT rest pose" in n for n in notes), "each fish agrees with its own rig"
+    doc = _parse(data)
+    parents = _parents(doc)
+
+    def under(i, top):
+        while i in parents:
+            i = parents[i]
+            if doc["nodes"][i]["name"] == top:
+                return True
+        return False
+    for body, fish in (("bodyA", "fishA"), ("bodyB", "fishB")):
+        skin = doc["skins"][doc["nodes"][_named(doc)[body]]["skin"]]
+        assert all(under(j, fish) for j in skin["joints"]), f"{body} is skinned to {fish}'s own bones"

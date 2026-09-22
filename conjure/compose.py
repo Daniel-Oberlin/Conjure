@@ -35,9 +35,11 @@ loud note rather than being welded into a figure that is wrong in a way nothing 
 
 from __future__ import annotations
 
+import collections
 import json
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -234,6 +236,13 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
             pc = piece.materials[i] if i < len(piece.materials) else None
             if pc is None:
                 continue
+            # A material id the registry NEVER HAD is the site's own data, not a gap: PlayCanvas draws
+            # such a mesh with its default material, and so does a glTF primitive with none, so the file
+            # already matches what runs. `dangling` and the rebuild's own note report it; failing the
+            # thing for it made one capture exit 1 for something no re-download could change
+            # (fucked.in.basement: a doorframe and two chains, bound to two ids in no `config.json`).
+            if build.asset(pc) is None:
+                continue
             if "material" not in prim:
                 bad.append(f"piece {idx} ({piece.entity!r}) primitive {i} has no material; the scene "
                            f"binds {build.name(pc)}")
@@ -281,6 +290,14 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
 
     # --- optional pieces are PRESENT and flagged, live ones are not flagged
     hidden = set(head.get("hidden") or ())
+    # Checked AS THE CLIENT WILL SEE IT, because that is where the list is used. Comparing raw names
+    # passed Bianca's two `underwear` meshes — both in the list, both named `underwear` — while the
+    # loader called the second `underwear_1` and the runtime left it drawn.
+    seen = collections.Counter(loader_name(n.get("name", "")) for n in nodes)
+    for name in sorted(hidden):
+        if seen[loader_name(name)] != 1:
+            bad.append(f"hidden {name!r} names {seen[loader_name(name)]} node(s) once the client's loader "
+                       f"has named them — the runtime hides by name, so it cannot reach exactly this one")
     for idx, piece in enumerate(thing.pieces):
         node = nodes[by_piece[idx][0]] if by_piece.get(idx) else None
         if node is None:
@@ -320,17 +337,35 @@ def verify_thing(build: Build, thing: Thing, data: bytes) -> list[str]:
         sdoc, sblob = split_glb(open(path, "rb").read())
         if not sdoc or not (sdoc.get("skins") or []):
             continue
-        here: dict = {}
-        for i in range(len(nodes)):
-            here.setdefault(nodes[i].get("name"), node_matrix(nodes[i]))
-        off = joints_agree(_Src(sdoc, sblob), here)
+        # Against the bones the file's skins for this container ACTUALLY point at, one skin at a time.
+        # Comparing against the first node of each name failed three correctly-rigged fish and could
+        # pass a join that pointed a skin at the wrong copy of a repeated name.
+        used = sorted({n["skin"] for n in nodes
+                       if n.get("skin") is not None and _tag(n).get("container") == cid})
+        if used:
+            off = sorted({name for si in used for name in joints_agree(_Src(sdoc, sblob), {
+                nodes[j].get("name"): node_matrix(nodes[j])
+                for j in (doc["skins"][si].get("joints") or []) if j < len(nodes)})})
+        else:
+            here: dict = {}
+            for i in range(len(nodes)):
+                here.setdefault(nodes[i].get("name"), node_matrix(nodes[i]))
+            off = joints_agree(_Src(sdoc, sblob), here)
         if off:
             bad.append(f"{len(off)} bone(s) are not where {build.name(cid)} was bound against them "
                        f"({', '.join(off[:4])}) — its meshes are posed against the wrong rest position")
 
+    # A STACK is a skeleton copied in beside the scene's — `copy_skeleton`, whose nodes come after the
+    # scene's own, one per entity and in order. Two scene entities sharing a bone name are not that:
+    # they are two rigs the scene itself states, as underwater's three fish are, and whether each skin
+    # reached its OWN rig is what the per-skin bone check above now answers.
+    scene_nodes = len(thing.tree)
     joint_names = [nodes[j].get("name") for s in (doc.get("skins") or []) for j in s.get("joints") or []]
-    dupes = {n for n in joint_names if n and joint_names.count(n) > 1 and
-             len({j for s in (doc.get("skins") or []) for j in s["joints"] if nodes[j].get("name") == n}) > 1}
+    dupes = set()
+    for n in {n for n in joint_names if n and joint_names.count(n) > 1}:
+        at = {j for s in (doc.get("skins") or []) for j in s["joints"] if nodes[j].get("name") == n}
+        if len(at) > 1 and any(j >= scene_nodes for j in at):
+            dupes.add(n)
     if dupes:
         bad.append(f"{len(dupes)} bone name(s) resolve to more than one node "
                    f"({', '.join(sorted(dupes)[:4])}) — the skeletons did not weld, they stacked")
@@ -531,7 +566,7 @@ class _Compose:
                   f"skeleton and one clip cannot drive both")
         return by_name
 
-    def skin(self, src: _Src, cid: int, index: int, joints: dict[str, int]) -> int:
+    def skin(self, src: _Src, cid: int, index: int, joints: dict[str, int], scope=None) -> int:
         """One container skin, its joints re-pointed at the scene's bones by NAME.
 
         The inverse bind matrices are copied unchanged and that is correct even where two containers
@@ -540,8 +575,11 @@ class _Compose:
         is in centimetres and `model_britney_bride.glb` in metres, 222 bones' worth of difference —
         and an earlier version of this refused to merge her over it. What has to agree is where the
         BONES are, which `joints_agree` checks directly.
+
+        `scope` is the rig the joints were resolved in, when a thing holds more than one that reuse the
+        same names. It is part of the key, or the second fish would reuse the first fish's skin.
         """
-        key = (cid, index)
+        key = (cid, index, scope)
         if key not in self._skin:
             source = src.doc["skins"][index]
             out: dict = {"joints": [joints[src.doc["nodes"][j].get("name")]
@@ -652,6 +690,46 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
         else:
             work.joints[entity.name] = node_of[i]
 
+    # ---- a thing can hold SEVERAL rigs that reuse the same bone names
+    #
+    # `work.joints` keys bones by name, first entity wins, which is right for one skeleton and wrong for
+    # a school of fish: underwater's MOVING group holds three fish, each its own subtree with its own
+    # `core`, `spine01`, `spine02`, `tail01`, so every fish was skinned to the FIRST fish's bones and
+    # drawn piled onto it. Measured on those three: 5 bones off each against the first fish's, 0 against
+    # their own. So a skin's bones are resolved inside the smallest subtree above the piece that holds
+    # every name the skin asks for. Where a name occurs once — every figure in the corpus — that is the
+    # same node the name map already gives, `rig_of` returns None, and nothing about them changes.
+    children: dict[int, list[int]] = {}
+    for i, entity in enumerate(thing.tree):
+        if i:
+            children.setdefault(entity.parent, []).append(i)
+
+    def below(i: int) -> list[int]:
+        out, stack = [], [i]
+        while stack:
+            j = stack.pop()
+            out.append(j)
+            stack.extend(reversed(children.get(j, [])))
+        return out
+
+    def rig_of(start: int, names: set) -> Optional[tuple[int, dict[str, int]]]:
+        at = start
+        while True:
+            have: dict[str, int] = {}
+            for j in below(at):
+                have.setdefault(thing.tree[j].name, node_of[j])
+            if names <= have.keys():
+                scoped = {n: have[n] for n in names}
+                if all(work.joints.get(n) == node for n, node in scoped.items()):
+                    return None
+                return at, scoped
+            if at == 0:
+                return None
+            at = thing.tree[at].parent
+
+    def skin_names(src: _Src, index: int) -> set:
+        return {src.doc["nodes"][j].get("name") for j in src.doc["skins"][index].get("joints") or []}
+
     # ---- the bones the scene states, checked against the rest pose each container was bound in
     #
     # A scene entity's transform is usually the bind pose and is sometimes a SAVED POSE, and only the
@@ -692,7 +770,15 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
         if not (srcs[cid].doc.get("skins") or []):
             continue
         absent = [n for n in joint_locals(srcs[cid]) if n not in work.joints]
-        off = joints_agree(srcs[cid], rest)
+        # Each instance judged against its own rig where it has one; one container drawn three times
+        # in three rigs is three comparisons, not one against whichever came first.
+        rigs = [rig_of(p.node, skin_names(srcs[cid], srcs[cid].skin_of[p.mesh]))
+                for p in usable if p.container == cid and srcs[cid].skin_of.get(p.mesh) is not None]
+        if rigs and all(rigs):
+            off = sorted({n for _at, scoped in rigs for n in joints_agree(
+                srcs[cid], {k: node_matrix(work.nodes[v]) for k, v in scoped.items()})})
+        else:
+            off = joints_agree(srcs[cid], rest)
         if absent:
             work.note(f"{build.name(cid)} names {len(absent)} bone(s) that are not entities in this "
                       f"scene ({', '.join(absent[:4])})")
@@ -703,7 +789,7 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
         joints_for[cid] = (work.joints if not absent
                            else work.copy_skeleton(srcs[cid], cid, root))
 
-    hidden: list[str] = []
+    hidden_nodes: list[int] = []
     for index, piece in enumerate(thing.pieces):
         if piece not in usable:
             continue
@@ -714,7 +800,10 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
         node = node_of[piece.node]
         work.nodes[node]["mesh"] = work.mesh(src, piece.container, piece.mesh, piece.materials)
         if skin is not None:
-            work.nodes[node]["skin"] = work.skin(src, piece.container, skin, joints_for[piece.container])
+            rig = rig_of(piece.node, skin_names(src, skin))
+            work.nodes[node]["skin"] = work.skin(src, piece.container, skin,
+                                                 rig[1] if rig else joints_for[piece.container],
+                                                 scope=rig[0] if rig else None)
         work.nodes[node]["extras"] = {MARK: {"piece": index, "container": piece.container,
                                              "mesh": piece.mesh, "path": list(piece.path),
                                              "optional": not piece.enabled,
@@ -725,7 +814,12 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
                                              "variant": piece.shadowed,
                                              "skinned": skin is not None}}
         if not piece.enabled or piece.shadowed:
-            hidden.append(piece.entity)
+            hidden_nodes.append(node)
+    # Only what a SKIN uses. `work.joints` holds the first node of every entity name, pieces included,
+    # so protecting all of it left the first `Stall_Door` unrenamed beside a group of the same name.
+    bones = ({j for sk in work.skins for j in sk.get("joints") or []}
+             | {sk["skeleton"] for sk in work.skins if "skeleton" in sk})
+    hidden = _unique_piece_names(work.nodes, hidden_nodes, fixed=bones)
     redressed = [p for p in thing.pieces if p.redressed]
     if redressed:
         work.note(f"{len(redressed)} piece(s) wear the CONTAINER's materials rather than the scene "
@@ -785,6 +879,49 @@ def compose_thing(build: Build, thing: Thing, *, shown: bool = False,
 # ---------------------------------------------------------------- the driver
 
 
+def loader_name(name: str) -> str:
+    """The name three.js's GLTFLoader gives a node — `PropertyBinding.sanitizeNodeName`.
+
+    Whitespace becomes `_` and the characters `[ ] . : /` are removed. A name that repeats after that
+    then gets `_1`, `_2`, … in load order. Anything the client looks up BY NAME has to be written with
+    that in mind, and `figure-parts` does: it hides by node name.
+    """
+    return re.sub(r"[\[\]\.:/]", "", re.sub(r"\s", "_", name))
+
+
+def _unique_piece_names(nodes: list[dict], hidden_nodes: list[int], *, fixed: set) -> list[str]:
+    """Rename a HIDDEN piece whose name, as the client will see it, another node shares; return `hidden`.
+
+    The hidden list names glTF nodes and the runtime hides by name, so a name two nodes share hides the
+    wrong one or both. Scene entity names are not unique: rave.wc's washroom has `Stall_Door` three
+    times — a group, a switched-off door and a drawn one — and Bianca has two `underwear` meshes, both
+    switched off. The client's loader then renames repeats `_1`, `_2` in load order, so which copy an
+    entry reached depended on node order: on the washroom it hid a door the scene draws and left drawn
+    five pieces the scene switches off. Measured 2026-09-21: 16 hidden names shared by more than one
+    node across the 78 captures.
+
+    Only hidden pieces are renamed. A name nothing hides by is harmless however often it repeats, and
+    renaming it would change the bytes of files that are otherwise identical — a props file shared by
+    fifteen captures is one catalog row BECAUSE its bytes match. A bone is never renamed either: the
+    skeleton and every humanoid map find bones by name. A repeat becomes `name~2`, `name~3` — `~`
+    survives the loader's sanitising, so the name written is the name the client sees — and the scene's
+    own name is kept in the node's provenance as `entity`.
+    """
+    renamable = [i for i in hidden_nodes if i not in fixed]
+    taken = {loader_name(n.get("name", "")) for i, n in enumerate(nodes) if i not in renamable}
+    for i in renamable:
+        name = nodes[i].get("name", "")
+        final, k = name, 1
+        while loader_name(final) in taken:
+            k += 1
+            final = f"{name}~{k}"
+        taken.add(loader_name(final))
+        if final != name:
+            nodes[i]["name"] = final
+            nodes[i].setdefault("extras", {}).setdefault(MARK, {})["entity"] = name
+    return [nodes[i].get("name", "") for i in hidden_nodes]
+
+
 def _safe(name: str) -> str:
     """A thing's name as a file name. Thing names come from an artist and contain anything."""
     out = "".join(c if c.isalnum() or c in "-_. " else "_" for c in name).strip(" .")
@@ -830,8 +967,13 @@ def compose_build(root: str, out_dir: str, *, only: str = "", shown: bool = Fals
             dest = os.path.join(out_dir, f"{_safe(thing.name)}.glb")
             # A thing name repeats across scenes (13 toilet variants are 13 names, but `RootNode` is
             # not). Never silently overwrite: the second file loses to the first and nobody is told.
+            #
+            # The test is THIS RUN's output. It used to be `exists and not in written`, which is the
+            # guard inside out: a second same-named thing found the file this run had just written,
+            # stopped, and overwrote it — while a re-run into the same directory found last run's
+            # files and suffixed every one, so re-running piled up copies instead of replacing them.
             n = 1
-            while os.path.exists(dest) and dest not in written:
+            while dest in written:
                 n += 1
                 dest = os.path.join(out_dir, f"{_safe(thing.name)}-{n}.glb")
             open(dest, "wb").write(data)

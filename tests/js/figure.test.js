@@ -563,3 +563,26 @@ test("removing the component puts every weight IT set back to zero", () => {
   assert.equal(weights(meshes[0]).Jaw_Open, 0);
   assert.equal(weights(meshes[0]).Body_Alabaster, 0.8, "never ours to clear");
 });
+
+// ---------------------------------------------------------------- figure-parts
+
+// A part is hidden by NODE NAME, and three's loader renames nodes on the way in: whitespace to "_",
+// `[ ] . : /` removed. The list comes from the file, so it spells them the file's way.
+test("figure-parts hides a part whose file name the loader rewrote", () => {
+  const PARTS = components["figure-parts"];
+  const root = new THREE.Object3D();
+  const plane = new THREE.Object3D(); plane.name = "Plane002_Baked";      // file: "Plane.002_Baked"
+  const vase = new THREE.Object3D(); vase.name = "China_Vase01001";      // file: "China Vase01.001"
+  const other = new THREE.Object3D(); other.name = "Plane002_Baked_Wall"; // must NOT be caught
+  root.add(plane, vase, other);
+  const comp = Object.create(PARTS);
+  comp.el = { getObject3D: () => root, addEventListener() {}, removeEventListener() {} };
+  comp.data = { hidden: JSON.stringify(["Plane.002_Baked", "China Vase01.001"]) };
+  comp.apply();
+  assert.strictEqual(plane.visible, false, "a dotted name reaches the node the loader renamed");
+  assert.strictEqual(vase.visible, false, "and so does one with a space");
+  assert.strictEqual(other.visible, true, "without catching a node that merely starts the same way");
+  comp.data = { hidden: "[]" };
+  comp.apply();
+  assert.strictEqual(plane.visible, true, "dropping it from the list shows it again");
+});
