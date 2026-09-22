@@ -48,7 +48,8 @@ cp ~/.local/share/conjure/users/daniel/spaces/space-1.json /tmp/space-1.backup.j
 cd ~/Desktop/dev/Conjure
 
 # 4. Put the headset on, enter AR, and stand still for ~10 seconds so the space finishes loading.
-#    (The load gate holds identity until 60% of the seed is present; acting sooner re-mints walls.)
+#    (Two gates hold captures first: selection until the space vote resolves — "Finding which space
+#    you are in…" — then load until 60% of the seed is present. Both are correct; just wait.)
 ```
 
 Everything below assumes those two terminals. Server log = terminal 1. Commands = terminal 2.
@@ -66,8 +67,22 @@ section is meaningless.
 | A2 | headset browser console (`chrome://inspect` or the Quest devtools) | **no** `room segmentation failed` | |
 | A3 | `.venv/bin/python -m conjure.ctl rooms` | three rooms listed, each with a `floor=` | |
 
-**If A1 never appears but A2 is clean:** the segmentation ran, but the POST gate never fired — a settled
-space posts nothing. Walk around, or leave and re-enter AR to force a structural change.
+**If A1 never appears but A2 is clean**, there are now three causes, in the order they bite on a cold
+entry:
+
+1. **The selection gate is still holding.** Added 2026-09-22 (`0cdccb3`): until the location fix lands and
+   the space vote resolves, every capture is held — no registration, and no segmentation either, which is
+   correct, since segmenting against a space you may not be standing in is the same mistake. The headset
+   shows *"Finding which space you are in…"* and the log carries `space.selecting`. Wait for
+   `space.selected`; it is usually a few seconds.
+2. **The load gate is still holding** — *"Restoring your room…"*, below 60% of the seed. Also correct, and
+   also transient.
+3. **The POST gate never fired** — a settled space posts nothing. Walk around, or leave and re-enter AR to
+   force a structural change.
+
+Only the third needs anything from you. If the headset instead says *"step out of your play area and back
+in"*, that is the genuine lost-lock case and section A has failed for a reason that has nothing to do with
+rooms.
 
 **If A3 says `no rooms recorded`:** the capture landed without a segmentation. Check A1 again.
 
