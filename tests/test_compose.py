@@ -600,34 +600,121 @@ def test_a_file_name_is_made_safe_without_colliding(tmp_path):
     assert _safe("...") == "thing"
 
 
-def test_a_figure_welded_to_its_room_is_reported(tmp_path):
-    """teacher's `SchoolCorridor` is 394 entities holding BOTH the corridor and the teacher, so
-    converting it as one thing means she is not placeable at all — no clips, no rig, no figure.
+def _humanoid_bones():
+    """A skeleton `best_humanoid` genuinely accepts: `test_figures._skeleton`'s layout in Mixamo names.
 
-    susan is the same shape and was found by hand, weeks apart. The convention cannot decide this, but
-    it can SEE it, and one line of output is the difference between a person finding it and a figure
-    quietly disappearing at the next import.
+    The composer's own `BONES` are two bones, which is right for testing welds and deliberately NOT a
+    character — so a rule that lifts figures out of rooms has to be tested against a real one.
     """
-    from conjure.playcanvas import thing_notes
-    room = _glb([(f"wall{i}", [6]) for i in range(4)])
-    figure = _glb([("Body", [30])], bones=BONES, skinned=[0])
+    b = [("Hips", None, (0, 1.0, 0), None), ("Spine", 0, (0, 0.15, 0), None), ("Spine1", 1, (0, 0.25, 0), None),
+         ("Neck", 2, (0, 0.10, 0), None), ("Head", 3, (0, 0.25, 0), None)]
+    for side, sign in (("Left", 1), ("Right", -1)):
+        up = len(b)
+        b += [(f"{side}UpLeg", 0, (sign * 0.10, -0.05, 0), None), (f"{side}Leg", up, (0, -0.40, 0), None),
+              (f"{side}Foot", up + 1, (0, -0.40, 0), None), (f"{side}ToeBase", up + 2, (0, -0.05, 0.10), None)]
+        sh = len(b)
+        b += [(f"{side}Shoulder", 2, (sign * 0.05, 0.20, 0), None), (f"{side}Arm", sh, (sign * 0.08, 0, 0), None),
+              (f"{side}ForeArm", sh + 1, (sign * 0.25, 0, 0), None), (f"{side}Hand", sh + 2, (sign * 0.25, 0, 0), None)]
+        b += [(f"{side}Hand{f}1", sh + 3, (sign * 0.08, 0, i * 0.02), None)
+              for i, f in enumerate(("Index", "Middle", "Ring"))]
+    return b
+
+
+def _bone_tree(bones, under=None):
+    """The same skeleton as scene entities, as `_scene` spells a subtree: `under` hangs extras off a bone."""
+    under = under or {}
+
+    def node(i):
+        name, _parent, t, _r = bones[i]
+        kids = [node(j) for j, bone in enumerate(bones) if bone[1] == i]
+        return (name, {"position": list(t)}, kids + list(under.get(name, [])))
+    return node(0)
+
+
+def _room_with(tmp_path, *, rig_bones, wrapper=None, extra=()):
+    """A room of four walls with a skinned body standing in it — the shape of teacher's corridor."""
+    room = _glb([(f"wall{i}", [6]) for i in range(4)] + [("mug", [4])])
+    figure = _glb([("Body", [30])], bones=rig_bones, skinned=[0])
+    body = ("MainModelTeacher", {}, [_bone_tree(rig_bones, dict(extra)), ("Body", _render(11, 0, [30]), [])])
     tree = ("SchoolCorridor", {}, [
         ("EnvironmentVR", {}, [(f"wall{i}", _render(10, i, [30]), []) for i in range(4)]),
-        ("MainModelTeacher", {}, [("Body", _render(11, 0, [30]), [])]),
+        (wrapper, {"scale": [1.1, 1.1, 1.1]}, [body]) if wrapper else body,
     ])
     root = _build(tmp_path,
                   containers=[(10, "room.glb", "files/room.glb"), (11, "teacher.glb", "files/teacher.glb")],
-                  renders=[(10000 + i, f"wall{i}", 10, i) for i in range(4)] + [(11000, "Body", 11, 0)],
+                  renders=[(10000 + i, f"wall{i}", 10, i) for i in range(5)] + [(11000, "Body", 11, 0)],
                   glbs=[("files/room.glb", room), ("files/teacher.glb", figure)], scene_tree=tree)
-    build = read_build(root)
-    bare = {"exclude": [], "captures": {}}
-    assert any("welded to its environment" in n for n in thing_notes(build, rules=bare))
-    # Split, and the note goes away — the report is about the CHOICE, not about the geometry.
-    split = {"exclude": [], "captures": {"cap": {"scene.json": {"MainModelTeacher": "Teacher",
-                                                                "EnvironmentVR": "corridor"}}}}
-    notes = thing_notes(build, capture="cap", rules=split)
-    assert not any("welded" in n for n in notes), notes
-    assert sorted(t.name for t in things(build, capture="cap", rules=split)) == ["Teacher", "corridor"]
+    return read_build(root)
+
+
+BARE = {"exclude": [], "captures": {}}
+
+
+def test_a_figure_standing_in_its_room_is_lifted_out(tmp_path):
+    """cyberpunk's apartment, the hotel maid's room, the classroom and the washroom each composed as ONE
+    thing holding walls, furniture and a woman — and a figure welded to a room cannot be placed, posed or
+    given a clip. The split comes from the file: a rig the humanoid test recognises, inside a thing that
+    also draws other geometry."""
+    from conjure.playcanvas import thing_notes
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones())
+    got = {t.name: t for t in things(build, rules=BARE)}
+    assert sorted(got) == ["MainModelTeacher", "SchoolCorridor"]
+    teacher, corridor = got["MainModelTeacher"], got["SchoolCorridor"]
+    assert [p.entity for p in teacher.pieces] == ["Body"]
+    assert sorted(p.entity for p in corridor.pieces) == [f"wall{i}" for i in range(4)]
+    assert teacher.lifted_from == "SchoolCorridor" and teacher.lifted_by == "convention:mixamo"
+    assert corridor.lifted == ["MainModelTeacher"]
+    assert any("LIFTED out of 'SchoolCorridor'" in n for n in thing_notes(build, rules=BARE))
+
+
+def test_a_lifted_figure_takes_the_wrapper_that_places_her(tmp_path):
+    """From the HIGHEST node that draws nothing else, so a placement wrapper carrying her scale goes with
+    her. On the classroom that is `ModelParent` — what its hand-written `things.json` entry named."""
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones(), wrapper="ModelParent")
+    lifted = next(t for t in things(build, rules=BARE) if t.lifted_from)
+    assert lifted.name == "ModelParent" and lifted.scale == (1.1, 1.1, 1.1)
+
+
+def test_a_prop_on_her_hand_goes_with_her(tmp_path):
+    """Oktoberfest's beer hangs off `DEF-hand.R`: inside her subtree, so it is hers and not the room's."""
+    mug = ("mug", _render(10, 4, [30]), [])
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones(), extra={"RightHand": [mug]})
+    got = {t.name: t for t in things(build, rules=BARE)}
+    assert sorted(p.entity for p in got["MainModelTeacher"].pieces) == ["Body", "mug"]
+    assert "mug" not in [p.entity for p in got["SchoolCorridor"].pieces]
+
+
+def test_a_rig_that_is_not_humanoid_stays_in_its_room(tmp_path):
+    """A skinned chain in a basement and a school of fish are rigs, not figures: fucked.in.basement's
+    `Chains` (52 bones) and underwater's three fish fail `best_humanoid` and stay where they are."""
+    from conjure.playcanvas import thing_notes
+    build = _room_with(tmp_path, rig_bones=BONES)
+    assert [t.name for t in things(build, rules=BARE)] == ["SchoolCorridor"]
+    assert any("no humanoid rig was found" in n for n in thing_notes(build, rules=BARE))
+
+
+def test_a_figure_that_is_the_whole_thing_is_left_alone(tmp_path):
+    figure = _glb([("Body", [30])], bones=_humanoid_bones(), skinned=[0])
+    tree = ("Teacher", {}, [_bone_tree(_humanoid_bones()), ("Body", _render(10, 0, [30]), [])])
+    root = _build(tmp_path, renders=[(10000, "Body", 10, 0)], glbs=[("files/body.glb", figure)],
+                  scene_tree=tree)
+    got = things(read_build(root), rules=BARE)
+    assert [(t.name, t.lifted_from) for t in got] == [("Teacher", "")]
+
+
+def test_a_reviewed_override_is_not_second_guessed(tmp_path):
+    """The rule proposes; `things.json` is the reviewed answer and wins wherever it speaks."""
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones())
+    split = {"exclude": [], "captures": {"cap": {"scene.json": {"SchoolCorridor": "corridor"}}}}
+    got = things(build, capture="cap", rules=split)
+    assert [(t.name, t.lifted_from) for t in got] == [("corridor", "")], "named whole, kept whole"
+
+
+def test_a_lifted_figure_composes_and_verifies(tmp_path):
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones(), wrapper="ModelParent")
+    for thing in things(build, rules=BARE):
+        data, notes = compose_thing(build, thing)
+        assert verify_thing(build, thing, data) == [], (thing.name, notes)
 
 
 def test_the_capture_name_is_not_in_the_bytes(tmp_path):

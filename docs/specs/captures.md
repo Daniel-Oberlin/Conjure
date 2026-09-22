@@ -249,6 +249,22 @@ machinery groupings nobody places. So `things()` PROPOSES, `thing_notes()` repor
 with the counts that give it away, and `roots=` overrides it per scene. The same discipline
 `parts/parts.json` uses for garment words. `scripts/playcanvas_rebuild.py --things` is the view.
 
+**A figure standing in its room is lifted out, from the file alone.** The Root-child convention composed
+cyberpunk's apartment, the hotel maid's room, both classrooms, the washroom, the shower scene, the vampire
+manor and the school corridor as ONE thing each — walls, furniture and a woman — and a figure welded to a
+room cannot be placed, posed or given a clip. `thing_notes` had detected the shape and asked for a
+hand-written split per capture; `_lift_figures` now does it with no names. A **rig** is the smallest
+subtree above a skinned piece that holds every bone its skin names. It is a **figure** when
+`best_humanoid` recovers a humanoid map from its container — the import's own test for a character — so
+the basement's 52-bone skinned `Chains` and underwater's school of fish stay where they are. It is lifted
+only when the thing also draws something outside it, from the highest wrapper that draws nothing else, so
+a placement node carrying her scale goes with her — on the classroom that is `ModelParent`, what the
+hand-written entry for it named — and anything hanging off her bones goes too. A `things.json` entry for
+the scene still wins. Measured 2026-09-21: 8 figures lifted across the 78 captures, every one life-size
+(1.68–1.83 m), every room left with no skinned mesh; the original twenty byte-identical, since none of
+them has the shape, and 747 of the new set's 755 files byte-identical, the other 8 being the rooms that
+lost their figure.
+
 **Nothing in it is keyed to any particular model** — every string in the module is a PlayCanvas or glTF
 schema key, and the one heuristic (`--adopt`) matches on render-asset names read from the build. But the
 coverage was shaped by one character, so what it CANNOT carry is listed in `_UNCARRIED` and warned about
