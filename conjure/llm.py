@@ -456,6 +456,39 @@ class GrokLLM(_OpenAICompatibleLLM):
     base_url = "https://api.x.ai/v1"
 
 
+class LocalLLM(_OpenAICompatibleLLM):
+    """A model running on this machine — Ollama, LM Studio, or `mlx_lm.server`, all of which speak
+    Chat Completions. Same loop as the hosted ones; only the URL is local.
+
+    **Gated on `local_model`, not a key.** There is no API key to be missing, so naming a model is the
+    opt-in and an empty setting keeps the row out of the roster entirely. The `api_key` the SDK insists
+    on is a placeholder the server ignores.
+
+    **Prompt caching needs nothing here, and that is the interesting part.** Local runtimes reuse the
+    KV state of a prompt by longest-common-prefix match — llama.cpp per slot, LM Studio's MLX engine at
+    256-token checkpoints — so they find the divergence point themselves. No `cache_control`, no
+    breakpoints, no `prompt_cache_key`: the work that §5a needed for three hosted providers is simply
+    the runtime's job here. The cache is also free to write, ours to evict, and (via
+    `mlx_lm.cache_prompt`) persistable to disk, which no hosted provider offers.
+
+    What that does NOT fix is decode speed, which is memory-bandwidth-bound. Expect the gap to the
+    cloud to be about generation, not about the 15k-token prefix.
+    """
+
+    #: Ollama's default. LM Studio serves :1234/v1 and `mlx_lm.server` :8080/v1 — all the same API,
+    #: so switching runtime is a URL, which is the whole reason this subclass is four lines.
+    base_url = "http://localhost:11434/v1"
+
+    def __init__(self, name: str, api_key: str, model: str):
+        # `api_key` carries whatever ROSTER's key_field held — the model name, doing gating duty. A
+        # local server wants no key, so it is dropped here rather than forwarded.
+        super().__init__(name, "local", model)
+
+    def configure(self, settings) -> None:
+        """Point at a different local runtime without touching this class (the `build_roster` hook)."""
+        self.base_url = (getattr(settings, "local_llm_url", "") or "").strip() or type(self).base_url
+
+
 # =================================================================== image generation
 
 # Bound a single image request so a stalled API call fails cleanly instead of hanging the server
@@ -715,6 +748,9 @@ ROSTER: list[RosterEntry] = [
                 OpenAIImageGenerator, "openai_image_model", ()),  # opt-in; default for transparency
     RosterEntry("Grok", "xai", "xai_api_key", GrokLLM, "xai_director_model",
                 GrokImageGenerator, "xai_image_model", ()),       # opt-in; default for nothing
+    # No key field exists for a local server, so the MODEL NAME gates the row: set `local_model` and
+    # "Local" joins the roster, addressable like any other ("llm local").
+    RosterEntry("Local", "local", "local_model", LocalLLM, "local_model", None, None, ()),
 ]
 
 

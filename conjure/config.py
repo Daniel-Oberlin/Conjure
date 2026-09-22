@@ -475,6 +475,10 @@ class Settings:
     # gates tool search. Tool search is OFF: it changes what the model sees on every turn, and
     # measured worse than caching on this workload. `tool_search_always` names the tools that stay in
     # the request regardless — the ones a turn nearly always reaches for, where a search hop is a loss.
+    # A director running on this machine (docs/plans/local-llms.md §6). Naming a model opts in —
+    # there is no key to gate on. The URL suits Ollama; LM Studio is :1234/v1, mlx_lm.server :8080/v1.
+    local_model: str = ""
+    local_llm_url: str = "http://localhost:11434/v1"
     prompt_cache: bool = True
     tool_search: bool = False
     tool_search_kind: str = "regex"
@@ -579,6 +583,8 @@ def get_settings() -> Settings:
         tts=os.environ.get("CONJURE_TTS", "kokoro"),
         llm=os.environ.get("CONJURE_LLM", "claude"),
         llm_model=os.environ.get("CONJURE_LLM_MODEL", "claude-sonnet-4-6"),
+        local_model=os.environ.get("CONJURE_LOCAL_MODEL", ""),
+        local_llm_url=os.environ.get("CONJURE_LOCAL_LLM_URL", "http://localhost:11434/v1"),
         prompt_cache=os.environ.get("CONJURE_PROMPT_CACHE", "1").strip().lower()
                      not in ("0", "false", "no", "off"),
         tool_search=os.environ.get("CONJURE_TOOL_SEARCH", "").strip().lower() in ("1", "true", "yes", "on"),
@@ -702,6 +708,8 @@ SECRET_KEYS = frozenset({
 SETTABLE: dict[str, tuple[str, str]] = {
     # -- live: the next turn sees it
     "llm_model":             ("live", "Claude model the director runs on"),
+    "local_model":           ("live", "a local director's model name (empty = no local director)"),
+    "local_llm_url":         ("live", "local OpenAI-compatible endpoint"),
     "prompt_cache":          ("live", "cache the tools+system prefix across hops (on by default)"),
     "tool_search":           ("live", "defer tool schemas and let Claude search for them"),
     "tool_search_kind":      ("live", "tool search implementation: regex | bm25"),

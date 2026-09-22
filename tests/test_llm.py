@@ -6,6 +6,7 @@ from conjure.llm import (
     HOP_LIMIT_NOTICE,
     MAX_TOOL_HOPS,
     ClaudeLLM,
+    LocalLLM,
     GeminiLLM,
     GrokImageGenerator,
     GrokLLM,
@@ -790,3 +791,31 @@ async def test_gemini_usage_subtracts_the_cached_subset_too(monkeypatch):
                        tools=[], execute_tool=ex, emit=emit)
     assert llm.last_usage == [{"input": 1000, "output": 7,
                                "cache_read": 4000, "cache_write": 0}]
+
+
+# --------------------------------------------------------------------------- the local director
+
+def test_a_local_director_is_gated_on_a_model_name_not_a_key():
+    """There is no key to be missing, so naming a model IS the opt-in — and an empty one must keep
+    the row out of the roster rather than registering a director pointed at nothing."""
+    assert "Local" not in build_roster(_settings())[0]
+    roster, _ = build_roster(_settings(local_model="qwen3:8b"))
+    assert isinstance(roster["Local"], LocalLLM) and roster["Local"].model == "qwen3:8b"
+
+
+def test_the_local_endpoint_is_configurable_for_a_different_runtime():
+    """Ollama, LM Studio and mlx_lm.server differ by port, not by API — so switching is a URL."""
+    roster, _ = build_roster(_settings(local_model="m", local_llm_url="http://localhost:1234/v1"))
+    assert roster["Local"].base_url == "http://localhost:1234/v1"
+    default, _ = build_roster(_settings(local_model="m"))
+    assert default["Local"].base_url == "http://localhost:11434/v1"
+
+
+def test_the_local_director_sends_no_cache_key():
+    """`prompt_cache_key` is OpenAI's routing hint for ITS fleet. A local server has one backend and
+    does longest-common-prefix reuse itself, so the field is meaningless and must not be sent."""
+    assert LocalLLM("Local", "", "m")._cache_key([_spec("x")]) is None
+
+
+def test_the_local_director_is_addressable_like_any_other():
+    assert vendor_for("Local") == "local"
